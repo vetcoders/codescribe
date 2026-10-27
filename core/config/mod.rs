@@ -17,6 +17,8 @@
 //!
 //! Note: Config is loaded via `Config::load()` and accessed via shared state in main.rs.
 
+/// Voice conversation with a Bus agent and the built-in Agent's take timers.
+pub mod agent_channel;
 /// One-time move of high-churn data into `Config::churn_dir` (`data.noindex`).
 pub mod churn;
 /// Layer 1 ASR product mode, audio-egress consent, and gateway mint config.

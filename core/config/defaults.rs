@@ -14,6 +14,16 @@ pub fn default_double_tap_interval_ms() -> u64 {
     200
 }
 
+/// Countdown before an untouched built-in Agent transcript is sent.
+pub fn default_agent_auto_send_delay_sec() -> u64 {
+    super::agent_channel::DEFAULT_AGENT_AUTO_SEND_DELAY_SEC
+}
+
+/// A built-in Agent take that hears no voice for this long ends.
+pub fn default_agent_take_voiceless_end_sec() -> u64 {
+    super::agent_channel::DEFAULT_AGENT_TAKE_VOICELESS_END_SEC
+}
+
 /// Seconds of silence that end a recording in toggle mode.
 pub fn default_toggle_silence_sec() -> f32 {
     5.0

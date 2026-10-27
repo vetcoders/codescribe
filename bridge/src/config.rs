@@ -189,6 +189,22 @@ pub struct CsSettings {
     pub agent_auto_send: bool,
     /// Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
     pub agent_send_hold_sec: u32,
+    /// Built-in Agent auto-send countdown, `1...30` seconds.
+    pub agent_auto_send_delay_sec: u64,
+    /// A built-in Agent take without voice ends after this, `10...120` seconds.
+    pub agent_take_voiceless_end_sec: u64,
+    /// `continuous` | `end_after_message`.
+    pub agent_channel_session_policy: String,
+    /// Effective channel send pause; `0` only from the env override (off).
+    pub agent_channel_send_pause_sec: f32,
+    /// `settings` | `env_override`: where that pause came from.
+    pub agent_channel_send_pause_source: String,
+    /// `0` = never, else `15...600` seconds.
+    pub agent_channel_voiceless_close_sec: u64,
+    /// `off` | `light_plus` | `formatter`.
+    pub agent_channel_segment_finish: String,
+    /// Formatter budget for one channel message, `1...10` seconds.
+    pub agent_channel_format_wait_sec: u64,
     pub dump_audio_logs: bool,
     // ── Persisted lane selection and engine settings ──
     /// Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -312,6 +328,18 @@ impl CsSettings {
             agent_enter_sends: config.agent_enter_sends,
             agent_auto_send: config.agent_auto_send,
             agent_send_hold_sec: runtime.agent_send_hold_sec(),
+            agent_auto_send_delay_sec: config.agent_auto_send_delay_sec,
+            agent_take_voiceless_end_sec: config.agent_take_voiceless_end_sec,
+            agent_channel_session_policy: config.agent_channel.session_policy.as_str().to_string(),
+            agent_channel_send_pause_sec: config.agent_channel.send_pause_sec,
+            agent_channel_send_pause_source: config
+                .agent_channel
+                .send_pause_source
+                .as_str()
+                .to_string(),
+            agent_channel_voiceless_close_sec: config.agent_channel.voiceless_close_sec,
+            agent_channel_segment_finish: config.agent_channel.segment_finish.as_str().to_string(),
+            agent_channel_format_wait_sec: config.agent_channel.format_wait_sec,
             dump_audio_logs: config.dump_audio_logs,
             // Editable Settings fields prefer persisted intent from the same
             // seal so a fresh UI write is visible; sealed lanes fill gaps when
@@ -2163,6 +2191,8 @@ fn agent_env_keys() -> &'static [&'static str] {
         "AGENT_ENTER_SENDS",
         "AGENT_AUTO_SEND",
         "CODESCRIBE_AGENT_SEND_HOLD_SEC",
+        "AGENT_AUTO_SEND_DELAY_SEC",
+        "AGENT_TAKE_VOICELESS_END_SEC",
     ]
 }
 

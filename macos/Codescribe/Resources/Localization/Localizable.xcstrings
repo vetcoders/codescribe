@@ -1219,6 +1219,16 @@
         }
       }
     },
+    "%lld min" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld min"
+          }
+        }
+      }
+    },
     "%lld models discovered from provider" : {
       "comment" : "Model discovery status; needs a plural variation",
       "localizations" : {
@@ -1975,6 +1985,16 @@
         }
       }
     },
+    "A hands-free Agent recording that hears no voice stops and sends nothing." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagranie Agenta bez trzymania, które nie słyszy głosu, kończy się i niczego nie wysyła."
+          }
+        }
+      }
+    },
     "A license unlocks Agent mode." : {
       "comment" : "User panel, License section: what a license unlocks",
       "localizations" : {
@@ -2012,6 +2032,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Serwer o tej nazwie już istnieje. Wybierz inną nazwę."
+          }
+        }
+      }
+    },
+    "A session that hears no voice ends on its own. Agent replies do not count." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sesja, która nie słyszy głosu, kończy się sama. Odpowiedzi agenta się nie liczą."
           }
         }
       }
@@ -2538,6 +2568,16 @@
         }
       }
     },
+    "Adds the closing punctuation; nothing else changes." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaje końcową interpunkcję; reszta zostaje bez zmian."
+          }
+        }
+      }
+    },
     "Advanced" : {
       "localizations" : {
         "pl" : {
@@ -2607,6 +2647,26 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "After how many seconds" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Po ilu sekundach"
+          }
+        }
+      }
+    },
+    "After the message" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Po wiadomości"
           }
         }
       }
@@ -3709,16 +3769,6 @@
         }
       }
     },
-    "Auto-send to the built-in Agent" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wysyłaj automatycznie do wbudowanego Agenta"
-          }
-        }
-      }
-    },
     "Automatic playback muted" : {
       "localizations" : {
         "pl" : {
@@ -3905,6 +3955,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Data kompilacji"
+          }
+        }
+      }
+    },
+    "Built-in Agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wbudowany Agent"
           }
         }
       }
@@ -4567,6 +4627,26 @@
         }
       }
     },
+    "Channel close without voice" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zamknięcie kanału bez głosu"
+          }
+        }
+      }
+    },
+    "Channel formatting wait" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Czekanie kanału na formatowanie"
+          }
+        }
+      }
+    },
     "Channel map" : {
       "comment" : "Compact overlay: the collapsed counter that stands for every mapped channel",
       "localizations" : {
@@ -4585,6 +4665,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mapa kanałów w nakładce"
+          }
+        }
+      }
+    },
+    "Channel message finish" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykończenie wiadomości kanału"
+          }
+        }
+      }
+    },
+    "Channel send pause" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pauza wysyłki kanału"
+          }
+        }
+      }
+    },
+    "Channel session" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sesja kanału"
           }
         }
       }
@@ -5079,6 +5189,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zamknij panel kontekstu"
+          }
+        }
+      }
+    },
+    "Close without voice after" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zamknij bez głosu po"
           }
         }
       }
@@ -6781,6 +6901,16 @@
         }
       }
     },
+    "Countdown before the transcript is sent." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odliczanie przed wysłaniem transkrypcji."
+          }
+        }
+      }
+    },
     "Creator" : {
       "comment" : "Settings section: first-run setup and basics",
       "localizations" : {
@@ -7753,6 +7883,16 @@
         }
       }
     },
+    "Each pause sends a message; the conversation lasts until you hang up." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Każda pauza wysyła wiadomość; rozmowa trwa do rozłączenia."
+          }
+        }
+      }
+    },
     "Edit" : {
       "comment" : "Dictation panel: template segment, the raw template",
       "localizations" : {
@@ -7877,6 +8017,16 @@
         }
       }
     },
+    "End the Agent recording without voice after" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakończ nagranie Agenta bez głosu po"
+          }
+        }
+      }
+    },
     "End the chord with a letter or Space." : {
       "comment" : "Widget shortcut recorder refusal",
       "localizations" : {
@@ -7884,6 +8034,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończ skrót literą albo Spacją."
+          }
+        }
+      }
+    },
+    "End the session" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakończ sesję"
           }
         }
       }
@@ -8249,6 +8409,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gotowe"
+          }
+        }
+      }
+    },
+    "Finish each message" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykończenie każdej wiadomości"
           }
         }
       }
@@ -8967,6 +9137,16 @@
         }
       }
     },
+    "Hands-free dictation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dyktowanie bez trzymania"
+          }
+        }
+      }
+    },
     "Hang up the channel first, then remove the agent from the list" : {
       "comment" : "Drawer cross on an agent whose microphone channel is open",
       "localizations" : {
@@ -9591,6 +9771,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zachowuj nagrania"
+          }
+        }
+      }
+    },
+    "Keep listening" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słuchaj dalej"
           }
         }
       }
@@ -12836,6 +13026,16 @@
         }
       }
     },
+    "One formatting pass at your formatting level, within the wait below." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jedno przejście formatowania na Twoim poziomie, w czasie czekania poniżej."
+          }
+        }
+      }
+    },
     "One is enough: sign in with a provider account or add an API key. You can also do this later." : {
       "comment" : "Setup step description; the account and the key are alternatives",
       "localizations" : {
@@ -13475,6 +13675,16 @@
         }
       }
     },
+    "Past this, the message is sent with punctuation only." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Po tym czasie wiadomość wychodzi tylko z interpunkcją."
+          }
+        }
+      }
+    },
     "Paste after dictation" : {
       "localizations" : {
         "pl" : {
@@ -13562,12 +13772,32 @@
         }
       }
     },
-    "Pause before sending to Codescribe Bus" : {
+    "Pause %@" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Pauza przed wysłaniem do Codescribe Bus"
+            "state" : "translated",
+            "value" : "Pauza %@"
+          }
+        }
+      }
+    },
+    "Pause before sending" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pauza przed wysłaniem"
+          }
+        }
+      }
+    },
+    "Pause before sending (env override)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pauza przed wysłaniem (nadpisane przez env)"
           }
         }
       }
@@ -14156,6 +14386,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pulsujący czerwony"
+          }
+        }
+      }
+    },
+    "Punctuation (Light+)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Interpunkcja (Light+)"
           }
         }
       }
@@ -16562,6 +16802,16 @@
         }
       }
     },
+    "Send automatically" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wysyłaj automatycznie"
+          }
+        }
+      }
+    },
     "Send dictation audio to the cloud?" : {
       "comment" : "Cloud consent confirmation: dialog title",
       "localizations" : {
@@ -16668,12 +16918,12 @@
         }
       }
     },
-    "Sends the transcript after 5 seconds unless you start editing it." : {
+    "Sends the transcript unless you start editing it." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wyślij transkrypcję po 5 sekundach, jeśli nie rozpoczniesz edycji."
+            "value" : "Wysyła transkrypcję, chyba że zaczniesz ją edytować."
           }
         }
       }
@@ -17224,12 +17474,32 @@
         }
       }
     },
-    "Silence after you stop speaking before the message is sent; also the hands-free dictation limit. Applies from the next channel or recording." : {
+    "Silence after you stop speaking before the message is sent. Applies from the next channel." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Cisza po zakończeniu mowy, po której wiadomość zostaje wysłana; także limit dyktowania bez trzymania klawisza. Działa od następnego kanału lub nagrania."
+            "state" : "translated",
+            "value" : "Cisza po zakończeniu mówienia, po której wiadomość zostaje wysłana. Obowiązuje od następnego kanału."
+          }
+        }
+      }
+    },
+    "Silence after you stop speaking that closes an utterance while a hands-free recording keeps running. Applies from the next recording." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cisza po zakończeniu mówienia, która zamyka wypowiedź, gdy nagranie bez trzymania trwa dalej. Obowiązuje od następnego nagrania."
+          }
+        }
+      }
+    },
+    "Silence limit in hands-free dictation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Limit ciszy w dyktowaniu bez trzymania"
           }
         }
       }
@@ -19313,6 +19583,16 @@
         }
       }
     },
+    "The message is sent exactly as transcribed." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiadomość wychodzi dokładnie tak, jak została rozpoznana."
+          }
+        }
+      }
+    },
     "The message is too long (64 KB limit)." : {
       "localizations" : {
         "pl" : {
@@ -19340,6 +19620,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przy okazji zaktualizowana zostanie nieaktualna kopia dla %@."
+          }
+        }
+      }
+    },
+    "The pause sends the message and hangs up; press again for the next one." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pauza wysyła wiadomość i rozłącza; następną zaczniesz kolejnym naciśnięciem."
           }
         }
       }
@@ -20835,12 +21125,32 @@
         }
       }
     },
+    "Voice conversation with an agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmowa głosowa z agentem"
+          }
+        }
+      }
+    },
     "Volume" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Głośność"
+          }
+        }
+      }
+    },
+    "Wait for formatting" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Czekanie na formatowanie"
           }
         }
       }
@@ -22616,6 +22926,16 @@
         }
       }
     },
+    "formatting ≤ %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wygładzanie ≤ %@"
+          }
+        }
+      }
+    },
     "formatting…" : {
       "localizations" : {
         "pl" : {
@@ -22633,6 +22953,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "przyznano %@ · wybierz, aby cofnąć"
+          }
+        }
+      }
+    },
+    "hold %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "przytrzymanie %@"
           }
         }
       }
@@ -24362,6 +24692,16 @@
         }
       }
     },
+    "sent and hung up" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wysłane i rozłączone"
+          }
+        }
+      }
+    },
     "sent to Agent" : {
       "comment" : "Dictionary: quality record action",
       "localizations" : {
@@ -24379,6 +24719,67 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "wysłano · oczekiwanie na potwierdzenie odbioru"
+          }
+        }
+      }
+    },
+    "sent; the conversation lasts until you hang up" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wysłane; rozmowa trwa do rozłączenia"
+          }
+        }
+      }
+    },
+    "settings.agentChannel.finish.off" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wył."
+          }
+        }
+      }
+    },
+    "settings.agentChannel.source.env" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "env override"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "nadpisane przez env"
+          }
+        }
+      }
+    },
+    "settings.agentChannel.source.settings" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "settings"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ustawienia"
           }
         }
       }
