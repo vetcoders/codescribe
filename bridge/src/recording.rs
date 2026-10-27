@@ -577,6 +577,7 @@ impl CsPresentationStatusEvent {
             PresentationStatusKind::AdmissionRefused => "admission_refused",
             PresentationStatusKind::CalibrationSucceeded => "calibration_succeeded",
             PresentationStatusKind::CalibrationFailed => "calibration_failed",
+            PresentationStatusKind::FormattingDegraded => "formatting_degraded",
         };
         Self {
             schema: event.schema.clone(),

@@ -3752,6 +3752,7 @@ impl RecordingController {
         intent: (bool, bool, CaptureTurnIntent),
         stop: StopCanvasRequest,
         capture_closed_at: std::time::Instant,
+        runtime_settings: &RuntimeSettingsSnapshot,
     ) -> StopCanvasDelivery {
         let (assistive, force_ai, capture_turn) = intent;
         let presentation = self.active_presentation.read().await.clone();
@@ -3802,6 +3803,21 @@ impl RecordingController {
                 preempted: true,
             };
         }
+        if !assistive
+            && runtime_settings.formatting_policy() != FormattingPolicy::Off
+            && presentation
+                .as_ref()
+                .is_some_and(|emitter| !emitter.literal_delivery())
+        {
+            // The painted prefix is not the terminal formatter source. Selecting
+            // it here would permanently freeze the fallback before the last
+            // occurrence results can settle. PCM is already closed; leave the
+            // one delivery claim to the existing terminal path.
+            return StopCanvasDelivery {
+                delivery: Ok(None),
+                preempted: false,
+            };
+        }
         let committed_canvas = wait
             .snapshot
             .as_ref()
@@ -3823,7 +3839,7 @@ impl RecordingController {
                 preempted: false,
             };
         }
-        let config = self.get_config().await;
+        let config = runtime_settings.values().clone();
         let delivery = self
             .settle_frozen_canvas_at_stop(
                 take_id,
@@ -3832,7 +3848,8 @@ impl RecordingController {
                 stop.stopped_at,
                 |text| async move {
                     let text = if !assistive {
-                        self.select_paste_projection(text).await
+                        self.select_paste_projection(take_id, runtime_settings, text)
+                            .await
                     } else {
                         text
                     };
@@ -6846,6 +6863,8 @@ impl RecordingController {
         let assistive = *self.assistive_mode.read().await;
         let force_ai = *self.force_ai_mode.read().await;
 
+        let runtime_settings = self.runtime_settings_arc().await;
+
         // Self-deadlock guard (Rust 2024): the read guard temporary from an
         // if-let chain scrutinee outlives the chain body. Inlining the read
         // would keep the guard alive across `.write().await`, blocking the
@@ -6902,6 +6921,7 @@ impl RecordingController {
                     (assistive, force_ai, capture_turn),
                     stop,
                     capture_closed_at,
+                    runtime_settings.as_ref(),
                 )
                 .await;
             if preempted {
@@ -6962,10 +6982,20 @@ impl RecordingController {
             // take returns unchanged here — it already formatted per occurrence
             // while it was live.
             let streaming_text = self
-                .format_composer_turn_once(capture_turn, streaming_text)
+                .format_composer_turn_once(
+                    session_id_snapshot.as_deref(),
+                    runtime_settings.as_ref(),
+                    capture_turn,
+                    streaming_text,
+                )
                 .await;
             let streaming_text = if !take_delivers_to_composer(capture_turn) && !assistive {
-                self.select_paste_projection(streaming_text).await
+                self.select_paste_projection(
+                    session_id_snapshot.as_deref(),
+                    runtime_settings.as_ref(),
+                    streaming_text,
+                )
+                .await
             } else { streaming_text };
             if let Some(path) = raw_audio_path_opt.as_deref() {
                 let archived = retain_session_audio(
@@ -7398,6 +7428,8 @@ impl RecordingController {
     /// Raw document, shared buffer and acoustic revision remain unchanged.
     async fn format_composer_turn_once(
         &self,
+        take_id: Option<&str>,
+        runtime_settings: &RuntimeSettingsSnapshot,
         capture_turn: CaptureTurnIntent,
         committed_text: String,
     ) -> String {
@@ -7416,22 +7448,24 @@ impl RecordingController {
             session_id,
             source_revision,
             source_text,
-        }) = presentation.terminal_formatter_request()
+        }) = presentation
+            .terminal_formatter_request()
+            .filter(|request| Some(request.session_id.as_str()) == take_id)
         else {
             debug!("Composer turn: nothing to format at terminal; no provider call issued");
             return committed_text;
         };
-        let runtime_settings = self.runtime_settings_arc().await;
         let language = runtime_settings.values().whisper_language;
         // The one paid call this take is allowed. Same production entry point
         // the explicit overlay formatter uses; no second lane, no retry loop.
         let consultation = match self
-            .selected_max_consultation(runtime_settings.as_ref())
+            .selected_max_consultation(runtime_settings)
             .await
         {
             Ok(consultation) => consultation,
             Err(error) => {
                 warn!(%error, "Max consultation unavailable; preserving committed transcript");
+                self.publish_formatting_degraded(take_id);
                 return committed_text;
             }
         };
@@ -7439,7 +7473,7 @@ impl RecordingController {
         let result = format_text_with_status_for_policy(
             &source_text,
             language.whisper_hint(),
-            runtime_settings.as_ref(),
+            runtime_settings,
             consultation.as_deref().map(|agent| {
                 codescribe_core::ai_formatting::FormattingConsultation {
                     agent,
@@ -7448,6 +7482,8 @@ impl RecordingController {
             }),
         )
         .await;
+        let formatting_failed =
+            result.status == codescribe_core::llm::ai_formatting::AiFormatStatus::Failed;
         match presentation.apply_formatter_revision(
             session_id,
             source_revision,
@@ -7467,13 +7503,20 @@ impl RecordingController {
             }
             Err(refusal) => {
                 info!(%refusal, "Composer turn terminal formatting refused; committed text stands");
+                if formatting_failed {
+                    self.publish_formatting_degraded(take_id);
+                }
                 committed_text
             }
         }
     }
 
-    async fn select_paste_projection(&self, raw: String) -> String {
-        let runtime_settings = self.runtime_settings_arc().await;
+    async fn select_paste_projection(
+        &self,
+        take_id: Option<&str>,
+        runtime_settings: &RuntimeSettingsSnapshot,
+        raw: String,
+    ) -> String {
         let policy = runtime_settings.formatting_policy();
         if !matches!(
             policy,
@@ -7484,6 +7527,13 @@ impl RecordingController {
         let Some(presentation) = self.active_presentation.read().await.clone() else {
             return raw;
         };
+        if !presentation
+            .visible_canvas_snapshot()
+            .is_some_and(|canvas| Some(canvas.session_id.as_str()) == take_id)
+        {
+            warn!(take_id, "Stop formatter selection refused a different capture presentation");
+            return raw;
+        }
         if presentation.literal_delivery() {
             return raw;
         }
@@ -7510,7 +7560,17 @@ impl RecordingController {
         {
             info!(status = "Smart unavailable — delivered Corrections", source_revision = projection.source_raw_revision, receipt = %projection.receipt_id);
         }
+        if projection.requested_mode != projection.delivered_mode || projection.status != "applied" {
+            self.publish_formatting_degraded(take_id);
+        }
         projection.rendered_text
+    }
+
+    fn publish_formatting_degraded(&self, take_id: Option<&str>) {
+        if let Some(take_id) = take_id {
+            let status = PresentationStatusProjection::formatting_degraded(take_id.to_string());
+            Self::broadcast_presentation_status(&self.event_broadcast, &status);
+        }
     }
 
     /// Stop recording, transcribe, format, and paste the result
@@ -7593,6 +7653,7 @@ impl RecordingController {
         closed: Option<watch::Sender<bool>>,
     ) -> Result<ProcessRecordingOutcome> {
         let (assistive, hold_mode, force_raw, force_ai) = mode;
+        let runtime_settings = self.runtime_settings_arc().await;
         if cfg!(test) {
             info!(
                 "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",
@@ -7629,6 +7690,7 @@ impl RecordingController {
                 (assistive, force_ai, CaptureTurnIntent::HandsFree),
                 stop,
                 capture_closed_at,
+                runtime_settings.as_ref(),
             )
             .await;
         if preempted {
@@ -7670,7 +7732,12 @@ impl RecordingController {
         };
 
         let streaming_text = if !assistive {
-            self.select_paste_projection(streaming_text).await
+            self.select_paste_projection(
+                take_id.as_deref(),
+                runtime_settings.as_ref(),
+                streaming_text,
+            )
+            .await
         } else {
             streaming_text
         };

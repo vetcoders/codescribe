@@ -5335,6 +5335,35 @@ final class OverlayState {
   /// receipts, or product actions in Swift — and it may only close the capture
   /// its own identity addresses.
   func applyPresentationStatus(_ event: CsPresentationStatusEvent) {
+    if event.kind == "formatting_degraded" {
+      guard !event.terminal, let sessionID = event.sessionId,
+        sessionID == latestTranscriptProjection?.sessionId,
+        !retiredProjectionSessions.contains(sessionID)
+      else { return }
+      let headline = String(
+        localized: "Formatting was not applied",
+        comment: "Notice when the transcript is retained after formatting fails")
+      presentationStatus = OverlayPresentationStatus(
+        schema: event.schema,
+        emittedAt: event.emittedAt,
+        sessionId: sessionID,
+        kind: event.kind,
+        code: event.code,
+        statusLabel: String(
+          localized: "formatting unavailable",
+          comment: "Status of a transcript delivered without the requested formatting"),
+        headline: headline,
+        message: String(
+          localized: "Your transcript is retained without the requested formatting. Check the formatter in Settings.",
+          comment: "Recovery advice after automatic formatting fails"),
+        isError: event.isError,
+        terminal: false,
+        calibrationVersion: nil
+      )
+      onPresentationStatus?()
+      showToast(headline)
+      return
+    }
     if event.terminal, let sessionID = event.sessionId,
       draftCapture.destination(for: sessionID) != nil
     {

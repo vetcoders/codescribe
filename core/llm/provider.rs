@@ -82,23 +82,30 @@ impl WireFamily {
     /// trim, strip a known protocol suffix (or a bare `/v1`), append the
     /// canonical one. Pure string work — no settings, env, or Keychain.
     pub fn normalize_endpoint(self, raw: &str) -> String {
-        let known: &[&str] = match self {
-            WireFamily::OpenAiResponses => {
-                &["/v1/responses", "/v1/chat/completions", "/v1/completions"]
-            }
-            WireFamily::AnthropicMessages => &["/v1/messages", "/v1/responses"],
+        let known = [
+            "/v1/responses",
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/v1/completions",
+        ];
+        let Ok(mut endpoint) = reqwest::Url::parse(raw.trim()) else {
+            return raw.trim().to_string();
         };
-        let mut base = raw.trim().trim_end_matches('/').to_string();
-        for suffix in known {
-            if base.ends_with(suffix) {
-                base.truncate(base.len() - suffix.len());
-                return format!("{base}{}", self.canonical_suffix());
-            }
+        let mut base = endpoint.path().trim_end_matches('/').to_string();
+        // A wire change replaces the previous API path. Repeated suffixes
+        // also occur in persisted rows written by the former append path.
+        // Work on the path only: neither host names nor query values are API
+        // suffixes. A bare /v1 in a mount prefix survives an existing API path.
+        let mut replaced_api_path = false;
+        while let Some(suffix) = known.iter().find(|suffix| base.ends_with(**suffix)) {
+            base.truncate(base.len() - suffix.len());
+            replaced_api_path = true;
         }
-        if base.ends_with("/v1") {
+        if !replaced_api_path && base.ends_with("/v1") {
             base.truncate(base.len() - "/v1".len());
         }
-        format!("{base}{}", self.canonical_suffix())
+        endpoint.set_path(&format!("{base}{}", self.canonical_suffix()));
+        endpoint.to_string()
     }
 }
 

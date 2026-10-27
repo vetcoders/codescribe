@@ -18,6 +18,7 @@ pub enum PresentationStatusKind {
     AdmissionRefused,
     CalibrationSucceeded,
     CalibrationFailed,
+    FormattingDegraded,
 }
 
 /// One passive status card. Rust owns classification and diagnostic wording;
@@ -38,6 +39,24 @@ pub struct PresentationStatusProjection {
 }
 
 impl PresentationStatusProjection {
+    /// Formatting failure retains the transcript and all of its actions. This
+    /// is a notice for one take, never a capture-ending error.
+    pub fn formatting_degraded(session_id: String) -> Self {
+        Self {
+            schema: PRESENTATION_STATUS_SCHEMA.to_string(),
+            emitted_at: now_rfc3339(),
+            session_id: Some(session_id),
+            kind: PresentationStatusKind::FormattingDegraded,
+            code: "formatting_unavailable".to_string(),
+            status_label: "formatting unavailable".to_string(),
+            headline: "Formatting was not applied".to_string(),
+            message: "Your transcript is retained without the requested formatting. Check the formatter in Settings.".to_string(),
+            is_error: false,
+            terminal: false,
+            calibration_version: None,
+        }
+    }
+
     pub fn admission_refused(
         session_id: Option<String>,
         code: impl Into<String>,
