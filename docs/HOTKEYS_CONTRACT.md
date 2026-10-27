@@ -155,13 +155,17 @@ The channel digit chord is claimed by the CoreGraphics tap: down, repeat and up
 are consumed, including an up after modifier release. Ordinary typing, other
 shortcuts and mouse events still reach the frontmost app. A successfully opened
 live channel plays **Pop**, respecting Start sound and its configured volume.
-A rejected open or a close does not play that cue. A channel session ends on
-the second press (hang-up) or on silence: `CODESCRIBE_CHANNEL_AUTOSEAL_SECS`
-after heard voice, or 30 s after the open when no voice was heard (an agent
-reply playing into the channel does not count). Silence
-delivers the words and releases the microphone like a hang-up; nothing
-reopens the channel, so one press carries one message (Founder decision
-2026-10-26).
+A rejected open or a close does not play that cue. A pause of
+`agent_channel.send_pause_sec` after heard voice (default 5 s; the env
+`CODESCRIBE_CHANNEL_AUTOSEAL_SECS` overrides it) delivers the message. Under
+`agent_channel.session_policy = continuous` (default) the session keeps the
+same capture subscription and delivers each following message the same way
+until the second press (hang-up). Under `end_after_message` that pause also
+releases the microphone like a hang-up, so one press carries one message.
+A session that hears no voice for `agent_channel.voiceless_close_sec` since
+its current message began ends either way (default never for continuous,
+30 s for one message; an agent reply playing into the channel does not
+count). `toggle_silence_sec` is not a channel input.
 
 Each named conversation has a written-message composer. Clicking it takes the
 existing overlay keyboard gate; opening a voice channel never steals keyboard
@@ -451,17 +455,17 @@ picker, where Formatting and the Agent start.
 lane (`EpochGate` in `apple_live_session.rs`): Silero watches the mic, speech opens an SFSpeech
 epoch, silence past the slider seals the span and rests the engine, the next speech edge wakes a
 fresh epoch. Recording does not stop. This is not a wav-only chunker knob and not `CODESCRIBE_VAD_*`.
-**Assistive take: 30 s without voice end it (founder decision 2026-10-26, W2-09).** A hands-free
-assistive take that hears no voice for 30 s ends on its own: 30 s after the start when it never
-heard voice, else 30 s after the last measured speech end. Voice is the PCM energy and Silero VAD
-edges of the take's capture epoch (`SpeechClock`, `app/controller/speech_clock.rs`, the clock agent
-channels use, with the same `VOICELESS_CLOSE_SECS`), never recognizer output. Agent playback is not
-silence: it restarts the 30 s. The end is the controller's named stop (`stop_capture_if_owned`,
+**Assistive take: ends without voice after `interaction.agent_take_voiceless_end_sec` (default 30 s,
+10–120, W2-09).** A hands-free assistive take that hears no voice for that limit ends on its own:
+the limit after the start when it never heard voice, else after the last measured speech end. Voice
+is the PCM energy and Silero VAD edges of the take's capture epoch (`SpeechClock`,
+`app/controller/speech_clock.rs`, the clock agent channels use), never recognizer output; the limit
+is frozen when the take arms. Agent playback is not silence: it restarts the limit. The end is the controller's named stop (`stop_capture_if_owned`,
 `app/controller/assistive_silence.rs`), the path a Stop click takes. It releases only the take's
 capture, so an open agent channel keeps the microphone. It sends nothing: the stop path returns
 before `resolve_delivery_route`, the disposition is `ended_without_voice`, the overlay's opt-in
 Agent auto-send stays off for that take, and the text stays in the take archive, where an explicit
-send still works. A Stop before the 30 s delivers as before. Dictation and Formatting toggles run
+send still works. A Stop before the limit delivers as before. Dictation and Formatting toggles run
 until stopped, and `TOGGLE_SILENCE_SEC` still only closes utterance epochs.
 
 | Mode binding           | Keys                          | Mode                                                                               |

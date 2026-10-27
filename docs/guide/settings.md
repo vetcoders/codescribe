@@ -406,16 +406,43 @@ Prompts** edits their prompts. The model-list line (where the list came from,
 with **Refresh** and **Error details**) sits above the model field, because that
 is the line that tells you to type an identifier when there is no list.
 
-**Codescribe Bus** groups the two timers that act on channel messages:
-**Pause before sending to Codescribe Bus** (the silence that ends a spoken
-message, and the silence limit for hands-free dictation, applied from the next
-channel or recording) and **Hold before sending to Codescribe Bus** (0–30 s;
-the window in which you can revise or withdraw the message, 0 sends at once).
+**Voice conversation with an agent** sets how a Codescribe Bus channel
+(Fn+digit) behaves while you speak to an agent:
 
-**Auto-send to the built-in Agent** is a separate, labelled switch and has
-nothing to do with the bus: in Agent mode the untouched transcript is sent to
-the Agent in the overlay 5 seconds after the take ends unless you start editing
-it.
+- **After the message**: **Keep listening** (default) sends each message on a
+  pause and keeps the conversation open until you press the channel chord
+  again; **End the session** sends the message and hangs up, so the next
+  message is the next press.
+- **Pause before sending** (1–15 s, 0.5 s steps, default 5 s): the silence
+  after you stop speaking that sends the message. The countdown in the overlay
+  is this same pause. When `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` is set, the row
+  reads **(env override)** and the environment value applies.
+- **Close without voice after** (**Never**, 15 s–10 min): a session that hears
+  no voice ends on its own. Agent replies playing into the channel do not
+  count. Choosing a policy sets its own default (Never for Keep listening,
+  30 s for End the session).
+- **Finish each message**: **Off** (sent as transcribed), **Punctuation
+  (Light+)** (default; closing punctuation only) or **Formatting** (one
+  formatting pass at your formatting level). **Wait for formatting** (1–10 s,
+  only with Formatting) bounds that pass: past it, the message is sent with
+  punctuation only, without holding the microphone or the next message.
+- **Hold before sending to Codescribe Bus** (0–30 s): the window in which you
+  can revise or withdraw the message; 0 sends at once.
+
+A caption under the card spells out the chain with your values, for example
+"Pause 5 s → hold 10 s → sent; the conversation lasts until you hang up".
+
+**Built-in Agent** has nothing to do with the bus. **Send automatically** sends
+the untouched transcript to the Agent in the overlay **After how many seconds**
+(1–30 s, default 5) unless you start editing it. **End the Agent recording
+without voice after** (10–120 s, default 30) stops a hands-free Agent recording
+that hears no voice; it sends nothing.
+
+**Active configuration details** also lists the channel settings the next
+session uses, with the source of the send pause (settings or env override).
+
+The silence limit for hands-free dictation lives under **Microphone and
+recording › Hands-free dictation**.
 
 ### Agent → Prompts
 
