@@ -1109,7 +1109,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(chrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
     XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
     XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
-    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 8)
+    // The conversation's frame reader (sidebar fold, 2026-10-26) is the ninth:
+    // like the drawer's and the rail's readers it takes no click and, being
+    // Color.clear, hides nothing from accessibility.
+    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 9)
     XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 4)
     // The folded list's rail (2026-10-19) brought two of them: its leading
     // hairline and its frame reader, neither of which takes a click.

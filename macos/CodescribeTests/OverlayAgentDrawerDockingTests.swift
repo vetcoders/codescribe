@@ -1471,6 +1471,102 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       actions.contains("systemImage: \"checkmark\""),
       "no icon-slot checkmark impersonating a checkbox")
   }
+
+  // MARK: - Fold keeps the panes' layout (Founder, 2026-10-26)
+
+  /// The `sidebar.left` fold slides the panes, and the conversation inside
+  /// its shrinking cell used to be laid out at the cell's current width: one
+  /// character per line in the edge column, kept on screen by a stalled
+  /// frame (recording 17:49, 23.25 s). The conversation now keeps its split
+  /// width at every moment of the fold and the unfold; only the cell clips.
+  func testFoldKeepsTheConversationAtItsSplitWidthWhileTheCellSlides() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lena, astra]))
+    state.selectConversation(lena.id)
+    let drawer = OverlayDrawerFrameRecorder()
+    let conversation = OverlayDrawerFrameRecorder()
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+    let width: CGFloat = 560
+    let host = NSHostingView(
+      rootView:
+        DictationOverlayView(state: state)
+        .defaultAppStorage(defaults)
+        .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { drawer.frame = $0 }
+        .onPreferenceChange(OverlayConversationFramePreferenceKey.self) {
+          conversation.frame = $0
+        }
+        .frame(width: width, height: 500))
+    host.sizingOptions = []
+    let panel = NSPanel(
+      contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    BackgroundTestWindow.present(panel)
+    defer { panel.orderOut(nil) }
+    let settle = { (seconds: TimeInterval) in
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+      host.layoutSubtreeIfNeeded()
+    }
+    settle(0.6)
+    let splitWidth = width - OverlayAgentDrawerLayout.drawerWidth(textScale: 1, windowWidth: width)
+    XCTAssertEqual(splitWidth, 320, accuracy: 0.001)
+    XCTAssertEqual(drawer.frame.minX, splitWidth, accuracy: 1, "split: the column beside the chat")
+    XCTAssertEqual(conversation.frame.width, splitWidth, accuracy: 1)
+
+    state.hideAgentsCanvas()
+    for sample in 1...4 {
+      settle(0.05)
+      XCTAssertEqual(
+        conversation.frame.width, splitWidth, accuracy: 1,
+        "the folding conversation keeps its split width at \(sample * 50) ms")
+      XCTAssertEqual(conversation.frame.minX, 0, accuracy: 1)
+    }
+    settle(0.5)
+    let edge = OverlayAgentDrawerLayout.conversationEdgeWidth(textScale: 1)
+    XCTAssertEqual(drawer.frame.minX, edge, accuracy: 1, "folded: the roster behind the edge")
+    XCTAssertEqual(drawer.frame.width, width - edge, accuracy: 1)
+    XCTAssertEqual(
+      conversation.frame.width, splitWidth, accuracy: 1,
+      "folded: the conversation is clipped by its cell, never re-laid out")
+
+    state.showAgentsCanvas()
+    for _ in 0..<3 {
+      settle(0.05)
+      XCTAssertEqual(
+        conversation.frame.width, splitWidth, accuracy: 1,
+        "the unfolding conversation keeps its split width too")
+    }
+    settle(0.5)
+    XCTAssertEqual(drawer.frame.minX, splitWidth, accuracy: 1, "unfolded: the split is back")
+    XCTAssertEqual(conversation.frame.width, splitWidth, accuracy: 1)
+  }
+
+  /// The roster lays out at its new width at once; only the column's frame
+  /// slides over it, anchored to the window edge, so no row re-wraps its
+  /// title and preview inside a half-way frame.
+  func testDrawerColumnSnapsItsListAndSlidesOnlyItsFrame() throws {
+    let overlay = try overlaySource("DictationOverlayView.swift")
+    let column = try section(
+      of: overlay,
+      from: "private func agentDrawerColumn",
+      to: "private func conversationEdgeControls")
+    XCTAssertTrue(column.contains(".animation(nil, value: width)"), "the list snaps")
+    XCTAssertTrue(
+      column.contains(".frame(width: width, alignment: .trailing)"),
+      "the sliding frame is anchored to the window edge")
+    let stack = try section(
+      of: overlay, from: "private func canvasStack", to: "private func agentDrawerColumn")
+    XCTAssertTrue(
+      stack.contains(".frame(width: conversationContentWidth, alignment: .leading)"),
+      "the conversation is laid out at its split width")
+    let clippedCell =
+      ".frame(width: canvasWidth, height: geometry.size.height, alignment: .leading)\n"
+      + "          .clipped()"
+    XCTAssertTrue(stack.contains(clippedCell), "and its cell clips it while sliding")
+  }
 }
 
 @MainActor
