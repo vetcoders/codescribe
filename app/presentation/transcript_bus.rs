@@ -954,6 +954,16 @@ struct TranscriptBusWriter {
     announced_documents: HashSet<u64>,
 }
 
+/// A channel message as delivered: the finished text and the name of the
+/// revision it is (`committed`, `light_plus` or `formatter`). `fallback` says
+/// why a formatter revision was not delivered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChannelDelivery {
+    pub text: String,
+    pub revision: &'static str,
+    pub fallback: Option<&'static str>,
+}
+
 /// One open agent channel as the controller's registry holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ChannelCohortMember {
@@ -2373,7 +2383,16 @@ impl TranscriptBus {
     /// Maciej, 2026-10-17 09:59Z: the pause before sending covered typed
     /// messages only. On a day the ledger sealed no channel take, every spoken
     /// message left at once, with no Cancel/Edit.
-    pub(crate) fn publish_channel_closed(&self, hold_sec: u32) -> io::Result<()> {
+    ///
+    /// `delivery` is the channel's finished message (`agent_channel.segment_finish`):
+    /// its text replaces the rendered document on both closing rows and its
+    /// revision name is stamped as `delivered_revision`. `None` delivers the
+    /// committed document unchanged.
+    pub(crate) fn publish_channel_closed(
+        &self,
+        hold_sec: u32,
+        delivery: Option<&ChannelDelivery>,
+    ) -> io::Result<()> {
         if self.session.mode != TranscriptMode::Agent || self.session.audience.is_none() {
             return Ok(());
         }
@@ -2480,8 +2499,17 @@ impl TranscriptBus {
         projection.sequence = writer.sequence.saturating_add(1);
         projection.emitted_at = now.to_rfc3339_opts(SecondsFormat::Micros, true);
         projection.terminal = true;
+        if let Some(delivery) = delivery.filter(|delivery| !delivery.text.trim().is_empty()) {
+            projection.rendered_text = delivery.text.clone();
+        }
         let mut evidence = serde_json::to_value(&projection).map_err(io::Error::other)?;
         evidence["status"] = serde_json::json!("transcript_sealed");
+        if let Some(delivery) = delivery {
+            evidence["delivered_revision"] = serde_json::json!(delivery.revision);
+            if let Some(reason) = delivery.fallback {
+                evidence["delivered_revision_fallback"] = serde_json::json!(reason);
+            }
+        }
         // The one row that authorizes delivery under `publication: controller`.
         evidence["closing_decision"] = serde_json::json!("publish");
         if !certified {
@@ -2504,6 +2532,23 @@ impl TranscriptBus {
         Self::append_projection_locked(&mut writer, &evidence)?;
         writer.sequence = writer.sequence.saturating_add(1);
         Self::append_projection_locked(&mut writer, &clean)
+    }
+
+    /// The committed text the channel's closing seal would deliver, or `None`
+    /// when this session has nothing left to publish.
+    pub(crate) fn channel_closing_text(&self) -> Option<String> {
+        let writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if writer.channel_seal_published {
+            return None;
+        }
+        writer
+            .last_projection
+            .as_ref()
+            .map(|projection| projection.rendered_text.clone())
+            .filter(|text| !text.trim().is_empty())
     }
 
     /// Channel boundaries share the session's destinations and failure state.
@@ -3998,7 +4043,7 @@ mod tests {
                 !before_close.contains("hold_until"),
                 "the reducer seal is still pre-close"
             );
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             bus.record_channel_receipt(&serde_json::json!({
                 "schema": "codescribe.channel-session.v1",
                 "state": "sealed",
@@ -4055,7 +4100,7 @@ mod tests {
                     2
                 );
             }
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 raw,
@@ -4087,7 +4132,7 @@ mod tests {
             let (ledger, _, revision) = committed_fixture(id);
             bus.publish_revision(&revision, &ledger);
             assert!(!bus.writer.lock().unwrap().sealed);
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             bus.record_channel_receipt(&serde_json::json!({
                 "schema": "codescribe.channel-session.v1",
                 "state": "sealed",
@@ -4121,7 +4166,7 @@ mod tests {
                 "the joined close lets the unsealed session end"
             );
             let ended = std::fs::read_to_string(&path).unwrap();
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 ended,
@@ -4175,7 +4220,7 @@ mod tests {
                 }));
             }
             bus.observe_channel_publication_evidence(&ledger);
-            bus.publish_channel_closed(10).unwrap();
+            bus.publish_channel_closed(10, None).unwrap();
 
             let raw = std::fs::read_to_string(&path).unwrap();
             let rows = crate::durable_bus_oracle::rows(&raw).unwrap();
@@ -4260,7 +4305,7 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), before_end);
             assert!(!bus.writer.lock().unwrap().ended);
 
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             assert!(
                 bus.publish_ended(
                     TranscriptSessionEndReason::Completed,
@@ -4312,7 +4357,7 @@ mod tests {
             let (ledger, _, revision) = committed_fixture("plain-send-hold");
             bus.publish_revision(&revision, &ledger);
             let before = std::fs::read(&path).unwrap();
-            bus.publish_channel_closed(10).unwrap();
+            bus.publish_channel_closed(10, None).unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
     }

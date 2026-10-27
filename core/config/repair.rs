@@ -214,6 +214,41 @@ pub(super) fn retire_shortcut_bindings(
     }
 }
 
+/// The `agent_channel` section: a file written before it existed needs no
+/// write, because every absent key reads as its default (the send pause starts
+/// at its own default, never at hands-free dictation's `toggle_silence_sec`).
+/// A policy or finish string the app does not know returns to its default with
+/// a named `FieldReset`.
+fn repair_agent_channel_section(value: &mut Value, receipt: &mut RepairReceipt) {
+    use super::agent_channel::{ChannelSegmentFinish, ChannelSessionPolicy};
+    if let Some(policy) = value.pointer("/agent_channel/session_policy")
+        && !policy.is_null()
+        && policy
+            .as_str()
+            .is_none_or(|s| ChannelSessionPolicy::parse(s).is_none())
+    {
+        reset(
+            value,
+            "/agent_channel/session_policy",
+            Value::from(ChannelSessionPolicy::default().as_str()),
+            receipt,
+        );
+    }
+    if let Some(finish) = value.pointer("/agent_channel/segment_finish")
+        && !finish.is_null()
+        && finish
+            .as_str()
+            .is_none_or(|s| ChannelSegmentFinish::parse(s).is_none())
+    {
+        reset(
+            value,
+            "/agent_channel/segment_finish",
+            Value::from(ChannelSegmentFinish::default().as_str()),
+            receipt,
+        );
+    }
+}
+
 /// The one settings analysis grammar, shared by projection and repair.
 /// Only the writer supplies pack acquisition; analysis itself never persists.
 fn analyze_settings(
@@ -280,6 +315,7 @@ fn analyze_settings(
                 &mut receipt,
             );
         }
+        repair_agent_channel_section(&mut value, &mut receipt);
         if let Some(seed) = load_pack()? {
             for key in ["cloud_transcription_endpoint", "asr_mode"] {
                 let pointer = format!("/speech/engine/{key}");

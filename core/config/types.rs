@@ -1135,6 +1135,15 @@ pub struct Config {
     /// Send an untouched Agent transcript after the terminal countdown.
     #[serde(default)]
     pub agent_auto_send: bool,
+    /// Length of that countdown, in seconds.
+    #[serde(default = "default_agent_auto_send_delay_sec")]
+    pub agent_auto_send_delay_sec: u64,
+    /// A built-in Agent take that hears no voice for this long ends.
+    #[serde(default = "default_agent_take_voiceless_end_sec")]
+    pub agent_take_voiceless_end_sec: u64,
+    /// Voice conversation with a Codescribe Bus agent (Fn+digit channels).
+    #[serde(default)]
+    pub agent_channel: super::agent_channel::AgentChannelConfig,
     // ===== Debugging =====
     /// Whether to dump raw audio files to logs/audio directory
     #[serde(default = "default_dump_audio_logs")]
@@ -1222,6 +1231,12 @@ impl std::fmt::Debug for Config {
             .field("start_at_login", &self.start_at_login)
             .field("agent_enter_sends", &self.agent_enter_sends)
             .field("agent_auto_send", &self.agent_auto_send)
+            .field("agent_auto_send_delay_sec", &self.agent_auto_send_delay_sec)
+            .field(
+                "agent_take_voiceless_end_sec",
+                &self.agent_take_voiceless_end_sec,
+            )
+            .field("agent_channel", &self.agent_channel)
             .field("dump_audio_logs", &self.dump_audio_logs)
             .finish()
     }
@@ -1288,6 +1303,9 @@ impl Default for Config {
             start_at_login: false,
             agent_enter_sends: default_agent_enter_sends(),
             agent_auto_send: false,
+            agent_auto_send_delay_sec: default_agent_auto_send_delay_sec(),
+            agent_take_voiceless_end_sec: default_agent_take_voiceless_end_sec(),
+            agent_channel: super::agent_channel::AgentChannelConfig::default(),
             dump_audio_logs: default_dump_audio_logs(),
         }
     }
@@ -1304,6 +1322,20 @@ impl Config {
 
         // Clamp toggle silence to a reasonable range
         self.toggle_silence_sec = self.toggle_silence_sec.clamp(0.5, 30.0);
+        {
+            use super::agent_channel::{
+                AGENT_AUTO_SEND_DELAY_RANGE, AGENT_TAKE_VOICELESS_END_RANGE,
+            };
+            self.agent_auto_send_delay_sec = self.agent_auto_send_delay_sec.clamp(
+                *AGENT_AUTO_SEND_DELAY_RANGE.start(),
+                *AGENT_AUTO_SEND_DELAY_RANGE.end(),
+            );
+            self.agent_take_voiceless_end_sec = self.agent_take_voiceless_end_sec.clamp(
+                *AGENT_TAKE_VOICELESS_END_RANGE.start(),
+                *AGENT_TAKE_VOICELESS_END_RANGE.end(),
+            );
+        }
+        self.agent_channel.sanitize();
         self.whisper_context_window_sec =
             normalize_whisper_context_window_sec(self.whisper_context_window_sec);
         self.light_plus_sentence_pause_sec =
