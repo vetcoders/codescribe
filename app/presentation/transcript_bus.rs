@@ -1308,11 +1308,19 @@ fn append_capture_attachment(
 /// External agent messages and delivery controls use the same private journal.
 /// PCM transcript authority remains reducer-only.
 pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<serde_json::Value> {
+    if event["schema"] == super::dual_host_projection::HISTORY_PROJECTION_SCHEMA {
+        return super::dual_host_projection::append_projection(path, event);
+    }
     if event["schema"] == "codescribe.capture-attachment.v1" {
         return append_capture_attachment(path, event);
     }
     let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid agent event");
-    if !path.is_absolute() || !event.is_object() {
+    if !path.is_absolute()
+        || !event.is_object()
+        || ["projection", "pair_id", "source_receipt"]
+            .iter()
+            .any(|key| event.get(*key).is_some())
+    {
         return Err(invalid());
     }
     let text_field = |key: &str| event[key].as_str().filter(|value| !value.trim().is_empty());
@@ -1417,6 +1425,16 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
                     .is_some_and(|text| text.len() > 64 * 1024)
                 || event["source"] != "typed"
                 || event["source_event_id"] != event["message_id"]
+                || event
+                    .get("final_revision")
+                    .is_some_and(|revision| revision.as_u64().is_none_or(|n| n == 0))
+                || event.get("history_reply_to").is_some_and(|reference| {
+                    !reference.is_null()
+                        && !serde_json::from_value::<super::dual_host_projection::MessageReference>(
+                            reference.clone(),
+                        )
+                        .is_ok_and(|reference| reference.valid())
+                })
                 || recipients.len() != 1
                 || [
                     "provider",
@@ -1519,6 +1537,15 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
             }
         }
         _ => return Err(invalid()),
+    }
+    if event["schema"] == "codescribe.agent-user-message.v1" {
+        if chrono::DateTime::parse_from_rfc3339(text_field("emitted_at").ok_or_else(invalid)?)
+            .is_err()
+            || serde_json::to_vec(event).map_err(io::Error::other)?.len() > 16 << 20
+        {
+            return Err(invalid());
+        }
+        return super::dual_host_projection::append_original(path, event);
     }
     let encoded = super::transcript_bus_maintenance::generation::encode(event)?;
     if encoded.len() > 24 << 20 {

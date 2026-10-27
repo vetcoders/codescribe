@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -631,13 +631,55 @@ pub fn append(path: &Path, shared: &Arc<Mutex<File>>, bytes: &[u8]) -> io::Resul
 }
 
 /// A durable append receipt uses the logical stream clock, across rollover.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BusAppendReceipt {
     pub stream_id: String,
     pub stream_dev: u64,
     pub stream_inode: u64,
     pub offset: u64,
     pub length: u64,
+}
+
+/// Inspect complete logical events and their original physical coordinates.
+/// Call only inside append_durable_many_with's prepare closure: its descriptor
+/// locks and OS leases pin the stream while receipt reconciliation runs.
+pub(crate) fn scan_durable_events(
+    path: &Path,
+    mut visit: impl FnMut(&Value, &BusAppendReceipt) -> io::Result<()>,
+) -> io::Result<()> {
+    // Fail before Reader::open could attempt lease-taking remount recovery.
+    let manifest = view(path)?.ok_or_else(invalid)?;
+    let mut reader = BufReader::new(Reader::open(path)?);
+    let mut decoder = Decoder::default();
+    let mut offset = 0u64;
+    let mut start = 0u64;
+    loop {
+        let mut line = Vec::new();
+        let width = (&mut reader).take((1 << 20) + 1).read_until(b'\n', &mut line)?;
+        if width == 0 {
+            break;
+        }
+        if width > 1 << 20 || line.last() != Some(&b'\n') {
+            return Err(invalid());
+        }
+        offset = offset.checked_add(width as u64).ok_or_else(invalid)?;
+        let value = serde_json::from_slice(&line).map_err(|_| invalid())?;
+        for event in decoder.push(value)? {
+            visit(&event, &BusAppendReceipt {
+                stream_id: manifest.stream_id.clone(),
+                stream_dev: manifest.stream_dev,
+                stream_inode: manifest.stream_inode,
+                offset: start,
+                length: offset - start,
+            })?;
+            start = offset;
+        }
+    }
+    if decoder.incomplete() {
+        return Err(invalid());
+    }
+    Ok(())
 }
 
 /// Reply text must reach the same private journal authority before speech.
@@ -688,6 +730,9 @@ where
     let mut receipts = Vec::new();
     for (((path, _), file), batch) in destinations.iter().zip(files.iter_mut()).zip(batches) {
         let Some(bytes) = batch else {
+            // A recovered row may have survived a crash before fsync. Its ACK
+            // has the same durability obligation as a newly appended row.
+            file.sync_all()?;
             receipts.push(None);
             continue;
         };

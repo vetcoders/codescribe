@@ -80,6 +80,199 @@ Keyboard gestures and destination admission remain owned by
 [the hotkey contract](HOTKEYS_CONTRACT.md) and
 [the delivery route contract](DELIVERY_ROUTE.md).
 
+## Station history and Frozen Send wire contract
+
+The Rust source interface is `presentation::dual_host_projection`; all requests
+still enter `bus append-event --bus ABSOLUTE_BUS` and the existing private
+generation writer. This section defines the interface for the helper and UI.
+Source construction alone does not certify integration, execution or installed
+two-host behavior.
+
+### Frozen Send
+
+Before calling the helper, the existing local Send transaction retains one
+24-character lowercase hexadecimal `message_id` per exact logical owner and
+immutable publication payload. Pass it as `--message-id ID`. Retain the original
+text bytes, selected positive `final_revision`, RFC 3339 `emitted_at`, chosen
+recipient, sender, reply reference, hold deadline, attachments and Sync
+co-addresses. No retry allocates a new timestamp, deadline, ID or payload. Two
+stations of one owner collapse to one execution target. A multi-recipient Send
+retains each owner's ID and result independently inside that same transaction;
+retrying an uncertain recipient cannot republish a successful recipient.
+
+The helper publishes the existing `codescribe.agent-user-message.v1` /
+`agent_user_message` event with `source: typed`, `source_event_id == message_id`
+and exactly one frozen recipient. It may include positive `final_revision`
+(otherwise 1) and `history_reply_to`, a source-qualified message reference
+defined below. Neither field authorizes transcript claims. Existing native
+reply context (`user_reply_to`) retains its original delivery meaning.
+
+Canonical original publication idempotency is `(provider, exact
+provider_session_id, lease_id, message_id)`. Under the ordinary descriptor lock
+and generation OS lease the writer decodes retained complete events, compares
+the entire frozen JSON value, and returns the first event's original durable
+receipt. A different payload under that key, multiple existing originals, an
+incomplete chunk or corrupt retained stream refuses without appending a new
+event. Object-key ordering is immaterial; text bytes and all values matter.
+Daily storage rotation does not change logical offsets or stream identity.
+Reconciliation fsyncs the retained descriptor before acknowledging a recovered
+receipt, including crash-after-append-before-ACK. This is a correctness path
+that scans retained history; its latency on large journals requires integrator
+measurement. There is no Python seen-ID authority or second append writer.
+
+Helper stdout has schema `codescribe.bus-send-result.v1`. The closed wire fields
+are `schema`, `state`, `message_id`, `recipients`, and, for failures, `reason`.
+Keep detailed diagnostics on stderr. `message_id` is the retained original ID,
+or null only when allocation never happened. Each `recipients` element carries
+the exact `provider`, `provider_session_id`, `lease_id`, selected `channel`,
+`audience`, `bus`, its `state`, its retained `message_id`, and either a durable
+`source` receipt for `published` or its typed `reason`. Existing successful
+`kind: message_published`, `source`, `sources`, `skipped`, `broadcast` and hold
+receipt fields remain available; new state/schema fields supplement them.
+
+| `state` | `reason` | Meaning |
+| --- | --- | --- |
+| `published` | absent | All named published recipients have durable original source receipts. |
+| `rejected` | `invalid_binding`, `incomplete_binding`, `stale_lease`, `not_listening`, `transport_unavailable`, `attachment_unavailable`, `invalid_request` | Definite refusal for the named recipient before publication was attempted. |
+| `uncertain` | `publication_uncertain` | Publication may have happened. Reconcile the retained ID; never blind-retry Send. |
+
+The Rust `SendFailureReason` enum pins these spellings and derives the failure
+state. Aggregate results preserve recipient results: a mix of published and
+failed/uncertain recipients has aggregate state `uncertain` and reason
+`publication_uncertain`, retaining each known result. A malformed,
+unknown or missing result is an unclassified failure, never proof of rejection.
+The UI retains draft, attachments and reply context and uses localized copy.
+
+### Trusted pairing receipt
+
+DH1's explicit pairing operation creates a private regular file
+`<absolute bus>.station-pair.json` on each host. It is local admission state,
+never part of an incoming projection. It has schema `codescribe.station-pair.v1`
+and these required fields:
+
+| Field | Contract |
+| --- | --- |
+| `pair_id` | Shared opaque 24-lowercase-hex pairing identity. |
+| `home_host_id` | One of the two host IDs; identifies the existing native thread's home. |
+| `owner` | Exactly `provider`, `provider_session_id`, `lease_id`. Provider is lowercase, native session is exact, lease is the first 32 hex digits of SHA-256 of `provider + NUL + session`. |
+| `bridge_root`, `local_bus` | Canonical absolute local paths, chosen by local admission. |
+| `local`, `peer` | Each has `host_id` (32 lowercase hex), `generation_id` (canonical nonnil UUID stream ID), `channel` (`1`–`9`). |
+| `transitions` | At most 64 records with `host_id`, `from`, `to`, `receipt_id`. Each names a canonical old-to-new stream receipt for one paired host; chains must reach that host's current generation, without cycles or forks. |
+| `guest_broadcast_off_receipt_id` | 24-lowercase-hex receipt for the guest's durably acknowledged initial OFF admission. |
+
+The private bridge root contains `host-instance.json` with schema
+`codescribe.host-instance.v1` and durable opaque `host_id`, allocated once by
+local admission. Host aliases and display names never generate this ID. SSH
+host-key authentication and explicit pair admission bind the peer identity.
+The helper verifies the guest OFF receipt before publishing reachability and
+must not synthesize that receipt from a missing/default policy.
+
+Rust reads the pairing, host and current audience-binding files as bounded,
+owner-private regular files, with canonical paths and no symlink following.
+The current binding must still match the pair's exact owner, local bus and
+channel; the local generation must match the canonical manifest. Pairing file
+installation/replacement and generation transitions take that bus's existing
+generation lease, and binding mutations use the existing binding lock. The
+helper holds the binding read lock across publication. Canonical history import
+also takes that existing read lock before the generation lease, preserving the
+current binding writer's lock order (binding, then generation). No imported
+envelope can choose a trusted receipt path, host identity or current owner.
+
+Ordinary daily segment rotation leaves `stream_id` unchanged. A true stream
+replacement needs the explicit transition receipt before historical catch-up.
+Retaining an old generation in history does not permit its ACK against the new
+generation. Pair detach/rebind, watcher alias deduplication, transport and policy
+expiry remain helper responsibilities.
+
+### Immutable history projection
+
+Schema `codescribe.history-projection.v1`, kind `history_projection`, is a closed
+envelope. Unknown fields at every typed level refuse. Its required fields are
+`schema`, `kind`, `pair_id`, `projection`, `owner`, `source_receipt`, `message`.
+`source_receipt` has exactly `stream_id`, `stream_dev`, `stream_inode`, `offset`,
+`length` from the original canonical append; it is provenance, never an ACK.
+Its stream ID must equal the message's original generation.
+
+`projection: source` freezes a local original into an informational snapshot;
+`projection: replica` imports the peer's already frozen snapshot. Both are
+non-executable rows. Transport exports only `source` snapshots, flips only
+`projection` to `replica`, and never exports replicas or unrelated journal rows.
+The same pair ID and exact owner survive both directions. There is no second
+Send, sealed acoustic occurrence, native wake, read ACK, delivery-control action
+or broadcast inside either projection. Python normalizers/followers must exclude
+the outer schema before delivery admission; Swift unwraps it only in that exact
+paired conversation. Its source receipt links the raw original and the snapshot
+to one history entry; neither view keeps a second text/time merge rule for these
+messages. These downstream seams require DH1/DH2 and DH3 verification.
+
+The `message` object has exactly these fields (nullable fields may be null):
+
+| Field | Frozen value |
+| --- | --- |
+| `origin` | `source_host_id`, `source_generation_id`, `message_id`; immutable source-qualified key. |
+| `final_revision` | Positive final content revision, including eligible held edits. |
+| `order` | `counter`, `source_host_id`, `message_id`; stable Lamport ordering tuple. |
+| `kind` | `typed`, `voice`, or `agent_reply`; an informational label, never executable inner schema. |
+| `emitted_at` | Original RFC 3339 timestamp. It does not define merge identity/order. |
+| `sender` | `name`, `channel`, nullable `owner`. Agent replies retain their exact logical owner; Founder messages have null owner. |
+| `recipient` | The exact paired logical owner. |
+| `text` | Nonblank UTF-8, at most 64 KiB. Equal text with different IDs stays distinct. |
+| `reply_to` | Null or another source-qualified `origin` reference. |
+| `attachments` | At most 64 descriptors: `name`, `media_type`, `bytes`, `sha256`, `source_path`. |
+| `eligibility` | `broadcast` boolean and nullable `release_control_id`. |
+
+A projection is at most 256 KiB serialized before the existing generation
+encoder. Each attachment is 1 byte–50 MiB, with a lowercase 64-hex SHA-256.
+Descriptors contain no file bytes or receiving path capability. `source_path`
+is provenance only; transfer allocates a managed local destination after Send
+and verifies bytes/hash separately. Raw PCM/WAV fields, arbitrary nested events,
+capture coordinates, transcript authority and delivery flags are unknown fields
+and refuse. Merely naming `kind: voice` creates no transcript truth.
+
+For a first source snapshot, supply `order.counter: 0`; the writer locates the
+exact original receipt in its own decoded stream, validates sender, recipient,
+text, final revision, reply and selected attachment descriptors, then assigns
+`max(observed counters) + 1` once. Retries may carry zero or the frozen returned
+counter and recover that original receipt. A reply's parent must already be
+frozen locally before source publication. Both readers sort by the same
+`(counter, source_host_id, message_id)` tuple. Replica imports preserve the
+counter and advance the next local source counter; known reply edges must
+increase it. An out-of-order replica whose parent is missing retains its exact
+reference until the parent arrives. A contradictory edge refuses without cursor
+advance. No wall-clock or text/time-window deduplication participates.
+
+Source freezing admits only original typed messages, agent replies or canonical
+controller-published channel seals. Channel voice retains an explicit original
+message ID when present; a whole-channel message retains the existing
+`channel-message + NUL + capture-session` SHA-256 identity (first 24 hex digits);
+it never derives identity from words. Drafts, observations, controls and earlier
+projections cannot be source originals. Held revisions apply only before the
+original deadline or first release; withdrawal exports no words. Broadcast
+freezing requires the original admitted recipient list to contain that owner,
+never today's reception policy. Missing historical proof refuses backfill.
+An old native reply ID resolves only against one exact retained paired snapshot;
+an explicit `history_reply_to` must agree with that original ID. An unresolved
+or ambiguous reply is an unavailable-history boundary; do not guess a host from
+a label or silently erase its native reply association.
+
+Import idempotency keys exact owner plus `origin`, with `final_revision` and the
+entire snapshot frozen. Same key with different revision, payload, receipt or
+order refuses without overwrite or a new append. The existing generation
+writer lock contains validation, complete-stream reconciliation, encoding,
+append and fsync. The returned object has `source` (the local snapshot append
+receipt) and `projection` (the frozen envelope). Persist the transport cursor
+only after that durable receipt; losing it requires original-ID reconciliation.
+This return value does not attest native execution or remote history visibility.
+
+DH3 authors the regression cases at `append_agent_event`, `append_projection`,
+`append_original`, and `scan_durable_events`: duplicate/conflicting originals
+and frames; equal words under different IDs; forged transcript fields; pair,
+owner and host mismatch; oversize/unknown data; holds/withdrawals and skipped
+broadcasts; source snapshot retries; lost ACK; chunk boundaries; daily rotation;
+explicit generation transition; reply ordering/cycles; and one native execution
+with two histories. Source workers author no tests or fixtures and execute no
+gates beyond their declared static checkpoint checks.
+
 ## Held delivery
 
 Agent-channel messages (1–9 and broadcast channel 0) use
