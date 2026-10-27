@@ -174,11 +174,11 @@ final class ComposerCornerAcceptanceTests: XCTestCase {
       let caret = clip.convert(fixture.window.convertFromScreen(screen), from: nil)
       let center = NSPoint(x: caret.midX, y: caret.midY)
       XCTAssertTrue(clip.bounds.insetBy(dx: -2, dy: -2).contains(center))
-      if let mask = clip.layer?.mask as? CAShapeLayer, let path = mask.path {
-        XCTAssertTrue(
-          path.contains(clip.convertToLayer(center)),
-          "An in-bounds caret must also remain painted outside the corner cutouts")
-      }
+      let mask = try XCTUnwrap(clip.layer?.mask as? CAShapeLayer)
+      let path = try XCTUnwrap(mask.path)
+      XCTAssertTrue(
+        path.contains(clip.convertToLayer(center)),
+        "An in-bounds caret must also remain painted outside the corner cutouts")
       XCTAssertEqual(fixture.editor.selectedRange(), range)
       XCTAssertEqual(fixture.editor.string, text)
     }
