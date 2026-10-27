@@ -2,6 +2,7 @@
 //! These fixtures admit synthetic measured occurrences; they do not open a mic
 //! or substitute for installed capture/provider acceptance.
 use super::*;
+use codescribe_core::config::CapturedRuntimeInputs;
 use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use codescribe_core::pipeline::acoustic_ledger::{
     AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity, ObservationProducer,
@@ -26,6 +27,10 @@ impl Fixture {
     async fn new() -> Self {
         let controller = RecordingController::new_without_keychain();
         let directory = tempfile::tempdir().unwrap();
+        let mut inputs = CapturedRuntimeInputs::defaults_at(directory.path().to_path_buf(), 1);
+        inputs.user_settings.formatting_level = Some("smart".into());
+        *controller.runtime_settings.write().await =
+            Arc::new(Config::runtime_snapshot_from_captured(inputs));
         let path = directory.path().join("bus.jsonl");
         let bus = Arc::new(
             TranscriptBus::open_at(
