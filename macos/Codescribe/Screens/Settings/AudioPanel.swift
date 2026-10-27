@@ -796,6 +796,25 @@ struct AudioPanel: View {
       retentionSection
         .padding(.top, SettingsScale.headerGap)
 
+      // Hands-free dictation only: agent channels have their own send pause
+      // (Agent › AI models › Voice conversation with an agent).
+      SettingsSectionLabel(String(localized: "Hands-free dictation"))
+        .padding(.top, SettingsScale.sectionGap)
+      SettingsSecondsSlider(
+        title: String(localized: "Silence limit in hands-free dictation"),
+        detail: String(
+          localized:
+            "Silence after you stop speaking that closes an utterance while a hands-free recording keeps running. Applies from the next recording."
+        ),
+        seconds: model.settings.toggleSilenceSec,
+        value: $model.toggleSilenceSlider,
+        range: 0.5...30,
+        step: 0.5
+      )
+      .settingsGroupedInset()
+      .padding(.top, SettingsScale.headerGap)
+      .accessibilityIdentifier("dictation-toggle-silence")
+
       SettingsSectionLabel(String(localized: "Recording start sound"))
         .padding(.top, SettingsScale.sectionGap)
       feedbackSection

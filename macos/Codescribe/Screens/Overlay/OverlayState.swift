@@ -1220,8 +1220,12 @@ final class OverlayState {
   private var isPointerHovering = false
   private let nowProvider: () -> TimeInterval
   private let autoSendEnabled: () -> Bool
+  /// `interaction.agent_auto_send_delay_sec`: how long an armed Agent take
+  /// waits before it sends.
+  private let autoSendDelay: () -> TimeInterval
   private let micAccessProvider: () -> Bool
-  /// Terminal countdown for non-Agent outcomes and opted-in Agent delivery.
+  /// Terminal countdown for non-Agent outcomes. An armed Agent take waits
+  /// `autoSendDelay` instead, which defaults to the same 5 s.
   static let autoHideDelaySeconds: TimeInterval = 5
   /// Unpinning a resting overlay lets it go, never at the click itself: the
   /// panel the pin held stays this long, so a mistaken click can be undone.
@@ -1246,6 +1250,9 @@ final class OverlayState {
   init(
     nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend },
+    autoSendDelay: @escaping () -> TimeInterval = {
+      TimeInterval(CodescribeConfig().loadSettings().agentAutoSendDelaySec)
+    },
     micAccessProvider: @escaping () -> Bool = { micPermissionGranted() || requestMicPermission() },
     autoCollapseScheduler: @escaping OverlayAutoCollapse.Scheduler = OverlayAutoCollapse
       .liveScheduler
@@ -1255,6 +1262,7 @@ final class OverlayState {
     listener = DictationListener(continuation: channel.continuation)
     self.nowProvider = nowProvider
     self.autoSendEnabled = autoSendEnabled
+    self.autoSendDelay = autoSendDelay
     self.micAccessProvider = micAccessProvider
     autoCollapse = OverlayAutoCollapse(now: nowProvider, schedule: autoCollapseScheduler)
     eventTask = Task { @MainActor [weak self, eventStream] in
@@ -4950,12 +4958,13 @@ final class OverlayState {
       return
     }
     cancelAutoHide()
+    let terminalDelay = agentSessionArmed ? autoSendDelay() : OverlayState.autoHideDelaySeconds
     let delay =
       pinReleaseArmed
       ? OverlayState.pinReleaseDelaySeconds
       : presentationMode == .expanded
-        ? max(OverlayState.autoHideDelaySeconds, selectedReplyReadingSeconds ?? 0)
-        : OverlayState.autoHideDelaySeconds
+        ? max(terminalDelay, selectedReplyReadingSeconds ?? 0)
+        : terminalDelay
     autoHideDeadline = nowProvider() + delay
     scheduleAutoHideWake(after: delay, generation: captureGeneration)
   }
@@ -5813,8 +5822,10 @@ final class OverlayState {
       applyConversationProseEdit(
         OverlayComposerProseEdit(
           before: parts.text, after: parts.text + appended,
-          replacements: [OverlayComposerTextReplacement(
-            range: NSRange(location: parts.text.utf16.count, length: 0), replacement: appended)]),
+          replacements: [
+            OverlayComposerTextReplacement(
+              range: NSRange(location: parts.text.utf16.count, length: 0), replacement: appended)
+          ]),
         for: destination)
       admittedComposerSessions.insert(projection.sessionId)
       retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
