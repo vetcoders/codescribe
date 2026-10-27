@@ -46,14 +46,14 @@ pub(crate) mod live_archive;
 pub use live_archive::ArchiveRefusal;
 #[cfg(test)]
 mod channel_tray_tests;
+#[cfg(test)]
+mod formatter_selection_acceptance;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
 pub mod serving_status;
 #[cfg(test)]
 mod silver_start_refusal_tests;
-#[cfg(test)]
-mod formatter_selection_acceptance;
 /// Measured speech phases shared by agent channels and the assistive take.
 mod speech_clock;
 mod transcript_delivery;
@@ -7460,10 +7460,7 @@ impl RecordingController {
         let language = runtime_settings.values().whisper_language;
         // The one paid call this take is allowed. Same production entry point
         // the explicit overlay formatter uses; no second lane, no retry loop.
-        let consultation = match self
-            .selected_max_consultation(runtime_settings)
-            .await
-        {
+        let consultation = match self.selected_max_consultation(runtime_settings).await {
             Ok(consultation) => consultation,
             Err(error) => {
                 warn!(%error, "Max consultation unavailable; preserving committed transcript");
@@ -7533,7 +7530,10 @@ impl RecordingController {
             .visible_canvas_snapshot()
             .is_some_and(|canvas| Some(canvas.session_id.as_str()) == take_id)
         {
-            warn!(take_id, "Stop formatter selection refused a different capture presentation");
+            warn!(
+                take_id,
+                "Stop formatter selection refused a different capture presentation"
+            );
             return raw;
         }
         if presentation.literal_delivery() {
@@ -7562,7 +7562,8 @@ impl RecordingController {
         {
             info!(status = "Smart unavailable — delivered Corrections", source_revision = projection.source_raw_revision, receipt = %projection.receipt_id);
         }
-        if projection.requested_mode != projection.delivered_mode || projection.status != "applied" {
+        if projection.requested_mode != projection.delivered_mode || projection.status != "applied"
+        {
             self.publish_formatting_degraded(take_id);
         }
         projection.rendered_text
