@@ -52,6 +52,8 @@ pub mod production_replay;
 pub mod serving_status;
 #[cfg(test)]
 mod silver_start_refusal_tests;
+#[cfg(test)]
+mod formatter_selection_acceptance;
 /// Measured speech phases shared by agent channels and the assistive take.
 mod speech_clock;
 mod transcript_delivery;

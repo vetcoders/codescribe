@@ -1023,6 +1023,38 @@ mod tests {
         );
     }
 
+    /// Repair only the protocol path; host names and proxy metadata are opaque.
+    #[test]
+    fn formatter_endpoint_repair_preserves_authority_mount_query_and_fragment() {
+        let responses = WireFamily::OpenAiResponses;
+        for (input, expected) in [
+            ("https://v1/", "https://v1/v1/responses"),
+            (
+                "https://proxy.example/v1/messages/v1/responses",
+                "https://proxy.example/v1/responses",
+            ),
+            (
+                "https://proxy.example/mount/v1/v1/messages",
+                "https://proxy.example/mount/v1/v1/responses",
+            ),
+            (
+                "https://proxy.example/v1/messages?next=/v1/messages#v1",
+                "https://proxy.example/v1/responses?next=/v1/messages#v1",
+            ),
+        ] {
+            let actual = responses.normalize_endpoint(input);
+            assert_eq!(actual, expected, "{input}");
+            assert_eq!(responses.normalize_endpoint(&actual), actual, "idempotence");
+        }
+        assert_eq!(responses.normalize_endpoint(" not a URL "), "not a URL");
+        assert_eq!(
+            WireFamily::AnthropicMessages.normalize_endpoint(
+                "https://proxy.example/mount/v1/responses/v1/chat/completions"
+            ),
+            "https://proxy.example/mount/v1/messages"
+        );
+    }
+
     /// `custom:<id>` and vendor spellings round-trip through `parse`.
     #[test]
     fn provider_ref_round_trips_through_its_persisted_spelling() {

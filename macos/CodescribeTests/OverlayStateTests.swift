@@ -5691,6 +5691,67 @@ final class OverlayStateTests: XCTestCase {
 
   // MARK: Typed admission/calibration presentation status
 
+  private func formattingNotice(sessionID: String?, terminal: Bool = false)
+    -> CsPresentationStatusEvent
+  {
+    CsPresentationStatusEvent(
+      schema: "codescribe.presentation-status.v1", emittedAt: "2026-10-27T00:00:00Z",
+      sessionId: sessionID, kind: "formatting_degraded", code: "formatting_not_applied",
+      statusLabel: "formatting not applied", headline: "Formatting was not applied",
+      message: "Transcript retained", isError: false, terminal: terminal,
+      calibrationVersion: nil)
+  }
+
+  func testFormattingNoticePreservesCurrentDocumentPhaseAndCommands() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText(
+      "  retained 🦊\ntext  ", to: state, canPaste: true, canInsert: true,
+      canCopy: true, canRetranscribe: true, canFormat: true, sessionId: "formatter-current")
+    let text = state.activeText
+    let mode = state.mode
+    let terminal = state.terminal
+    let commands = [state.canPaste, state.canInsert, state.canCopy, state.canRetranscribe, state.canFormat]
+    var callbacks = 0
+    state.onPresentationStatus = { callbacks += 1 }
+    state.applyPresentationStatus(formattingNotice(sessionID: "formatter-current"))
+    XCTAssertEqual(state.activeText, text)
+    XCTAssertEqual(state.mode, mode)
+    XCTAssertEqual(state.terminal, terminal)
+    XCTAssertEqual(
+      [state.canPaste, state.canInsert, state.canCopy, state.canRetranscribe, state.canFormat],
+      commands)
+    XCTAssertEqual(state.presentationStatus?.kind, "formatting_degraded")
+    XCTAssertEqual(callbacks, 1)
+  }
+
+  func testFormattingNoticeCannotAffectSuccessorOrUnidentifiedTake() {
+    for identity: String? in [nil, "formatter-predecessor"] {
+      let state = OverlayState()
+      projectText("new take", to: state, sessionId: "formatter-current")
+      let mode = state.mode
+      var callbacks = 0
+      state.onPresentationStatus = { callbacks += 1 }
+      state.applyPresentationStatus(formattingNotice(sessionID: identity))
+      XCTAssertNil(state.presentationStatus)
+      XCTAssertEqual(state.activeText, "new take")
+      XCTAssertEqual(state.mode, mode)
+      XCTAssertEqual(callbacks, 0)
+    }
+  }
+
+  func testFormattingNoticeCannotMasqueradeAsTerminalCaptureError() {
+    let state = OverlayState()
+    projectText("retained", to: state, sessionId: "formatter-current")
+    let mode = state.mode
+    state.applyPresentationStatus(formattingNotice(sessionID: "formatter-current", terminal: true))
+    XCTAssertNil(state.presentationStatus)
+    XCTAssertEqual(state.activeText, "retained")
+    XCTAssertEqual(state.mode, mode)
+    XCTAssertFalse(state.terminal)
+  }
+
   func testAdmissionRefusalProjectionBecomesRenderablePassiveOverlayState() {
     let state = OverlayState()
     var visibleCallbacks = 0
