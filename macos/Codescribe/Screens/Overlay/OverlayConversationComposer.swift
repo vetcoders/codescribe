@@ -407,7 +407,8 @@ struct OverlayConversationComposer: View {
             .contentShape(Rectangle())
             .buttonStyle(.plain)
             .conversationActionHover(
-              restingColor: restingActionColor, hoverColor: palette.primaryText.color)
+              restingColor: restingActionColor, hoverColor: palette.primaryText.color
+            )
             .disabled(sending)
             .help("Attach")
             .accessibilityIdentifier("overlay-conversation-attach")
@@ -478,7 +479,8 @@ private struct ConversationComposerCornerLayout: Equatable {
   init(width: CGFloat, fontSize: CGFloat, compact: Bool, showsSync: Bool, showsMicrophone: Bool) {
     lineHeight = ComposerTextLayout.lineHeight(fontSize: fontSize)
     actionHeight = min(ComposerControlMetrics.hitTargetSize, 2 * lineHeight)
-    let padding = compact
+    let padding =
+      compact
       ? ComposerControlMetrics.intercomVerticalPadding : ComposerControlMetrics.verticalPadding
     // Send plus BOTH outer margins fits inside two actual scaled text rows.
     verticalPadding = min(padding, max(0, (2 * lineHeight - actionHeight) / 2))
@@ -1110,7 +1112,8 @@ private struct ConversationMessageField: NSViewRepresentable {
           minimum,
           ComposerTextLayout.resolve(
             contentHeight: .greatestFiniteMagnitude, lineHeight: corners.lineHeight,
-            maximumHeight: maximumEditorHeight).height)
+            maximumHeight: maximumEditorHeight
+          ).height)
         editor.leadingTextInset = 0
         exclusionRects = []
         container.exclusionPaths = []
@@ -1124,7 +1127,8 @@ private struct ConversationMessageField: NSViewRepresentable {
           while true {
             reserveCorners(
               corners,
-              viewport: NSRect(origin: .zero, size: NSSize(width: viewport.width, height: candidate)),
+              viewport: NSRect(
+                origin: .zero, size: NSSize(width: viewport.width, height: candidate)),
               editor: editor, container: container)
             measuredHeight = documentHeight()
             if measuredHeight <= candidate || candidate >= limit { break }
@@ -1144,7 +1148,8 @@ private struct ConversationMessageField: NSViewRepresentable {
             editor.leadingTextInset = corners.leadingWidth + corners.clearance
             container.containerSize = NSSize(
               width: max(
-                1, viewport.width - corners.leadingWidth - corners.trailingWidth
+                1,
+                viewport.width - corners.leadingWidth - corners.trailingWidth
                   - 2 * corners.clearance), height: .greatestFiniteMagnitude)
             usesViewportCorners = false
           }
