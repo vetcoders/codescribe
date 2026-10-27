@@ -13,6 +13,10 @@ final class OverlayDraftCapture {
   @ObservationIgnored var onStartResolved: (() -> Void)?
   @ObservationIgnored private var controller: (any ComposerCaptureControlling)?
   @ObservationIgnored private var destinations: [String: String] = [:]
+  /// Sync members linked when each take was requested. Speech spoken before a
+  /// participant joined is never theirs, however late the document arrives.
+  @ObservationIgnored private var audiences: [String: Set<String>] = [:]
+  @ObservationIgnored private var requestedAudience: Set<String> = []
   @ObservationIgnored private var earlyTerminals: Set<String> = []
   @ObservationIgnored private var errorCaptureID: String?
 
@@ -24,6 +28,11 @@ final class OverlayDraftCapture {
   var awaitingStart: Bool { hasRequest && handle == nil }
 
   func destination(for sessionID: String) -> String? { destinations[sessionID] }
+
+  /// Conversations linked to the destination when this take was requested.
+  func audience(for sessionID: String) -> Set<String> {
+    audiences[sessionID] ?? destinations[sessionID].map { [$0] } ?? []
+  }
 
   func ended(sessionID: String) {
     if awaitingStart { earlyTerminals.insert(sessionID) }
@@ -41,7 +50,9 @@ final class OverlayDraftCapture {
     ended(sessionID: sessionID)
   }
 
-  func toggle(conversationID destination: String, busy: Bool) async {
+  func toggle(
+    conversationID destination: String, busy: Bool, audience: Set<String> = []
+  ) async {
     guard !transitioning else { return }
     if hasRequest {
       guard conversationID == destination, let owned = handle else { return }
@@ -92,6 +103,7 @@ final class OverlayDraftCapture {
     // Install the destination before the asynchronous start: projections may
     // beat the start reply, but cannot nominate themselves as the owner.
     conversationID = destination
+    requestedAudience = audience.union([destination])
     error = nil
     errorConversationID = nil
     errorCaptureID = nil
@@ -99,6 +111,7 @@ final class OverlayDraftCapture {
       let admitted = try await captureController.startComposerTurnRecording()
       handle = admitted
       destinations[admitted.captureId] = destination
+      audiences[admitted.captureId] = requestedAudience
       if earlyTerminals.remove(admitted.captureId) != nil {
         conversationID = nil
         handle = nil

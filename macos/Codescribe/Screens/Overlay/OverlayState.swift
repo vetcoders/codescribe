@@ -2875,8 +2875,8 @@ final class OverlayState {
     @MainActor ([String], OverlayCaptureAttachmentTarget) async throws -> Void = { paths, target in
       try await RealAgentBridgeInstaller.stageCaptureAttachments(paths: paths, target: target)
     }
-  @ObservationIgnored private var pendingDraftProjections: [String: CsTranscriptProjectionEvent] =
-    [:]
+  @ObservationIgnored private(set) var pendingDraftProjections:
+    [String: CsTranscriptProjectionEvent] = [:]
   @ObservationIgnored private var otherComposerOwnsCapture: (() -> Bool)?
   private(set) var pendingTextMessages: Set<String> = []
   private(set) var textMessageErrors: [String: String] = [:]
@@ -3033,9 +3033,13 @@ final class OverlayState {
       pendingDraftProjections.removeAll()
       for projection in waiting { admitComposerDelivery(projection, affectsCurrentCapture: false) }
     }
+    // The take's audience is frozen at its request: only conversations linked
+    // while the words are spoken may receive them (Roman's pre-join leak).
+    let audience = draftGroupIndex(for: conversation.id).map { conversationDraftGroups[$0].members }
     await draftCapture.toggle(
       conversationID: conversation.id,
-      busy: audioCaptureActive || otherComposerOwnsCapture?() == true)
+      busy: audioCaptureActive || otherComposerOwnsCapture?() == true,
+      audience: audience ?? [conversation.id])
   }
 
   func draftMicrophoneBusy(in conversation: OverlayConversation) -> Bool {
@@ -5810,6 +5814,18 @@ final class OverlayState {
     if let destination = draftCapture.destination(for: projection.sessionId) {
       let parts = ConversationDraft.split(conversationDraft(for: destination))
       let appended = parts.text.isEmpty ? text : "\n" + text
+      let linked = draftGroupIndex(for: destination).map { conversationDraftGroups[$0].members }
+      let audience = draftCapture.audience(for: projection.sessionId)
+      guard linked.map({ $0.isSubset(of: audience) }) ?? true else {
+        // Someone joined after these words were spoken. They stay private to
+        // the destination; the changed prose starts a fresh shared epoch.
+        setConversationDraft(
+          ConversationDraft.compose(text: parts.text + appended, attachments: parts.attachments),
+          for: destination)
+        admittedComposerSessions.insert(projection.sessionId)
+        retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
+        return
+      }
       applyConversationProseEdit(
         OverlayComposerProseEdit(
           before: parts.text, after: parts.text + appended,

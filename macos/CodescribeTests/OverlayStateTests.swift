@@ -455,6 +455,67 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNotNil(refused.error, "busy is a message, never silence")
   }
 
+  /// Roman's pre-join leak: A's take ends before its document arrives, B is
+  /// linked in that window, and the late document must stay A's alone.
+  func testDraftMicrophoneNeverDeliversPreJoinSpeechToALateSyncMember() async throws {
+    let (state, a, b) = try syncedDraftPair()
+    let surface = DraftCaptureFixture()
+    surface.outcome = .noLiveCapture
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    state.setConversationDraft("Mine", for: a.id)
+
+    await state.toggleDraftMicrophone(in: a)
+    XCTAssertFalse(state.toggleDraftSync(from: a.id, with: b.id), "no join while A speaks")
+    await state.toggleDraftMicrophone(in: a)
+    XCTAssertFalse(state.draftCapture.hasRequest, "the take ended; its document is late")
+    XCTAssertTrue(state.toggleDraftSync(from: a.id, with: b.id))
+
+    projectText(
+      "Prywatne zdanie", to: state, terminal: true, delivery: .composerPending,
+      sessionId: "draft-capture", reducerAction: "session_ended")
+    XCTAssertEqual(ConversationDraft.split(state.conversationDraft(for: a.id)).text,
+      "Mine\nPrywatne zdanie")
+    XCTAssertEqual(state.conversationDraft(for: b.id), "", "B joined after the words")
+
+    // Sync itself survives: typing after the private words is shared.
+    let before = ConversationDraft.split(state.conversationDraft(for: a.id)).text
+    state.applyConversationProseEdit(
+      OverlayComposerProseEdit(
+        before: before, after: before + " razem",
+        replacements: [
+          .init(range: NSRange(location: before.utf16.count, length: 0), replacement: " razem")
+        ]), for: a.id)
+    XCTAssertEqual(state.conversationDraft(for: b.id), " razem")
+  }
+
+  /// Members linked before the take started still receive its words.
+  func testDraftMicrophoneDeliversToMembersLinkedBeforeTheTake() async throws {
+    let (state, a, b) = try syncedDraftPair()
+    state.draftCapture = OverlayDraftCapture(controller: DraftCaptureFixture())
+    XCTAssertTrue(state.toggleDraftSync(from: a.id, with: b.id))
+
+    await state.toggleDraftMicrophone(in: a)
+    projectText(
+      "Wspólne zdanie", to: state, terminal: true, delivery: .composerPending,
+      sessionId: "draft-capture", reducerAction: "session_ended")
+    XCTAssertEqual(state.conversationDraft(for: a.id), "Wspólne zdanie")
+    XCTAssertEqual(state.conversationDraft(for: b.id), "Wspólne zdanie")
+  }
+
+  private func syncedDraftPair() throws -> (OverlayState, OverlayConversation, OverlayConversation)
+  {
+    let state = OverlayState()
+    let a = try navigationConversation(channel: "2", session: "sync-a", lease: "a")
+    let b = try navigationConversation(channel: "3", session: "sync-b", lease: "b")
+    state.applyChannelRoster([
+      navigationRoster(channel: "2", session: "sync-a", open: false),
+      navigationRoster(channel: "3", session: "sync-b", open: false),
+    ])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [a, b]))
+    XCTAssertEqual(Set(state.draftSyncConversations.map(\.id)), [a.id, b.id])
+    return (state, a, b)
+  }
+
   func testDraftMicrophoneDeliversToItsOriginAfterNavigationWithoutSending() async throws {
     let state = OverlayState()
     let surface = DraftCaptureFixture()
