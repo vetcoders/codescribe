@@ -1008,6 +1008,8 @@ extension CsSettings {
     holdArmModifier: "shift",
     holdStartDelayMs: 250,
     doubleTapIntervalMs: 320,
+    tapMaxMs: 220,
+    typingQuietMs: 300,
     toggleSilenceSec: 1.5,
     whisperContextWindowSec: 8,
     whisperAdaptiveBuffer: false,

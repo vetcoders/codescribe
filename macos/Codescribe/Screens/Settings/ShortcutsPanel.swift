@@ -34,6 +34,9 @@ struct ShortcutsPanel: View {
       }
 
       modeSection.padding(.top, SettingsScale.sectionGap)
+      if usesOptionDoubleTap {
+        OptionDoubleTapTuning(model: model).padding(.top, SettingsScale.sectionGap)
+      }
       fnAndChannelsSection.padding(.top, SettingsScale.sectionGap)
       dictationContextSection.padding(.top, SettingsScale.sectionGap)
       extraShortcutsSection.padding(.top, SettingsScale.sectionGap)
@@ -59,10 +62,33 @@ struct ShortcutsPanel: View {
   private var modeSection: some View {
     VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       bindingRows
+      modeFooter
       if !blockingConflicts.isEmpty { conflictList }
       saveRow
       if !informationalNotices.isEmpty { noticeList }
     }
+  }
+
+  /// Where the two opt-in modes start without a gesture. One footer for the
+  /// section, not a line per row: it holds whichever gesture is picked.
+  private var modeFooter: some View {
+    Text(
+      String(
+        localized: "settings.shortcuts.modeFooter",
+        defaultValue:
+          "Formatting and the Agent also start from the menu bar or the overlay. Their gestures are off until you pick one.",
+        comment: "Shortcuts screen: footer under the three mode gestures")
+    )
+    .font(SettingsScale.helper)
+    .foregroundStyle(CSColor.secondaryInk)
+    .fixedSize(horizontal: false, vertical: true)
+    .accessibilityIdentifier("shortcuts-mode-footer")
+  }
+
+  /// The Option timing controls show while any mode, saved or in the draft,
+  /// is on an Option double-tap.
+  private var usesOptionDoubleTap: Bool {
+    model.draftBindings.contains { $0.binding.isOptionDoubleTap }
   }
 
   private var bindingRows: some View {
@@ -87,19 +113,10 @@ struct ShortcutsPanel: View {
             .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
-        if !row.offersGesturePicker, let note = row.mode.noShortcutNote {
-          Text(note)
-            .font(SettingsScale.helper)
-            .foregroundStyle(CSColor.secondaryInk)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityIdentifier("shortcuts-no-gesture-\(row.mode)")
-        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
 
-      if row.offersGesturePicker {
-        bindingPicker(row)
-      }
+      bindingPicker(row)
     }
     .padding(.horizontal, SettingsScale.rowInsetH)
     .padding(.vertical, SettingsScale.rowInsetV)
@@ -692,3 +709,187 @@ struct ShortcutsPanel: View {
       .frame(width: 720, height: 620)
   }
 #endif
+
+// MARK: Option double-tap timing and tester
+
+/// Live timing of the Option double-taps plus a row to try the gesture.
+///
+/// Each slider writes on change and the hotkey engine re-reads its atomics on
+/// the next tap, so a new value applies without a restart. The tester holds a
+/// short lease in the core while it runs: a recognised pair is reported here
+/// and starts nothing, so trying the gesture never opens a recording.
+struct OptionDoubleTapTuning: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
+      SettingsSectionLabel(
+        String(
+          localized: "settings.shortcuts.optionTiming.section",
+          defaultValue: "Option double-tap",
+          comment: "Shortcuts screen: section with the Option double-tap timing"))
+      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+        PreviewTimingSlider(
+          title: String(
+            localized: "settings.shortcuts.optionTiming.interval",
+            defaultValue: "Double-tap interval",
+            comment: "Shortcuts screen: longest gap between the two Option taps"),
+          value: $model.doubleTapIntervalSlider,
+          range: 100...450,
+          step: 10,
+          valueLabel: Self.milliseconds(model.settings.doubleTapIntervalMs)
+        )
+        PreviewTimingSlider(
+          title: String(
+            localized: "settings.shortcuts.optionTiming.tapMax",
+            defaultValue: "Longest tap",
+            comment: "Shortcuts screen: longest Option press that still counts as a tap"),
+          value: $model.tapMaxSlider,
+          range: 120...300,
+          step: 10,
+          valueLabel: Self.milliseconds(model.settings.tapMaxMs)
+        )
+        PreviewTimingSlider(
+          title: String(
+            localized: "settings.shortcuts.optionTiming.typingQuiet",
+            defaultValue: "Ignore taps while typing for",
+            comment:
+              "Shortcuts screen: Option taps right after typing count for nothing for this long"),
+          value: $model.typingQuietSlider,
+          range: 0...1000,
+          step: 50,
+          valueLabel: Self.milliseconds(model.settings.typingQuietMs)
+        )
+        GestureTestRow()
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .settingsGroupedInset()
+    }
+  }
+
+  static func milliseconds(_ value: UInt64) -> String {
+    String(
+      localized: "\(Int(value)) ms",
+      comment: "Preview timing value: a delay in milliseconds")
+  }
+}
+
+/// Try the Option double-tap without starting anything. While running it
+/// renews the core's tester lease and shows the latest outcome the detector
+/// reported; stopping, or leaving the screen, releases the lease.
+struct GestureTestRow: View {
+  @State private var running = false
+  @State private var baseline: UInt32?
+  @State private var outcome: CsDoubleTapOutcomeKind?
+
+  var body: some View {
+    HStack(alignment: .center, spacing: SettingsScale.rowInsetH) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(
+          String(
+            localized: "settings.shortcuts.gestureTest.title", defaultValue: "Gesture test",
+            comment: "Shortcuts screen: row to try the Option double-tap")
+        )
+        .font(SettingsScale.settingName)
+        .foregroundStyle(Color.primary)
+        Text(statusText)
+          .font(SettingsScale.helper)
+          .foregroundStyle(outcome == .recognized ? CSColor.oliveLight : CSColor.secondaryInk)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("shortcuts-gesture-test-outcome")
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      Button {
+        running.toggle()
+      } label: {
+        Text(
+          running
+            ? String(
+              localized: "settings.shortcuts.gestureTest.stop", defaultValue: "Stop test",
+              comment: "Shortcuts screen: stop trying the gesture")
+            : String(
+              localized: "settings.shortcuts.gestureTest.start", defaultValue: "Start test",
+              comment: "Shortcuts screen: start trying the gesture"))
+      }
+      .csFocusRing()
+    }
+    .task(id: running) {
+      guard running else {
+        setGestureTestActive(active: false)
+        return
+      }
+      baseline = lastDoubleTapOutcome()?.sequence
+      outcome = nil
+      while !Task.isCancelled {
+        setGestureTestActive(active: true)
+        if let latest = lastDoubleTapOutcome(), latest.sequence != baseline {
+          outcome = latest.kind
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+      }
+    }
+    .onDisappear {
+      running = false
+      setGestureTestActive(active: false)
+    }
+  }
+
+  private var statusText: String {
+    guard running else {
+      return String(
+        localized: "settings.shortcuts.gestureTest.idle",
+        defaultValue: "Start the test, then double-tap Option. Nothing starts while it runs.",
+        comment: "Shortcuts screen: gesture test before it runs")
+    }
+    guard let outcome else {
+      return String(
+        localized: "settings.shortcuts.gestureTest.waiting",
+        defaultValue: "Waiting for a double-tap…",
+        comment: "Shortcuts screen: gesture test is running, nothing tapped yet")
+    }
+    return outcome.testerLabel
+  }
+}
+
+extension CsDoubleTapOutcomeKind {
+  /// One word or two: what the last Option double-tap came to.
+  var testerLabel: String {
+    switch self {
+    case .recognized:
+      return String(
+        localized: "settings.shortcuts.gestureTest.recognized", defaultValue: "Recognized",
+        comment: "Gesture test outcome: the double-tap was recognized")
+    case .tooSlow:
+      return String(
+        localized: "settings.shortcuts.gestureTest.tooSlow", defaultValue: "Too slow",
+        comment: "Gesture test outcome: the second tap came too late")
+    case .tooLong:
+      return String(
+        localized: "settings.shortcuts.gestureTest.tooLong", defaultValue: "Too long",
+        comment: "Gesture test outcome: a press lasted too long to be a tap")
+    case .typedRecently:
+      return String(
+        localized: "settings.shortcuts.gestureTest.typedRecently", defaultValue: "Typing detected",
+        comment: "Gesture test outcome: a key was typed just before or with Option")
+    case .mouse:
+      return String(
+        localized: "settings.shortcuts.gestureTest.mouse", defaultValue: "Mouse",
+        comment: "Gesture test outcome: a click or scroll happened between the taps")
+    case .synthetic:
+      return String(
+        localized: "settings.shortcuts.gestureTest.synthetic", defaultValue: "Synthetic",
+        comment: "Gesture test outcome: the key events did not come from the keyboard")
+    case .modifierActive:
+      return String(
+        localized: "settings.shortcuts.gestureTest.modifierActive",
+        defaultValue: "Another key held",
+        comment: "Gesture test outcome: another modifier or a hold was active")
+    case .notAssigned:
+      return String(
+        localized: "settings.shortcuts.gestureTest.notAssigned",
+        defaultValue: "No mode on this Option",
+        comment: "Gesture test outcome: no mode is bound to the tapped Option side")
+    }
+  }
+}
