@@ -1,5 +1,85 @@
 # Clean Transcript Bus
 
+## Implementation baseline and paired-host target
+
+The source baseline for this comparison is
+`97d6b9af080dfd3d6d91e7445dc1b10b10bbf01f`. The paired-host column records the
+chosen product contract, **not an implemented or installed capability**.
+
+| Surface | Present in the source baseline | Chosen paired-host target |
+| --- | --- | --- |
+| Composer Sync | Local composer membership and edit epochs share future input. Existing text and attachments remain each owner's private baseline. | Reuse that same local mechanism for composers whose recipients are on SSH hosts. No second draft store or cross-host keystroke stream. |
+| Send | Each exact recipient has a frozen payload, reply and edit revisions; the helper validates its current owner before publication. | Retain an original message ID and a result per logical recipient. A lost remote receipt must not replay successful recipients. |
+| SSH mailbox | The managed helper reads, ACKs and watches the remote mailbox. The native queue relay runs on the machine owning the agent's thread. | Explicitly pair a home seat and an SSH guest seat of the same native agent. Preserve one execution identity and make both stations visible. |
+| Conversation history | The UI reads local journals. Remote queue receipts are transport evidence, not a local copy of remote conversation history. | Both paired views converge on the same eligible sent messages, replies and attachments, including already-ACKed history. Replicas never enqueue a task. |
+| Guest reception | Ordinary missing reception policy defaults to enabled; a journal may contain broadcast rows its recipient skipped. | Persist visited-host channel 0 reception OFF before publishing guest reachability. Temporary opt-in expires; it never retroactively releases skipped history. |
+| Attachments | Local pointers carry source paths, sizes and hashes. Remote file overrides are refused; a pointer does not transfer bytes. | Transfer explicitly sent attachment bytes after release, verify size/hash and allocate a safe path in the receiving host's own store. |
+| Unavailable recipient | The exact-owner guard rejects a rebound or absent listener and retains the draft. The UI can append raw helper stderr to its localized message. | Show a known unavailable recipient before Send and a short localized reason after a race, while retaining draft, reply and attachments. Publication uncertainty remains distinct from definite rejection. |
+
+Composer Sync identifies an exact logical owner by provider and native session;
+names and channel numbers are labels. Two host-qualified seats of that same
+owner are one execution recipient. Different agents remain distinct recipients,
+even if their messages contain identical text. Joining a local Sync group starts
+an edit epoch without copying earlier words or files into another composer's
+draft. A remote recipient's composer is still a local editor on the user's Mac.
+
+The planned path reuses the existing Send transaction:
+
+```mermaid
+flowchart LR
+  Input[Local typing, paste or composer microphone] --> Drafts[Existing local composer drafts and Sync]
+  Drafts --> Send[Send or eligible hold release]
+  Send --> Frozen[Immutable payload and result per logical recipient]
+  Frozen --> Route{Explicit selected destination}
+  Route --> Local[Managed publisher on local host]
+  Route --> SSH[SSH to managed publisher on selected host]
+  Local --> Original[Canonical original publication]
+  SSH --> Original
+  Original --> Native[One native delivery to the exact agent]
+  Original --> History[Paired history projections]
+```
+
+This diagram describes the **target**. In the baseline, composer Sync and the
+remote mailbox relay exist separately; paired history, station admission and
+retry-safe cross-host Send are not certified by their existence.
+
+Each host writes through its own canonical Rust publication owner. An agent's
+reply originates on its own machine; transport asks the receiving host's owner
+to admit a projection instead of writing foreign JSON files. Source-qualified
+message identity, frozen content revision, recipient identity and reply
+association survive transport. The canonical writer must make original Send
+and replica import idempotent, including recovery after append-before-ACK.
+Conflicting content under the same original ID is a refusal, not a new revision.
+Text equality and timestamp windows never identify a replicated message.
+
+History visibility, native execution, read ACK and audio playback are separate
+receipts. A projection supplies none of the other three. A copied broadcast
+cannot become a new local broadcast or wake unrelated agents. Export eligibility
+comes from the original recipient/release evidence; today's policy is not proof
+that a historical row was eligible. Without that evidence, expose the missing
+history boundary rather than exporting the row. During disconnection, show the
+pending state and prove convergence after reconnect.
+
+Spoken participant membership is also separate from local composer Sync.
+The baseline shares physical microphone capture while opening separate channel
+recognition sessions and archives. The chosen Voice direction is one shared
+recognition stream with capture-clock membership intervals, retained until its
+last participant leaves. The first participant is its initiator; hardware and
+occurrence authority remain with the existing recording controller and acoustic
+ledger. Leaving and rejoining must exclude speech from the participant's gap.
+The shared-stream implementation belongs to the Voice path; SSH consumes its
+eligible committed per-recipient messages and does not open a recorder, cut WAVs
+or reinterpret the transcript. This is a chosen direction, not a measurement of
+CPU savings or a claim that shared recognition already works.
+
+Acceptance requires two genuine host views, one native execution per original
+message and logical recipient, no pre-Send draft transfer, readable sent
+attachments, and explicit reconnect/rotation/rebind/partial-publication cases.
+Source tests, an SSH connection or a signed bundle alone do not prove this path.
+Keyboard gestures and destination admission remain owned by
+[the hotkey contract](HOTKEYS_CONTRACT.md) and
+[the delivery route contract](DELIVERY_ROUTE.md).
+
 ## Held delivery
 
 Agent-channel messages (1–9 and broadcast channel 0) use
