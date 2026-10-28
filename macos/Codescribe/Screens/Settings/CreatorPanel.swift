@@ -55,7 +55,8 @@ struct CreatorPanel: View {
           title: String(localized: "Intercom layout"),
           subtitle: String(
             localized:
-              "Classic overlay, the horizontal agent strip, or floating vertical agent pills. The strip and pills are experimental.")
+              "Classic overlay, the horizontal agent strip, or floating vertical agent pills. The strip and pills are experimental."
+          )
         ) {
           // Classic ships as the default. The subtitle keeps the experimental
           // status of the two mapped layouts outside the short pills label.
