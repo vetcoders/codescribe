@@ -638,7 +638,13 @@ final class SettingsChromeContractTests: XCTestCase {
   func testWorkspaceTabNamesAgentAccessNotProjects() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
-    XCTAssertTrue(tab.contains("String(localized: \"Folders available to the Agent\""))
+    // W0-01 (rule G2): the page is headed by its tab name, Workspace; the
+    // folder list below names folder access ("Allowed folders").
+    XCTAssertTrue(
+      tab.contains(
+        "case .agentWorkspace, .agentStatus, .dictationEngine, .dictationWhisper, .dictationPreview:\n      title"
+      ))
+    XCTAssertFalse(tab.contains("String(localized: \"Folders available to the Agent\""))
     XCTAssertFalse(tab.contains("\"Workspace roots.\""))
     XCTAssertTrue(tab.contains("\"Processes and MCP servers have their own permissions.\""))
     XCTAssertFalse(
@@ -1212,7 +1218,12 @@ final class SettingsChromeContractTests: XCTestCase {
   /// this test pins the source structure, which does not depend on that import.
   func testAudioPaneReadsAsMicrophoneAndRecording() throws {
     let panel = try XCTUnwrap(try settingsSources()["AudioPanel.swift"])
-    XCTAssertTrue(panel.contains("String(localized: \"Microphone and recording\")"))
+    // W0-01 (rule G2): the page is headed by its sidebar name, Audio; the
+    // microphone and recording are named by the line under it.
+    XCTAssertTrue(panel.contains("SettingsPageHeader(\n        SettingsSection.audio.title,"))
+    XCTAssertFalse(
+      panel.contains("String(localized: \"Microphone and recording\")"),
+      "no second name for the pane")
     XCTAssertFalse(panel.contains("Microphone and recording."), "the headline takes no period")
     XCTAssertFalse(panel.contains("Hear the real input"))
     XCTAssertTrue(
@@ -1357,7 +1368,11 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(markers.contains("DisclosureGroup(isExpanded: $showingTemplate)"))
     XCTAssertTrue(markers.contains("\"Edit template and preview\""))
     XCTAssertTrue(markers.contains("model.insertTranscriptTagPlaceholder(placeholder)"))
-    XCTAssertTrue(markers.contains("Button(String(localized: \"Restore default template\""))
+    // W0-06: a text action reads as one link style, an underlined label.
+    XCTAssertTrue(
+      markers.contains(
+        "Text(String(localized: \"Restore default template\", comment: \"Dictation panel: button\"))\n            .underline()"
+      ))
     XCTAssertTrue(markers.contains("model.transcriptTagTemplateWarning"))
     // One box, two faces: the segment flips the same inset between the raw
     // template and its rendering; no second "Template preview" box below.
