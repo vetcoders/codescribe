@@ -74,14 +74,18 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     state.channelMapPreference.selectLayout(.vertical)
     XCTAssertTrue(state.channelMapEnabled)
     XCTAssertFalse(state.channelMapInHeader)
-    state.setPresentationMode(.midi)
-    XCTAssertNil(
-      DictationOverlayView(state: state).channelMap,
-      "the vertical layout's chips live in the Intercom")
-    state.setPresentationMode(.mini)
-    let counter = try XCTUnwrap(
-      DictationOverlayView(state: state).channelMap, "mini is one widget in both layouts")
-    XCTAssertTrue(counter.stacked, "only the counter's face and destination differ")
+    var reveals = 0
+    state.onRevealIntercom = { reveals += 1 }
+    for mode: OverlayPresentationMode in [.mini, .midi, .expanded] {
+      state.setPresentationMode(mode)
+      let counter = try XCTUnwrap(
+        DictationOverlayView(state: state).channelMap,
+        "Floating panels keep their reveal entrance at every overlay width")
+      XCTAssertTrue(counter.stacked)
+      counter.onCounter()
+      XCTAssertEqual(state.presentationMode, mode, "Reveal must not switch overlay density")
+    }
+    XCTAssertEqual(reveals, 3)
     XCTAssertEqual(state.captureGeneration, generation)
     XCTAssertEqual(state.selectedConversationID, selected)
     XCTAssertEqual(state.channelHudStates, hud)
