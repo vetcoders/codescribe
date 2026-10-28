@@ -569,17 +569,15 @@ struct OverlayConversationView: View {
     }
   }
 
-  /// Rows per window of the rendered list. Every rendered row is built and
-  /// measured: a LazyVStack sized the document from estimates, so a long thread
-  /// opened past its last bubble, and rows realized while scrolling changed the
-  /// document by thousands of points, which threw the reader off the bottom
-  /// and left an empty viewport (Maciej, 2026-10-19). The Agent window bounds
-  /// its list the same way; older rows wait behind "Show earlier".
+  /// Keep the initially measured page small so a thread switch does not lay
+  /// out forty rich Markdown bubbles at once. "Show earlier" retains the
+  /// larger history page; eager measurement keeps the bottom anchor stable.
+  static let initialMessageWindow = 10
   static let messageWindow = 40
 
   private var windowStart: Int {
     guard windowConversationID == conversation.id, let windowStartID else {
-      return max(0, orderedMessages.count - Self.messageWindow)
+      return max(0, orderedMessages.count - Self.initialMessageWindow)
     }
     // Only the oldest-row trim removes a pinned row, so its window starts at
     // the top that is left rather than jumping to the newest rows.
@@ -595,9 +593,9 @@ struct OverlayConversationView: View {
       windowStartID = nil
       return
     }
-    var start = reset ? max(0, count - Self.messageWindow) : windowStart
+    var start = reset ? max(0, count - Self.initialMessageWindow) : windowStart
     if followsLatest, count - start > 2 * Self.messageWindow {
-      start = count - Self.messageWindow
+      start = count - Self.initialMessageWindow
     }
     pinMessageWindow(at: start)
   }

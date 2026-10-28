@@ -1353,13 +1353,20 @@ struct OverlayChannelStatusView: View {
     maximumHeight: CGFloat, onUnfold: @escaping () -> Void
   ) -> some View {
     let unfold = 22 * textScale
+    let viewportHeight = max(0, maximumHeight - 8 - unfold - 8)
+    let rowCount = channels.count
+      + (currentConversations.contains(where: { $0.channel == "0" }) ? 1 : 0)
+      + (currentConversations.contains(where: \.isHumanInbox) ? 1 : 0)
+    let gapCount = max(0, rowCount - 1)
+    let rowSpacing = gapCount == 0 ? 0 : min(
+      6, max(0, (viewportHeight - CGFloat(rowCount) * 24 * textScale - 4) / CGFloat(gapCount)))
     return VStack(spacing: 8) {
       OverlaySidebarToggleButton(
         symbol: "sidebar.right", title: String(localized: "Show agents list"),
         identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
         action: onUnfold)
-      ScrollView(.vertical) {
-        VStack(spacing: 6) {
+      ScrollView(.vertical, showsIndicators: false) {
+        VStack(spacing: rowSpacing) {
           if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
             railPill(broadcast, channel: nil)
           }
@@ -1372,9 +1379,10 @@ struct OverlayChannelStatusView: View {
         }
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity)
-        .csAutohidingScrollers()
+        .csAutohidingScrollers(.verticalHidden)
       }
-      .frame(maxHeight: max(0, maximumHeight - unfold - 8))
+      .csRailOverflowHints(color: palette.mutedText.color)
+      .frame(maxHeight: viewportHeight)
     }
     // The list header sits 8 points into the roster content: the unfold
     // button lands where `sidebar.right` folded it.
