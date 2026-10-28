@@ -363,12 +363,14 @@ have no control on this tab; they are settings keys
 ## Providers and Agent
 
 Open **Settings → Providers** to connect accounts and add API keys. Each
-provider card shows its key as one line — **API key · Set** with **Change**
+provider card shows its key as one line — **API key · Saved** with **Change**
 (or **Add**) opening the editor — and, for vendors with a sign-in flow, one
-account line with a single action: **Sign out** while connected (the line
-names the account, e.g. **Connected as name@example.com**), **Sign in with …**
-otherwise. **Sign out** is a neutral chip like the other row actions, not a
-red one. A key that is present reads **Set** in green; a key that is absent is
+account line with a single action: **Sign out** while connected, **Sign in
+with …** otherwise. The saved account identity appears below its vendor
+label, while the state word beside it is **Saved**, the same as for a stored
+key. **Sign out** is a neutral chip like the other row actions, not a
+red one. A stored credential has an empty-circle **Saved** badge, which
+does not claim that the provider has been tested; a key that is absent is
 neutral grey, and reads **Optional** when nothing is waiting for it — a
 key-optional host, or a Responses vendor (OpenAI, xAI) whose connected account
 serves requests. A connected Messages account does not serve requests, so that
@@ -407,7 +409,7 @@ this Mac (experimental)**, in which case Apple runs first without any cloud
 credential and the lane below is used only when Apple fails; the lane's access
 line then reads **Used when Apple fails.** followed by its real state. The
 `CODESCRIBE_FORMAT_ON_DEVICE` value in `.env` overrides this row. Each card shows the provider, the model
-field and one line about the lane's access: **Account saved**, **Stored API
+field and one line about the lane's access: **Saved**, **Stored API
 key** or **No key required**. These describe what is stored, not whether it
 works: a stored key can still be rejected, and a saved account does not open
 model discovery. The model field holds your override; when it is empty, the

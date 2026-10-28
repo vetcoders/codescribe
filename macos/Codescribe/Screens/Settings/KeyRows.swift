@@ -631,12 +631,7 @@ struct AccountLoginRow: View {
   /// currently accepts requests. Capability is measured by the lane's Test.
   static func status(for provider: CsProviderOption) -> String {
     guard provider.accountSignedIn else { return String(localized: "Not connected") }
-    if let identity = provider.accountIdentity, !identity.isEmpty {
-      return String(
-        localized: "Saved account: \(identity)",
-        comment: "Provider account row; the placeholder is the signed-in email")
-    }
-    return String(localized: "Account saved")
+    return String(localized: "Saved")
   }
 
   var body: some View {
@@ -644,9 +639,23 @@ struct AccountLoginRow: View {
       if !signedIn {
         StatusToneGlyph(tone: .neutral)
       }
-      Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
-        .font(SettingsScale.settingName)
-        .foregroundStyle(Color.primary)
+      VStack(alignment: .leading, spacing: 3) {
+        Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
+          .font(SettingsScale.settingName)
+          .foregroundStyle(Color.primary)
+        if signedIn, let identity = provider.accountIdentity, !identity.isEmpty {
+          Text(
+            String(
+              localized: "Saved account: \(identity)",
+              comment: "Provider account row; the placeholder is the signed-in email")
+          )
+          .font(SettingsScale.helper)
+          .foregroundStyle(CSColor.secondaryInk)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .help(identity)
+        }
+      }
       Group {
         if signedIn {
           CSStatusBadge(text: Self.status(for: provider), mark: .saved)
@@ -660,7 +669,8 @@ struct AccountLoginRow: View {
       .truncationMode(.middle)
       .help(
         signedIn
-          ? String(localized: "Account saved. Use Test in Formatting to check the selected provider and model.")
+          ? String(
+            localized: "Saved. Use Test in Formatting to check the selected provider and model.")
           : provider.accountStatusMessage)
       if let loginNotice, !loginNotice.isEmpty {
         Text(loginNotice)

@@ -16505,6 +16505,17 @@
         }
       }
     },
+    "Saved. Use Test in Formatting to check the selected provider and model." : {
+      "comment" : "Stored account identity is not proof of provider or model access.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zapisano. Użyj przycisku Test w Formatowaniu, aby sprawdzić wybranego dostawcę i model."
+          }
+        }
+      }
+    },
     "Saved: %@. The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until Codescribe starts without that override." : {
       "comment" : "The placeholder is the saved input device name",
       "localizations" : {

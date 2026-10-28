@@ -63,6 +63,11 @@ session. The summary's heading is **Codescribe is ready.** only when dictation
 and, on the agent path, the agent step are both ready; with dictation ready and
 the agent not, it reads **Dictation is ready.**
 
+On the summary, blocked recording readiness carries a warning glyph and a
+terracotta badge, so the state is readable without relying on colour alone.
+The ordinary **Checking…** state remains neutral; a completed check retains
+its verified badge.
+
 The wizard never downloads the local Whisper model on its own: its model step
 shows one card with the model, its install state, its source, its size and
 where it is or would be stored; the summary shows the model name and state with

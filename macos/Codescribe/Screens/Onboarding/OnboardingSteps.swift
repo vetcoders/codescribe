@@ -1000,9 +1000,7 @@ struct DoneStepView: View {
         if state.done {
           CSStatusBadge(text: state.status, mark: .verified)
         } else {
-          Text(state.status)
-            .font(CSFont.ui(11, .medium))
-            .foregroundStyle(state.tint)
+          CSStatusBadge(text: state.status, mark: state.blocked ? .blocked : .none)
             .multilineTextAlignment(.trailing)
         }
       }
@@ -1028,10 +1026,6 @@ struct DoneStepView: View {
     let blocked: Bool
     let status: String
     let detail: String?
-
-    var tint: Color {
-      blocked ? CSColor.terracottaLight : CSColor.secondaryInk
-    }
   }
 
   private func recordingState(_ blocker: DictationReadiness.Blocker?) -> RecordingRowState {

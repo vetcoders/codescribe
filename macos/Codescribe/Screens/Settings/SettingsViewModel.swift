@@ -920,7 +920,7 @@ struct LLMLaneModel {
     // Presence, not validity: a stored key may still be rejected, and a
     // signed-in account does not open model discovery (`discoveryDescription`).
     if runtime.accountAuth {
-      return String(localized: "Account saved", comment: "Lane auth: stored account identity")
+      return String(localized: "Saved", comment: "Lane auth: stored account identity")
     }
     if runtime.keyPresent {
       return String(localized: "Stored API key", comment: "Lane auth: an API key is stored")
