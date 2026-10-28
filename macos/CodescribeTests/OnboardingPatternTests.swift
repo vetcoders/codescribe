@@ -177,7 +177,11 @@ final class OnboardingPatternTests: XCTestCase {
 
     XCTAssertTrue(components.contains("struct CSStatusBadge"), "one badge for wizard and Settings")
     XCTAssertTrue(steps.contains("CSProgressBar(value: SettingsViewModel.calibrationProgress("))
-    XCTAssertTrue(components.contains("Capsule().fill(CSColor.oliveLight.opacity(0.14))"))
+    // The capsule takes the mark's tint (W0-03): olive for saved and verified,
+    // terracotta only for a state that blocks ("red only when blocking").
+    XCTAssertTrue(components.contains("Capsule().fill(tint.opacity(0.14))"))
+    XCTAssertTrue(components.contains("case .saved, .verified: CSColor.oliveLight"))
+    XCTAssertTrue(components.contains("case .blocked: CSColor.terracottaLight"))
     XCTAssertTrue(
       components.contains("CSIconView(icon: .success, size: 9, weight: .semibold,"),
       "a verified status is the thin check of the glyph canon, never a filled badge")
@@ -191,7 +195,11 @@ final class OnboardingPatternTests: XCTestCase {
     XCTAssertTrue(
       steps.contains("CSStatusBadge(text: state.status, mark: .verified)"),
       "a calibrated microphone is a verified state")
+    XCTAssertTrue(
+      steps.contains("CSStatusBadge(text: state.status, mark: state.blocked ? .blocked : .none)"),
+      "step 9 marks blocked recording readiness with a sign, not colour alone (W0-03)")
     XCTAssertFalse(steps.contains("private func statusBadge("), "one badge, not two")
-    XCTAssertEqual(steps.components(separatedBy: "CSStatusBadge(").count, 7, "six wizard statuses")
+    XCTAssertEqual(
+      steps.components(separatedBy: "CSStatusBadge(").count, 8, "seven wizard statuses")
   }
 }
