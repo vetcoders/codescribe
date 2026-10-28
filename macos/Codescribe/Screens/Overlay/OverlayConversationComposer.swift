@@ -298,51 +298,56 @@ struct OverlayConversationComposer: View {
       : draftMicrophoneRecording ? "mic.fill" : "mic"
   }
 
-  private func draftSyncControl(_ corners: ConversationComposerCornerLayout) -> some View {
-    Button {
-      onActivateDraftSync?()
+  /// One "+" opens the composer actions; the former paperclip and link
+  /// buttons live inside it.
+  private func composerPlusMenu(_ corners: ConversationComposerCornerLayout) -> some View {
+    Menu {
+      Button("Attach files…", systemImage: "paperclip", action: pickAttachments)
+        .disabled(sending)
+        .accessibilityIdentifier("overlay-conversation-attach")
+      if showsDraftSync {
+        Divider()
+        Button("Sync draft", systemImage: "link") { onActivateDraftSync?() }
+          .disabled(sending || !draftSyncEnabled || onActivateDraftSync == nil)
+          .accessibilityIdentifier("overlay-conversation-draft-sync")
+        ForEach(draftSyncChoices) { choice in
+          Toggle(
+            isOn: Binding(
+              get: { choice.selected },
+              set: { _ in onToggleDraftSync?(choice.id) })
+          ) {
+            Text(verbatim: choice.title)
+          }
+          .disabled(sending || !choice.enabled)
+          .help(
+            choice.enabled
+              ? String(localized: "Share future typing and pasted attachments with this composer")
+              : String(localized: "This composer has a pending delivery or recording attachments."))
+        }
+        if draftSyncNames.count > 1 {
+          Button("Stop syncing") { onStopDraftSync?() }
+            .disabled(sending)
+        }
+      }
     } label: {
-      Label("Sync draft", systemImage: "link")
-        .labelStyle(.iconOnly)
+      Image(systemName: "plus")
+        .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
+        .frame(width: corners.actionWidth, height: corners.actionHeight)
+        .contentShape(Rectangle())
     }
+    .menuStyle(.button)
     .buttonStyle(.plain)
-    .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
-    .frame(
-      width: corners.actionWidth,
-      height: corners.actionHeight
-    )
-    .contentShape(Circle())
+    .menuIndicator(.hidden)
+    .frame(width: corners.actionWidth, height: corners.actionHeight)
     .conversationActionHover(
       restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
       hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
     )
-    .disabled(!draftSyncEnabled || onActivateDraftSync == nil)
-    .contextMenu {
-      ForEach(draftSyncChoices) { choice in
-        Toggle(
-          isOn: Binding(
-            get: { choice.selected },
-            set: { _ in onToggleDraftSync?(choice.id) })
-        ) {
-          Text(verbatim: choice.title)
-        }
-        .disabled(sending || !choice.enabled)
-        .help(
-          choice.enabled
-            ? String(localized: "Share future typing and pasted attachments with this composer")
-            : String(localized: "This composer has a pending delivery or recording attachments."))
-      }
-      if draftSyncNames.count > 1 {
-        Divider()
-        Button("Stop syncing") { onStopDraftSync?() }
-          .disabled(sending)
-      }
-    }
-    .help(Text(verbatim: draftSyncHelp))
-    .accessibilityLabel(Text("Sync draft"))
+    .disabled(sending)
+    .help(Text(verbatim: showsDraftSync ? draftSyncHelp : String(localized: "Attach")))
+    .accessibilityLabel(Text("Composer actions"))
     .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
-    .accessibilityHint(Text(verbatim: draftSyncHelp))
-    .accessibilityIdentifier("overlay-conversation-draft-sync")
+    .accessibilityIdentifier("overlay-conversation-plus")
   }
 
   private var draftSyncActive: Bool { draftSyncArmed || draftSyncNames.count > 1 }
@@ -411,23 +416,7 @@ struct OverlayConversationComposer: View {
         }
       }
       .overlay(alignment: .bottomLeading) {
-        HStack(spacing: corners.spacing) {
-          Button("Attach", systemImage: "paperclip", action: pickAttachments)
-            .labelStyle(.iconOnly)
-            .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
-            .frame(width: corners.actionWidth, height: corners.actionHeight)
-            .contentShape(Rectangle())
-            .buttonStyle(.plain)
-            .conversationActionHover(
-              restingColor: restingActionColor, hoverColor: palette.primaryText.color
-            )
-            .disabled(sending)
-            .help("Attach")
-            .accessibilityIdentifier("overlay-conversation-attach")
-          if showsDraftSync {
-            draftSyncControl(corners)
-          }
-        }
+        composerPlusMenu(corners)
       }
       .overlay(alignment: .bottomTrailing) {
         HStack(spacing: corners.spacing) {
@@ -497,7 +486,10 @@ private struct ConversationComposerCornerLayout: Equatable {
       ? ComposerControlMetrics.intercomVerticalPadding : ComposerControlMetrics.verticalPadding
     // Send plus BOTH outer margins fits inside two actual scaled text rows.
     verticalPadding = min(padding, max(0, (2 * lineHeight - actionHeight) / 2))
-    let leadingCount: CGFloat = showsSync ? 2 : 1
+    // The "+" menu folds attach and sync into one control; sync no longer
+    // widens the leading corner.
+    let leadingCount: CGFloat = 1
+    _ = showsSync
     let trailingCount: CGFloat = showsMicrophone ? 2 : 1
     let count = leadingCount + trailingCount
     clearance = min(4, max(0, width / 24))
@@ -527,6 +519,14 @@ private struct ConversationComposerCornerLayout: Equatable {
         x: viewport.width - trailingWidth - clearance - textOrigin.x, y: y,
         width: trailingWidth + clearance, height: actionHeight),
     ]
+  }
+
+  /// Once a draft transfers into the multiline body, the control row is
+  /// released for the rest of that draft: the WHOLE bottom row is excluded,
+  /// so shrinking text never drops back between the controls.
+  func releasedRowExclusions(viewport: NSRect, textOrigin: NSPoint) -> [NSRect] {
+    let y = viewport.maxY - actionHeight - textOrigin.y
+    return [NSRect(x: -textOrigin.x, y: y, width: viewport.width, height: actionHeight)]
   }
 }
 
@@ -990,6 +990,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     private var exclusionRects: [NSRect] = []
     private var needsContentMeasurement = true
     private var usesViewportCorners = false
+    /// One-way per-draft latch: trips when the draft first needs a second
+    /// row, resets only when the draft empties (send/cancel).
+    private var rowReleasedForDraft = false
     private let cornerClip = CAShapeLayer()
     private var arranging = false
 
@@ -1025,15 +1028,20 @@ private struct ConversationMessageField: NSViewRepresentable {
       let upper = NSRect(
         x: viewport.minX, y: viewport.minY, width: viewport.width,
         height: max(0, viewport.height - corners.actionHeight))
-      let middle = NSRect(
-        x: viewport.minX + corners.leadingWidth + corners.clearance, y: upper.maxY,
-        width: max(
-          0, viewport.width - corners.leadingWidth - corners.trailingWidth - 2 * corners.clearance),
-        height: corners.actionHeight)
       let path = CGMutablePath()
       // AppKit owns the backing layer's coordinate system (including flipping).
       path.addRect(contentView.convertToLayer(upper))
-      path.addRect(contentView.convertToLayer(middle))
+      if !rowReleasedForDraft {
+        // A released row shows no text between the controls, so the writable
+        // middle gap exists only before the latch trips.
+        let middle = NSRect(
+          x: viewport.minX + corners.leadingWidth + corners.clearance, y: upper.maxY,
+          width: max(
+            0,
+            viewport.width - corners.leadingWidth - corners.trailingWidth - 2 * corners.clearance),
+          height: corners.actionHeight)
+        path.addRect(contentView.convertToLayer(middle))
+      }
       cornerClip.frame = layer.bounds
       cornerClip.bounds = layer.bounds
       cornerClip.path = path
@@ -1064,7 +1072,7 @@ private struct ConversationMessageField: NSViewRepresentable {
       let length = editor.textStorage?.length ?? 0
       let start = min(range.location, length)
       let end = start + min(range.length, length - start)
-      let blockedRects = corners.exclusions(viewport: viewport, textOrigin: .zero)
+      let blockedRects = effectiveExclusions(corners, viewport: viewport, textOrigin: .zero)
       // Native scrolling chooses the visible end of a selection. Correct only
       // an endpoint actually under a control, never drag an offscreen endpoint
       // back into view or replace the native selected range.
@@ -1080,11 +1088,20 @@ private struct ConversationMessageField: NSViewRepresentable {
       }
     }
 
+    private func effectiveExclusions(
+      _ corners: ConversationComposerCornerLayout, viewport: NSRect, textOrigin: NSPoint
+    ) -> [NSRect] {
+      rowReleasedForDraft
+        ? corners.releasedRowExclusions(viewport: viewport, textOrigin: textOrigin)
+        : corners.exclusions(viewport: viewport, textOrigin: textOrigin)
+    }
+
     private func reserveCorners(
       _ corners: ConversationComposerCornerLayout, viewport: NSRect, editor: NSTextView,
       container: NSTextContainer
     ) {
-      let rects = corners.exclusions(viewport: viewport, textOrigin: editor.textContainerOrigin)
+      let rects = effectiveExclusions(
+        corners, viewport: viewport, textOrigin: editor.textContainerOrigin)
       guard rects != exclusionRects else { return }
       exclusionRects = rects
       container.exclusionPaths = rects.map { NSBezierPath(rect: $0) }
@@ -1138,11 +1155,14 @@ private struct ConversationMessageField: NSViewRepresentable {
         container.exclusionPaths = []
         container.containerSize = NSSize(
           width: max(1, viewport.width), height: .greatestFiniteMagnitude)
+        if (editor.textStorage?.length ?? 0) == 0 { rowReleasedForDraft = false }
         var measuredHeight = documentHeight()
+        if measuredHeight > minimum { rowReleasedForDraft = true }
         var candidate = min(limit, max(minimum, measuredHeight))
         if measuredHeight <= limit {
           // A fitting draft has stationary native corner wrapping. No scroll
           // origin participates in these document coordinates.
+          var latchRetried = false
           while true {
             reserveCorners(
               corners,
@@ -1150,6 +1170,15 @@ private struct ConversationMessageField: NSViewRepresentable {
                 origin: .zero, size: NSSize(width: viewport.width, height: candidate)),
               editor: editor, container: container)
             measuredHeight = documentHeight()
+            if !rowReleasedForDraft, measuredHeight > minimum, !latchRetried {
+              // First transfer into the multiline body releases the whole
+              // control row for the rest of this draft; remeasure once with
+              // the full-row exclusion so text leaves the row immediately.
+              rowReleasedForDraft = true
+              latchRetried = true
+              exclusionRects = []
+              continue
+            }
             if measuredHeight <= candidate || candidate >= limit { break }
             candidate = min(limit, candidate + corners.lineHeight)
           }
