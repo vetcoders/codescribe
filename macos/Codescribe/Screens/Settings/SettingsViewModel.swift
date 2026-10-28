@@ -162,6 +162,20 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
   }
 
+  /// Explanation of the selected level, separate from its compact name.
+  var summary: String {
+    switch self {
+    case .off:
+      return String(localized: "Keeps the transcript without AI formatting.")
+    case .correction:
+      return String(localized: "Corrects spelling and punctuation while keeping your wording.")
+    case .smart:
+      return String(localized: "Edits the transcript for clarity while keeping its meaning.")
+    case .max:
+      return String(localized: "Uses the Agent model and prompt for the dictated request.")
+    }
+  }
+
   init?(storedValue: String?) {
     switch storedValue {
     case "off", "raw": self = .off
@@ -2507,6 +2521,10 @@ final class SettingsViewModel: ObservableObject {
     if lane == .assistive { return llmLane(lane).availabilityDescription }
     if FormattingPolicyOption(storedValue: settings.formattingLevel) == .off {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
+    }
+    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .max {
+      return String(
+        localized: "Max uses the Agent model. This lane is not required for readiness.")
     }
     if settings.formatOnDevice {
       // The engine row above already says Apple runs first; this line only

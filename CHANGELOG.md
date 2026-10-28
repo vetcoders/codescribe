@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Settings: Creator explains the selected formatting level, and Agent › AI models explains the selected cloud or Apple engine. With Max selected, the Formatting lane says that Max uses the Agent model instead of suggesting a cloud fallback.
 - Settings › Agent › MCP: each server's Enabled/Disabled setting is a native switch instead of a coloured action chip. It still changes only the saved configuration; Test, Edit and Remove remain separate actions.
 - Settings › Agent › Prompts: **Built-in** and **Custom** are small, muted text labels without a capsule or border, so the prompt source is visually distinct from the Edit/Save button beside it.
 - The menu bar's **Agent** row shows ⇧⌘Space, the shortcut that opens the same Agent window, instead of an Option double-tap: that gesture never opened the window, and where it is set it starts an Agent recording.

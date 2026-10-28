@@ -56,6 +56,11 @@ Correction is the default. There is no separate AI formatting toggle any more �
 a toggle that was switched off in an older version becomes level Off on the
 first launch.
 
+The row explains the selected level: Off keeps the transcript without AI
+formatting, Correction fixes spelling and punctuation while keeping the wording,
+Smart edits for clarity while preserving meaning, and Max uses the Agent model
+and prompt for the dictated request. The explanation changes with the selection.
+
 **Max permissions** says under its heading whether anything is waiting for you —
 _No requests waiting_ or _Requests waiting_ — so an empty section cannot be
 mistaken for one that was never read; the requests themselves are the cards
@@ -408,7 +413,11 @@ prompt; the Formatting lane never serves it. The Formatting card also has a
 this Mac (experimental)**, in which case Apple runs first without any cloud
 credential and the lane below is used only when Apple fails; the lane's access
 line then reads **Used when Apple fails.** followed by its real state. The
-`CODESCRIBE_FORMAT_ON_DEVICE` value in `.env` overrides this row. Each card shows the provider, the model
+engine row's explanation follows the selected engine: cloud describes the
+provider's Correction/Smart role; Apple describes the on-device-first route.
+With Off or Max selected, the lane's access line instead explains that the
+Formatting lane is not required for readiness; Max uses the Agent model.
+The `CODESCRIBE_FORMAT_ON_DEVICE` value in `.env` overrides this row. Each card shows the provider, the model
 field and one line about the lane's access: **Saved**, **Stored API
 key** or **No key required**. These describe what is stored, not whether it
 works: a stored key can still be rejected, and a saved account does not open

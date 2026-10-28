@@ -6376,6 +6376,16 @@
         }
       }
     },
+    "Corrects spelling and punctuation while keeping your wording." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Poprawia pisownię i interpunkcję, zachowując Twoje sformułowania."
+          }
+        }
+      }
+    },
     "Could not complete restoring %@. Check the current source shown above." : {
       "localizations" : {
         "pl" : {
@@ -7971,6 +7981,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zmiany są zapisywane w pliku mcp.json. Ręczne zmiany (env, własne pola) zostają zachowane."
+          }
+        }
+      }
+    },
+    "Edits the transcript for clarity while keeping its meaning." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Redaguje transkrypcję dla większej jasności, zachowując jej sens."
           }
         }
       }
@@ -9778,6 +9798,16 @@
         }
       }
     },
+    "Keeps the transcript without AI formatting." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zachowuje transkrypcję bez formatowania przez AI."
+          }
+        }
+      }
+    },
     "Key OK" : {
       "localizations" : {
         "pl" : {
@@ -10712,6 +10742,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Max korzysta z modelu Agenta. Skonfiguruj endpoint Agenta, aby używać Max."
+          }
+        }
+      }
+    },
+    "Max uses the Agent model. This lane is not required for readiness." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Max korzysta z modelu Agenta. Ten tor nie jest wymagany do gotowości."
           }
         }
       }
@@ -19962,6 +20002,17 @@
         }
       }
     },
+    "This provider formats Correction and Smart." : {
+      "comment" : "Formatting engine row explanation when the cloud provider is selected",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ten dostawca formatuje tekst na poziomach Korekta i Smart."
+          }
+        }
+      }
+    },
     "This removes “%@” and its saved conversation. There is no undo." : {
       "comment" : "The placeholder is the thread title",
       "localizations" : {
@@ -20923,6 +20974,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Używa dźwięku z nagrania widocznego w overlayu."
+          }
+        }
+      }
+    },
+    "Uses the Agent model and prompt for the dictated request." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Korzysta z modelu i promptu Agenta do obsługi podyktowanego polecenia."
           }
         }
       }

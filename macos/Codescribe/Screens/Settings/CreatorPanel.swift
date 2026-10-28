@@ -108,7 +108,10 @@ struct CreatorPanel: View {
       .padding(.top, SettingsScale.headerGap)
 
       VStack(spacing: 8) {
-        SettingsControlRow(title: String(localized: "Formatting level")) {
+        SettingsControlRow(
+          title: String(localized: "Formatting level"),
+          subtitle: FormattingPolicyOption(storedValue: model.settings.formattingLevel)?.summary
+        ) {
           Picker("", selection: formattingLevelBinding) {
             ForEach(FormattingPolicyOption.allCases) { policy in
               Text(policy.visibleName).tag(policy.rawValue)

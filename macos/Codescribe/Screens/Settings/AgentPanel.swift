@@ -137,9 +137,13 @@ private struct LLMLaneEditor: View {
           title: String(
             localized: "Formatting engine",
             comment: "Settings row: Apple on this Mac or the cloud provider formats the text"),
-          subtitle: String(
-            localized: "Apple on your Mac first; this provider steps in when Apple fails.",
-            comment: "Formatting engine row explanation"),
+          subtitle: model.settings.formatOnDevice
+            ? String(
+              localized: "Apple on your Mac first; this provider steps in when Apple fails.",
+              comment: "Formatting engine row explanation")
+            : String(
+              localized: "This provider formats Correction and Smart.",
+              comment: "Formatting engine row explanation when the cloud provider is selected"),
           inset: 10
         ) {
           Picker(
