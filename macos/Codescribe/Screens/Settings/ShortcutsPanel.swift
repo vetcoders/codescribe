@@ -48,10 +48,11 @@ struct ShortcutsPanel: View {
 
   // MARK: Header
 
-  /// The header states the screen's purpose by its title alone; the two save
-  /// contracts are explained next to the buttons they govern, not up here.
+  /// The header states the screen's purpose by its title alone, the sidebar
+  /// name the user clicked to get here; the two save contracts are explained
+  /// next to the buttons they govern, not up here.
   private var header: some View {
-    SettingsPageHeader(String(localized: "Shortcuts & control"))
+    SettingsPageHeader(SettingsSection.shortcuts.title)
   }
 
   // MARK: Per-mode gestures, their conflicts and their save

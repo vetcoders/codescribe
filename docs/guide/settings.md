@@ -163,7 +163,9 @@ This tab owns the transcript pipeline itself:
 
 ## Dictation tabs
 
-The Dictation pane is one tab per concern:
+The Dictation pane is one tab per concern. The Engine, Whisper and Preview
+pages are headed by their tab names; Preview names its setting, **Transcript
+display pace**, in the line under the title.
 
 1. **Engine** — **Recognition mode** is the first row and the only recognition
    choice (Apple only, Local power, Cloud). The two on-device modes carry a one-line
@@ -260,9 +262,10 @@ the effect; only confirming it writes `CODESCRIBE_CLOUD_CONSENT=granted`
 together with the mode. Leaving Cloud for Local power or Apple only writes
 `denied`, so selecting Cloud again always asks again.
 
-## Shortcuts & control
+## Hotkeys
 
-Open **Settings → Hotkeys**. The page is headed **Shortcuts & control**.
+Open **Settings → Hotkeys**. The page is headed **Hotkeys**, the same name as
+in the sidebar.
 
 The tab holds two different save contracts: the three mode gestures are a
 draft and need **Save shortcuts**; every other control on the page writes as
@@ -607,7 +610,7 @@ Palette labels and grant actions follow the macOS interface language through
 the app's String Catalog. Model IDs, provider IDs and tool grant keys remain
 unchanged.
 
-Open **Settings → Agent → Diagnostics** (headline "Agent environment configuration", no introduction)
+Open **Settings → Agent → Diagnostics** (headed **Diagnostics**, with "Agent environment configuration" as the one line under the title)
 for the agent status screen: one summary card with the verdict, the key facts
 and whatever needs attention, then Integrations, Tools and servers, Detected
 installations, and a collapsed "Technical details" group. A single Refresh

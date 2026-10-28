@@ -58,25 +58,18 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
   }
 
+  /// The page title under the tab bar. Where it is the tab's own name, it is
+  /// read from `title`, so the page is headed by the name the user clicked
+  /// and the two cannot drift apart.
   var headline: String {
     switch self {
     case .agentLanes: String(localized: "Model configuration.")
     case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
     case .agentWorkspace:
       String(localized: "Folders available to the Agent", comment: "Settings tab: Agent folders")
-    case .agentStatus:
-      String(
-        localized: "Agent environment configuration", comment: "Settings tab: Diagnostics headline")
+    case .agentStatus, .dictationEngine, .dictationWhisper, .dictationPreview: title
     case .agentTools: String(localized: "Tool permissions")
     case .agentMcp: String(localized: "MCP servers")
-    case .dictationEngine:
-      String(localized: "Speech recognition", comment: "Settings tab headline: Dictation › Engine")
-    case .dictationWhisper:
-      String(
-        localized: "Local Whisper model", comment: "Settings tab headline: Dictation › Whisper")
-    case .dictationPreview:
-      String(
-        localized: "Transcript display pace", comment: "Settings tab headline: Dictation › Preview")
     case .dictationPrivacy: CloudPrivacyCopy.title
     }
   }
@@ -100,7 +93,9 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       // checked is in docs/guide/settings.md, Agent → Workspace.
       String(localized: "Processes and MCP servers have their own permissions.")
     case .agentStatus:
-      nil
+      // The page is headed "Diagnostics"; this line says what is diagnosed.
+      String(
+        localized: "Agent environment configuration", comment: "Settings tab blurb: Diagnostics")
     case .agentTools:
       // One sentence: the three levels name themselves on the segmented
       // controls below, and the resolution order has its own note next to the
@@ -123,9 +118,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: "Pick a model, check its availability and manage the space it takes.",
         comment: "Settings tab blurb: Dictation › Whisper")
     case .dictationPreview:
-      // The headline names the setting; the preset picker and its selected
-      // preset's own line say the rest (Founder round-2 copy trim, 2026-10-20).
-      nil
+      // The line names the setting the tab holds; the preset picker and its
+      // selected preset's own line say the rest (Founder round-2 copy trim,
+      // 2026-10-20).
+      String(
+        localized: "Transcript display pace", comment: "Settings tab blurb: Dictation › Preview")
     case .dictationPrivacy:
       String(localized: "See when Codescribe uses online services.")
     }

@@ -2838,7 +2838,7 @@
       }
     },
     "Agent environment configuration" : {
-      "comment" : "Settings tab: Diagnostics headline",
+      "comment" : "Settings tab blurb: Diagnostics",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10470,7 +10470,7 @@
       }
     },
     "Local Whisper model" : {
-      "comment" : "Engine tab row: the on-device model Local power loads\nSettings tab headline: Dictation › Whisper",
+      "comment" : "Engine tab row: the on-device model Local power loads",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17096,16 +17096,6 @@
         }
       }
     },
-    "Shortcuts & control" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Skróty i sterowanie"
-          }
-        }
-      }
-    },
     "Shortcuts need Input Monitoring + Accessibility" : {
       "localizations" : {
         "pl" : {
@@ -18101,17 +18091,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Odtwarzanie nie powiodło się: limit głosu wyczerpany"
-          }
-        }
-      }
-    },
-    "Speech recognition" : {
-      "comment" : "Settings tab headline: Dictation › Engine",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpoznawanie mowy"
           }
         }
       }
@@ -20285,7 +20264,7 @@
       }
     },
     "Transcript display pace" : {
-      "comment" : "Settings tab headline: Dictation › Preview",
+      "comment" : "Settings tab blurb: Dictation › Preview",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
