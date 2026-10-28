@@ -621,9 +621,9 @@ Account sign-in alone does not supply that key. With account-only model
 access, `/model` shows the currently resolved model and explains the missing
 catalog access. Keep that model, or enter a supported model ID in **Agent →
 AI models**. Adding an API key is optional for supported account requests.
-Without a key or a saved account, the Agent and Formatting cards read **The model
-list needs an API key. You can enter a model ID by hand.** With a saved account,
-they instead read **The model list needs an API key. The account remains saved.**
+Without a key, with or without a saved account, the Agent and Formatting cards
+read **The model list needs an API key. You can enter a model ID by hand.** A
+saved account never opens the list, so the model is entered by hand there too.
 The line describes catalog access without promising that account-authenticated
 requests will work or that the list will load on its own. A rejected
 key next to a signed-in account reads **The API key was rejected, so there is no
