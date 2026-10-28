@@ -444,7 +444,12 @@ A panel reads the role, never a bare number.
   ("Granted", "Ready") is `CSStatusBadge(mark: .verified)` — a thin check on
   an olive capsule — and stored identity that nothing has tested ("Saved") is
   the same capsule with the empty circle; `StatusPill` remains the dotted
-  live-activity pill.
+  live-activity pill. Audio's healthy recording summary and Whisper's ready
+  model status use the verified badge; saved provider keys and accounts use
+  the saved badge without claiming service liveness. Audio's committing
+  fragments row spells out "Enabled"/"Disabled" ("Włączone"/"Wyłączone" in
+  Polish). Blocked audio and missing or pending model states keep their
+  existing warning or neutral presentation.
 
 ### Agent window header
 

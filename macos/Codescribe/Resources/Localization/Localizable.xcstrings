@@ -22134,37 +22134,37 @@
       }
     },
     "audio.readiness.sealLane.off" : {
-      "comment" : "Value of the committing fragments row; keep it as short as the UI allows",
+      "comment" : "Value of the committing fragments row; use the full word, never an abbreviation",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Off"
+            "value" : "Disabled"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wył."
+            "value" : "Wyłączone"
           }
         }
       }
     },
     "audio.readiness.sealLane.on" : {
-      "comment" : "Value of the committing fragments row; keep it as short as the UI allows",
+      "comment" : "Value of the committing fragments row; use the full word, never an abbreviation",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "On"
+            "value" : "Enabled"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wł."
+            "value" : "Włączone"
           }
         }
       }

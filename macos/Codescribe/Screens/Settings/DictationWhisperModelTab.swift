@@ -126,13 +126,18 @@ struct DictationWhisperModelTab: View {
       }
       cardRow {
         let line = Self.modelStatus(available: status.available, catalog: catalog)
-        Text(
-          String(
-            localized: "Status: \(line.label)",
-            comment:
-              "Whisper tab row: the selected model's state. Placeholder: a state such as Installed or Loaded in memory"
-          )
+        let statusText = String(
+          localized: "Status: \(line.label)",
+          comment:
+            "Whisper tab row: the selected model's state. Placeholder: a state such as Installed or Loaded in memory"
         )
+        Group {
+          if line.tone == .ready {
+            CSStatusBadge(text: statusText, mark: .verified)
+          } else {
+            Text(statusText)
+          }
+        }
         .font(SettingsScale.settingName)
         .foregroundStyle(line.tone.color)
         .fixedSize(horizontal: false, vertical: true)

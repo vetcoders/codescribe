@@ -399,10 +399,15 @@ struct KeyRow: View {
     }
   }
 
+  @ViewBuilder
   private var presenceState: some View {
-    Text(isSet ? "Saved" : (optional ? "Optional" : "Not set"))
-      .font(SettingsScale.statusBadge)
-      .foregroundStyle(accent)
+    if isSet {
+      CSStatusBadge(text: String(localized: "Saved"), mark: .saved)
+    } else {
+      Text(optional ? "Optional" : "Not set")
+        .font(SettingsScale.statusBadge)
+        .foregroundStyle(accent)
+    }
   }
 
   private var editButton: some View {
@@ -636,19 +641,27 @@ struct AccountLoginRow: View {
 
   var body: some View {
     HStack(spacing: CSSpace.sm) {
-      StatusToneGlyph(tone: .neutral)
+      if !signedIn {
+        StatusToneGlyph(tone: .neutral)
+      }
       Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
         .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
-      Text(Self.status(for: provider))
-        .font(SettingsScale.statusBadge)
-        .foregroundStyle(CSColor.secondaryInk)
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .help(
-          signedIn
-            ? String(localized: "Account saved. Use Test in Formatting to check the selected provider and model.")
-            : provider.accountStatusMessage)
+      Group {
+        if signedIn {
+          CSStatusBadge(text: Self.status(for: provider), mark: .saved)
+        } else {
+          Text(Self.status(for: provider))
+        }
+      }
+      .font(SettingsScale.statusBadge)
+      .foregroundStyle(CSColor.secondaryInk)
+      .lineLimit(1)
+      .truncationMode(.middle)
+      .help(
+        signedIn
+          ? String(localized: "Account saved. Use Test in Formatting to check the selected provider and model.")
+          : provider.accountStatusMessage)
       if let loginNotice, !loginNotice.isEmpty {
         Text(loginNotice)
           .font(SettingsScale.statusBadge)

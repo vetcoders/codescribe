@@ -548,15 +548,15 @@ func audioSealLaneFact(_ admission: CsAdmissionReadiness?) -> AudioReadinessFact
       id: .sealLane,
       label: label,
       value: String(
-        localized: "audio.readiness.sealLane.on", defaultValue: "On",
-        comment: "Value of the committing fragments row; keep it as short as the UI allows"),
+        localized: "audio.readiness.sealLane.on", defaultValue: "Enabled",
+        comment: "Value of the committing fragments row; use the full word, never an abbreviation"),
       tone: .healthy)
     : AudioReadinessFact(
       id: .sealLane,
       label: label,
       value: String(
-        localized: "audio.readiness.sealLane.off", defaultValue: "Off",
-        comment: "Value of the committing fragments row; keep it as short as the UI allows"),
+        localized: "audio.readiness.sealLane.off", defaultValue: "Disabled",
+        comment: "Value of the committing fragments row; use the full word, never an abbreviation"),
       tone: !admission.ready && admission.code == "admission_seal_lane_disarmed"
         ? .unavailable : .neutral)
 }
@@ -1016,19 +1016,25 @@ struct AudioPanel: View {
     recordingState: OverlayState?, tray: TrayViewModel?, stopRequested: Binding<Bool>
   ) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 10) {
-      CSIconView(
-        icon: summary.tone == .healthy ? .checkCircleFill : .warning,
-        size: 13,
-        weight: .semibold,
-        color: statusColor(summary.tone)
-      )
-      .accessibilityHidden(true)
+      if summary.tone != .healthy {
+        CSIconView(
+          icon: .warning,
+          size: 13,
+          weight: .semibold,
+          color: statusColor(summary.tone)
+        )
+        .accessibilityHidden(true)
+      }
 
       VStack(alignment: .leading, spacing: 2) {
-        Text(summary.title)
-          .font(SettingsScale.settingName)
-          .foregroundStyle(Color.primary)
-          .fixedSize(horizontal: false, vertical: true)
+        if summary.tone == .healthy {
+          CSStatusBadge(text: summary.title, mark: .verified)
+        } else {
+          Text(summary.title)
+            .font(SettingsScale.settingName)
+            .foregroundStyle(Color.primary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
         if let detail = summary.detail {
           Text(detail)
             .font(SettingsScale.helper)
