@@ -634,6 +634,16 @@ struct AccountLoginRow: View {
     return String(localized: "Saved")
   }
 
+  /// The signed-in identity, shown as a line under the row name rather than
+  /// as part of the state word; nil when there is nothing to name.
+  static func identityLine(for provider: CsProviderOption) -> String? {
+    guard provider.accountSignedIn, let identity = provider.accountIdentity, !identity.isEmpty
+    else { return nil }
+    return String(
+      localized: "Saved account: \(identity)",
+      comment: "Provider account row; the placeholder is the signed-in email")
+  }
+
   var body: some View {
     HStack(spacing: CSSpace.sm) {
       if !signedIn {
@@ -643,17 +653,13 @@ struct AccountLoginRow: View {
         Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
           .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
-        if signedIn, let identity = provider.accountIdentity, !identity.isEmpty {
-          Text(
-            String(
-              localized: "Saved account: \(identity)",
-              comment: "Provider account row; the placeholder is the signed-in email")
-          )
-          .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.secondaryInk)
-          .lineLimit(1)
-          .truncationMode(.middle)
-          .help(identity)
+        if let identityLine = Self.identityLine(for: provider) {
+          Text(identityLine)
+            .font(SettingsScale.helper)
+            .foregroundStyle(CSColor.secondaryInk)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .help(provider.accountIdentity ?? "")
         }
       }
       Group {
