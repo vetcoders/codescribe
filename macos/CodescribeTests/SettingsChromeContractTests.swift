@@ -292,6 +292,20 @@ final class SettingsChromeContractTests: XCTestCase {
       let titles = try entry.titles.map { try XCTUnwrap($0, entry.picker) }
       XCTAssertLessThanOrEqual(width(titles), frame, "\(entry.picker): \(titles)")
     }
+
+    // The indicator picker owns its row under its name (W0-10): its frame
+    // fits the card at the minimum window, and the name no longer shares the
+    // line with it.
+    let shortcuts = try XCTUnwrap(sources["ShortcutsPanel.swift"])
+    let indicator = try XCTUnwrap(shortcuts.range(of: "Picker(\"Pointer indicator\""))
+    let indicatorFrame = try XCTUnwrap(
+      fixedFrameWidth(in: String(shortcuts[indicator.upperBound...].prefix(600))))
+    XCTAssertLessThanOrEqual(indicatorFrame, column, "the indicator picker fits the card")
+    let indicatorHead = String(shortcuts[..<indicator.lowerBound].suffix(700))
+    let sharedLine = "HStack(spacing: SettingsScale.rowInsetH) {\n          Text(\"Size of"
+    XCTAssertFalse(
+      indicatorHead.contains(sharedLine),
+      "the indicator's name does not share its line with the picker")
   }
 
   /// The sidebar footer is one sentence-case line per state, and empty while

@@ -370,7 +370,8 @@ command and password-field safeguards are unchanged.
 
 **Recording indicator** carries its title above the card, like **Fn and Agent
 channels**, **Extra shortcuts** and **Paste after dictation**. Inside, the size
-of the indicator next to the cursor comes first (Off / Small / Medium / Large; the
+of the indicator next to the cursor comes first, with its picker on its own
+line under the name (Off / Small / Medium / Large; the
 Agent indicator stays proportionally larger), and the three dot states —
 Recording, Agent, Processing — read as captions below the size they are sized
 by.

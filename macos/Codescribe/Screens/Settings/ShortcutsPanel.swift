@@ -311,23 +311,25 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Recording indicator"))
       VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
-        HStack(spacing: SettingsScale.rowInsetH) {
-          Text("Size of the indicator next to the cursor")
-            .font(SettingsScale.settingName)
-            .foregroundStyle(Color.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        // The picker sits under its name, as Deferred paste does: beside it,
+        // 372 pt left the name about 208 pt at the minimum window, and both
+        // "Size of the indicator next to the cursor" (241 pt) and "Rozmiar
+        // wskaźnika przy kursorze" (210 pt) wrapped.
+        Text("Size of the indicator next to the cursor")
+          .font(SettingsScale.settingName)
+          .foregroundStyle(Color.primary)
+          .fixedSize(horizontal: false, vertical: true)
 
-          Picker("Pointer indicator", selection: holdBadgeBinding) {
-            ForEach(HoldBadgeOption.allCases) { option in
-              Text(option.visibleName).tag(option)
-            }
+        Picker("Pointer indicator", selection: holdBadgeBinding) {
+          ForEach(HoldBadgeOption.allCases) { option in
+            Text(option.visibleName).tag(option)
           }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          // Every segment takes the widest label, here Polish "Wyłączony";
-          // four of them measure 364 pt, so the frame keeps a little slack.
-          .frame(width: 372)
         }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        // Every segment takes the widest label, here Polish "Wyłączony";
+        // four of them measure 364 pt, so the frame keeps a little slack.
+        .frame(width: 372)
         // The dots belong under the size they are sized by, at the helper rung
         // the rest of the page explains itself in (Founder review, 2026-10-18).
         HStack(alignment: .top, spacing: SettingsScale.rowInsetH) {
