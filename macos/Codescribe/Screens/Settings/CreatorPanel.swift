@@ -55,10 +55,10 @@ struct CreatorPanel: View {
           title: String(localized: "Intercom layout"),
           subtitle: String(
             localized:
-              "Classic overlay, the horizontal agent strip, or floating vertical agent pills.")
+              "Classic overlay, the horizontal agent strip, or floating vertical agent pills. The strip and pills are experimental.")
         ) {
-          // Classic ships as the default; the two mapped layouts ship marked
-          // experimental (Maciej, 2026-10-23).
+          // Classic ships as the default. The subtitle keeps the experimental
+          // status of the two mapped layouts outside the short pills label.
           Picker(
             "Intercom layout",
             selection: Binding(
@@ -68,7 +68,7 @@ struct CreatorPanel: View {
             Text("Classic").tag(OverlayIntercomPresentationMode.classic)
             Text("Horizontal strip (experimental)")
               .tag(OverlayIntercomPresentationMode.horizontal)
-            Text("Floating agent pills (experimental)")
+            Text("Floating pills")
               .tag(OverlayIntercomPresentationMode.vertical)
           }
           .labelsHidden()

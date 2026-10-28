@@ -61,6 +61,10 @@ formatting, Correction fixes spelling and punctuation while keeping the wording,
 Smart edits for clarity while preserving meaning, and Max uses the Agent model
 and prompt for the dictated request. The explanation changes with the selection.
 
+**Intercom layout** keeps the floating option short: **Floating pills**
+(PL **Lewitujące pigułki**). The row's description identifies both the horizontal
+strip and floating vertical agent pills as experimental.
+
 **Max permissions** says under its heading whether anything is waiting for you —
 _No requests waiting_ or _Requests waiting_ — so an empty section cannot be
 mistaken for one that was never read; the requests themselves are the cards
@@ -606,9 +610,11 @@ Account sign-in alone does not supply that key. With account-only model
 access, `/model` shows the currently resolved model and explains the missing
 catalog access. Keep that model, or enter a supported model ID in **Agent →
 AI models**. Adding an API key is optional for supported account requests.
-Without a key, the Agent and Formatting cards read **The model list needs an API
-key. You can enter a model ID by hand.** — the same line with or without a
-connected account, because it is about the list, not about requests. A rejected
+Without a key or a saved account, the Agent and Formatting cards read **The model
+list needs an API key. You can enter a model ID by hand.** With a saved account,
+they instead read **The model list needs an API key. The account remains saved.**
+The line describes catalog access without promising that account-authenticated
+requests will work or that the list will load on its own. A rejected
 key next to a signed-in account reads **The API key was rejected, so there is no
 model list. The account remains saved.**
 

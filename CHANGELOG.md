@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Settings: a missing model-list API key beside a saved account now says the account remains saved, without telling every account user to enter a model ID. The prompt segment is named **Agent**, and the Intercom menu shortens **Floating pills** (PL **Lewitujące pigułki**) while its description keeps the experimental status. The shared Whisper download card shows the model ID in muted ink and only its location in monospace.
 - Settings: Creator explains the selected formatting level, and Agent › AI models explains the selected cloud or Apple engine. With Max selected, the Formatting lane says that Max uses the Agent model instead of suggesting a cloud fallback.
 - Settings › Agent › MCP: each server's Enabled/Disabled setting is a native switch instead of a coloured action chip. It still changes only the saved configuration; Test, Edit and Remove remain separate actions.
 - Settings › Agent › Prompts: **Built-in** and **Custom** are small, muted text labels without a capsule or border, so the prompt source is visually distinct from the Edit/Save button beside it.

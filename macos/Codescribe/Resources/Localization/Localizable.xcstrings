@@ -2724,7 +2724,7 @@
       }
     },
     "Agent" : {
-      "comment" : "Agent window title\nConversation header subtitle without a model\nSettings section",
+      "comment" : "Agent window title\nConversation header subtitle without a model\nPrompt file: Agent and Max base prompt\nSettings section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3492,7 +3492,7 @@
       }
     },
     "Assistive" : {
-      "comment" : "Prompt file: voice-assistant base prompt\nRequest lane: agent and voice assistant",
+      "comment" : "Request lane: agent and voice assistant",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5046,13 +5046,13 @@
         }
       }
     },
-    "Classic overlay, the horizontal agent strip, or floating vertical agent pills." : {
+    "Classic overlay, the horizontal agent strip, or floating vertical agent pills. The strip and pills are experimental." : {
       "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Klasyczna nakładka, poziomy pasek agentów lub pionowe, lewitujące pigułki."
+            "state" : "needs_review",
+            "value" : "Klasyczna nakładka, poziomy pasek agentów lub pionowe, lewitujące pigułki agentów. Pasek i pigułki są eksperymentalne."
           }
         }
       }
@@ -8541,13 +8541,13 @@
         }
       }
     },
-    "Floating agent pills (experimental)" : {
+    "Floating pills" : {
       "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lewitujące pigułki agentów (eksperymentalne)"
+            "state" : "needs_review",
+            "value" : "Lewitujące pigułki"
           }
         }
       }
@@ -19613,6 +19613,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wiadomość jest za długa (limit 64 KB)."
+          }
+        }
+      }
+    },
+    "The model list needs an API key. The account remains saved." : {
+      "comment" : "Model discovery has no API key while the provider account remains saved",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Lista modeli wymaga klucza API. Konto pozostaje zapisane."
           }
         }
       }

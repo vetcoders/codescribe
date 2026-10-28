@@ -36,7 +36,9 @@ struct WhisperDownloadView: View {
           .foregroundStyle(store.status.available ? CSColor.oliveLight : CSColor.secondaryInk)
         Spacer(minLength: 0)
       }
-      Text(store.status.modelId).font(SettingsScale.helper)
+      Text(store.status.modelId)
+        .font(SettingsScale.helper)
+        .foregroundStyle(CSColor.secondaryInk)
       switch presentation {
       case .full:
         technicalDetails
@@ -139,6 +141,7 @@ struct WhisperDownloadView: View {
                 "Model location on this Mac", locale: locale,
                 comment: "Whisper model card: field label for the folder or file of the model")))
           detailValue(location)
+            .fontDesign(.monospaced)
             .lineLimit(1)
             .truncationMode(.middle)
             .textSelection(.enabled)
