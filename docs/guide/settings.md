@@ -5,6 +5,9 @@ the Dictation section has separate tabs for its concerns. The button at the
 left of the toolbar, or `Control+Command+S`, hides and shows the sidebar, and
 the window remembers the choice. The window bar carries only the wordmark and
 version: the selected sidebar row and the pane's own heading name the pane.
+Every page is headed by the name you clicked: a page with tabs by the active
+tab's name, every other page by its sidebar name, in the same words. Where a
+page needs saying what it is for, that is the sentence under the heading.
 The sections below
 describe the current controls and their runtime contracts.
 
@@ -39,7 +42,8 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 
 ## Creator
 
-Right under the heading, **Open Setup Wizard…** reopens the first-run wizard
+The page is headed **Creator**, its sidebar name, with _Get Codescribe ready
+to work._ under it. Right below, **Open Setup Wizard…** reopens the first-run wizard
 from its first screen, with no explanation beside the button. Each step opens
 on your current value and writes it when you press Continue; the shortcuts step
 writes a preset (Hold, Toggle or Hybrid) to the three mode bindings only when
@@ -188,9 +192,9 @@ This tab owns the transcript pipeline itself:
 
 ## Dictation tabs
 
-The Dictation pane is one tab per concern. The Engine, Whisper and Preview
-pages are headed by their tab names; Preview names its setting, **Transcript
-display pace**, in the line under the title.
+The Dictation pane is one tab per concern. Every Dictation page is headed by its
+tab name — Engine, Whisper, Preview, Privacy; Preview names its setting,
+**Transcript display pace**, in the line under the title.
 
 1. **Engine** — **Recognition mode** is the first row and the only recognition
    choice (Apple only, Local power, Cloud). The two on-device modes carry a one-line
@@ -669,7 +673,7 @@ attach listeners.
 
 ### Agent → Tools
 
-Tools is the permissions screen: when the Agent may use a tool without
+Tools, headed **Tools** like its tab, is the permissions screen: when the Agent may use a tool without
 asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
 
 The tab has two bands: **Defaults** under its own title, then the per-tool
@@ -791,7 +795,7 @@ capability operations `CapabilityOp::all()` declares, each resolved to one tier.
 ### Agent → MCP
 
 The MCP tab is the editing surface for `~/.codescribe/mcp.json`; Diagnostics
-only reports it. The headline **MCP servers** stands without an introduction
+only reports it. The page is headed **MCP**, its tab name, and stands without an introduction
 and the list reads as servers, not as a config dump.
 
 - **Server card** — the name, the configured state as a native switch (Enabled /
@@ -1041,7 +1045,7 @@ Common overrides:
 
 ## Dictionary
 
-**Settings → Dictionary** shows what was corrected, what the app actually
+**Settings → Dictionary**, headed **Dictionary**, shows what was corrected, what the app actually
 learned, and where the active rules come from.
 
 - **Counters** — three separate values on one line: corrections (every take
