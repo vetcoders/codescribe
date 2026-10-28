@@ -2248,18 +2248,6 @@
         }
       }
     },
-    "Account saved. Use Test in Formatting to check the selected provider and model." : {
-      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Konto zostało zapisane. Użyj przycisku Test w Formatowaniu, aby sprawdzić wybranego dostawcę i model."
-          }
-        }
-      }
-    },
     "Acoustic evidence" : {
       "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
       "localizations" : {
@@ -5349,18 +5337,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codescribe - %@"
-          }
-        }
-      }
-    },
-    "Codescribe Bus" : {
-      "comment" : "AI models section: the two bus timers",
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Codescribe Bus"
           }
         }
       }
@@ -19559,50 +19535,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie można sprawdzić ścieżki instalacji."
-          }
-        }
-      }
-    },
-    "The ledger anchored %@ of the speech and did not close this take." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ledger zakotwiczył %@ mowy i nie domknął tego nagrania."
-          }
-        }
-      }
-    },
-    "The ledger anchored %@ of the speech and did not close this take. Open Lab to see where." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ledger zakotwiczył %@ mowy i nie domknął tego nagrania. Otwórz Lab, żeby zobaczyć gdzie."
-          }
-        }
-      }
-    },
-    "The ledger did not close this take." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ledger nie domknął tego nagrania."
-          }
-        }
-      }
-    },
-    "The ledger did not close this take. Open Lab to see where." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ledger nie domknął tego nagrania. Otwórz Lab, żeby zobaczyć gdzie."
           }
         }
       }
