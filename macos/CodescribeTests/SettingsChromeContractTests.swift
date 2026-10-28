@@ -697,12 +697,12 @@ final class SettingsChromeContractTests: XCTestCase {
   func testWorkspaceTabNamesAgentAccessNotProjects() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
-    // W0-01 (rule G2): the page is headed by its tab name, Workspace; the
-    // folder list below names folder access ("Allowed folders").
-    XCTAssertTrue(
-      tab.contains(
-        "case .agentWorkspace, .agentStatus, .dictationEngine, .dictationWhisper, .dictationPreview:\n      title"
-      ))
+    // W0-11 (one heading rule): a tabbed page is headed by its tab name, so
+    // SettingsTab carries no separate headline; the folder list below names
+    // folder access ("Allowed folders").
+    XCTAssertFalse(tab.contains("var headline"), "the tab name is the heading")
+    let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
+    XCTAssertTrue(pane.contains("SettingsPageHeader(tab.title"), "tabbed pages are headed by tab.title")
     XCTAssertFalse(tab.contains("String(localized: \"Folders available to the Agent\""))
     XCTAssertFalse(tab.contains("\"Workspace roots.\""))
     XCTAssertTrue(tab.contains("\"Processes and MCP servers have their own permissions.\""))
