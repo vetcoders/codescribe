@@ -768,7 +768,7 @@ private struct SheetShadeRows: View {
 /// One compact line inside the shared permissions group: status badge, name,
 /// and — only while something is missing — the repair action. The five rows
 /// share a single bordered card (Founder brief, round 4, 2026-10-10); the
-/// per-row olive/danger wash lives on in the badge; the action link keeps the accent.
+/// per-row olive/danger wash lives on in the badge; repair actions keep neutral ink.
 private struct PermissionChecklistRow: View {
   let kind: PermissionKind
   let state: PermissionState
@@ -814,7 +814,7 @@ private struct PermissionChecklistRow: View {
           } label: {
             Text("allow \(kind.displayName)")
               .font(CSFont.ui(11, .semibold))
-              .foregroundStyle(CSColor.terracottaText)
+              .foregroundStyle(Color.primary)
           }
           .csFocusRing()
         }
@@ -825,7 +825,7 @@ private struct PermissionChecklistRow: View {
           } label: {
             Text("open System Settings")
               .font(CSFont.ui(11, .semibold))
-              .foregroundStyle(CSColor.terracottaText)
+              .foregroundStyle(Color.primary)
           }
           .csFocusRing()
         }

@@ -326,10 +326,11 @@ struct UserPanel: View {
     Link(destination: url) {
       HStack(alignment: .center, spacing: CSSpace.sm) {
         Text(title)
-          .font(SettingsScale.helper)
+          .font(SettingsScale.controlLabel)
+          .underline()
           .frame(maxWidth: .infinity, alignment: .leading)
         Image(systemName: "arrow.up.forward.square")
-          .font(.system(size: 11, weight: .medium))
+          .font(CSFont.ui(11, .semibold))
       }
       .foregroundStyle(CSColor.chromeAccent)
       .padding(.vertical, CSSpace.xs)
