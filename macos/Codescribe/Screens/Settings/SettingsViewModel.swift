@@ -1009,11 +1009,8 @@ struct LLMLaneModel {
       // account token (`core/llm/model_discovery.rs`, `bridge/src/config.rs`),
       // so the list's access says nothing about whether requests using a
       // separately stored account will be accepted.
-      if runtime.accountAuth {
-        return String(
-          localized: "The model list needs an API key. The account remains saved.",
-          comment: "Model discovery has no API key while the provider account remains saved")
-      }
+      // With a stored account the model is still entered by hand: the account
+      // never opens the list, so one sentence covers both cases.
       return String(
         localized: "The model list needs an API key. You can enter a model ID by hand.")
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")

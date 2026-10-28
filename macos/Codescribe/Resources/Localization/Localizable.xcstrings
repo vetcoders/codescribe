@@ -19637,17 +19637,6 @@
         }
       }
     },
-    "The model list needs an API key. The account remains saved." : {
-      "comment" : "Model discovery has no API key while the provider account remains saved",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Lista modeli wymaga klucza API. Konto pozostaje zapisane."
-          }
-        }
-      }
-    },
     "The model list needs an API key. You can enter a model ID by hand." : {
       "localizations" : {
         "pl" : {
