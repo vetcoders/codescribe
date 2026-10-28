@@ -1,0 +1,13 @@
+{
+  // AI reviewers required per risk tier (case-insensitive login or check name).
+  "reviewers": {
+    "low": [],
+    "medium": ["copilot-pull-request-reviewer", "chatgpt-codex-connector"],
+    "high": ["copilot-pull-request-reviewer", "chatgpt-codex-connector"]
+  },
+  // Agents clear blockers and verify locally; the maintainer owns merge and auto-merge enablement.
+  "humanApprovalFor": ["low", "medium", "high"],
+  "autoMergeFor": [],
+  "mergeMethod": "squash",
+  "deployCheck": ["python3", "scripts/tests/test_appcast_version.py"]
+}
