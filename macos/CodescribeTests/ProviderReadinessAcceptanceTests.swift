@@ -12,8 +12,8 @@ final class ProviderReadinessAcceptanceTests: XCTestCase {
   /// so colour alone no longer separates it from an accepted probe: the sign
   /// does. The saved rows must render the olive circle and never the
   /// verified check; a rejected probe stays free of the state colour. The
-  /// accepted probe is the positive control that keeps an empty render from
-  /// passing.
+  /// accepted probe wears the thin verified check and is the positive control
+  /// that keeps an empty render from passing.
   func testStoredCredentialsWearTheSavedSignNotTheAcceptedOne() throws {
     let savedKey = KeyRow(
       account: "FIXTURE_API_KEY", label: "Fixture", isSet: true,
@@ -48,6 +48,15 @@ final class ProviderReadinessAcceptanceTests: XCTestCase {
       "a stored account is the saved mark")
     XCTAssertFalse(
       keyRows.contains("mark: .verified"), "no stored credential wears the verified check")
+    // The check belongs to the probe that the provider accepted, and to
+    // nothing else in the key rows; a refused key blocks, an untested one is
+    // saved.
+    XCTAssertTrue(keyRows.contains("case .ok: return .verified"), "an accepted probe is verified")
+    XCTAssertEqual(
+      keyRows.components(separatedBy: ".verified").count - 1, 1,
+      "the accepted probe is the only verified sign in the key rows")
+    XCTAssertTrue(keyRows.contains("case .invalid, .noQuota: return .blocked"))
+    XCTAssertTrue(keyRows.contains("case .unsupported: return .saved"))
   }
 
   private func greenPixels<V: View>(_ view: V, name: String) throws -> Int {

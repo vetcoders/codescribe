@@ -389,7 +389,12 @@ with …** otherwise. The saved account identity appears below its vendor
 label, while the state word beside it is **Saved**, the same as for a stored
 key. **Sign out** is a neutral chip like the other row actions, not a
 red one. A stored credential has an empty-circle **Saved** badge, which
-does not claim that the provider has been tested; a key that is absent is
+does not claim that the provider has been tested. After **Test**, a key the
+provider accepted reads **Key OK** with a thin check; a refused key or an
+exhausted usage limit carries the terracotta warning sign; a probe the
+provider turned down for another reason, or a network error, is a plain word,
+because it says nothing about the key; a provider without a probe shows the
+empty-circle **Saved — no test for this key**. A key that is absent is
 neutral grey, and reads **Optional** when nothing is waiting for it — a
 key-optional host, or a Responses vendor (OpenAI, xAI) whose connected account
 serves requests. A connected Messages account does not serve requests, so that

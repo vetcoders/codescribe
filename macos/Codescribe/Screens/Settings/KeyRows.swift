@@ -578,17 +578,23 @@ struct KeyProbeChip: View {
     return "\(verdict) @ \(host)"
   }
 
-  private var tint: Color { result.status.tone.dotColor }
+  /// The sign carries the verdict (D2, 2026-10-26): an accepted key is the
+  /// thin verified check, a refused key or an exhausted limit blocks use, and
+  /// a key with no probe is stored but untested. A rejected probe request or a
+  /// network error proves nothing about the key, so it stays a plain word; the
+  /// row's tone glyph already marks it.
+  private var mark: CSStatusBadge.Mark {
+    switch result.status {
+    case .ok: return .verified
+    case .invalid, .noQuota: return .blocked
+    case .unsupported: return .saved
+    case .rejected, .network, .missing: return .none
+    }
+  }
 
   var body: some View {
-    Text(label)
-      .font(SettingsScale.statusBadge)
+    CSStatusBadge(text: label, mark: mark)
       .lineLimit(1)
-      .foregroundStyle(tint)
-      .padding(.horizontal, 8)
-      .padding(.vertical, 4)
-      .background(Capsule().fill(tint.opacity(0.11)))
-      .overlay(Capsule().strokeBorder(tint.opacity(0.24), lineWidth: 1))
       .help(
         result.probedEndpoint.map {
           String(
