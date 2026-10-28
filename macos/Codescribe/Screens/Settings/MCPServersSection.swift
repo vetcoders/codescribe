@@ -355,26 +355,30 @@ struct MCPServerRow: View {
   // the shared Settings chip family.
 
   /// The configured state. Clicking flips the `enabled` flag in mcp.json; it
-  /// never connects or disconnects anything by itself.
+  /// never connects or disconnects anything by itself. The switch is the one
+  /// Settings switch (`settingsSwitch()`), whose label is hidden, so the state
+  /// word stays visible beside it and the server name labels it for VoiceOver.
   private var enabledToggle: some View {
-    Toggle(
-      isOn: Binding(
-        get: { server.enabled },
-        set: { enabled in
-          if enabled != server.enabled { onToggle() }
-        }
-      )
-    ) {
+    HStack(spacing: 5) {
+      Toggle(
+        isOn: Binding(
+          get: { server.enabled },
+          set: { enabled in
+            if enabled != server.enabled { onToggle() }
+          }
+        )
+      ) {
+        Text(verbatim: server.name)
+      }
+      .settingsSwitch()
       Text(
         server.enabled
           ? String(localized: "mcp.server.enabled", defaultValue: "Enabled")
           : String(localized: "mcp.server.disabled", defaultValue: "Disabled")
       )
       .font(SettingsScale.controlLabel)
+      .accessibilityHidden(true)
     }
-    .toggleStyle(.switch)
-    .controlSize(.small)
-    .accessibilityLabel(Text(verbatim: server.name))
     .help(server.enabled ? "Disable this server" : "Enable this server")
   }
 
