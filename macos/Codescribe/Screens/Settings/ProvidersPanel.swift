@@ -142,7 +142,7 @@ struct ProviderAccessStatusSlot: View {
 
   private var receipt: String {
     guard let checkedAt else { return "" }
-    let time = checkedAt.formatted(date: .omitted, time: .standard)
+    let time = checkedAt.formatted(date: .omitted, time: .shortened)
     return String(localized: "Checked at \(time)")
   }
 

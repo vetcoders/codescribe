@@ -208,12 +208,24 @@ enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
     return "px-\(size)"
   }
   var visibleName: String {
-    guard let size else {
+    switch self {
+    case .off:
       return String(
         localized: "settings.holdBadge.size.off", defaultValue: "Off",
         comment: "Hold badge size: the badge is disabled")
+    case .four:
+      return String(
+        localized: "settings.holdBadge.size.small", defaultValue: "Small",
+        comment: "Hold badge size: the small indicator")
+    case .eight:
+      return String(
+        localized: "settings.holdBadge.size.medium", defaultValue: "Medium",
+        comment: "Hold badge size: the medium indicator")
+    case .twelve:
+      return String(
+        localized: "settings.holdBadge.size.large", defaultValue: "Large",
+        comment: "Hold badge size: the large indicator")
     }
-    return "\(size)px"
   }
   var size: UInt32? {
     switch self {

@@ -150,7 +150,9 @@ This tab owns the transcript pipeline itself:
 - **Transcript display pace** (Dictation → Preview)
   - presets: `Smooth`, `Snappy`, `Relaxed`, `No preview`, `Custom`
   - `Detailed settings` — collapsed by default, opened by `Custom`:
-    - `Update delay` → `CODESCRIBE_BUFFER_DELAY_MS`
+    - `Update delay` → `CODESCRIBE_BUFFER_DELAY_MS`; the label shows seconds
+      with the locale's decimal separator (for example, `1.5 s` in English or
+      `1,5 s` in Polish); the stored value remains milliseconds
     - `Character pace` → `CODESCRIBE_TYPING_CPS`
     - `Max words per update` → `CODESCRIBE_EMIT_WORDS_MAX`
     - `Interim result interval` → `CODESCRIBE_BUFFERED_INTERIM_SEC`
@@ -360,7 +362,7 @@ command and password-field safeguards are unchanged.
 
 **Recording indicator** carries its title above the card, like **Fn and Agent
 channels**, **Extra shortcuts** and **Paste after dictation**. Inside, the size
-of the indicator next to the cursor comes first (Off / 4px / 8px / 12px; the
+of the indicator next to the cursor comes first (Off / Small / Medium / Large; the
 Agent indicator stays proportionally larger), and the three dot states —
 Recording, Agent, Processing — read as captions below the size they are sized
 by.
@@ -546,8 +548,9 @@ a previous successful snapshot is labeled as the last checked state. Settings
 also offers **Refresh** (one shared refresh chip is used across every Settings
 section); while the read runs, the spinner and
 **Checking provider access…** sit in a fixed slot beside the button, and once
-it lands the slot keeps **Checked at HH:MM:SS** so even an instant refresh
-leaves a visible receipt. Returning focus refreshes only the owning Settings
+it lands the slot keeps **Checked at HH:MM** in the system's clock format,
+without seconds and with AM/PM where the region uses it, so even an instant
+refresh leaves a visible receipt. Returning focus refreshes only the owning Settings
 or Setup window, and repeated requests share the pending read.
 Permission changes refresh permissions and hotkeys separately.
 

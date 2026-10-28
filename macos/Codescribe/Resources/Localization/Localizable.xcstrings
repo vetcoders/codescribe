@@ -24929,6 +24929,42 @@
         }
       }
     },
+    "settings.holdBadge.size.large" : {
+      "comment" : "Hold badge size: the large indicator",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Large"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Duży"
+          }
+        }
+      }
+    },
+    "settings.holdBadge.size.medium" : {
+      "comment" : "Hold badge size: the medium indicator",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Medium"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Średni"
+          }
+        }
+      }
+    },
     "settings.holdBadge.size.off" : {
       "comment" : "Hold badge size: the badge is disabled",
       "extractionState" : "extracted_with_value",
@@ -24942,7 +24978,25 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wył."
+            "value" : "Wyłączony"
+          }
+        }
+      }
+    },
+    "settings.holdBadge.size.small" : {
+      "comment" : "Hold badge size: the small indicator",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Small"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mały"
           }
         }
       }
