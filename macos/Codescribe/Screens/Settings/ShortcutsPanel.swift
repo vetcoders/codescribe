@@ -324,7 +324,9 @@ struct ShortcutsPanel: View {
           }
           .pickerStyle(.segmented)
           .labelsHidden()
-          .frame(width: 230)
+          // Every segment takes the widest label, here Polish "Wyłączony";
+          // four of them measure 364 pt, so the frame keeps a little slack.
+          .frame(width: 372)
         }
         // The dots belong under the size they are sized by, at the helper rung
         // the rest of the page explains itself in (Founder review, 2026-10-18).

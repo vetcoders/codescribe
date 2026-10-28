@@ -269,9 +269,18 @@ final class SettingsChromeContractTests: XCTestCase {
     // Pickers that keep a fixed frame hold their Polish labels.
     let fixed: [(file: String, picker: String, titles: [String?])] = [
       ("ShortcutsPanel.swift", "Picker(\"Arm modifier\"", ["Shift", "Command"]),
+      // W0-05 (rule "units for humans"): the sizes are named, not in pixels,
+      // in both languages; the longest Polish word sets every segment.
       (
         "ShortcutsPanel.swift", "Picker(\"Pointer indicator\"",
-        [polish["settings.holdBadge.size.off"], "4px", "8px", "12px"]
+        ["Off", "Small", "Medium", "Large"]
+      ),
+      (
+        "ShortcutsPanel.swift", "Picker(\"Pointer indicator\"",
+        [
+          polish["settings.holdBadge.size.off"], polish["settings.holdBadge.size.small"],
+          polish["settings.holdBadge.size.medium"], polish["settings.holdBadge.size.large"],
+        ]
       ),
       ("ShortcutsPanel.swift", "Picker(\"Agent channel modifier\"", ["Ctrl", "Fn"]),
     ]
