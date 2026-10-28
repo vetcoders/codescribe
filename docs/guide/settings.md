@@ -15,7 +15,9 @@ Amber is reserved for warnings that need action. Cloud privacy assurances,
 the safe choice not to grant cloud consent, enhanced capability labels,
 diagnostic environment overrides and tags on unused cached models use neutral
 ink. A failed model selection, missing or invalid selected-model files, and
-disk read or removal errors remain warnings.
+disk read or removal errors remain warnings. A verdict or a take still in
+flight (“Checking…”, “Starting recording…”, “Finishing recording…”) is a
+process state: neutral ink, no warning sign.
 
 **Start recording**, **Stop recording**, microphone-access actions,
 and Voice Lab disclosure toggles,

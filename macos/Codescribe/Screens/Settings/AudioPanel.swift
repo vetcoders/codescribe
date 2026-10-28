@@ -1,8 +1,11 @@
 import SwiftUI
 
+/// `pending` is a verdict or a take still in flight (checking, starting,
+/// finishing): a process state, never a warning, so it carries no glyph.
 enum AudioInputDisplayTone: Equatable {
   case healthy
   case neutral
+  case pending
   case fallback
   case unavailable
 }
@@ -239,7 +242,7 @@ func audioReadinessSteps(
   } else {
     calibration = AudioReadinessStep(
       id: .calibration,
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Checking calibration…"),
       detail: String(localized: "Reading the controller's measured profile.")
     )
@@ -301,7 +304,7 @@ func audioReadinessSteps(
   } else {
     sealLane = AudioReadinessStep(
       id: .sealLane,
-      tone: .fallback,
+      tone: .pending,
       title: sealLaneTitle,
       detail: String(localized: "Reading the current setting…")
     )
@@ -311,7 +314,7 @@ func audioReadinessSteps(
   if processing {
     recording = AudioReadinessStep(
       id: .recording,
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Finishing recording…"),
       detail: String(
         localized: "The shared recorder is processing this take. Wait before starting another.")
@@ -319,7 +322,7 @@ func audioReadinessSteps(
   } else if preparing {
     recording = AudioReadinessStep(
       id: .recording,
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Starting recording…"),
       detail: String(localized: "The shared recorder is preparing this take.")
     )
@@ -334,7 +337,7 @@ func audioReadinessSteps(
   } else if isRecording == nil {
     recording = AudioReadinessStep(
       id: .recording,
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Checking recording activity…"),
       detail: String(localized: "Waiting for the shared recorder's lifecycle.")
     )
@@ -359,7 +362,7 @@ func audioReadinessSteps(
   } else {
     recording = AudioReadinessStep(
       id: .recording,
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Checking recording readiness…"),
       detail: String(localized: "Waiting for the controller's admission verdict.")
     )
@@ -381,8 +384,9 @@ func audioReadinessSteps(
 /// Collapses the four prerequisites into the one line the panel shows. A
 /// healthy or in-flight state is a bare headline; a blocked one becomes the
 /// blocking prerequisite, its explanation and the single action that clears it.
-/// A `.fallback` prerequisite is only promoted when recording really cannot
-/// start — a system-fallback microphone is a notice on the microphone card.
+/// A `.fallback` or `.pending` prerequisite is only promoted when recording
+/// really cannot start — a system-fallback microphone is a notice on the
+/// microphone card.
 func audioReadinessSummary(
   input: CsAudioInputSnapshot,
   microphonePermission: PermissionState,
@@ -402,7 +406,7 @@ func audioReadinessSummary(
   )
   guard let recordingStep = steps.first(where: { $0.id == .recording }) else {
     return AudioReadinessSummary(
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Checking recording readiness…"),
       detail: nil,
       remedy: .none
@@ -419,7 +423,7 @@ func audioReadinessSummary(
   let blocker =
     prerequisites.first { $0.tone == .unavailable }
     ?? (admission == nil && recordingStep.tone != .healthy
-      ? prerequisites.first { $0.tone == .fallback } : nil)
+      ? prerequisites.first { $0.tone == .fallback || $0.tone == .pending } : nil)
 
   if let blocker {
     return AudioReadinessSummary(
@@ -490,7 +494,7 @@ func audioCalibrationFact(
   }
   guard let admission else {
     return AudioReadinessFact(
-      id: .calibration, label: label, value: audioReadinessCheckingValue(), tone: .fallback)
+      id: .calibration, label: label, value: audioReadinessCheckingValue(), tone: .pending)
   }
   if admission.calibrationVersion != nil, admission.calibrationStatus == "sealed" {
     return AudioReadinessFact(
@@ -531,7 +535,7 @@ func audioSealLaneFact(_ admission: CsAdmissionReadiness?) -> AudioReadinessFact
   let label = String(localized: "Committing fragments")
   guard let admission else {
     return AudioReadinessFact(
-      id: .sealLane, label: label, value: audioReadinessCheckingValue(), tone: .fallback)
+      id: .sealLane, label: label, value: audioReadinessCheckingValue(), tone: .pending)
   }
   if !admission.ready, admission.code == "admission_seal_vad_unavailable" {
     return AudioReadinessFact(
@@ -647,7 +651,7 @@ func sealLaneControlState(_ readiness: CsAdmissionReadiness?) -> SealLaneControl
 func admissionDisplayState(_ readiness: CsAdmissionReadiness?) -> AudioInputDisplayState {
   guard let readiness else {
     return AudioInputDisplayState(
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Checking acoustic admission…"),
       detail: String(localized: "Reading the controller's calibration and seal-lane verdict.")
     )
@@ -1016,7 +1020,7 @@ struct AudioPanel: View {
     recordingState: OverlayState?, tray: TrayViewModel?, stopRequested: Binding<Bool>
   ) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 10) {
-      if summary.tone != .healthy {
+      if summary.tone == .fallback || summary.tone == .unavailable {
         CSIconView(
           icon: .warning,
           size: 13,
@@ -1365,7 +1369,7 @@ struct AudioPanel: View {
   private func statusColor(_ tone: AudioInputDisplayTone) -> Color {
     switch tone {
     case .healthy: return CSColor.oliveLight
-    case .neutral: return CSColor.secondaryInk
+    case .neutral, .pending: return CSColor.secondaryInk
     case .fallback: return CSColor.amberLight
     case .unavailable: return CSColor.dangerLight
     }
