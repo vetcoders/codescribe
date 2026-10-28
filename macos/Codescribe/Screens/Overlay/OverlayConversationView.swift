@@ -174,6 +174,10 @@ struct OverlayConversationView: View {
   var onReply: ((OverlayConversationMessage) -> Void)? = nil
   var draftSyncChoices: [OverlayComposerSyncChoice] = []
   var draftSyncNames: [String] = []
+  var draftSyncArmed: Bool = false
+  var draftSyncEnabled: Bool = false
+  var onActivateDraftSync: (() -> Void)? = nil
+  var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
   var onToggleDraftSync: ((String) -> Void)? = nil
   var onStopDraftSync: (() -> Void)? = nil
   @State private var replyNavigationID: String?
@@ -413,7 +417,13 @@ struct OverlayConversationView: View {
           onRetryCaptureAttachments: onRetryCaptureAttachments,
           onNavigateReply: { navigateToReply(replySelection?.messageID) },
           draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
+          draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
+          onActivateDraftSync: onActivateDraftSync,
+          onProseEdit: onProseEdit,
           onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync)
+        // A reused native coordinator must never redirect an old owner's
+        // proposal or undo history into a different conversation's binding.
+        .id([conversation.id, conversation.owner?.id ?? ""])
         if let sendError { composerError(sendError) }
         if let playbackError {
           composerError(playbackError)

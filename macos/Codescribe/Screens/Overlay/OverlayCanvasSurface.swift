@@ -140,10 +140,8 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
 /// not a pill's: the header spans the full width at the very top, so a
 /// circular pill corner sat inside the canvas's `CSRadius.window` continuous
 /// clip and the two curves read as a cut-off right end (Founder, 2026-10-18).
-/// The composer floats inside the sheet with the same 22 pt corner: a capsule
-/// while it is one line tall, a rounded panel once it grows;
-/// the corner style is `.continuous` for both, the way every other shape on
-/// this canvas is drawn.
+/// Floating composers pass their dedicated 12 pt corner, so their curve stays
+/// the same as the editor grows. Both surfaces use the canvas's continuous style.
 struct OverlayControlGlass: ViewModifier {
   var cornerRadius: CGFloat = CSRadius.window
   var isEnabled = true

@@ -4882,16 +4882,6 @@
         }
       }
     },
-    "Choose the composers that share this draft. Send delivers to the linked agents." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wybierz kompozytory współdzielące szkic. Wysłanie dostarczy wiadomość połączonym agentom."
-          }
-        }
-      }
-    },
     "Choose the horizontal strip or floating vertical agent pills." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -8672,6 +8662,18 @@
         }
       }
     },
+    "Formatting was not applied" : {
+      "comment" : "Notice when the transcript is retained after formatting fails",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie nie zostało zastosowane"
+          }
+        }
+      }
+    },
     "Free motion" : {
       "comment" : "Overlay placement mode: the user drags freely",
       "localizations" : {
@@ -9525,6 +9527,16 @@
     "JetBrains Mono — meta 11" : {
       "shouldTranslate" : false
     },
+    "Join channel 0" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Dołącz do kanału 0"
+          }
+        }
+      }
+    },
     "Jump to current" : {
       "localizations" : {
         "pl" : {
@@ -9865,6 +9877,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uczyć słownik z poprawek?"
+          }
+        }
+      }
+    },
+    "Leave channel 0" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Opuść kanał 0"
           }
         }
       }
@@ -13446,22 +13468,6 @@
         }
       }
     },
-    "Paste files, images, or long text to attach a local copy." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Paste files, images, or long text to attach a local copy."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wklej plik, obraz lub dłuższy tekst, aby załączyć lokalną kopię."
-          }
-        }
-      }
-    },
     "Paste key…" : {
       "comment" : "Setup API key editor placeholder",
       "localizations" : {
@@ -16809,12 +16815,12 @@
         }
       }
     },
-    "Share typing and pasted attachments with this composer" : {
+    "Share future typing and pasted attachments with this composer" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Współdziel wpisywany tekst i wklejane załączniki z tym kompozytorem"
+            "value" : "Udostępniaj temu polu dalszy tekst i wklejane załączniki"
           }
         }
       }
@@ -18606,12 +18612,42 @@
         }
       }
     },
+    "Sync armed" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Oczekiwanie na drugie pole"
+          }
+        }
+      }
+    },
     "Sync draft" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Synchronizuj szkic"
+          }
+        }
+      }
+    },
+    "Sync linked" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Synchronizacja włączona"
+          }
+        }
+      }
+    },
+    "Sync off" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Synchronizacja wyłączona"
           }
         }
       }
@@ -19582,12 +19618,12 @@
         }
       }
     },
-    "This composer has a different draft or a pending delivery." : {
+    "This composer has a pending delivery or recording attachments." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Ten kompozytor ma inny szkic lub oczekuje na zakończenie wysyłania."
+            "value" : "To pole ma oczekującą wiadomość lub załączniki do nagrania."
           }
         }
       }
@@ -20180,6 +20216,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dostosuj skróty"
+          }
+        }
+      }
+    },
+    "Turn off do not disturb" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wyłącz „Nie przeszkadzać”"
           }
         }
       }
@@ -21632,6 +21678,18 @@
         }
       }
     },
+    "Your transcript is retained without the requested formatting." : {
+      "comment" : "Notice that the retained transcript does not use the requested formatting",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja została zachowana bez wybranego formatowania."
+          }
+        }
+      }
+    },
     "You’ll choose your dictation language later." : {
       "comment" : "Interface language is independent of speech recognition",
       "localizations" : {
@@ -22547,6 +22605,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "sformatowano"
+          }
+        }
+      }
+    },
+    "formatting not applied" : {
+      "comment" : "Status of a transcript delivered without the requested formatting",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "formatowanie niezastosowane"
           }
         }
       }

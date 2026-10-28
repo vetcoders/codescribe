@@ -30,17 +30,18 @@ enum OverlayHeaderAccent {
   static let selectedHoverWash = 0.42
 }
 
-/// Hover chrome of a header control: a hairline ring in the control's accent
-/// and the action pill's hint. In mini and compact form the header is the
-/// whole 46 pt window, so a hint cannot sit inside the panel the way the
-/// pill's sits above the canvas; it floats just below the control in a
-/// click-through child window of the overlay panel. A nil accent keeps the
-/// hint without the ring (the close dot has its own hover). A selected control
+/// Hover chrome of a header control: stronger rendered ink, a hairline ring
+/// in the control's accent and the action pill's hint. In mini and compact
+/// form the header is the whole 46 pt window, so a hint cannot sit inside the
+/// panel the way the pill's sits above the canvas; it floats just below the
+/// control in a click-through child window. A nil accent keeps only the hint
+/// (the close dot has its own hover). A selected control
 /// sits on a pastel wash of its mode's colour; the pointer deepens the wash
 /// and draws the ring in that colour, so a chosen control still answers hover.
 struct OverlayHeaderControlChrome: ViewModifier {
   @Environment(\.displayScale) private var displayScale
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.isEnabled) private var isEnabled
   let title: String
   let accent: OverlayHeaderAccent?
   let palette: OverlayAppearancePalette
@@ -57,14 +58,22 @@ struct OverlayHeaderControlChrome: ViewModifier {
 
   func body(content: Content) -> some View {
     let selection: Color? = selected ? accent?.selectionTint(in: palette) : nil
-    let hoverTint: Color? = hovered ? (selection ?? accent?.color(in: palette).opacity(0.8)) : nil
+    let emphasizesInk = isEnabled && hovered && accent != nil
+    let hoverTint: Color? =
+      emphasizesInk ? (selection ?? accent?.color(in: palette).opacity(0.8)) : nil
     content
+      // Glyphs own their semantic tint. Emphasize their rendered pixels so
+      // even an explicit inner foregroundStyle responds, without replacing
+      // terracotta, violet or status hues with a chrome colour. Nil-accent
+      // tooltip anchors remain hint-only, including the disabled recorder.
+      .brightness(emphasizesInk ? (palette.appearance == .dark ? 0.12 : -0.12) : 0)
       .background {
         if let selection {
           Circle()
             .fill(
               selection.opacity(
-                hovered ? OverlayHeaderAccent.selectedHoverWash : OverlayHeaderAccent.selectedWash)
+                emphasizesInk
+                  ? OverlayHeaderAccent.selectedHoverWash : OverlayHeaderAccent.selectedWash)
             )
             .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
             .allowsHitTesting(false)

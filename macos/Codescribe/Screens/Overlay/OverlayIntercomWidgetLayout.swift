@@ -162,17 +162,18 @@ struct IntercomContentMetrics: Equatable {
     let scale = nameFontSize / 11
     if compactPreviewLayout(width: width, cardHeight: cardHeight) != nil { return .preview }
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return .header }
-    // The context now shares the name's header block instead of consuming
-    // another row below it. A small height increase reveals that second line.
-    if cardHeight > OverlayIntercomWidgetLayout.controlHeight(scale: scale) + 2 * scale {
+    // Metadata gets a full-width line of its own, outside the name's hit area.
+    if cardHeight >= OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      + OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
+    {
       return .context
     }
     return .header
   }
 
-  /// Header metadata consumes no separate body row. A short scrollable preview
-  /// appears first; the compact shared input follows as soon as its actual
-  /// controls and a line of conversation fit. There is no arbitrary card-size gate.
+  /// A short preview precedes the input. Mounting the complete conversation
+  /// also needs its route, footer, bubble/list insets and readable message text;
+  /// a bare line left above the editor cannot accommodate that renderer.
   func compactPreviewLayout(width: CGFloat, cardHeight: CGFloat) -> IntercomCompactPreviewLayout? {
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return nil }
     let scale = nameFontSize / 11
@@ -182,25 +183,32 @@ struct IntercomContentMetrics: Equatable {
     let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
     let contextFont = NSFont.systemFont(ofSize: 10 * scale)
     let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
-    let available = cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-    let minimum = lineHeight + metadataLine
+    let available =
+      cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      - OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
+    let minimum =
+      lineHeight + metadataLine
       + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
       + OverlayIntercomWidgetLayout.compactPreviewSpacing
     guard available >= minimum else { return nil }
     let editorHeightLimit = 28 * scale
-    let composerHeight = max(
-      ComposerControlMetrics.intercomMinimumHeight,
-      editorHeightLimit + 2 * ComposerControlMetrics.intercomVerticalPadding
-    ) + 14 // ConversationView's 6pt top and Intercom's 8pt bottom insets.
-    let inputFont = NSFont.systemFont(ofSize: ComposerControlMetrics.textSize * scale)
-    let inputWidth = ceil(("Message" as NSString).size(withAttributes: [.font: inputFont]).width)
-    // Three real 28pt controls, their gaps, the editor and both layers of padding.
-    let composerWidth = inputWidth + 3 * ComposerControlMetrics.hitTargetSize
-      + 3 * ComposerControlMetrics.intercomSpacing
-      + 2 * ComposerControlMetrics.intercomHorizontalPadding + 24
+    // The shared composer owns the stacked editor/action-row measurements.
+    // Only ConversationView's external insets belong to this admission gate.
+    let composerHeight =
+      ComposerControlMetrics.intercomComposerHeight(
+        editorHeight: editorHeightLimit, scale: scale) + 6 + 8
+    let composerWidth = ComposerControlMetrics.intercomComposerMinimumWidth(scale: scale) + 2 * 12
+    // The full renderer caps its bubbles more narrowly than the passive preview.
+    // Preserve a readable text measure inside the bubble's own 12pt padding too.
+    let readableConversationWidth =
+      OverlayConversationView.bubbleCap(
+        contentWidth: width, textScale: scale) - 2 * 12
     return IntercomCompactPreviewLayout(
       height: available,
-      showsComposer: width >= composerWidth && available >= lineHeight + composerHeight,
+      showsComposer: width >= composerWidth
+        && readableConversationWidth >= readableWidth
+        && available >= OverlayIntercomWidgetLayout.minimumReadableConversationHeight(scale: scale)
+          + composerHeight,
       composerEditorHeightLimit: editorHeightLimit)
   }
 
@@ -255,6 +263,21 @@ enum OverlayIntercomWidgetLayout {
   static let gap: CGFloat = 4
 
   static func controlHeight(scale: CGFloat) -> CGFloat { rowHeight * max(1, scale) }
+
+  static func contextStripHeight(scale: CGFloat) -> CGFloat {
+    ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 10 * scale))) + 6
+  }
+
+  /// OverlayConversationView.messageBubble: route + two prose lines + footer,
+  /// 5pt between its three sections and 12pt padding on either edge. The list
+  /// adds 8pt top/bottom, 12pt before its 1pt bottom anchor. Optional taller content
+  /// still scrolls; this is the same reading budget used by the input gate.
+  static func minimumReadableConversationHeight(scale: CGFloat) -> CGFloat {
+    let layout = NSLayoutManager()
+    let body = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 13 * scale)))
+    let metadata = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
+    return 2 * body + 2 * metadata + 2 * 5 + 2 * 12 + 2 * 8 + 12 + 1
+  }
 
   /// One corner for the header, every row and a mini fiszka. A radius of half
   /// the row turned a two-line card into a stadium (Maciej, 2026-10-23:

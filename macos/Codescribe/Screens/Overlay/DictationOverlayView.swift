@@ -619,6 +619,10 @@ struct DictationOverlayView: View {
                 },
                 draftSyncChoices: state.draftSyncChoices(for: conversation),
                 draftSyncNames: state.draftSyncNames(for: conversation.id),
+                draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
+                draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
+                onActivateDraftSync: { state.activateDraftSync(for: conversation.id) },
+                onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
                 onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
                 onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
               )
@@ -1091,8 +1095,8 @@ struct DictationOverlayView: View {
         .contentShape(Circle().inset(by: -7.5))
     }
     .buttonStyle(.plain)
-    .onHover {
-      closeDotHovered = $0
+    .background {
+      OverlayMenuCursorRegion { closeDotHovered = $0 }
     }
     .animation(
       reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered

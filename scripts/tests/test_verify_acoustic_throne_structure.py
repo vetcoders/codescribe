@@ -3277,6 +3277,15 @@ class CurrentDeliveryProjectionMutantTests(unittest.TestCase):
     def test_current_delivery_and_projection_chains_pass(self):
         self.assertEqual(self.positive_failures, [])
 
+    def test_rail_slot_dispatch_cannot_be_removed_from_the_rendered_chain(self):
+        path = "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift"
+        self.assertTrue(self.run_mutated(
+            "OverlayIntentRail", path, "mountedControl(slot)", "EmptyView()"
+        ))
+        self.assertTrue(self.run_mutated(
+            "mountedControl", path, "intentControl(intent)", "EmptyView()"
+        ))
+
     def test_tail_patch_retains_exact_owners_and_rejects_a_fourth_constructor(self):
         literal = "TailPatchRequest {"
         manifest = json.loads((self.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
