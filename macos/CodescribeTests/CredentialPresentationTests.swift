@@ -55,10 +55,11 @@ final class CredentialPresentationTests: XCTestCase {
         "global key-status flags cannot impersonate this provider's credential")
       XCTAssertEqual(engine.keyWrites, 0)
       // An account and a key are alternatives: whichever is missing reads
-      // "Optional" once the other covers the provider.
+      // "Optional" once the other covers the provider. A stored account says
+      // "Saved" like a stored key; the row label already names the account.
       XCTAssertEqual(
         model.selectedProviderAccountStatus,
-        account ? "Account saved" : (key ? "Optional" : "Not connected"))
+        account ? "Saved" : (key ? "Optional" : "Not connected"))
       XCTAssertEqual(
         model.selectedProviderKeyStatus, key ? "Saved" : (account ? "Optional" : "Not set"))
       engine.provider.accountSignedIn = !account

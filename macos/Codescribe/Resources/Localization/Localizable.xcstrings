@@ -2237,17 +2237,6 @@
         }
       }
     },
-    "Account saved" : {
-      "comment" : "Setup Agent account row status",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Konto zapisane"
-          }
-        }
-      }
-    },
     "Acoustic evidence" : {
       "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
       "localizations" : {
@@ -16333,7 +16322,7 @@
       }
     },
     "Saved" : {
-      "comment" : "Lane auth: stored account identity\nSetup API key row status",
+      "comment" : "Lane auth: stored account identity\nSetup API key row status\nSetup Agent account row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {

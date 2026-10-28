@@ -852,7 +852,7 @@ final class OnboardingViewModel: ObservableObject {
     if selectedProviderAccountConnected {
       return String(
         localized: LocalizedStringResource(
-          "Account saved", locale: interfaceLocale,
+          "Saved", locale: interfaceLocale,
           comment: "Setup Agent account row status"))
     }
     // A stored key already covers this provider, so the account is an extra.
