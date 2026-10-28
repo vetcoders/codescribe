@@ -2,12 +2,12 @@
 
 ## System Requirements
 
-| Requirement | Minimum                           | Recommended              |
-| ----------- | --------------------------------- | ------------------------ |
-| macOS       | 26.0 (Tahoe)                      | 26.0+ (Tahoe)           |
-| Chip        | Apple Silicon (M1 or later)       | Apple Silicon (M1 or later) |
-| RAM         | 8 GB                              | 16 GB                    |
-| Disk        | 1 GB                              | 2 GB                     |
+| Requirement | Minimum                     | Recommended                 |
+| ----------- | --------------------------- | --------------------------- |
+| macOS       | 26.0 (Tahoe)                | 26.0+ (Tahoe)               |
+| Chip        | Apple Silicon (M1 or later) | Apple Silicon (M1 or later) |
+| RAM         | 8 GB                        | 16 GB                       |
+| Disk        | 1 GB                        | 2 GB                        |
 
 ---
 
