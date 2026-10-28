@@ -302,12 +302,13 @@ struct LicenseSection: View {
       Spacer(minLength: CSSpace.md)
 
       if hasKey {
-        Button("Remove key", role: .destructive) {
+        SettingsChipButton {
           Task { @MainActor in await model.removeLicense() }
+        } label: {
+          Text("Remove key")
+            .font(SettingsScale.controlLabel)
+            .foregroundStyle(CSColor.dangerLight)
         }
-        .csFocusRing()
-        .font(SettingsScale.controlLabel)
-        .foregroundStyle(CSColor.dangerLight)
         .disabled(model.licenseBusy)
       }
     }

@@ -3533,6 +3533,16 @@
         }
       }
     },
+    "Attach files…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dołącz pliki…"
+          }
+        }
+      }
+    },
     "Attach images to send to the Agent" : {
       "localizations" : {
         "pl" : {
@@ -5837,6 +5847,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wykonaj krok 1 przed pomiarem tego wejścia."
+          }
+        }
+      }
+    },
+    "Composer actions" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Akcje pola wiadomości"
           }
         }
       }

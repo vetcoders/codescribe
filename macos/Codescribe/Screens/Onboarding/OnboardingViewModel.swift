@@ -213,7 +213,7 @@ final class OnboardingViewModel: ObservableObject {
 
   /// The bar follows the same visible fraction as the counter.
   var progressFraction: Double {
-    Double(visibleStepNumber - 1) / Double(max(1, visibleStepCount - 1))
+    Double(visibleStepNumber) / Double(max(1, visibleStepCount))
   }
 
   var isDone: Bool { step == .done }

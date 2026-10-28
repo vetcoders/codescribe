@@ -512,10 +512,8 @@ struct CustomProviderForm: View {
       }
       HStack(spacing: 10) {
         Spacer()
-        Button("Cancel") { dismiss() }
-          .disabled(saving)
+        SettingsSaveButton(title: "Cancel", enabled: !saving) { dismiss() }
           .keyboardShortcut(.cancelAction)
-          .csFocusRing()
         SettingsSaveButton(
           title: isEdit ? "Save changes" : "Add provider", enabled: canSave, action: save
         )
