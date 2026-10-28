@@ -25,7 +25,7 @@ struct ProvidersPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        String(localized: "Providers"),
+        SettingsSection.keys.title,
         blurb: String(
           localized: "Connect accounts or add API keys. Models are chosen under Agent › AI models.",
           comment: "Providers panel blurb; `AI models` is the Agent tab title")

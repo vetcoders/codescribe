@@ -33,8 +33,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
   }
 
-  /// Segment label. Short on purpose: six of them share one tab bar, and they
-  /// should fit the pane at the 880pt minimum window. Each segment hugs its own
+  /// Segment label, and the page title under the tab bar: a tabbed page is
+  /// headed by the name of the tab the user clicked, read from this one key,
+  /// so the two cannot drift apart (Founder decision, 2026-10-29). Short on
+  /// purpose: six of them share one tab bar, and they should fit the pane at
+  /// the 880pt minimum window. Each segment hugs its own
   /// label, so one long title no longer sets the width of all six; when the six
   /// still do not fit, `SettingsTabBar` scrolls horizontally instead of widening
   /// the pane, so a long translation costs a scroll, never a clipped pane.
@@ -58,23 +61,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
   }
 
-  /// The page title under the tab bar. Where it is the tab's own name, it is
-  /// read from `title`, so the page is headed by the name the user clicked
-  /// and the two cannot drift apart.
-  var headline: String {
-    switch self {
-    case .agentLanes: String(localized: "Model configuration.")
-    case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
-    case .agentWorkspace, .agentStatus, .dictationEngine, .dictationWhisper, .dictationPreview:
-      title
-    case .agentTools: String(localized: "Tool permissions")
-    case .agentMcp: String(localized: "MCP servers")
-    case .dictationPrivacy: CloudPrivacyCopy.title
-    }
-  }
-
-  /// `nil` where the headline and the pane say enough on their own (Founder
-  /// brief, 2026-10-20: minimum text).
+  /// The sentence under the tab's title. `nil` where the title and the pane
+  /// say enough on their own (Founder brief, 2026-10-20: minimum text).
   var blurb: String? {
     switch self {
     case .agentLanes:

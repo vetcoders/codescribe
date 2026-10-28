@@ -29,7 +29,7 @@ struct UserPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        String(localized: "User", comment: "User panel header"),
+        SettingsSection.user.title,
         blurb: String(
           localized: "Your license, Codescribe version, local data and privacy.",
           comment: "User panel blurb")

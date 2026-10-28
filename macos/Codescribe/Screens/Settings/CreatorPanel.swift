@@ -21,7 +21,13 @@ struct CreatorPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsPageHeader(String(localized: "Get set up"))
+      // Headed by the sidebar name; what the page is for is the line under it.
+      SettingsPageHeader(
+        SettingsSection.creator.title,
+        blurb: String(
+          localized: "Get Codescribe ready to work.",
+          comment: "Creator page blurb under the sidebar name")
+      )
 
       // The wizard's only entry after first run: the tray row that used to
       // open it is gone (Founder, 2026-10-20), so the Creator offers it here.

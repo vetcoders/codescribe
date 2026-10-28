@@ -316,7 +316,6 @@ final class SettingsTruthTests: XCTestCase {
     )
     for tab in SettingsTab.allCases {
       XCTAssertFalse(tab.title.isEmpty)
-      XCTAssertFalse(tab.headline.isEmpty)
       if let blurb = tab.blurb { XCTAssertFalse(blurb.isEmpty, "\(tab)") }
       XCTAssertFalse(tab.searchKeywords.isEmpty)
       XCTAssertTrue(SettingsTab.tabs(in: tab.section).contains(tab))
@@ -2525,7 +2524,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(pane.contains("preferredColorScheme"))
     XCTAssertTrue(pane[..<scroll.lowerBound].contains("Divider()"))
     XCTAssertTrue(
-      pane[scroll.lowerBound...].contains("SettingsPageHeader(tab.headline, blurb: tab.blurb)"))
+      pane[scroll.lowerBound...].contains("SettingsPageHeader(tab.title, blurb: tab.blurb)"))
     XCTAssertTrue(pane[scroll.lowerBound...].contains(".id(model.currentTab)"))
 
     let detail = try settingsLayoutSource("SettingsView.swift")

@@ -111,6 +111,52 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertGreaterThan(joined.components(separatedBy: ".settingsGroupedInset(").count, 2)
   }
 
+  /// One rule heads every Settings page (Founder decision, 2026-10-29): a
+  /// tabbed page is headed by the active tab's name, every other page by its
+  /// sidebar name. Both come from the key the user clicked, never from a
+  /// second text, so the heading cannot drift from the sidebar or the tab bar.
+  /// A descriptive line that still carries meaning is the blurb under it.
+  func testEveryPageIsHeadedByTheNameTheUserClicked() throws {
+    let sources = try settingsSources()
+    let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
+    XCTAssertTrue(pane.contains("SettingsPageHeader(tab.title, blurb: tab.blurb)"))
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertFalse(tab.contains("var headline"), "a tab has one name, not a second headline")
+
+    let headers: [(file: String, header: String)] = [
+      ("CreatorPanel.swift", "SettingsPageHeader(\n        SettingsSection.creator.title,"),
+      ("ShortcutsPanel.swift", "SettingsPageHeader(SettingsSection.shortcuts.title)"),
+      ("ProvidersPanel.swift", "SettingsPageHeader(\n        SettingsSection.keys.title,"),
+      ("AudioPanel.swift", "SettingsPageHeader(\n        SettingsSection.audio.title,"),
+      ("VoiceLabPanel.swift", "SettingsPageHeader(SettingsSection.voiceLab.title)"),
+      ("LabPanel.swift", "SettingsPageHeader(\n        SettingsSection.lab.title,"),
+      ("UserPanel.swift", "SettingsPageHeader(\n        SettingsSection.user.title,"),
+    ]
+    for (file, header) in headers {
+      let source = try XCTUnwrap(sources[file], file)
+      XCTAssertTrue(source.contains(header), "\(file) is not headed by its sidebar name")
+      XCTAssertEqual(
+        source.components(separatedBy: "SettingsPageHeader(").count, 2,
+        "\(file) has exactly one page header")
+    }
+    let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
+    XCTAssertTrue(creator.contains("localized: \"Get Codescribe ready to work.\""))
+
+    let polish = try polishCatalog()
+    XCTAssertEqual(polish["Get Codescribe ready to work."], "Przygotuj Codescribe do pracy.")
+    XCTAssertEqual(polish["Creator"], "Kreator")
+    XCTAssertEqual(polish["Dictionary"], "Słownik")
+    XCTAssertEqual(polish["AI models"], "Modele AI")
+    XCTAssertEqual(polish["Tools"], "Narzędzia")
+    XCTAssertEqual(polish["Privacy"], "Prywatność")
+    for retired in [
+      "Get set up", "Dictionary and corrections", "Model configuration.", "Tool permissions",
+      "Cloud & privacy",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
   /// The six tabs of a tabbed section fit the narrowest detail column, in
   /// English and in Polish. A language that breaks this still gets the
   /// scrolling bar, but the label is then too long and should be shortened
@@ -376,7 +422,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let boundProviderAdvancedCount =
       panel.components(separatedBy: "DisclosureGroup(isExpanded: $showingAdvanced)").count - 1
     XCTAssertEqual(nativeAdvancedCount + boundProviderAdvancedCount, 2)
-    XCTAssertTrue(panel.contains("String(localized: \"Providers\")"))
+    XCTAssertTrue(panel.contains("SettingsSection.keys.title,"))
     XCTAssertFalse(panel.contains("\"Providers.\""))
     XCTAssertFalse(panel.contains("factory endpoint"))
     XCTAssertFalse(panel.contains("SettingsSectionLabel(String(localized: \"Vendors\"))"))
@@ -519,7 +565,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
     XCTAssertTrue(tab.contains("String(localized: \"AI models\""))
-    XCTAssertTrue(tab.contains("case .agentLanes: String(localized: \"Model configuration.\")"))
+    XCTAssertFalse(tab.contains("Model configuration."), "the tab is headed by its name")
     XCTAssertFalse(tab.contains("\"LLM lanes\""))
 
     let panel = try XCTUnwrap(sources["AgentPanel.swift"])
@@ -581,7 +627,6 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "AI models": "Modele AI",
-      "Model configuration.": "Konfiguracja modeli",
       "Choose the Agent and formatting models. Accounts and keys live under Providers.":
         "Wybierz modele Agenta i formatowania. Konta i klucze ustawisz w Dostawcach.",
       "Assistive": "Agent",
@@ -811,8 +856,7 @@ final class SettingsChromeContractTests: XCTestCase {
   func testToolsTabReadsAsAPermissionScreen() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
-    XCTAssertTrue(tab.contains("case .agentTools: String(localized: \"Tool permissions\")"))
-    XCTAssertFalse(tab.contains("\"Tool permissions.\""))
+    XCTAssertFalse(tab.contains("\"Tool permissions"), "the tab is headed by its name, Tools")
     XCTAssertFalse(tab.contains("Deny wins over everything"))
     XCTAssertTrue(tab.contains("\"Choose when the Agent may use tools.\""))
 
@@ -874,7 +918,6 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
-      "Tool permissions": "Uprawnienia narzędzi",
       "Choose when the Agent may use tools.": "Wybierz, kiedy Agent może korzystać z narzędzi.",
       "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent.":
         "Najpierw obowiązują ustawienia narzędzia, potem serwera, na końcu domyślne. Operacje destrukcyjne są zablokowane. Dostęp do miejsc mogących zawierać sekrety wymaga zgody.",
@@ -901,7 +944,8 @@ final class SettingsChromeContractTests: XCTestCase {
       XCTAssertEqual(polish[key], value, key)
     }
     for retired in [
-      "Tool permissions.", "Allow, ask, or deny — per tool. Deny wins over everything.",
+      "Tool permissions", "Tool permissions.",
+      "Allow, ask, or deny — per tool. Deny wins over everything.",
       "Per-tool permissions · %lld", "%lld tool sources", "Unclassified tools",
       "Search server or tool",
       "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.",
@@ -1037,8 +1081,7 @@ final class SettingsChromeContractTests: XCTestCase {
   func testMcpTabReadsAsAServerScreen() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
-    XCTAssertTrue(tab.contains("case .agentMcp: String(localized: \"MCP servers\")"))
-    XCTAssertFalse(tab.contains("\"MCP servers.\""))
+    XCTAssertFalse(tab.contains("\"MCP servers"), "the tab is headed by its name, MCP")
     XCTAssertFalse(
       tab.contains("\"Add MCP servers and manage the tools the Agent may use.\""),
       "the MCP pane opens on the form (views review, 2026-10-20)")
@@ -1330,7 +1373,7 @@ final class SettingsChromeContractTests: XCTestCase {
   func testUserPaneReadsAsTheUserTheAppAndItsData() throws {
     let sources = try settingsSources()
     let panel = try XCTUnwrap(sources["UserPanel.swift"])
-    XCTAssertTrue(panel.contains("String(localized: \"User\", comment: \"User panel header\")"))
+    XCTAssertTrue(panel.contains("SettingsSection.user.title,"))
     XCTAssertTrue(panel.contains("\"Your license, Codescribe version, local data and privacy.\""))
     // The license is a section of this pane, first in the column, not a tab.
     XCTAssertTrue(panel.contains("LicenseSection(model: model)"))
@@ -1464,7 +1507,7 @@ final class SettingsChromeContractTests: XCTestCase {
   /// compared stage by stage, and a Learn action that states its scope first.
   func testDictionaryPaneReadsAsCorrectionsAndRules() throws {
     let panel = try XCTUnwrap(try settingsSources()["VoiceLabPanel.swift"])
-    XCTAssertTrue(panel.contains("String(localized: \"Dictionary and corrections\")"))
+    XCTAssertTrue(panel.contains("SettingsPageHeader(SettingsSection.voiceLab.title)"))
     // Round 2 (UI-43): no intro sentence under the Dictionary headline.
     XCTAssertFalse(panel.contains("\"Browse corrections and dictionary rules.\""))
     XCTAssertFalse(panel.contains("dictionaryHeadline("), "no dynamic multi-line headline")
@@ -1531,7 +1574,6 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
-      "Dictionary and corrections": "Słownik i poprawki",
       "Changes in the transcript": "Zmiany w transkrypcji",
       "Corrected text": "Poprawiony tekst",
       "Learn from corrections": "Ucz z poprawek",

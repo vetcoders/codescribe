@@ -5214,16 +5214,6 @@
         }
       }
     },
-    "Cloud & privacy" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Chmura i prywatność"
-          }
-        }
-      }
-    },
     "Cloud STT pass over the last session audio" : {
       "localizations" : {
         "pl" : {
@@ -7500,16 +7490,6 @@
         }
       }
     },
-    "Dictionary and corrections" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Słownik i poprawki"
-          }
-        }
-      }
-    },
     "Dictionary rules" : {
       "localizations" : {
         "pl" : {
@@ -8960,22 +8940,29 @@
         }
       }
     },
+    "Get Codescribe ready to work." : {
+      "comment" : "Creator page blurb under the sidebar name",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Get Codescribe ready to work."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przygotuj Codescribe do pracy."
+          }
+        }
+      }
+    },
     "Get license key" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Uzyskaj klucz"
-          }
-        }
-      }
-    },
-    "Get set up" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przygotuj Codescribe do pracy"
           }
         }
       }
@@ -11170,16 +11157,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Model"
-          }
-        }
-      }
-    },
-    "Model configuration." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Konfiguracja modeli"
           }
         }
       }
@@ -20162,16 +20139,6 @@
         }
       }
     },
-    "Tool permissions" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Uprawnienia narzędzi"
-          }
-        }
-      }
-    },
     "Tool permissions are managed in the Tools tab." : {
       "localizations" : {
         "pl" : {
@@ -20911,7 +20878,7 @@
       }
     },
     "User" : {
-      "comment" : "Settings section: license, app version, local data and resets\nUser panel header",
+      "comment" : "Settings section: license, app version, local data and resets",
       "localizations" : {
         "pl" : {
           "stringUnit" : {

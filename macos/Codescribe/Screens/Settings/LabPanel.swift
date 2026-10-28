@@ -11,7 +11,7 @@ struct LabPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       SettingsPageHeader(
-        String(localized: "Voice Lab"),
+        SettingsSection.lab.title,
         blurb: labMode
           ? String(
             localized: "Lab mode is on. Overlay follows the tray toggle — Lab does not steal it.")

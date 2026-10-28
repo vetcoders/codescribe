@@ -484,9 +484,7 @@ struct VoiceLabPanel: View {
   private var header: some View {
     HStack(alignment: .top, spacing: CSSpace.md) {
       VStack(alignment: .leading, spacing: 0) {
-        SettingsPageHeader(
-          String(localized: "Dictionary and corrections")
-        )
+        SettingsPageHeader(SettingsSection.voiceLab.title)
         countersRow
           .padding(.top, CSSpace.sm)
         if let teachMsg = model.voiceLabTeachMessage {

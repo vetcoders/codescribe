@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The one grammar for every settings pane that outgrew a single scroll: a
-/// pinned segmented tab bar, then the selected tab's headline, blurb and
+/// pinned segmented tab bar, then the selected tab's title, blurb and
 /// content. The sidebar already names the section, so the pane does not
 /// repeat it.
 struct SettingsTabbedPane<Content: View>: View {
@@ -21,7 +21,7 @@ struct SettingsTabbedPane<Content: View>: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 0) {
           if let tab = model.currentTab {
-            SettingsPageHeader(tab.headline, blurb: tab.blurb)
+            SettingsPageHeader(tab.title, blurb: tab.blurb)
           }
 
           content
