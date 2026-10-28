@@ -116,8 +116,6 @@ struct OverlayConversationComposer: View {
     }
   }
 
-
-
   /// The editor holds the prose; pasted attachments ride as pills.
   private var prose: Binding<String> {
     Binding(
@@ -344,7 +342,7 @@ struct OverlayConversationComposer: View {
       hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
     )
     .disabled(sending)
-    .help(Text(verbatim: showsDraftSync ? draftSyncHelp : String(localized: "Attach")))
+    .overlayFastHint(composerPlusHint, palette: palette)
     .accessibilityLabel(Text("Composer actions"))
     .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
     .accessibilityIdentifier("overlay-conversation-plus")
@@ -361,14 +359,16 @@ struct OverlayConversationComposer: View {
     return status + ": " + draftSyncNames.joined(separator: " · ")
   }
 
-  private var draftSyncHelp: String {
+  /// The hint names the menu, not one of its entries; sync state rides along
+  /// so an armed or linked composer explains its tinted plus.
+  private var composerPlusHint: String {
+    let base = String(localized: "Composer actions")
     if draftSyncArmed {
-      return String(localized: "Sync armed")
+      return base + " · " + String(localized: "Sync armed")
     } else if draftSyncNames.count > 1 {
-      return String(localized: "Stop syncing")
-    } else {
-      return String(localized: "Sync draft")
+      return base + " · " + String(localized: "Sync linked")
     }
+    return base
   }
 
   var draftMicrophoneAccessibilityLabel: String {
@@ -440,7 +440,7 @@ struct OverlayConversationComposer: View {
             )
             .scaleEffect(microphoneHint.visible && !reduceMotion ? 1.18 : 1)
             .disabled(draftMicrophoneBusy)
-            .help(Text(verbatim: draftMicrophoneAccessibilityLabel))
+            .overlayFastHint(draftMicrophoneAccessibilityLabel, palette: palette)
             .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
             .accessibilityIdentifier("overlay-conversation-draft-microphone")
           }
@@ -456,9 +456,10 @@ struct OverlayConversationComposer: View {
             )
             .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .accessibilityIdentifier("overlay-conversation-send")
-            .help(
+            .overlayFastHint(
               draftSyncNames.count > 1
-                ? String(localized: "Send to all linked agents") : String(localized: "Send"))
+                ? String(localized: "Send to all linked agents") : String(localized: "Send"),
+              palette: palette)
         }
       }
     }
@@ -613,7 +614,7 @@ struct OverlayComposerAttachmentPill: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .help("Preview attachment")
+      .overlayFastHint(String(localized: "Preview attachment"), palette: palette)
       .accessibilityIdentifier("overlay-conversation-attachment-preview")
       Button(action: onRemove) {
         Image(systemName: "xmark")
@@ -623,7 +624,7 @@ struct OverlayComposerAttachmentPill: View {
           .contentShape(Circle())
       }
       .buttonStyle(.plain)
-      .help("Remove attachment")
+      .overlayFastHint(String(localized: "Remove attachment"), palette: palette)
       .accessibilityLabel("Remove attachment")
       .accessibilityIdentifier("overlay-conversation-attachment-remove")
     }
