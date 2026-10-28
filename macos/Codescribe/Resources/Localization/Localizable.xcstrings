@@ -246,7 +246,7 @@
       }
     },
     "%@ s" : {
-      "comment" : "Preview timing value: an interval in seconds. The placeholder is a formatted number\nSlider value in seconds. The placeholder is the number; keep the unit abbreviated",
+      "comment" : "A duration in seconds. The placeholder is a formatted number\nPreview timing value: an interval in seconds. The placeholder is a formatted number\nSlider value in seconds. The placeholder is the number; keep the unit abbreviated",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1220,6 +1220,7 @@
       }
     },
     "%lld min" : {
+      "comment" : "A duration in minutes. The placeholder is a whole number",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1550,7 +1551,7 @@
       }
     },
     "%lld s" : {
-      "comment" : "Overlay header menu: auto-fold interval in seconds",
+      "comment" : "A duration in seconds. The placeholder is a whole number",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3271,6 +3272,16 @@
         }
       }
     },
+    "Another sign-in replaced this one." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inne logowanie zastąpiło to logowanie."
+          }
+        }
+      }
+    },
     "Answered, text unchanged" : {
       "comment" : "Formatting test verdict",
       "localizations" : {
@@ -3529,6 +3540,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Załączanie dodatkowego kontekstu"
+          }
+        }
+      }
+    },
+    "Attach files…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Dołącz pliki…"
           }
         }
       }
@@ -3960,6 +3981,7 @@
       }
     },
     "Built-in Agent" : {
+      "comment" : "AI models section: the built-in Agent's timers",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5340,17 +5362,6 @@
         }
       }
     },
-    "Codescribe Bus" : {
-      "comment" : "AI models section: the two bus timers",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Codescribe Bus"
-          }
-        }
-      }
-    },
     "Codescribe also refreshes its own commands in ~/.local/bin; a command it did not install is never overwritten. No listener is started." : {
       "comment" : "Install confirmation; ~/.local/bin is a folder path — keep it verbatim",
       "localizations" : {
@@ -5837,6 +5848,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wykonaj krok 1 przed pomiarem tego wejścia."
+          }
+        }
+      }
+    },
+    "Composer actions" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Akcje pola wiadomości"
           }
         }
       }
@@ -8039,6 +8060,7 @@
       }
     },
     "End the session" : {
+      "comment" : "Channel session policy: one message per press",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8705,7 +8727,7 @@
       }
     },
     "Formatting" : {
-      "comment" : "Request lane: transcript cleanup",
+      "comment" : "Channel message finish: one formatter pass\nRequest lane: transcript cleanup",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9776,6 +9798,7 @@
       }
     },
     "Keep listening" : {
+      "comment" : "Channel session policy: continuous conversation",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11668,7 +11691,7 @@
       }
     },
     "Never" : {
-      "comment" : "Overlay header menu: an expanded overlay never folds itself",
+      "comment" : "Channel close without voice: never",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -12784,12 +12807,32 @@
         }
       }
     },
+    "OAuth" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OAuth"
+          }
+        }
+      }
+    },
     "OAuth client id…" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Identyfikator klienta OAuth…"
+          }
+        }
+      }
+    },
+    "OAuth — not signed in" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OAuth — niezalogowano"
           }
         }
       }
@@ -13773,6 +13816,7 @@
       }
     },
     "Pause %@" : {
+      "comment" : "Channel chain step. The placeholder is a duration such as '5 s'",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14391,6 +14435,7 @@
       }
     },
     "Punctuation (Light+)" : {
+      "comment" : "Channel message finish: end punctuation",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16315,6 +16360,16 @@
         }
       }
     },
+    "Save the server, then use Sign in on its row — the browser opens like for provider accounts." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisz serwer, a potem użyj Zaloguj się w jego wierszu — przeglądarka otworzy się jak przy kontach dostawców."
+          }
+        }
+      }
+    },
     "Saved" : {
       "comment" : "Setup API key row status",
       "localizations" : {
@@ -17423,12 +17478,32 @@
         }
       }
     },
+    "Sign in" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zaloguj się"
+          }
+        }
+      }
+    },
     "Sign in with %@" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zaloguj się przez %@"
+          }
+        }
+      }
+    },
+    "Sign in with OAuth" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zaloguj się przez OAuth"
           }
         }
       }
@@ -17459,6 +17534,66 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyloguj się z %@"
+          }
+        }
+      }
+    },
+    "Sign-in could not start." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się rozpocząć logowania."
+          }
+        }
+      }
+    },
+    "Sign-in failed." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Logowanie nie powiodło się."
+          }
+        }
+      }
+    },
+    "Sign-in failed: %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Logowanie nie powiodło się: %@"
+          }
+        }
+      }
+    },
+    "Sign-in was not completed in time. Try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Logowanie nie zostało ukończone na czas. Spróbuj ponownie."
+          }
+        }
+      }
+    },
+    "Signed in — the connector now sends the OAuth token." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zalogowano — konektor wysyła teraz token OAuth."
+          }
+        }
+      }
+    },
+    "Signing in…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Logowanie…"
           }
         }
       }
@@ -21138,6 +21273,7 @@
       }
     },
     "Voice conversation with an agent" : {
+      "comment" : "AI models section: how a spoken Codescribe Bus channel session behaves",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -22939,6 +23075,7 @@
       }
     },
     "formatting ≤ %@" : {
+      "comment" : "Channel chain step. The placeholder is a duration such as '3 s'",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -22970,6 +23107,7 @@
       }
     },
     "hold %@" : {
+      "comment" : "Channel chain step. The placeholder is a duration such as '5 s'",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -24741,6 +24879,7 @@
       }
     },
     "sent and hung up" : {
+      "comment" : "Channel chain: last step of a one-message session",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -24772,6 +24911,7 @@
       }
     },
     "sent; the conversation lasts until you hang up" : {
+      "comment" : "Channel chain: last step of a continuous session",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -24782,6 +24922,7 @@
       }
     },
     "settings.agentChannel.finish.off" : {
+      "comment" : "Channel message finish: literal text. Short segment label",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -24799,6 +24940,7 @@
       }
     },
     "settings.agentChannel.source.env" : {
+      "comment" : "Where the channel send pause came from: the environment variable",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -24816,6 +24958,7 @@
       }
     },
     "settings.agentChannel.source.settings" : {
+      "comment" : "Where the channel send pause came from: settings.json",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {

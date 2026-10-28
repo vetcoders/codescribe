@@ -30,6 +30,9 @@ Codescribe Bus
 AICX MCP
 Loctree MCP
 
+# Protocol name — the same in every language.
+OAuth
+
 # Wire values, endpoints and identifiers shown verbatim.
 HTTP(S): %@
 Messages (/v1/messages)

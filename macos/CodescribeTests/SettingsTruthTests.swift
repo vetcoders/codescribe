@@ -1831,13 +1831,13 @@ final class SettingsTruthTests: XCTestCase {
       CsMcpServer(
         name: "loctree-mcp", command: "loct", args: [], envKeys: [], enabled: true,
         transport: "stdio",
-        endpoint: "", authRef: ""),
+        endpoint: "", authRef: "", oauth: false),
       CsMcpServer(
         name: "aicx-mcp", command: "aicx", args: [], envKeys: [], enabled: true, transport: "stdio",
-        endpoint: "", authRef: ""),
+        endpoint: "", authRef: "", oauth: false),
       CsMcpServer(
         name: "orphan", command: "x", args: [], envKeys: [], enabled: true, transport: "stdio",
-        endpoint: "", authRef: ""),
+        endpoint: "", authRef: "", oauth: false),
     ]
     let results = [
       "loctree-mcp": CsMcpTestResult(
@@ -2066,7 +2066,7 @@ final class SettingsTruthTests: XCTestCase {
     let admin = ScriptedMcpAdmin(servers: [
       CsMcpServer(
         name: "loctree-mcp", command: "loct", args: ["mcp"], envKeys: [], enabled: true,
-        transport: "stdio", endpoint: "", authRef: "")
+        transport: "stdio", endpoint: "", authRef: "", oauth: false)
     ])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -2080,6 +2080,21 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertNil(model.mcpTestResults["loctree-mcp"])
     XCTAssertEqual(model.mcpServers.first?.enabled, false)
     XCTAssertEqual(admin.updates, ["loctree-mcp"])
+  }
+
+  func testMcpOAuthSurvivesToggleAndCanBeChanged() {
+    let admin = ScriptedMcpAdmin(servers: [])
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+    XCTAssertNil(model.addMcpServer(
+      name: "remote", command: "", args: [], endpoint: "https://example.com/mcp", oauth: true))
+    XCTAssertEqual(model.mcpServers.first?.oauth, true)
+    model.toggleMcpServer(model.mcpServers[0])
+    XCTAssertEqual(model.mcpServers.first?.oauth, true)
+    XCTAssertNil(model.updateMcpServer(
+      model.mcpServers[0], command: "", args: [], endpoint: "https://example.com/mcp",
+      token: "", oauth: false))
+    XCTAssertEqual(model.mcpServers.first?.oauth, false)
   }
 
   /// A rejected add hands the store's refusal back to the form translated: the
@@ -2107,7 +2122,7 @@ final class SettingsTruthTests: XCTestCase {
   func testMcpEditUpdatesTheExistingServerWithoutLosingArgumentsOrState() async {
     let server = CsMcpServer(
       name: "unicode-puzzles", command: "/opt/homebrew/bin/node script.js", args: [],
-      envKeys: ["TOKEN"], enabled: false, transport: "stdio", endpoint: "", authRef: "")
+      envKeys: ["TOKEN"], enabled: false, transport: "stdio", endpoint: "", authRef: "", oauth: false)
     let admin = ScriptedMcpAdmin(servers: [server])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -2132,7 +2147,7 @@ final class SettingsTruthTests: XCTestCase {
   func testMcpEditKeepsSavedAuthenticationAndReturnsValidationFailure() {
     let server = CsMcpServer(
       name: "remote", command: "", args: [], envKeys: [], enabled: true,
-      transport: "remote", endpoint: "https://old.example/mcp", authRef: "saved-account")
+      transport: "remote", endpoint: "https://old.example/mcp", authRef: "saved-account", oauth: false)
     let admin = ScriptedMcpAdmin(servers: [server])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -2236,10 +2251,10 @@ final class SettingsTruthTests: XCTestCase {
     let admin = ScriptedMcpAdmin(servers: [
       CsMcpServer(
         name: "loctree-mcp", command: "loct", args: ["mcp"], envKeys: [], enabled: true,
-        transport: "stdio", endpoint: "", authRef: ""),
+        transport: "stdio", endpoint: "", authRef: "", oauth: false),
       CsMcpServer(
         name: "desktop-commander", command: "dc", args: [], envKeys: [], enabled: true,
-        transport: "stdio", endpoint: "", authRef: ""),
+        transport: "stdio", endpoint: "", authRef: "", oauth: false),
     ])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -2630,7 +2645,7 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
       CsMcpServer(
         name: input.name, command: input.command, args: input.args, envKeys: [],
         enabled: input.enabled, transport: input.endpoint.isEmpty ? "stdio" : "remote",
-        endpoint: input.endpoint, authRef: input.authRef))
+        endpoint: input.endpoint, authRef: input.authRef, oauth: input.oauth))
   }
 
   func updateServer(name: String, input: CsMcpServerInput) throws {
@@ -2641,7 +2656,7 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
       name: input.name, command: input.command, args: input.args,
       envKeys: servers[index].envKeys, enabled: input.enabled,
       transport: input.endpoint.isEmpty ? "stdio" : "remote",
-      endpoint: input.endpoint, authRef: input.authRef)
+      endpoint: input.endpoint, authRef: input.authRef, oauth: input.oauth)
   }
 
   func removeServer(name: String) throws { servers.removeAll { $0.name == name } }

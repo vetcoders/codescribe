@@ -14,10 +14,12 @@
 //! records the outcome in the app's MCP evidence owner so Agent Diagnostics
 //! reads the same test the MCP tab just showed.
 
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use codescribe_core::agent::{AgentPermissions, PermissionLevel, ToolRegistry, tool_grants};
 use codescribe_core::config::keychain::{delete_key, save_key};
+use codescribe_core::mcp::oauth::{self, LoginOptions};
 use codescribe_core::mcp::{
     McpServerSpec, McpServerSummary, add_server, list_servers, remove_server, update_server,
 };
@@ -40,6 +42,9 @@ pub struct CsMcpServer {
     pub transport: String,
     pub endpoint: String,
     pub auth_ref: String,
+    /// True when the credential behind `auth_ref` is an OAuth grant
+    /// (`auth_type: "oauth"` in mcp.json), not a pasted bearer token.
+    pub oauth: bool,
 }
 
 impl From<McpServerSummary> for CsMcpServer {
@@ -58,6 +63,7 @@ impl From<McpServerSummary> for CsMcpServer {
             },
             endpoint: summary.endpoint.unwrap_or_default(),
             auth_ref: summary.auth_ref.unwrap_or_default(),
+            oauth: summary.auth_type.as_deref() == Some("oauth"),
         }
     }
 }
@@ -77,6 +83,9 @@ pub struct CsMcpServerInput {
     /// Write-only bearer token. It is saved straight to Keychain and never
     /// serialized into mcp.json or returned by `list_servers`.
     pub token: String,
+    /// The connector signs in with OAuth instead of a bearer token. The grant
+    /// itself is obtained through `start_mcp_sign_in` / `await_mcp_sign_in`.
+    pub oauth: bool,
 }
 
 impl From<&CsMcpServerInput> for McpServerSpec {
@@ -89,9 +98,10 @@ impl From<&CsMcpServerInput> for McpServerSpec {
             enabled: input.enabled,
             endpoint: (!input.endpoint.trim().is_empty()).then(|| input.endpoint.clone()),
             auth_ref: (!input.auth_ref.trim().is_empty()).then(|| input.auth_ref.clone()),
-            // The Settings form does not edit the auth type; an OAuth entry
-            // keeps its `auth_type` through updates because `None` is a no-op.
-            auth_type: None,
+            // `Some("oauth")` marks the row; `None` leaves an existing
+            // `auth_type` untouched on update, and the explicit OAuth-off
+            // transition is handled in `update_server`.
+            auth_type: input.oauth.then(|| "oauth".to_string()),
         }
     }
 }
@@ -109,6 +119,39 @@ pub struct CsMcpTestResult {
     pub server_version: String,
     pub protocol_version: String,
     pub error: String,
+}
+
+/// One step of the MCP OAuth sign-in flow — the shape of
+/// `CsAccountLoginResult` for provider accounts, minus Rust-composed prose:
+/// `status` is a wire value Swift turns into a sentence it owns
+/// (LOCALIZATION_LEDGER.md §4), and `detail` carries only propagated content —
+/// an upstream error chain, or the superseding server's name. `auth_url` is
+/// present after `start_mcp_sign_in` when the UI should open a browser;
+/// `signed_in` flips once the exchange completed and the credential is in the
+/// Keychain.
+#[derive(uniffi::Record)]
+pub struct CsMcpSignInResult {
+    pub server: String,
+    /// `started` | `signed_in` | `failed` | `timeout` | `superseded` | `idle`.
+    pub status: String,
+    /// Upstream content for `failed` (error chain) and `superseded` (the other
+    /// server's name); empty otherwise. Never a sentence composed in Rust.
+    pub detail: String,
+    pub auth_url: Option<String>,
+    pub signed_in: bool,
+}
+
+/// The one in-flight OAuth attempt. A second `start_mcp_sign_in` supersedes it
+/// (dropping the pending login closes its loopback listener), so fixed ports
+/// and browser tabs never race two logins — same policy as provider accounts.
+struct PendingMcpSignIn {
+    server: String,
+    login: oauth::PendingLogin,
+}
+
+fn active_mcp_sign_in() -> &'static Mutex<Option<PendingMcpSignIn>> {
+    static STATE: OnceLock<Mutex<Option<PendingMcpSignIn>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(None))
 }
 
 /// Read/write handle over the MCP config store. Stateless: every call re-reads
@@ -173,6 +216,7 @@ impl CodescribeMcpAdmin {
 
     /// Add a new server. Errors if the name already exists or is invalid.
     pub fn add_server(&self, server: CsMcpServerInput) -> Result<(), CsError> {
+        validate_auth_shape(&server)?;
         let mut spec = McpServerSpec::from(&server);
         let stored_account = store_connector_token(&server.name, &server.token)?;
         if stored_account.is_some() {
@@ -204,10 +248,35 @@ impl CodescribeMcpAdmin {
     }
 
     /// Update the named server's spawn shape, preserving its env + unknown fields.
+    /// Turning OAuth off clears the grant: the credential leaves the Keychain
+    /// and `auth_type`/`auth_ref` leave mcp.json before any new bearer lands.
     pub fn update_server(&self, name: String, server: CsMcpServerInput) -> Result<(), CsError> {
+        validate_auth_shape(&server)?;
+        let was_oauth = list_servers()
+            .map_err(config_err)?
+            .into_iter()
+            .find(|entry| entry.name == name)
+            .is_some_and(|entry| entry.auth_type.as_deref() == Some("oauth"));
         let mut spec = McpServerSpec::from(&server);
         if let Some(account) = store_connector_token(&server.name, &server.token)? {
             spec.auth_ref = Some(account);
+        }
+        if was_oauth && !server.oauth {
+            // The form passes the row's old auth_ref through; for an OAuth row
+            // that is the credential account being signed out, not a bearer.
+            let credential = oauth::credential_account(&name);
+            if spec.auth_ref.as_deref() == Some(credential.as_str()) {
+                spec.auth_ref = None;
+            }
+            let mut cleared = spec.clone();
+            cleared.auth_ref = None;
+            cleared.auth_type = None;
+            update_server(&name, &cleared).map_err(config_err)?;
+            let _ = delete_key(&credential);
+            if spec.auth_ref.is_some() {
+                update_server(&name, &spec).map_err(config_err)?;
+            }
+            return Ok(());
         }
         update_server(&name, &spec).map_err(config_err)
     }
@@ -322,6 +391,93 @@ impl CodescribeMcpAdmin {
             .collect()
     }
 
+    /// Begin OAuth sign-in for a remote server: probe the 401 challenge,
+    /// discover the authorization server, register a client and bind the
+    /// loopback listener — everything short of the human. Returns the
+    /// authorize URL for Swift to open; `await_mcp_sign_in` then blocks on
+    /// the browser redirect. Nothing is stored until that completes.
+    pub async fn start_mcp_sign_in(
+        &self,
+        name: String,
+        endpoint: String,
+    ) -> Result<CsMcpSignInResult, CsError> {
+        if endpoint.trim().is_empty() {
+            return Err(CsError::Config {
+                msg: "OAuth sign-in needs a remote server URL".to_string(),
+            });
+        }
+        {
+            let mut guard = mcp_sign_in_lock()?;
+            // Dropping a pending login closes its loopback listener.
+            guard.take();
+        }
+        let login = crate::application_runtime::run(async move {
+            oauth::begin_login(&endpoint, LoginOptions::default()).await
+        })
+        .await?
+        .map_err(config_err)?;
+        let auth_url = login.authorization_url.clone();
+        let mut guard = mcp_sign_in_lock()?;
+        *guard = Some(PendingMcpSignIn {
+            server: name.clone(),
+            login,
+        });
+        Ok(CsMcpSignInResult {
+            server: name,
+            status: "started".to_string(),
+            detail: String::new(),
+            auth_url: Some(auth_url),
+            signed_in: false,
+        })
+    }
+
+    /// Block until the in-flight MCP sign-in completes, fails or times out.
+    /// Swift calls this right after `start_mcp_sign_in` opened the browser.
+    /// On success the credential is already in the Keychain and the server's
+    /// mcp.json row flips to `auth_type: "oauth"`. On timeout the pending
+    /// login is dropped, which shuts the loopback listener down.
+    pub async fn await_mcp_sign_in(
+        &self,
+        name: String,
+        timeout_seconds: u64,
+    ) -> Result<CsMcpSignInResult, CsError> {
+        let pending = { mcp_sign_in_lock()?.take() };
+        let Some(pending) = pending else {
+            return Ok(mcp_sign_in_result(&name, "idle", ""));
+        };
+        if pending.server != name {
+            return Ok(mcp_sign_in_result(&name, "superseded", &pending.server));
+        }
+        let account = oauth::credential_account(&name);
+        let timeout = Duration::from_secs(timeout_seconds.max(1));
+        let outcome = crate::application_runtime::run(async move {
+            tokio::time::timeout(timeout, pending.login.complete(&account)).await
+        })
+        .await?;
+        match outcome {
+            Ok(Ok(_credential)) => {
+                persist_oauth_entry(&name)?;
+                Ok(CsMcpSignInResult {
+                    server: name.clone(),
+                    status: "signed_in".to_string(),
+                    detail: String::new(),
+                    auth_url: None,
+                    signed_in: true,
+                })
+            }
+            Ok(Err(error)) => Ok(mcp_sign_in_result(&name, "failed", &error.to_string())),
+            // Dropping the pending login shut the loopback listener down.
+            Err(_elapsed) => Ok(mcp_sign_in_result(&name, "timeout", "")),
+        }
+    }
+
+    /// Cancel any in-flight MCP sign-in (closes the loopback listener).
+    pub fn cancel_mcp_sign_in(&self) {
+        if let Ok(mut guard) = mcp_sign_in_lock() {
+            guard.take();
+        }
+    }
+
     /// Spawn the named server, run the `initialize` + `tools/list` handshake, and
     /// report its advertised identity + live tool count. Bounded by a 10s timeout.
     /// A failed handshake is returned as `ok == false` with a reason, never as a
@@ -361,6 +517,61 @@ fn config_err(error: anyhow::Error) -> CsError {
     CsError::Config {
         msg: error.to_string(),
     }
+}
+
+/// OAuth and a pasted bearer are mutually exclusive on one row, and remote
+/// authentication shapes make no sense on a local stdio server.
+fn validate_auth_shape(server: &CsMcpServerInput) -> Result<(), CsError> {
+    if server.oauth && !server.token.trim().is_empty() {
+        return Err(CsError::Config {
+            msg: "OAuth and a bearer token cannot be combined".to_string(),
+        });
+    }
+    if server.endpoint.trim().is_empty() && (server.oauth || !server.token.trim().is_empty()) {
+        return Err(CsError::Config {
+            msg: "Local MCP servers cannot use remote authentication".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn mcp_sign_in_lock() -> Result<std::sync::MutexGuard<'static, Option<PendingMcpSignIn>>, CsError> {
+    active_mcp_sign_in().lock().map_err(|_| CsError::Config {
+        msg: "MCP sign-in state lock poisoned".to_string(),
+    })
+}
+
+/// A displayable sign-in outcome that is not `signed_in`.
+fn mcp_sign_in_result(server: &str, status: &str, detail: &str) -> CsMcpSignInResult {
+    CsMcpSignInResult {
+        server: server.to_string(),
+        status: status.to_string(),
+        detail: detail.to_string(),
+        auth_url: None,
+        signed_in: false,
+    }
+}
+
+/// After a completed exchange, point the server's mcp.json row at the stored
+/// grant: `auth_ref` = the Keychain credential account, `auth_type: "oauth"`.
+fn persist_oauth_entry(name: &str) -> Result<(), CsError> {
+    let summary = list_servers()
+        .map_err(config_err)?
+        .into_iter()
+        .find(|entry| entry.name == name)
+        .ok_or_else(|| CsError::Config {
+            msg: format!("MCP server '{name}' is no longer configured"),
+        })?;
+    let spec = McpServerSpec {
+        name: summary.name,
+        command: summary.command,
+        args: summary.args,
+        enabled: summary.enabled,
+        endpoint: summary.endpoint,
+        auth_ref: Some(oauth::credential_account(name)),
+        auth_type: Some("oauth".to_string()),
+    };
+    update_server(name, &spec).map_err(config_err)
 }
 
 /// Persist a bearer token to the Keychain under a name derived from the server

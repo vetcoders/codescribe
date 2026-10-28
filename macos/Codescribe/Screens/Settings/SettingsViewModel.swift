@@ -2085,14 +2085,14 @@ final class SettingsViewModel: ObservableObject {
   @discardableResult
   func addMcpServer(
     name: String, command: String, args: [String],
-    endpoint: String = "", token: String = ""
+    endpoint: String = "", token: String = "", oauth: Bool = false
   ) -> MCPAddFailure? {
     guard let mcpAdmin else { return nil }
     do {
       try mcpAdmin.addServer(
         CsMcpServerInput(
           name: name, command: command, args: args, enabled: true,
-          endpoint: endpoint, authRef: "", token: token
+          endpoint: endpoint, authRef: "", token: token, oauth: oauth
         )
       )
       reloadMcpServers()
@@ -2109,7 +2109,7 @@ final class SettingsViewModel: ObservableObject {
   /// fields. An empty token retains the existing Keychain reference.
   func updateMcpServer(
     _ server: CsMcpServer, command: String, args: [String],
-    endpoint: String, token: String
+    endpoint: String, token: String, oauth: Bool = false
   ) -> MCPAddFailure? {
     guard let mcpAdmin else { return nil }
     do {
@@ -2117,7 +2117,8 @@ final class SettingsViewModel: ObservableObject {
         name: server.name,
         input: CsMcpServerInput(
           name: server.name, command: command, args: args, enabled: server.enabled,
-          endpoint: endpoint, authRef: endpoint.isEmpty ? "" : server.authRef, token: token))
+          endpoint: endpoint, authRef: endpoint.isEmpty ? "" : server.authRef, token: token,
+          oauth: oauth))
       invalidateMcpTest(server.name)
       reloadMcpServers()
       refreshAgentStatus()
@@ -2126,6 +2127,66 @@ final class SettingsViewModel: ObservableObject {
       let failure = MCPAddFailure(error)
       lastError = failure.detail
       return failure
+    }
+  }
+
+  /// Servers with an OAuth sign-in in flight (browser roundtrip pending).
+  @Published private(set) var mcpAuthorizationPending: Set<String> = []
+  /// Last sign-in outcome per server, shown under the row.
+  @Published var mcpAuthNotices: [String: String] = [:]
+
+  /// OAuth sign-in for a remote MCP server — the same two-phase shape as
+  /// provider accounts: `start` binds the loopback listener and returns the
+  /// authorize URL, Swift opens the browser, then the await roundtrip runs
+  /// off the main actor. The result refreshes the row — no restart.
+  func authorizeMcpServer(_ server: CsMcpServer) {
+    guard let mcpAdmin, !mcpAuthorizationPending.contains(server.name) else { return }
+    mcpAuthorizationPending.insert(server.name)
+    mcpAuthNotices[server.name] = nil
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { self.mcpAuthorizationPending.remove(server.name) }
+      do {
+        let started = try await mcpAdmin.startMcpSignIn(
+          name: server.name, endpoint: server.endpoint)
+        guard let authUrl = started.authUrl, let url = URL(string: authUrl) else {
+          self.mcpAuthNotices[server.name] = String(localized: "Sign-in could not start.")
+          return
+        }
+        NSWorkspace.shared.open(url)
+        let login = try await mcpAdmin.awaitMcpSignIn(
+          name: server.name,
+          // Same cap as provider accounts: OAuth browser roundtrip + 2FA.
+          timeoutSeconds: 300
+        )
+        self.mcpAuthNotices[server.name] = Self.mcpSignInNotice(login)
+        if login.signedIn {
+          self.invalidateMcpTest(server.name)
+          self.reloadMcpServers()
+          self.refreshAgentStatus()
+        }
+      } catch {
+        self.lastError = error.userFacingMessage
+      }
+    }
+  }
+
+  /// The bridge sends a wire `status` + propagated `detail`, never a sentence
+  /// (LOCALIZATION_LEDGER.md §4) — the sentence is composed and localized here.
+  private static func mcpSignInNotice(_ result: CsMcpSignInResult) -> String? {
+    switch result.status {
+    case "signed_in":
+      return String(localized: "Signed in — the connector now sends the OAuth token.")
+    case "timeout":
+      return String(localized: "Sign-in was not completed in time. Try again.")
+    case "superseded":
+      return String(localized: "Another sign-in replaced this one.")
+    case "failed":
+      return result.detail.isEmpty
+        ? String(localized: "Sign-in failed.")
+        : String(localized: "Sign-in failed: \(result.detail)")
+    default:
+      return nil
     }
   }
 
@@ -2160,7 +2221,8 @@ final class SettingsViewModel: ObservableObject {
         input: CsMcpServerInput(
           name: server.name, command: server.command,
           args: server.args, enabled: !server.enabled,
-          endpoint: server.endpoint, authRef: server.authRef, token: ""
+          endpoint: server.endpoint, authRef: server.authRef, token: "",
+          oauth: server.oauth
         )
       )
       invalidateMcpTest(server.name)
