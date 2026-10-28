@@ -405,7 +405,8 @@ struct OverlayConversationComposer: View {
             .padding(
               .top,
               ComposerControlMetrics.textVerticalInset
-                + corners.firstLineOffset(viewportHeight: geometry.size.height))
+                + corners.firstLineOffset(viewportHeight: geometry.size.height)
+            )
             .padding(.leading, corners.leadingWidth + corners.clearance)
             .padding(.trailing, corners.trailingWidth + corners.clearance)
             .allowsHitTesting(false)
