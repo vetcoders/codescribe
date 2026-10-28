@@ -1068,7 +1068,7 @@ struct AudioPanel: View {
       } label: {
         Text(microphonePermissionActionTitle)
           .font(SettingsScale.controlLabel)
-          .foregroundStyle(CSColor.chromeAccent)
+          .foregroundStyle(Color.primary)
       }
       .accessibilityHint("Grants Codescribe access to the microphone selected above")
     case .calibrate:
@@ -1117,7 +1117,7 @@ struct AudioPanel: View {
             comment: "Button on the readiness status line: stop the running take")
         )
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(enabled ? CSColor.chromeAccent : CSColor.secondaryInk)
+        .foregroundStyle(enabled ? Color.primary : CSColor.secondaryInk)
       }
       .accessibilityLabel("Stop recording")
       .accessibilityHint("Stops the active take in the shared recorder")
@@ -1133,7 +1133,7 @@ struct AudioPanel: View {
             comment: "Button on the readiness status line: start a take")
         )
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(enabled ? CSColor.chromeAccent : CSColor.secondaryInk)
+        .foregroundStyle(enabled ? Color.primary : CSColor.secondaryInk)
       }
       .accessibilityLabel("Start recording")
       .accessibilityHint("Starts a real dictation session in the shared recorder")

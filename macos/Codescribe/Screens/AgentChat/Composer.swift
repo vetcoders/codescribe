@@ -272,7 +272,7 @@ struct Composer: View {
         }
         .csFocusRing()
         .font(CSFont.mono(11, .semibold))
-        .foregroundStyle(CSColor.chromeAccent)
+        .foregroundStyle(Color.primary)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 8)

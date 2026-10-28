@@ -899,7 +899,7 @@ struct VoiceLabPanel: View {
         Text(label)
           .font(CSFont.ui(11, .medium))
       }
-      .foregroundStyle(CSColor.chromeAccent)
+      .foregroundStyle(Color.primary)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)

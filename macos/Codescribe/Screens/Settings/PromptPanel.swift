@@ -231,7 +231,7 @@ private struct PromptEditor: View {
         if hasUnsavedChanges {
           Text("Unsaved changes")
             .font(CSFont.ui(12, .medium))
-            .foregroundStyle(CSColor.chromeAccent)
+            .foregroundStyle(Color.primary)
         }
         if editing {
           cancelButton

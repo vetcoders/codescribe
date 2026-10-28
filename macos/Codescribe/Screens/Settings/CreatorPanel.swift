@@ -370,6 +370,7 @@ struct CreatorPanel: View {
       ) {
         pendingSkillInstall = model.creatorAgentBridgeInstallPlan(for: client)
       }
+      .csAction()
       .disabled(model.creatorAgentBridgeInstallPlan(for: client) == nil)
       .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
       if model.creatorAgentBridgeError != nil {

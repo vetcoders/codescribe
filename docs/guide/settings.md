@@ -14,6 +14,14 @@ diagnostic environment overrides and tags on unused cached models use neutral
 ink. A failed model selection, missing or invalid selected-model files, and
 disk read or removal errors remain warnings.
 
+**Start recording**, **Stop recording**, microphone-access actions,
+and Voice Lab disclosure toggles,
+**Install skill…** / **Update skill…**, and Agent chat's **Enter license** use
+neutral primary text that follows the light or dark appearance independently
+of the macOS accent. Disabled controls keep their dimmed text. The prompt
+editor's **Unsaved changes** note also uses neutral text; selection and review
+badges retain their separate status styling.
+
 Configuration still lives in three layers:
 
 1. **GUI settings**: `~/Library/Application Support/Codescribe/settings.json`
