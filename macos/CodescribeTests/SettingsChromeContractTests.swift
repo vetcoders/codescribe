@@ -702,7 +702,8 @@ final class SettingsChromeContractTests: XCTestCase {
     // folder access ("Allowed folders").
     XCTAssertFalse(tab.contains("var headline"), "the tab name is the heading")
     let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
-    XCTAssertTrue(pane.contains("SettingsPageHeader(tab.title"), "tabbed pages are headed by tab.title")
+    XCTAssertTrue(
+      pane.contains("SettingsPageHeader(tab.title"), "tabbed pages are headed by tab.title")
     XCTAssertFalse(tab.contains("String(localized: \"Folders available to the Agent\""))
     XCTAssertFalse(tab.contains("\"Workspace roots.\""))
     XCTAssertTrue(tab.contains("\"Processes and MCP servers have their own permissions.\""))
