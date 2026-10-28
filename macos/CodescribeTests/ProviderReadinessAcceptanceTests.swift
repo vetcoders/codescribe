@@ -6,8 +6,15 @@ import XCTest
 
 @MainActor
 final class ProviderReadinessAcceptanceTests: XCTestCase {
-  /// A positive control prevents an empty render from passing the absence checks.
-  func testStoredCredentialsRemainNeutralWhileAnAcceptedProbeIsGreen() throws {
+  /// A stored key or account is presence, not acceptance. Since the colour
+  /// rule of 2026-10-26 (D2, carried into Settings by W0-02) a saved
+  /// credential wears the olive state colour with the empty circle (`.saved`),
+  /// so colour alone no longer separates it from an accepted probe: the sign
+  /// does. The saved rows must render the olive circle and never the
+  /// verified check; a rejected probe stays free of the state colour. The
+  /// accepted probe is the positive control that keeps an empty render from
+  /// passing.
+  func testStoredCredentialsWearTheSavedSignNotTheAcceptedOne() throws {
     let savedKey = KeyRow(
       account: "FIXTURE_API_KEY", label: "Fixture", isSet: true,
       probeResult: nil, probePending: false,
@@ -23,9 +30,24 @@ final class ProviderReadinessAcceptanceTests: XCTestCase {
       account: "FIXTURE_API_KEY", status: .rejected,
       message: "fixture rejected", probedEndpoint: nil))
     XCTAssertGreaterThan(try greenPixels(accepted, name: "accepted-probe"), 10)
-    XCTAssertLessThanOrEqual(try greenPixels(savedKey, name: "saved-key"), 2)
-    XCTAssertLessThanOrEqual(try greenPixels(savedAccount, name: "saved-account"), 2)
+    XCTAssertGreaterThan(try greenPixels(savedKey, name: "saved-key"), 0, "the olive circle")
+    XCTAssertGreaterThan(
+      try greenPixels(savedAccount, name: "saved-account"), 0, "the olive circle")
     XCTAssertLessThanOrEqual(try greenPixels(rejected, name: "rejected-probe"), 2)
+
+    let keyRowsURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Settings/KeyRows.swift")
+    let keyRows = try String(contentsOf: keyRowsURL, encoding: .utf8)
+    XCTAssertTrue(
+      keyRows.contains("CSStatusBadge(text: String(localized: \"Saved\"), mark: .saved)"),
+      "a stored key is the saved mark")
+    XCTAssertTrue(
+      keyRows.contains("CSStatusBadge(text: Self.status(for: provider), mark: .saved)"),
+      "a stored account is the saved mark")
+    XCTAssertFalse(
+      keyRows.contains("mark: .verified"), "no stored credential wears the verified check")
   }
 
   private func greenPixels<V: View>(_ view: V, name: String) throws -> Int {
