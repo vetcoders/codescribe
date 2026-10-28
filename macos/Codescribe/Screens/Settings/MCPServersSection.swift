@@ -368,8 +368,9 @@ struct MCPServerRow: View {
       Text(
         server.enabled
           ? String(localized: "mcp.server.enabled", defaultValue: "Enabled")
-          : String(localized: "mcp.server.disabled", defaultValue: "Disabled"))
-        .font(SettingsScale.controlLabel)
+          : String(localized: "mcp.server.disabled", defaultValue: "Disabled")
+      )
+      .font(SettingsScale.controlLabel)
     }
     .toggleStyle(.switch)
     .controlSize(.small)
