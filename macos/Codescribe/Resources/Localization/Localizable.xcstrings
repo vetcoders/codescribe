@@ -10943,16 +10943,6 @@
         }
       }
     },
-    "Microphone and recording" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mikrofon i nagrywanie"
-          }
-        }
-      }
-    },
     "Microphone busy with shortcut dictation" : {
       "localizations" : {
         "pl" : {

@@ -65,9 +65,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     switch self {
     case .agentLanes: String(localized: "Model configuration.")
     case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
-    case .agentWorkspace:
-      String(localized: "Folders available to the Agent", comment: "Settings tab: Agent folders")
-    case .agentStatus, .dictationEngine, .dictationWhisper, .dictationPreview: title
+    case .agentWorkspace, .agentStatus, .dictationEngine, .dictationWhisper, .dictationPreview:
+      title
     case .agentTools: String(localized: "Tool permissions")
     case .agentMcp: String(localized: "MCP servers")
     case .dictationPrivacy: CloudPrivacyCopy.title
@@ -90,7 +89,9 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       // Only the limit stays on screen: the list validates Codescribe's own
       // file and terminal tools and the MCP calls it knows how to check
       // (Desktop Commander), not a sandbox around the child process. What is
-      // checked is in docs/guide/settings.md, Agent → Workspace.
+      // checked is in docs/guide/settings.md, Agent → Workspace. The folder
+      // list below carries its own label, so the former headline ("Folders
+      // available to the Agent") is not repeated here as a second name for it.
       String(localized: "Processes and MCP servers have their own permissions.")
     case .agentStatus:
       // The page is headed "Diagnostics"; this line says what is diagnosed.

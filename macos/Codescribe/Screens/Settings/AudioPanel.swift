@@ -762,8 +762,10 @@ struct AudioPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
+      // Headed by the sidebar name; the line under it says what the pane is
+      // for, microphone and recording, in one sentence.
       SettingsPageHeader(
-        String(localized: "Microphone and recording"),
+        SettingsSection.audio.title,
         blurb: String(localized: "Choose a microphone and adjust recording.")
       )
 

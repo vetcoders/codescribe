@@ -491,7 +491,9 @@ recoverable. A failed save is reported with the same current-source check.
 
 ### Agent → Workspace
 
-**Folders available to the Agent** lists the roots Codescribe uses to validate
+The tab is headed **Workspace**, its name in the tab bar, with "Processes and
+MCP servers have their own permissions." under the title. Its folder list,
+**Allowed folders**, holds the roots Codescribe uses to validate
 the paths of its own file and Git tools, terminal working directories and
 path-shaped command arguments; `read_file` may also read Codescribe's own
 storage folder. It also validates paths handed to MCP tools it knows how to
@@ -845,7 +847,8 @@ Prompt files live in `~/.codescribe/prompts/`.
 
 ## Audio & Input
 
-Open **Settings → Audio** — headlined **Microphone and recording**. The pane owns
+Open **Settings → Audio** — headed **Audio**, the same name as in the sidebar,
+with "Choose a microphone and adjust recording." under the title. The pane owns
 the microphone, recording readiness, how long recorded audio is kept, and the
 start signal. Nothing else: the transcription overlay is set under
 [Dictation → Preview](#dictation-tabs), and the Dock icon from the menu bar
