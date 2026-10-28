@@ -3146,17 +3146,24 @@ final class OverlayState {
           $0.captureSessionID == target.captureSessionID && $0.captureState == .finished
         })
       else { continue }
-      let draft = ConversationDraft.split(conversationDraft(for: id))
-      let added = staged.paths.filter { !draft.attachments.contains($0) }
-      setConversationDraft(
-        ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id
-      )
-      captureAttachmentDrafts.removeValue(forKey: id)
-      captureAttachmentErrors.removeValue(forKey: id)
-      textMessageErrors[id] = String(
-        localized:
-          "The recording ended. Files are in this conversation's draft; send them when ready.")
+      returnCaptureAttachmentsToDraft(in: id)
     }
+  }
+
+  /// Hand one staging's files back to the conversation's manual draft. Send
+  /// stays an explicit choice; the info line tells the Founder where they went.
+  private func returnCaptureAttachmentsToDraft(in id: String) {
+    guard let staged = captureAttachmentDrafts[id] else { return }
+    let draft = ConversationDraft.split(conversationDraft(for: id))
+    let added = staged.paths.filter { !draft.attachments.contains($0) }
+    setConversationDraft(
+      ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id
+    )
+    captureAttachmentDrafts.removeValue(forKey: id)
+    captureAttachmentErrors.removeValue(forKey: id)
+    textMessageErrors[id] = String(
+      localized:
+        "The recording ended. Files are in this conversation's draft; send them when ready.")
   }
 
   func sendCaptureAttachments(in conversationID: String) async {
@@ -3186,7 +3193,17 @@ final class OverlayState {
         captureAttachmentDrafts[conversationID] = current.paths.isEmpty ? nil : current
       }
     } catch {
-      captureAttachmentErrors[conversationID] = error.userFacingMessage
+      // The helper revalidates under the bus append lock, so its refusal is
+      // the authority that this frozen target is gone. A take that never
+      // seals keeps projecting `.receiving`, so waiting for a `.finished`
+      // row would strand the files behind a retry that cannot succeed
+      // (Maciej, 2026-10-28: "to dołączanie nadal nie działa").
+      let refusal = (error as NSError).userInfo[NSDebugDescriptionErrorKey] as? String
+      if refusal?.contains("capture attachment refused") == true {
+        returnCaptureAttachmentsToDraft(in: conversationID)
+      } else {
+        captureAttachmentErrors[conversationID] = error.userFacingMessage
+      }
     }
   }
 
