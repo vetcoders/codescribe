@@ -8,6 +8,12 @@ version: the selected sidebar row and the pane's own heading name the pane.
 The sections below
 describe the current controls and their runtime contracts.
 
+Amber is reserved for warnings that need action. Cloud privacy assurances,
+the safe choice not to grant cloud consent, enhanced capability labels,
+diagnostic environment overrides and tags on unused cached models use neutral
+ink. A failed model selection, missing or invalid selected-model files, and
+disk read or removal errors remain warnings.
+
 Configuration still lives in three layers:
 
 1. **GUI settings**: `~/Library/Application Support/Codescribe/settings.json`
@@ -241,7 +247,8 @@ on demand:
 
 - **Data processing** — the selected recognition mode and the stored cloud
   consent as two separate rows. A granted record is not evidence that audio
-  is leaving now. The cloud itself is configured in Providers: the one
+  is leaving now. **Not granted** is a normal safe choice and carries no
+  warning mark. The cloud itself is configured in Providers: the one
   **Set up the cloud in Providers** action under this card opens
   **Providers** and scrolls to its **Cloud transcription** section.
 - **What can leave this computer?** — two scannable rows. **Audio**: in Cloud
@@ -1018,8 +1025,10 @@ learned, and where the active rules come from.
   **Open in Lab** appears only where the Lab section is available (a developer
   build); elsewhere Lab is hidden and the card does not offer it.
   A take the ledger left open (any terminal status other than sealed or
-  observed silence) says so, with the share of its speech that committed
-  words cover. The ledger's refusal list is not shown as a word count: it
+  observed silence) says **This take did not finish.** in neutral ink. Where
+  Lab is available it adds **See Lab for details.** Coverage percentages stay
+  in Lab rather than in this sentence. The ledger's refusal list is not shown
+  as a word count: it
   repeats a range for every replayed decode and also records Whisper's
   successful replacements, so it can exceed the take's words several times
   over. The list is read from

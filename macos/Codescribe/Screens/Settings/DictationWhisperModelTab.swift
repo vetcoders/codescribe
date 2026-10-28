@@ -150,8 +150,8 @@ struct DictationWhisperModelTab: View {
   }
 
   /// Everything that shadows or contradicts the selection above: an authority
-  /// over the picker, the engine's own notice, and its last error. All three
-  /// stay — they are the states that ask the user to do something.
+  /// over the picker, the engine's own notice, and its last error. Informational
+  /// overrides stay neutral; a failed model selection still needs attention.
   @ViewBuilder
   private func selectionMessages(catalog: CsWhisperModelCatalog?) -> some View {
     let overrideNote = selectionOverrideNote(catalog?.overrideKind)
@@ -162,7 +162,7 @@ struct DictationWhisperModelTab: View {
         if let overrideNote {
           Text(overrideNote)
             .font(SettingsScale.helper)
-            .foregroundStyle(CSColor.amberLight)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let notice = model.whisperModelNotice {
@@ -247,9 +247,9 @@ struct DictationWhisperModelTab: View {
     switch model.localWhisperRuntimeState {
     case .livePatchingConfigured:
       CSColor.oliveLight
-    case .livePatchingNotReady, .degradedEnvOverride:
+    case .livePatchingNotReady:
       CSColor.amberLight
-    case .notSelected:
+    case .degradedEnvOverride, .notSelected:
       CSColor.secondaryInk
     }
   }
@@ -300,7 +300,7 @@ struct DictationWhisperModelTab: View {
               Spacer(minLength: CSSpace.sm)
               Text(Self.reasonTag(entry.element.reason))
                 .font(CSFont.ui(12, .medium))
-                .foregroundStyle(CSColor.amberLight)
+                .foregroundStyle(CSColor.secondaryInk)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
             }

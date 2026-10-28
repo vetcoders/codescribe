@@ -37,7 +37,7 @@ struct DictationCloudPrivacyTab: View {
         RuntimeRow(
           key: CloudPrivacyCopy.savedConsentLabel, value: consentValue,
           tint: false,
-          trailing: .mark(model.cloudConsentGranted ? .good : .warn))
+          trailing: model.cloudConsentGranted ? .mark(.good) : .none)
       }
       .clipShape(.rect(cornerRadius: CSRadius.composer))
       .overlay {

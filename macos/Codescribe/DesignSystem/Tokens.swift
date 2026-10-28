@@ -257,8 +257,9 @@ enum CSColor {
 
   // Reasoning — amber
   static let amber = Color(nsColor: CSPalette.amber)
-  /// Amber as a word (a warning, a pending state): the label rung that clears
-  /// 4.5:1 on paper, where the base amber reads 3.31:1 on a card.
+  /// Amber marks an actionable warning, never reassurance, an informational
+  /// tag or a normal first-run state. The label rung clears 4.5:1 on paper,
+  /// where the base amber reads 3.31:1 on a card.
   static let amberLight = Color(nsColor: CSPalette.amberLight)
 
   // Destructive actions — reserved for explicit danger-zone controls

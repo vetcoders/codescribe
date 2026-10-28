@@ -608,7 +608,7 @@ struct SpeechToTextSection: View {
       // the same truth as Dictation › Cloud & privacy.
       Text("Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription.")
         .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.amberLight)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.top, SettingsScale.headerGap)
       VStack(spacing: CSSpace.sm) {

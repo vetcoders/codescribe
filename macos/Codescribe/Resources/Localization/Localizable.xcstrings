@@ -19983,6 +19983,28 @@
         }
       }
     },
+    "This take did not finish." : {
+      "comment" : "Recent take whose finalization did not complete; diagnostic coverage remains in Lab.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "To nagranie nie zostało ukończone."
+          }
+        }
+      }
+    },
+    "This take did not finish. See Lab for details." : {
+      "comment" : "Recent take whose finalization did not complete; Lab is available for diagnostics.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "To nagranie nie zostało ukończone. Szczegóły znajdziesz w Labie."
+          }
+        }
+      }
+    },
     "This text cannot be copied without changing its spacing." : {
       "localizations" : {
         "pl" : {
