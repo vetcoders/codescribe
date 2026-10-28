@@ -22265,7 +22265,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Disabled"
+            "value" : "Off"
           }
         },
         "pl" : {
@@ -22283,7 +22283,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Enabled"
+            "value" : "On"
           }
         },
         "pl" : {

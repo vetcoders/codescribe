@@ -548,14 +548,14 @@ func audioSealLaneFact(_ admission: CsAdmissionReadiness?) -> AudioReadinessFact
       id: .sealLane,
       label: label,
       value: String(
-        localized: "audio.readiness.sealLane.on", defaultValue: "Enabled",
+        localized: "audio.readiness.sealLane.on", defaultValue: "On",
         comment: "Value of the committing fragments row; use the full word, never an abbreviation"),
       tone: .healthy)
     : AudioReadinessFact(
       id: .sealLane,
       label: label,
       value: String(
-        localized: "audio.readiness.sealLane.off", defaultValue: "Disabled",
+        localized: "audio.readiness.sealLane.off", defaultValue: "Off",
         comment: "Value of the committing fragments row; use the full word, never an abbreviation"),
       tone: !admission.ready && admission.code == "admission_seal_lane_disarmed"
         ? .unavailable : .neutral)
