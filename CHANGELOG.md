@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Settings › Agent › MCP: each server's Enabled/Disabled setting is a native switch instead of a coloured action chip. It still changes only the saved configuration; Test, Edit and Remove remain separate actions.
 - Settings › Agent › Prompts: **Built-in** and **Custom** are small, muted text labels without a capsule or border, so the prompt source is visually distinct from the Edit/Save button beside it.
 - The menu bar's **Agent** row shows ⇧⌘Space, the shortcut that opens the same Agent window, instead of an Option double-tap: that gesture never opened the window, and where it is set it starts an Agent recording.
 - An Agent take started from the menu bar or the overlay ends after 30 seconds without voice and sends nothing. A false start once kept the microphone on a room for 55 minutes. The take ends 30 seconds after the start when it hears no voice, or 30 seconds after the last thing said; agent playback does not count as silence. Only the take's capture is released, so an open agent channel stays live. The text stays in the take archive and can still be sent with **To Agent**; the overlay's opt-in auto-send skips it. The new transcript disposition `ended_without_voice` records this on the Bus. Agent channels and the take share one 30-second limit and one speech clock.

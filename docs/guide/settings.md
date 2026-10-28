@@ -762,12 +762,11 @@ The MCP tab is the editing surface for `~/.codescribe/mcp.json`; Diagnostics
 only reports it. The headline **MCP servers** stands without an introduction
 and the list reads as servers, not as a config dump.
 
-- **Server card** — the name, the configured state as a flag button (Enabled /
+- **Server card** — the name, the configured state as a native switch (Enabled /
   Disabled flips `enabled` in `mcp.json`; it never connects or disconnects
-  anything), the last handshake, and the Test / Remove actions. All three
-  actions are the one Settings chip, so they share a shape, a label rung and a
-  focus ring with every other flat action in the window; the configured state
-  still reads in colour, on its power glyph and label. Remove only
+  anything), the last handshake, and the Test / Edit / Remove actions. The
+  switch uses the system style and exposes the server name to VoiceOver;
+  the actions keep the shared Settings chip shape and focus ring. Remove only
   asks: an alert names the server and what goes with it (its entry in
   `mcp.json` and its Keychain token); Cancel, Escape or closing the alert
   leaves the configuration as it was, and only "Remove server" removes. "Details"

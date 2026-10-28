@@ -195,7 +195,7 @@ struct MCPServerRow: View {
           .layoutPriority(1)
         Spacer(minLength: CSSpace.sm)
         HStack(spacing: CSSpace.xs) {
-          enabledButton
+          enabledToggle
           testButton
           SettingsChipButton(action: { isEditing.toggle() }) {
             Text("Edit").font(SettingsScale.controlLabel)
@@ -351,27 +351,29 @@ struct MCPServerRow: View {
 
   // MARK: Actions
 
-  // All three are `SettingsChipButton`: one chip family across Settings, so
-  // the card no longer carries three hand-rolled shapes at a seventh radius.
-  // The state still reads in colour — on the power glyph and the label, where
-  // it belongs — instead of tinting a button's whole background.
+  // The configured state is a switch. Test, Edit and Remove stay actions in
+  // the shared Settings chip family.
 
   /// The configured state. Clicking flips the `enabled` flag in mcp.json; it
   /// never connects or disconnects anything by itself.
-  private var enabledButton: some View {
-    SettingsChipButton(action: onToggle) {
-      HStack(spacing: 5) {
-        CSIconView(
-          icon: .power, size: 8, weight: .semibold,
-          color: server.enabled ? CSColor.oliveLight : CSColor.secondaryInk)
-        Text(
-          server.enabled
-            ? String(localized: "mcp.server.enabled", defaultValue: "Enabled")
-            : String(localized: "mcp.server.disabled", defaultValue: "Disabled"))
-      }
-      .font(SettingsScale.controlLabel)
-      .foregroundStyle(server.enabled ? CSColor.oliveLight : CSColor.secondaryInk)
+  private var enabledToggle: some View {
+    Toggle(
+      isOn: Binding(
+        get: { server.enabled },
+        set: { enabled in
+          if enabled != server.enabled { onToggle() }
+        }
+      )
+    ) {
+      Text(
+        server.enabled
+          ? String(localized: "mcp.server.enabled", defaultValue: "Enabled")
+          : String(localized: "mcp.server.disabled", defaultValue: "Disabled"))
+        .font(SettingsScale.controlLabel)
     }
+    .toggleStyle(.switch)
+    .controlSize(.small)
+    .accessibilityLabel(Text(verbatim: server.name))
     .help(server.enabled ? "Disable this server" : "Enable this server")
   }
 
