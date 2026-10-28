@@ -91,6 +91,8 @@ pub mod word_verdict;
 use word_verdict::WordDeletionReceipt;
 #[path = "acoustic_ledger/recovery_diagnostics.rs"]
 mod recovery_diagnostics;
+#[path = "acoustic_ledger/witness.rs"]
+pub mod witness;
 pub use recovery_diagnostics::{
     CoverageDiagnostics, RecoveryAlternativeDiagnostic, RecoveryDiagnostic, RecoveryPinDiagnostic,
 };

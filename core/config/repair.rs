@@ -173,47 +173,6 @@ fn reset(value: &mut Value, pointer: &str, replacement: Value, receipt: &mut Rep
     }
 }
 
-/// Gestures that left the closed binding set. The Option double-taps of
-/// Formatting and Assistive went on 2026-10-26: Option types characters, and
-/// one key keeps one role.
-const RETIRED_SHORTCUT_BINDINGS: [&str; 2] = ["double_left_option", "double_right_option"];
-
-/// Rebind a mode whose saved gesture was retired to `disabled`, so the typed
-/// parse accepts the document and every other setting survives.
-pub(super) fn retire_shortcut_bindings(
-    value: &mut Value,
-    pointer: &str,
-    receipt: &mut RepairReceipt,
-) {
-    let Some(bindings) = value.pointer_mut(pointer).and_then(Value::as_array_mut) else {
-        return;
-    };
-    for entry in bindings {
-        let mode = entry
-            .get("mode")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_owned();
-        let Some(slot) = entry.get_mut("binding") else {
-            continue;
-        };
-        if slot
-            .as_str()
-            .is_some_and(|binding| RETIRED_SHORTCUT_BINDINGS.contains(&binding))
-        {
-            let field = format!(
-                "{}.{mode}.binding",
-                pointer.trim_start_matches('/').replace('/', ".")
-            );
-            let to = Value::from("disabled");
-            let from = std::mem::replace(slot, to.clone());
-            receipt
-                .actions
-                .push(RepairAction::FieldReset { field, from, to });
-        }
-    }
-}
-
 /// The `agent_channel` section: a file written before it existed needs no
 /// write, because every absent key reads as its default (the send pause starts
 /// at its own default, never at hands-free dictation's `toggle_silence_sec`).

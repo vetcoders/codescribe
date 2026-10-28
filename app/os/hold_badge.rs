@@ -538,6 +538,9 @@ mod imp {
         /// Create the system-wide AX element (the root for "whatever is focused
         /// right now"). Returns a `+1` handle. Requires Accessibility trust.
         fn AXUIElementCreateSystemWide() -> AXId;
+        /// Owning process of an AX element; identifies our own UI, whose AX
+        /// answers execute AppKit accessibility code on the calling thread.
+        fn AXUIElementGetPid(element: AXId, pid: *mut i32) -> i32;
         /// Unwrap an `AXValueRef` into a caller-provided struct matching
         /// `type_` (one of the `AX_VALUE_*` constants). `false` on mismatch.
         fn AXValueGetValue(value: AXId, type_: i32, value_ptr: *mut std::ffi::c_void) -> bool;
@@ -939,6 +942,18 @@ mod imp {
             );
             CFRelease(system);
             if result != AX_ERROR_SUCCESS || focused.is_null() {
+                return None;
+            }
+            // An in-process focused element answers AX queries by running
+            // AppKit accessibility code on THIS background thread; a
+            // MainActor-isolated view getter then traps
+            // (dispatch_assert_queue → SIGTRAP) and kills the app. Our own
+            // windows fall back to the cursor position instead.
+            let mut focused_pid: i32 = 0;
+            if AXUIElementGetPid(focused, &mut focused_pid) != AX_ERROR_SUCCESS
+                || focused_pid == std::process::id() as i32
+            {
+                CFRelease(focused);
                 return None;
             }
             let mut range: AXId = ptr::null_mut();

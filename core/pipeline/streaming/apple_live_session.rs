@@ -1207,6 +1207,9 @@ pub(crate) async fn apple_stream_transcription_session(
         terminal_audio,
         mut last_window_closed,
     } = config;
+    // Arm the hold witness for this take's shared ledger: if any holder wedges
+    // mid-take, the receipt names the lock instead of the take ending silently.
+    crate::pipeline::acoustic_ledger::witness::watch(&acoustic_ledger, &session_id);
     let seal_ledger_enabled = runtime_settings.seal_ledger_enabled();
     // One owner for this capture epoch's acoustic evidence. This async arm is
     // the writer and the blocking Apple worker below is the reader; both hold
