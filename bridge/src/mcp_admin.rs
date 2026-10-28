@@ -89,6 +89,9 @@ impl From<&CsMcpServerInput> for McpServerSpec {
             enabled: input.enabled,
             endpoint: (!input.endpoint.trim().is_empty()).then(|| input.endpoint.clone()),
             auth_ref: (!input.auth_ref.trim().is_empty()).then(|| input.auth_ref.clone()),
+            // The Settings form does not edit the auth type; an OAuth entry
+            // keeps its `auth_type` through updates because `None` is a no-op.
+            auth_type: None,
         }
     }
 }
