@@ -471,8 +471,8 @@ dictated request and for Max consultations; voice chat carries its own persona.
 Codescribe may append further instructions at runtime, so the editor shows the
 base text, not the full prompt a provider receives.
 
-A quiet capsule on the header line names the prompt in use (a state, not a
-button; it shares Edit's type, height and baseline): **Custom** when your
+A small, muted text label on the header line names the prompt in use, without
+a background or border beside the Edit/Save button: **Custom** when your
 file is read, **Built-in** when no custom file exists or the file is empty. An
 unreadable file also reads **Built-in**, with a red sentence under the header
 saying so; screen readers get the full sentence (**Source: Custom prompt**,
