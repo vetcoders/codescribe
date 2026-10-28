@@ -246,7 +246,7 @@
       }
     },
     "%@ s" : {
-      "comment" : "Preview timing value: an interval in seconds. The placeholder is a formatted number\nSlider value in seconds. The placeholder is the number; keep the unit abbreviated",
+      "comment" : "A duration in seconds. The placeholder is a formatted number\nPreview timing value: an interval in seconds. The placeholder is a formatted number\nSlider value in seconds. The placeholder is the number; keep the unit abbreviated",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1220,6 +1220,7 @@
       }
     },
     "%lld min" : {
+      "comment" : "A duration in minutes. The placeholder is a whole number",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1550,7 +1551,7 @@
       }
     },
     "%lld s" : {
-      "comment" : "Overlay header menu: auto-fold interval in seconds",
+      "comment" : "A duration in seconds. The placeholder is a whole number",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -2237,7 +2238,7 @@
       }
     },
     "Account saved" : {
-      "comment" : "Lane auth: stored account identity\nSetup Agent account row status",
+      "comment" : "Setup Agent account row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -2249,6 +2250,7 @@
     },
     "Account saved. Use Test in Formatting to check the selected provider and model." : {
       "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3970,6 +3972,7 @@
       }
     },
     "Built-in Agent" : {
+      "comment" : "AI models section: the built-in Agent's timers",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5352,6 +5355,7 @@
     },
     "Codescribe Bus" : {
       "comment" : "AI models section: the two bus timers",
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8068,6 +8072,7 @@
       }
     },
     "End the session" : {
+      "comment" : "Channel session policy: one message per press",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8734,7 +8739,7 @@
       }
     },
     "Formatting" : {
-      "comment" : "Request lane: transcript cleanup",
+      "comment" : "Channel message finish: one formatter pass\nRequest lane: transcript cleanup",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9788,6 +9793,7 @@
       }
     },
     "Keep listening" : {
+      "comment" : "Channel session policy: continuous conversation",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11701,7 +11707,7 @@
       }
     },
     "Never" : {
-      "comment" : "Overlay header menu: an expanded overlay never folds itself",
+      "comment" : "Channel close without voice: never",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13806,6 +13812,7 @@
       }
     },
     "Pause %@" : {
+      "comment" : "Channel chain step. The placeholder is a duration such as '5 s'",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14424,6 +14431,7 @@
       }
     },
     "Punctuation (Light+)" : {
+      "comment" : "Channel message finish: end punctuation",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16349,7 +16357,7 @@
       }
     },
     "Saved" : {
-      "comment" : "Setup API key row status",
+      "comment" : "Lane auth: stored account identity\nSetup API key row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -19556,6 +19564,7 @@
       }
     },
     "The ledger anchored %@ of the speech and did not close this take." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -19566,6 +19575,7 @@
       }
     },
     "The ledger anchored %@ of the speech and did not close this take. Open Lab to see where." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -19576,6 +19586,7 @@
       }
     },
     "The ledger did not close this take." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -19586,6 +19597,7 @@
       }
     },
     "The ledger did not close this take. Open Lab to see where." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -21215,6 +21227,7 @@
       }
     },
     "Voice conversation with an agent" : {
+      "comment" : "AI models section: how a spoken Codescribe Bus channel session behaves",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -22248,7 +22261,7 @@
       }
     },
     "audio.readiness.sealLane.off" : {
-      "comment" : "Value of the committing fragments row; use the full word, never an abbreviation",
+      "comment" : "Value of the committing fragments row; keep it as short as the UI allows\nValue of the committing fragments row; use the full word, never an abbreviation",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -23027,6 +23040,7 @@
       }
     },
     "formatting ≤ %@" : {
+      "comment" : "Channel chain step. The placeholder is a duration such as '3 s'",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -23058,6 +23072,7 @@
       }
     },
     "hold %@" : {
+      "comment" : "Channel chain step. The placeholder is a duration such as '5 s'",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -24829,6 +24844,7 @@
       }
     },
     "sent and hung up" : {
+      "comment" : "Channel chain: last step of a one-message session",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -24860,6 +24876,7 @@
       }
     },
     "sent; the conversation lasts until you hang up" : {
+      "comment" : "Channel chain: last step of a continuous session",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -24870,6 +24887,7 @@
       }
     },
     "settings.agentChannel.finish.off" : {
+      "comment" : "Channel message finish: literal text. Short segment label",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -24887,6 +24905,7 @@
       }
     },
     "settings.agentChannel.source.env" : {
+      "comment" : "Where the channel send pause came from: the environment variable",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -24904,6 +24923,7 @@
       }
     },
     "settings.agentChannel.source.settings" : {
+      "comment" : "Where the channel send pause came from: settings.json",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -24940,7 +24960,6 @@
     },
     "settings.holdBadge.size.large" : {
       "comment" : "Hold badge size: the large indicator",
-      "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -24958,7 +24977,6 @@
     },
     "settings.holdBadge.size.medium" : {
       "comment" : "Hold badge size: the medium indicator",
-      "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -24994,7 +25012,6 @@
     },
     "settings.holdBadge.size.small" : {
       "comment" : "Hold badge size: the small indicator",
-      "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
