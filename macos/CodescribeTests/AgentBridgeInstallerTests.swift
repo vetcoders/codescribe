@@ -48,12 +48,14 @@ final class AgentBridgeInstallerTests: XCTestCase {
       XCTFail("The refusing helper must fail publication")
     } catch {
       let failure = error as NSError
+      // The shown message carries the helper's refusal, so the person learns
+      // WHY the files stayed in the draft, not only that they did.
       XCTAssertEqual(
         failure.localizedDescription,
         String(
           localized:
             "Files could not be attached to this live capture. Keep them in your draft and try again."
-        ))
+        ) + " (" + diagnostic + ")")
       XCTAssertEqual(failure.userInfo[NSDebugDescriptionErrorKey] as? String, diagnostic)
     }
   }

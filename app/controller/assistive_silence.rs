@@ -1,19 +1,20 @@
-//! Thirty seconds without voice end a hands-free assistive take.
+//! A hands-free assistive take ends after `agent_take_voiceless_end_sec`
+//! (default 30 s, Settings › Built-in Agent) without voice.
 //!
 //! A false start of the Agent take once recorded a room for 55 minutes and
 //! kept the microphone live (W2-09, 2026-10-26). The take now ends on its own
-//! after [`VOICELESS_CLOSE_SECS`] without measured voice, through the same
-//! controller stop a Stop click uses, and that end delivers nothing: the text
-//! stays in the take archive (Founder decision 2026-10-26). Only the take's
-//! own capture is released; an agent channel on the same microphone stays
-//! open. `toggle_silence_sec` still only closes utterance epochs.
+//! after that limit without measured voice, through the same controller stop
+//! a Stop click uses, and that end delivers nothing: the text stays in the
+//! take archive. Only the take's own capture is released; an agent channel on
+//! the same microphone stays open. `toggle_silence_sec` still only closes
+//! utterance epochs.
 
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use tracing::{info, warn};
 
-use super::speech_clock::{SpeechClock, VOICELESS_CLOSE_SECS};
+use super::speech_clock::SpeechClock;
 use super::{CaptureStopOutcome, RecordingController, STOPPING_SUFFIX};
 use crate::presentation::emitter::SpeechActivityObserver;
 
@@ -26,6 +27,8 @@ pub(crate) struct AssistiveSilenceWatch {
     take_id: String,
     opened_at: SystemTime,
     clock: Arc<StdMutex<SpeechClock>>,
+    /// Voiceless limit frozen from the take's runtime snapshot.
+    voiceless_end_secs: u64,
     /// This watch ended the take; its stop then archives only.
     ended: bool,
     /// A failed stop was logged for this take.
@@ -50,6 +53,7 @@ impl RecordingController {
         &self,
         take_id: &str,
         armed: bool,
+        voiceless_end_secs: u64,
     ) -> Option<SpeechActivityObserver> {
         let mut slot = self
             .assistive_silence
@@ -64,6 +68,7 @@ impl RecordingController {
             take_id: take_id.to_owned(),
             opened_at: SystemTime::now(),
             clock: Arc::clone(&clock),
+            voiceless_end_secs,
             ended: false,
             stop_failure_logged: false,
         });
@@ -119,7 +124,7 @@ impl RecordingController {
 
     /// One read of the take's speech clock. `playback` is whether agent speech
     /// owns the speaker now; that time is not silence. When the take has heard
-    /// no voice for [`VOICELESS_CLOSE_SECS`], it is stopped by name through
+    /// no voice for its `voiceless_end_secs`, it is stopped by name through
     /// `stop_take_without_voice`, which marks the stop archive-only in the
     /// same settlement-slot section that registers it.
     pub(super) async fn poll_assistive_silence(
@@ -131,7 +136,7 @@ impl RecordingController {
         if self.session_id.read().await.as_deref() != Some(take_id) {
             return AssistiveSilencePoll::Gone;
         }
-        {
+        let secs = {
             let slot = self
                 .assistive_silence
                 .lock()
@@ -143,14 +148,14 @@ impl RecordingController {
             if playback {
                 clock.note_agent_playback(now);
             }
-            if !clock.no_voice_for(watch.opened_at, now, VOICELESS_CLOSE_SECS) {
+            if !clock.no_voice_for(watch.opened_at, now, watch.voiceless_end_secs) {
                 return AssistiveSilencePoll::Open;
             }
-        }
+            watch.voiceless_end_secs
+        };
         info!(
             take = take_id,
-            secs = VOICELESS_CLOSE_SECS,
-            "assistive take ends: no voice; its text stays in the take archive"
+            secs, "assistive take ends: no voice; its text stays in the take archive"
         );
         match self.stop_take_without_voice(take_id).await {
             Ok(CaptureStopOutcome::Stopped | CaptureStopOutcome::Pending) => {
@@ -245,7 +250,7 @@ impl RecordingController {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::super::speech_clock::measured_clock_edge;
+    use super::super::speech_clock::{VOICELESS_CLOSE_SECS, measured_clock_edge};
     use super::super::*;
     use super::*;
     use crate::audio::streaming_recorder::CaptureSubscriberKind;
@@ -439,7 +444,7 @@ mod tests {
             }
         };
         let silent = "take-silent";
-        controller.arm_assistive_silence(silent, true);
+        controller.arm_assistive_silence(silent, true, VOICELESS_CLOSE_SECS);
         controller.mark_assistive_silence_end(silent, true);
         let disposition = controller
             .deliver_stop_transcript_with_sink(
@@ -463,7 +468,7 @@ mod tests {
         );
 
         let stopped = "take-stopped";
-        controller.arm_assistive_silence(stopped, true);
+        controller.arm_assistive_silence(stopped, true, VOICELESS_CLOSE_SECS);
         let _ = controller
             .deliver_stop_transcript_with_sink(
                 Some(stopped),
@@ -531,14 +536,14 @@ mod tests {
     #[test]
     fn a_failing_stop_is_logged_once_per_take() {
         let controller = RecordingController::new_without_keychain();
-        controller.arm_assistive_silence("take-a", true);
+        controller.arm_assistive_silence("take-a", true, VOICELESS_CLOSE_SECS);
         assert!(controller.first_stop_failure("take-a"));
         assert!(!controller.first_stop_failure("take-a"));
         assert!(
             !controller.first_stop_failure("take-b"),
             "only the armed take"
         );
-        controller.arm_assistive_silence("take-b", true);
+        controller.arm_assistive_silence("take-b", true, VOICELESS_CLOSE_SECS);
         assert!(controller.first_stop_failure("take-b"));
     }
 }

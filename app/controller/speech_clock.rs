@@ -9,17 +9,24 @@ use std::time::{Duration, SystemTime};
 
 use codescribe_core::pipeline::contracts::{SidebandEvidence, SidebandEvidenceKind};
 
-/// A capture that hears no voice for this many seconds ends, so a start
-/// without a message never leaves the microphone live (Founder decisions
-/// 2026-10-26: agent channels, then the assistive take). Agent playback, which
-/// a capture cannot tell from voice, does not count as silence.
+/// Default voiceless end of the built-in Agent take and of a one-message
+/// channel, so a start without a message never leaves the microphone live.
+/// The effective limits come from the runtime snapshot
+/// (`agent_take_voiceless_end_sec`, `agent_channel.voiceless_close_sec`).
+/// Agent playback, which a capture cannot tell from voice, does not count as
+/// silence.
+#[cfg(test)]
 pub const VOICELESS_CLOSE_SECS: u64 = 30;
 
 pub(crate) fn silence_is_due(last_voice: SystemTime, now: SystemTime, secs: u64) -> bool {
     if secs == 0 {
         return false;
     }
-    now.duration_since(last_voice).unwrap_or_default() >= Duration::from_secs(secs)
+    elapsed_at_least(last_voice, now, Duration::from_secs(secs))
+}
+
+fn elapsed_at_least(from: SystemTime, now: SystemTime, limit: Duration) -> bool {
+    now.duration_since(from).unwrap_or_default() >= limit
 }
 
 #[derive(Debug, Default)]
@@ -120,9 +127,12 @@ impl SpeechClock {
         }
     }
 
-    pub(crate) fn silence_due(&self, now: SystemTime, secs: u64) -> bool {
-        self.quiet_since()
-            .is_some_and(|since| silence_is_due(since, now, secs))
+    /// Measured quiet for `pause` after heard voice. `None` = never due.
+    pub(crate) fn silence_due(&self, now: SystemTime, pause: Option<Duration>) -> bool {
+        pause.is_some_and(|pause| {
+            self.quiet_since()
+                .is_some_and(|since| elapsed_at_least(since, now, pause))
+        })
     }
 
     /// Agent playback cannot be told from voice, and a channel feed hears
@@ -136,16 +146,21 @@ impl SpeechClock {
             .map_or(opened_at, |from| from.max(opened_at))
     }
 
-    /// No edge since the capture opened, and [`VOICELESS_CLOSE_SECS`] have
-    /// passed since it opened or since the last agent playback, whichever is
-    /// later. `secs == 0` (the channel threshold turned off) turns it off too.
-    pub(crate) fn voiceless_due(&self, opened_at: SystemTime, now: SystemTime, secs: u64) -> bool {
-        secs != 0
-            && matches!(
+    /// No edge since the capture opened, and `limit` has passed since it
+    /// opened or since the last agent playback, whichever is later. `None`
+    /// (never, or automatic sending turned off) is never due.
+    pub(crate) fn voiceless_due(
+        &self,
+        opened_at: SystemTime,
+        now: SystemTime,
+        limit: Option<Duration>,
+    ) -> bool {
+        limit.is_some_and(|limit| {
+            matches!(
                 (&self.phase, &self.last_edge),
                 (SpeechPhase::Unmeasured, None)
-            )
-            && silence_is_due(self.voiceless_start(opened_at), now, VOICELESS_CLOSE_SECS)
+            ) && elapsed_at_least(self.voiceless_start(opened_at), now, limit)
+        })
     }
 
     /// No voice for `secs`: not speaking, and `secs` have passed since the
@@ -164,11 +179,8 @@ impl SpeechClock {
         silence_is_due(from, now, secs)
     }
 
-    pub(crate) fn deadline(&self, secs: u64) -> Option<SystemTime> {
-        if secs == 0 {
-            return None;
-        }
-        self.quiet_since()?.checked_add(Duration::from_secs(secs))
+    pub(crate) fn deadline(&self, pause: Option<Duration>) -> Option<SystemTime> {
+        self.quiet_since()?.checked_add(pause?)
     }
 }
 
@@ -202,6 +214,10 @@ mod tests {
 
     fn at(opened: SystemTime, secs: u64) -> SystemTime {
         opened + Duration::from_secs(secs)
+    }
+
+    fn secs(seconds: u64) -> Option<Duration> {
+        Some(Duration::from_secs(seconds))
     }
 
     #[test]
@@ -265,7 +281,7 @@ mod tests {
             "thirty seconds after the last edge, whatever the phase label"
         );
         assert!(
-            !clock.voiceless_due(opened, at(opened, 600), 5),
+            !clock.voiceless_due(opened, at(opened, 600), secs(VOICELESS_CLOSE_SECS)),
             "the channel's voiceless rule still needs a capture with no edge"
         );
     }
@@ -274,19 +290,22 @@ mod tests {
     fn continuous_speech_outlives_sparse_recognizer_output_and_only_a_real_end_arms_silence() {
         let start = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
         let mut clock = SpeechClock::default();
-        assert_eq!(clock.deadline(5), None);
-        assert!(!clock.silence_due(at(start, 1000), 5));
+        assert_eq!(clock.deadline(secs(5)), None);
+        assert!(!clock.silence_due(at(start, 1000), secs(5)));
         clock.observe(&measured_clock_edge(1, 0, true), start);
         // No recognizer output for twenty seconds is not twenty seconds of silence.
-        assert!(!clock.silence_due(at(start, 20), 5));
-        assert_eq!(clock.deadline(5), None);
+        assert!(!clock.silence_due(at(start, 20), secs(5)));
+        assert_eq!(clock.deadline(secs(5)), None);
         let ended = at(start, 21);
         clock.observe(&measured_clock_edge(2, 336_000, false), ended);
-        assert_eq!(clock.deadline(5), Some(ended + Duration::from_secs(5)));
-        assert!(!clock.silence_due(ended + Duration::from_secs(4), 5));
-        assert!(clock.silence_due(ended + Duration::from_secs(5), 5));
-        assert!(!clock.silence_due(ended + Duration::from_secs(99), 0));
-        assert!(!clock.silence_due(start, 5));
+        assert_eq!(
+            clock.deadline(secs(5)),
+            Some(ended + Duration::from_secs(5))
+        );
+        assert!(!clock.silence_due(ended + Duration::from_secs(4), secs(5)));
+        assert!(clock.silence_due(ended + Duration::from_secs(5), secs(5)));
+        assert!(!clock.silence_due(ended + Duration::from_secs(99), None));
+        assert!(!clock.silence_due(start, secs(5)));
     }
 
     #[test]
@@ -294,13 +313,13 @@ mod tests {
         let t = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
         let mut clock = SpeechClock::default();
         clock.observe(&measured_clock_edge(1, 0, false), t);
-        assert_eq!(clock.deadline(5), None, "first end lacks its start");
+        assert_eq!(clock.deadline(secs(5)), None, "first end lacks its start");
         clock.observe(&measured_clock_edge(2, 0, true), t);
         clock.observe(&measured_clock_edge(3, 16_000, false), t);
-        let due = clock.deadline(5);
+        let due = clock.deadline(secs(5));
         clock.observe(&measured_clock_edge(4, 16_000, false), at(t, 4));
         assert_eq!(
-            clock.deadline(5),
+            clock.deadline(secs(5)),
             due,
             "repeated end cannot postpone delivery"
         );
@@ -313,13 +332,13 @@ mod tests {
         bad_epoch.range.capture_epoch = 2;
         clock.observe(&bad_epoch, t);
         assert_eq!(
-            clock.deadline(5),
+            clock.deadline(secs(5)),
             due,
             "regressing or foreign units leave the accepted boundary intact"
         );
         clock.observe(&measured_clock_edge(7, 32_000, false), t);
         assert_eq!(
-            clock.deadline(5),
+            clock.deadline(secs(5)),
             None,
             "another end without its start is unmeasured"
         );

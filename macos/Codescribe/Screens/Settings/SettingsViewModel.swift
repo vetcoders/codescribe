@@ -2958,6 +2958,26 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Option double-tap timing. Each write reloads the hotkey atomics, so the
+  /// next tap already uses the new value.
+  func setDoubleTapIntervalMs(_ ms: UInt64) {
+    guard settings.doubleTapIntervalMs != ms else { return }
+    settings.doubleTapIntervalMs = ms
+    persist("DOUBLE_TAP_INTERVAL_MS", String(ms))
+  }
+
+  func setTapMaxMs(_ ms: UInt64) {
+    guard settings.tapMaxMs != ms else { return }
+    settings.tapMaxMs = ms
+    persist("TAP_MAX_MS", String(ms))
+  }
+
+  func setTypingQuietMs(_ ms: UInt64) {
+    guard settings.typingQuietMs != ms else { return }
+    settings.typingQuietMs = ms
+    persist("TYPING_QUIET_MS", String(ms))
+  }
+
   func setToggleSilenceSeconds(_ seconds: Float) {
     settings.toggleSilenceSec = seconds
     persist("TOGGLE_SILENCE_SEC", String(format: "%.1f", seconds))
@@ -3530,6 +3550,99 @@ final class SettingsViewModel: ObservableObject {
     let bounded = min(30, max(0, seconds))
     if engine == nil { settings.agentSendHoldSec = UInt32(bounded) }
     persist("CODESCRIBE_AGENT_SEND_HOLD_SEC", String(bounded))
+  }
+
+  // MARK: - Voice conversation with an agent (`agent_channel`)
+
+  var agentChannelPolicy: AgentChannelPolicy {
+    AgentChannelPolicy(rawValue: settings.agentChannelSessionPolicy) ?? .continuous
+  }
+
+  /// A policy brings its own voiceless close (never for a conversation, 30 s
+  /// for one message); the slider can change it afterwards.
+  func setAgentChannelPolicy(_ policy: AgentChannelPolicy) {
+    if engine == nil {
+      settings.agentChannelSessionPolicy = policy.rawValue
+      settings.agentChannelVoicelessCloseSec = policy.defaultVoicelessCloseSec
+    }
+    persistMany([
+      CsConfigEntry(key: "AGENT_CHANNEL_SESSION_POLICY", value: policy.rawValue),
+      CsConfigEntry(
+        key: "AGENT_CHANNEL_VOICELESS_CLOSE_SEC", value: String(policy.defaultVoicelessCloseSec)),
+    ])
+  }
+
+  /// The pause that sends; the env override wins over the stored value and
+  /// the row says so.
+  var agentChannelSendPauseOverridden: Bool {
+    settings.agentChannelSendPauseSource == "env_override"
+  }
+
+  var agentChannelSendPauseSlider: Double {
+    get { Double(settings.agentChannelSendPauseSec) }
+    set {
+      let seconds = min(15, max(1, (newValue * 2).rounded() / 2))
+      if engine == nil { settings.agentChannelSendPauseSec = Float(seconds) }
+      persist("AGENT_CHANNEL_SEND_PAUSE_SEC", String(format: "%.1f", seconds))
+    }
+  }
+
+  /// Slider stops: `Never`, then 15 s … 10 min.
+  static let agentChannelVoicelessStops: [UInt64] = [0, 15, 30, 45, 60, 90, 120, 180, 300, 600]
+
+  var agentChannelVoicelessSlider: Double {
+    get {
+      let current = settings.agentChannelVoicelessCloseSec
+      let stops = Self.agentChannelVoicelessStops
+      let index = stops.firstIndex { $0 >= current } ?? stops.count - 1
+      return Double(index)
+    }
+    set {
+      let stops = Self.agentChannelVoicelessStops
+      let index = min(stops.count - 1, max(0, Int(newValue.rounded())))
+      let seconds = stops[index]
+      if engine == nil { settings.agentChannelVoicelessCloseSec = seconds }
+      persist("AGENT_CHANNEL_VOICELESS_CLOSE_SEC", String(seconds))
+    }
+  }
+
+  var agentChannelFinish: AgentChannelFinish {
+    AgentChannelFinish(rawValue: settings.agentChannelSegmentFinish) ?? .lightPlus
+  }
+
+  func setAgentChannelFinish(_ finish: AgentChannelFinish) {
+    if engine == nil { settings.agentChannelSegmentFinish = finish.rawValue }
+    persist("AGENT_CHANNEL_SEGMENT_FINISH", finish.rawValue)
+  }
+
+  var agentChannelFormatWaitSeconds: Binding<Int> {
+    Binding(
+      get: { Int(self.settings.agentChannelFormatWaitSec) },
+      set: { seconds in
+        let bounded = min(10, max(1, seconds))
+        if self.engine == nil { self.settings.agentChannelFormatWaitSec = UInt64(bounded) }
+        self.persist("AGENT_CHANNEL_FORMAT_WAIT_SEC", String(bounded))
+      })
+  }
+
+  var agentAutoSendDelaySeconds: Binding<Int> {
+    Binding(
+      get: { Int(self.settings.agentAutoSendDelaySec) },
+      set: { seconds in
+        let bounded = min(30, max(1, seconds))
+        if self.engine == nil { self.settings.agentAutoSendDelaySec = UInt64(bounded) }
+        self.persist("AGENT_AUTO_SEND_DELAY_SEC", String(bounded))
+      })
+  }
+
+  var agentTakeVoicelessEndSeconds: Binding<Int> {
+    Binding(
+      get: { Int(self.settings.agentTakeVoicelessEndSec) },
+      set: { seconds in
+        let bounded = min(120, max(10, seconds))
+        if self.engine == nil { self.settings.agentTakeVoicelessEndSec = UInt64(bounded) }
+        self.persist("AGENT_TAKE_VOICELESS_END_SEC", String(bounded))
+      })
   }
 
   // MARK: - Agent workspace roots (list_projects tool)

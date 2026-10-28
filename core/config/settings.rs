@@ -123,6 +123,17 @@ pub const AGENT_SEND_HOLD_ENV: &str = "CODESCRIBE_AGENT_SEND_HOLD_SEC";
 /// Seconds between an Agent channel seal and automatic delivery; zero disables it.
 pub const DEFAULT_AGENT_SEND_HOLD_SEC: u32 = 10;
 
+/// Settings wire keys of the voice-conversation and built-in Agent timers.
+/// They live in `settings.json` only; none of them is read from the
+/// environment. The one env override is `CODESCRIBE_CHANNEL_AUTOSEAL_SECS`.
+pub const AGENT_AUTO_SEND_DELAY_KEY: &str = "AGENT_AUTO_SEND_DELAY_SEC";
+pub const AGENT_TAKE_VOICELESS_END_KEY: &str = "AGENT_TAKE_VOICELESS_END_SEC";
+pub const AGENT_CHANNEL_SESSION_POLICY_KEY: &str = "AGENT_CHANNEL_SESSION_POLICY";
+pub const AGENT_CHANNEL_SEND_PAUSE_KEY: &str = "AGENT_CHANNEL_SEND_PAUSE_SEC";
+pub const AGENT_CHANNEL_VOICELESS_CLOSE_KEY: &str = "AGENT_CHANNEL_VOICELESS_CLOSE_SEC";
+pub const AGENT_CHANNEL_SEGMENT_FINISH_KEY: &str = "AGENT_CHANNEL_SEGMENT_FINISH";
+pub const AGENT_CHANNEL_FORMAT_WAIT_KEY: &str = "AGENT_CHANNEL_FORMAT_WAIT_SEC";
+
 /// Power-user override for the product-owned Silero seal lane.
 ///
 /// The durable field lives at `audio.seal_lane_armed` in `settings.json` and
@@ -218,6 +229,12 @@ pub struct UserSettings {
     pub hold_start_delay_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub double_tap_interval_ms: Option<u64>,
+    /// Longest Option press that counts as a tap. `None` keeps the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tap_max_ms: Option<u64>,
+    /// Option taps ignored this long after typing. `None` keeps the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typing_quiet_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toggle_silence_sec: Option<f32>,
     /// Layer 1 Whisper context, seconds. `None` keeps the code default.
@@ -382,6 +399,27 @@ pub struct UserSettings {
     /// Agent-channel send hold in seconds. Zero disables the hold.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_send_hold_sec: Option<u32>,
+    /// Built-in Agent auto-send countdown in seconds (`1..=30`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_auto_send_delay_sec: Option<u64>,
+    /// A built-in Agent take without voice ends after this many seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_take_voiceless_end_sec: Option<u64>,
+    /// `agent_channel.session_policy`: `continuous` | `end_after_message`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_channel_session_policy: Option<String>,
+    /// `agent_channel.send_pause_sec`, `1.0..=15.0`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_channel_send_pause_sec: Option<f32>,
+    /// `agent_channel.voiceless_close_sec`: `0` = never, else `15..=600`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_channel_voiceless_close_sec: Option<u64>,
+    /// `agent_channel.segment_finish`: `off` | `light_plus` | `formatter`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_channel_segment_finish: Option<String>,
+    /// `agent_channel.format_wait_sec`, `1..=10`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_channel_format_wait_sec: Option<u64>,
     /// First-run operating lane chosen during onboarding ("basic" | "agentic").
     /// `None` means "not yet chosen" — callers treat that as the safe Basic lane.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1464,6 +1502,9 @@ pub(super) struct SettingsV2 {
     /// Agent runtime preferences (tool permissions gateway, …).
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<AgentV2>,
+    /// Voice conversation with a Codescribe Bus agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_channel: Option<AgentChannelV2>,
     /// Operator-defined LLM providers; vendors are pinned in code.
     #[serde(skip_serializing_if = "Option::is_none")]
     providers: Option<ProvidersV2>,
@@ -1479,6 +1520,22 @@ struct ProvidersV2 {
     pending_key_moves: Vec<super::keychain::KeyMove>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pending_env_key_imports: Vec<super::migrate::PendingEnvKeyImport>,
+}
+
+/// `agent_channel` section: how an open Fn+digit channel sends and ends.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct AgentChannelV2 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    send_pause_sec: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    voiceless_close_sec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    segment_finish: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format_wait_sec: Option<u64>,
 }
 
 /// `agent` section. Written only when at least one of its parts is present, so
@@ -1515,6 +1572,10 @@ struct InteractionV2 {
     agent_auto_send: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_send_hold_sec: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_auto_send_delay_sec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_take_voiceless_end_sec: Option<u64>,
     /// User-owned automatic paste policy shared by Hold and hands-free
     /// dictation. Assistive and safety vetoes are enforced by the controller.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1544,6 +1605,10 @@ struct InteractionV2 {
 struct TriggerV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     double_tap_interval_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tap_max_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    typing_quiet_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_silence_timeout_sec: Option<f32>,
 }
@@ -1796,6 +1861,8 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "WHISPER_LANGUAGE",
     "HOLD_START_DELAY_MS",
     "DOUBLE_TAP_INTERVAL_MS",
+    "TAP_MAX_MS",
+    "TYPING_QUIET_MS",
     "TOGGLE_SILENCE_SEC",
     "WHISPER_CONTEXT_WINDOW_SEC",
     "WHISPER_ADAPTIVE_BUFFER",
@@ -1863,6 +1930,13 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "AGENT_ENTER_SENDS",
     "AGENT_AUTO_SEND",
     AGENT_SEND_HOLD_ENV,
+    AGENT_AUTO_SEND_DELAY_KEY,
+    AGENT_TAKE_VOICELESS_END_KEY,
+    AGENT_CHANNEL_SESSION_POLICY_KEY,
+    AGENT_CHANNEL_SEND_PAUSE_KEY,
+    AGENT_CHANNEL_VOICELESS_CLOSE_KEY,
+    AGENT_CHANNEL_SEGMENT_FINISH_KEY,
+    AGENT_CHANNEL_FORMAT_WAIT_KEY,
     "ONBOARDING_MODE",
     "AGENT_WORKSPACE_ROOTS",
     // Voice Lab survivors
@@ -1949,8 +2023,14 @@ typed_setting_writes! {
         AGENT_SEND_HOLD_ENV => agent_send_hold_sec,
     }
     store_u64: u64, |value: &str| value.parse::<u64>().ok() => {
+        AGENT_AUTO_SEND_DELAY_KEY => agent_auto_send_delay_sec,
+        AGENT_TAKE_VOICELESS_END_KEY => agent_take_voiceless_end_sec,
+        AGENT_CHANNEL_VOICELESS_CLOSE_KEY => agent_channel_voiceless_close_sec => super::agent_channel::normalize_voiceless_close_sec,
+        AGENT_CHANNEL_FORMAT_WAIT_KEY => agent_channel_format_wait_sec,
         "HOLD_START_DELAY_MS" => hold_start_delay_ms,
         "DOUBLE_TAP_INTERVAL_MS" => double_tap_interval_ms,
+        "TAP_MAX_MS" => tap_max_ms,
+        "TYPING_QUIET_MS" => typing_quiet_ms,
         "CODESCRIBE_BUFFER_DELAY_MS" => buffer_delay_ms,
         "CODESCRIBE_EMIT_WORDS_MAX" => emit_words_max,
         "BACKEND_MAX_UPLOAD_MB" => backend_max_upload_mb,
@@ -1960,6 +2040,7 @@ typed_setting_writes! {
     store_f32: f32, |value: &str| value.parse::<f32>().ok() => {
         "SOUND_VOLUME" => sound_volume,
         "TOGGLE_SILENCE_SEC" => toggle_silence_sec,
+        AGENT_CHANNEL_SEND_PAUSE_KEY => agent_channel_send_pause_sec => super::agent_channel::normalize_send_pause_sec,
         "WHISPER_CONTEXT_WINDOW_SEC" => whisper_context_window_sec => super::normalize_whisper_context_window_sec,
         "LIGHT_PLUS_SENTENCE_PAUSE_SEC" => light_plus_sentence_pause_sec => super::normalize_light_plus_sentence_pause_sec,
         "CODESCRIBE_TYPING_CPS" => typing_cps,
@@ -1979,6 +2060,8 @@ impl UserSettings {
             interaction: Some(InteractionV2 {
                 trigger: Some(TriggerV2 {
                     double_tap_interval_ms: self.double_tap_interval_ms,
+                    tap_max_ms: self.tap_max_ms,
+                    typing_quiet_ms: self.typing_quiet_ms,
                     toggle_silence_timeout_sec: self.toggle_silence_sec,
                 }),
                 hold: Some(HoldV2 {
@@ -1998,6 +2081,14 @@ impl UserSettings {
                 agent_send_hold_sec: Some(
                     self.agent_send_hold_sec
                         .unwrap_or(DEFAULT_AGENT_SEND_HOLD_SEC),
+                ),
+                agent_auto_send_delay_sec: Some(
+                    self.agent_auto_send_delay_sec
+                        .unwrap_or(super::agent_channel::DEFAULT_AGENT_AUTO_SEND_DELAY_SEC),
+                ),
+                agent_take_voiceless_end_sec: Some(
+                    self.agent_take_voiceless_end_sec
+                        .unwrap_or(super::agent_channel::DEFAULT_AGENT_TAKE_VOICELESS_END_SEC),
                 ),
                 paste_mode: self.paste_mode,
                 deferred_insert_shortcut: self.deferred_insert_shortcut.clone(),
@@ -2107,6 +2198,7 @@ impl UserSettings {
                     capabilities,
                 }),
             },
+            agent_channel: Some(self.agent_channel_v2()),
             providers: (!self.llm_custom_providers.is_empty()
                 || !self.pending_key_moves.is_empty()
                 || !self.pending_env_key_imports.is_empty())
@@ -2115,6 +2207,43 @@ impl UserSettings {
                 pending_key_moves: self.pending_key_moves.clone(),
                 pending_env_key_imports: self.pending_env_key_imports.clone(),
             }),
+        }
+    }
+
+    /// The complete `agent_channel` section: every field written, each
+    /// missing one at its default, so the file states the whole contract.
+    fn agent_channel_v2(&self) -> AgentChannelV2 {
+        use super::agent_channel::{
+            ChannelSegmentFinish, ChannelSessionPolicy, DEFAULT_FORMAT_WAIT_SEC,
+            DEFAULT_SEND_PAUSE_SEC,
+        };
+        let session_policy = self
+            .agent_channel_session_policy
+            .as_deref()
+            .and_then(ChannelSessionPolicy::parse)
+            .unwrap_or_default();
+        AgentChannelV2 {
+            session_policy: Some(session_policy.as_str().to_string()),
+            send_pause_sec: Some(
+                self.agent_channel_send_pause_sec
+                    .unwrap_or(DEFAULT_SEND_PAUSE_SEC),
+            ),
+            voiceless_close_sec: Some(
+                self.agent_channel_voiceless_close_sec
+                    .unwrap_or(session_policy.default_voiceless_close_sec()),
+            ),
+            segment_finish: Some(
+                self.agent_channel_segment_finish
+                    .as_deref()
+                    .and_then(ChannelSegmentFinish::parse)
+                    .unwrap_or_default()
+                    .as_str()
+                    .to_string(),
+            ),
+            format_wait_sec: Some(
+                self.agent_channel_format_wait_sec
+                    .unwrap_or(DEFAULT_FORMAT_WAIT_SEC),
+            ),
         }
     }
 
@@ -2157,6 +2286,8 @@ impl UserSettings {
             mode_bindings: cloned!(v2.interaction, mode_bindings),
             hold_start_delay_ms: copy!(v2.interaction, hold, start_delay_ms),
             double_tap_interval_ms: copy!(v2.interaction, trigger, double_tap_interval_ms),
+            tap_max_ms: copy!(v2.interaction, trigger, tap_max_ms),
+            typing_quiet_ms: copy!(v2.interaction, trigger, typing_quiet_ms),
             toggle_silence_sec: copy!(v2.interaction, trigger, toggle_silence_timeout_sec),
             format_on_device: copy!(v2.speech, formatting, on_device),
             paste_mode: copy!(v2.interaction, paste_mode),
@@ -2245,6 +2376,13 @@ impl UserSettings {
             agent_enter_sends: copy!(v2.interaction, agent_enter_sends),
             agent_auto_send: copy!(v2.interaction, agent_auto_send),
             agent_send_hold_sec: copy!(v2.interaction, agent_send_hold_sec),
+            agent_auto_send_delay_sec: copy!(v2.interaction, agent_auto_send_delay_sec),
+            agent_take_voiceless_end_sec: copy!(v2.interaction, agent_take_voiceless_end_sec),
+            agent_channel_session_policy: cloned!(v2.agent_channel, session_policy),
+            agent_channel_send_pause_sec: copy!(v2.agent_channel, send_pause_sec),
+            agent_channel_voiceless_close_sec: copy!(v2.agent_channel, voiceless_close_sec),
+            agent_channel_segment_finish: cloned!(v2.agent_channel, segment_finish),
+            agent_channel_format_wait_sec: copy!(v2.agent_channel, format_wait_sec),
             buffer_delay_ms: copy!(v2.speech, emission, buffer_delay_ms),
             typing_cps: copy!(v2.speech, emission, typing_cps),
             emit_words_max: copy!(v2.speech, emission, emit_words_max),
@@ -2283,6 +2421,20 @@ impl UserSettings {
             .and_then(|formatting| formatting.level.as_deref())
         {
             FormattingPolicy::parse(level)?;
+        }
+        if let Some(channel) = v2.agent_channel.as_ref() {
+            if let Some(policy) = channel.session_policy.as_deref()
+                && super::agent_channel::ChannelSessionPolicy::parse(policy).is_none()
+            {
+                anyhow::bail!(
+                    "agent_channel.session_policy must be continuous or end_after_message"
+                )
+            }
+            if let Some(finish) = channel.segment_finish.as_deref()
+                && super::agent_channel::ChannelSegmentFinish::parse(finish).is_none()
+            {
+                anyhow::bail!("agent_channel.segment_finish must be off, light_plus or formatter")
+            }
         }
         Ok(())
     }
@@ -2953,6 +3105,8 @@ impl UserSettings {
                     "agent_enter_sends",
                     "agent_auto_send",
                     "agent_send_hold_sec",
+                    "agent_auto_send_delay_sec",
+                    "agent_take_voiceless_end_sec",
                 ],
             )?;
 
@@ -2975,6 +3129,8 @@ impl UserSettings {
                     "agent_enter_sends",
                     "agent_auto_send",
                     "agent_send_hold_sec",
+                    "agent_auto_send_delay_sec",
+                    "agent_take_voiceless_end_sec",
                 ],
             )?;
             let _: Self = serde_json::from_value(value.clone())?;
@@ -3292,6 +3448,26 @@ impl UserSettings {
                 }
             }
             "TRANSCRIPT_SEND_MODE" => self.transcript_send_mode = Some(value.to_owned()),
+            AGENT_CHANNEL_SESSION_POLICY_KEY => {
+                match super::agent_channel::ChannelSessionPolicy::parse(value) {
+                    Some(policy) => {
+                        self.agent_channel_session_policy = Some(policy.as_str().to_string());
+                    }
+                    None => {
+                        return reject(format!("Rejected channel session policy: {value}"), false);
+                    }
+                }
+            }
+            AGENT_CHANNEL_SEGMENT_FINISH_KEY => {
+                match super::agent_channel::ChannelSegmentFinish::parse(value) {
+                    Some(finish) => {
+                        self.agent_channel_segment_finish = Some(finish.as_str().to_string());
+                    }
+                    None => {
+                        return reject(format!("Rejected channel segment finish: {value}"), false);
+                    }
+                }
+            }
             "AUDIO_INPUT_DEVICE" => self.audio_input_device = Some(value.to_owned()),
             "AUDIO_RETENTION" => {
                 self.audio_retention = Some(

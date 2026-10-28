@@ -1220,8 +1220,12 @@ final class OverlayState {
   private var isPointerHovering = false
   private let nowProvider: () -> TimeInterval
   private let autoSendEnabled: () -> Bool
+  /// `interaction.agent_auto_send_delay_sec`: how long an armed Agent take
+  /// waits before it sends.
+  private let autoSendDelay: () -> TimeInterval
   private let micAccessProvider: () -> Bool
-  /// Terminal countdown for non-Agent outcomes and opted-in Agent delivery.
+  /// Terminal countdown for non-Agent outcomes. An armed Agent take waits
+  /// `autoSendDelay` instead, which defaults to the same 5 s.
   static let autoHideDelaySeconds: TimeInterval = 5
   /// Unpinning a resting overlay lets it go, never at the click itself: the
   /// panel the pin held stays this long, so a mistaken click can be undone.
@@ -1246,6 +1250,9 @@ final class OverlayState {
   init(
     nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend },
+    autoSendDelay: @escaping () -> TimeInterval = {
+      TimeInterval(CodescribeConfig().loadSettings().agentAutoSendDelaySec)
+    },
     micAccessProvider: @escaping () -> Bool = { micPermissionGranted() || requestMicPermission() },
     autoCollapseScheduler: @escaping OverlayAutoCollapse.Scheduler = OverlayAutoCollapse
       .liveScheduler
@@ -1255,6 +1262,7 @@ final class OverlayState {
     listener = DictationListener(continuation: channel.continuation)
     self.nowProvider = nowProvider
     self.autoSendEnabled = autoSendEnabled
+    self.autoSendDelay = autoSendDelay
     self.micAccessProvider = micAccessProvider
     autoCollapse = OverlayAutoCollapse(now: nowProvider, schedule: autoCollapseScheduler)
     eventTask = Task { @MainActor [weak self, eventStream] in
@@ -2875,8 +2883,8 @@ final class OverlayState {
     @MainActor ([String], OverlayCaptureAttachmentTarget) async throws -> Void = { paths, target in
       try await RealAgentBridgeInstaller.stageCaptureAttachments(paths: paths, target: target)
     }
-  @ObservationIgnored private var pendingDraftProjections: [String: CsTranscriptProjectionEvent] =
-    [:]
+  @ObservationIgnored private(set) var pendingDraftProjections:
+    [String: CsTranscriptProjectionEvent] = [:]
   @ObservationIgnored private var otherComposerOwnsCapture: (() -> Bool)?
   private(set) var pendingTextMessages: Set<String> = []
   private(set) var textMessageErrors: [String: String] = [:]
@@ -3033,9 +3041,13 @@ final class OverlayState {
       pendingDraftProjections.removeAll()
       for projection in waiting { admitComposerDelivery(projection, affectsCurrentCapture: false) }
     }
+    // The take's audience is frozen at its request: only conversations linked
+    // while the words are spoken may receive them (Roman's pre-join leak).
+    let audience = draftGroupIndex(for: conversation.id).map { conversationDraftGroups[$0].members }
     await draftCapture.toggle(
       conversationID: conversation.id,
-      busy: audioCaptureActive || otherComposerOwnsCapture?() == true)
+      busy: audioCaptureActive || otherComposerOwnsCapture?() == true,
+      audience: audience ?? [conversation.id])
   }
 
   func draftMicrophoneBusy(in conversation: OverlayConversation) -> Bool {
@@ -4950,12 +4962,13 @@ final class OverlayState {
       return
     }
     cancelAutoHide()
+    let terminalDelay = agentSessionArmed ? autoSendDelay() : OverlayState.autoHideDelaySeconds
     let delay =
       pinReleaseArmed
       ? OverlayState.pinReleaseDelaySeconds
       : presentationMode == .expanded
-        ? max(OverlayState.autoHideDelaySeconds, selectedReplyReadingSeconds ?? 0)
-        : OverlayState.autoHideDelaySeconds
+        ? max(terminalDelay, selectedReplyReadingSeconds ?? 0)
+        : terminalDelay
     autoHideDeadline = nowProvider() + delay
     scheduleAutoHideWake(after: delay, generation: captureGeneration)
   }
@@ -5810,11 +5823,25 @@ final class OverlayState {
     if let destination = draftCapture.destination(for: projection.sessionId) {
       let parts = ConversationDraft.split(conversationDraft(for: destination))
       let appended = parts.text.isEmpty ? text : "\n" + text
+      let linked = draftGroupIndex(for: destination).map { conversationDraftGroups[$0].members }
+      let audience = draftCapture.audience(for: projection.sessionId)
+      guard linked.map({ $0.isSubset(of: audience) }) ?? true else {
+        // Someone joined after these words were spoken. They stay private to
+        // the destination; the changed prose starts a fresh shared epoch.
+        setConversationDraft(
+          ConversationDraft.compose(text: parts.text + appended, attachments: parts.attachments),
+          for: destination)
+        admittedComposerSessions.insert(projection.sessionId)
+        retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
+        return
+      }
       applyConversationProseEdit(
         OverlayComposerProseEdit(
           before: parts.text, after: parts.text + appended,
-          replacements: [OverlayComposerTextReplacement(
-            range: NSRange(location: parts.text.utf16.count, length: 0), replacement: appended)]),
+          replacements: [
+            OverlayComposerTextReplacement(
+              range: NSRange(location: parts.text.utf16.count, length: 0), replacement: appended)
+          ]),
         for: destination)
       admittedComposerSessions.insert(projection.sessionId)
       retainedComposerDocuments.removeAll { $0.id == projection.sessionId }

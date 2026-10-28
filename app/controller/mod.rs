@@ -46,14 +46,14 @@ pub(crate) mod live_archive;
 pub use live_archive::ArchiveRefusal;
 #[cfg(test)]
 mod channel_tray_tests;
+#[cfg(test)]
+mod formatter_selection_acceptance;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
 pub mod serving_status;
 #[cfg(test)]
 mod silver_start_refusal_tests;
-#[cfg(test)]
-mod formatter_selection_acceptance;
 /// Measured speech phases shared by agent channels and the assistive take.
 mod speech_clock;
 mod transcript_delivery;
@@ -117,9 +117,9 @@ use codescribe_core::tts::AudioPlayer;
 use delivery_route::DeliveryFacts;
 use helpers::send_assistive_with_agent_runtime_lane;
 use hotkey_policy::{
-    STOP_TIMEOUT, effective_hold_start_delay_ms, should_apply_incoming_mode_flags,
-    should_block_hotkey_during_agent_send, should_use_toggle_adjudicated_stop,
-    toggle_final_pass_enabled,
+    STOP_TIMEOUT, effective_hold_start_delay_ms, hold_start_redirects_to_composer,
+    should_apply_incoming_mode_flags, should_block_hotkey_during_agent_send,
+    should_use_toggle_adjudicated_stop, toggle_final_pass_enabled,
 };
 use transcript_delivery::TranscriptDeliveryTagger;
 
@@ -3788,66 +3788,13 @@ impl RecordingController {
         if wait.preempted {
             wait.live_finals_admitted = false;
         }
-        let preempted = wait.preempted;
-        if take_delivers_to_composer(capture_turn) {
-            return StopCanvasDelivery {
-                delivery: Ok(None),
-                preempted: false,
-            };
-        }
-        if preempted {
-            // A new take does not authorize pasting the old take's unfinished
-            // paint. Its owned drain retains the audio and terminal document.
-            self.record_delivery_disposition(TranscriptDelivery::Retained)
-                .await;
-            return StopCanvasDelivery {
-                delivery: Ok(Some(TranscriptDelivery::Retained)),
-                preempted: true,
-            };
-        }
-        if !assistive
-            && runtime_settings.formatting_policy() != FormattingPolicy::Off
-            && presentation
-                .as_ref()
-                .is_some_and(|emitter| !emitter.literal_delivery())
-        {
-            // The painted prefix is not the terminal formatter source. Selecting
-            // it here would permanently freeze the fallback before the last
-            // occurrence results can settle. PCM is already closed; leave the
-            // one delivery claim to the existing terminal path.
-            return StopCanvasDelivery {
-                delivery: Ok(None),
-                preempted: false,
-            };
-        }
-        let committed_canvas = wait
-            .snapshot
-            .as_ref()
-            .is_some_and(|canvas| canvas.has_committed_document && canvas.preview_only_words == 0);
-        if !wait.permits_first_delivery(take_id) {
-            info!(
-                take_id,
-                stop_final_wait_ms = wait.stop_final_wait_ms,
-                stop_final_timeout = wait.stop_final_timeout,
-                live_finals_admitted = wait.live_finals_admitted,
-                committed_canvas,
-                "stop paste deferred until terminal text settlement"
-            );
-            // None leaves the single delivery claim for the existing terminal
-            // path. A paint timeout or recognizer close cannot settle a prefix
-            // and suppress the later, complete document.
-            return StopCanvasDelivery {
-                delivery: Ok(None),
-                preempted: false,
-            };
-        }
         let config = runtime_settings.values().clone();
-        let delivery = self
-            .settle_frozen_canvas_at_stop(
+        self.stop_canvas_delivery(
                 take_id,
                 presentation.as_deref(),
                 wait,
                 stop.stopped_at,
+                (assistive, capture_turn, runtime_settings),
                 |text| async move {
                     let text = if !assistive {
                         self.select_paste_projection(take_id, runtime_settings, text)
@@ -3918,6 +3865,80 @@ impl RecordingController {
                     .await
                 },
             )
+            .await
+    }
+
+    /// Decide first-Stop delivery before invoking the single transport boundary.
+    /// Tests supply that boundary after the original ClosedTake completion wait.
+    async fn stop_canvas_delivery<F, Fut>(
+        &self,
+        take_id: Option<&str>,
+        presentation: Option<&PresentationEmitter>,
+        wait: StopCanvasWait,
+        stop_start: std::time::Instant,
+        intent: (bool, CaptureTurnIntent, &RuntimeSettingsSnapshot),
+        deliver: F,
+    ) -> StopCanvasDelivery
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<TranscriptDelivery>>,
+    {
+        let (assistive, capture_turn, runtime_settings) = intent;
+        let preempted = wait.preempted;
+        if take_delivers_to_composer(capture_turn) {
+            return StopCanvasDelivery {
+                delivery: Ok(None),
+                preempted: false,
+            };
+        }
+        if preempted {
+            // A new take does not authorize pasting the old take's unfinished
+            // paint. Its owned drain retains the audio and terminal document.
+            self.record_delivery_disposition(TranscriptDelivery::Retained)
+                .await;
+            return StopCanvasDelivery {
+                delivery: Ok(Some(TranscriptDelivery::Retained)),
+                preempted: true,
+            };
+        }
+        if !assistive
+            && runtime_settings.formatting_policy() != FormattingPolicy::Off
+            && presentation
+                .as_ref()
+                .is_some_and(|emitter| !emitter.literal_delivery())
+        {
+            // The painted prefix is not the terminal formatter source. Selecting
+            // it here would permanently freeze the fallback before the last
+            // occurrence results can settle. PCM is already closed; leave the
+            // one delivery claim to the existing terminal path.
+            return StopCanvasDelivery {
+                delivery: Ok(None),
+                preempted: false,
+            };
+        }
+        let committed_canvas = wait
+            .snapshot
+            .as_ref()
+            .is_some_and(|canvas| canvas.has_committed_document && canvas.preview_only_words == 0);
+        if !wait.permits_first_delivery(take_id) {
+            info!(
+                take_id,
+                stop_final_wait_ms = wait.stop_final_wait_ms,
+                stop_final_timeout = wait.stop_final_timeout,
+                live_finals_admitted = wait.live_finals_admitted,
+                committed_canvas,
+                "stop paste deferred until terminal text settlement"
+            );
+            // None leaves the single delivery claim for the existing terminal
+            // path. A paint timeout or recognizer close cannot settle a prefix
+            // and suppress the later, complete document.
+            return StopCanvasDelivery {
+                delivery: Ok(None),
+                preempted: false,
+            };
+        }
+        let delivery = self
+            .settle_frozen_canvas_at_stop(take_id, presentation, wait, stop_start, deliver)
             .await
             .map(Some);
         StopCanvasDelivery {
@@ -6228,6 +6249,24 @@ impl RecordingController {
                 return;
             }
 
+            // The caret sits in one of Codescribe's own message fields. That
+            // field records through its own microphone; global dictation would
+            // steal focus to the overlay and deliver elsewhere. Stay idle and
+            // let the field show the person where its microphone is.
+            if hold_start_redirects_to_composer(
+                assistive,
+                *hold_mode.read().await,
+                hotkeys::composer_caret_owned(),
+            ) {
+                info!("Hold-start refused: a Codescribe composer owns the caret");
+                let _ = event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::ComposerDictationRedirected,
+                });
+                return;
+            }
+
             if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
                 if let Err(error) = controller.close_agent_channels_for_dictation().await {
                     error!(%error, "Hold-start refused: agent channel did not close");
@@ -6718,11 +6757,13 @@ impl RecordingController {
         })
         .map(Arc::new);
 
-        // A hands-free assistive take ends after 30 s without voice; any other
-        // take clears the previous take's watch.
+        // A hands-free assistive take ends after its voiceless limit
+        // (Settings › Built-in Agent); any other take clears the previous
+        // take's watch.
         let speech_observer = self.arm_assistive_silence(
             &new_session_id,
             is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree),
+            config.agent_take_voiceless_end_sec,
         );
         // Runtime pipeline is always event-based.
         let pipeline = Self::configure_toggle_event_sink(
@@ -7460,10 +7501,7 @@ impl RecordingController {
         let language = runtime_settings.values().whisper_language;
         // The one paid call this take is allowed. Same production entry point
         // the explicit overlay formatter uses; no second lane, no retry loop.
-        let consultation = match self
-            .selected_max_consultation(runtime_settings)
-            .await
-        {
+        let consultation = match self.selected_max_consultation(runtime_settings).await {
             Ok(consultation) => consultation,
             Err(error) => {
                 warn!(%error, "Max consultation unavailable; preserving committed transcript");
@@ -7533,7 +7571,10 @@ impl RecordingController {
             .visible_canvas_snapshot()
             .is_some_and(|canvas| Some(canvas.session_id.as_str()) == take_id)
         {
-            warn!(take_id, "Stop formatter selection refused a different capture presentation");
+            warn!(
+                take_id,
+                "Stop formatter selection refused a different capture presentation"
+            );
             return raw;
         }
         if presentation.literal_delivery() {
@@ -7562,7 +7603,8 @@ impl RecordingController {
         {
             info!(status = "Smart unavailable — delivered Corrections", source_revision = projection.source_raw_revision, receipt = %projection.receipt_id);
         }
-        if projection.requested_mode != projection.delivered_mode || projection.status != "applied" {
+        if projection.requested_mode != projection.delivered_mode || projection.status != "applied"
+        {
             self.publish_formatting_degraded(take_id);
         }
         projection.rendered_text

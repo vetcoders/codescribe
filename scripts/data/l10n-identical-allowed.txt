@@ -19,6 +19,7 @@
 %@ Hz
 %@ s
 %lld s
+%lld min
 %lld ms
 %@ · %@ MB
 %@ · %@ / %@ MB

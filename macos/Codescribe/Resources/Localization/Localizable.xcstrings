@@ -1219,6 +1219,16 @@
         }
       }
     },
+    "%lld min" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld min"
+          }
+        }
+      }
+    },
     "%lld models discovered from provider" : {
       "comment" : "Model discovery status; needs a plural variation",
       "localizations" : {
@@ -1975,6 +1985,16 @@
         }
       }
     },
+    "A hands-free Agent recording that hears no voice stops and sends nothing." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagranie Agenta bez trzymania, które nie słyszy głosu, kończy się i niczego nie wysyła."
+          }
+        }
+      }
+    },
     "A license unlocks Agent mode." : {
       "comment" : "User panel, License section: what a license unlocks",
       "localizations" : {
@@ -2012,6 +2032,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Serwer o tej nazwie już istnieje. Wybierz inną nazwę."
+          }
+        }
+      }
+    },
+    "A session that hears no voice ends on its own. Agent replies do not count." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sesja, która nie słyszy głosu, kończy się sama. Odpowiedzi agenta się nie liczą."
           }
         }
       }
@@ -2538,6 +2568,16 @@
         }
       }
     },
+    "Adds the closing punctuation; nothing else changes." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaje końcową interpunkcję; reszta zostaje bez zmian."
+          }
+        }
+      }
+    },
     "Advanced" : {
       "localizations" : {
         "pl" : {
@@ -2607,6 +2647,26 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "After how many seconds" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Po ilu sekundach"
+          }
+        }
+      }
+    },
+    "After the message" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Po wiadomości"
           }
         }
       }
@@ -3709,16 +3769,6 @@
         }
       }
     },
-    "Auto-send to the built-in Agent" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wysyłaj automatycznie do wbudowanego Agenta"
-          }
-        }
-      }
-    },
     "Automatic playback muted" : {
       "localizations" : {
         "pl" : {
@@ -3905,6 +3955,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Data kompilacji"
+          }
+        }
+      }
+    },
+    "Built-in Agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wbudowany Agent"
           }
         }
       }
@@ -4567,6 +4627,26 @@
         }
       }
     },
+    "Channel close without voice" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zamknięcie kanału bez głosu"
+          }
+        }
+      }
+    },
+    "Channel formatting wait" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Czekanie kanału na formatowanie"
+          }
+        }
+      }
+    },
     "Channel map" : {
       "comment" : "Compact overlay: the collapsed counter that stands for every mapped channel",
       "localizations" : {
@@ -4585,6 +4665,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mapa kanałów w nakładce"
+          }
+        }
+      }
+    },
+    "Channel message finish" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykończenie wiadomości kanału"
+          }
+        }
+      }
+    },
+    "Channel send pause" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pauza wysyłki kanału"
+          }
+        }
+      }
+    },
+    "Channel session" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sesja kanału"
           }
         }
       }
@@ -5079,6 +5189,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zamknij panel kontekstu"
+          }
+        }
+      }
+    },
+    "Close without voice after" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zamknij bez głosu po"
           }
         }
       }
@@ -6781,6 +6901,16 @@
         }
       }
     },
+    "Countdown before the transcript is sent." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odliczanie przed wysłaniem transkrypcji."
+          }
+        }
+      }
+    },
     "Creator" : {
       "comment" : "Settings section: first-run setup and basics",
       "localizations" : {
@@ -7742,6 +7872,16 @@
         }
       }
     },
+    "Each pause sends a message; the conversation lasts until you hang up." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Każda pauza wysyła wiadomość; rozmowa trwa do rozłączenia."
+          }
+        }
+      }
+    },
     "Edit" : {
       "comment" : "Dictation panel: template segment, the raw template",
       "localizations" : {
@@ -7866,6 +8006,16 @@
         }
       }
     },
+    "End the Agent recording without voice after" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakończ nagranie Agenta bez głosu po"
+          }
+        }
+      }
+    },
     "End the chord with a letter or Space." : {
       "comment" : "Widget shortcut recorder refusal",
       "localizations" : {
@@ -7873,6 +8023,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończ skrót literą albo Spacją."
+          }
+        }
+      }
+    },
+    "End the session" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakończ sesję"
           }
         }
       }
@@ -8238,6 +8398,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gotowe"
+          }
+        }
+      }
+    },
+    "Finish each message" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykończenie każdej wiadomości"
           }
         }
       }
@@ -8956,6 +9126,16 @@
         }
       }
     },
+    "Hands-free dictation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dyktowanie bez trzymania"
+          }
+        }
+      }
+    },
     "Hang up the channel first, then remove the agent from the list" : {
       "comment" : "Drawer cross on an agent whose microphone channel is open",
       "localizations" : {
@@ -9563,6 +9743,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zachowuj nagrania"
+          }
+        }
+      }
+    },
+    "Keep listening" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słuchaj dalej"
           }
         }
       }
@@ -12819,6 +13009,16 @@
         }
       }
     },
+    "One formatting pass at your formatting level, within the wait below." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jedno przejście formatowania na Twoim poziomie, w czasie czekania poniżej."
+          }
+        }
+      }
+    },
     "One is enough: sign in with a provider account or add an API key. You can also do this later." : {
       "comment" : "Setup step description; the account and the key are alternatives",
       "localizations" : {
@@ -13458,6 +13658,16 @@
         }
       }
     },
+    "Past this, the message is sent with punctuation only." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Po tym czasie wiadomość wychodzi tylko z interpunkcją."
+          }
+        }
+      }
+    },
     "Paste after dictation" : {
       "localizations" : {
         "pl" : {
@@ -13545,12 +13755,32 @@
         }
       }
     },
-    "Pause before sending to Codescribe Bus" : {
+    "Pause %@" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Pauza przed wysłaniem do Codescribe Bus"
+            "state" : "translated",
+            "value" : "Pauza %@"
+          }
+        }
+      }
+    },
+    "Pause before sending" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pauza przed wysłaniem"
+          }
+        }
+      }
+    },
+    "Pause before sending (env override)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pauza przed wysłaniem (nadpisane przez env)"
           }
         }
       }
@@ -14139,6 +14369,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pulsujący czerwony"
+          }
+        }
+      }
+    },
+    "Punctuation (Light+)" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Interpunkcja (Light+)"
           }
         }
       }
@@ -16545,6 +16785,16 @@
         }
       }
     },
+    "Send automatically" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wysyłaj automatycznie"
+          }
+        }
+      }
+    },
     "Send dictation audio to the cloud?" : {
       "comment" : "Cloud consent confirmation: dialog title",
       "localizations" : {
@@ -16651,12 +16901,12 @@
         }
       }
     },
-    "Sends the transcript after 5 seconds unless you start editing it." : {
+    "Sends the transcript unless you start editing it." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wyślij transkrypcję po 5 sekundach, jeśli nie rozpoczniesz edycji."
+            "value" : "Wysyła transkrypcję, chyba że zaczniesz ją edytować."
           }
         }
       }
@@ -17207,12 +17457,32 @@
         }
       }
     },
-    "Silence after you stop speaking before the message is sent; also the hands-free dictation limit. Applies from the next channel or recording." : {
+    "Silence after you stop speaking before the message is sent. Applies from the next channel." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Cisza po zakończeniu mowy, po której wiadomość zostaje wysłana; także limit dyktowania bez trzymania klawisza. Działa od następnego kanału lub nagrania."
+            "state" : "translated",
+            "value" : "Cisza po zakończeniu mówienia, po której wiadomość zostaje wysłana. Obowiązuje od następnego kanału."
+          }
+        }
+      }
+    },
+    "Silence after you stop speaking that closes an utterance while a hands-free recording keeps running. Applies from the next recording." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cisza po zakończeniu mówienia, która zamyka wypowiedź, gdy nagranie bez trzymania trwa dalej. Obowiązuje od następnego nagrania."
+          }
+        }
+      }
+    },
+    "Silence limit in hands-free dictation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Limit ciszy w dyktowaniu bez trzymania"
           }
         }
       }
@@ -19307,6 +19577,16 @@
         }
       }
     },
+    "The message is sent exactly as transcribed." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiadomość wychodzi dokładnie tak, jak została rozpoznana."
+          }
+        }
+      }
+    },
     "The message is too long (64 KB limit)." : {
       "localizations" : {
         "pl" : {
@@ -19334,6 +19614,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przy okazji zaktualizowana zostanie nieaktualna kopia dla %@."
+          }
+        }
+      }
+    },
+    "The pause sends the message and hangs up; press again for the next one." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pauza wysyła wiadomość i rozłącza; następną zaczniesz kolejnym naciśnięciem."
           }
         }
       }
@@ -20575,6 +20865,18 @@
         }
       }
     },
+    "Use the microphone button in the message field" : {
+      "comment" : "Shown in a message field when Fn is held while typing in it",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Użyj mikrofonu w polu wiadomości"
+          }
+        }
+      }
+    },
     "Use the saved transcript when automatic pasting is unavailable." : {
       "localizations" : {
         "en" : {
@@ -20829,12 +21131,32 @@
         }
       }
     },
+    "Voice conversation with an agent" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmowa głosowa z agentem"
+          }
+        }
+      }
+    },
     "Volume" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Głośność"
+          }
+        }
+      }
+    },
+    "Wait for formatting" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Czekanie na formatowanie"
           }
         }
       }
@@ -22621,6 +22943,16 @@
         }
       }
     },
+    "formatting ≤ %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wygładzanie ≤ %@"
+          }
+        }
+      }
+    },
     "formatting…" : {
       "localizations" : {
         "pl" : {
@@ -22638,6 +22970,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "przyznano %@ · wybierz, aby cofnąć"
+          }
+        }
+      }
+    },
+    "hold %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "przytrzymanie %@"
           }
         }
       }
@@ -22710,6 +23052,78 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Naciśnij dwukrotnie klawisz Control"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.doubleLeftOption" : {
+      "comment" : "Gesture option: tap the left Option key twice",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "2× Left ⌥ (Option)"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2× lewy ⌥ (Option)"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.doubleLeftOption.spoken" : {
+      "comment" : "VoiceOver reading of a gesture option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Tap the left Option key twice"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naciśnij dwukrotnie lewy klawisz Option"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.doubleRightOption" : {
+      "comment" : "Gesture option: tap the right Option key twice",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "2× Right ⌥ (Option)"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2× prawy ⌥ (Option)"
+          }
+        }
+      }
+    },
+    "hotkeys.binding.doubleRightOption.spoken" : {
+      "comment" : "VoiceOver reading of a gesture option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Tap the right Option key twice"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naciśnij dwukrotnie prawy klawisz Option"
           }
         }
       }
@@ -22930,24 +23344,6 @@
         }
       }
     },
-    "hotkeys.mode.agent.noShortcut" : {
-      "comment" : "Shortcuts screen: replaces the gesture picker for the Agent; the quoted name is a menu bar item",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Start the Agent from the menu bar (“Start in Agent mode”). The keyboard shortcut is turned off."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agenta uruchomisz z menu na pasku („Start w trybie Agenta”). Skrót klawiaturowy jest wyłączony."
-          }
-        }
-      }
-    },
     "hotkeys.mode.dictation" : {
       "comment" : "Work mode name on the Shortcuts screen",
       "extractionState" : "extracted_with_value",
@@ -22998,24 +23394,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dyktowanie z formatowaniem AI"
-          }
-        }
-      }
-    },
-    "hotkeys.mode.formatting.noShortcut" : {
-      "comment" : "Shortcuts screen: replaces the gesture picker for Formatting",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Start Formatting from the menu bar or the overlay. The keyboard shortcut is turned off."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Formatowanie uruchomisz z menu na pasku lub z nakładki. Skrót klawiaturowy jest wyłączony."
           }
         }
       }
@@ -24367,6 +24745,16 @@
         }
       }
     },
+    "sent and hung up" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wysłane i rozłączone"
+          }
+        }
+      }
+    },
     "sent to Agent" : {
       "comment" : "Dictionary: quality record action",
       "localizations" : {
@@ -24384,6 +24772,67 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "wysłano · oczekiwanie na potwierdzenie odbioru"
+          }
+        }
+      }
+    },
+    "sent; the conversation lasts until you hang up" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wysłane; rozmowa trwa do rozłączenia"
+          }
+        }
+      }
+    },
+    "settings.agentChannel.finish.off" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Off"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wył."
+          }
+        }
+      }
+    },
+    "settings.agentChannel.source.env" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "env override"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "nadpisane przez env"
+          }
+        }
+      }
+    },
+    "settings.agentChannel.source.settings" : {
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "settings"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ustawienia"
           }
         }
       }
@@ -24838,38 +25287,92 @@
         }
       }
     },
-    "settings.shortcuts.conflict.agentHasNoShortcut" : {
-      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
+    "settings.shortcuts.conflict.alreadyAgent" : {
+      "comment" : "Shortcuts screen: blocking conflict, two modes on one gesture",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "This gesture starts only Dictation. The Agent has no shortcut: start it from the menu bar."
+            "value" : "The Agent already uses this gesture. One gesture starts one mode."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ten gest uruchamia tylko Dyktowanie. Agent nie ma skrótu: włączysz go z menu na pasku."
+            "value" : "Tego gestu używa już Agent. Jeden gest uruchamia jeden tryb."
           }
         }
       }
     },
-    "settings.shortcuts.conflict.formattingHasNoShortcut" : {
+    "settings.shortcuts.conflict.alreadyDictation" : {
+      "comment" : "Shortcuts screen: blocking conflict, two modes on one gesture",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Dictation already uses this gesture. One gesture starts one mode."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tego gestu używa już Dyktowanie. Jeden gest uruchamia jeden tryb."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.conflict.alreadyFormatting" : {
+      "comment" : "Shortcuts screen: blocking conflict, two modes on one gesture",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Formatting already uses this gesture. One gesture starts one mode."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tego gestu używa już Formatowanie. Jeden gest uruchamia jeden tryb."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.conflict.holdOnlyDictatesNotAgent" : {
       "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "This gesture starts only Dictation. Formatting has no shortcut: start it from the menu bar."
+            "value" : "A hold starts only Dictation. The Agent starts with 2× Ctrl or 2× ⌥ (Option)."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ten gest uruchamia tylko Dyktowanie. Formatowanie nie ma skrótu: włączysz je z menu na pasku."
+            "value" : "Przytrzymanie uruchamia tylko Dyktowanie. Agenta uruchamia 2× Ctrl albo 2× ⌥ (Option)."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.conflict.holdOnlyDictatesNotFormatting" : {
+      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "A hold starts only Dictation. Formatting starts with 2× Ctrl or 2× ⌥ (Option)."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przytrzymanie uruchamia tylko Dyktowanie. Formatowanie uruchamia 2× Ctrl albo 2× ⌥ (Option)."
           }
         }
       }
@@ -24892,6 +25395,276 @@
         }
       }
     },
+    "settings.shortcuts.conflict.optionNeverDictates" : {
+      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "2× ⌥ (Option) never starts Dictation: Option also types characters. Dictation starts with a hold or 2× Ctrl."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2× ⌥ (Option) nigdy nie uruchamia Dyktowania: Option wpisuje też znaki. Dyktowanie uruchamia przytrzymanie albo 2× Ctrl."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.idle" : {
+      "comment" : "Shortcuts screen: gesture test before it runs",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Start the test, then double-tap Option. Nothing starts while it runs."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpocznij test i stuknij dwa razy Option. W trakcie testu nic się nie uruchomi."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.modifierActive" : {
+      "comment" : "Gesture test outcome: another modifier or a hold was active",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Another key held"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inny klawisz wciśnięty"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.mouse" : {
+      "comment" : "Gesture test outcome: a click or scroll happened between the taps",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Mouse"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mysz"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.notAssigned" : {
+      "comment" : "Gesture test outcome: no mode is bound to the tapped Option side",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "No mode on this Option"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten Option nie ma trybu"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.recognized" : {
+      "comment" : "Gesture test outcome: the double-tap was recognized",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Recognized"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpoznano"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.start" : {
+      "comment" : "Shortcuts screen: start trying the gesture",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Start test"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpocznij test"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.stop" : {
+      "comment" : "Shortcuts screen: stop trying the gesture",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Stop test"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakończ test"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.synthetic" : {
+      "comment" : "Gesture test outcome: the key events did not come from the keyboard",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Synthetic"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Syntetyczne"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.title" : {
+      "comment" : "Shortcuts screen: row to try the Option double-tap",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Gesture test"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test gestu"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.tooLong" : {
+      "comment" : "Gesture test outcome: a press lasted too long to be a tap",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Too long"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Za długo"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.tooSlow" : {
+      "comment" : "Gesture test outcome: the second tap came too late",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Too slow"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Za wolno"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.typedRecently" : {
+      "comment" : "Gesture test outcome: a key was typed just before or with Option",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Typing detected"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykryto pisanie"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.gestureTest.waiting" : {
+      "comment" : "Shortcuts screen: gesture test is running, nothing tapped yet",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Waiting for a double-tap…"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Czekam na podwójne stuknięcie…"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.modeFooter" : {
+      "comment" : "Shortcuts screen: footer under the three mode gestures",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Formatting and the Agent also start from the menu bar or the overlay. Their gestures are off until you pick one."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie i Agenta uruchomisz też z menu na pasku lub z nakładki. Ich gesty są wyłączone, dopóki żadnego nie wybierzesz."
+          }
+        }
+      }
+    },
     "settings.shortcuts.note.fnTapOwnedByMacos" : {
       "comment" : "Shortcuts screen: informational note about macOS, never an error",
       "extractionState" : "extracted_with_value",
@@ -24906,6 +25679,78 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Krótkie naciśnięcie Fn otwiera w macOS wybór emoji lub dyktowanie. Codescribe przechwytuje je pierwszy, więc funkcja macOS może się nie uruchomić."
+          }
+        }
+      }
+    },
+    "settings.shortcuts.optionTiming.interval" : {
+      "comment" : "Shortcuts screen: longest gap between the two Option taps",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Double-tap interval"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odstęp podwójnego stuknięcia"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.optionTiming.section" : {
+      "comment" : "Shortcuts screen: section with the Option double-tap timing",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Option double-tap"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podwójne stuknięcie Option"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.optionTiming.tapMax" : {
+      "comment" : "Shortcuts screen: longest Option press that still counts as a tap",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Longest tap"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najdłuższe stuknięcie"
+          }
+        }
+      }
+    },
+    "settings.shortcuts.optionTiming.typingQuiet" : {
+      "comment" : "Shortcuts screen: Option taps right after typing count for nothing for this long",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Ignore taps while typing for"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ignoruj stuknięcia podczas pisania przez"
           }
         }
       }

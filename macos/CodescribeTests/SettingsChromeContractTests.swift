@@ -516,18 +516,38 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(lanes.contains("@State private var detailsExpanded = false"))
     XCTAssertTrue(lanes.contains("DisclosureGroup(isExpanded: $detailsExpanded)"))
     XCTAssertTrue(lanes.contains("value: \"\\(lane.providerKey) · \\(lane.modelKey)\""))
-    let autoSend = try XCTUnwrap(lanes.range(of: "Auto-send to the built-in Agent"))
-    // Both Codescribe Bus timers sit under one header on this tab; the hold
-    // left the lane editors (round 15, 2026-10-18).
-    let busHeader = try XCTUnwrap(lanes.range(of: "String(localized: \"Codescribe Bus\""))
-    let pause = try XCTUnwrap(lanes.range(of: "\"agent-bus-speech-pause\""))
+    // The voice conversation and the built-in Agent are two sections, each
+    // naming its target; the hands-free dictation limit left this tab.
+    let voiceHeader = try XCTUnwrap(
+      lanes.range(of: "localized: \"Voice conversation with an agent\""))
+    let policy = try XCTUnwrap(lanes.range(of: "\"agent-channel-session-policy\""))
+    let pause = try XCTUnwrap(lanes.range(of: "\"agent-channel-send-pause\""))
+    let voiceless = try XCTUnwrap(lanes.range(of: "AgentChannelVoicelessSlider(model: model)"))
+    let finish = try XCTUnwrap(lanes.range(of: "\"agent-channel-segment-finish\""))
+    let formatWait = try XCTUnwrap(lanes.range(of: "\"agent-channel-format-wait\""))
     let hold = try XCTUnwrap(lanes.range(of: "\"agent-send-hold-seconds\""))
-    XCTAssertLessThan(busHeader.lowerBound, pause.lowerBound)
-    XCTAssertLessThan(pause.lowerBound, hold.lowerBound)
-    XCTAssertLessThan(hold.lowerBound, autoSend.lowerBound)
+    let chain = try XCTUnwrap(lanes.range(of: "\"agent-channel-chain\""))
+    let agentHeader = try XCTUnwrap(lanes.range(of: "String(localized: \"Built-in Agent\""))
+    let autoSend = try XCTUnwrap(lanes.range(of: "String(localized: \"Send automatically\")"))
+    let delay = try XCTUnwrap(lanes.range(of: "\"agent-auto-send-delay\""))
+    let takeEnd = try XCTUnwrap(lanes.range(of: "\"agent-take-voiceless-end\""))
+    let ordered = [
+      voiceHeader, policy, pause, voiceless, finish, formatWait, hold, chain, agentHeader,
+      autoSend, delay, takeEnd,
+    ]
+    for (earlier, later) in zip(ordered, ordered.dropFirst()) {
+      XCTAssertLessThan(earlier.lowerBound, later.lowerBound)
+    }
+    XCTAssertTrue(
+      lanes.contains(".disabled(finish != .formatter)"), "the wait serves Formatting only")
+    XCTAssertFalse(lanes.contains("toggleSilence"), "the dictation limit is not a channel setting")
     XCTAssertFalse(panel.contains("agent-send-hold-seconds"), "the hold is not a lane setting")
+    let audio = try XCTUnwrap(sources["AudioPanel.swift"])
+    XCTAssertTrue(audio.contains("\"dictation-toggle-silence\""))
+    XCTAssertTrue(audio.contains("value: $model.toggleSilenceSlider"))
     let details = try XCTUnwrap(lanes.range(of: "Active configuration details"))
-    XCTAssertLessThan(autoSend.lowerBound, details.lowerBound)
+    XCTAssertLessThan(takeEnd.lowerBound, details.lowerBound)
+    XCTAssertTrue(lanes.contains("ForEach(channelRuntimeRows, id: \\.key)"))
     XCTAssertFalse(lanes.contains("Resolved runtime truth"))
 
     let model = try XCTUnwrap(sources["SettingsViewModel.swift"])
@@ -557,11 +577,19 @@ final class SettingsChromeContractTests: XCTestCase {
       "Reset model": "Przywróć model domyślny",
       "Active configuration details": "Szczegóły aktywnej konfiguracji",
       "%@ endpoint": "Adres API: %@",
-      "Auto-send to the built-in Agent": "Wysyłaj automatycznie do wbudowanego Agenta",
-      "Codescribe Bus": "Codescribe Bus",
+      "Voice conversation with an agent": "Rozmowa głosowa z agentem",
+      "Built-in Agent": "Wbudowany Agent",
+      "Send automatically": "Wysyłaj automatycznie",
+      "After how many seconds": "Po ilu sekundach",
+      "End the Agent recording without voice after": "Zakończ nagranie Agenta bez głosu po",
+      "Pause before sending": "Pauza przed wysłaniem",
+      "settings.agentChannel.finish.off": "Wył.",
+      "Punctuation (Light+)": "Interpunkcja (Light+)",
+      "formatting ≤ %@": "wygładzanie ≤ %@",
+      "sent; the conversation lasts until you hang up": "wysłane; rozmowa trwa do rozłączenia",
+      "sent and hung up": "wysłane i rozłączone",
+      "Silence limit in hands-free dictation": "Limit ciszy w dyktowaniu bez trzymania",
       "Hold before sending to Codescribe Bus": "Przytrzymanie przed wysłaniem do Codescribe Bus",
-      "Sends the transcript after 5 seconds unless you start editing it.":
-        "Wyślij transkrypcję po 5 sekundach, jeśli nie rozpoczniesz edycji.",
       "The API key was rejected, so there is no model list. The account still works.":
         "Klucz API został odrzucony, więc nie ma listy modeli. Konto nadal działa.",
     ]
@@ -580,6 +608,9 @@ final class SettingsChromeContractTests: XCTestCase {
       "Model discovery failed: %@. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
       "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes.",
       "Auto-send to the Agent", "Hold before sending",
+      "Auto-send to the built-in Agent", "Pause before sending to Codescribe Bus",
+      "Sends the transcript after 5 seconds unless you start editing it.",
+      "Silence after you stop speaking before the message is sent; also the hands-free dictation limit. Applies from the next channel or recording.",
       "Edit or withdraw a message to an agent during this window. 0 sends immediately.",
       "Waits this long after you stop speaking before sending your message. Also sets the silence limit for hands-free dictation. Changes apply when you open a channel or start a recording.",
     ] {

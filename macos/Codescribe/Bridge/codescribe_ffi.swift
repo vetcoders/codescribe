@@ -2950,7 +2950,7 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
 
     /**
      * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
-     * Formatting and Assistive have no gesture) and reload.
+     * Formatting and Assistive have no gesture until the user opts in) and reload.
      */
     func resetBindingsToDefaults() throws
 
@@ -3021,8 +3021,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     /**
      * Start the same toggle flow in the assistive lane.
      *
-     * This is the hands-free assistive route, started from the menu bar or the
-     * overlay; no key starts it. It keeps utterance silence epochs. The Agent composer mic is
+     * This is the hands-free assistive route: the overlay and the right-Option
+     * double tap. It keeps utterance silence epochs. The Agent composer mic is
      * a separate, UI-initiated capture — see
      * [`Self::start_composer_turn_recording`].
      */
@@ -3042,8 +3042,7 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func startComposerTurnRecording() async throws  -> CsCaptureHandle
 
     /**
-     * Start the Formatting toggle, from the menu bar or the overlay; no key
-     * starts it.
+     * Start the same toggle recording flow used by the default hotkey.
      */
     func startRecording() async throws
 
@@ -3812,7 +3811,7 @@ open func reserveIdleRestart()throws  -> Bool  {
 
     /**
      * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
-     * Formatting and Assistive have no gesture) and reload.
+     * Formatting and Assistive have no gesture until the user opts in) and reload.
      */
 open func resetBindingsToDefaults()throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribehotkeys_reset_bindings_to_defaults(
@@ -3992,8 +3991,8 @@ open func start()async throws   {
     /**
      * Start the same toggle flow in the assistive lane.
      *
-     * This is the hands-free assistive route, started from the menu bar or the
-     * overlay; no key starts it. It keeps utterance silence epochs. The Agent composer mic is
+     * This is the hands-free assistive route: the overlay and the right-Option
+     * double tap. It keeps utterance silence epochs. The Agent composer mic is
      * a separate, UI-initiated capture — see
      * [`Self::start_composer_turn_recording`].
      */
@@ -4043,8 +4042,7 @@ open func startComposerTurnRecording()async throws  -> CsCaptureHandle  {
 }
 
     /**
-     * Start the Formatting toggle, from the menu bar or the overlay; no key
-     * starts it.
+     * Start the same toggle recording flow used by the default hotkey.
      */
 open func startRecording()async throws   {
     return
@@ -6495,6 +6493,12 @@ public protocol CsAppActionListener: AnyObject, Sendable {
      */
     func onAgentGesture(input: CsAgentGestureInput)
 
+    /**
+     * A long dictation hold was refused because a Codescribe message field
+     * owns the caret. UI-only: that field points at its own microphone.
+     */
+    func onComposerDictationRedirected()
+
 }
 /**
  * Foreign callback for UI-only global commands. These actions are deliberately
@@ -6588,6 +6592,17 @@ open func onAgentGesture(input: CsAgentGestureInput)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csappactionlistener_on_agent_gesture(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsAgentGestureInput_lower(input),$0
+    )
+}
+}
+
+    /**
+     * A long dictation hold was refused because a Codescribe message field
+     * owns the caret. UI-only: that field points at its own microphone.
+     */
+open func onComposerDictationRedirected()  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csappactionlistener_on_composer_dictation_redirected(
+            self.uniffiCloneHandle(),$0
     )
 }
 }
@@ -6700,6 +6715,28 @@ fileprivate struct UniffiCallbackInterfaceCsAppActionListener {
                 }
                 return uniffiObj.onAgentGesture(
                      input: try FfiConverterTypeCsAgentGestureInput_lift(input)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onComposerDictationRedirected: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsAppActionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onComposerDictationRedirected(
                 )
             }
 
@@ -10666,6 +10703,62 @@ public func FfiConverterTypeCsDocumentVersions_lower(_ value: CsDocumentVersions
 
 
 /**
+ * The latest Option double-tap attempt. `sequence` changes on every attempt,
+ * so the tester can tell a repeated outcome from a stale one.
+ */
+public struct CsDoubleTapOutcome: Equatable, Hashable {
+    public var sequence: UInt32
+    public var kind: CsDoubleTapOutcomeKind
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sequence: UInt32, kind: CsDoubleTapOutcomeKind) {
+        self.sequence = sequence
+        self.kind = kind
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsDoubleTapOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDoubleTapOutcome: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDoubleTapOutcome {
+        return
+            try CsDoubleTapOutcome(
+                sequence: FfiConverterUInt32.read(from: &buf),
+                kind: FfiConverterTypeCsDoubleTapOutcomeKind.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsDoubleTapOutcome, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.sequence, into: &buf)
+        FfiConverterTypeCsDoubleTapOutcomeKind.write(value.kind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDoubleTapOutcome_lift(_ buf: RustBuffer) throws -> CsDoubleTapOutcome {
+    return try FfiConverterTypeCsDoubleTapOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDoubleTapOutcome_lower(_ value: CsDoubleTapOutcome) -> RustBuffer {
+    return FfiConverterTypeCsDoubleTapOutcome.lower(value)
+}
+
+
+/**
  * What a guided calibration measured and stored (levels and counts only).
  */
 public struct CsEnergyCalibrationReport: Equatable, Hashable {
@@ -13865,6 +13958,14 @@ public struct CsSettings: Equatable, Hashable {
     public var holdArmModifier: String
     public var holdStartDelayMs: UInt64
     public var doubleTapIntervalMs: UInt64
+    /**
+     * `TAP_MAX_MS`: longest Option press that still counts as a tap.
+     */
+    public var tapMaxMs: UInt64
+    /**
+     * `TYPING_QUIET_MS`: Option taps count for nothing this long after typing.
+     */
+    public var typingQuietMs: UInt64
     public var toggleSilenceSec: Float
     /**
      * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
@@ -13991,6 +14092,38 @@ public struct CsSettings: Equatable, Hashable {
      * Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
      */
     public var agentSendHoldSec: UInt32
+    /**
+     * Built-in Agent auto-send countdown, `1...30` seconds.
+     */
+    public var agentAutoSendDelaySec: UInt64
+    /**
+     * A built-in Agent take without voice ends after this, `10...120` seconds.
+     */
+    public var agentTakeVoicelessEndSec: UInt64
+    /**
+     * `continuous` | `end_after_message`.
+     */
+    public var agentChannelSessionPolicy: String
+    /**
+     * Effective channel send pause; `0` only from the env override (off).
+     */
+    public var agentChannelSendPauseSec: Float
+    /**
+     * `settings` | `env_override`: where that pause came from.
+     */
+    public var agentChannelSendPauseSource: String
+    /**
+     * `0` = never, else `15...600` seconds.
+     */
+    public var agentChannelVoicelessCloseSec: UInt64
+    /**
+     * `off` | `light_plus` | `formatter`.
+     */
+    public var agentChannelSegmentFinish: String
+    /**
+     * Formatter budget for one channel message, `1...10` seconds.
+     */
+    public var agentChannelFormatWaitSec: UInt64
     public var dumpAudioLogs: Bool
     /**
      * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -14056,7 +14189,13 @@ public struct CsSettings: Equatable, Hashable {
     public init(holdExclusive: Bool,
         /**
          * Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"` (W10-B).
-         */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float,
+         */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64,
+        /**
+         * `TAP_MAX_MS`: longest Option press that still counts as a tap.
+         */tapMaxMs: UInt64,
+        /**
+         * `TYPING_QUIET_MS`: Option taps count for nothing this long after typing.
+         */typingQuietMs: UInt64, toggleSilenceSec: Float,
         /**
          * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
          */whisperContextWindowSec: Float, whisperAdaptiveBuffer: Bool,
@@ -14128,7 +14267,31 @@ public struct CsSettings: Equatable, Hashable {
          */audioRetention: String, historyEnabled: Bool, quickNotesEnabled: Bool, quickNotesSaveOnly: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool,
         /**
          * Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
-         */agentSendHoldSec: UInt32, dumpAudioLogs: Bool,
+         */agentSendHoldSec: UInt32,
+        /**
+         * Built-in Agent auto-send countdown, `1...30` seconds.
+         */agentAutoSendDelaySec: UInt64,
+        /**
+         * A built-in Agent take without voice ends after this, `10...120` seconds.
+         */agentTakeVoicelessEndSec: UInt64,
+        /**
+         * `continuous` | `end_after_message`.
+         */agentChannelSessionPolicy: String,
+        /**
+         * Effective channel send pause; `0` only from the env override (off).
+         */agentChannelSendPauseSec: Float,
+        /**
+         * `settings` | `env_override`: where that pause came from.
+         */agentChannelSendPauseSource: String,
+        /**
+         * `0` = never, else `15...600` seconds.
+         */agentChannelVoicelessCloseSec: UInt64,
+        /**
+         * `off` | `light_plus` | `formatter`.
+         */agentChannelSegmentFinish: String,
+        /**
+         * Formatter budget for one channel message, `1...10` seconds.
+         */agentChannelFormatWaitSec: UInt64, dumpAudioLogs: Bool,
         /**
          * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
          */llmFormattingProvider: String?, llmFormattingModel: String?,
@@ -14172,6 +14335,8 @@ public struct CsSettings: Equatable, Hashable {
         self.holdArmModifier = holdArmModifier
         self.holdStartDelayMs = holdStartDelayMs
         self.doubleTapIntervalMs = doubleTapIntervalMs
+        self.tapMaxMs = tapMaxMs
+        self.typingQuietMs = typingQuietMs
         self.toggleSilenceSec = toggleSilenceSec
         self.whisperContextWindowSec = whisperContextWindowSec
         self.whisperAdaptiveBuffer = whisperAdaptiveBuffer
@@ -14226,6 +14391,14 @@ public struct CsSettings: Equatable, Hashable {
         self.agentEnterSends = agentEnterSends
         self.agentAutoSend = agentAutoSend
         self.agentSendHoldSec = agentSendHoldSec
+        self.agentAutoSendDelaySec = agentAutoSendDelaySec
+        self.agentTakeVoicelessEndSec = agentTakeVoicelessEndSec
+        self.agentChannelSessionPolicy = agentChannelSessionPolicy
+        self.agentChannelSendPauseSec = agentChannelSendPauseSec
+        self.agentChannelSendPauseSource = agentChannelSendPauseSource
+        self.agentChannelVoicelessCloseSec = agentChannelVoicelessCloseSec
+        self.agentChannelSegmentFinish = agentChannelSegmentFinish
+        self.agentChannelFormatWaitSec = agentChannelFormatWaitSec
         self.dumpAudioLogs = dumpAudioLogs
         self.llmFormattingProvider = llmFormattingProvider
         self.llmFormattingModel = llmFormattingModel
@@ -14266,6 +14439,8 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 holdArmModifier: FfiConverterString.read(from: &buf),
                 holdStartDelayMs: FfiConverterUInt64.read(from: &buf),
                 doubleTapIntervalMs: FfiConverterUInt64.read(from: &buf),
+                tapMaxMs: FfiConverterUInt64.read(from: &buf),
+                typingQuietMs: FfiConverterUInt64.read(from: &buf),
                 toggleSilenceSec: FfiConverterFloat.read(from: &buf),
                 whisperContextWindowSec: FfiConverterFloat.read(from: &buf),
                 whisperAdaptiveBuffer: FfiConverterBool.read(from: &buf),
@@ -14320,6 +14495,14 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 agentEnterSends: FfiConverterBool.read(from: &buf),
                 agentAutoSend: FfiConverterBool.read(from: &buf),
                 agentSendHoldSec: FfiConverterUInt32.read(from: &buf),
+                agentAutoSendDelaySec: FfiConverterUInt64.read(from: &buf),
+                agentTakeVoicelessEndSec: FfiConverterUInt64.read(from: &buf),
+                agentChannelSessionPolicy: FfiConverterString.read(from: &buf),
+                agentChannelSendPauseSec: FfiConverterFloat.read(from: &buf),
+                agentChannelSendPauseSource: FfiConverterString.read(from: &buf),
+                agentChannelVoicelessCloseSec: FfiConverterUInt64.read(from: &buf),
+                agentChannelSegmentFinish: FfiConverterString.read(from: &buf),
+                agentChannelFormatWaitSec: FfiConverterUInt64.read(from: &buf),
                 dumpAudioLogs: FfiConverterBool.read(from: &buf),
                 llmFormattingProvider: FfiConverterOptionString.read(from: &buf),
                 llmFormattingModel: FfiConverterOptionString.read(from: &buf),
@@ -14348,6 +14531,8 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterString.write(value.holdArmModifier, into: &buf)
         FfiConverterUInt64.write(value.holdStartDelayMs, into: &buf)
         FfiConverterUInt64.write(value.doubleTapIntervalMs, into: &buf)
+        FfiConverterUInt64.write(value.tapMaxMs, into: &buf)
+        FfiConverterUInt64.write(value.typingQuietMs, into: &buf)
         FfiConverterFloat.write(value.toggleSilenceSec, into: &buf)
         FfiConverterFloat.write(value.whisperContextWindowSec, into: &buf)
         FfiConverterBool.write(value.whisperAdaptiveBuffer, into: &buf)
@@ -14402,6 +14587,14 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.agentEnterSends, into: &buf)
         FfiConverterBool.write(value.agentAutoSend, into: &buf)
         FfiConverterUInt32.write(value.agentSendHoldSec, into: &buf)
+        FfiConverterUInt64.write(value.agentAutoSendDelaySec, into: &buf)
+        FfiConverterUInt64.write(value.agentTakeVoicelessEndSec, into: &buf)
+        FfiConverterString.write(value.agentChannelSessionPolicy, into: &buf)
+        FfiConverterFloat.write(value.agentChannelSendPauseSec, into: &buf)
+        FfiConverterString.write(value.agentChannelSendPauseSource, into: &buf)
+        FfiConverterUInt64.write(value.agentChannelVoicelessCloseSec, into: &buf)
+        FfiConverterString.write(value.agentChannelSegmentFinish, into: &buf)
+        FfiConverterUInt64.write(value.agentChannelFormatWaitSec, into: &buf)
         FfiConverterBool.write(value.dumpAudioLogs, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingProvider, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingModel, into: &buf)
@@ -17603,6 +17796,140 @@ public func FfiConverterTypeCsDocumentRevisionProvenance_lower(_ value: CsDocume
 }
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * What the latest Option double-tap came to, for the Settings gesture tester.
+ */
+
+public enum CsDoubleTapOutcomeKind: Equatable, Hashable {
+
+    /**
+     * Recognised; it started its mode unless the tester held it back.
+     */
+    case recognized
+    /**
+     * The second tap came after the double-tap interval.
+     */
+    case tooSlow
+    /**
+     * A press lasted longer than the longest tap.
+     */
+    case tooLong
+    /**
+     * A key was typed with Option or just before the tap.
+     */
+    case typedRecently
+    /**
+     * A click or a scroll landed during the pair.
+     */
+    case mouse
+    /**
+     * The Option events did not come from the keyboard.
+     */
+    case synthetic
+    /**
+     * Another modifier or a hold was active.
+     */
+    case modifierActive
+    /**
+     * No mode is bound to the Option side that was tapped.
+     */
+    case notAssigned
+
+
+
+}
+
+#if compiler(>=6)
+extension CsDoubleTapOutcomeKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDoubleTapOutcomeKind: FfiConverterRustBuffer {
+    typealias SwiftType = CsDoubleTapOutcomeKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDoubleTapOutcomeKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .recognized
+
+        case 2: return .tooSlow
+
+        case 3: return .tooLong
+
+        case 4: return .typedRecently
+
+        case 5: return .mouse
+
+        case 6: return .synthetic
+
+        case 7: return .modifierActive
+
+        case 8: return .notAssigned
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsDoubleTapOutcomeKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .recognized:
+            writeInt(&buf, Int32(1))
+
+
+        case .tooSlow:
+            writeInt(&buf, Int32(2))
+
+
+        case .tooLong:
+            writeInt(&buf, Int32(3))
+
+
+        case .typedRecently:
+            writeInt(&buf, Int32(4))
+
+
+        case .mouse:
+            writeInt(&buf, Int32(5))
+
+
+        case .synthetic:
+            writeInt(&buf, Int32(6))
+
+
+        case .modifierActive:
+            writeInt(&buf, Int32(7))
+
+
+        case .notAssigned:
+            writeInt(&buf, Int32(8))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDoubleTapOutcomeKind_lift(_ buf: RustBuffer) throws -> CsDoubleTapOutcomeKind {
+    return try FfiConverterTypeCsDoubleTapOutcomeKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDoubleTapOutcomeKind_lower(_ value: CsDoubleTapOutcomeKind) -> RustBuffer {
+    return FfiConverterTypeCsDoubleTapOutcomeKind.lower(value)
+}
+
+
 
 /**
  * Error surfaced across the FFI boundary. One enum for every slice:
@@ -19059,6 +19386,8 @@ public enum CsShortcutBinding: Equatable, Hashable {
     case holdCtrlShift
     case holdCtrlCmd
     case doubleCtrl
+    case doubleLeftOption
+    case doubleRightOption
 
 
 
@@ -19091,6 +19420,10 @@ public struct FfiConverterTypeCsShortcutBinding: FfiConverterRustBuffer {
         case 6: return .holdCtrlCmd
 
         case 7: return .doubleCtrl
+
+        case 8: return .doubleLeftOption
+
+        case 9: return .doubleRightOption
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -19126,6 +19459,14 @@ public struct FfiConverterTypeCsShortcutBinding: FfiConverterRustBuffer {
 
         case .doubleCtrl:
             writeInt(&buf, Int32(7))
+
+
+        case .doubleLeftOption:
+            writeInt(&buf, Int32(8))
+
+
+        case .doubleRightOption:
+            writeInt(&buf, Int32(9))
 
         }
     }
@@ -19928,6 +20269,30 @@ fileprivate struct FfiConverterOptionTypeCsDocumentProvider: FfiConverterRustBuf
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCsDocumentProvider.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCsDoubleTapOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = CsDoubleTapOutcome?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsDoubleTapOutcome.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsDoubleTapOutcome.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -21255,6 +21620,15 @@ public func downloadWhisperModel(listener: CsWhisperDownloadListener?)async thro
         )
 }
 /**
+ * Latest Option double-tap outcome, or `None` before the first attempt.
+ */
+public func lastDoubleTapOutcome() -> CsDoubleTapOutcome?  {
+    return try!  FfiConverterOptionTypeCsDoubleTapOutcome.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_last_double_tap_outcome($0
+    )
+})
+}
+/**
  * Read the live custom lexicon as flattened `variant -> canonical` rows.
  */
 public func lexiconCustomEntries()throws  -> [CsLexiconEntry]  {
@@ -21464,6 +21838,27 @@ public func setAgentChooserCapture(active: Bool)  {try! rustCall() {
 }
 }
 /**
+ * A Codescribe message field took or released the focused caret. While it
+ * holds the caret, a long dictation hold stays idle and the field is told to
+ * point at its own microphone.
+ */
+public func setComposerCaretOwned(owned: Bool)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_set_composer_caret_owned(
+        FfiConverterBool.lower(owned),$0
+    )
+}
+}
+/**
+ * The Settings gesture tester takes (or renews) its lease, or releases it.
+ * While held, a recognised Option pair is reported but starts nothing.
+ */
+public func setGestureTestActive(active: Bool)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_set_gesture_test_active(
+        FfiConverterBool.lower(active),$0
+    )
+}
+}
+/**
  * Persist a picker selection and switch the running process to it.
  *
  * Validation happens before persistence: an unknown or unusable reference is
@@ -21604,6 +21999,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_download_whisper_model() != 26167) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_last_double_tap_outcome() != 16470) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_lexicon_custom_entries() != 24996) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -21659,6 +22057,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_set_agent_chooser_capture() != 16074) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_set_composer_caret_owned() != 10890) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_set_gesture_test_active() != 50579) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_set_local_whisper_model() != 36491) {
@@ -22030,7 +22434,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reserve_idle_restart() != 51863) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 44608) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 39169) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_resolve_max_tool_approval() != 6688) {
@@ -22066,13 +22470,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start() != 63389) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_assistive_recording() != 36343) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_assistive_recording() != 1112) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_composer_turn_recording() != 48894) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_recording() != 5857) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_recording() != 17686) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_stop() != 44257) {
@@ -22265,6 +22669,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_gesture() != 52788) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_composer_dictation_redirected() != 43322) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csaudioreadlease_release() != 6902) {

@@ -453,11 +453,12 @@ private struct OverlayAudioControlInk: ViewModifier {
   func body(content: Content) -> some View {
     // The resolved primary ink darkens a light canvas and brightens a dark
     // one. Keep a lit control's hue while giving it its own hover step.
-    let hover = lit.map { ink in
-      let color = NSColor(ink)
-      return Color(
-        nsColor: color.blended(withFraction: 0.3, of: palette.primaryText.nsColor) ?? color)
-    } ?? palette.primaryText.color
+    let hover =
+      lit.map { ink in
+        let color = NSColor(ink)
+        return Color(
+          nsColor: color.blended(withFraction: 0.3, of: palette.primaryText.nsColor) ?? color)
+      } ?? palette.primaryText.color
     content.conversationActionHover(
       restingColor: lit ?? palette.mutedText.color.opacity(unlitOpacity),
       hoverColor: hover)
@@ -1353,13 +1354,20 @@ struct OverlayChannelStatusView: View {
     maximumHeight: CGFloat, onUnfold: @escaping () -> Void
   ) -> some View {
     let unfold = 22 * textScale
+    let viewportHeight = max(0, maximumHeight - 8 - unfold - 8)
+    let rowCount = channels.count
+      + (currentConversations.contains(where: { $0.channel == "0" }) ? 1 : 0)
+      + (currentConversations.contains(where: \.isHumanInbox) ? 1 : 0)
+    let gapCount = max(0, rowCount - 1)
+    let rowSpacing = gapCount == 0 ? 0 : min(
+      6, max(0, (viewportHeight - CGFloat(rowCount) * 24 * textScale - 4) / CGFloat(gapCount)))
     return VStack(spacing: 8) {
       OverlaySidebarToggleButton(
         symbol: "sidebar.right", title: String(localized: "Show agents list"),
         identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
         action: onUnfold)
-      ScrollView(.vertical) {
-        VStack(spacing: 6) {
+      ScrollView(.vertical, showsIndicators: false) {
+        VStack(spacing: rowSpacing) {
           if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
             railPill(broadcast, channel: nil)
           }
@@ -1372,9 +1380,10 @@ struct OverlayChannelStatusView: View {
         }
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity)
-        .csAutohidingScrollers()
+        .csAutohidingScrollers(.verticalHidden)
       }
-      .frame(maxHeight: max(0, maximumHeight - unfold - 8))
+      .csRailOverflowHints(color: palette.mutedText.color)
+      .frame(maxHeight: viewportHeight)
     }
     // The list header sits 8 points into the roster content: the unfold
     // button lands where `sidebar.right` folded it.
@@ -1814,7 +1823,8 @@ struct OverlayChannelStatusView: View {
       : String(localized: "View conversation without changing the microphone")
     let label = rosterRowLabel(
       title: conversation?.name ?? channel.agent,
-      statusChannel: channel, conversation: conversation, dot: statusDotKind(for: channel))
+      statusChannel: channel, conversation: conversation, dot: statusDotKind(for: channel),
+      titleAccessory: panelFocusAccessory(for: channel))
     return rowGlassContainer(
       VStack(alignment: .leading, spacing: 4) {
         Group {
@@ -1853,49 +1863,6 @@ struct OverlayChannelStatusView: View {
           rosterRowState(channel, receiptText: receiptText)
           Spacer(minLength: 0)
           HStack(spacing: 6) {
-            if showsPanelFocusButton(for: channel),
-              let owner = archiveCandidates[channel.channel],
-              let onFocusAgentPanel
-            {
-              let focusState = panelFocusStates[channel.channel]
-              let focusHelp = panelFocusHelp(for: channel, state: focusState)
-              Button {
-                onFocusAgentPanel(owner)
-              } label: {
-                Group {
-                  if focusState?.isRequesting == true {
-                    ProgressView()
-                      .controlSize(.mini)
-                  } else {
-                    Image(
-                      systemName: panelFocusSymbol(
-                        focusState,
-                        target: panelFocusTarget(for: channel)
-                          ?? (hasCodexCloudThread(channel)
-                            ? OverlayAgentPanelFocusTarget.codexThread : nil))
-                    )
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(
-                      focusState?.isSucceeded == true
-                        ? palette.successStatus.color
-                        : focusState?.isFailed == true
-                          ? palette.errorStatus.color
-                          : panelFocusUnreachable(channel)
-                            ? palette.mutedText.color : palette.primaryText.color
-                    )
-                  }
-                }
-                .frame(width: 16, height: 16)
-              }
-              .modifier(OverlayAgentControlStyle())
-              .csFocusOutline()
-              .disabled(focusState?.isRequesting == true || panelFocusUnreachable(channel))
-              .modifier(
-                OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)
-              )
-              .accessibilityLabel(Text(verbatim: focusHelp))
-              .accessibilityIdentifier("overlay-focus-panel-\(channel.channel)")
-            }
             OverlayAgentAudioControls(
               open: open, muted: mutedChannels[channel.channel],
               microphoneEnabled: !unavailable && onToggleChannel != nil
@@ -1972,7 +1939,7 @@ struct OverlayChannelStatusView: View {
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
     conversation: OverlayConversation?, dot: OverlayAgentDotKind,
-    includePreview: Bool = true
+    includePreview: Bool = true, titleAccessory: AnyView? = nil
   ) -> some View {
     let last = conversation?.messages.last
     return OverlayAgentRosterLabel(
@@ -1983,8 +1950,58 @@ struct OverlayChannelStatusView: View {
       unreadCount: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
       dot: dot, statusLabel: statusChannel.map { shortStatus(for: $0) } ?? "",
       statusDetail: statusChannel.map { detail(for: $0) } ?? "",
-      reception: statusChannel, receptionEnabled: !unavailable, palette: palette,
+      reception: statusChannel, receptionEnabled: !unavailable,
+      titleAccessory: titleAccessory, palette: palette,
       textScale: textScale)
+  }
+
+  /// The client focus button (Frame pane, terminal tab or Codex thread),
+  /// rendered beside the agent's name (Maciej, 2026-10-28: "przycisk
+  /// kierowania do klienta … powinien być koło imienia").
+  private func panelFocusAccessory(for channel: OverlayChannelDelivery) -> AnyView? {
+    guard showsPanelFocusButton(for: channel),
+      let owner = archiveCandidates[channel.channel],
+      let onFocusAgentPanel
+    else { return nil }
+    let focusState = panelFocusStates[channel.channel]
+    let focusHelp = panelFocusHelp(for: channel, state: focusState)
+    return AnyView(
+      Button {
+        onFocusAgentPanel(owner)
+      } label: {
+        Group {
+          if focusState?.isRequesting == true {
+            ProgressView()
+              .controlSize(.mini)
+          } else {
+            Image(
+              systemName: panelFocusSymbol(
+                focusState,
+                target: panelFocusTarget(for: channel)
+                  ?? (hasCodexCloudThread(channel)
+                    ? OverlayAgentPanelFocusTarget.codexThread : nil))
+            )
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(
+              focusState?.isSucceeded == true
+                ? palette.successStatus.color
+                : focusState?.isFailed == true
+                  ? palette.errorStatus.color
+                  : panelFocusUnreachable(channel)
+                    ? palette.mutedText.color : palette.primaryText.color
+            )
+          }
+        }
+        .frame(width: 16, height: 16)
+      }
+      .modifier(OverlayAgentControlStyle())
+      .csFocusOutline()
+      .disabled(focusState?.isRequesting == true || panelFocusUnreachable(channel))
+      .modifier(
+        OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)
+      )
+      .accessibilityLabel(Text(verbatim: focusHelp))
+      .accessibilityIdentifier("overlay-focus-panel-\(channel.channel)"))
   }
 
   private func rosterRowState(

@@ -1275,6 +1275,8 @@ impl Config {
         );
         env_parse!("HOLD_START_DELAY_MS", self.hold_start_delay_ms);
         env_parse!("DOUBLE_TAP_INTERVAL_MS", self.double_tap_interval_ms);
+        env_parse!("TAP_MAX_MS", self.tap_max_ms);
+        env_parse!("TYPING_QUIET_MS", self.typing_quiet_ms);
         env_parse!("TOGGLE_SILENCE_SEC", self.toggle_silence_sec);
         env_flag!("WHISPER_ADAPTIVE_BUFFER", self.whisper_adaptive_buffer);
         env_parse!(
@@ -1341,6 +1343,14 @@ impl Config {
         env_flag!("BEEP_ON_START", self.beep_on_start);
         env_flag!("AGENT_ENTER_SENDS", self.agent_enter_sends);
         env_flag!("AGENT_AUTO_SEND", self.agent_auto_send);
+        if let Ok(raw) =
+            Self::config_runtime_env_var(super::agent_channel::CHANNEL_AUTOSEAL_SECS_ENV)
+            && let Some(seconds) = super::agent_channel::parse_autoseal_override(&raw)
+        {
+            self.agent_channel.send_pause_sec = seconds;
+            self.agent_channel.send_pause_source =
+                super::agent_channel::ChannelSettingSource::EnvOverride;
+        }
         env_set!("SOUND_NAME", self.sound_name);
         env_parse!("SOUND_VOLUME", self.sound_volume);
 
@@ -1444,6 +1454,44 @@ impl Config {
         Self::remember_seeded_env_key(key);
     }
 
+    /// Voice-conversation and built-in Agent timers. `settings.json` alone
+    /// owns them; the send pause's env override is applied in `load_from_env`.
+    fn apply_agent_channel_settings(&mut self, settings: &super::settings::UserSettings) {
+        use super::agent_channel::{
+            AgentChannelConfig, ChannelSegmentFinish, ChannelSessionPolicy,
+            DEFAULT_FORMAT_WAIT_SEC, DEFAULT_SEND_PAUSE_SEC,
+        };
+        if let Some(seconds) = settings.agent_auto_send_delay_sec {
+            self.agent_auto_send_delay_sec = seconds;
+        }
+        if let Some(seconds) = settings.agent_take_voiceless_end_sec {
+            self.agent_take_voiceless_end_sec = seconds;
+        }
+        let session_policy = settings
+            .agent_channel_session_policy
+            .as_deref()
+            .and_then(ChannelSessionPolicy::parse)
+            .unwrap_or_default();
+        self.agent_channel = AgentChannelConfig {
+            session_policy,
+            send_pause_sec: settings
+                .agent_channel_send_pause_sec
+                .unwrap_or(DEFAULT_SEND_PAUSE_SEC),
+            send_pause_source: super::agent_channel::ChannelSettingSource::Settings,
+            voiceless_close_sec: settings
+                .agent_channel_voiceless_close_sec
+                .unwrap_or(session_policy.default_voiceless_close_sec()),
+            segment_finish: settings
+                .agent_channel_segment_finish
+                .as_deref()
+                .and_then(ChannelSegmentFinish::parse)
+                .unwrap_or_default(),
+            format_wait_sec: settings
+                .agent_channel_format_wait_sec
+                .unwrap_or(DEFAULT_FORMAT_WAIT_SEC),
+        };
+    }
+
     /// Apply user settings from JSON (lower priority than .env).
     /// Only applies values that are Some AND not already overridden by env vars.
     fn apply_user_settings(&mut self, settings: &super::settings::UserSettings) {
@@ -1504,6 +1552,12 @@ impl Config {
             "DOUBLE_TAP_INTERVAL_MS",
             self.double_tap_interval_ms,
             settings.double_tap_interval_ms
+        );
+        apply_copy!("TAP_MAX_MS", self.tap_max_ms, settings.tap_max_ms);
+        apply_copy!(
+            "TYPING_QUIET_MS",
+            self.typing_quiet_ms,
+            settings.typing_quiet_ms
         );
         apply_copy!(
             "TOGGLE_SILENCE_SEC",
@@ -1741,6 +1795,7 @@ impl Config {
             self.agent_auto_send,
             settings.agent_auto_send
         );
+        self.apply_agent_channel_settings(settings);
 
         // ── Voice Lab survivors (runtime env vars, not Config struct fields) ──
         if Self::config_runtime_env_var("CODESCRIBE_BUFFER_DELAY_MS").is_err()

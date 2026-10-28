@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use super::types::{HotkeyAction, HotkeyInput, HotkeyType, State};
+use crate::os::hotkeys::HoldMode;
 
 /// Assistive hold bindings keep a 400ms floor even if settings lower the
 /// generic hold delay — prevents accidental Emil sessions on short taps.
@@ -111,4 +112,50 @@ pub(super) fn should_block_hotkey_during_agent_send(
         && agent_send_in_flight
         && is_hotkey_start_event(event)
         && !is_assistive_start_event(event)
+}
+
+/// Whether a dictation hold that outlived its start delay must stay closed
+/// because one of Codescribe's own message fields owns the caret.
+///
+/// That field carries its own microphone, which records into the field and
+/// its conversation. A global dictation take would open the dictation overlay
+/// over it and deliver somewhere else, so the hold is refused and the field
+/// is asked to point at its microphone instead. Assistive holds (Chat /
+/// Selection) target the agent, not the focused field, and stay untouched.
+pub(super) fn hold_start_redirects_to_composer(
+    assistive: bool,
+    hold_mode: HoldMode,
+    composer_caret_owned: bool,
+) -> bool {
+    composer_caret_owned && !assistive && matches!(hold_mode, HoldMode::Raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dictation_hold_redirects_only_while_a_composer_owns_the_caret() {
+        assert!(hold_start_redirects_to_composer(false, HoldMode::Raw, true));
+        assert!(!hold_start_redirects_to_composer(
+            false,
+            HoldMode::Raw,
+            false
+        ));
+    }
+
+    #[test]
+    fn assistive_holds_never_redirect_to_the_composer() {
+        assert!(!hold_start_redirects_to_composer(true, HoldMode::Raw, true));
+        assert!(!hold_start_redirects_to_composer(
+            false,
+            HoldMode::Chat,
+            true
+        ));
+        assert!(!hold_start_redirects_to_composer(
+            false,
+            HoldMode::Selection,
+            true
+        ));
+    }
 }

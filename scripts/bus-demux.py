@@ -9353,15 +9353,33 @@ def stage_capture_attachment_command(args: argparse.Namespace) -> int:
 
 
 def validate_user_reply_reference(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict) or set(value) != {"message_id", "author", "text"}:
-        raise ValueError("invalid user reply reference")
+    # Refusals name the offending field: one opaque message for seven distinct
+    # conditions made the 2026-10-28 composer refusal undiagnosable from the UI.
+    if not isinstance(value, dict):
+        raise ValueError("invalid user reply reference: not an object")
+    if set(value) != {"message_id", "author", "text"}:
+        raise ValueError(
+            f"invalid user reply reference: keys {sorted(map(str, value))!r}"
+            " != ['author', 'message_id', 'text']")
     identity, author, text = value["message_id"], value["author"], value["text"]
-    if (not isinstance(identity, str) or not identity or len(identity.encode("utf-8")) > 512
-            or any(ord(c) < 32 or ord(c) == 127 for c in identity)
-            or not isinstance(author, str) or not author.strip() or len(author) > 128
-            or any(ord(c) < 32 or ord(c) == 127 for c in author)
-            or not isinstance(text, str) or len(text) > 512):
-        raise ValueError("invalid user reply reference")
+    if not isinstance(identity, str) or not identity:
+        raise ValueError("invalid user reply reference: message_id empty or not a string")
+    if len(identity.encode("utf-8")) > 512:
+        raise ValueError("invalid user reply reference: message_id over 512 bytes")
+    if any(ord(c) < 32 or ord(c) == 127 for c in identity):
+        raise ValueError("invalid user reply reference: message_id has control characters")
+    if not isinstance(author, str) or not author.strip():
+        raise ValueError("invalid user reply reference: author empty or not a string")
+    if len(author) > 128:
+        raise ValueError("invalid user reply reference: author over 128 characters")
+    if any(ord(c) < 32 or ord(c) == 127 for c in author):
+        raise ValueError("invalid user reply reference: author has control characters")
+    if not isinstance(text, str):
+        raise ValueError("invalid user reply reference: text not a string")
+    if len(text) > 512:
+        raise ValueError(
+            f"invalid user reply reference: text {len(text)} code points over 512"
+            " (grapheme-truncated previews can exceed the code-point cap)")
     return {"message_id": identity, "author": author, "text": text}
 
 

@@ -181,7 +181,7 @@ mod co_audience_contract {
         bus.freeze_co_audience(Arc::clone(&shared.read().unwrap()));
         *shared.write().unwrap() = Arc::new(Vec::new());
         bus.observe_channel_publication_evidence(&ledger);
-        bus.publish_channel_closed(0).unwrap();
+        bus.publish_channel_closed(0, None).unwrap();
         let text = crate::durable_bus_oracle::logical_text(&bus.path);
         let twins: Vec<serde_json::Value> = text
             .lines()

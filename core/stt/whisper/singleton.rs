@@ -74,6 +74,24 @@ const DEFAULT_IDLE_UNLOAD_SECS: u64 = 1800;
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
 
+/// A slot waiter emits its first overdue receipt after this much blocked
+/// waiting. Visibility only: admission still belongs to the caller's
+/// `LocalExecutionControl`, which keeps sole authority over giving up.
+const SLOT_WAIT_WARN_AFTER: Duration = Duration::from_secs(10);
+
+/// Cadence of repeated waiter receipts while the wait continues, so one wedged
+/// pass yields a bounded trickle instead of a flood or a single lost line.
+const SLOT_WAIT_REWARN_EVERY: Duration = Duration::from_secs(30);
+
+/// An engine pass holding the slot lock longer than this is reported by the
+/// reaper-side witness. Must stay above the longest legitimate pass: file HQ
+/// decodes run past 90s and a cold load adds its 5s+20s budget on top.
+const PASS_OVERDUE_AFTER: Duration = Duration::from_secs(180);
+
+/// Cadence of repeated pass-overdue reports (reaper ticks are the sampling
+/// clock, so the effective spacing rounds up to a multiple of `REAPER_TICK`).
+const PASS_OVERDUE_REWARN_EVERY: Duration = Duration::from_secs(300);
+
 /// What the resident engine was built from. Recorded at load so the Settings
 /// surface can tell the actually-loaded model apart from the saved preference,
 /// and so a switch request can no-op when the warm engine already matches.
@@ -123,6 +141,16 @@ static REAPER_STARTED: OnceLock<()> = OnceLock::new();
 static RESIDENCY_LOAD_COUNT: AtomicU64 = AtomicU64::new(0);
 static RESIDENCY_UNLOAD_COUNT: AtomicU64 = AtomicU64::new(0);
 static RESIDENCY_RECLAIM_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Millisecond UNIX time at which the current engine pass acquired the slot
+/// lock; `0` while no pass holds it. Written only by the pass owner (via
+/// [`PassWitness`]), read lock-free by the reaper witness so a wedged pass
+/// cannot silence its own report.
+static PASS_HELD_SINCE_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Millisecond UNIX time of the last pass-overdue report; bounds the re-warn
+/// cadence across reaper ticks.
+static PASS_OVERDUE_WARNED_MS: AtomicU64 = AtomicU64::new(0);
 
 /// Test-only witness for callers that would initialize the heavyweight local
 /// engine. It lets routing tests exercise the real selected-engine seam without
@@ -381,14 +409,84 @@ fn ensure_reaper() {
     });
 }
 
+/// Millisecond UNIX time, saturating; `0` only if the clock reads pre-epoch.
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+/// RAII marker for "an engine pass holds the slot lock". Armed right after
+/// acquisition, cleared on every exit path (including `?` during cold load),
+/// so the reaper witness never reports a pass that already released the lock.
+struct PassWitness;
+
+impl PassWitness {
+    fn arm() -> Self {
+        // `.max(1)` keeps `0` as the unambiguous idle sentinel.
+        PASS_HELD_SINCE_MS.store(epoch_ms().max(1), Ordering::Release);
+        PASS_OVERDUE_WARNED_MS.store(0, Ordering::Release);
+        PassWitness
+    }
+}
+
+impl Drop for PassWitness {
+    fn drop(&mut self) {
+        PASS_HELD_SINCE_MS.store(0, Ordering::Release);
+    }
+}
+
+/// Decide whether a pass-overdue report is due. Returns the held duration to
+/// report, or `None` when idle, under threshold, or inside the re-warn window.
+fn overdue_report_due(held_since_ms: u64, last_warned_ms: u64, now_ms: u64) -> Option<u64> {
+    if held_since_ms == 0 {
+        return None;
+    }
+    let held_ms = now_ms.saturating_sub(held_since_ms);
+    if held_ms < PASS_OVERDUE_AFTER.as_millis() as u64 {
+        return None;
+    }
+    if last_warned_ms != 0
+        && now_ms.saturating_sub(last_warned_ms) < PASS_OVERDUE_REWARN_EVERY.as_millis() as u64
+    {
+        return None;
+    }
+    Some(held_ms)
+}
+
+/// Reaper-side pass witness: reads only atomics, never the slot lock, so a
+/// wedged pass (e.g. a GPU barrier that never returns) still gets reported.
+fn witness_overdue_pass() {
+    let held_since = PASS_HELD_SINCE_MS.load(Ordering::Acquire);
+    let last_warned = PASS_OVERDUE_WARNED_MS.load(Ordering::Acquire);
+    let now = epoch_ms();
+    if let Some(held_ms) = overdue_report_due(held_since, last_warned, now)
+        && PASS_OVERDUE_WARNED_MS
+            .compare_exchange(last_warned, now, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
+        warn!(
+            event = "whisper_engine_pass_overdue",
+            held_ms,
+            "Whisper engine pass holds the slot lock beyond the overdue threshold; \
+             a decode or GPU barrier may be wedged"
+        );
+    }
+}
+
 /// Background loop: drops the engine after it has been idle long enough.
 fn reaper_loop() {
     loop {
         std::thread::sleep(REAPER_TICK);
+        witness_overdue_pass();
         let Some(threshold) = idle_unload_after() else {
             continue;
         };
-        let mut guard = match slot().lock() {
+        // `try_lock`, not `lock`: queuing behind a long or wedged pass would
+        // park this thread and stop both the witness above and future ticks.
+        // A busy slot is by definition not idle; the next tick re-checks.
+        let mut guard = match slot().try_lock() {
             Ok(g) => g,
             Err(_) => continue,
         };
@@ -449,6 +547,8 @@ fn acquire_controlled<'a, T>(
     mutex: &'a Mutex<T>,
     control: &LocalExecutionControl,
 ) -> Result<std::sync::MutexGuard<'a, T>> {
+    let wait_started = Instant::now();
+    let mut next_warn_at = SLOT_WAIT_WARN_AFTER;
     loop {
         control.check()?;
         match mutex.try_lock() {
@@ -457,6 +557,27 @@ fn acquire_controlled<'a, T>(
                 return Ok(guard);
             }
             Err(std::sync::TryLockError::WouldBlock) => {
+                // Visibility only: a wait with no deadline used to be fully
+                // silent until acquisition stamped `lock_wait_ms`, which a
+                // wedged holder turns into "never". The receipt pairs the
+                // waiter's view with the holder's pass clock for correlation.
+                let waited = wait_started.elapsed();
+                if waited >= next_warn_at {
+                    let held_since = PASS_HELD_SINCE_MS.load(Ordering::Acquire);
+                    let holder_pass_ms = if held_since == 0 {
+                        0
+                    } else {
+                        epoch_ms().saturating_sub(held_since)
+                    };
+                    warn!(
+                        event = "whisper_slot_wait_overdue",
+                        waited_ms = waited.as_millis() as u64,
+                        holder_pass_ms,
+                        "Whisper slot wait exceeds the visibility threshold; \
+                         the holding engine pass has not released the lock"
+                    );
+                    next_warn_at = waited + SLOT_WAIT_REWARN_EVERY;
+                }
                 std::thread::sleep(Duration::from_millis(5));
             }
             Err(std::sync::TryLockError::Poisoned(_)) => {
@@ -472,6 +593,7 @@ fn with_engine_controlled<R>(
 ) -> Result<R> {
     let lock_started = Instant::now();
     let mut guard = acquire_controlled(slot(), control)?;
+    let _pass_witness = PassWitness::arm();
     let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
     let mut model_load_ms = 0u64;
     let cold_load = guard.engine.is_none();
@@ -959,6 +1081,49 @@ mod tests {
             tiled.extend_from_slice(&pcm);
         }
         Some(tiled)
+    }
+}
+
+#[cfg(test)]
+mod pass_witness_tests {
+    use super::*;
+
+    const OVERDUE_MS: u64 = PASS_OVERDUE_AFTER.as_millis() as u64;
+    const REWARN_MS: u64 = PASS_OVERDUE_REWARN_EVERY.as_millis() as u64;
+
+    #[test]
+    fn idle_slot_never_reports() {
+        assert_eq!(overdue_report_due(0, 0, 1_000_000), None);
+    }
+
+    #[test]
+    fn pass_under_threshold_never_reports() {
+        let held_since = 1_000;
+        let now = held_since + OVERDUE_MS - 1;
+        assert_eq!(overdue_report_due(held_since, 0, now), None);
+    }
+
+    #[test]
+    fn overdue_pass_reports_held_duration() {
+        let held_since = 1_000;
+        let now = held_since + OVERDUE_MS;
+        assert_eq!(overdue_report_due(held_since, 0, now), Some(OVERDUE_MS));
+    }
+
+    #[test]
+    fn rewarn_window_suppresses_then_releases() {
+        let held_since = 1_000;
+        let first_warn = held_since + OVERDUE_MS;
+        let inside_window = first_warn + REWARN_MS - 1;
+        assert_eq!(
+            overdue_report_due(held_since, first_warn, inside_window),
+            None
+        );
+        let past_window = first_warn + REWARN_MS;
+        assert_eq!(
+            overdue_report_due(held_since, first_warn, past_window),
+            Some(past_window - held_since)
+        );
     }
 }
 

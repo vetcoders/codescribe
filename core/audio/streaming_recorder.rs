@@ -878,6 +878,16 @@ struct ChannelTask {
     sample_rate: u32,
 }
 
+/// One channel transcription session's own authority: its identity, frozen
+/// settings, sink and ledger. A session's next message gets a fresh one.
+pub struct ChannelSessionSpec {
+    pub session_id: String,
+    pub runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    pub event_sink: Arc<dyn EventSink>,
+    pub language: Option<String>,
+    pub acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
+}
+
 /// What [`StreamingRecorder::register_channel_feed`] handed the caller.
 pub struct ChannelFeedRegistration {
     pub id: CaptureSubscriberId,
@@ -1015,6 +1025,19 @@ impl StreamingRecorder {
         self.live_formatting_agent = None;
         self.acoustic_ledger = Some(Arc::clone(&acoustic_ledger));
         acoustic_ledger
+    }
+
+    /// Inject only recognizer completion ingress for cross-crate controller tests.
+    /// No microphone or provider is opened; detachment and Stop keep their owners.
+    #[cfg(feature = "test-isolation")]
+    pub fn bind_test_live_finals(&mut self, capture_epoch: u64, completion: oneshot::Receiver<()>) {
+        assert!(self.authority_session_id.is_some());
+        assert!(capture_epoch > 0);
+        assert!(!self.recorder.is_active());
+        assert!(self.transcription_handle.is_none());
+        assert!(self.last_window_closed.is_none());
+        self.capture_epoch = capture_epoch;
+        self.last_window_closed = Some(completion);
     }
 
     /// Supply the existing host executor without creating another Agent session.
@@ -1481,6 +1504,69 @@ impl StreamingRecorder {
             }
         }
 
+        let (id, _) = self.attach_channel_session(
+            None,
+            ChannelSessionSpec {
+                session_id,
+                runtime_settings,
+                event_sink,
+                language,
+                acoustic_ledger,
+            },
+            utterance_silence_sec,
+        )?;
+        Ok(id)
+    }
+
+    /// End the current message of a channel session and start the next one on
+    /// the same capture subscription.
+    ///
+    /// The subscription, and so the physical capture and its subscriber count,
+    /// stay as they are: only the feed's sender and archive are swapped, under
+    /// the registry lock, so every PCM block goes to exactly one message. The
+    /// previous message's feed is dropped, its session observes end-of-capture
+    /// and the returned [`ClosedChannel`] runs the same terminal settlement a
+    /// hang-up runs (archive receipt, dictation witness, gap recovery, seal
+    /// coverage). No Stop grace is owed: the send pause already captured the
+    /// tail.
+    pub async fn rotate_channel_segment(
+        &mut self,
+        id: CaptureSubscriberId,
+        next: ChannelSessionSpec,
+        configured_silence_sec: f32,
+    ) -> Result<ClosedChannel> {
+        anyhow::ensure!(
+            self.channel_tasks.iter().any(|task| task.subscriber == id),
+            "channel segment rotation found no session for {id:?}"
+        );
+        let (_, previous) = self.attach_channel_session(
+            Some(id),
+            next,
+            channel_session_silence(configured_silence_sec),
+        )?;
+        Ok(ClosedChannel {
+            last: false,
+            task: previous,
+            physical_archive: None,
+        })
+    }
+
+    /// Start one channel transcription session. `existing` hands the next
+    /// message of a running session its feed in place and returns the task
+    /// it replaces; `None` registers a new subscription.
+    fn attach_channel_session(
+        &mut self,
+        existing: Option<CaptureSubscriberId>,
+        spec: ChannelSessionSpec,
+        utterance_silence_sec: Option<f32>,
+    ) -> Result<(CaptureSubscriberId, Option<ChannelTask>)> {
+        let ChannelSessionSpec {
+            session_id,
+            runtime_settings,
+            event_sink,
+            language,
+            acoustic_ledger,
+        } = spec;
         let actual_sample_rate = {
             let actual = self.recorder.actual_sample_rate();
             if actual == 0 {
@@ -1500,7 +1586,38 @@ impl StreamingRecorder {
             }
         };
         let archive_feed = archive.as_ref().and_then(|archive| archive.feed().ok());
-        let registration = self.register_channel_feed_archived(archive_feed);
+        let (id, feed, previous) = match existing {
+            None => {
+                let registration = self.register_channel_feed_archived(archive_feed);
+                (registration.id, registration.receiver, None)
+            }
+            Some(id) => {
+                let (sender, receiver) = mpsc::channel::<Vec<f32>>(AUDIO_BACKLOG_CHUNKS);
+                let replaced = {
+                    let mut feeds = self
+                        .pcm_feeds
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let feed = feeds
+                        .iter_mut()
+                        .find(|feed| feed.id == id)
+                        .context("channel segment rotation found no PCM feed")?;
+                    (
+                        std::mem::replace(&mut feed.sender, sender),
+                        std::mem::replace(&mut feed.archive, archive_feed),
+                    )
+                };
+                // Outside the registry lock: the previous message's session
+                // sees end-of-capture once its sender and archive feed drop.
+                drop(replaced);
+                let position = self
+                    .channel_tasks
+                    .iter()
+                    .position(|task| task.subscriber == id)
+                    .context("channel segment rotation found no session")?;
+                (id, receiver, Some(self.channel_tasks.remove(position)))
+            }
+        };
         let capture_device_name = self.recorder.last_input_device().map(str::to_owned);
         let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
         let (lifecycle, lifecycle_events) = recorder_lifecycle_channel();
@@ -1513,8 +1630,6 @@ impl StreamingRecorder {
         let terminal_audio_sender = terminal_audio.is_some().then_some(terminal_tx);
         event_sink.on_capture_opened(&session_id, 1);
         let sink = event_sink;
-        let feed = registration.receiver;
-        let id = registration.id;
         let task_session_id = session_id.clone();
         let task = tokio::spawn(async move {
             transcription_session(
@@ -1550,7 +1665,7 @@ impl StreamingRecorder {
             session_id,
             sample_rate: actual_sample_rate,
         });
-        Ok(id)
+        Ok((id, previous))
     }
 
     /// Release one channel subscription. The last subscriber closes the device.
