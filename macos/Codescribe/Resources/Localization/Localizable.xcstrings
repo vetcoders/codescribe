@@ -2362,12 +2362,12 @@
         }
       }
     },
-    "Add custom provider." : {
+    "Add custom provider" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dodaj własnego dostawcę."
+            "value" : "Dodaj własnego dostawcę"
           }
         }
       }
@@ -7903,22 +7903,22 @@
         }
       }
     },
+    "Edit custom provider" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edytuj własnego dostawcę"
+          }
+        }
+      }
+    },
     "Edit custom provider %@" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Edytuj własnego dostawcę: %@"
-          }
-        }
-      }
-    },
-    "Edit custom provider." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Edytuj własnego dostawcę."
           }
         }
       }
@@ -8960,12 +8960,12 @@
         }
       }
     },
-    "Get set up." : {
+    "Get set up" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Przygotuj Codescribe do pracy."
+            "value" : "Przygotuj Codescribe do pracy"
           }
         }
       }

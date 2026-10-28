@@ -21,7 +21,7 @@ struct CreatorPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsPageHeader(String(localized: "Get set up."))
+      SettingsPageHeader(String(localized: "Get set up"))
 
       // The wizard's only entry after first run: the tray row that used to
       // open it is gone (Founder, 2026-10-20), so the Creator offers it here.

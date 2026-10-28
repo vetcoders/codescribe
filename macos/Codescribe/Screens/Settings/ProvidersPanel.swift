@@ -450,7 +450,7 @@ struct CustomProviderForm: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text(isEdit ? "Edit custom provider." : "Add custom provider.")
+      Text(isEdit ? "Edit custom provider" : "Add custom provider")
         .font(CSFont.ui(20, .bold))
         .tracking(-0.3)
         .foregroundStyle(Color.primary)
