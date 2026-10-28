@@ -18,6 +18,9 @@ struct OverlayAgentRosterLabel: View {
   /// nil for the All row, which has no reception of its own.
   let reception: OverlayChannelDelivery?
   var receptionEnabled = true
+  /// Rendered right after the name: the caller's own control, such as the
+  /// client focus button that lives beside the agent's name.
+  var titleAccessory: AnyView? = nil
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
 
@@ -48,6 +51,9 @@ struct OverlayAgentRosterLabel: View {
             .truncationMode(.tail)
             .layoutPriority(1)
             .accessibilityIdentifier("overlay-agent-title-\(channel ?? "0")")
+          if let titleAccessory {
+            titleAccessory
+          }
           Spacer(minLength: 4)
           if unreadCount > 0, let conversationID {
             OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)
