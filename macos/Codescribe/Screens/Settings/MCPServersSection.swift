@@ -213,7 +213,9 @@ struct MCPServerRow: View {
             SettingsChipButton(action: onAuthorize) {
               Text(
                 authorizationPending
-                  ? String(localized: "Signing in…") : String(localized: "Sign in")
+                  ? String(localized: "Signing in…")
+                  : (server.authRef.isEmpty
+                    ? String(localized: "Sign in") : String(localized: "Sign in again"))
               )
               .font(SettingsScale.controlLabel)
             }
@@ -329,7 +331,8 @@ struct MCPServerRow: View {
           String(localized: "Authentication"),
           server.oauth
             ? (server.authRef.isEmpty
-              ? String(localized: "OAuth — not signed in") : String(localized: "OAuth"))
+              ? String(localized: "OAuth — not signed in")
+              : String(localized: "OAuth — signed in"))
             : (server.authRef.isEmpty
               ? String(localized: "No authentication") : String(localized: "Token in Keychain")))
       } else {

@@ -12807,16 +12807,6 @@
         }
       }
     },
-    "OAuth" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "OAuth"
-          }
-        }
-      }
-    },
     "OAuth client id…" : {
       "localizations" : {
         "pl" : {
@@ -12833,6 +12823,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "OAuth — niezalogowano"
+          }
+        }
+      }
+    },
+    "OAuth — signed in" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OAuth — zalogowano"
           }
         }
       }
@@ -17484,6 +17484,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Zaloguj się"
+          }
+        }
+      }
+    },
+    "Sign in again" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaloguj ponownie"
           }
         }
       }
