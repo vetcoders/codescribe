@@ -670,9 +670,10 @@ struct OverlayAgentAudioControls: View {
             width: glyphBox, height: glyphBox,
             alignment: chrome ? .center : .leading)
         }
+        // Violet means speech is playing; enabled playback alone rests neutral.
         .modifier(
           OverlayAudioControlInk(
-            palette: palette, lit: muted == false ? palette.agentAccent.color : nil)
+            palette: palette, lit: speakingNow ? palette.agentAccent.color : nil)
         )
         .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
         .disabled(!playbackEnabled || muted == nil)

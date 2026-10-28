@@ -1130,7 +1130,10 @@ struct DictationOverlayView: View {
     // gap across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
     // Every use below is mini's: one mini in both layouts.
     let mapEnabled = state.channelMapInMini
-    let horizontalMap = density == .midi && channelMap != nil
+    let horizontalMap = density == .midi && state.channelMapInHeader && channelMap != nil
+    // The vertical layout's stacked counter is the visible way to the Intercom
+    // group, so it keeps the brand's side in compact and expanded as in mini.
+    let leadingCounter = mini || state.channelMapCounterStacked
     return HStack(spacing: mini ? (mapEnabled ? DictationOverlayWindow.miniRowSpacing : 6) : 10) {
       // The shared lockup, with the close button in the brand dot's place.
       // Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini. Its
@@ -1152,7 +1155,7 @@ struct DictationOverlayView: View {
             identifier: mini
               ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
         }
-        if mini, let map = channelMap {
+        if leadingCounter, let map = channelMap {
           refreshingChordModifier(map)
         }
       }
@@ -1189,7 +1192,7 @@ struct DictationOverlayView: View {
         HStack(spacing: 0) {
           sessionTimer
             .allowsHitTesting(false)
-          if density == .midi, let map = channelMap {
+          if density == .midi, state.channelMapInHeader, let map = channelMap {
             refreshingChordModifier(map)
           }
         }
@@ -1263,12 +1266,13 @@ struct DictationOverlayView: View {
   /// selects its conversation through the roster, as a rail pill does; the
   /// counter switches mini to compact, or returns a narrowed compact strip to
   /// its natural width (spec §13.4). Wide named chips have separate audio and
-  /// panel controls. The vertical layout keeps mini's counter, as stacked
-  /// cards that open the Intercom group, and has no chips in compact.
+  /// panel controls. The vertical layout has no chips: its counter, as stacked
+  /// cards that open the Intercom group, stays in every form, so widening the
+  /// overlay never removes the way to the group.
   /// Internal so tests can drive the header's same values.
   var channelMap: OverlayChannelMapView? {
-    let mini = state.presentationMode == .mini
-    guard mini ? state.channelMapInMini : state.channelMapInHeader else { return nil }
+    let counterOnly = state.presentationMode == .mini || state.channelMapCounterStacked
+    guard counterOnly ? state.channelMapInMini : state.channelMapInHeader else { return nil }
     let roster = channelStatusView
     let model = roster.channelMapModel
     guard !model.chips.isEmpty else { return nil }
@@ -1298,7 +1302,7 @@ struct DictationOverlayView: View {
         focusFailed: focusState?.isFailed == true)
     }
     return OverlayChannelMapView(
-      model: model, placement: mini ? .mini : .strip,
+      model: model, placement: counterOnly ? .mini : .strip,
       modifier: state.agentChannelModifier, palette: palette,
       textScale: textScale, animates: overlayVisible,
       onSelectChannel: { roster.selectChannelConversation($0) },
