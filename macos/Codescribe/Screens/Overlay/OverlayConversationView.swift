@@ -1047,7 +1047,8 @@ struct OverlayConversationView: View {
     .overlay {
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(
-          message.kind == .user ? CSColor.terracotta.opacity(0.65) : palette.border.color,
+          message.kind == .user
+            ? CSColor.terracottaDeep.opacity(CSAlpha.selectionStroke) : palette.border.color,
           lineWidth: 1 / max(displayScale, 1)
         )
         .allowsHitTesting(false)

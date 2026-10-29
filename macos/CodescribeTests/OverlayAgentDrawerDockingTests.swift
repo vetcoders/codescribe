@@ -569,7 +569,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
           textScale: 1.0, preferredWidth: widest, windowWidth: 780),
         windowWidth: 780),
       "the conversation slides out at its 320-point minimum")
-    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 60.44, accuracy: 0.001)
+    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 76.44, accuracy: 0.001)
   }
 
   func testTheLayoutIsRememberedAndTheDraggedAgentsViewMigrates() throws {
@@ -786,6 +786,10 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
           x: button.x, y: screenTop - button.y - button.height,
           width: button.width, height: button.height)
         let rect = panel.convertFromScreen(screenRect)
+        XCTAssertEqual(
+          rect.midX,
+          panel.frame.width - OverlayAgentDrawerLayout.railWidth(textScale: scale) / 2,
+          accuracy: 1, "the channel button is centered across the full folded sidebar")
         XCTAssertLessThan(rect.maxX, panel.frame.width - OverlayResizeHit.band)
         for x in [rect.minX + 1, rect.midX, rect.maxX - 1] {
           let point = NSPoint(x: x, y: rect.midY)
