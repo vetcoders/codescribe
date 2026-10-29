@@ -2637,7 +2637,11 @@ impl AcousticLedger {
 
     /// Debt is open until complete decode windows cover its whole range.
     pub fn text_recovery_pending(&self, occurrence: &OccurrenceIdentity) -> bool {
-        self.publication_debt.contains_key(occurrence)
+        self.publication_debt.get(occurrence).is_some_and(|ranges| {
+            ranges.iter().any(|&(start, end)| {
+                !self.publication_range_debt(occurrence, start, end).is_empty()
+            })
+        })
             || (self.pending_text_recovery.contains(occurrence)
                 && !self.complete_decode_covers(occurrence))
     }

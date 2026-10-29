@@ -2404,6 +2404,63 @@ impl AcousticLedger {
             })
     }
 
+    /// Keep measured speech and any interval whose silence is not proven.
+    /// A decoder returning no words cannot itself establish quiet.
+    pub(super) fn publication_range_debt(
+        &self,
+        owner: &OccurrenceIdentity,
+        source_start: u64,
+        source_end: u64,
+    ) -> Vec<(u64, u64)> {
+        use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
+
+        let range = OccurrenceIdentity::new(
+            &owner.session,
+            owner.capture_epoch,
+            source_start,
+            source_end,
+        );
+        let Some(speech) = self.measured_speech_for(&range) else {
+            return vec![(source_start, source_end)];
+        };
+        if self.capture_rate_hz.is_none() {
+            return vec![(source_start, source_end)];
+        }
+        let mut spans = speech.ranges().iter().filter_map(|speech| {
+            let start = speech.sample_start.max(source_start);
+            let end = speech.sample_end.min(source_end);
+            (start < end).then_some((start, end))
+        }).collect::<Vec<_>>();
+        spans.sort_unstable();
+        let quiet = |start: u64, end: u64| {
+            if let Some(energy) = self.decode_fence_energy.as_ref() {
+                energy.owner.measured_quiet_in(&owner.session, owner.capture_epoch, start, end)
+                    == Some(true)
+            } else if let Some(fences) = self.replay_quiet_fences.as_ref() {
+                fences.iter().any(|fence| {
+                    fence.same_capture(owner)
+                        && fence.sample_start <= start
+                        && end <= fence.sample_end
+                })
+            } else {
+                speech.producer() == CAPTURE_ENERGY_PRODUCER
+            }
+        };
+        let mut debt = Vec::new();
+        let mut cursor = source_start;
+        for (start, end) in spans {
+            if start > cursor && !quiet(cursor, start) {
+                debt.push((cursor, start));
+            }
+            debt.push((start, end));
+            cursor = cursor.max(end);
+        }
+        if cursor < source_end && !quiet(cursor, source_end) {
+            debt.push((cursor, source_end));
+        }
+        debt
+    }
+
     /// Record only publication that actually landed in committed slots. The
     /// original coarse source supplies the physical debt; decoder context is
     /// not a publication receipt and cannot discharge that debt.
@@ -2421,7 +2478,9 @@ impl AcousticLedger {
             for operation in operations {
                 for source in &operation.sources {
                     if self.complete_coarse_partition(observation, source, &operation.outputs) {
-                        new_sources.push((source.sample_start, source.sample_end));
+                        new_sources.extend(self.publication_range_debt(
+                            owner, source.sample_start, source.sample_end,
+                        ));
                     }
                 }
             }
