@@ -872,31 +872,26 @@ private struct PermissionChecklistRow: View {
       } else {
         missingMark
         let repair = kind.repair(for: state)
+        // Repair actions read through their chip shape, not through bold text
+        // (Founder D2, 2026-10-26): the same neutral chip as every other flat
+        // Settings action. The row title already names the permission, so the
+        // visible label stays generic; VoiceOver keeps the specific one.
         if repair.requestsNatively {
-          Button {
+          SettingsChipButton("Allow access", tint: CSColor.secondaryInk) {
             onRequested?()
             Task { @MainActor in
               // The return value is not a grant; the following probe is.
               _ = await kind.requestInApp()
               onStateChanged?()
             }
-          } label: {
-            Text("allow \(kind.displayName)")
-              .font(CSFont.ui(11, .semibold))
-              .foregroundStyle(Color.primary)
           }
-          .csFocusRing()
+          .accessibilityLabel(Text("allow \(kind.displayName)"))
         }
         if repair.opensSettings {
-          Button {
+          SettingsChipButton("Open System Settings", tint: CSColor.secondaryInk) {
             onRequested?()
             kind.openSystemSettings()
-          } label: {
-            Text("open System Settings")
-              .font(CSFont.ui(11, .semibold))
-              .foregroundStyle(Color.primary)
           }
-          .csFocusRing()
         }
       }
     }

@@ -3135,6 +3135,17 @@
         }
       }
     },
+    "Allow access" : {
+      "comment" : "In-app permission repair chip; the row title already names the permission",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Przyznaj dostęp"
+          }
+        }
+      }
+    },
     "Allow microphone access" : {
       "localizations" : {
         "pl" : {
@@ -23888,16 +23899,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "teraz"
-          }
-        }
-      }
-    },
-    "open System Settings" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "otwórz Ustawienia systemowe"
           }
         }
       }

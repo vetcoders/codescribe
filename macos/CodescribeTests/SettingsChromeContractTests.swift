@@ -1291,6 +1291,28 @@ final class SettingsChromeContractTests: XCTestCase {
       polish["All permissions granted (%lld)"], "Wszystkie uprawnienia przyznane (%lld)")
   }
 
+  /// Founder D2 (2026-10-26): a missing permission's repair actions read
+  /// through their chip shape, not through bold text — the same neutral
+  /// `SettingsChipButton` as every other flat Settings action. The row title
+  /// already names the permission, so VoiceOver keeps the specific label
+  /// through `allow %@` while the visible chip stays generic (W0-21).
+  func testPermissionRepairActionsAreChipsNotPlainText() throws {
+    let creator = try XCTUnwrap(try settingsSources()["CreatorPanel.swift"])
+    XCTAssertTrue(
+      creator.contains("SettingsChipButton(\"Allow access\", tint: CSColor.secondaryInk)"))
+    XCTAssertTrue(
+      creator.contains("SettingsChipButton(\"Open System Settings\", tint: CSColor.secondaryInk)"))
+    XCTAssertFalse(
+      creator.contains("Text(\"allow \\(kind.displayName)\")"),
+      "the permission name is no longer a plain bold label")
+    XCTAssertFalse(
+      creator.contains("Text(\"open System Settings\")"),
+      "the repair action is no longer a plain bold label")
+    XCTAssertTrue(
+      creator.contains(".accessibilityLabel(Text(\"allow \\(kind.displayName)\"))"),
+      "VoiceOver still names the specific permission")
+  }
+
   func testCreatorStatesTheSkillGenerationAndKeepsPathsInDetails() throws {
     let sources = try settingsSources()
     let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
