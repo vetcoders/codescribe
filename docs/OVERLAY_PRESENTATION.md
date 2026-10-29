@@ -34,6 +34,10 @@ surface. Keep the policy symbol/help from `AgentBroadcastPolicy`; its meaning
 does not belong to the visual style. `OverlayAgentUnreadBadge` is shared by
 current and saved conversations.
 
+The [approved window mockup from 2026-10-29](guide/bus-window-mockup.html)
+records the compact-card layout and its matching More/right-click menu.
+The runtime action semantics and availability are defined below.
+
 An agent row has three blocks: identity and controls, the provider/model/project
 descriptor, and a routed message preview of at most two lines. There is no
 separate state-and-actions footer. The waveform microphone, speaker and more
@@ -59,6 +63,19 @@ availability, frozen-owner and archive guards remain in force. An open
 microphone can still be stopped after its reader disconnects, and playback can
 still be muted. A client-focus request keeps its progress and result on the
 more control and in the menu; removing the footer must not erase that feedback.
+
+`cardAgentMenu` selects only these secondary actions from the existing command
+owner. Card menus do not repeat Write/Forward, microphone, playback or Show in
+Agents; the full menu remains available on other pill surfaces. The same
+subset is used by the conversation header's More control.
+
+Opening the workspace dispatches the existing `focusAgentPanel` command to
+the detected Frame pane, terminal or Codex thread. `showAgentInMonitor` is a
+separate navigation action. Removing a card uses `archiveAgent`: the exact
+owner is verified, an open microphone channel refuses the operation, a live
+reader is stopped before its digit is released, and the lease, backlog and
+saved conversation remain retained. No new action or archive semantics are
+introduced by the mockup's labels.
 
 Reception controls live in the menu, but restrictions remain visible by the
 name: a moon while Do not disturb is on, and a crossed antenna while the agent
