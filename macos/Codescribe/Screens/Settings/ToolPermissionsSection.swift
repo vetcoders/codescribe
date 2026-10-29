@@ -160,7 +160,7 @@ struct ToolPermissionItem: Equatable, Hashable, Identifiable {
   let risk: String
   let effective: String
   /// Rule behind `effective`: `tool` (individual), `server` / `default`
-  /// (inherited) or `thread`.
+  /// (inherited), `builtin` (the tool's own rule) or `thread`.
   let ruleSource: String
 
   init(
@@ -401,11 +401,22 @@ enum ToolPermissionLabels {
     }
   }
 
-  static func ruleCaption(_ source: String) -> String {
+  /// Where a tool's level comes from. A built-in rule names its reason when
+  /// the tool has one: reading the clipboard asks by default because a
+  /// password or a token often sits there (Founder decision D3/N4, 2026-10-26).
+  static func ruleCaption(_ source: String, identity: String = "") -> String {
     switch source {
     case "tool": return String(localized: "Individual rule")
     case "server": return String(localized: "Server rule")
     case "thread": return String(localized: "Overridden for this conversation")
+    case "builtin" where identity == "native:read_clipboard":
+      return String(
+        localized: "Built-in rule: the clipboard may hold passwords",
+        comment: "Why reading the clipboard asks by default; shown beside the tool's level")
+    case "builtin":
+      return String(
+        localized: "Built-in rule",
+        comment: "The tool's own rule turned its category's Allow into Ask")
     default: return String(localized: "Category default")
     }
   }
@@ -497,11 +508,12 @@ struct ToolCapabilityRow: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
           // Where the level below comes from, in the same words the defaults
-          // band uses: "Category default", "Server rule" or "Individual rule".
+          // band uses: "Category default", "Server rule" or "Individual rule",
+          // or the tool's built-in rule with its reason (the clipboard).
           // At the helper rung, not a rung below it, so a tool that follows
           // its category says so as plainly as the name is written. Capped so
           // a long translation wraps instead of eating the name's line.
-          Text(ToolPermissionLabels.ruleCaption(item.ruleSource))
+          Text(ToolPermissionLabels.ruleCaption(item.ruleSource, identity: item.identity))
             .font(SettingsScale.helper)
             .foregroundStyle(CSColor.secondaryInk)
             .multilineTextAlignment(.trailing)

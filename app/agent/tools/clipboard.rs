@@ -1,14 +1,19 @@
 //! Native clipboard tools (canonical: `read_clipboard` / `write_clipboard`).
 //!
 //! Reading prefers text and falls back to an image, re-encoded as PNG so the
-//! agent always receives one predictable media type. Writing is
-//! [`ToolRisk::Mutating`]: it overwrites user-owned clipboard state with no
-//! restore path. Both operations are injected through function parameters, which
+//! agent always receives one predictable media type. Reading stays
+//! [`ToolRisk::ReadOnly`] but carries the built-in `requires_approval` rule:
+//! the clipboard often holds a password or a token, so the read asks unless
+//! the operator set a rule for the tool (Founder decision D3/N4, 2026-10-26).
+//! Writing is [`ToolRisk::Mutating`]: it overwrites user-owned clipboard state
+//! with no restore path. Both operations are injected through function parameters, which
 //! is what lets the tests exercise the fallback without a real pasteboard.
 
 use anyhow::{Context, Result, bail};
 use arboard::Clipboard;
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
+use codescribe_core::agent::{
+    ToolDefinition, ToolExecutionPolicy, ToolRegistry, ToolResultContent, ToolRisk,
+};
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, RgbaImage};
 use serde_json::{Value, json};
@@ -19,10 +24,11 @@ const OK_TEXT: &str = "ok";
 /// Register both clipboard tools on the shared [`ToolRegistry`].
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register_native(
+        .register_with_policy(
             read_clipboard_definition(),
             Box::new(|input| Box::pin(handle_read(input))),
-            ToolRisk::ReadOnly,
+            read_clipboard_policy(),
+            None,
         )
         .expect("register read_clipboard tool");
     registry
@@ -33,6 +39,15 @@ pub fn register(registry: &mut ToolRegistry) {
             ToolRisk::Mutating,
         )
         .expect("register write_clipboard tool");
+}
+
+/// Read-only class with the built-in Ask rule: the category default's Allow
+/// becomes Ask, while an explicit operator rule for the tool still wins.
+fn read_clipboard_policy() -> ToolExecutionPolicy {
+    ToolExecutionPolicy {
+        requires_approval: true,
+        ..ToolExecutionPolicy::native(ToolRisk::ReadOnly)
+    }
 }
 
 /// Tool schema for `read_clipboard` (takes no arguments).

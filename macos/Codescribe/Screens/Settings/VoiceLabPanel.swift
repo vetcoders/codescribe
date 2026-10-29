@@ -484,9 +484,7 @@ struct VoiceLabPanel: View {
   private var header: some View {
     HStack(alignment: .top, spacing: CSSpace.md) {
       VStack(alignment: .leading, spacing: 0) {
-        SettingsPageHeader(
-          String(localized: "Dictionary and corrections")
-        )
+        SettingsPageHeader(SettingsSection.voiceLab.title)
         countersRow
           .padding(.top, CSSpace.sm)
         if let teachMsg = model.voiceLabTeachMessage {
@@ -899,7 +897,7 @@ struct VoiceLabPanel: View {
         Text(label)
           .font(CSFont.ui(11, .medium))
       }
-      .foregroundStyle(CSColor.chromeAccent)
+      .foregroundStyle(Color.primary)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -1021,7 +1019,7 @@ struct VoiceLabPanel: View {
       )
       .textCase(.uppercase)
       .font(CSFont.mono(10, .semibold))
-      .foregroundStyle(CSColor.chromeAccent)
+      .foregroundStyle(CSColor.secondaryInk)
       TextEditor(text: $editor.canonical)
         .focused($focusedCorrectionID, equals: row.id)
         .font(CSFont.ui(13))

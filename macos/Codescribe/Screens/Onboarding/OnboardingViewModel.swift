@@ -186,7 +186,7 @@ final class OnboardingViewModel: ObservableObject {
     String(
       localized: LocalizedStringResource(
         "Getting started", locale: interfaceLocale,
-        comment: "Setup wizard window title"
+        comment: "Setup wizard window title: the wizard itself, reopened from Settings (General)"
       ))
   }
   var totalSteps: Int { OnboardingStep.count }
@@ -213,7 +213,7 @@ final class OnboardingViewModel: ObservableObject {
 
   /// The bar follows the same visible fraction as the counter.
   var progressFraction: Double {
-    Double(visibleStepNumber - 1) / Double(max(1, visibleStepCount - 1))
+    Double(visibleStepNumber) / Double(max(1, visibleStepCount))
   }
 
   var isDone: Bool { step == .done }
@@ -852,7 +852,7 @@ final class OnboardingViewModel: ObservableObject {
     if selectedProviderAccountConnected {
       return String(
         localized: LocalizedStringResource(
-          "Account saved", locale: interfaceLocale,
+          "Saved", locale: interfaceLocale,
           comment: "Setup Agent account row status"))
     }
     // A stored key already covers this provider, so the account is an extra.

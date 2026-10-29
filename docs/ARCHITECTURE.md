@@ -422,6 +422,41 @@ A panel reads the role, never a bare number.
   styling so the system can resolve selected and inactive text.
   `DesignSystemAdaptiveTests` holds these pairs in standard and high-contrast
   appearances; light text rungs account for travertine's darkest tinted card.
+  The terracotta rungs are the brand hue with only its lightness moved in
+  OKLCH (C 0.13, H 39°), brick rather than a blend with black.
+- **Brand accent for state, chrome accent for controls.** `CSColor.brandAccent`
+  (`#BA5C3C` on paper, `#D97757` on ink; 3:1 as a mark on every sheet shade)
+  colours what reports state: the setup progress bar, the mark of a selected
+  choice and the icon of a wizard step — except the final summary's
+  not-ready verdict heading, which stays neutral `CSColor.secondaryInk`
+  rather than terracotta or red: the concrete blocking rows below it already
+  carry the warning in `dangerLight` (Founder, 2026-10-29). A selected choice
+  row is drawn by
+  `csChoice(selected:)` (the wash at `CSAlpha.selectionWash`, the one-point
+  edge at `CSAlpha.selectionStroke`), never by the prominent action surface.
+  `CSColor.chromeAccent` stays the macOS accent for focus, switches, sliders,
+  bordered and prominent buttons and the dictionary pins; actions read as
+  clickable through their shape, not through a hue, and their ink never
+  follows the system accent (Founder, 2026-10-24 and 2026-10-26). A link in
+  prose is the brand text rung (`terracottaText`, the brick), underlined, with
+  the pointing-hand pointer on hover, one style in the whole app (Founder,
+  2026-10-26): `csLink()` draws it, and
+  neither the chrome accent nor the system `.link` style draws a link. A determinate progress bar is `CSProgressBar`: the native
+  linear `ProgressView` on macOS paints the system accent and ignores
+  `.tint`, so a brand-coloured bar must draw its own track. Indeterminate
+  progress keeps the native spinner. A status word that is verified
+  ("Granted", "Ready") is `CSStatusBadge(mark: .verified)` — a thin check on
+  an olive capsule — and stored identity that nothing has tested ("Saved") is
+  the same capsule with the empty circle; `StatusPill` remains the dotted
+  live-activity pill. Audio's healthy recording summary and Whisper's ready
+  model status use the verified badge; saved provider keys and accounts use
+  the saved badge without claiming service liveness. Audio's committing
+  fragments row spells out "Enabled"/"Disabled" ("Włączone"/"Wyłączone" in
+  Polish). Blocked audio and missing or pending model states keep their
+  existing warning or neutral presentation. A problem is never terracotta:
+  `CSStatusBadge(mark: .blocked)` and the wizard's `OnboardingProblemText`
+  draw an error or a blocker in `dangerLight` behind the warning sign, and a
+  missing optional setting stays `secondaryInk` without one.
 
 ### Agent window header
 

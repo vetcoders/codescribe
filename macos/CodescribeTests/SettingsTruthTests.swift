@@ -316,7 +316,6 @@ final class SettingsTruthTests: XCTestCase {
     )
     for tab in SettingsTab.allCases {
       XCTAssertFalse(tab.title.isEmpty)
-      XCTAssertFalse(tab.headline.isEmpty)
       if let blurb = tab.blurb { XCTAssertFalse(blurb.isEmpty, "\(tab)") }
       XCTAssertFalse(tab.searchKeywords.isEmpty)
       XCTAssertTrue(SettingsTab.tabs(in: tab.section).contains(tab))
@@ -625,6 +624,24 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertTrue(individual.hasIndividualRule)
     XCTAssertEqual(ToolPermissionLabels.ruleCaption("tool"), "Individual rule")
     XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Server rule")
+
+    // Reading the clipboard asks by its built-in rule and the card says why;
+    // any other tool lifted by a built-in rule gets the plain caption.
+    let clipboard = ToolPermissionItem(
+      capability: CsToolCapability(
+        name: "read_clipboard", identity: "native:read_clipboard", origin: "native",
+        server: "", risk: "read_only", effective: "ask", ruleSource: "builtin",
+        requiresApprovalFlag: true))
+    XCTAssertFalse(clipboard.hasIndividualRule, "a built-in rule has nothing to remove")
+    XCTAssertEqual(
+      ToolPermissionLabels.ruleCaption(clipboard.ruleSource, identity: clipboard.identity),
+      "Built-in rule: the clipboard may hold passwords")
+    XCTAssertEqual(
+      ToolPermissionLabels.ruleCaption("builtin", identity: "desktop-commander:write_file"),
+      "Built-in rule")
+    XCTAssertEqual(
+      ToolPermissionLabels.ruleCaption("default", identity: "native:read_clipboard"),
+      "Category default", "a category default stays one, even for the clipboard")
   }
 
   /// P0-9 residual: permissions hierarchy groups server→tool, filters by query,
@@ -2540,7 +2557,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(pane.contains("preferredColorScheme"))
     XCTAssertTrue(pane[..<scroll.lowerBound].contains("Divider()"))
     XCTAssertTrue(
-      pane[scroll.lowerBound...].contains("SettingsPageHeader(tab.headline, blurb: tab.blurb)"))
+      pane[scroll.lowerBound...].contains("SettingsPageHeader(tab.title, blurb: tab.blurb)"))
     XCTAssertTrue(pane[scroll.lowerBound...].contains(".id(model.currentTab)"))
 
     let detail = try settingsLayoutSource("SettingsView.swift")

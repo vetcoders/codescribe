@@ -24,19 +24,21 @@ struct WhisperDownloadView: View {
     VStack(alignment: .leading, spacing: 10) {
       // The state belongs to the model named beside it, so it sits next to the
       // heading instead of drifting to the far edge of whatever hosts this control.
-      HStack(spacing: 10) {
+      HStack(alignment: .firstTextBaseline, spacing: 10) {
         Text(
           String(
             localized: LocalizedStringResource(
               "Whisper model", locale: locale, comment: "Shared Whisper download control heading"))
         )
-        .font(SettingsScale.settingName)
+        .font(CSFont.ui(13, .semibold))
         Text(installLabel)
-          .font(.caption.weight(.medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(store.status.available ? CSColor.oliveLight : CSColor.secondaryInk)
         Spacer(minLength: 0)
       }
-      Text(store.status.modelId).font(SettingsScale.helper)
+      Text(store.status.modelId)
+        .font(SettingsScale.helper)
+        .foregroundStyle(CSColor.secondaryInk)
       switch presentation {
       case .full:
         technicalDetails
@@ -59,10 +61,7 @@ struct WhisperDownloadView: View {
 
       if store.inFlight {
         if let fraction = store.fraction {
-          ProgressView(value: fraction, total: 1)
-            .progressViewStyle(.linear)
-            .controlSize(.large)
-            .tint(CSColor.chromeAccent)
+          CSProgressBar(value: fraction, height: 6)
             .frame(maxWidth: .infinity)
         } else {
           ProgressView().controlSize(.small)
@@ -113,33 +112,62 @@ struct WhisperDownloadView: View {
     }
   }
 
-  /// Source, size and on-disk location of the model.
+  /// Source, size and on-disk location of the model, each under its own
+  /// label. A long path keeps both ends visible and shows in full on hover.
   private var technicalDetails: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text(
-        String(
-          localized: LocalizedStringResource(
-            "Hugging Face · \(store.status.repo) · \(store.status.sizeHint)", locale: locale,
-            comment:
-              "Download source: first placeholder is a repository id, second is approximate disk size"
-          ))
-      )
-      .font(SettingsScale.helper)
-      .foregroundStyle(CSColor.secondaryInk)
-      .fixedSize(horizontal: false, vertical: true)
-      if let path = store.status.path {
-        Text(path).font(.caption).textSelection(.enabled)
-      } else if !store.status.embedded {
-        Text(
+    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
+      GridRow {
+        detailLabel(
           String(
             localized: LocalizedStringResource(
-              "Default location: \(store.status.modelsDir)", locale: locale,
-              comment: "Default model storage folder; the placeholder is a directory path"))
-        )
-        .font(.caption)
-        .foregroundStyle(CSColor.secondaryInk)
+              "Source", locale: locale,
+              comment: "Whisper model card: field label for where the model downloads from")))
+        detailValue("Hugging Face · \(store.status.repo)")
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      GridRow {
+        detailLabel(
+          String(
+            localized: LocalizedStringResource(
+              "Size", locale: locale,
+              comment: "Whisper model card: field label for the approximate download size")))
+        detailValue(store.status.sizeHint)
+      }
+      if let location = modelLocation {
+        GridRow {
+          detailLabel(
+            String(
+              localized: LocalizedStringResource(
+                "Model location on this Mac", locale: locale,
+                comment: "Whisper model card: field label for the folder or file of the model")))
+          detailValue(location)
+            .fontDesign(.monospaced)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+            .help(location)
+        }
       }
     }
+  }
+
+  /// The installed path, or the folder a download will use. An embedded
+  /// model has no location of its own to show.
+  private var modelLocation: String? {
+    if let path = store.status.path { return path }
+    return store.status.embedded ? nil : store.status.modelsDir
+  }
+
+  private func detailLabel(_ text: String) -> some View {
+    Text(text)
+      .font(CSFont.ui(11, .medium))
+      .foregroundStyle(CSColor.secondaryInk)
+  }
+
+  private func detailValue(_ text: String) -> some View {
+    Text(verbatim: text)
+      .font(CSFont.ui(11))
+      .foregroundStyle(CSColor.secondaryInk)
   }
 
   private var downloadTitle: String {

@@ -111,6 +111,59 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertGreaterThan(joined.components(separatedBy: ".settingsGroupedInset(").count, 2)
   }
 
+  /// One rule heads every Settings page (Founder decision, 2026-10-29): a
+  /// tabbed page is headed by the active tab's name, every other page by its
+  /// sidebar name. Both come from the key the user clicked, never from a
+  /// second text, so the heading cannot drift from the sidebar or the tab bar.
+  /// A descriptive line that still carries meaning is the blurb under it.
+  func testEveryPageIsHeadedByTheNameTheUserClicked() throws {
+    let sources = try settingsSources()
+    let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
+    XCTAssertTrue(pane.contains("SettingsPageHeader(tab.title, blurb: tab.blurb)"))
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+    XCTAssertFalse(tab.contains("var headline"), "a tab has one name, not a second headline")
+
+    let headers: [(file: String, header: String)] = [
+      ("CreatorPanel.swift", "SettingsPageHeader(\n        SettingsSection.creator.title,"),
+      ("ShortcutsPanel.swift", "SettingsPageHeader(SettingsSection.shortcuts.title)"),
+      ("ProvidersPanel.swift", "SettingsPageHeader(\n        SettingsSection.keys.title,"),
+      ("AudioPanel.swift", "SettingsPageHeader(\n        SettingsSection.audio.title,"),
+      ("VoiceLabPanel.swift", "SettingsPageHeader(SettingsSection.voiceLab.title)"),
+      ("LabPanel.swift", "SettingsPageHeader(\n        SettingsSection.lab.title,"),
+      ("UserPanel.swift", "SettingsPageHeader(\n        SettingsSection.user.title,"),
+    ]
+    for (file, header) in headers {
+      let source = try XCTUnwrap(sources[file], file)
+      XCTAssertTrue(source.contains(header), "\(file) is not headed by its sidebar name")
+      XCTAssertEqual(
+        source.components(separatedBy: "SettingsPageHeader(").count, 2,
+        "\(file) has exactly one page header")
+    }
+    let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
+    XCTAssertTrue(
+      creator.contains("localized: \"Language, appearance, permissions and formatting.\""))
+
+    let polish = try polishCatalog()
+    XCTAssertEqual(
+      polish["Language, appearance, permissions and formatting."],
+      "Język, wygląd, uprawnienia i formatowanie.")
+    // The page holds general settings; "Kreator" names the wizard window it
+    // reopens (Founder, 2026-10-27).
+    XCTAssertEqual(polish["Creator"], "Ogólne")
+    XCTAssertEqual(polish["Getting started"], "Kreator")
+    XCTAssertEqual(polish["Open Setup Wizard…"], "Otwórz kreator…")
+    XCTAssertEqual(polish["Dictionary"], "Słownik")
+    XCTAssertEqual(polish["AI models"], "Modele AI")
+    XCTAssertEqual(polish["Tools"], "Narzędzia")
+    XCTAssertEqual(polish["Privacy"], "Prywatność")
+    for retired in [
+      "Get set up", "Dictionary and corrections", "Model configuration.", "Tool permissions",
+      "Cloud & privacy", "Get Codescribe ready to work.",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
   /// The six tabs of a tabbed section fit the narrowest detail column, in
   /// English and in Polish. A language that breaks this still gets the
   /// scrolling bar, but the label is then too long and should be shortened
@@ -262,16 +315,25 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertNil(polish["Text formatting"])
     XCTAssertNil(polish["Apple on-device (experimental)"])
 
-    // Shade menus name the shade; the hex reads as the row's subtitle.
+    // Shade menus name the shade; no raw hex code under the row title.
     XCTAssertTrue(creator.contains("Text(verbatim: shade.title).tag(shade)"))
-    XCTAssertTrue(creator.contains("subtitle: \"#\\(model.sheetShadeDark.rawValue)\""))
+    XCTAssertFalse(creator.contains("subtitle: \"#\\(model.sheetShade"))
 
     // Pickers that keep a fixed frame hold their Polish labels.
     let fixed: [(file: String, picker: String, titles: [String?])] = [
       ("ShortcutsPanel.swift", "Picker(\"Arm modifier\"", ["Shift", "Command"]),
+      // W0-05 (rule "units for humans"): the sizes are named, not in pixels,
+      // in both languages; the longest Polish word sets every segment.
       (
         "ShortcutsPanel.swift", "Picker(\"Pointer indicator\"",
-        [polish["settings.holdBadge.size.off"], "4px", "8px", "12px"]
+        ["Off", "Small", "Medium", "Large"]
+      ),
+      (
+        "ShortcutsPanel.swift", "Picker(\"Pointer indicator\"",
+        [
+          polish["settings.holdBadge.size.off"], polish["settings.holdBadge.size.small"],
+          polish["settings.holdBadge.size.medium"], polish["settings.holdBadge.size.large"],
+        ]
       ),
       ("ShortcutsPanel.swift", "Picker(\"Agent channel modifier\"", ["Ctrl", "Fn"]),
     ]
@@ -283,6 +345,20 @@ final class SettingsChromeContractTests: XCTestCase {
       let titles = try entry.titles.map { try XCTUnwrap($0, entry.picker) }
       XCTAssertLessThanOrEqual(width(titles), frame, "\(entry.picker): \(titles)")
     }
+
+    // The indicator picker owns its row under its name (W0-10): its frame
+    // fits the card at the minimum window, and the name no longer shares the
+    // line with it.
+    let shortcuts = try XCTUnwrap(sources["ShortcutsPanel.swift"])
+    let indicator = try XCTUnwrap(shortcuts.range(of: "Picker(\"Pointer indicator\""))
+    let indicatorFrame = try XCTUnwrap(
+      fixedFrameWidth(in: String(shortcuts[indicator.upperBound...].prefix(600))))
+    XCTAssertLessThanOrEqual(indicatorFrame, column, "the indicator picker fits the card")
+    let indicatorHead = String(shortcuts[..<indicator.lowerBound].suffix(700))
+    let sharedLine = "HStack(spacing: SettingsScale.rowInsetH) {\n          Text(\"Size of"
+    XCTAssertFalse(
+      indicatorHead.contains(sharedLine),
+      "the indicator's name does not share its line with the picker")
   }
 
   /// The sidebar footer is one sentence-case line per state, and empty while
@@ -353,7 +429,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let boundProviderAdvancedCount =
       panel.components(separatedBy: "DisclosureGroup(isExpanded: $showingAdvanced)").count - 1
     XCTAssertEqual(nativeAdvancedCount + boundProviderAdvancedCount, 2)
-    XCTAssertTrue(panel.contains("String(localized: \"Providers\")"))
+    XCTAssertTrue(panel.contains("SettingsSection.keys.title,"))
     XCTAssertFalse(panel.contains("\"Providers.\""))
     XCTAssertFalse(panel.contains("factory endpoint"))
     XCTAssertFalse(panel.contains("SettingsSectionLabel(String(localized: \"Vendors\"))"))
@@ -496,7 +572,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
     XCTAssertTrue(tab.contains("String(localized: \"AI models\""))
-    XCTAssertTrue(tab.contains("case .agentLanes: String(localized: \"Model configuration.\")"))
+    XCTAssertFalse(tab.contains("Model configuration."), "the tab is headed by its name")
     XCTAssertFalse(tab.contains("\"LLM lanes\""))
 
     let panel = try XCTUnwrap(sources["AgentPanel.swift"])
@@ -558,7 +634,6 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "AI models": "Modele AI",
-      "Model configuration.": "Konfiguracja modeli",
       "Choose the Agent and formatting models. Accounts and keys live under Providers.":
         "Wybierz modele Agenta i formatowania. Konta i klucze ustawisz w Dostawcach.",
       "Assistive": "Agent",
@@ -629,7 +704,14 @@ final class SettingsChromeContractTests: XCTestCase {
   func testWorkspaceTabNamesAgentAccessNotProjects() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
-    XCTAssertTrue(tab.contains("String(localized: \"Folders available to the Agent\""))
+    // W0-11 (one heading rule): a tabbed page is headed by its tab name, so
+    // SettingsTab carries no separate headline; the folder list below names
+    // folder access ("Allowed folders").
+    XCTAssertFalse(tab.contains("var headline"), "the tab name is the heading")
+    let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
+    XCTAssertTrue(
+      pane.contains("SettingsPageHeader(tab.title"), "tabbed pages are headed by tab.title")
+    XCTAssertFalse(tab.contains("String(localized: \"Folders available to the Agent\""))
     XCTAssertFalse(tab.contains("\"Workspace roots.\""))
     XCTAssertTrue(tab.contains("\"Processes and MCP servers have their own permissions.\""))
     XCTAssertFalse(
@@ -782,8 +864,7 @@ final class SettingsChromeContractTests: XCTestCase {
   func testToolsTabReadsAsAPermissionScreen() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
-    XCTAssertTrue(tab.contains("case .agentTools: String(localized: \"Tool permissions\")"))
-    XCTAssertFalse(tab.contains("\"Tool permissions.\""))
+    XCTAssertFalse(tab.contains("\"Tool permissions"), "the tab is headed by its name, Tools")
     XCTAssertFalse(tab.contains("Deny wins over everything"))
     XCTAssertTrue(tab.contains("\"Choose when the Agent may use tools.\""))
 
@@ -812,7 +893,9 @@ final class SettingsChromeContractTests: XCTestCase {
       section.contains("let category = ToolPermissionLabels.risk(risk)"),
       "the category rides the card's one facts line (sourceSummary)")
     XCTAssertTrue(section.contains("Text(verbatim: item.sourceSummary)"))
-    XCTAssertTrue(section.contains("ToolPermissionLabels.ruleCaption(item.ruleSource)"))
+    XCTAssertTrue(
+      section.contains(
+        "ToolPermissionLabels.ruleCaption(item.ruleSource, identity: item.identity)"))
     XCTAssertTrue(section.contains("if item.hasIndividualRule, let restoreInheritance {"))
     XCTAssertTrue(
       section.contains("if model.toolCatalogLoading {"),
@@ -845,7 +928,6 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
-      "Tool permissions": "Uprawnienia narzędzi",
       "Choose when the Agent may use tools.": "Wybierz, kiedy Agent może korzystać z narzędzi.",
       "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent.":
         "Najpierw obowiązują ustawienia narzędzia, potem serwera, na końcu domyślne. Operacje destrukcyjne są zablokowane. Dostęp do miejsc mogących zawierać sekrety wymaga zgody.",
@@ -861,6 +943,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Individual rule": "Własna reguła",
       "Category default": "Ustawienie kategorii",
       "Server rule": "Reguła serwera",
+      "Built-in rule": "Reguła wbudowana",
+      "Built-in rule: the clipboard may hold passwords": "Reguła wbudowana: w schowku bywają hasła",
       "Remove rule": "Usuń regułę",
       "Discovering tools from the MCP servers…": "Wykrywanie narzędzi z serwerów MCP…",
       "tools.native.read_file": "Odczytaj plik",
@@ -872,7 +956,8 @@ final class SettingsChromeContractTests: XCTestCase {
       XCTAssertEqual(polish[key], value, key)
     }
     for retired in [
-      "Tool permissions.", "Allow, ask, or deny — per tool. Deny wins over everything.",
+      "Tool permissions", "Tool permissions.",
+      "Allow, ask, or deny — per tool. Deny wins over everything.",
       "Per-tool permissions · %lld", "%lld tool sources", "Unclassified tools",
       "Search server or tool",
       "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.",
@@ -1008,8 +1093,7 @@ final class SettingsChromeContractTests: XCTestCase {
   func testMcpTabReadsAsAServerScreen() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
-    XCTAssertTrue(tab.contains("case .agentMcp: String(localized: \"MCP servers\")"))
-    XCTAssertFalse(tab.contains("\"MCP servers.\""))
+    XCTAssertFalse(tab.contains("\"MCP servers"), "the tab is headed by its name, MCP")
     XCTAssertFalse(
       tab.contains("\"Add MCP servers and manage the tools the Agent may use.\""),
       "the MCP pane opens on the form (views review, 2026-10-20)")
@@ -1151,19 +1235,83 @@ final class SettingsChromeContractTests: XCTestCase {
   /// Creator (round 14, 2026-10-18): a client row says whether its skill is
   /// the generation this app carries, the folders sit in one disclosure
   /// instead of inside a client's name, and Max says whether anything waits.
-  /// The tray row that reopened the wizard is gone; the Creator offers it
-  /// under its header through the view model's hook (Founder, 2026-10-20).
-  func testCreatorReopensTheSetupWizardUnderItsHeader() throws {
+  /// The tray row that reopened the wizard is gone; the General page offers
+  /// it on its title line through the view model's hook (Founder, 2026-10-20),
+  /// as a neutral chip with its glyph before the label.
+  func testCreatorReopensTheSetupWizardFromItsTitleRow() throws {
     let creator = try XCTUnwrap(try settingsSources()["CreatorPanel.swift"])
     XCTAssertTrue(creator.contains("localized: \"Open Setup Wizard…\""))
     XCTAssertTrue(creator.contains("model.onOpenSetupWizard()"))
     XCTAssertTrue(creator.contains("\"settings-creator-open-wizard\""))
+    let header = try XCTUnwrap(creator.range(of: "SettingsPageHeader("))
+    let titleRow = try XCTUnwrap(
+      creator.range(
+        of: ".overlay(alignment: Alignment(horizontal: .trailing, vertical: .firstTextBaseline))"))
+    XCTAssertLessThan(header.lowerBound, titleRow.lowerBound)
+    XCTAssertTrue(creator.contains("SettingsChipButton(action: { model.onOpenSetupWizard() })"))
+    XCTAssertTrue(creator.contains("CSIconView(icon: .setupWizard"))
+    XCTAssertFalse(creator.contains(".buttonStyle(.bordered)"))
     let tray = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/Tray/TrayMenuView.swift"),
       encoding: .utf8)
     XCTAssertFalse(tray.contains("Setup Wizard"), "the wizard is reached from the Creator only")
+  }
+
+  /// General page (K2, K5, K8): Quick start leads under the title, Language
+  /// and Appearance carry their own section titles, the five granted
+  /// permissions fold into one verified line that a missing scope reopens,
+  /// and the quick-start glyphs share one fixed box so the titles align.
+  func testGeneralPageLeadsWithQuickStartAndFoldsGrantedPermissions() throws {
+    let creator = try XCTUnwrap(try settingsSources()["CreatorPanel.swift"])
+    let order = try [
+      "SettingsPageHeader(",
+      "SettingsSectionLabel(String(localized: \"Quick start\"))",
+      "SettingsSectionLabel(String(localized: \"Language\"))",
+      "SettingsSectionLabel(String(localized: \"Appearance\"))",
+      "SettingsSectionHeaderRow(String(localized: \"Permissions\"))",
+      "agentBridgeSection\n",
+    ].map { try XCTUnwrap(creator.range(of: $0), $0).lowerBound }
+    XCTAssertEqual(order, order.sorted(), "General page sections out of order")
+
+    let fold = try XCTUnwrap(creator.range(of: "if allPermissionsGranted {"))
+    let full = try XCTUnwrap(creator.range(of: "} else {\n          permissionRows"))
+    XCTAssertLessThan(fold.lowerBound, full.lowerBound)
+    XCTAssertTrue(
+      creator.contains("Self.permissionKinds.allSatisfy { model.permissions.state($0).isGranted }"))
+    XCTAssertTrue(
+      creator.contains("localized: \"All permissions granted (\\(Self.permissionKinds.count))\""))
+    XCTAssertTrue(creator.contains("mark: .verified)"))
+    XCTAssertTrue(
+      creator.contains(".frame(width: Self.iconBox, height: Self.iconBox, alignment: .leading)"))
+
+    let polish = try polishCatalog()
+    XCTAssertEqual(
+      polish["All permissions granted (%lld)"], "Wszystkie uprawnienia przyznane (%lld)")
+  }
+
+  /// Founder D2 (2026-10-26): a missing permission's repair actions read
+  /// through their chip shape, not through bold text — the same neutral
+  /// `SettingsChipButton` as every other flat Settings action. The row title
+  /// already names the permission, so VoiceOver keeps the specific label
+  /// through `allow %@` while the visible chip stays generic (W0-21).
+  func testPermissionRepairActionsAreChipsNotPlainText() throws {
+    let creator = try XCTUnwrap(try settingsSources()["CreatorPanel.swift"])
+    XCTAssertTrue(
+      creator.contains("SettingsChipButton(\"Allow access\", tint: CSColor.secondaryInk)"))
+    XCTAssertTrue(
+      creator.contains("SettingsChipButton(\"Open System Settings\", tint: CSColor.secondaryInk)"))
+    // The only remaining "allow <name>" text is the VoiceOver label below.
+    XCTAssertEqual(
+      creator.components(separatedBy: "Text(\"allow \\(kind.displayName)\")").count - 1, 1,
+      "the permission name is no longer a plain bold label")
+    XCTAssertFalse(
+      creator.contains("Text(\"open System Settings\")"),
+      "the repair action is no longer a plain bold label")
+    XCTAssertTrue(
+      creator.contains(".accessibilityLabel(Text(\"allow \\(kind.displayName)\"))"),
+      "VoiceOver still names the specific permission")
   }
 
   func testCreatorStatesTheSkillGenerationAndKeepsPathsInDetails() throws {
@@ -1203,7 +1351,12 @@ final class SettingsChromeContractTests: XCTestCase {
   /// this test pins the source structure, which does not depend on that import.
   func testAudioPaneReadsAsMicrophoneAndRecording() throws {
     let panel = try XCTUnwrap(try settingsSources()["AudioPanel.swift"])
-    XCTAssertTrue(panel.contains("String(localized: \"Microphone and recording\")"))
+    // W0-01 (rule G2): the page is headed by its sidebar name, Audio; the
+    // microphone and recording are named by the line under it.
+    XCTAssertTrue(panel.contains("SettingsPageHeader(\n        SettingsSection.audio.title,"))
+    XCTAssertFalse(
+      panel.contains("String(localized: \"Microphone and recording\")"),
+      "no second name for the pane")
     XCTAssertFalse(panel.contains("Microphone and recording."), "the headline takes no period")
     XCTAssertFalse(panel.contains("Hear the real input"))
     XCTAssertTrue(
@@ -1296,7 +1449,7 @@ final class SettingsChromeContractTests: XCTestCase {
   func testUserPaneReadsAsTheUserTheAppAndItsData() throws {
     let sources = try settingsSources()
     let panel = try XCTUnwrap(sources["UserPanel.swift"])
-    XCTAssertTrue(panel.contains("String(localized: \"User\", comment: \"User panel header\")"))
+    XCTAssertTrue(panel.contains("SettingsSection.user.title,"))
     XCTAssertTrue(panel.contains("\"Your license, Codescribe version, local data and privacy.\""))
     // The license is a section of this pane, first in the column, not a tab.
     XCTAssertTrue(panel.contains("LicenseSection(model: model)"))
@@ -1348,7 +1501,11 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(markers.contains("DisclosureGroup(isExpanded: $showingTemplate)"))
     XCTAssertTrue(markers.contains("\"Edit template and preview\""))
     XCTAssertTrue(markers.contains("model.insertTranscriptTagPlaceholder(placeholder)"))
-    XCTAssertTrue(markers.contains("Button(String(localized: \"Restore default template\""))
+    // A text action reads as the one link style (see testProseLinksShareTheBrickLinkStyle).
+    XCTAssertTrue(
+      markers.contains(
+        "Button(String(localized: \"Restore default template\", comment: \"Dictation panel: button\")) {"
+      ))
     XCTAssertTrue(markers.contains("model.transcriptTagTemplateWarning"))
     // One box, two faces: the segment flips the same inset between the raw
     // template and its rendering; no second "Template preview" box below.
@@ -1426,7 +1583,7 @@ final class SettingsChromeContractTests: XCTestCase {
   /// compared stage by stage, and a Learn action that states its scope first.
   func testDictionaryPaneReadsAsCorrectionsAndRules() throws {
     let panel = try XCTUnwrap(try settingsSources()["VoiceLabPanel.swift"])
-    XCTAssertTrue(panel.contains("String(localized: \"Dictionary and corrections\")"))
+    XCTAssertTrue(panel.contains("SettingsPageHeader(SettingsSection.voiceLab.title)"))
     // Round 2 (UI-43): no intro sentence under the Dictionary headline.
     XCTAssertFalse(panel.contains("\"Browse corrections and dictionary rules.\""))
     XCTAssertFalse(panel.contains("dictionaryHeadline("), "no dynamic multi-line headline")
@@ -1493,7 +1650,6 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
-      "Dictionary and corrections": "Słownik i poprawki",
       "Changes in the transcript": "Zmiany w transkrypcji",
       "Corrected text": "Poprawiony tekst",
       "Learn from corrections": "Ucz z poprawek",
@@ -1670,17 +1826,46 @@ final class SettingsChromeContractTests: XCTestCase {
     let details = try XCTUnwrap(privacy.range(of: "private var privacyDetails"))
     XCTAssertLessThan(link.lowerBound, details.lowerBound, "the link sits in the main part")
     XCTAssertTrue(privacy.contains("anchor: .providersCloudTranscription"))
-    // UI-45/46: one license card, Manage key inside it, the offline countdown
-    // named for what it is, the old repeated rows gone.
+    // UI-45/46, W0-16: one license card with one layout, the offline countdown
+    // named for what it is, the old repeated rows gone. The actions follow the
+    // state: Change key / Remove key with a saved key, the field and Get
+    // license key without one; no "Manage key" band.
     XCTAssertTrue(license.contains("\"A license unlocks Agent mode.\""))
     XCTAssertFalse(license.contains("Basic mode stays free"))
     for key in [
-      "Manage key", "Change key", "Key management", "Get license key", "Remove key",
+      "Change key", "Get license key", "Remove key", "Paste license key",
       "Key stored in the macOS Keychain", "One-time purchase", "No active license",
-      "Works offline for \\(daysLeft) more days",
+      "Works offline for \\(daysLeft) more days", "Activating the key…",
+      "Your current key is still saved.", "Try again",
     ] {
       XCTAssertTrue(license.contains(key), key)
     }
+    for retired in ["Manage key", "Key management", "managingKey"] {
+      XCTAssertFalse(license.contains(retired), retired)
+    }
+    // Get license key lives only in the no-key branch; Change key and Remove
+    // key only in the saved-key row.
+    XCTAssertEqual(license.components(separatedBy: "\"Get license key\"").count - 1, 1)
+    let noKey = try XCTUnwrap(license.range(of: "case .noKey:\n        divider"))
+    let saved = try XCTUnwrap(license.range(of: "case .saved:\n        divider"))
+    let noKeyBranch = license[noKey.upperBound..<saved.lowerBound]
+    XCTAssertTrue(noKeyBranch.contains("getKeyRow"))
+    XCTAssertFalse(noKeyBranch.contains("keyArea"))
+    let cardEnd = try XCTUnwrap(license.range(of: ".clipShape(RoundedRectangle("))
+    XCTAssertFalse(license[saved.upperBound..<cardEnd.lowerBound].contains("getKeyRow"))
+    let getKey = try XCTUnwrap(license.range(of: "private var getKeyRow"))
+    XCTAssertTrue(license[getKey.upperBound...].contains("Text(\"Get license key\")"))
+    let actions = try XCTUnwrap(license.range(of: "private var keyActionsRow"))
+    let actionsBody = license[actions.upperBound..<getKey.lowerBound]
+    XCTAssertTrue(actionsBody.contains("\"Change key\""))
+    XCTAssertTrue(actionsBody.contains("Text(\"Remove key\")"))
+    XCTAssertFalse(actionsBody.contains("Get license key"))
+    // A read failure is not a missing key: the unknown state offers Try again,
+    // never the empty-state field.
+    let unknown = try XCTUnwrap(license.range(of: "case .unknown:"))
+    let unknownBranch = license[unknown.upperBound..<noKey.lowerBound]
+    XCTAssertTrue(unknownBranch.contains("problemBlock"))
+    XCTAssertFalse(unknownBranch.contains("keyEditor("))
     XCTAssertTrue(license.contains("\"Codescribe Agent\""))
     XCTAssertFalse(license.contains("license.mode.agent"))
     XCTAssertFalse(license.contains("license.offer.agentLifetime"))
@@ -1700,11 +1885,15 @@ final class SettingsChromeContractTests: XCTestCase {
       "Set up the cloud in Providers": "Skonfiguruj chmurę w Dostawcach",
       "A license unlocks Agent mode.": "Licencja odblokowuje tryb agentowy.",
       "Key stored in the macOS Keychain": "Klucz zapisany w Pęku kluczy macOS",
-      "Manage key": "Zarządzaj kluczem",
       "Change key": "Zmień klucz",
-      "Key management": "Zarządzanie kluczem",
+      "Remove key": "Usuń klucz",
+      "Get license key": "Uzyskaj klucz",
+      "License key": "Klucz licencyjny",
+      "Paste license key": "Wklej klucz licencyjny",
+      "Activating the key…": "Aktywowanie klucza…",
+      "Your current key is still saved.": "Dotychczasowy klucz pozostaje zapisany.",
       "One-time purchase": "Zakup jednorazowy",
-      "No active license": "Bez aktywnej licencji",
+      "No active license": "Brak aktywnej licencji",
       "Basic mode": "Tryb podstawowy",
       // Kept on purpose: the markers switch's accessibility label (UI-33).
       "Add markers to text": "Dodawaj znaczniki do tekstu",
@@ -1719,6 +1908,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Browse corrections and dictionary rules.",
       // W2-09: onboarding presets are gone; Settings › Shortcuts is the only editor.
       "Your custom shortcuts stay as they are unless you pick a preset.",
+      // W0-16: the license card has one layout, no key-management band.
+      "Manage key", "Key management",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -1817,6 +2008,99 @@ final class SettingsChromeContractTests: XCTestCase {
 
   private func joinedSettingsSources() throws -> String {
     try settingsSources().values.joined(separator: "\n")
+  }
+
+  /// Founder decision of 2026-10-26: in Settings the brand terracotta marks
+  /// progress, a ready or granted state is the olive capsule with a check, and
+  /// the one eyebrow reads in the muted grey; focus, switches, sliders, buttons
+  /// and links keep the macOS accent.
+  func testSettingsProgressWearsTheBrandAccentAndReadyTheOliveCapsule() throws {
+    let sources = try settingsSources()
+    let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
+    XCTAssertTrue(
+      creator.contains("CSStatusBadge(text: state.label, mark: .verified)"),
+      "a granted scope in Settings › Creator")
+    XCTAssertFalse(creator.contains("Circle().fill((granted"), "no round olive badge")
+    let whisper = try XCTUnwrap(sources["WhisperDownloadView.swift"])
+    let modelTab = try XCTUnwrap(sources["DictationWhisperModelTab.swift"])
+    let audio = try XCTUnwrap(sources["AudioPanel.swift"])
+    let voiceLab = try XCTUnwrap(sources["VoiceLabPanel.swift"])
+    let joined = try joinedSettingsSources()
+
+    XCTAssertTrue(whisper.contains("CSProgressBar(value: fraction, height: 6)"), "download bar")
+    XCTAssertTrue(modelTab.contains("CSProgressBar(value: fraction)"), "model tab download bar")
+    // The native linear bar paints the macOS accent whatever its tint; only
+    // the indeterminate spinner stays native.
+    XCTAssertFalse(joined.contains("ProgressView(value:"), "a determinate native bar remains")
+    XCTAssertFalse(joined.contains(".progressViewStyle(.linear)"), "a linear native bar remains")
+
+    let runtimeBadge = "CSStatusBadge(text: localWhisperRuntimeLabel, mark: .verified)"
+    XCTAssertTrue(modelTab.contains(runtimeBadge))
+    XCTAssertTrue(audio.contains("CSStatusBadge(text: fact.value, mark: .verified)"))
+    XCTAssertTrue(audio.contains("statusValue(calibration)"))
+    XCTAssertTrue(audio.contains("statusValue(sealLane)"))
+    XCTAssertTrue(
+      audio.contains("CSProgressBar(value: SettingsViewModel.calibrationProgress("),
+      "the Audio pane's calibration capture")
+
+    let eyebrowFace = ".font(CSFont.mono(10, .semibold))\n      .foregroundStyle("
+    XCTAssertFalse(voiceLab.contains(eyebrowFace + "CSColor.chromeAccent)"), "eyebrow in accent")
+    // Settings keeps its muted rung in `secondaryInk` (the pane bans `textMuted`).
+    XCTAssertTrue(voiceLab.contains(eyebrowFace + "CSColor.secondaryInk)"), "eyebrow in muted ink")
+
+    // The chrome accent stays on the controls.
+    let slider = "Slider(value: soundVolumeBinding, in: 0...1, step: 0.05)\n          .tint("
+    XCTAssertTrue(joined.contains(slider + "CSColor.chromeAccent)"))
+    let toggle = ".controlSize(.small)\n      .labelsHidden()\n      .tint("
+    XCTAssertTrue(joined.contains(toggle + "CSColor.chromeAccent)"))
+  }
+
+  /// A link in prose is underlined brick drawn by one style, `csLink()`; it
+  /// never follows the macOS accent and never uses the system `.link` style
+  /// (Founder, 2026-10-26; the 2026-10-29 smoke found the links still blue).
+  func testProseLinksShareTheBrickLinkStyle() throws {
+    let sources = try settingsSources()
+    let links = [
+      "LabPanel.swift", "TranscriptMarkersSection.swift", "UserPanel.swift",
+      "DictationCloudPrivacyTab.swift",
+    ]
+    for name in links {
+      let source = try XCTUnwrap(sources[name], name)
+      XCTAssertTrue(source.contains(".csLink()"), name)
+      XCTAssertFalse(source.contains(".foregroundStyle(CSColor.chromeAccent)"), name)
+    }
+    XCTAssertFalse(
+      sources.values.contains { $0.contains(".buttonStyle(.link)") }, "the system link style")
+
+    let components = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/DesignSystem/Components.swift"),
+      encoding: .utf8)
+    let style = try XCTUnwrap(components.range(of: "private struct CSLinkButtonStyle"))
+    let body = components[style.lowerBound...].prefix(600)
+    XCTAssertTrue(body.contains(".underline()"))
+    XCTAssertTrue(body.contains("CSColor.terracottaText"))
+    XCTAssertTrue(body.contains(".pointerStyle(isEnabled ? .link : nil)"), "the pointing hand")
+    XCTAssertFalse(body.contains("chromeAccent"))
+  }
+
+  /// Remove key asks first: the app never shows a stored key, so one stray
+  /// click must not delete it (Founder, 2026-10-29: removed at once, no warning).
+  func testRemovingTheLicenseKeyAsksFirst() throws {
+    let license = try XCTUnwrap(try settingsSources()["LicenseSection.swift"])
+    XCTAssertEqual(
+      license.components(separatedBy: "model.removeLicense()").count - 1, 1,
+      "one removal path")
+    let dialog = try XCTUnwrap(license.range(of: ".confirmationDialog("))
+    let removal = try XCTUnwrap(license.range(of: "model.removeLicense()"))
+    XCTAssertLessThan(dialog.lowerBound, removal.lowerBound, "removal lives in the dialog")
+    XCTAssertTrue(license.contains("confirmingRemove = true"))
+    XCTAssertTrue(license.contains("Button(\"Remove key\", role: .destructive)"))
+
+    let polish = try polishCatalog()
+    XCTAssertEqual(polish["Remove the license key?"], "Usunąć klucz licencji?")
   }
 
   /// True when `token` occurs and the next character is not a letter, so

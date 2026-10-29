@@ -80,7 +80,7 @@ enum CodeTheme {
   // `codeWell`, so every rung below clears 5.7:1 there. Hexes are written
   // plainly because hljs reads CSS; the token rungs use their light values:
   //   base, doctag/strong       → near-black ink   #090A0D
-  //   keyword/type/title/link   → terracottaText   #75351E
+  //   keyword/type/title/link   → terracottaText   #862C08
   //   number/literal/meta       → amberLight       #644200
   //   comment/quote             → secondaryInk     #666666 (black 60 % on white)
   //   string/addition           → olive            #5F6B3E
@@ -88,12 +88,12 @@ enum CodeTheme {
   static let lightCSS = """
     .hljs{color:#090A0D}
     .hljs-comment,.hljs-quote{color:#666666}
-    .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type,.hljs-tag,.hljs-name,.hljs-template-tag{color:#75351E}
+    .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type,.hljs-tag,.hljs-name,.hljs-template-tag{color:#862C08}
     .hljs-string,.hljs-symbol,.hljs-bullet,.hljs-regexp,.hljs-char.escape_,.hljs-addition{color:#5F6B3E}
     .hljs-number,.hljs-literal,.hljs-meta,.hljs-meta .hljs-keyword,.hljs-meta .hljs-string,.hljs-meta-keyword{color:#644200}
-    .hljs-title,.hljs-title.class_,.hljs-title.function_,.hljs-section,.hljs-selector-id,.hljs-selector-class{color:#75351E}
+    .hljs-title,.hljs-title.class_,.hljs-title.function_,.hljs-section,.hljs-selector-id,.hljs-selector-class{color:#862C08}
     .hljs-attr,.hljs-attribute,.hljs-property,.hljs-variable,.hljs-template-variable,.hljs-params,.hljs-operator,.hljs-punctuation,.hljs-subst,.hljs-selector-attr,.hljs-selector-pseudo{color:#5D6058}
     .hljs-doctag,.hljs-strong{color:#090A0D}
-    .hljs-deletion,.hljs-link{color:#75351E}
+    .hljs-deletion,.hljs-link{color:#862C08}
     """
 }

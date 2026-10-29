@@ -139,9 +139,8 @@ struct TranscriptMarkersSection: View {
         Button(String(localized: "Restore default template", comment: "Dictation panel: button")) {
           model.restoreDefaultTranscriptTagTemplate()
         }
-        .csFocusRing()
-        .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.chromeAccent)
+        .font(SettingsScale.controlLabel)
+        .csLink()
         .accessibilityLabel("Restore default transcript tag template")
       }
       .padding(.top, CSSpace.sm)

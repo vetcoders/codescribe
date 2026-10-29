@@ -591,8 +591,10 @@ impl ToolRegistry {
     /// use. Origin does not participate: a native tool that injects keystrokes
     /// into the frontmost app is exactly as side-effectful as an MCP one, so
     /// the category defaults are driven by risk alone (review P1-06). The
-    /// `requires_approval` ratchet turns an inherited Allow into Ask; an
-    /// explicit operator rule (thread, tool, server) is left as written.
+    /// `requires_approval` ratchet turns an inherited Allow into Ask and
+    /// reports it as the tool's built-in rule, so Settings does not call the
+    /// lifted level a category default; an explicit operator rule (thread,
+    /// tool, server) is left as written.
     fn effective_level(
         &self,
         policy: &AgentPermissions,
@@ -605,14 +607,12 @@ impl ToolRegistry {
             tool.policy.risk,
             &self.thread_overrides,
         );
-        let level = if tool.policy.requires_approval
+        if tool.policy.requires_approval
             && source == PermissionSource::Default
             && level == PermissionLevel::Allow
         {
-            PermissionLevel::Ask
-        } else {
-            level
-        };
+            return (PermissionLevel::Ask, PermissionSource::Builtin);
+        }
         (level, source)
     }
 
@@ -1186,7 +1186,8 @@ mod tests {
     }
 
     /// `requires_approval` lifts an inherited Allow to Ask in both the list and
-    /// the gate; an explicit tool rule is honoured as written in both.
+    /// the gate, and the list names it as the tool's built-in rule; an explicit
+    /// tool rule is honoured as written in both.
     #[test]
     fn requires_approval_ratchet_is_visible_in_capabilities() {
         let mut registry = ToolRegistry::new();
@@ -1212,7 +1213,7 @@ mod tests {
 
         let row = registry.capabilities().remove(0);
         assert_eq!(row.effective, PermissionLevel::Ask);
-        assert_eq!(row.source, PermissionSource::Default);
+        assert_eq!(row.source, PermissionSource::Builtin);
         assert!(matches!(
             registry.decide("peek", &json!({}), "c", "s", "t"),
             ToolDecision::RequireApproval(_)

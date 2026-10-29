@@ -48,10 +48,11 @@ struct ShortcutsPanel: View {
 
   // MARK: Header
 
-  /// The header states the screen's purpose by its title alone; the two save
-  /// contracts are explained next to the buttons they govern, not up here.
+  /// The header states the screen's purpose by its title alone, the sidebar
+  /// name the user clicked to get here; the two save contracts are explained
+  /// next to the buttons they govern, not up here.
   private var header: some View {
-    SettingsPageHeader(String(localized: "Shortcuts & control"))
+    SettingsPageHeader(SettingsSection.shortcuts.title)
   }
 
   // MARK: Per-mode gestures, their conflicts and their save
@@ -310,27 +311,33 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Recording indicator"))
       VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
-        HStack(spacing: SettingsScale.rowInsetH) {
-          Text("Size of the indicator next to the cursor")
-            .font(SettingsScale.settingName)
-            .foregroundStyle(Color.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        // The picker sits under its name, as Deferred paste does: beside it,
+        // 372 pt left the name about 208 pt at the minimum window, and both
+        // "Size of the indicator next to the cursor" (241 pt) and "Rozmiar
+        // wskaźnika przy kursorze" (210 pt) wrapped.
+        Text("Size of the indicator next to the cursor")
+          .font(SettingsScale.settingName)
+          .foregroundStyle(Color.primary)
+          .fixedSize(horizontal: false, vertical: true)
 
-          Picker("Pointer indicator", selection: holdBadgeBinding) {
-            ForEach(HoldBadgeOption.allCases) { option in
-              Text(option.visibleName).tag(option)
-            }
+        Picker("Pointer indicator", selection: holdBadgeBinding) {
+          ForEach(HoldBadgeOption.allCases) { option in
+            Text(option.visibleName).tag(option)
           }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          .frame(width: 230)
         }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        // Every segment takes the widest label, here Polish "Wyłączony";
+        // four of them measure 364 pt, so the frame keeps a little slack.
+        .frame(width: 372)
         // The dots belong under the size they are sized by, at the helper rung
         // the rest of the page explains itself in (Founder review, 2026-10-18).
-        HStack(alignment: .top, spacing: SettingsScale.rowInsetH) {
-          legendItem(color: CSColor.terracotta, text: "Recording")
-          legendItem(color: CSColor.assistive, text: "Agent")
-          legendItem(color: CSColor.amber, text: "Processing")
+        // Every state the pointer dot shows, in the colour it is painted in:
+        // the list and the colours come from the core palette (S5).
+        LazyVGrid(columns: legendColumns, alignment: .leading, spacing: CSSpace.xs) {
+          ForEach(IndicatorPalette.swatches, id: \.state) { swatch in
+            legendItem(swatch)
+          }
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -559,10 +566,25 @@ struct ShortcutsPanel: View {
     )
   }
 
-  private func legendItem(color: Color, text: LocalizedStringKey) -> some View {
+  /// Three captions a row: six states read as two short rows.
+  private var legendColumns: [GridItem] {
+    Array(
+      repeating: GridItem(.flexible(), spacing: SettingsScale.rowInsetH, alignment: .topLeading),
+      count: 3)
+  }
+
+  private func legendItem(_ swatch: CsIndicatorSwatch) -> some View {
     HStack(alignment: .top, spacing: CSSpace.xs) {
-      Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
-      Text(text)
+      Circle()
+        .fill(Color(nsColor: swatch.nsColor))
+        .overlay {
+          if let rim = swatch.rimColor {
+            Circle().strokeBorder(Color(nsColor: rim), lineWidth: 1)
+          }
+        }
+        .frame(width: 7, height: 7)
+        .padding(.top, 4)
+      Text(swatch.state.legendName)
         .font(SettingsScale.helper)
         .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)

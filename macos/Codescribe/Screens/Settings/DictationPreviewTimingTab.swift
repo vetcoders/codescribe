@@ -69,7 +69,7 @@ struct DictationPreviewTimingTab: View {
         value: $model.bufferDelaySlider,
         range: 0...1500,
         step: 1,
-        valueLabel: Self.milliseconds(values.bufferDelayMs)
+        valueLabel: Self.seconds(Float(values.bufferDelayMs) / 1000)
       )
       PreviewTimingSlider(
         title: String(
@@ -100,12 +100,6 @@ struct DictationPreviewTimingTab: View {
       )
     }
     .disabled(!enabled)
-  }
-
-  private static func milliseconds(_ value: UInt64) -> String {
-    String(
-      localized: "\(Int(value)) ms",
-      comment: "Preview timing value: a delay in milliseconds")
   }
 
   private static func charactersPerSecond(_ value: Float) -> String {

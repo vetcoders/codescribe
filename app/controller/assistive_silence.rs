@@ -125,8 +125,8 @@ impl RecordingController {
     /// One read of the take's speech clock. `playback` is whether agent speech
     /// owns the speaker now; that time is not silence. When the take has heard
     /// no voice for its `voiceless_end_secs`, it is stopped by name through
-    /// [`RecordingController::stop_capture_if_owned`], marked so its stop
-    /// archives only.
+    /// `stop_take_without_voice`, which marks the stop archive-only in the
+    /// same settlement-slot section that registers it.
     pub(super) async fn poll_assistive_silence(
         self: &Arc<Self>,
         take_id: &str,
@@ -162,7 +162,10 @@ impl RecordingController {
                 AssistiveSilencePoll::Ended
             }
             Ok(CaptureStopOutcome::AlreadyStopping) => {
-                // An explicit Stop got there first and delivers as usual.
+                // A stop of this take is already registered: an explicit Stop
+                // that got there first and delivers as usual, or this watch's
+                // own stop from an earlier read that failed and stays in the
+                // slot. Either way the watch ends here.
                 AssistiveSilencePoll::Gone
             }
             Ok(
@@ -193,7 +196,9 @@ impl RecordingController {
     /// The named stop of [`RecordingController::stop_capture_if_owned`], with
     /// the archive-only mark set in the same settlement-slot section that
     /// registers the stop. A Stop of this take that registered first keeps
-    /// its delivery: the mark is never set on it.
+    /// its delivery: the mark is never set on it. The slot admission here
+    /// repeats the one in `stop_capture_if_owned`; a change to either
+    /// belongs in both until one function owns it.
     async fn stop_take_without_voice(
         self: &Arc<Self>,
         take_id: &str,
@@ -435,7 +440,7 @@ mod tests {
             move |route: DeliveryRoute, _: String, _: Option<String>| async move {
                 assert_eq!(route, DeliveryRoute::ClipboardPaste);
                 seen.fetch_add(1, Ordering::SeqCst);
-                Err::<OverlayPasteResult, _>(anyhow::anyhow!("test sink"))
+                Err(anyhow::anyhow!("test sink"))
             }
         };
         let silent = "take-silent";

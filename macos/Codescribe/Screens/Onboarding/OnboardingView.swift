@@ -76,13 +76,19 @@ struct OnboardingView: View {
   }
 
   /// Each step's single task message (a question or an instruction), its icon
-  /// and its short category label. The step bodies never repeat it.
-  private var heading: (symbol: String, title: String, label: String) {
+  /// and its short category label. The step bodies never repeat it. `tone` is
+  /// the icon's colour, carried explicitly rather than inferred from the
+  /// symbol: every step wears the brand accent except the wizard's not-ready
+  /// verdict, which stays neutral ink (Founder, 2026-10-29 — terracotta is
+  /// choice and progress, not a verdict, and the concrete blocking rows below
+  /// already carry the red warning).
+  private var heading: (symbol: String, tone: Color, title: String, label: String) {
     let locale = model.interfaceLocale
     switch model.step {
     case .interfaceLanguage:
       return (
         "globe",
+        CSColor.brandAccent,
         String(
           localized: LocalizedStringResource(
             "What language should Codescribe use?", locale: locale,
@@ -94,6 +100,7 @@ struct OnboardingView: View {
     case .mode:
       return (
         "waveform",
+        CSColor.brandAccent,
         String(
           localized: LocalizedStringResource(
             "How do you want to work?", locale: locale, comment: "Setup step heading")),
@@ -104,6 +111,7 @@ struct OnboardingView: View {
     case .permissions:
       return (
         "hand.raised",
+        CSColor.brandAccent,
         String(
           localized: LocalizedStringResource(
             "Choose which features to allow", locale: locale,
@@ -115,6 +123,7 @@ struct OnboardingView: View {
     case .language:
       return (
         "character.bubble",
+        CSColor.brandAccent,
         String(
           localized: LocalizedStringResource(
             "Pick your dictation language.", locale: locale, comment: "Setup step heading")),
@@ -126,6 +135,7 @@ struct OnboardingView: View {
     case .localModel:
       return (
         "arrow.down.circle",
+        CSColor.brandAccent,
         String(
           localized: LocalizedStringResource(
             "Do you want to transcribe on your Mac?", locale: locale,
@@ -138,6 +148,7 @@ struct OnboardingView: View {
     case .apiKey:
       return (
         "key",
+        CSColor.brandAccent,
         String(
           localized: LocalizedStringResource(
             "Connect an AI provider", locale: locale, comment: "Setup step heading")),
@@ -148,6 +159,7 @@ struct OnboardingView: View {
     case .hotkeyMode:
       return (
         "keyboard",
+        CSColor.brandAccent,
         String(
           localized: LocalizedStringResource(
             "How do you trigger recording?", locale: locale, comment: "Setup step heading")),
@@ -158,6 +170,7 @@ struct OnboardingView: View {
     case .agenticReadiness:
       return (
         "sparkles",
+        CSColor.brandAccent,
         String(
           localized: LocalizedStringResource(
             "Choose the agents you want to work with by voice.", locale: locale,
@@ -176,6 +189,7 @@ struct OnboardingView: View {
         if model.onboardingMode == .agentic, !model.agentBridgeReadyToGo {
           return (
             "checkmark",
+            CSColor.brandAccent,
             String(
               localized: LocalizedStringResource(
                 "Dictation is ready.", locale: locale,
@@ -186,6 +200,7 @@ struct OnboardingView: View {
         }
         return (
           "checkmark",
+          CSColor.brandAccent,
           String(
             localized: LocalizedStringResource(
               "Codescribe is ready.", locale: locale, comment: "Setup chapter heading")),
@@ -195,6 +210,7 @@ struct OnboardingView: View {
       if model.dictationReadinessChecking {
         return (
           "hourglass",
+          CSColor.brandAccent,
           String(
             localized: LocalizedStringResource(
               "Checking your setup…", locale: locale,
@@ -202,8 +218,12 @@ struct OnboardingView: View {
           summary
         )
       }
+      // The not-ready verdict stays neutral: the concrete blocking rows below
+      // already carry the red warning sign, and terracotta is reserved for
+      // choice and progress (Founder, 2026-10-29).
       return (
         "exclamationmark.circle",
+        CSColor.secondaryInk,
         String(
           localized: LocalizedStringResource(
             "Codescribe is not ready yet.", locale: locale,
@@ -224,8 +244,9 @@ struct OnboardingView: View {
           .font(CSFont.ui(12, .regular))
           .foregroundStyle(CSColor.textMuted)
       }
-      ProgressView(value: model.progressFraction)
-        .controlSize(.small)
+      // Progress is state, so it wears the brand hue rather than the macOS
+      // accent, which turns grey under Graphite (Founder, 2026-10-26).
+      CSProgressBar(value: model.progressFraction)
         .accessibilityLabel("Setup progress")
     }
     .padding(.horizontal, 28)
@@ -235,23 +256,27 @@ struct OnboardingView: View {
   }
 
   /// Top of the reading column: the step icon with its one task message, then
-  /// the quieter category label.
+  /// the quieter category label. The message is the 18 pt display role of the
+  /// one text scale, the wizard's largest size; no system text style.
   private var stepHeading: some View {
     let current = heading
     return VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .firstTextBaseline, spacing: 10) {
         Image(systemName: current.symbol)
-          .font(.title2.weight(.regular))
-          .foregroundStyle(CSColor.secondaryInk)
+          .font(CSFont.ui(18))
+          .foregroundStyle(current.tone)
           .accessibilityHidden(true)
         Text(current.title)
-          .font(.title2.weight(.semibold))
+          .font(CSFont.ui(18, .semibold))
           .foregroundStyle(.primary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityAddTraits(.isHeader)
           .accessibilityIdentifier("onboarding-step-heading")
       }
-      EyebrowLabel(text: current.label)
+      // The wizard speaks in one family: the section marker keeps its
+      // uppercase and tracking in the system face, and reads in the muted
+      // grey so the step's colour belongs to its icon (Founder, 2026-10-26).
+      EyebrowLabel(text: current.label, color: CSColor.textMuted, font: CSFont.ui(11, .semibold))
     }
   }
 

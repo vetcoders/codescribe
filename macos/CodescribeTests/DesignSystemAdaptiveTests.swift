@@ -73,6 +73,7 @@ final class DesignSystemAdaptiveTests: XCTestCase {
       ("textMuted", CSPalette.textMuted),
       ("textFaint", CSPalette.textFaint),
       ("terracottaLight", CSPalette.terracottaLight),
+      ("brandAccent", CSPalette.brandAccent),
       ("assistiveLight", CSPalette.assistiveLight),
       ("oliveLight", CSPalette.oliveLight),
       ("oliveStatus", CSPalette.oliveStatus),
@@ -108,6 +109,17 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     XCTAssertEqual(c.r, CGFloat(0xD9) / 255.0, accuracy: 0.001)
     XCTAssertEqual(c.g, CGFloat(0x77) / 255.0, accuracy: 0.001)
     XCTAssertEqual(c.b, CGFloat(0x57) / 255.0, accuracy: 0.001)
+  }
+
+  func testBrandAccentKeepsTheFounderRungs() {
+    let light = components(CSPalette.brandAccent, dark: false)
+    XCTAssertEqual(light.r, CGFloat(0xBA) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(light.g, CGFloat(0x5C) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(light.b, CGFloat(0x3C) / 255.0, accuracy: 0.001)
+    let dark = components(CSPalette.brandAccent, dark: true)
+    XCTAssertEqual(dark.r, CGFloat(0xD9) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(dark.g, CGFloat(0x77) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(dark.b, CGFloat(0x57) / 255.0, accuracy: 0.001)
   }
 
   // MARK: - Legibility contract
@@ -222,6 +234,22 @@ final class DesignSystemAdaptiveTests: XCTestCase {
           XCTAssertGreaterThanOrEqual(
             ratio, 4.5, "\(role) on \(surface) in \(name.rawValue): \(ratio):1")
         }
+      }
+    }
+  }
+
+  /// The brand accent marks state on the sheet itself: the progress bar, the
+  /// glyph of a selected choice, a step's icon. A mark needs 3:1, and every
+  /// selectable sheet shade of each appearance has to hold it (Founder,
+  /// 2026-10-26: "≥ 3:1 on every sheet shade").
+  func testBrandAccentReadsAsAMarkOnEverySheetShade() {
+    for name in Self.auditAppearances {
+      let ink = resolvedRGBA(CSPalette.brandAccent, name)
+      let dark = isDark(name)
+      for shade in SheetShade.allCases where shade.isDark == dark {
+        let ratio = ink.contrast(RGB(hex: shade.hex))
+        XCTAssertGreaterThanOrEqual(
+          ratio, 3.0, "brandAccent on \(shade.rawValue) in \(name.rawValue): \(ratio):1")
       }
     }
   }

@@ -88,8 +88,8 @@ pub use recording::CsAudioReadLease;
 pub use recording::{CsCaptureHandle, CsConditionalStop, CsTranscriptDelivery};
 pub use speech::{CsSpeechResult, speak_text, speech_availability, stop_speaking};
 pub use tray_status::{
-    CodescribeTrayStatus, CsTrayStatusKind, CsTrayStatusListener, CsTrayStatusPayload,
-    CsTrayStatusTone,
+    CodescribeTrayStatus, CsIndicatorState, CsIndicatorSwatch, CsTrayStatusKind,
+    CsTrayStatusListener, CsTrayStatusPayload, CsTrayStatusTone, indicator_palette,
 };
 
 /// Error surfaced across the FFI boundary. One enum for every slice:

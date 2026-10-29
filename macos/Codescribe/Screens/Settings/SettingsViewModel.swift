@@ -162,6 +162,20 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
   }
 
+  /// Explanation of the selected level, separate from its compact name.
+  var summary: String {
+    switch self {
+    case .off:
+      return String(localized: "Keeps the transcript without AI formatting.")
+    case .correction:
+      return String(localized: "Corrects spelling and punctuation while keeping your wording.")
+    case .smart:
+      return String(localized: "Edits the transcript for clarity while keeping its meaning.")
+    case .max:
+      return String(localized: "Uses the Agent model and prompt for the dictated request.")
+    }
+  }
+
   init?(storedValue: String?) {
     switch storedValue {
     case "off", "raw": self = .off
@@ -194,12 +208,24 @@ enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
     return "px-\(size)"
   }
   var visibleName: String {
-    guard let size else {
+    switch self {
+    case .off:
       return String(
         localized: "settings.holdBadge.size.off", defaultValue: "Off",
         comment: "Hold badge size: the badge is disabled")
+    case .four:
+      return String(
+        localized: "settings.holdBadge.size.small", defaultValue: "Small",
+        comment: "Hold badge size: the small indicator")
+    case .eight:
+      return String(
+        localized: "settings.holdBadge.size.medium", defaultValue: "Medium",
+        comment: "Hold badge size: the medium indicator")
+    case .twelve:
+      return String(
+        localized: "settings.holdBadge.size.large", defaultValue: "Large",
+        comment: "Hold badge size: the large indicator")
     }
-    return "\(size)px"
   }
   var size: UInt32? {
     switch self {
@@ -364,7 +390,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .creator:
-      return String(localized: "Creator", comment: "Settings section: first-run setup and basics")
+      return String(
+        localized: "Creator",
+        comment:
+          "Settings section: general settings (language, appearance, permissions, formatting)")
     case .shortcuts: return String(localized: "Hotkeys", comment: "Settings section")
     case .keys:
       return String(localized: "Providers", comment: "Settings section: AI provider accounts")
@@ -920,7 +949,7 @@ struct LLMLaneModel {
     // Presence, not validity: a stored key may still be rejected, and a
     // signed-in account does not open model discovery (`discoveryDescription`).
     if runtime.accountAuth {
-      return String(localized: "Account saved", comment: "Lane auth: stored account identity")
+      return String(localized: "Saved", comment: "Lane auth: stored account identity")
     }
     if runtime.keyPresent {
       return String(localized: "Stored API key", comment: "Lane auth: an API key is stored")
@@ -983,6 +1012,8 @@ struct LLMLaneModel {
       // account token (`core/llm/model_discovery.rs`, `bridge/src/config.rs`),
       // so the list's access says nothing about whether requests using a
       // separately stored account will be accepted.
+      // With a stored account the model is still entered by hand: the account
+      // never opens the list, so one sentence covers both cases.
       return String(
         localized: "The model list needs an API key. You can enter a model ID by hand.")
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
@@ -2569,6 +2600,10 @@ final class SettingsViewModel: ObservableObject {
     if lane == .assistive { return llmLane(lane).availabilityDescription }
     if FormattingPolicyOption(storedValue: settings.formattingLevel) == .off {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
+    }
+    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .max {
+      return String(
+        localized: "Max uses the Agent model. This lane is not required for readiness.")
     }
     if settings.formatOnDevice {
       // The engine row above already says Apple runs first; this line only

@@ -39,7 +39,6 @@ https://…/mcp
 status
 
 # A sample raw Polish transcript used as a placeholder; the source is already Polish.
-tak jeśli nie stosuje się zaleceń dokumentacji…
 
 # Loanwords Polish spells the same way.
 Argument
