@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codescribe",
+  "version": "1.5.0",
+  "description": "Connect the current local Codex conversation to Codescribe: scoped mailbox, exact ACK, durable replies and local queue wakeup.",
+  "extensions": {
+    "com.openai": {
+      "requires_local_executor": true,
+      "hooks": "./hooks/codex.json",
+      "onboardingSkill": "./skills/codescribe/SKILL.md",
+      "interface": {
+        "displayName": "Codescribe",
+        "shortDescription": "A voice and text mailbox for this local conversation",
+        "developerName": "Vetcoders",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"]
+      }
+    }
+  }
+}

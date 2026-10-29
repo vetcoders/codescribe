@@ -1736,7 +1736,13 @@ same ID, the exact provider/session/lease and a 24-lowercase-hex
 `tts_error` and `reason` describe failures without credentials. ACK, provider
 queue acceptance, reply text and speech completion remain separate facts.
 
-`cs-say` still attempts speech immediately after text publication. In the app,
+`cs-say` attempts speech immediately after text publication by default.
+`cs-bus --say TEXT --text-only --provider P --session S --reply-to DELIVERY_ID`
+uses the same canonical reply publication and ownership check without synthesis
+or playback. The local OpenAI plugin defaults to this text-only operation and
+uses the existing constrained connector's durable request receipt for retries;
+speech remains an explicit separate choice. See [OpenAI plugin](OPENAI_PLUGIN.md).
+In the app,
 Play is explicit for one reply; viewing a tab never synthesizes or replays.
 The installed helper's control interface is:
 

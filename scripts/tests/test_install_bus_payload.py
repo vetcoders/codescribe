@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import select
 from pathlib import Path
 import shutil
 import subprocess
@@ -27,7 +28,7 @@ class InstallBusPayloadTests(unittest.TestCase):
         (self.repo / "scripts").mkdir(parents=True)
         (self.repo / "skills" / "codescribe").mkdir(parents=True)
         for name in ("install-bus.sh", "build-app.sh", "bus-demux.py", "cs-bus", "cs-say", "cs-junie", "bus-mcp.py",
-                     "bus-mcp-agent.py", "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py"):
+                     "bus-mcp-agent.py", "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py", "bus-mcp-sessions.py"):
             shutil.copy2(REPO / "scripts" / name, self.repo / "scripts" / name)
         shutil.copytree(REPO / "plugins", self.repo / "plugins")
         shutil.copy2(REPO / "Cargo.toml", self.repo / "Cargo.toml")
@@ -76,6 +77,51 @@ output.chmod(0o755)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(self.receipt.read_text()), self.manifest["files"][0])
         self.assertEqual(self.publisher.read_bytes(), original)
+
+    def test_portable_plugin_loads_matching_managed_server_and_refuses_drift(self):
+        payload = self.work / "portable-payload"
+        result = subprocess.run([str(self.repo / "scripts/build-app.sh"), "--stage-agent-bridge",
+                                 str(payload), "9.8.7"], text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shutil.copytree(payload / "bin", self.runtime / "bin", dirs_exist_ok=True)
+        plugin = payload / "plugins" / "codescribe"
+        manifest = json.loads((plugin / "plugin.json").read_text())
+        self.assertEqual(manifest["extensions"]["com.openai"]["hooks"], "./hooks/codex.json")
+        entries = json.loads((plugin / "server/manifest.json").read_text())["files"]
+        for entry in entries:
+            self.assertEqual(hashlib.sha256((plugin / "server" / entry["path"]).read_bytes()).hexdigest(), entry["sha256"])
+        self.assertTrue((payload / "plugins/.agents/plugins/marketplace.json").is_file())
+        entrypoint = plugin / "scripts/openai.py"
+        hook = {"session_id": "11111111-2222-4333-8444-777777777777", "hook_event_name": "SessionStart"}
+        result = subprocess.run([sys.executable, "-E", str(entrypoint), "--hook"], input=json.dumps(hook),
+                                text=True, capture_output=True, env=self.env, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("session_capability=", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
+        process = subprocess.Popen([sys.executable, "-E", str(entrypoint), "--serve"], env=self.env,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n")
+            process.stdin.flush()
+            self.assertTrue(select.select([process.stdout], [], [], 10)[0], "Packaged MCP startup timed out")
+            response = json.loads(process.stdout.readline())
+            self.assertTrue(response["result"]["tools"])
+            self.assertTrue(all("session_capability" in t["inputSchema"]["required"]
+                                for t in response["result"]["tools"]))
+            process.stdin.close()
+            process.wait(timeout=5)
+            self.assertEqual(process.returncode, 0, process.stderr.read())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            process.stdin.close()
+            process.stdout.close()
+            process.stderr.close()
+        (self.runtime / "bin/bus-mcp.py").write_text("changed installed helper")
+        result = subprocess.run([sys.executable, "-E", str(entrypoint), "--serve"],
+                                text=True, capture_output=True, env=self.env, timeout=10)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("helpers differ", result.stderr)
 
     def test_changed_publisher_refuses_before_installation(self):
         self.publisher.write_bytes(b"changed artifact")

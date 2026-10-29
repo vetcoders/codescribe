@@ -47,6 +47,7 @@ import ctypes
 import datetime
 import fcntl
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -2176,7 +2177,7 @@ PROVIDER_SESSION_ENV = {"claude-code": "CLAUDE_CODE_SESSION_ID"}
 REMOTE_HELPER = '"$HOME/.local/bin/cs-bus"'
 REMOTE_HOST_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,252}")
 #: Local paths and native hook modes mean nothing on another Mac.
-REMOTE_REFUSED_FLAGS = ("--bridge-home", "--bus", "--mcp", "--install-junie-extension",
+REMOTE_REFUSED_FLAGS = ("--bridge-home", "--bus", "--mcp", "--codex-mcp", "--install-junie-extension",
                         "--claude-code-wake", "--claude-code-probe", "--omp-wake",
                         "--attach-file", "--from-file", "--extensions-directory")
 
@@ -2862,22 +2863,37 @@ def process_is_alive(pid: Any) -> bool:
     return True
 
 
-def process_identity(pid: int) -> dict[str, str] | None:
-    """Observe one process incarnation and its complete invocation, never TTL."""
+def probe_process_identity(pid: int) -> dict[str, Any]:
+    """Observe an incarnation and retain why observation failed, without argv in errors."""
     import subprocess
 
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return {"identity": None, "error": "invalid_pid"}
     try:
         result = subprocess.run(
             ["/bin/ps", "-ww", "-p", str(pid), "-o", "lstart=", "-o", "state=", "-o", "command="],
             capture_output=True, text=True, check=False, timeout=2,
             env={**os.environ, "LC_ALL": "C"},
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except PermissionError:
+        return {"identity": None, "error": "process_probe_permission_denied"}
+    except subprocess.TimeoutExpired:
+        return {"identity": None, "error": "process_probe_timeout"}
+    except OSError as error:
+        return {"identity": None, "error": "process_probe_os_error", "errno": error.errno}
     fields = result.stdout.strip().split(None, 6)
-    if result.returncode or len(fields) != 7 or fields[5].startswith(("T", "Z", "X")):
-        return None
-    return {"started": " ".join(fields[:5]), "command": fields[6]}
+    if result.returncode:
+        return {"identity": None, "error": "process_probe_exit", "exit_code": result.returncode}
+    if len(fields) != 7:
+        return {"identity": None, "error": "process_probe_malformed"}
+    if fields[5].startswith(("T", "Z", "X")):
+        return {"identity": None, "error": "process_not_running"}
+    return {"identity": {"started": " ".join(fields[:5]), "command": fields[6]}, "error": None}
+
+
+def process_identity(pid: int) -> dict[str, str] | None:
+    """Observe one process incarnation and its complete invocation, never TTL."""
+    return probe_process_identity(pid)["identity"]
 
 
 def active_leases(root: Path, ttl_seconds: float) -> list[dict[str, Any]]:
@@ -9183,6 +9199,8 @@ def say_reply(args: argparse.Namespace) -> int:
     receipt = publish_reply_event(bus, reply, bridge_root=args.bridge_home)
     remember_published_reply(args.bridge_home, bus, reply, receipt)
     emit(reply)
+    if getattr(args, "text_only", False):
+        return 0
     return speak_published_reply(args, bus, reply, os.urandom(12).hex(), automatic=True)
 
 
@@ -9988,7 +10006,7 @@ def confirm_follower(root: Path, lease_id: str, session: str, bus: str,
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         if child.poll() is not None:
-            raise OSError(f"follower exited during startup; see {errors_path}")
+            raise OSError(f"follower exited during startup (follower_child_exit: {child.returncode}); see {errors_path}")
         state = read_json(lease_path) or {}
         if (state.get("schema") == LEASE_SCHEMA and state.get("pid") == child.pid
                 and state.get("lease_id") == lease_id
@@ -9998,7 +10016,9 @@ def confirm_follower(root: Path, lease_id: str, session: str, bus: str,
                 and child.poll() is None):
             return
         time.sleep(0.1)
-    raise OSError(f"follower readiness timed out; see {errors_path}")
+    probe = probe_process_identity(child.pid)
+    reason = probe["error"] or "follower_identity_or_lease_mismatch"
+    raise OSError(f"follower readiness timed out: {reason}; see {errors_path}")
 
 
 def recover_follower(root: Path, provider: str, session: str) -> dict[str, Any]:
@@ -10977,19 +10997,26 @@ def status_command(args: argparse.Namespace) -> int:
     )
     heartbeat = state.get("heartbeat_unix") if isinstance(state, dict) else None
     lease_pid = state.get("pid") if isinstance(state, dict) else None
-    follower_alive = bool(
+    heartbeat_fresh = bool(
         isinstance(heartbeat, (int, float))
-        and time.time() - float(heartbeat) <= args.lease_ttl
-        and process_is_alive(lease_pid)
+        and 0 <= time.time() - float(heartbeat) <= args.lease_ttl
     )
+    probe = probe_process_identity(lease_pid)
+    follower_verified = bool(heartbeat_fresh and probe["identity"] is not None
+                             and verified_follower(root, lease_id, args.session, lease_pid))
+    follower_alive = follower_verified
     channel = None
     binding = read_json(root / AUDIENCE_BINDING_FILENAME) or {}
-    bindings = binding.get("bindings")
+    bindings = binding.get("bindings") if binding.get("schema") == AUDIENCE_BINDING_SCHEMA else None
     if isinstance(bindings, dict):
         for slot, entry in bindings.items():
             if (
                 isinstance(entry, dict)
+                and str(slot) in "123456789" and len(str(slot)) == 1
+                and entry.get("provider") == args.provider.casefold()
                 and entry.get("provider_session_id") == args.session
+                and lease_identifier(entry["provider"], entry["provider_session_id"]) == lease_id
+                and isinstance(state, dict) and entry.get("bus") == state.get("bus")
             ):
                 channel = str(slot)
                 break
@@ -11024,7 +11051,14 @@ def status_command(args: argparse.Namespace) -> int:
             "lease_id": lease_id,
             "follower_log": str(log_path),
             "follower_events": str(events_path),
-            "attached": state is not None,
+            "lease_recorded": state is not None,
+            "channel_bound": channel is not None,
+            "heartbeat_fresh": heartbeat_fresh,
+            "follower_verified": follower_verified,
+            "follower_problem": (None if follower_verified else probe["error"]
+                                 or ("heartbeat_stale" if not heartbeat_fresh
+                                     else "follower_identity_or_lease_mismatch")),
+            "attached": channel is not None and follower_verified,
             "channel": channel,
             "name": name,
             "follower_alive": follower_alive,
@@ -11412,6 +11446,7 @@ def main() -> int:
     parser.add_argument("--queue-admit", action="store_true", help=argparse.SUPPRESS)
     native = parser.add_mutually_exclusive_group()
     native.add_argument("--mcp", action="store_true", help="serve the native Codescribe MCP conversation over stdio")
+    native.add_argument("--codex-mcp", action="store_true", help="serve session-scoped Codex plugin tools over stdio")
     native.add_argument("--install-junie-extension", action="store_true", help="register the bundled native extension in Junie's user scope")
     native.add_argument("--claude-code-wake", action="store_true",
                         help="Claude Code plugin hook: read the hook payload on stdin and exit 75 when this attached session's mailbox has an unannounced message")
@@ -11599,6 +11634,7 @@ def main() -> int:
     parser.add_argument("--to", metavar="NAME|1-9|0", help="recipient for --send: an agent name (every other session bound to it), "
                         "one channel digit 1-9, or 0 to broadcast to every other bound agent")
     parser.add_argument("--reply-to", metavar="DELIVERY_ID", help="associate --say with this owned delivery envelope")
+    parser.add_argument("--text-only", action="store_true", help="with --say, publish the reply without synthesis or playback")
     playback = parser.add_mutually_exclusive_group()
     playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
     playback.add_argument("--stop-reply", metavar="REPLY_ID", help="request stop from that reply's real player")
@@ -11708,8 +11744,8 @@ def main() -> int:
         except (OSError, ValueError) as error:
             sys.stderr.write(f"cs-bus: broadcast policy refused: {error}\n")
             return 3
-    if args.mcp or args.install_junie_extension or args.claude_code_wake or args.claude_code_probe or args.omp_wake:
-        allowed = {"mcp", "install_junie_extension", "claude_code_wake", "claude_code_probe", "omp_wake", "host_pid",
+    if args.mcp or args.codex_mcp or args.install_junie_extension or args.claude_code_wake or args.claude_code_probe or args.omp_wake:
+        allowed = {"mcp", "codex_mcp", "install_junie_extension", "claude_code_wake", "claude_code_probe", "omp_wake", "host_pid",
                    "provider", "session", "extensions_directory", "bridge_home", "bus", "entrypoint"}
         if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
             parser.error("native extension commands combine only with --bridge-home/--bus")
@@ -11732,6 +11768,12 @@ def main() -> int:
                 return module.claude_code_probe(sys.modules[__name__], root, args.bus, json.load(sys.stdin), os.environ)
             elif args.omp_wake:
                 return module.omp_wake(sys.modules[__name__], root, args.bus, args.session, args.host_pid)
+            elif args.codex_mcp:
+                spec = importlib.util.spec_from_file_location("codescribe_mcp_sessions", Path(__file__).with_name("bus-mcp-sessions.py"))
+                sessions = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(sessions)
+                router = sessions.SessionCapabilities(sys.modules[__name__], module, root, args.bus)
+                module.serve(sys.modules[__name__], root, args.bus, mailbox=router, tools=router.tools)
             else:
                 module.serve(sys.modules[__name__], root, args.bus)
             return 0
@@ -11978,6 +12020,8 @@ def main() -> int:
             return 3
     if args.reply_to and (args.say is None or not re.fullmatch(r"[0-9a-f]{24}", args.reply_to)):
         parser.error("--reply-to requires --say and a delivery id")
+    if args.text_only and args.say is None:
+        parser.error("--text-only requires --say")
     if args.play_reply or args.stop_reply:
         identity = args.play_reply or args.stop_reply
         if (not args.provider or not re.fullmatch(r"[0-9a-f]{24}", identity)
