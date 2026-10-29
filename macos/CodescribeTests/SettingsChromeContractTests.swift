@@ -1302,8 +1302,9 @@ final class SettingsChromeContractTests: XCTestCase {
       creator.contains("SettingsChipButton(\"Allow access\", tint: CSColor.secondaryInk)"))
     XCTAssertTrue(
       creator.contains("SettingsChipButton(\"Open System Settings\", tint: CSColor.secondaryInk)"))
-    XCTAssertFalse(
-      creator.contains("Text(\"allow \\(kind.displayName)\")"),
+    // The only remaining "allow <name>" text is the VoiceOver label below.
+    XCTAssertEqual(
+      creator.components(separatedBy: "Text(\"allow \\(kind.displayName)\")").count - 1, 1,
       "the permission name is no longer a plain bold label")
     XCTAssertFalse(
       creator.contains("Text(\"open System Settings\")"),
