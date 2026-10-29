@@ -88,7 +88,7 @@ the microphone control changes whom you speak to. The named agent must be
 attached with its own provider and session identity.
 
 In the horizontal window, the conversation header keeps the viewed agent and
-its microphone, speaker and **More (…​)** menu visible with either the full
+its microphone, speaker and **More (…)** menu visible with either the full
 sidebar or its folded rail. To change what you view, use the channel list or,
 in the compact form, the channel chips. Rows you can open show a faint
 highlight under the pointer.
