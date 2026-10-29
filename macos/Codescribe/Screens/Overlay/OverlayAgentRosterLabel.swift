@@ -50,13 +50,13 @@ struct OverlayAgentRosterLabel: View {
             if let titleAccessory {
               titleAccessory
             }
+            if let receipt {
+              OverlayRosterReceiptMark(receipt: receipt, palette: palette, textScale: textScale)
+            }
             Spacer(minLength: 4)
             if unreadCount > 0, let conversationID {
               OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)
                 .accessibilityIdentifier("overlay-agent-unread-replies-\(conversationID)")
-            }
-            if let receipt {
-              OverlayRosterReceiptMark(receipt: receipt, palette: palette, textScale: textScale)
             }
             if let timestamp {
               MessageTimestampLabel(date: timestamp, compact: true)
@@ -119,6 +119,7 @@ struct OverlayAgentUnreadBadge: View {
 struct OverlayRosterReceipt {
   let symbol: String
   let text: String
+  let helpText: String
 }
 
 private struct OverlayRosterReceiptMark: View {
@@ -138,8 +139,8 @@ private struct OverlayRosterReceiptMark: View {
       }
     }
     .foregroundStyle(palette.mutedText.color)
-    .help(Text(verbatim: receipt.text))
-    .accessibilityLabel(Text(verbatim: receipt.text))
+    .help(Text(verbatim: receipt.helpText))
+    .accessibilityLabel(Text(verbatim: receipt.helpText))
   }
 }
 

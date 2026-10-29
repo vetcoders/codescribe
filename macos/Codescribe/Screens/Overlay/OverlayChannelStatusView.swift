@@ -813,6 +813,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   var agentActions: OverlayAgentPillMenuActions? = nil
   var showsInlineError = true
   var showsButton = false
+  var focusState: OverlayAgentPanelFocusState? = nil
   @State private var commandError: String?
 
   @MainActor
@@ -834,10 +835,27 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
             Image(systemName: "ellipsis")
               .font(.system(size: 12, weight: .semibold))
               .frame(width: 16, height: 16)
+              .overlay(alignment: .topTrailing) {
+                if let focusState {
+                  if focusState.isRequesting {
+                    ProgressView().controlSize(.mini)
+                      .scaleEffect(0.6)
+                      .offset(x: 7, y: -5)
+                  } else {
+                    Image(systemName: focusState.isFailed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                      .font(.system(size: 8, weight: .semibold))
+                      .foregroundStyle(
+                        focusState.isFailed ? palette.errorStatus.color : palette.successStatus.color)
+                      .offset(x: 5, y: -4)
+                  }
+                }
+              }
           }
           .menuStyle(.borderlessButton)
           .fixedSize()
           .accessibilityLabel(Text("Agent actions"))
+          .accessibilityValue(Text(verbatim: focusState?.statusText ?? ""))
+          .help(Text(verbatim: focusState?.statusText ?? String(localized: "Agent actions")))
         } else {
           content.contextMenu { menuContents }
         }
@@ -1513,26 +1531,29 @@ struct OverlayChannelStatusView: View {
     for digit: String, showsInlineError: Bool = true, showsButton: Bool = false
   ) -> OverlayBroadcastPolicyMenu {
     guard let channel = channels.first(where: { $0.channel == digit }), digit != "0",
-      let actions = agentPillMenuActions(for: digit)
+      let actions = agentPillMenuActions(for: digit, showsFocusState: true)
     else {
       return OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
     }
     return OverlayBroadcastPolicyMenu(
       members: [channel], palette: palette, enabled: !unavailable,
-      agentActions: actions, showsInlineError: showsInlineError, showsButton: showsButton)
+      agentActions: actions, showsInlineError: showsInlineError, showsButton: showsButton,
+      focusState: showsButton ? panelFocusStates[digit] : nil)
   }
 
   /// The commands behind one agent's pill menu, with their real availability.
   /// The Intercom draws its focus button from the same `focus` action, so a
   /// fiszka and the menu never disagree on where the agent can be reached.
-  func agentPillMenuActions(for digit: String) -> OverlayAgentPillMenuActions? {
+  func agentPillMenuActions(
+    for digit: String, showsFocusState: Bool = false
+  ) -> OverlayAgentPillMenuActions? {
     guard let channel = channels.first(where: { $0.channel == digit }), digit != "0" else {
       return nil
     }
     let microphoneEnabled =
       !unavailable && onToggleChannel != nil
       && !pendingToggleChannels.contains(digit)
-      && Self.toggleDigit(for: digit) != nil && !hasDeadFollower(channel)
+      && Self.toggleDigit(for: digit) != nil && (isOpen(channel) || !hasDeadFollower(channel))
     let muted = mutedChannels[digit]
     let focusState = panelFocusStates[digit]
     let owner = archiveCandidates[digit]
@@ -1574,9 +1595,11 @@ struct OverlayChannelStatusView: View {
       focus: !showsPanelFocusButton(for: channel)
         ? nil
         : OverlayAgentPillMenuAction(
-          title: panelFocusTarget(for: channel)?.help
-            ?? panelFocusHelp(for: channel, state: nil),
-          symbol: panelFocusSymbol(nil, target: panelFocusTarget(for: channel)),
+          title: showsFocusState
+            ? (focusState?.statusText ?? panelFocusHelp(for: channel, state: nil))
+            : (panelFocusTarget(for: channel)?.help ?? panelFocusHelp(for: channel, state: nil)),
+          symbol: panelFocusSymbol(
+            showsFocusState ? focusState : nil, target: panelFocusTarget(for: channel)),
           identifier: "overlay-agent-menu-focus-\(digit)",
           enabled: !panelFocusUnreachable(channel) && focusState?.isRequesting != true,
           perform: { focusAgentPanel(channel) }),
@@ -1946,9 +1969,9 @@ struct OverlayChannelStatusView: View {
         open: isOpen(channel), muted: mutedChannels[channel.channel],
         microphoneEnabled: !unavailable && onToggleChannel != nil
           && !pendingToggleChannels.contains(channel.channel)
-          && Self.toggleDigit(for: channel.channel) != nil && !hasDeadFollower(channel),
-        playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains(channel.channel)
-          && !hasDeadFollower(channel),
+          && Self.toggleDigit(for: channel.channel) != nil
+          && (isOpen(channel) || !hasDeadFollower(channel)),
+        playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains(channel.channel),
         palette: palette, onMicrophone: { toggle(channel) },
         onPlayback: { onTogglePlayback?(channel.channel) },
         speaking: conversation(for: channel)?.replySpeaking == true)
@@ -1977,7 +2000,7 @@ struct OverlayChannelStatusView: View {
     .foregroundStyle(palette.mutedText.color)
   }
 
-  private func deliveryReceiptDisplay(
+  func deliveryReceiptDisplay(
     for channel: OverlayChannelDelivery, conversation: OverlayConversation?
   ) -> OverlayRosterReceipt? {
     guard !unavailable else { return nil }
@@ -1990,24 +2013,34 @@ struct OverlayChannelStatusView: View {
             && $0.owner.leaseID == owner.leaseID
         }) else { continue }
         guard message.withdrawn != true else { return nil }
+        func display(_ symbol: String, _ text: String) -> OverlayRosterReceipt {
+          let detail: String
+          if let date = MessageTimestamp.date(fromISO8601: message.emittedAt) {
+            let timestamp = date.formatted(date: .abbreviated, time: .shortened)
+            detail = String(localized: "Last sent message at \(timestamp): \(text)")
+          } else {
+            detail = String(localized: "Last sent message: \(text)")
+          }
+          return OverlayRosterReceipt(symbol: symbol, text: text, helpText: detail)
+        }
         if message.holdSecondsRemaining != nil {
-          return OverlayRosterReceipt(symbol: "pause.circle", text: String(localized: "Held"))
+          return display("pause.circle", String(localized: "Held"))
         }
         if let deliveryID = recipient.deliveryID,
           let state = message.receipt?.deliveries.first(where: { $0.deliveryID == deliveryID })?.state
         {
           switch state {
-          case .read: return OverlayRosterReceipt(symbol: "double-check", text: String(localized: "Read"))
-          case .delivered: return OverlayRosterReceipt(symbol: "checkmark", text: String(localized: "Delivered"))
-          case .skipped: return OverlayRosterReceipt(symbol: "forward.end", text: OverlayConversationView.skippedBroadcastText)
-          case .noReceipt: return OverlayRosterReceipt(symbol: "circle.dotted", text: OverlayConversationView.noReceiptText)
+          case .read: return display("double-check", String(localized: "Read"))
+          case .delivered: return display("checkmark", String(localized: "Delivered"))
+          case .skipped: return display("forward.end", OverlayConversationView.skippedBroadcastText)
+          case .noReceipt: return display("circle.dotted", OverlayConversationView.noReceiptText)
           }
         }
         if recipient.acknowledged {
-          return OverlayRosterReceipt(symbol: "double-check", text: String(localized: "Read"))
+          return display("double-check", String(localized: "Read"))
         }
         let symbol = recipient.broadcastSkipped == true ? "forward.end" : "clock"
-        return OverlayRosterReceipt(symbol: symbol, text: OverlayConversationView.receiptStatusText(for: recipient))
+        return display(symbol, OverlayConversationView.receiptStatusText(for: recipient))
       }
     }
     return nil
