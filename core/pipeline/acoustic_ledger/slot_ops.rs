@@ -853,6 +853,12 @@ impl AcousticLedger {
         if start >= end || !self.publication_range_debt(owner, start, end).is_empty() {
             return false;
         }
+        let floor_ungated = self.decode_fence_energy.as_ref().and_then(|energy| {
+            energy.owner.digital_zero_in(&owner.session, owner.capture_epoch, start, end)
+        }).map(|gated| !gated);
+        if self.decode_fence_energy.is_some() && floor_ungated != Some(true) {
+            return false;
+        }
         let quiet = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, start, end);
         if !self.quiet_publication_bands.insert((observation.clone(), quiet.clone())) {
             return true;
@@ -862,11 +868,6 @@ impl AcousticLedger {
             let floor = self.decode_fence_energy.as_ref().map(|energy| {
                 energy.owner.session_active_speech_ranges(&quiet.session, quiet.capture_epoch, rate)
             });
-            let floor_ungated = self.decode_fence_energy.as_ref().and_then(|energy| {
-                energy.owner.digital_zero_in(
-                    &quiet.session, quiet.capture_epoch, quiet.sample_start, quiet.sample_end,
-                )
-            }).map(|gated| !gated);
             super::super::trail::record_quiet_publication_band(
                 observation, &quiet, speech, floor.as_ref(), floor_ungated, rate,
             );
