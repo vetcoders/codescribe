@@ -161,7 +161,7 @@ A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 | `credential_busy`            | Another process holds the grant; retry after it finishes |
 | `credential_storage`         | The credential store cannot be safely read or saved      |
 | `credential_refresh_invalid` | Refresh returned an invalid or incomplete grant          |
-| `quota_exhausted`            | Spending limit or credits used up; the user decides   |
+| `quota_exhausted`            | Spending limit or credits used up; the user decides      |
 | `http_<code>`                | Other refusal; report the code                           |
 | `network`                    | The request did not complete; one retry is reasonable    |
 | `muted`                      | Muted on purpose; the text landed, never unmute          |

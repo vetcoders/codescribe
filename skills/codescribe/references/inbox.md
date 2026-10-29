@@ -6,12 +6,12 @@ name, a microphone channel or another listener to attach.
 
 ## Choose the destination
 
-| Destination | Meaning | Agent command |
-| --- | --- | --- |
-| User inbox, channel 10 | A retained report intended for the person using this installation | `cs-bus --send "TEXT" --to 10 --provider PROVIDER --session SESSION` |
-| Named agent or channel 1–9 | Requested peer coordination | `cs-bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION` |
-| Shared group, channel 0 | Requested discussion with the agents it was `sent_to`, listed per copy | `cs-bus --send "TEXT" --to 0 --provider PROVIDER --session SESSION` |
-| Voice / this agent's conversation | Answer the exact owned user delivery | `cs-say "TEXT" --provider PROVIDER --session SESSION --reply-to ID` |
+| Destination                       | Meaning                                                                | Agent command                                                          |
+| --------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| User inbox, channel 10            | A retained report intended for the person using this installation      | `cs-bus --send "TEXT" --to 10 --provider PROVIDER --session SESSION`   |
+| Named agent or channel 1–9        | Requested peer coordination                                            | `cs-bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION` |
+| Shared group, channel 0           | Requested discussion with the agents it was `sent_to`, listed per copy | `cs-bus --send "TEXT" --to 0 --provider PROVIDER --session SESSION`    |
+| Voice / this agent's conversation | Answer the exact owned user delivery                                   | `cs-say "TEXT" --provider PROVIDER --session SESSION --reply-to ID`    |
 
 Use your real attached provider/session; reuse its lease and profile. Channel 10
 is not a valid agent attach slot. Do not attach an agent there or open a
