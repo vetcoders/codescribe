@@ -911,11 +911,24 @@ final class OverlayHeaderChromeTests: XCTestCase {
   /// Founder's website shots (2026-10-18): bubbles stayed legible under the
   /// header glass, a mouse brought back legacy scrollers, the expandable
   /// receipt sat right of a plain one and a jargon badge rode on replies.
-  func testConversationFadesUnderTheHeaderAndKeepsItsChromeQuiet() throws {
+  /// Standalone and Intercom retain that edge. The horizontal bus reserves
+  /// physical chrome space, covered by the native scrolling-viewport regression.
+  func testStandaloneAndIntercomKeepTheirSoftHeaderEdgeAndQuietChrome() throws {
     let conversation = try source("Overlay/OverlayConversationView.swift")
-    XCTAssertTrue(conversation.contains(".safeAreaBar(edge: .top, spacing: 0)"), "header is a bar")
-    XCTAssertTrue(conversation.contains(".scrollEdgeEffectStyle(.soft, for: .top)"))
-    XCTAssertFalse(conversation.contains("scrollEdgeEffectHidden(true, for: [.top, .bottom])"))
+    let list = try XCTUnwrap(conversation.range(of: "private func messageList("))
+    let floatingStart = try XCTUnwrap(
+      conversation.range(
+        of: "} else if #available(macOS 26.0, *) {",
+        range: list.upperBound..<conversation.endIndex))
+    let floatingEnd = try XCTUnwrap(
+      conversation.range(
+        of: "static let receiptMenuLabelInset",
+        range: floatingStart.upperBound..<conversation.endIndex))
+    let floatingChrome = String(conversation[floatingStart.lowerBound..<floatingEnd.lowerBound])
+    XCTAssertTrue(
+      floatingChrome.contains(".safeAreaBar(edge: .top, spacing: 0)"), "header is a bar")
+    XCTAssertTrue(floatingChrome.contains(".scrollEdgeEffectStyle(.soft, for: .top)"))
+    XCTAssertFalse(floatingChrome.contains("scrollEdgeEffectHidden(true, for: [.top, .bottom])"))
     XCTAssertTrue(conversation.contains(".csAutohidingScrollers()"), "one scroller owner")
     let scroller = try source("../DesignSystem/CSScroller.swift")
     XCTAssertTrue(scroller.contains("scrollView.scrollerStyle = .overlay"))
