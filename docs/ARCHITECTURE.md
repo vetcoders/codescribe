@@ -434,10 +434,9 @@ A panel reads the role, never a bare number.
   bordered and prominent buttons and the dictionary pins; actions read as
   clickable through their shape, not through a hue, and their ink never
   follows the system accent (Founder, 2026-10-24 and 2026-10-26). A link in
-  prose is the brand text rung (`terracottaText`, the brick), one style in
-  the whole app (Founder, 2026-10-26); the three links still on the chrome
-  accent (Lab, transcript markers, the User page) move in the Settings
-  rules wave. A determinate progress bar is `CSProgressBar`: the native
+  prose is the brand text rung (`terracottaText`, the brick), underlined, one
+  style in the whole app (Founder, 2026-10-26): `csLink()` draws it, and
+  neither the chrome accent nor the system `.link` style draws a link. A determinate progress bar is `CSProgressBar`: the native
   linear `ProgressView` on macOS paints the system accent and ignores
   `.tint`, so a brand-coloured bar must draw its own track. Indeterminate
   progress keeps the native spinner. A status word that is verified

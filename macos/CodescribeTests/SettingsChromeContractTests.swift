@@ -1945,6 +1945,36 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(joined.contains(toggle + "CSColor.chromeAccent)"))
   }
 
+  /// A link in prose is underlined brick drawn by one style, `csLink()`; it
+  /// never follows the macOS accent and never uses the system `.link` style
+  /// (Founder, 2026-10-26; the 2026-10-29 smoke found the links still blue).
+  func testProseLinksShareTheBrickLinkStyle() throws {
+    let sources = try settingsSources()
+    let links = [
+      "LabPanel.swift", "TranscriptMarkersSection.swift", "UserPanel.swift",
+      "DictationCloudPrivacyTab.swift",
+    ]
+    for name in links {
+      let source = try XCTUnwrap(sources[name], name)
+      XCTAssertTrue(source.contains(".csLink()"), name)
+      XCTAssertFalse(source.contains(".foregroundStyle(CSColor.chromeAccent)"), name)
+    }
+    XCTAssertFalse(
+      sources.values.contains { $0.contains(".buttonStyle(.link)") }, "the system link style")
+
+    let components = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/DesignSystem/Components.swift"),
+      encoding: .utf8)
+    let style = try XCTUnwrap(components.range(of: "private struct CSLinkButtonStyle"))
+    let body = components[style.lowerBound...].prefix(600)
+    XCTAssertTrue(body.contains(".underline()"))
+    XCTAssertTrue(body.contains("CSColor.terracottaText"))
+    XCTAssertFalse(body.contains("chromeAccent"))
+  }
+
   /// True when `token` occurs and the next character is not a letter, so
   /// `CSColor.olive` does not pass merely because `CSColor.oliveLight` exists.
   private func containsToken(_ source: String, _ token: String) -> Bool {

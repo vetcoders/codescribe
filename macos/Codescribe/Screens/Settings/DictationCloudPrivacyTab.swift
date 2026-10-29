@@ -51,8 +51,8 @@ struct DictationCloudPrivacyTab: View {
       Button(CloudPrivacyCopy.configureCloudServices) {
         SettingsDeepLink.shared.present(.keys, anchor: .providersCloudTranscription)
       }
-      .buttonStyle(.link)
-      .font(CSFont.ui(12, .medium))
+      .font(SettingsScale.controlLabel)
+      .csLink()
     }
   }
 

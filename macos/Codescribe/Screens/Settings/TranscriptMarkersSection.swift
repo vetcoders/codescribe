@@ -136,15 +136,11 @@ struct TranscriptMarkersSection: View {
               comment: "Dictation panel: template field chip"))
         }
         Spacer(minLength: 0)
-        Button {
+        Button(String(localized: "Restore default template", comment: "Dictation panel: button")) {
           model.restoreDefaultTranscriptTagTemplate()
-        } label: {
-          Text(String(localized: "Restore default template", comment: "Dictation panel: button"))
-            .underline()
         }
-        .csFocusRing()
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(CSColor.chromeAccent)
+        .csLink()
         .accessibilityLabel("Restore default transcript tag template")
       }
       .padding(.top, CSSpace.sm)

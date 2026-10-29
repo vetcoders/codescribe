@@ -72,15 +72,11 @@ struct LabPanel: View {
       .font(.caption)
       .foregroundStyle(CSColor.secondaryInk)
 
-      Button {
+      Button("Open Voice Lab") {
         Task { await VoiceLabRuntime.shared.openConsole() }
-      } label: {
-        Text("Open Voice Lab")
-          .underline()
       }
       .font(SettingsScale.controlLabel)
-      .foregroundStyle(CSColor.chromeAccent)
-      .csFocusRing()
+      .csLink()
 
       recognitionParameters
 

@@ -333,6 +333,29 @@ extension View {
   }
 }
 
+/// A link in prose — one that opens a page, a window or another place in
+/// Settings — is underlined brick text, one style in the whole app (Founder,
+/// 2026-10-26). Unlike an action it does take the brand text rung; unlike a
+/// control it never follows the macOS accent.
+private struct CSLinkButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .underline()
+      .foregroundStyle(CSColor.terracottaText.opacity(isEnabled ? 1 : 0.4))
+      .contentShape(Rectangle())
+      .opacity(configuration.isPressed && isEnabled ? 0.7 : 1)
+  }
+}
+
+extension View {
+  func csLink() -> some View {
+    buttonStyle(CSLinkButtonStyle())
+      .csFocusOutline()
+  }
+}
+
 /// A selectable choice (a radio-style row or card) shares the flat action's
 /// shape; the selected one wears the brand accent as a wash and a one-point
 /// edge (Founder, 2026-10-26), never the chrome accent of a pressed action.
