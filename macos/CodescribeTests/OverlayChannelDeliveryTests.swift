@@ -4599,6 +4599,123 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     }
   }
 
+  func testUserReplyReferenceTruncatesMultiScalarGraphemesWithin512UnicodeScalars() throws {
+    // Each "⚠️" is 1 Swift Character (extended grapheme cluster) but 2 Unicode scalars (U+26A0 U+FE0F).
+    // 512 Characters would be 528+ scalars if truncated with `.prefix(512)`.
+    let warningCluster = "\u{26A0}\u{FE0F}"
+    let body = String(repeating: warningCluster, count: 20) + String(repeating: "a", count: 520)
+    let authorName = String(repeating: warningCluster, count: 10) + String(repeating: "b", count: 130)
+    let owner = OverlayConversationOwner(row: [
+      "provider": "agy",
+      "provider_session_id": "ses-1",
+      "lease_id": Fixture.leaseID,
+      "channel": "4",
+      "name": authorName,
+    ])
+    let message = OverlayConversationMessage(
+      id: "reply:" + Fixture.firstID,
+      kind: .reply,
+      text: body,
+      order: 1,
+      emittedAt: "2026-10-29T21:00:00Z",
+      owner: owner,
+      recipients: [],
+      deliveryID: Fixture.firstID,
+      replyTo: nil,
+      unsolicited: false,
+      playback: nil,
+      busPath: "/tmp/channel-4.jsonl"
+    )
+
+    let ref = try XCTUnwrap(OverlayUserReplyReference(message: message))
+    XCTAssertLessThanOrEqual(ref.text.unicodeScalars.count, 512)
+    XCTAssertGreaterThan(ref.text.unicodeScalars.count, 500)
+    XCTAssertLessThanOrEqual(ref.author?.unicodeScalars.count ?? 0, 128)
+
+    // Must round-trip through JSON row validation (`init?(row:)`) without splitting variation selectors.
+    var row: [String: Any] = [
+      "kind": ref.kind.rawValue,
+      "id": ref.id,
+      "text": ref.text,
+    ]
+    if let author = ref.author { row["author"] = author }
+    let roundTripped = try XCTUnwrap(OverlayUserReplyReference(row: row))
+    XCTAssertEqual(roundTripped, ref)
+  }
+
+  func testContinuousChannelSegmentsExposeActiveCaptureAttachmentSessionUntilSealed() {
+    var bus = OverlayChannelDelivery.Bus()
+    let channelSession = "agent-channel-7-fixture"
+    let firstSegment = "agent-channel-7-fixture-s1"
+    let secondSegment = "agent-channel-7-fixture-s2"
+
+    bus.consume([
+      "schema": "codescribe.channel-session.v1",
+      "kind": "channel_session",
+      "channel": "7",
+      "state": "open",
+      "session_policy": "continuous",
+      "session_id": channelSession,
+    ])
+    bus.consume([
+      "schema": "codescribe.transcript-evidence.v1",
+      "session_id": firstSegment,
+      "occurrence_session_id": firstSegment,
+      "capture_epoch": 1,
+      "sample_start": 0,
+      "sample_end": 1600,
+      "document_index": 0,
+      "sequence": 1,
+      "reducer_revision": 1,
+      "reducer_action": "record_ledger_projection",
+      "channel": "7",
+      "audience": "roman",
+      "rendered_text": "Segment one live",
+      "recipients": [],
+    ])
+    XCTAssertEqual(bus.activeCaptureAttachmentSessions["7"], firstSegment)
+
+    // Sealing segment 1 clears the active document until segment 2 starts, while keeping the parent session open.
+    bus.consume([
+      "schema": "codescribe.channel-session.v1",
+      "kind": "channel_session",
+      "channel": "7",
+      "state": "segment_sealed",
+      "session_id": firstSegment,
+      "channel_session_id": channelSession,
+    ])
+    XCTAssertNil(bus.activeCaptureAttachmentSessions["7"])
+
+    // Segment 2 starts under the same continuous parent session and becomes attachable.
+    bus.consume([
+      "schema": "codescribe.transcript-evidence.v1",
+      "session_id": secondSegment,
+      "occurrence_session_id": secondSegment,
+      "capture_epoch": 1,
+      "sample_start": 1600,
+      "sample_end": 3200,
+      "document_index": 0,
+      "sequence": 2,
+      "reducer_revision": 2,
+      "reducer_action": "record_ledger_projection",
+      "channel": "7",
+      "audience": "roman",
+      "rendered_text": "Segment two live",
+      "recipients": [],
+    ])
+    XCTAssertEqual(bus.activeCaptureAttachmentSessions["7"], secondSegment)
+
+    // Closing the parent channel session clears active capture attachments.
+    bus.consume([
+      "schema": "codescribe.channel-session.v1",
+      "kind": "channel_session",
+      "channel": "7",
+      "state": "sealed",
+      "session_id": channelSession,
+    ])
+    XCTAssertNil(bus.activeCaptureAttachmentSessions["7"])
+  }
+
   private struct Fixture {
     static let leaseID = "0123456789abcdef0123456789abcdef"
     static let firstID = "b67e9660afb01eb53ab2de50"

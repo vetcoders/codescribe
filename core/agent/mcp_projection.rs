@@ -94,15 +94,19 @@ pub enum McpCallResolution {
 /// Build the wire [`ToolDefinition`] for [`MCP_SEARCH_TOOL_NAME`], embedding the
 /// round-robin compact catalog of currently registered MCP tools.
 pub fn build_mcp_search_tool_definition(entries: &[McpToolEntry<'_>]) -> ToolDefinition {
-    let catalog = render_mcp_catalog(entries, MCP_CATALOG_BUDGET_BYTES);
-    let description = format!(
+    let preamble = format!(
         "Search or inspect full JSON schemas for external MCP tools on demand.\n\
          MCP tools are lazy-loaded to keep context compact. When a tool's parameters \
          are clear from its signature below, invoke it directly with `{MCP_CALL_TOOL_NAME}`. \
          When you need full parameter descriptions, nested object shapes, or tools not \
          shown below, call `{MCP_SEARCH_TOOL_NAME}` first.\n\n\
-         Available MCP tools (compact catalog):\n{catalog}"
+         Available MCP tools (compact catalog):\n"
     );
+    let catalog = render_mcp_catalog(
+        entries,
+        MCP_CATALOG_BUDGET_BYTES.saturating_sub(preamble.len()),
+    );
+    let description = format!("{preamble}{catalog}");
 
     ToolDefinition {
         name: MCP_SEARCH_TOOL_NAME.to_string(),
@@ -171,9 +175,14 @@ pub fn build_mcp_call_tool_definition() -> ToolDefinition {
 
 /// Render a deterministic, token-budgeted compact MCP catalog using round-robin
 /// selection across MCP servers so one large server never starves smaller ones.
+///
+/// Strict invariant: the returned string never exceeds `budget_bytes` UTF-8 bytes.
 pub fn render_mcp_catalog(entries: &[McpToolEntry<'_>], budget_bytes: usize) -> String {
+    if budget_bytes == 0 {
+        return String::new();
+    }
     if entries.is_empty() {
-        return "No MCP tools registered.".to_string();
+        return truncate_utf8_to_bytes("No MCP tools registered.", budget_bytes);
     }
 
     let mut by_server: BTreeMap<&str, Vec<&McpToolEntry<'_>>> = BTreeMap::new();
@@ -200,32 +209,60 @@ pub fn render_mcp_catalog(entries: &[McpToolEntry<'_>], budget_bytes: usize) -> 
         })
         .collect();
 
-    let mut selected_counts: BTreeMap<&str, usize> =
-        server_names.iter().map(|&s| (s, 0usize)).collect();
+    // First determine how many server sections fit within `budget_bytes`.
+    let mut active_servers: Vec<&str> = Vec::with_capacity(server_names.len());
+    let mut selected_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for &server in &server_names {
+        let mut candidate_servers = active_servers.clone();
+        candidate_servers.push(server);
+        let mut candidate_counts = selected_counts.clone();
+        candidate_counts.insert(server, 0);
+        let rendered = format_catalog_sections(
+            &candidate_servers,
+            server_names.len(),
+            &rendered_lines,
+            &candidate_counts,
+        );
+        if rendered.len() <= budget_bytes {
+            active_servers = candidate_servers;
+            selected_counts = candidate_counts;
+        } else {
+            break;
+        }
+    }
 
-    // Reserve conservative space for per-server headers.
-    let header_reserve: usize = server_names
+    if active_servers.is_empty() {
+        let fallback = format!(
+            "({} MCP servers registered — call {MCP_SEARCH_TOOL_NAME} to list tools)",
+            server_names.len()
+        );
+        return truncate_utf8_to_bytes(&fallback, budget_bytes);
+    }
+
+    let max_len = active_servers
         .iter()
-        .map(|s| s.len().saturating_add(48))
-        .sum();
-    let mut used_bytes = header_reserve;
-
-    let max_len = rendered_lines.values().map(Vec::len).max().unwrap_or(0);
+        .filter_map(|s| rendered_lines.get(s).map(Vec::len))
+        .max()
+        .unwrap_or(0);
 
     for round in 0..max_len {
         let mut any_added = false;
-        for &server in &server_names {
+        for &server in &active_servers {
             let lines = &rendered_lines[server];
-            if round >= lines.len() {
+            let current = selected_counts.get(server).copied().unwrap_or(0);
+            if round >= lines.len() || current > round {
                 continue;
             }
-            let line_bytes = lines[round].len() + 1;
-            // Guarantee at least one entry per server so every namespace is visible.
-            if round == 0 || used_bytes.saturating_add(line_bytes) <= budget_bytes {
-                if let Some(count) = selected_counts.get_mut(server) {
-                    *count += 1;
-                }
-                used_bytes = used_bytes.saturating_add(line_bytes);
+            let mut candidate_counts = selected_counts.clone();
+            candidate_counts.insert(server, current + 1);
+            let candidate = format_catalog_sections(
+                &active_servers,
+                server_names.len(),
+                &rendered_lines,
+                &candidate_counts,
+            );
+            if candidate.len() <= budget_bytes {
+                selected_counts = candidate_counts;
                 any_added = true;
             }
         }
@@ -234,8 +271,23 @@ pub fn render_mcp_catalog(entries: &[McpToolEntry<'_>], budget_bytes: usize) -> 
         }
     }
 
+    let out = format_catalog_sections(
+        &active_servers,
+        server_names.len(),
+        &rendered_lines,
+        &selected_counts,
+    );
+    truncate_utf8_to_bytes(&out, budget_bytes)
+}
+
+fn format_catalog_sections(
+    active_servers: &[&str],
+    total_servers: usize,
+    rendered_lines: &BTreeMap<&str, Vec<String>>,
+    selected_counts: &BTreeMap<&str, usize>,
+) -> String {
     let mut out = String::new();
-    for &server in &server_names {
+    for &server in active_servers {
         let lines = &rendered_lines[server];
         let total = lines.len();
         let shown = selected_counts.get(server).copied().unwrap_or(0);
@@ -254,8 +306,31 @@ pub fn render_mcp_catalog(entries: &[McpToolEntry<'_>], budget_bytes: usize) -> 
             out.push('\n');
         }
     }
-
+    if active_servers.len() < total_servers {
+        let omitted = total_servers - active_servers.len();
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "(+{omitted} more MCP server(s) — call {MCP_SEARCH_TOOL_NAME} to inspect)"
+        ));
+    }
     out.trim_end().to_string()
+}
+
+fn truncate_utf8_to_bytes(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = 0usize;
+    for (idx, ch) in s.char_indices() {
+        let next = idx + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    s[..end].trim_end().to_string()
 }
 
 /// Format a single MCP tool as `  - tool(arg: type, opt?: type) — summary`.
@@ -313,17 +388,56 @@ pub fn json_schema_to_compact_signature(tool_name: &str, schema: &Value) -> Stri
 
 /// Extract a concise type label and whether the schema explicitly permits `null`.
 fn compact_json_type(prop_schema: &Value) -> (String, bool) {
+    let explicit_nullable = prop_schema
+        .get("nullable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
     if let Some(enum_vals) = prop_schema.get("enum").and_then(Value::as_array)
         && !enum_vals.is_empty()
         && enum_vals.len() <= 4
-        && enum_vals.iter().all(Value::is_string)
+        && enum_vals.iter().all(|v| v.is_string() || v.is_null())
     {
+        let has_null = enum_vals.iter().any(Value::is_null) || explicit_nullable;
         let literals: Vec<String> = enum_vals
             .iter()
             .filter_map(Value::as_str)
             .map(|s| format!("\"{s}\""))
             .collect();
-        return (literals.join("|"), false);
+        if literals.is_empty() {
+            return ("null".to_string(), true);
+        }
+        return (literals.join("|"), has_null);
+    }
+
+    if let Some(variants) = prop_schema
+        .get("anyOf")
+        .or_else(|| prop_schema.get("oneOf"))
+        .and_then(Value::as_array)
+        && !variants.is_empty()
+    {
+        let mut nullable = explicit_nullable;
+        let mut labels = Vec::new();
+        for variant in variants {
+            let (label, var_null) = compact_json_type(variant);
+            if var_null || label == "null" {
+                nullable = true;
+            }
+            if label != "null" && label != "any" && !labels.contains(&label) {
+                labels.push(label);
+            }
+        }
+        if labels.is_empty() {
+            return (
+                if nullable {
+                    "null".to_string()
+                } else {
+                    "any".to_string()
+                },
+                nullable,
+            );
+        }
+        return (labels.join("|"), nullable);
     }
 
     match prop_schema.get("type") {
@@ -333,13 +447,13 @@ fn compact_json_type(prop_schema: &Value) -> (String, bool) {
                     .get("items")
                     .map(|items| compact_json_type(items).0)
                     .unwrap_or_else(|| "any".to_string());
-                (format!("{item_ty}[]"), false)
+                (format!("{item_ty}[]"), explicit_nullable)
             } else {
-                (t.clone(), t == "null")
+                (t.clone(), explicit_nullable || t == "null")
             }
         }
         Some(Value::Array(types)) => {
-            let mut nullable = false;
+            let mut nullable = explicit_nullable;
             let mut non_null = Vec::new();
             for item in types {
                 if let Some(s) = item.as_str() {
@@ -351,12 +465,49 @@ fn compact_json_type(prop_schema: &Value) -> (String, bool) {
                 }
             }
             if non_null.is_empty() {
-                ("any".to_string(), nullable)
+                (
+                    if nullable {
+                        "null".to_string()
+                    } else {
+                        "any".to_string()
+                    },
+                    nullable,
+                )
             } else {
                 (non_null.join("|"), nullable)
             }
         }
-        _ => ("any".to_string(), false),
+        _ => ("any".to_string(), explicit_nullable),
+    }
+}
+
+/// True when a property's JSON Schema explicitly allows `null` (or is an unconstrained schema).
+fn schema_allows_null(prop_schema: &Value) -> bool {
+    let Some(obj) = prop_schema.as_object() else {
+        return true;
+    };
+    if obj.get("nullable").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    if obj.get("const").is_some_and(Value::is_null) {
+        return true;
+    }
+    if let Some(enum_vals) = obj.get("enum").and_then(Value::as_array) {
+        return enum_vals.iter().any(Value::is_null);
+    }
+    if let Some(variants) = obj
+        .get("anyOf")
+        .or_else(|| obj.get("oneOf"))
+        .and_then(Value::as_array)
+    {
+        return variants.iter().any(schema_allows_null);
+    }
+    match obj.get("type") {
+        Some(Value::String(t)) => t == "null",
+        Some(Value::Array(types)) => types.iter().any(|v| v.as_str() == Some("null")),
+        Some(_) => false,
+        // Unconstrained schema object (no `type`, `enum`, `const`, `anyOf`, `oneOf`) accepts any JSON value.
+        None => !obj.contains_key("const"),
     }
 }
 
@@ -426,11 +577,22 @@ pub fn search_mcp_tools(entries: &[McpToolEntry<'_>], input: &Value) -> String {
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or("");
-    let server_filter = input
-        .get("server")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let server_filter = match input.get("server") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return "`server` filter must be a non-empty string when provided.".to_string();
+            }
+            Some(trimmed)
+        }
+        Some(other) => {
+            return format!(
+                "`server` filter must be a string, got {}.",
+                json_value_kind(other)
+            );
+        }
+    };
     let exact_tool = input
         .get("tool")
         .and_then(Value::as_str)
@@ -445,8 +607,9 @@ pub fn search_mcp_tools(entries: &[McpToolEntry<'_>], input: &Value) -> String {
         match find_target_mcp_tool(entries, server_filter, tool_spec) {
             Ok(entry) => return format_full_tool_documentation(entry),
             Err(err) => {
-                // Fall through if query is also present; otherwise return the helpful resolution message.
-                if query.is_empty() {
+                // When an explicit server was given (or query is empty), never fall through to
+                // returning tools from other servers.
+                if query.is_empty() || server_filter.is_some() {
                     return err;
                 }
             }
@@ -615,11 +778,30 @@ pub fn resolve_mcp_call(entries: &[McpToolEntry<'_>], input: &Value) -> McpCallR
         };
     };
 
-    let server_hint = obj
-        .get("server")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let server_hint = match obj.get("server") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return McpCallResolution::Invalid {
+                    canonical_name: None,
+                    error: format!(
+                        "`{MCP_CALL_TOOL_NAME}` parameter `server` must be a non-empty string when provided."
+                    ),
+                };
+            }
+            Some(trimmed)
+        }
+        Some(other) => {
+            return McpCallResolution::Invalid {
+                canonical_name: None,
+                error: format!(
+                    "`{MCP_CALL_TOOL_NAME}` parameter `server` must be a string, got {}.",
+                    json_value_kind(other)
+                ),
+            };
+        }
+    };
     let Some(tool_spec) = obj
         .get("tool")
         .and_then(Value::as_str)
@@ -660,7 +842,7 @@ pub fn resolve_mcp_call(entries: &[McpToolEntry<'_>], input: &Value) -> McpCallR
     }
 
     let inner_arguments = match obj.get("arguments") {
-        None | Some(Value::Null) => json!({}),
+        None => json!({}),
         Some(Value::Object(map)) => Value::Object(map.clone()),
         Some(Value::String(raw_json)) => {
             let trimmed = raw_json.trim();
@@ -739,34 +921,48 @@ pub fn resolve_mcp_alias(entries: &[McpToolEntry<'_>], name: &str) -> Option<Str
 /// - `<server>/<tool>` or `<server>:<tool>`
 /// - `(Some(server), <upstream_tool>)`
 /// - Unambiguous `<upstream_tool>` across all registered MCP servers
+///
+/// Security / routing invariant: when a server is explicitly specified (via
+/// `server_hint` or embedded in `tool_spec`), this function NEVER falls back to
+/// matching a tool on a different server.
 fn find_target_mcp_tool<'a>(
     entries: &'a [McpToolEntry<'a>],
     server_hint: Option<&str>,
     tool_spec: &str,
 ) -> Result<&'a McpToolEntry<'a>, String> {
+    let server_hint = server_hint.map(str::trim).filter(|s| !s.is_empty());
     let spec = tool_spec.trim();
 
-    // 1. Exact registered name match (`mcp__<server>__<tool>`).
-    if let Some(found) = entries
-        .iter()
-        .find(|e| e.registered_name.eq_ignore_ascii_case(spec))
-    {
-        return Ok(found);
-    }
-
-    // 2. Decompose `<server>/<tool>`, `<server>:<tool>`, or `mcp__<server>__<tool>` / `mcp__<server>_<tool>`.
+    // 1. Decompose `<server>/<tool>`, `<server>:<tool>`, or `mcp__<server>__<tool>` / `mcp__<server>_<tool>`.
     let (inferred_server, inferred_tool) = if let Some(rest) = spec.strip_prefix("mcp__") {
         if let Some((srv, tl)) = rest.split_once("__") {
-            (Some(srv), tl)
+            (Some(srv.trim()), tl.trim())
         } else {
-            // Handle single-underscore `mcp__<server>_<tool>` by matching against known server prefixes.
-            let matched_server = entries.iter().find_map(|e| {
+            // Handle single-underscore `mcp__<server>_<tool>` by matching against known server prefixes
+            // (preferring the longest server name match).
+            let mut best_match: Option<(&str, &str)> = None;
+            for e in entries {
                 let prefix = format!("{}_", e.server);
-                rest.strip_prefix(&prefix).map(|tl| (e.server, tl))
-            });
-            match matched_server {
+                let norm_prefix = format!("{}_", normalize_ident(e.server));
+                let rest_norm = normalize_ident(rest);
+                if let Some(tl) = rest.strip_prefix(&prefix) {
+                    if best_match.is_none_or(|(prev_srv, _)| e.server.len() > prev_srv.len()) {
+                        best_match = Some((e.server, tl));
+                    }
+                } else if rest_norm.starts_with(&norm_prefix) && rest.len() > norm_prefix.len() {
+                    let tl = &rest[norm_prefix.len()..];
+                    if best_match.is_none_or(|(prev_srv, _)| e.server.len() > prev_srv.len()) {
+                        best_match = Some((e.server, tl));
+                    }
+                }
+            }
+            match best_match {
                 Some((srv, tl)) => (Some(srv), tl),
-                None => (server_hint, spec),
+                None => {
+                    return Err(format!(
+                        "MCP tool `{spec}` is not registered (unknown server prefix in `mcp__` identifier)."
+                    ));
+                }
             }
         }
     } else if let Some((srv, tl)) = spec.split_once('/') {
@@ -774,26 +970,86 @@ fn find_target_mcp_tool<'a>(
     } else if let Some((srv, tl)) = spec.split_once(':') {
         (Some(srv.trim()), tl.trim())
     } else {
-        (server_hint, spec)
+        (None, spec)
     };
 
-    let effective_server = inferred_server.or(server_hint);
+    if inferred_tool.is_empty() {
+        return Err(format!(
+            "Invalid MCP tool specification `{spec}`: tool name is empty."
+        ));
+    }
 
-    // 3. Match with server constraint when provided.
+    // 2. Reject conflicting server specifications (`server` argument vs prefix in `tool`).
+    if let (Some(hint), Some(inferred)) = (server_hint, inferred_server)
+        && !server_matches(inferred, hint)
+    {
+        return Err(format!(
+            "Conflicting MCP server specifications: `server` is `{hint}` but `tool` specifies `{inferred}`."
+        ));
+    }
+
+    let effective_server = server_hint.or(inferred_server);
+
+    // 3. Exact registered name match (`mcp__<server>__<tool>`), respecting `effective_server`.
+    if let Some(found) = entries
+        .iter()
+        .find(|e| e.registered_name.eq_ignore_ascii_case(spec))
+    {
+        if let Some(srv) = effective_server
+            && !server_matches(found.server, srv)
+        {
+            return Err(format!(
+                "Conflicting MCP server specifications: `server` is `{srv}` but `{spec}` belongs to server `{}`.",
+                found.server
+            ));
+        }
+        return Ok(found);
+    }
+
+    // 4. Match with explicit server constraint when provided. NEVER fall back to other servers.
     if let Some(srv) = effective_server {
         let candidates: Vec<&McpToolEntry<'a>> = entries
             .iter()
             .filter(|e| server_matches(e.server, srv))
             .collect();
-        if let Some(exact) = candidates.iter().copied().find(|e| {
-            e.upstream_tool.eq_ignore_ascii_case(inferred_tool)
-                || normalize_ident(e.upstream_tool) == normalize_ident(inferred_tool)
-        }) {
+        if candidates.is_empty() {
+            let mut servers: Vec<&str> = entries.iter().map(|e| e.server).collect();
+            servers.sort_unstable();
+            servers.dedup();
+            return Err(format!(
+                "MCP server `{srv}` is not registered. Available MCP servers: {}.",
+                if servers.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    servers.join(", ")
+                }
+            ));
+        }
+        if let Some(exact) = candidates
+            .iter()
+            .copied()
+            .find(|e| e.upstream_tool.eq_ignore_ascii_case(inferred_tool))
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|e| normalize_ident(e.upstream_tool) == normalize_ident(inferred_tool))
+            })
+        {
             return Ok(exact);
         }
+        let available: Vec<String> = candidates
+            .iter()
+            .take(10)
+            .map(|e| format!("`{}`", e.upstream_tool))
+            .collect();
+        return Err(format!(
+            "MCP tool `{inferred_tool}` is not registered on server `{srv}`. Available tools on `{srv}`: {}.",
+            available.join(", ")
+        ));
     }
 
-    // 4. Match across all servers by `upstream_tool`.
+    // 5. No server specified: match across all servers by `upstream_tool`.
     let matches: Vec<&McpToolEntry<'a>> = entries
         .iter()
         .filter(|e| {
@@ -816,7 +1072,7 @@ fn find_target_mcp_tool<'a>(
         ));
     }
 
-    // 5. Not found: suggest closest tools so the model can self-correct without an extra search turn.
+    // 6. Not found: suggest closest tools so the model can self-correct without an extra search turn.
     let tokens: Vec<String> = inferred_tool
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -879,19 +1135,29 @@ fn normalize_ident(s: &str) -> String {
         .collect()
 }
 
-/// Validate top-level `required` fields and primitive property types against a tool's
-/// JSON Schema. Returns `Err(human_reason)` when validation fails so the caller can
-/// attach the full schema for self-correction.
+/// Validate top-level `required` fields and property types (including `null`ability)
+/// against a tool's JSON Schema. Returns `Err(human_reason)` when validation fails
+/// so the caller can attach the full schema for self-correction.
 pub fn validate_arguments_against_schema(arguments: &Value, schema: &Value) -> Result<(), String> {
     let Some(arg_obj) = arguments.as_object() else {
         return Err("arguments must be a JSON object".to_string());
     };
 
+    let props = schema.get("properties").and_then(Value::as_object);
+
     if let Some(required) = schema.get("required").and_then(Value::as_array) {
         let mut missing = Vec::new();
         for req in required.iter().filter_map(Value::as_str) {
             match arg_obj.get(req) {
-                None | Some(Value::Null) => missing.push(format!("`{req}`")),
+                None => missing.push(format!("`{req}`")),
+                Some(Value::Null) => {
+                    let allows_null = props
+                        .and_then(|p| p.get(req))
+                        .is_some_and(schema_allows_null);
+                    if !allows_null {
+                        missing.push(format!("`{req}`"));
+                    }
+                }
                 _ => {}
             }
         }
@@ -903,12 +1169,15 @@ pub fn validate_arguments_against_schema(arguments: &Value, schema: &Value) -> R
         }
     }
 
-    if let Some(props) = schema.get("properties").and_then(Value::as_object) {
+    let disallow_additional =
+        schema.get("additionalProperties").and_then(Value::as_bool) == Some(false);
+
+    if let Some(props) = props {
         for (key, value) in arg_obj {
-            if value.is_null() {
-                continue;
-            }
             let Some(prop_schema) = props.get(key) else {
+                if disallow_additional {
+                    return Err(format!("unknown parameter `{key}`"));
+                }
                 continue;
             };
             if !value_matches_schema_type(value, prop_schema) {
@@ -919,16 +1188,40 @@ pub fn validate_arguments_against_schema(arguments: &Value, schema: &Value) -> R
                 ));
             }
         }
+    } else if disallow_additional && !arg_obj.is_empty() {
+        let first_key = arg_obj.keys().next().expect("non-empty");
+        return Err(format!("unknown parameter `{first_key}`"));
     }
 
     Ok(())
 }
 
-/// Check whether a non-null JSON value matches a property schema's declared `type` / `enum`.
+/// Check whether a JSON value (including `null`) matches a property schema's declared
+/// `type`, `enum`, `const`, `nullable`, `anyOf`, or `oneOf`.
 fn value_matches_schema_type(value: &Value, prop_schema: &Value) -> bool {
+    if value.is_null() {
+        return schema_allows_null(prop_schema);
+    }
+
+    if let Some(const_val) = prop_schema.get("const")
+        && value != const_val
+    {
+        return false;
+    }
+
     if let Some(enum_vals) = prop_schema.get("enum").and_then(Value::as_array)
         && !enum_vals.is_empty()
         && !enum_vals.contains(value)
+    {
+        return false;
+    }
+
+    if let Some(variants) = prop_schema
+        .get("anyOf")
+        .or_else(|| prop_schema.get("oneOf"))
+        .and_then(Value::as_array)
+        && !variants.is_empty()
+        && !variants.iter().any(|v| value_matches_schema_type(value, v))
     {
         return false;
     }
@@ -1158,5 +1451,187 @@ mod tests {
             }
             other => panic!("expected Invalid, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn explicit_server_never_falls_back_to_another_server() {
+        let raw = sample_entries();
+        let entries = as_mcp_entries(&raw);
+
+        // 1. Explicit `server: "loctree-mcp"` with tool `write_file` (which only exists on `desktop-commander`)
+        let wrong_server = resolve_mcp_call(
+            &entries,
+            &json!({
+                "server": "loctree-mcp",
+                "tool": "write_file",
+                "arguments": { "path": "/tmp/a.txt", "content": "x" }
+            }),
+        );
+        match wrong_server {
+            McpCallResolution::Invalid {
+                canonical_name,
+                error,
+            } => {
+                assert_eq!(canonical_name, None);
+                assert!(error.contains("not registered on server `loctree-mcp`"));
+            }
+            other => panic!("must not substitute desktop-commander, got {other:?}"),
+        }
+
+        // 2. Explicit `server` conflicting with `tool` prefix (`loctree-mcp` vs `desktop-commander/write_file`)
+        let conflicting = resolve_mcp_call(
+            &entries,
+            &json!({
+                "server": "loctree-mcp",
+                "tool": "desktop-commander/write_file",
+                "arguments": { "path": "/tmp/a.txt", "content": "x" }
+            }),
+        );
+        assert!(matches!(
+            conflicting,
+            McpCallResolution::Invalid {
+                canonical_name: None,
+                ..
+            }
+        ));
+
+        // 3. Explicit `server` conflicting with canonical `mcp__desktop-commander__write_file`
+        let conflicting_canonical = resolve_mcp_call(
+            &entries,
+            &json!({
+                "server": "loctree-mcp",
+                "tool": "mcp__desktop-commander__write_file",
+                "arguments": { "path": "/tmp/a.txt", "content": "x" }
+            }),
+        );
+        assert!(matches!(
+            conflicting_canonical,
+            McpCallResolution::Invalid {
+                canonical_name: None,
+                ..
+            }
+        ));
+
+        // 4. Unregistered server in `server` or `tool` prefix never resolves to another server
+        let unknown_srv = resolve_mcp_call(
+            &entries,
+            &json!({
+                "server": "nonexistent-mcp",
+                "tool": "write_file",
+                "arguments": { "path": "/tmp/a.txt", "content": "x" }
+            }),
+        );
+        assert!(matches!(
+            unknown_srv,
+            McpCallResolution::Invalid {
+                canonical_name: None,
+                ..
+            }
+        ));
+
+        let unknown_prefix = resolve_mcp_call(
+            &entries,
+            &json!({
+                "tool": "nonexistent-mcp/write_file",
+                "arguments": { "path": "/tmp/a.txt", "content": "x" }
+            }),
+        );
+        assert!(matches!(
+            unknown_prefix,
+            McpCallResolution::Invalid {
+                canonical_name: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn catalog_and_search_definition_never_exceed_6000_byte_budget() {
+        let mut raw = Vec::new();
+        for s in 0..12 {
+            for t in 0..20 {
+                raw.push((
+                    format!("mcp__server-with-long-name-{s:02}__instrument_tool_{t:02}"),
+                    format!("server-with-long-name-{s:02}"),
+                    format!("instrument_tool_{t:02}"),
+                    format!(
+                        "Detailed description for tool {t} on server {s} with enough text to test the 6000 byte budget boundary accurately."
+                    ),
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "target_path": { "type": "string" },
+                            "recursive_scan": { "type": "boolean" },
+                            "max_depth": { "type": "integer" }
+                        },
+                        "required": ["target_path"]
+                    }),
+                    ToolRisk::ReadOnly,
+                ));
+            }
+        }
+        let entries = as_mcp_entries(&raw);
+        let catalog = render_mcp_catalog(&entries, MCP_CATALOG_BUDGET_BYTES);
+        assert!(
+            catalog.len() <= MCP_CATALOG_BUDGET_BYTES,
+            "catalog len {} exceeded {}",
+            catalog.len(),
+            MCP_CATALOG_BUDGET_BYTES
+        );
+
+        let search_def = build_mcp_search_tool_definition(&entries);
+        assert!(
+            search_def.description.len() <= MCP_CATALOG_BUDGET_BYTES,
+            "search tool description len {} exceeded {}",
+            search_def.description.len(),
+            MCP_CATALOG_BUDGET_BYTES
+        );
+    }
+
+    #[test]
+    fn schema_validation_handles_null_for_optional_and_nullable_required_fields() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "project": { "type": "string" },
+                "depth": { "type": "integer" },
+                "mode": { "type": "string", "enum": ["rewrite", "append"] },
+                "cursor": { "type": ["string", "null"] },
+                "filter": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+            },
+            "required": ["project", "cursor"]
+        });
+
+        // 1. Nullable required field (`cursor: null`) is accepted when its schema allows `null`.
+        assert!(
+            validate_arguments_against_schema(
+                &json!({ "project": "/repo", "cursor": null, "filter": null }),
+                &schema
+            )
+            .is_ok()
+        );
+
+        // 2. Non-nullable optional field (`depth: null` or `mode: null`) is rejected.
+        let err_depth = validate_arguments_against_schema(
+            &json!({ "project": "/repo", "cursor": null, "depth": null }),
+            &schema,
+        )
+        .expect_err("null for non-nullable integer must fail");
+        assert!(err_depth.contains("parameter `depth` expected type `integer`, got null"));
+
+        let err_mode = validate_arguments_against_schema(
+            &json!({ "project": "/repo", "cursor": null, "mode": null }),
+            &schema,
+        )
+        .expect_err("null for non-nullable enum must fail");
+        assert!(err_mode.contains("parameter `mode`"));
+
+        // 3. Non-nullable required field (`project: null`) is rejected.
+        let err_req = validate_arguments_against_schema(
+            &json!({ "project": null, "cursor": "abc" }),
+            &schema,
+        )
+        .expect_err("null for non-nullable required string must fail");
+        assert!(err_req.contains("missing required parameter(s): `project`"));
     }
 }

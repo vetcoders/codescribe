@@ -1061,6 +1061,21 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Parent `channel_session` identity of a channel message document.
+/// Continuous voice sessions name each segment `<channel_session_id>-s<index>`,
+/// while the session's `open` and terminal `sealed` rows carry `<channel_session_id>`.
+fn channel_session_id_of_document(session: &str) -> &str {
+    if let Some((prefix, segment)) = session.rsplit_once("-s")
+        && prefix.starts_with("agent-channel-")
+        && !segment.is_empty()
+        && segment.bytes().all(|b| b.is_ascii_digit())
+        && segment.parse::<u32>().is_ok_and(|index| index >= 1)
+    {
+        return prefix;
+    }
+    session
+}
+
 /// Read an exact recent capture through the canonical generation/chunk decoder.
 /// Missing old history is a refusal; an append target is never guessed.
 fn capture_attachment_source(
@@ -1091,6 +1106,7 @@ fn capture_attachment_source(
     } else {
         generation::Decoder::from_tail_boundary()
     };
+    let channel_session = channel_session_id_of_document(session);
     let mut latest = None;
     let mut selected = None;
     let mut open = false;
@@ -1105,6 +1121,23 @@ fn capture_attachment_source(
         line.clear();
         for packed in decoder.push(raw)? {
             for row in generation::rows(packed)? {
+                if row["schema"] == "codescribe.channel-session.v1" {
+                    if row["session_id"] == session {
+                        if row["state"] == "open" && !ended {
+                            open = true;
+                        } else {
+                            open = false;
+                            ended = true;
+                        }
+                    } else if row["session_id"] == channel_session {
+                        if row["state"] == "open" && !ended {
+                            open = true;
+                        } else if row["state"] != "segment_sealed" {
+                            open = false;
+                            ended = true;
+                        }
+                    }
+                }
                 if row["session_id"] != session {
                     continue;
                 }
@@ -1119,17 +1152,10 @@ fn capture_attachment_source(
                     }
                     seen_stage = true;
                 }
-                if row["schema"] == "codescribe.channel-session.v1" {
-                    if row["state"] == "open" && !ended {
-                        open = true;
-                    } else {
-                        open = false;
-                        ended = true;
-                    }
-                }
                 if row["status"] == "session_ended"
                     || row["reducer_action"] == "session_ended"
                     || row["schema"] == "codescribe.transcript-publication.v1"
+                    || (row["status"] == "transcript_sealed" && row["terminal"] == true)
                 {
                     ended = true;
                     open = false;
@@ -3385,6 +3411,90 @@ mod tests {
                     .contains("capture_attachment")
             );
         }
+    }
+
+    #[test]
+    fn capture_attachment_accepts_continuous_channel_segments_and_refuses_sealed_segments() {
+        use std::io::Write;
+        let (_temp, buses, base_request) = capture_attachment_fixture();
+        let recipients = serde_json::json!([
+            {"provider":"codex", "provider_session_id":"one", "lease_id":"a", "channel":"7", "audience":"mira", "bus":buses[0]},
+            {"provider":"codex", "provider_session_id":"two", "lease_id":"b", "channel":"7", "audience":"mira", "bus":buses[1]}
+        ]);
+        let recipients_s1 = serde_json::json!({
+            "schema":"codescribe.channel-recipients.v1", "kind":"channel_recipients",
+            "session_id":"agent-channel-7-fixture-s1", "channel":"7", "audience":"mira", "recipients":recipients
+        });
+        let opened = serde_json::json!({
+            "schema":"codescribe.channel-session.v1", "kind":"channel_session",
+            "session_id":"agent-channel-7-fixture", "channel":"7", "state":"open"
+        });
+        let source_s1 = serde_json::json!({
+            "schema":"codescribe.transcript-evidence.v1", "session_id":"agent-channel-7-fixture-s1",
+            "sequence":0, "capture_epoch":1, "reducer_revision":1, "reducer_action":"record_ledger_projection",
+            "occurrence_session_id":"occurrence-s1", "sample_start":10, "sample_end":50, "document_index":0,
+            "channel":"7", "audience":"mira", "recipients":recipients, "rendered_text":"Segment one"
+        });
+        for bus in &buses {
+            std::fs::write(bus, format!("{recipients_s1}\n{opened}\n{source_s1}\n")).unwrap();
+        }
+        let mut request_s1 = base_request.clone();
+        request_s1["stage_id"] = "222222222222222222222222".into();
+        request_s1["session_id"] = "agent-channel-7-fixture-s1".into();
+        request_s1["capture_epoch"] = 1.into();
+        request_s1["source_sequence"] = 0.into();
+        let receipt_s1 = super::append_agent_event(&buses[0], &request_s1).unwrap();
+        assert_eq!(receipt_s1["buses"].as_array().unwrap().len(), 2);
+
+        // Seal segment 1 with segment_sealed and open segment 2 on the same continuous channel session.
+        let segment_sealed_s1 = serde_json::json!({
+            "schema":"codescribe.channel-session.v1", "kind":"channel_session",
+            "session_id":"agent-channel-7-fixture-s1", "channel_session_id":"agent-channel-7-fixture",
+            "channel":"7", "state":"segment_sealed"
+        });
+        let source_s2 = serde_json::json!({
+            "schema":"codescribe.transcript-evidence.v1", "session_id":"agent-channel-7-fixture-s2",
+            "sequence":0, "capture_epoch":1, "reducer_revision":1, "reducer_action":"record_ledger_projection",
+            "occurrence_session_id":"occurrence-s2", "sample_start":60, "sample_end":120, "document_index":0,
+            "channel":"7", "audience":"mira", "recipients":recipients, "rendered_text":"Segment two"
+        });
+        for bus in &buses {
+            writeln!(
+                std::fs::OpenOptions::new().append(true).open(bus).unwrap(),
+                "{segment_sealed_s1}\n{source_s2}"
+            )
+            .unwrap();
+        }
+
+        // Segment 1 is now sealed and must refuse new capture attachments.
+        let mut late_s1 = request_s1.clone();
+        late_s1["stage_id"] = "333333333333333333333333".into();
+        assert!(super::append_agent_event(&buses[0], &late_s1).is_err());
+
+        // Segment 2 is open under the parent channel session and must accept capture attachments.
+        let mut request_s2 = base_request.clone();
+        request_s2["stage_id"] = "444444444444444444444444".into();
+        request_s2["session_id"] = "agent-channel-7-fixture-s2".into();
+        request_s2["capture_epoch"] = 1.into();
+        request_s2["source_sequence"] = 0.into();
+        let receipt_s2 = super::append_agent_event(&buses[0], &request_s2).unwrap();
+        assert_eq!(receipt_s2["buses"].as_array().unwrap().len(), 2);
+
+        // Sealing the parent channel session closes segment 2 as well.
+        let parent_sealed = serde_json::json!({
+            "schema":"codescribe.channel-session.v1", "kind":"channel_session",
+            "session_id":"agent-channel-7-fixture", "channel":"7", "state":"sealed"
+        });
+        for bus in &buses {
+            writeln!(
+                std::fs::OpenOptions::new().append(true).open(bus).unwrap(),
+                "{parent_sealed}"
+            )
+            .unwrap();
+        }
+        let mut late_s2 = request_s2;
+        late_s2["stage_id"] = "555555555555555555555555".into();
+        assert!(super::append_agent_event(&buses[0], &late_s2).is_err());
     }
     #[test]
     fn typed_publication_uses_private_journal_and_refuses_audio_claims() {
