@@ -253,9 +253,11 @@ final class OverlayHintPanel {
         height: min(desiredSize.height, bounds.height - 2 * Self.screenInset))
       controller.rootView = AnyView(
         content.frame(width: size.width, height: size.height)
-          .onHover { [weak self, weak owner] inside in
-            guard let owner else { return }
-            self?.pointerHover(inside, owner: owner)
+          .background {
+            OverlayMenuCursorRegion { [weak self, weak owner] inside in
+              guard let owner else { return }
+              self?.pointerHover(inside, owner: owner)
+            }
           })
     } else {
       controller.rootView = AnyView(
@@ -312,7 +314,7 @@ final class OverlayHintPanel {
     panel.orderOut(nil)
   }
 
-  func pointerHover(_ inside: Bool, owner: OverlayHintAnchor) {
+  private func pointerHover(_ inside: Bool, owner: OverlayHintAnchor) {
     guard self.owner === owner, interactive else { return }
     pointerInside = inside
     if inside {

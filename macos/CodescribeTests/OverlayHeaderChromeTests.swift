@@ -114,12 +114,25 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertTrue(parent.firstResponder === responder)
     XCTAssertEqual(hint.alphaValue, parent.alphaValue, "the preview follows its owner's visibility")
 
+    func previewRegion(in view: NSView) -> OverlayMenuCursorRegionView? {
+      if let region = view as? OverlayMenuCursorRegionView, region.bounds.width > 300 {
+        return region
+      }
+      return view.subviews.lazy.compactMap { previewRegion(in: $0) }.first
+    }
+    let root = try XCTUnwrap(hint.contentView)
+    root.layoutSubtreeIfNeeded()
+    let region = try XCTUnwrap(previewRegion(in: root))
+    region.updateTrackingAreas()
+    XCTAssertTrue(region.trackingAreas.contains { $0.options.contains(.activeAlways) })
+
     first.hide(allowPointerRetention: true)
-    OverlayHintPanel.shared.pointerHover(true, owner: first)
+    region.updateHover(
+      at: region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil))
     try await Task.sleep(for: .milliseconds(300))
     XCTAssertTrue(first.isPresented, "the pointer can move from the row into its message")
 
-    OverlayHintPanel.shared.pointerHover(false, owner: first)
+    region.updateHover(at: NSPoint(x: -10_000, y: -10_000))
     second.show("Next control", palette: .dark)
     try await Task.sleep(for: .milliseconds(300))
     XCTAssertEqual(OverlayHintPanel.shared.presentedTitle, "Next control")
