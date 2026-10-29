@@ -387,7 +387,8 @@ struct OverlayConversationComposer: View {
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 },
-        hasAttachments: { !attachments.isEmpty }, onAttach: attach,
+        hasAttachments: { !attachments.isEmpty || !pendingCaptureAttachments.isEmpty },
+        onAttach: attach,
         onProseEdit: onProseEdit,
         onMicrophoneRedirect: onToggleDraftMicrophone == nil
           ? nil : { microphoneHint.show(reduceMotion: reduceMotion) }
@@ -452,7 +453,11 @@ struct OverlayConversationComposer: View {
               restingColor: restingActionColor,
               hoverColor: palette.primaryText.color
             )
-            .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(
+              sending
+                || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                  && pendingCaptureAttachments.isEmpty)
+            )
             .accessibilityIdentifier("overlay-conversation-send")
             .overlayFastHint(
               draftSyncNames.count > 1

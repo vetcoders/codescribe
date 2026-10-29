@@ -140,14 +140,13 @@ pub fn build_mcp_search_tool_definition(entries: &[McpToolEntry<'_>]) -> ToolDef
 pub fn build_mcp_call_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: MCP_CALL_TOOL_NAME.to_string(),
-        description: format!(
-            "Invoke an external MCP tool by server and tool name (or canonical \
+        description: "Invoke an external MCP tool by server and tool name (or canonical \
              `mcp__<server>__<tool>` / `<server>/<tool>` identifier). \
              Every call goes through the operator permission gate for the target MCP tool. \
              Pass `arguments: \"?\"` (or `help: true`) to inspect the tool's full JSON schema \
              without executing it. If required arguments are missing or have the wrong type, \
              the error response includes the tool's full schema so you can retry immediately."
-        ),
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -371,8 +370,11 @@ pub fn json_schema_to_compact_signature(tool_name: &str, schema: &Value) -> Stri
     let mut rendered_params = Vec::with_capacity(total_params.min(MCP_SIGNATURE_MAX_PARAMS) + 1);
     for key in param_keys.into_iter().take(MCP_SIGNATURE_MAX_PARAMS) {
         let prop_schema = &props[key];
-        let (ty, nullable) = compact_json_type(prop_schema);
-        let is_required = required_set.contains(key.as_str()) && !nullable;
+        let (mut ty, nullable) = compact_json_type(prop_schema);
+        if nullable && ty != "null" && !ty.split('|').any(|part| part == "null") {
+            ty.push_str("|null");
+        }
+        let is_required = required_set.contains(key.as_str());
         if is_required {
             rendered_params.push(format!("{key}: {ty}"));
         } else {
@@ -631,12 +633,19 @@ pub fn search_mcp_tools(entries: &[McpToolEntry<'_>], input: &Value) -> String {
         .map(str::to_string)
         .collect();
 
+    let has_exact_server_filter =
+        server_filter.is_some_and(|srv| entries.iter().any(|e| e.server.eq_ignore_ascii_case(srv)));
     let mut scored: Vec<(u32, &McpToolEntry<'_>)> = Vec::new();
     for entry in entries {
-        if let Some(srv) = server_filter
-            && !server_matches(entry.server, srv)
-        {
-            continue;
+        if let Some(srv) = server_filter {
+            let matches_srv = if has_exact_server_filter {
+                entry.server.eq_ignore_ascii_case(srv)
+            } else {
+                server_matches(entry.server, srv)
+            };
+            if !matches_srv {
+                continue;
+            }
         }
         if tokens.is_empty() {
             scored.push((1, entry));
@@ -939,25 +948,31 @@ fn find_target_mcp_tool<'a>(
             (Some(srv.trim()), tl.trim())
         } else {
             // Handle single-underscore `mcp__<server>_<tool>` by matching against known server prefixes
-            // (preferring the longest server name match).
-            let mut best_match: Option<(&str, &str)> = None;
+            // (preferring exact server prefix matches over normalized `-`/`_` matches, then longest server name).
+            let mut best_match: Option<(bool, &str, &str)> = None;
+            let rest_lower = rest.to_ascii_lowercase();
+            let rest_norm = normalize_ident(rest);
             for e in entries {
-                let prefix = format!("{}_", e.server);
+                let exact_prefix = format!("{}_", e.server.to_ascii_lowercase());
                 let norm_prefix = format!("{}_", normalize_ident(e.server));
-                let rest_norm = normalize_ident(rest);
-                if let Some(tl) = rest.strip_prefix(&prefix) {
-                    if best_match.is_none_or(|(prev_srv, _)| e.server.len() > prev_srv.len()) {
-                        best_match = Some((e.server, tl));
+                if rest_lower.starts_with(&exact_prefix) && rest.len() > exact_prefix.len() {
+                    let tl = &rest[exact_prefix.len()..];
+                    if best_match.is_none_or(|(prev_exact, prev_srv, _)| {
+                        !prev_exact || e.server.len() > prev_srv.len()
+                    }) {
+                        best_match = Some((true, e.server, tl));
                     }
                 } else if rest_norm.starts_with(&norm_prefix) && rest.len() > norm_prefix.len() {
                     let tl = &rest[norm_prefix.len()..];
-                    if best_match.is_none_or(|(prev_srv, _)| e.server.len() > prev_srv.len()) {
-                        best_match = Some((e.server, tl));
+                    if best_match.is_none_or(|(prev_exact, prev_srv, _)| {
+                        !prev_exact && e.server.len() > prev_srv.len()
+                    }) {
+                        best_match = Some((false, e.server, tl));
                     }
                 }
             }
             match best_match {
-                Some((srv, tl)) => (Some(srv), tl),
+                Some((_, srv, tl)) => (Some(srv), tl),
                 None => {
                     return Err(format!(
                         "MCP tool `{spec}` is not registered (unknown server prefix in `mcp__` identifier)."
@@ -980,12 +995,24 @@ fn find_target_mcp_tool<'a>(
     }
 
     // 2. Reject conflicting server specifications (`server` argument vs prefix in `tool`).
-    if let (Some(hint), Some(inferred)) = (server_hint, inferred_server)
-        && !server_matches(inferred, hint)
-    {
-        return Err(format!(
-            "Conflicting MCP server specifications: `server` is `{hint}` but `tool` specifies `{inferred}`."
-        ));
+    if let (Some(hint), Some(inferred)) = (server_hint, inferred_server) {
+        let hint_exact = entries
+            .iter()
+            .find(|e| e.server.eq_ignore_ascii_case(hint))
+            .map(|e| e.server);
+        let inferred_exact = entries
+            .iter()
+            .find(|e| e.server.eq_ignore_ascii_case(inferred))
+            .map(|e| e.server);
+        let distinct_exact_servers = match (hint_exact, inferred_exact) {
+            (Some(h), Some(i)) => !h.eq_ignore_ascii_case(i),
+            _ => false,
+        };
+        if !server_matches(inferred, hint) || distinct_exact_servers {
+            return Err(format!(
+                "Conflicting MCP server specifications: `server` is `{hint}` but `tool` specifies `{inferred}`."
+            ));
+        }
     }
 
     let effective_server = server_hint.or(inferred_server);
@@ -995,23 +1022,47 @@ fn find_target_mcp_tool<'a>(
         .iter()
         .find(|e| e.registered_name.eq_ignore_ascii_case(spec))
     {
-        if let Some(srv) = effective_server
-            && !server_matches(found.server, srv)
-        {
-            return Err(format!(
-                "Conflicting MCP server specifications: `server` is `{srv}` but `{spec}` belongs to server `{}`.",
-                found.server
-            ));
+        if let Some(srv) = effective_server {
+            let srv_has_exact_other = entries.iter().any(|e| {
+                e.server.eq_ignore_ascii_case(srv) && !e.server.eq_ignore_ascii_case(found.server)
+            });
+            if !server_matches(found.server, srv) || srv_has_exact_other {
+                return Err(format!(
+                    "Conflicting MCP server specifications: `server` is `{srv}` but `{spec}` belongs to server `{}`.",
+                    found.server
+                ));
+            }
         }
         return Ok(found);
     }
 
     // 4. Match with explicit server constraint when provided. NEVER fall back to other servers.
+    //    Prefer exact case-insensitive server ID match before normalized `-`/`_` alias matching so
+    //    coexisting servers like `alpha-beta` and `alpha_beta` never collide.
     if let Some(srv) = effective_server {
-        let candidates: Vec<&McpToolEntry<'a>> = entries
+        let exact_server_candidates: Vec<&McpToolEntry<'a>> = entries
             .iter()
-            .filter(|e| server_matches(e.server, srv))
+            .filter(|e| e.server.eq_ignore_ascii_case(srv))
             .collect();
+        let candidates: Vec<&McpToolEntry<'a>> = if !exact_server_candidates.is_empty() {
+            exact_server_candidates
+        } else {
+            let norm_candidates: Vec<&McpToolEntry<'a>> = entries
+                .iter()
+                .filter(|e| server_matches(e.server, srv))
+                .collect();
+            let mut distinct_servers: Vec<&str> =
+                norm_candidates.iter().map(|e| e.server).collect();
+            distinct_servers.sort_unstable();
+            distinct_servers.dedup();
+            if distinct_servers.len() > 1 {
+                return Err(format!(
+                    "MCP server `{srv}` is ambiguous across multiple registered servers: {}. Specify the exact server ID.",
+                    distinct_servers.join(", ")
+                ));
+            }
+            norm_candidates
+        };
         if candidates.is_empty() {
             let mut servers: Vec<&str> = entries.iter().map(|e| e.server).collect();
             servers.sort_unstable();
@@ -1633,5 +1684,102 @@ mod tests {
         )
         .expect_err("null for non-nullable required string must fail");
         assert!(err_req.contains("missing required parameter(s): `project`"));
+
+        // 4. Compact signature keeps required nullable fields as `name: type|null` (not `name?: type`).
+        let nullable_req_schema = json!({
+            "type": "object",
+            "properties": {
+                "cursor": { "type": ["string", "null"] },
+                "filter": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+            },
+            "required": ["cursor"]
+        });
+        assert_eq!(
+            json_schema_to_compact_signature("next", &nullable_req_schema),
+            "next(cursor: string|null, filter?: string|null)"
+        );
+    }
+
+    #[test]
+    fn distinct_servers_differing_only_by_dash_vs_underscore_never_collide() {
+        let raw = vec![
+            (
+                "mcp__alpha-beta__status".to_string(),
+                "alpha-beta".to_string(),
+                "status".to_string(),
+                "Alpha-beta status".to_string(),
+                json!({ "type": "object" }),
+                ToolRisk::ReadOnly,
+            ),
+            (
+                "mcp__alpha_beta__status".to_string(),
+                "alpha_beta".to_string(),
+                "status".to_string(),
+                "Alpha_beta status".to_string(),
+                json!({ "type": "object" }),
+                ToolRisk::ReadOnly,
+            ),
+        ];
+        let entries = as_mcp_entries(&raw);
+
+        assert_eq!(
+            resolve_mcp_call(
+                &entries,
+                &json!({
+                    "server": "alpha_beta",
+                    "tool": "status",
+                    "arguments": {}
+                })
+            ),
+            McpCallResolution::Resolved {
+                canonical_name: "mcp__alpha_beta__status".to_string(),
+                arguments: json!({}),
+            }
+        );
+
+        assert_eq!(
+            resolve_mcp_call(
+                &entries,
+                &json!({
+                    "server": "alpha-beta",
+                    "tool": "status",
+                    "arguments": {}
+                })
+            ),
+            McpCallResolution::Resolved {
+                canonical_name: "mcp__alpha-beta__status".to_string(),
+                arguments: json!({}),
+            }
+        );
+
+        assert_eq!(
+            resolve_mcp_call(
+                &entries,
+                &json!({
+                    "tool": "mcp__alpha_beta_status",
+                    "arguments": {}
+                })
+            ),
+            McpCallResolution::Resolved {
+                canonical_name: "mcp__alpha_beta__status".to_string(),
+                arguments: json!({}),
+            }
+        );
+
+        let cross_conflict = resolve_mcp_call(
+            &entries,
+            &json!({
+                "server": "alpha_beta",
+                "tool": "mcp__alpha-beta__status",
+                "arguments": {}
+            }),
+        );
+        assert!(matches!(
+            cross_conflict,
+            McpCallResolution::Invalid {
+                canonical_name: None,
+                ..
+            }
+        ));
     }
 }

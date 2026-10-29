@@ -420,6 +420,48 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.paths, ["/fixture/pending.png"])
   }
 
+  func testSendConversationTextAdoptsWaitingCaptureAttachmentWhenTextDraftIsEmpty() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let receiving = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first {
+        $0.owner?.channel == "1"
+      })
+    let target = try XCTUnwrap(receiving.messages.first?.activeCaptureAttachmentTarget)
+    let empty = OverlayConversation(
+      id: receiving.id, channel: receiving.channel, name: receiving.name,
+      owner: receiving.owner, messages: [])
+    let session = OverlayCaptureAttachmentSession(
+      id: "agent-channel-1-continuous-s2", channel: "1", openedAt: "2026-10-20T21:59:59Z",
+      recipientIDs: target.recipientIDs.sorted())
+    let state = OverlayState()
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [empty], activeCaptureAttachmentSessions: [session]))
+    state.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "1", audience: empty.name, provider: empty.owner?.provider,
+        providerSessionId: empty.owner?.providerSessionID, open: true, loud: true,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    XCTAssertTrue(state.stageConversationAttachments(["/fixture/screenshot.png"], in: empty))
+    XCTAssertEqual(state.conversationDraft(for: empty.id), "")
+    XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.paths, ["/fixture/screenshot.png"])
+    var publishedText: String?
+    state.publishConversationText = { owner, outgoing, _, _ in
+      XCTAssertEqual(owner, empty.owner)
+      publishedText = outgoing
+    }
+    await state.sendConversationText(empty)
+    let parts = ConversationDraft.split(try XCTUnwrap(publishedText))
+    XCTAssertEqual(parts.text, "")
+    XCTAssertEqual(parts.attachments, ["/fixture/screenshot.png"])
+    XCTAssertNil(state.captureAttachmentDrafts[empty.id])
+  }
+
   func testBusRefusalReturnsFilesToDraftWithoutWaitingForProjection() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
@@ -4627,35 +4669,80 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       busPath: "/tmp/channel-4.jsonl"
     )
 
-    let ref = try XCTUnwrap(OverlayUserReplyReference(message: message))
+    let ref = OverlayUserReplyReference(message: message)
     XCTAssertLessThanOrEqual(ref.text.unicodeScalars.count, 512)
     XCTAssertGreaterThan(ref.text.unicodeScalars.count, 500)
-    XCTAssertLessThanOrEqual(ref.author?.unicodeScalars.count ?? 0, 128)
+    XCTAssertLessThanOrEqual(ref.author.unicodeScalars.count, 128)
+    XCTAssertTrue(body.hasPrefix(ref.text))
+    XCTAssertTrue(authorName.hasPrefix(ref.author))
 
     // Must round-trip through JSON row validation (`init?(row:)`) without splitting variation selectors.
-    var row: [String: Any] = [
-      "kind": ref.kind.rawValue,
-      "id": ref.id,
+    let row: [String: Any] = [
+      "message_id": ref.messageID,
+      "author": ref.author,
       "text": ref.text,
     ]
-    if let author = ref.author { row["author"] = author }
     let roundTripped = try XCTUnwrap(OverlayUserReplyReference(row: row))
     XCTAssertEqual(roundTripped, ref)
+
+    // Oversized single grapheme cluster (601 scalars in 1 Character) must never be split mid-grapheme.
+    let oversizedCluster = "a" + String(repeating: "\u{0301}", count: 600)
+    let oversizedOwner = OverlayConversationOwner(row: [
+      "provider": "agy",
+      "provider_session_id": "ses-1",
+      "lease_id": Fixture.leaseID,
+      "channel": "4",
+      "name": oversizedCluster,
+    ])
+    let oversizedMessage = OverlayConversationMessage(
+      id: "reply:" + Fixture.firstID,
+      kind: .reply,
+      text: oversizedCluster,
+      order: 2,
+      emittedAt: "2026-10-29T21:00:01Z",
+      owner: oversizedOwner,
+      recipients: [],
+      deliveryID: Fixture.firstID,
+      replyTo: nil,
+      unsolicited: false,
+      playback: nil,
+      busPath: "/tmp/channel-4.jsonl"
+    )
+    let oversizedRef = OverlayUserReplyReference(message: oversizedMessage)
+    XCTAssertEqual(oversizedRef.text, "")
+    XCTAssertFalse(oversizedRef.author.isEmpty)
+    XCTAssertLessThanOrEqual(oversizedRef.author.unicodeScalars.count, 128)
+    let oversizedRoundTrip = try XCTUnwrap(
+      OverlayUserReplyReference(row: [
+        "message_id": oversizedRef.messageID,
+        "author": oversizedRef.author,
+        "text": oversizedRef.text,
+      ]))
+    XCTAssertEqual(oversizedRoundTrip, oversizedRef)
   }
 
-  func testContinuousChannelSegmentsExposeActiveCaptureAttachmentSessionUntilSealed() {
+  func testContinuousChannelSegmentsExposeActiveCaptureAttachmentSessionUntilSealed() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
     var bus = OverlayChannelDelivery.Bus()
     let channelSession = "agent-channel-7-fixture"
     let firstSegment = "agent-channel-7-fixture-s1"
     let secondSegment = "agent-channel-7-fixture-s2"
+    var recipient = fixture.recipient()
+    recipient["channel"] = "7"
 
     bus.consume([
       "schema": "codescribe.channel-session.v1",
       "kind": "channel_session",
       "channel": "7",
+      "agent": "james",
       "state": "open",
+      "loud": true,
       "session_policy": "continuous",
       "session_id": channelSession,
+      "provider": "codex",
+      "provider_session_id": "agent-session",
+      "opened_at": "2026-10-29T21:00:00Z",
     ])
     bus.consume([
       "schema": "codescribe.transcript-evidence.v1",
@@ -4669,22 +4756,28 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "reducer_revision": 1,
       "reducer_action": "record_ledger_projection",
       "channel": "7",
-      "audience": "roman",
+      "audience": "james",
       "rendered_text": "Segment one live",
-      "recipients": [],
+      "recipients": [recipient],
     ])
-    XCTAssertEqual(bus.activeCaptureAttachmentSessions["7"], firstSegment)
+    XCTAssertEqual(
+      bus.activeCaptureAttachmentSessions.first(where: { $0.channel == "7" })?.id, firstSegment)
 
     // Sealing segment 1 clears the active document until segment 2 starts, while keeping the parent session open.
     bus.consume([
       "schema": "codescribe.channel-session.v1",
       "kind": "channel_session",
       "channel": "7",
+      "agent": "james",
       "state": "segment_sealed",
+      "loud": false,
       "session_id": firstSegment,
       "channel_session_id": channelSession,
+      "provider": "codex",
+      "provider_session_id": "agent-session",
+      "opened_at": "2026-10-29T21:00:00Z",
     ])
-    XCTAssertNil(bus.activeCaptureAttachmentSessions["7"])
+    XCTAssertNil(bus.activeCaptureAttachmentSessions.first(where: { $0.channel == "7" }))
 
     // Segment 2 starts under the same continuous parent session and becomes attachable.
     bus.consume([
@@ -4699,21 +4792,27 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "reducer_revision": 2,
       "reducer_action": "record_ledger_projection",
       "channel": "7",
-      "audience": "roman",
+      "audience": "james",
       "rendered_text": "Segment two live",
-      "recipients": [],
+      "recipients": [recipient],
     ])
-    XCTAssertEqual(bus.activeCaptureAttachmentSessions["7"], secondSegment)
+    XCTAssertEqual(
+      bus.activeCaptureAttachmentSessions.first(where: { $0.channel == "7" })?.id, secondSegment)
 
     // Closing the parent channel session clears active capture attachments.
     bus.consume([
       "schema": "codescribe.channel-session.v1",
       "kind": "channel_session",
       "channel": "7",
+      "agent": "james",
       "state": "sealed",
+      "loud": false,
       "session_id": channelSession,
+      "provider": "codex",
+      "provider_session_id": "agent-session",
+      "opened_at": "2026-10-29T21:00:00Z",
     ])
-    XCTAssertNil(bus.activeCaptureAttachmentSessions["7"])
+    XCTAssertNil(bus.activeCaptureAttachmentSessions.first(where: { $0.channel == "7" }))
   }
 
   private struct Fixture {

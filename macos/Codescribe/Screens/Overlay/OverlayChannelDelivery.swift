@@ -1664,7 +1664,10 @@ struct OverlayUserReplyReference: Codable, Equatable, Sendable {
     let normalizedAuthor =
       sanitizedAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       ? fallbackAuthor : sanitizedAuthor
-    author = Self.scalarBoundedPrefix(of: normalizedAuthor, maxScalars: 128)
+    let boundedAuthor = Self.scalarBoundedPrefix(of: normalizedAuthor, maxScalars: 128)
+    author =
+      boundedAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? fallbackAuthor : boundedAuthor
     let body = message.bodyText
     let context =
       body.isEmpty
@@ -1698,9 +1701,6 @@ struct OverlayUserReplyReference: Codable, Equatable, Sendable {
       if usedScalars + count > maxScalars { break }
       usedScalars += count
       end = value.index(after: end)
-    }
-    if end == value.startIndex {
-      return String(String.UnicodeScalarView(value.unicodeScalars.prefix(maxScalars)))
     }
     return String(value[..<end])
   }
