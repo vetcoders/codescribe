@@ -2583,11 +2583,11 @@ impl AcousticLedger {
             return;
         };
         // A word owned by its midpoint is published in full, including any
-        // measured edge beyond the band's boundary. Only the original pins
-        // verified as complete and committed above may settle that edge.
-        let paid = std::iter::once(bounds).chain(words.iter().map(|word| {
+        // measured edge beyond the band's boundary. The surrounding decoder
+        // window cannot account for speech absent from all committed pins.
+        let paid = words.iter().map(|word| {
             (word.sample_start.max(owner.sample_start), word.sample_end.min(owner.sample_end))
-        }));
+        });
         let mut remaining = debt.clone();
         for (paid_start, paid_end) in paid {
             let mut next = Vec::new();
