@@ -831,6 +831,38 @@ impl AcousticLedger {
         accounted
     }
 
+    /// Account only the physically quiet part of a matched successful empty
+    /// publication band. The caller authenticates the returned request and
+    /// verifies that no original word belongs to the band before filtering.
+    pub(crate) fn record_quiet_publication_band(
+        &mut self,
+        observation: &ObservationIdentity,
+        band: &OccurrenceIdentity,
+    ) -> bool {
+        let owner = &observation.occurrence;
+        if observation.producer != ObservationProducer::Whisper
+            || !band.same_capture(owner)
+            || !band.is_anchored()
+            || !self.is_qualified(owner)
+            || self.is_sealed(owner)
+        {
+            return false;
+        }
+        let start = band.sample_start.max(owner.sample_start);
+        let end = band.sample_end.min(owner.sample_end);
+        if start >= end || !self.publication_range_debt(owner, start, end).is_empty() {
+            return false;
+        }
+        let quiet = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, start, end);
+        if !self.quiet_publication_bands.insert((observation.clone(), quiet.clone())) {
+            return true;
+        }
+        self.record_complete_decode_span(observation, (start, end));
+        super::super::trail::record_quiet_publication_band(self, observation, &quiet);
+        self.reconcile_returned_word_debt(owner);
+        true
+    }
+
     /// Authenticate the exact recorded work scope independently of accounting.
     pub(crate) fn has_returned_decode_work(
         &self,

@@ -929,6 +929,9 @@ pub struct AcousticLedger {
     /// Parts of a retired coarse label that have not yet been published by
     /// an accepted measured word partition. Decoder context does not pay it.
     publication_debt: BTreeMap<OccurrenceIdentity, Vec<(u64, u64)>>,
+    /// Matched quiet publication work, bound to its observation and clipped
+    /// owner range. This is not an empty decoder-final receipt.
+    quiet_publication_bands: std::collections::HashSet<(ObservationIdentity, OccurrenceIdentity)>,
     /// Matched successful empty finals; these observations mint no Word.
     successful_empty_decodes: std::collections::HashSet<ObservationIdentity>,
     answered: std::collections::HashSet<ObservationIdentity>,

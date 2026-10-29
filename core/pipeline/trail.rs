@@ -648,6 +648,14 @@ pub enum TrailEvent {
         speech: TrailSpeechEvidence,
         accounted: bool,
     },
+    QuietPublicationBand {
+        observation: ObservationIdentity,
+        band: OccurrenceIdentity,
+        speech: TrailSpeechEvidence,
+        floor: Option<TrailSpeechEvidence>,
+        floor_ungated: Option<bool>,
+        capture_rate_hz: u32,
+    },
     OccurrenceSealed {
         occurrence: OccurrenceIdentity,
         receipt_id: String,
@@ -912,6 +920,35 @@ pub(super) fn record_decode_work(
             accounted,
         },
     );
+}
+
+pub(super) fn record_quiet_publication_band(
+    ledger: &AcousticLedger,
+    observation: &ObservationIdentity,
+    band: &OccurrenceIdentity,
+) {
+    if !is_enabled(&observation.occurrence) {
+        return;
+    }
+    let (Some(speech), Some(rate)) = (&ledger.speech_evidence, ledger.capture_rate_hz) else {
+        return;
+    };
+    let floor = ledger.decode_fence_energy.as_ref().map(|energy| {
+        TrailSpeechEvidence::from_evidence(&energy.owner.session_active_speech_ranges(
+            &band.session, band.capture_epoch, rate,
+        ))
+    });
+    let floor_ungated = ledger.decode_fence_energy.as_ref().and_then(|energy| {
+        energy.owner.digital_zero_in(&band.session, band.capture_epoch, band.sample_start, band.sample_end)
+    }).map(|gated| !gated);
+    record(&observation.occurrence, TrailEvent::QuietPublicationBand {
+        observation: observation.clone(),
+        band: band.clone(),
+        speech: TrailSpeechEvidence::from_evidence(speech),
+        floor,
+        floor_ungated,
+        capture_rate_hz: rate,
+    });
 }
 
 pub(super) fn record(occurrence: &OccurrenceIdentity, event: TrailEvent) {
@@ -1271,6 +1308,7 @@ fn validate_envelope(records: &[TrailRecord]) -> io::Result<()> {
             TrailEvent::Qualification { evidence, .. } => Some(&evidence.occurrence),
             TrailEvent::Decision { decision } => Some(&decision.observation.occurrence),
             TrailEvent::DecodeWork { observation, .. } => Some(&observation.occurrence),
+            TrailEvent::QuietPublicationBand { observation, .. } => Some(&observation.occurrence),
             TrailEvent::DecodeSkippedNoSpeech { decode, .. } => Some(decode),
             TrailEvent::Frontier { occurrence, .. } => Some(occurrence),
             TrailEvent::SlotStart { operation } => Some(&operation.observation.occurrence),
@@ -1591,6 +1629,54 @@ fn replay_validated(
                     || !ledger.has_returned_decode_work(observation, decode)
                 {
                     return Err(io::Error::other("decode work accounting differs"));
+                }
+            }
+            TrailEvent::QuietPublicationBand {
+                observation,
+                band,
+                speech,
+                floor,
+                floor_ungated,
+                capture_rate_hz,
+            } => {
+                use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
+                if !band.same_capture(&observation.occurrence)
+                    || !band.is_anchored()
+                    || band.sample_start < observation.occurrence.sample_start
+                    || band.sample_end > observation.occurrence.sample_end
+                    || *capture_rate_hz == 0
+                    || ledger.capture_rate_hz.is_some_and(|rate| rate != *capture_rate_hz)
+                {
+                    return Err(io::Error::other("quiet publication identity differs"));
+                }
+                let evidence = speech.evidence()?;
+                let floor_evidence = floor.as_ref().map(TrailSpeechEvidence::evidence).transpose()?;
+                if let Some(floor) = &floor_evidence {
+                    if *floor_ungated != Some(true)
+                        || floor.producer() != CAPTURE_ENERGY_PRODUCER
+                        || !floor.identity().matches(&band.session, band.capture_epoch)
+                        || floor.availability().observed_samples().is_none_or(|end| end < band.sample_end)
+                        || floor.ranges().iter().any(|range| {
+                            range.session != band.session
+                                || range.capture_epoch != band.capture_epoch
+                                || range.sample_start >= range.sample_end
+                                || floor.availability().observed_samples().is_none_or(|end| range.sample_end > end)
+                                || (range.sample_start < band.sample_end && band.sample_start < range.sample_end)
+                        })
+                    {
+                        return Err(io::Error::other("quiet publication floor differs"));
+                    }
+                } else if floor_ungated.is_some() || evidence.producer() != CAPTURE_ENERGY_PRODUCER {
+                    return Err(io::Error::other("quiet publication lacks floor evidence"));
+                }
+                ledger.capture_rate_hz = Some(*capture_rate_hz);
+                ledger.record_speech_evidence(&evidence);
+                let prior_fences = ledger.replay_quiet_fences.clone();
+                ledger.replay_quiet_fences = floor_evidence.as_ref().map(|_| vec![band.clone()]);
+                let accepted = ledger.record_quiet_publication_band(observation, band);
+                ledger.replay_quiet_fences = prior_fences;
+                if !accepted {
+                    return Err(io::Error::other("quiet publication accounting differs"));
                 }
             }
             TrailEvent::SlotStart { operation } => {
