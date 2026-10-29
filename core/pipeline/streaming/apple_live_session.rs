@@ -123,12 +123,6 @@ use super::stream_log::append_to_stream_log;
 /// Bounded transport for capture-plan windows. A full queue retains the exact
 /// pending request without blocking the worker that forwards PCM to SFSpeech.
 const TAIL_PATCH_QUEUE_CAP: usize = 8;
-/// The bounded word-trial scan walks every open word component against the
-/// whole slot-operation history. The Apple worker loop reaches it on every
-/// PCM chunk and partial, so without a bound a long take spends one core on
-/// the scan alone (2026-10-12: a 19-minute take, 91 % of the worker thread).
-/// A trial is a 9 s window; a quarter second between scans costs nothing.
-
 /// Bounded transport ownership for occurrence formatter jobs. Saturation skips
 /// Formatter scheduling for that occurrence; it never backpressures PCM.
 const FORMATTER_QUEUE_CAP: usize = 8;
@@ -2268,6 +2262,12 @@ struct MemberPinRoute {
 struct RoutedWords<'a> {
     pins: &'a [RoutedPin],
     neighbours: &'a [(OccurrenceIdentity, OccurrenceIdentity)],
+}
+
+/// Decode identity and optional owned publication evidence for one batch.
+struct RoutedDecode<'a> {
+    request_window: (u64, Option<(u64, u64)>),
+    publication: Option<(&'a TailProviderPayload, (u64, u64), bool)>,
 }
 
 /// `(owner, unclipped pin)` for every pin this batch routed to another member.
@@ -4701,10 +4701,13 @@ impl AppleSealState {
                         ev_tx,
                         *member_id,
                         occurrence,
-                        (
-                            request_id,
-                            Some((identity.range.sample_start, identity.range.sample_end)),
-                        ),
+                        RoutedDecode {
+                            request_window: (
+                                request_id,
+                                Some((identity.range.sample_start, identity.range.sample_end)),
+                            ),
+                            publication: Some((returned, (band_start, band_end), terminal_tail)),
+                        },
                         RoutedWords {
                             pins: &route.exclusive,
                             neighbours: &neighbour_pin_assignments(
@@ -4712,7 +4715,6 @@ impl AppleSealState {
                             ),
                         },
                         LedgerObservationProducer::Whisper,
-                        Some((returned, (band_start, band_end), terminal_tail)),
                     );
                 }
                 continue;
@@ -5267,7 +5269,12 @@ impl AppleSealState {
         producer: LedgerObservationProducer,
     ) -> bool {
         self.admit_routed_words_with_publication(
-            ev_tx, id, owner, request_window, batch, producer, None,
+            ev_tx,
+            id,
+            owner,
+            RoutedDecode { request_window, publication: None },
+            batch,
+            producer,
         )
     }
 
@@ -5276,12 +5283,12 @@ impl AppleSealState {
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         id: u64,
         owner: &OccurrenceIdentity,
-        request_window: (u64, Option<(u64, u64)>),
+        decode: RoutedDecode<'_>,
         batch: RoutedWords<'_>,
         producer: LedgerObservationProducer,
-        publication: Option<(&TailProviderPayload, (u64, u64), bool)>,
     ) -> bool {
-        let (request, decode_window) = request_window;
+        let (request, decode_window) = decode.request_window;
+        let publication = decode.publication;
         let RoutedWords { pins, neighbours } = batch;
         let merge_sources = super::live_lexicon::registered_merges(
             &pins.iter().map(|pin| pin.text.as_str()).collect::<Vec<_>>(),
