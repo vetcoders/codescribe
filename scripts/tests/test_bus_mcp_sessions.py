@@ -29,8 +29,8 @@ class SessionTests(fixtures.MailboxFixture):
         self.router = SESSIONS.SessionCapabilities(DEMUX, MCP, self.root, self.bus)
         self.token = self.issue(self.session)
 
-    def issue(self, session, event="SessionStart"):
-        result = SESSIONS.host_hook(DEMUX, self.root, {"session_id": session, "hook_event_name": event})
+    def issue(self, session, event="SessionStart", source="startup"):
+        result = SESSIONS.host_hook(DEMUX, self.root, {"session_id": session, "hook_event_name": event, "source": source})
         return result["hookSpecificOutput"]["additionalContext"].split("session_capability=", 1)[1].split(" ", 1)[0]
 
     def call(self, name, values=None, token=None):
@@ -56,7 +56,7 @@ class SessionTests(fixtures.MailboxFixture):
         self.assertTrue((self.root / "acknowledgments" / self.lease / (self.ids[0] + ".json")).is_file())
 
     def test_capability_is_stable_for_compact_but_new_for_new_session(self):
-        self.assertEqual(self.issue(self.session, "PostCompact"), self.token)
+        self.assertEqual(self.issue(self.session, source="compact"), self.token)
         self.assertEqual(self.issue(self.session, "UserPromptSubmit"), self.token)
         self.assertNotEqual(self.issue("11111111-2222-4333-8444-666666666666"), self.token)
 

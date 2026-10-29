@@ -45,7 +45,7 @@ def read_record(path):
 def host_hook(demux, root, payload):
     """Only the trusted host hook issues/revokes a capability; tools never do."""
     event = payload.get("hook_event_name")
-    if event not in ("SessionStart", "UserPromptSubmit", "PostCompact", "SessionEnd"):
+    if event not in ("SessionStart", "UserPromptSubmit", "SessionEnd"):
         return {}
     session = payload.get("session_id")
     if not isinstance(session, str) or str(uuid.UUID(session)) != session:
