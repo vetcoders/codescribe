@@ -7,7 +7,8 @@ import XCTest
 @MainActor
 final class OverlayBusWindowTests: XCTestCase {
   private func conversation(
-    _ digit: String, session: String = "initial", lease: String = "a", canonicalLease: Bool = false
+    _ digit: String, session: String = "initial", lease: String = "a", canonicalLease: Bool = false,
+    name: String? = nil
   ) throws -> OverlayConversation {
     let sessionID = "window-\(digit)-\(session)"
     let leaseID =
@@ -18,7 +19,7 @@ final class OverlayBusWindowTests: XCTestCase {
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": sessionID,
         "lease_id": leaseID, "channel": digit,
-        "name": digit == "2" ? "Tola" : "Lena",
+        "name": name ?? (digit == "2" ? "Tola" : "Lena"),
       ]))
     return OverlayConversation(
       id: owner.id, channel: digit, name: owner.name, owner: owner, messages: [])
@@ -438,6 +439,153 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertNotNil(
       NSImage(
         systemSymbolName: "antenna.radiowaves.left.and.right.slash", accessibilityDescription: nil))
+  }
+
+  private func accessibleElements(in root: NSView) -> [any NSAccessibilityProtocol] {
+    var visited: Set<ObjectIdentifier> = []
+    func walk(_ object: Any) -> [any NSAccessibilityProtocol] {
+      guard let element = object as? any NSAccessibilityProtocol,
+        visited.insert(ObjectIdentifier(element as AnyObject)).inserted
+      else { return [] }
+      let native = (object as? NSView)?.subviews ?? []
+      return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(walk)
+    }
+    return walk(root)
+  }
+
+  func testStandardSidebarKeepsShortNamesAndCompleteChannelDigitsVisible() throws {
+    for scale: CGFloat in [1, 1.5] {
+      for width: CGFloat in [220, 280] {
+        for name in ["Tola", "Lena", "lena2", "Wera", "Nina"] {
+          var target = try conversation("2", canonicalLease: true, name: name)
+          target = withMessages(target, [try outgoing(in: target, acknowledged: true)])
+          let channel = OverlayChannelDelivery(
+            channel: "2", agent: name, deliveryID: "delivery", stage: .received, isOpen: false)
+          var view = OverlayChannelStatusView(
+            channels: [channel], unavailable: false, palette: .dark, animates: false,
+            hudStates: [
+              "2": .init(
+                open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+                provider: target.owner?.provider, providerSessionID: target.owner?.providerSessionID)
+            ], conversations: [target], unreadCounts: [target.id: 12], onSelectConversation: { _ in })
+          view.textScale = scale
+          view.mutedChannels = ["2": false]
+          view.onTogglePlayback = { _ in }
+          let host = NSHostingView(
+            rootView: view.channelRow(channel)
+              .frame(width: width * scale)
+              .environment(\.csTextScale, scale))
+          let size = host.fittingSize
+          let panel = NSPanel(
+            contentRect: NSRect(origin: NSPoint(x: -10_000, y: -10_000), size: size),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+          panel.isReleasedWhenClosed = false
+          panel.contentView = host
+          BackgroundTestWindow.present(panel)
+          defer { panel.orderOut(nil) }
+          host.layoutSubtreeIfNeeded()
+          RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+          host.layoutSubtreeIfNeeded()
+          let tree = accessibleElements(in: host)
+          let nameElement = try XCTUnwrap(
+            tree.first { $0.accessibilityIdentifier() == "overlay-agent-title-2" },
+            "name=\(name) width=\(width) scale=\(scale); ids=\(tree.compactMap { $0.accessibilityIdentifier() })")
+          let digit = try XCTUnwrap(
+            tree.first { $0.accessibilityIdentifier() == "overlay-agent-digit-2" })
+          let visible = panel.convertToScreen(host.convert(host.bounds, to: nil))
+            .insetBy(dx: -1, dy: -1)
+          let nameFrame = nameElement.accessibilityFrame()
+          let digitFrame = digit.accessibilityFrame()
+          XCTAssertFalse(nameFrame.isEmpty)
+          XCTAssertFalse(digitFrame.isEmpty)
+          XCTAssertTrue(visible.contains(nameFrame), "name clipped: \(nameFrame), row: \(visible)")
+          XCTAssertTrue(visible.contains(digitFrame), "digit clipped: \(digitFrame), row: \(visible)")
+          let nameWidth = (name as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 14 * scale, weight: .semibold)
+          ]).width
+          XCTAssertGreaterThanOrEqual(nameFrame.width + 1, nameWidth, "short name became an ellipsis")
+        }
+      }
+    }
+  }
+
+  func testRosterPreviewFitsShortMessagesAndScrollsLongMessagesWithoutShadow() throws {
+    let target = try conversation("2")
+    let short = previewReply(in: target, text: "A short, complete reply.")
+    let long = previewReply(
+      in: target, text: String(repeating: "A complete paragraph that remains available.\n\n", count: 40))
+    let parent = NSPanel(
+      contentRect: NSRect(x: -10_000, y: -10_000, width: 400, height: 100),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let control = NSView(frame: NSRect(x: 10, y: 10, width: 250, height: 60))
+    parent.contentView?.addSubview(control)
+    BackgroundTestWindow.present(parent)
+    let owner = OverlayHintAnchor()
+    owner.view = control
+    defer {
+      owner.hide()
+      parent.orderOut(nil)
+    }
+    func show(_ message: OverlayConversationMessage) throws -> NSPanel {
+      owner.show(
+        message.bodyText, palette: .dark, leading: true,
+        content: AnyView(OverlayRosterMessagePreview(name: "Tola", message: message, palette: .dark)),
+        size: CGSize(width: 330, height: 240), interactive: true)
+      let panel = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
+      panel.contentView?.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+      panel.contentView?.layoutSubtreeIfNeeded()
+      return panel
+    }
+    let shortPanel = try show(short)
+    let shortHeight = shortPanel.frame.height
+    XCTAssertLessThan(shortHeight, 140, "a short message must not reserve the full preview height")
+    XCTAssertFalse(shortPanel.hasShadow)
+    XCTAssertFalse(shortPanel.canBecomeKey)
+    let longPanel = try show(long)
+    XCTAssertGreaterThan(longPanel.frame.height, shortHeight)
+    XCTAssertLessThanOrEqual(longPanel.frame.height, 240)
+    XCTAssertEqual(longPanel.frame.width, 330, accuracy: 1)
+    func scrollViews(_ view: NSView) -> [NSScrollView] {
+      (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
+    }
+    let scroll = try XCTUnwrap(scrollViews(try XCTUnwrap(longPanel.contentView)).first)
+    XCTAssertGreaterThan(
+      try XCTUnwrap(scroll.documentView).bounds.height, scroll.contentView.bounds.height,
+      "the full long message needs a real scrollable document")
+  }
+
+  func testSidebarReviewAtStandardWidths() throws {
+    let names = ["miksa-sztudio", "tola", "lena", "lena2", "wera", "nina"]
+    let conversations = try names.enumerated().map { offset, name in
+      let target = try conversation(String(offset + 1), canonicalLease: true, name: name)
+      return withMessages(target, [
+        try outgoing(in: target, acknowledged: true),
+        previewReply(in: target, text: "The full name and channel stay readable. The last message remains available on hover."),
+      ])
+    }
+    let state = OverlayState()
+    apply(conversations, to: state)
+    state.selectConversation(conversations[0].id)
+    for width: CGFloat in [240, 300] {
+      let view = DictationOverlayView(state: state).channelStatusView
+      let host = NSHostingView(
+        rootView: view.monitorBody(maximumHeight: 900)
+          .frame(width: width, height: 900)
+          .environment(\.csTextScale, 1)
+          .environment(\.colorScheme, .dark)
+          .background(OverlayAppearancePalette.dark.desktopBackground.color))
+      host.frame = NSRect(x: 0, y: 0, width: width, height: 900)
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let image = NSImage(size: host.bounds.size)
+      image.addRepresentation(bitmap)
+      let attachment = XCTAttachment(image: image)
+      attachment.name = "Sidebar-standard-\(Int(width))"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+    }
   }
 
   private func previewReply(
