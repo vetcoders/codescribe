@@ -2688,67 +2688,6 @@ impl AcousticLedger {
         None
     }
 
-    pub(crate) fn admit_word_trial(
-        &mut self,
-        trial: &WordTrial,
-        observation: &ObservationIdentity,
-        words: &[WordPin],
-        original: &[WordPin],
-    ) -> MutationReceipt {
-        // A reserved coarse group can receive its measured child pins. It
-        // cannot pass the one-word matcher before ordinary admission has
-        // proved that partition. Keep every child inside the reserved group;
-        // context still cannot create targets or rewrite unreserved neighbors.
-        let current = self.slots_of(&trial.owner).unwrap_or(&[]);
-        let targets_pin = |word: &&WordPin| {
-            let range = OccurrenceIdentity::new(
-                &trial.owner.session,
-                trial.owner.capture_epoch,
-                word.sample_start,
-                word.sample_end,
-            );
-            current.iter().any(|slot| {
-                trial.targets.contains(&SlotTarget::from(slot))
-                    && (self.word_slot_targets_pin(slot, &range)
-                        || (self.coarse_word_source(slot)
-                            && range.is_anchored()
-                            && range.same_capture(&slot.observation.occurrence)
-                            && slot.sample_start <= range.sample_start
-                            && range.sample_end <= slot.sample_end))
-            })
-        };
-        let pins = words
-            .iter()
-            .filter(targets_pin)
-            .cloned()
-            .collect::<Vec<_>>();
-        let raw = original
-            .iter()
-            .filter(targets_pin)
-            .cloned()
-            .collect::<Vec<_>>();
-        self.stage_word_evidence(observation, &raw, None, "unknown");
-        self.word_adjudication
-            .input
-            .as_mut()
-            .expect("staged trial")
-            .trial = Some(trial.clone());
-        let refusal = self.word_trial_input_refusal(observation, &pins);
-        let receipt = self.admit_word_slots(observation, &pins);
-        let resolved = self
-            .word_adjudication
-            .choices
-            .iter()
-            .rev()
-            .find(|choice| choice.observation == *observation)
-            .is_some_and(|choice| choice.reason == "trial_confirmed");
-        self.close_word_trial(
-            trial,
-            refusal.unwrap_or(if resolved { "resolved" } else { "unresolved" }),
-        );
-        receipt
-    }
-
     /// Components held for adjudication, settled or not.
     #[cfg(test)]
     pub(crate) fn word_component_count(&self) -> (usize, usize) {
