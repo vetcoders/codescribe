@@ -7,12 +7,16 @@ import XCTest
 @MainActor
 final class OverlayBusWindowTests: XCTestCase {
   private func conversation(
-    _ digit: String, session: String = "initial", lease: String = "a"
+    _ digit: String, session: String = "initial", lease: String = "a", canonicalLease: Bool = false
   ) throws -> OverlayConversation {
+    let sessionID = "window-\(digit)-\(session)"
+    let leaseID = canonicalLease
+      ? AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: sessionID)
+      : String(repeating: lease, count: 32)
     let owner = try XCTUnwrap(
       OverlayConversationOwner(row: [
-        "provider": "codex", "provider_session_id": "window-\(digit)-\(session)",
-        "lease_id": String(repeating: lease, count: 32), "channel": digit,
+        "provider": "codex", "provider_session_id": sessionID,
+        "lease_id": leaseID, "channel": digit,
         "name": digit == "2" ? "Tola" : "Lena",
       ]))
     return OverlayConversation(
@@ -21,7 +25,7 @@ final class OverlayBusWindowTests: XCTestCase {
 
   private func apply(_ conversations: [OverlayConversation], to state: OverlayState) {
     state.applyChannelRoster(
-      conversations.map {
+      conversations.filter { $0.owner != nil || $0.channel == "0" }.map {
         CsChannelRosterState(
           channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
           providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
@@ -415,8 +419,8 @@ final class OverlayBusWindowTests: XCTestCase {
   private func renderWindowForReview(
     dark: Bool, rail: Bool, scale: CGFloat, width: CGFloat
   ) throws {
-    var first = try conversation("2")
-    let second = try conversation("3", lease: "b")
+    var first = try conversation("2", canonicalLease: true)
+    let second = try conversation("3", lease: "b", canonicalLease: true)
     let sent = try outgoing(in: first, acknowledged: true)
     let reply = OverlayConversationMessage(
       id: "reply:window-review", kind: .reply,
@@ -443,6 +447,9 @@ final class OverlayBusWindowTests: XCTestCase {
     state.chooseComposerTarget(second)
     state.setConversationDraft("A retained draft for Lena", for: second.id)
     if rail { state.foldAgentList() }
+    let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
+    XCTAssertEqual(row.broadcastIdentity?.leaseID, first.owner?.leaseID)
+    XCTAssertFalse(state.visibleChannelRows.contains { $0.channel == "10" })
     let height: CGFloat = 680
     let host = NSHostingView(
       rootView: DictationOverlayView(state: state)

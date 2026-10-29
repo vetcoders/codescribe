@@ -80,7 +80,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let audio = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayAgentAudioControls: View {",
       to: "struct OverlayAgentPillMenuAction {")
-    try assertOrder(["Button(action: onPlayback)", "Button(action: onMicrophone)"], in: audio)
+    try assertOrder(["Button(action: onMicrophone)", "Button(action: onPlayback)"], in: audio)
   }
 
   func testIntercomWidthBudgetsEveryReorderedSlotAtEachScale() {

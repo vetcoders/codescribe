@@ -862,7 +862,8 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
           .fixedSize()
           .accessibilityLabel(Text("Agent actions"))
           .accessibilityValue(Text(verbatim: focusState?.statusText ?? ""))
-          .help(Text(verbatim: focusState?.statusText ?? String(localized: "Agent actions")))
+          .overlayFastHint(
+            focusState?.statusText ?? String(localized: "Agent actions"), palette: palette)
         } else {
           content.contextMenu { menuContents }
         }

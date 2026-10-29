@@ -1348,21 +1348,23 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "a visual reply control is not a delivery until the envelope carries the source id")
   }
 
-  func testAgentRowStaysWithinFiveLinesAndKeepsUnreadApartFromReceipts() throws {
-    // Maciej (2026-10-17): "ustalmy budżet 5 wierszy". Title, descriptor,
-    // two preview lines, one state line; unread is a badge on the title line.
+  func testCompactAgentRowDropsTheFooterAndKeepsUnreadApartFromReceipts() throws {
+    // The compact card has identity, descriptor and up to two preview lines.
+    // Receipt and unread are distinct marks, neither adds a footer row.
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let label = try section(
-      of: source, from: "private func rosterRowLabel(", to: "func rowStateText(")
+      of: source, from: "private func rosterRowLabel(", to: "func compactAgentActions(")
     let visual = try overlaySource("OverlayAgentRosterLabel.swift")
     let limits = (visual + label).components(separatedBy: ".lineLimit(").dropFirst().compactMap {
       Int($0.prefix { $0.isNumber })
     }
-    XCTAssertEqual(limits.reduce(0, +), 5, "every text in the row is capped, five lines in all")
+    XCTAssertEqual(limits.reduce(0, +), 4, "identity, descriptor and two preview lines")
     XCTAssertTrue(
       visual.contains("OverlayAgentUnreadBadge("), "unread rides the title line as a badge")
     XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
-    XCTAssertTrue(label.contains("rowStateText("), "receipt and reader share one state line")
+    XCTAssertTrue(label.contains("deliveryReceiptDisplay("), "receipt follows frozen delivery evidence")
+    let row = try section(of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
+    XCTAssertFalse(row.contains("rosterRowState("), "compact cards have no separate footer")
   }
 
   func testBroadcastPolicyRidesTheRowsContextMenuWithNoDisclosureList() throws {
