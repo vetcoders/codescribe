@@ -1018,14 +1018,14 @@ struct DictationOverlayView: View {
       onFoldList: { state.foldAgentList() })
   }
 
-  /// A divider drag clamps to the split; only the explicit fold hides the canvas.
+  /// Preserve the existing explicit divider gesture: crossing the conversation
+  /// floor folds that pane, while ordinary window resizing keeps the split.
   private func commitAgentDrawerWidth(_ preferred: CGFloat, windowWidth: CGFloat) {
     guard
       let width = OverlayAgentDrawerLayout.rememberedWidth(
         textScale: textScale, preferredWidth: preferred, windowWidth: windowWidth)
     else {
-      preferredAgentDrawerWidth = OverlayAgentDrawerLayout.widestSplitWidth(
-        textScale: textScale, windowWidth: windowWidth)
+      state.setAgentsLayout(.agents)
       return
     }
     preferredAgentDrawerWidth = width
