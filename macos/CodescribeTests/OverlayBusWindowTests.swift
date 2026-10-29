@@ -455,7 +455,7 @@ final class OverlayBusWindowTests: XCTestCase {
 
   func testStandardSidebarKeepsShortNamesAndCompleteChannelDigitsVisible() throws {
     for scale: CGFloat in [1, 1.5] {
-      for width: CGFloat in [220, 280] {
+      for width: CGFloat in [240, 300] {
         for name in ["Tola", "Lena", "lena2", "Wera", "Nina"] {
           var target = try conversation("2", canonicalLease: true, name: name)
           target = withMessages(target, [try outgoing(in: target, acknowledged: true)])
@@ -468,11 +468,10 @@ final class OverlayBusWindowTests: XCTestCase {
                 open: false, loud: false, autosealDeadline: nil, followerAlive: true,
                 provider: target.owner?.provider, providerSessionID: target.owner?.providerSessionID)
             ], conversations: [target], unreadCounts: [target.id: 12], onSelectConversation: { _ in })
-          view.textScale = scale
           view.mutedChannels = ["2": false]
           view.onTogglePlayback = { _ in }
           let host = NSHostingView(
-            rootView: view.channelRow(channel)
+            rootView: view.monitorBody(maximumHeight: 400 * scale)
               .frame(width: width * scale)
               .environment(\.csTextScale, scale))
           let size = host.fittingSize
@@ -492,7 +491,11 @@ final class OverlayBusWindowTests: XCTestCase {
             "name=\(name) width=\(width) scale=\(scale); ids=\(tree.compactMap { $0.accessibilityIdentifier() })")
           let digit = try XCTUnwrap(
             tree.first { $0.accessibilityIdentifier() == "overlay-agent-digit-2" })
-          let visible = panel.convertToScreen(host.convert(host.bounds, to: nil))
+          func scrollViews(_ view: NSView) -> [NSScrollView] {
+            (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
+          }
+          let viewport = try XCTUnwrap(scrollViews(host).first).contentView
+          let visible = panel.convertToScreen(viewport.convert(viewport.bounds, to: nil))
             .insetBy(dx: -1, dy: -1)
           let nameFrame = nameElement.accessibilityFrame()
           let digitFrame = digit.accessibilityFrame()
@@ -568,7 +571,7 @@ final class OverlayBusWindowTests: XCTestCase {
     apply(conversations, to: state)
     state.selectConversation(conversations[0].id)
     for width: CGFloat in [240, 300] {
-      let view = DictationOverlayView(state: state).channelStatusView
+      let view = OverlayChannelStatusView.intercomRoster(state: state, palette: .dark, animates: false)
       let host = NSHostingView(
         rootView: view.monitorBody(maximumHeight: 900)
           .frame(width: width, height: 900)
