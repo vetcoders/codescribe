@@ -814,6 +814,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   var agentActions: OverlayAgentPillMenuActions? = nil
   var showsInlineError = true
   var showsButton = false
+  var secondaryActionsOnly = false
   var focusState: OverlayAgentPanelFocusState? = nil
   @State private var commandError: String?
 
@@ -884,11 +885,15 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
       Divider()
     }
     if members.count == 1, let member = members.first {
-      if let agentActions {
+      if !secondaryActionsOnly, let agentActions {
         agentCommands(agentActions)
         Divider()
       }
       policyActions(for: member)
+      if secondaryActionsOnly, let focus = agentActions?.focus {
+        Divider()
+        agentCommand(focus)
+      }
       if let archive = agentActions?.archive {
         Divider()
         agentCommand(archive, role: .destructive)
@@ -1553,7 +1558,8 @@ struct OverlayChannelStatusView: View {
   /// One menu projection for the header, folded rail, list and floating
   /// intercom. Broadcast policy execution remains in its existing modifier.
   func agentPillMenu(
-    for digit: String, showsInlineError: Bool = true, showsButton: Bool = false
+    for digit: String, showsInlineError: Bool = true, showsButton: Bool = false,
+    secondaryActionsOnly: Bool = false
   ) -> OverlayBroadcastPolicyMenu {
     guard let channel = channels.first(where: { $0.channel == digit }), digit != "0",
       let actions = agentPillMenuActions(for: digit, showsFocusState: true)
@@ -1563,7 +1569,16 @@ struct OverlayChannelStatusView: View {
     return OverlayBroadcastPolicyMenu(
       members: [channel], palette: palette, enabled: !unavailable,
       agentActions: actions, showsInlineError: showsInlineError, showsButton: showsButton,
+      secondaryActionsOnly: secondaryActionsOnly,
       focusState: showsButton ? panelFocusStates[digit] : nil)
+  }
+
+  /// Cards keep microphone/playback inline and explicit writing in the composer.
+  /// Their More button and right-click share this smaller menu. Other pill
+  /// surfaces retain the full action set and the same guarded commands.
+  func cardAgentMenu(for digit: String, showsButton: Bool = false) -> OverlayBroadcastPolicyMenu {
+    agentPillMenu(
+      for: digit, showsInlineError: false, showsButton: showsButton, secondaryActionsOnly: true)
   }
 
   /// Both the card controls and the action menu use the same command guards.
@@ -1963,7 +1978,7 @@ struct OverlayChannelStatusView: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     )
-    .modifier(agentPillMenu(for: channel.channel, showsInlineError: false))
+    .modifier(cardAgentMenu(for: channel.channel))
     .padding(.vertical, 3)
     .padding(.horizontal, 5)
     .modifier(
@@ -2029,8 +2044,7 @@ struct OverlayChannelStatusView: View {
       )
       .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
       EmptyView().modifier(
-        agentPillMenu(
-          for: channel.channel, showsInlineError: false, showsButton: true))
+        cardAgentMenu(for: channel.channel, showsButton: true))
     }
     .fixedSize()
     .accessibilityIdentifier("overlay-agent-row-controls-\(channel.channel)")

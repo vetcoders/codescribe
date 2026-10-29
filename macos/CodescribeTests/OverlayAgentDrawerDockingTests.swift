@@ -49,10 +49,10 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       id: owner.id, channel: channel, name: name, owner: owner, messages: messages)
   }
 
-  private func hud(session: String) -> OverlayChannelHudProjection {
+  private func hud(session: String, frameDetected: Bool? = nil) -> OverlayChannelHudProjection {
     OverlayChannelHudProjection(
       open: false, loud: false, autosealDeadline: nil, followerAlive: true,
-      provider: "codex", providerSessionID: session)
+      provider: "codex", providerSessionID: session, frameDetected: frameDetected)
   }
 
   private func rosterFixture() throws -> (
@@ -948,13 +948,89 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
   }
 
-  /// Astra's full-view contract (2026-10-22, brief rev c11709ef): the classic
-  /// full roster carries all actions and information inline. A secondary
-  /// click anywhere on it resolves no big agent menu — "Write / Forward…",
-  /// microphone, playback, Show in Agents and archive never hang off a row —
-  /// and no AppKit tooltip duplicates the inline metadata. The resolved
-  /// policy menu on 0 · All is the positive control that the scan sees real
-  /// menus at all.
+  func testCardMenuKeepsExactlyFourSecondaryActionsAndTheirFrozenOwner() throws {
+    let (_, lena, _) = try rosterFixture()
+    let owner = try XCTUnwrap(lena.owner)
+    let row = OverlayChannelDelivery(
+      channel: "2", agent: "lena", deliveryID: "card-menu", stage: .received, isOpen: false)
+    var focusOwners: [OverlayConversationOwner] = []
+    var archiveOwners: [OverlayConversationOwner] = []
+    var primaryCalls = 0
+    var view = OverlayChannelStatusView(
+      channels: [row], unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: owner.providerSessionID, frameDetected: true)],
+      onToggleChannel: { _ in primaryCalls += 1 }, conversations: [lena],
+      onSelectConversation: { _ in primaryCalls += 1 })
+    view.mutedChannels = ["2": false]
+    view.onTogglePlayback = { _ in primaryCalls += 1 }
+    view.onShowAgentInMonitor = { _ in primaryCalls += 1 }
+    view.archiveCandidates = ["2": owner]
+    view.onArchiveAgent = { archiveOwners.append($0) }
+    view.onFocusAgentPanel = { focusOwners.append($0) }
+    view.panelFocusAvailable = true
+    let actions = try XCTUnwrap(view.agentPillMenuActions(for: "2", showsFocusState: true))
+    let focus = try XCTUnwrap(actions.focus)
+    let archive = try XCTUnwrap(actions.archive)
+    XCTAssertTrue(focus.enabled)
+    XCTAssertTrue(archive.enabled)
+    XCTAssertTrue(view.cardAgentMenu(for: "2").secondaryActionsOnly)
+    XCTAssertTrue(view.cardAgentMenu(for: "2", showsButton: true).secondaryActionsOnly)
+    XCTAssertFalse(view.agentPillMenu(for: "2").secondaryActionsOnly)
+
+    let host = NSHostingView(rootView: view.channelRow(row).frame(width: 340, height: 140))
+    host.frame = NSRect(x: 0, y: 0, width: 340, height: 140)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    BackgroundTestWindow.present(window)
+    defer { window.orderOut(nil) }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+    host.layoutSubtreeIfNeeded()
+    var found: NSMenu?
+    scan: for x in stride(from: CGFloat(6), to: host.bounds.width, by: 12) {
+      for y in stride(from: CGFloat(6), to: host.bounds.height, by: 12) {
+        let point = NSPoint(x: x, y: y)
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .rightMouseDown, location: host.convert(point, to: nil), modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 9_400, clickCount: 1, pressure: 1))
+        var hit = host.hitTest(point)
+        while let current = hit {
+          if let menu = current.menu(for: event) {
+            found = menu
+            break scan
+          }
+          hit = current.superview
+        }
+      }
+    }
+    let menu = try XCTUnwrap(found, "the real card must resolve a menu; absence is not a pass")
+    menu.delegate?.menuNeedsUpdate?(menu)
+    let items = menu.items.filter { !$0.isSeparatorItem }
+    XCTAssertEqual(items.count, 4)
+    XCTAssertEqual(
+      Set(items.map(\.title)),
+      Set([
+        String(localized: "Channel 0"), String(localized: "Do not disturb"), focus.title,
+        archive.title,
+      ]))
+    let focusIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == focus.title })
+    let archiveIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == archive.title })
+    menu.performActionForItem(at: focusIndex)
+    menu.performActionForItem(at: archiveIndex)
+    XCTAssertEqual(focusOwners, [owner])
+    XCTAssertEqual(archiveOwners, [owner])
+    XCTAssertEqual(primaryCalls, 0, "secondary actions cannot select, write, record or mute")
+  }
+
+  /// The 2026-10-29 card contract supersedes the older no-menu roster:
+  /// More and right-click expose reception policy, workspace focus and archive.
+  /// Write, microphone, playback and Show in Agents stay out of card menus.
+  /// Both the permitted card menu and the full pill sentinel are required
+  /// positive controls; inline metadata still has no system tooltip.
   func testFullRosterResolvesNoBigAgentMenuAndCarriesNoSystemTooltips() throws {
     let (broadcast, lena, astra) = try rosterFixture()
     let channels = [
@@ -1000,13 +1076,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       String(localized: "Write / Forward…"), String(localized: "Speak to agent"),
       String(localized: "Stop speaking to agent"), String(localized: "Mute agent replies"),
       String(localized: "Unmute agent replies"), String(localized: "Show in Agents"),
-      String(localized: "Disconnect and archive agent"),
-      String(localized: "Remove from list and move to archive"),
     ]
     func titles(of menu: NSMenu) -> [String] {
       menu.items.flatMap { [$0.title] + ($0.submenu.map(titles(of:)) ?? []) }
     }
     var resolvedMenus = 0
+    var cardMenus = 0
     let step: CGFloat = 12
     for x in stride(from: CGFloat(6), to: host.bounds.width, by: step) {
       for y in stride(from: CGFloat(6), to: host.bounds.height, by: step) {
@@ -1028,6 +1103,11 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         resolvedMenus += 1
         menu.delegate?.menuNeedsUpdate?(menu)
         let resolved = titles(of: menu)
+        if resolved.contains(String(localized: "Disconnect and archive agent")) {
+          cardMenus += 1
+          XCTAssertTrue(resolved.contains(String(localized: "Channel 0")))
+          XCTAssertTrue(resolved.contains(String(localized: "Do not disturb")))
+        }
         for title in resolved {
           for marker in forbidden {
             XCTAssertFalse(
@@ -1039,6 +1119,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     }
     XCTAssertGreaterThan(
       resolvedMenus, 0, "the scan resolved no menu at all, so absence proves nothing")
+    XCTAssertGreaterThan(cardMenus, 0, "the roster must expose its permitted secondary menu")
 
     var tooltips: [String] = []
     func walk(_ view: NSView) {
@@ -1078,6 +1159,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     probeWindow.contentView = probeHost
     BackgroundTestWindow.present(probeWindow)
     probeHost.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+    probeHost.layoutSubtreeIfNeeded()
 
     func resolvedMenu(in container: NSView, of window: NSWindow, at point: NSPoint) -> NSMenu? {
       guard
@@ -1094,8 +1177,20 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       }
       return nil
     }
-    let probeMenu = resolvedMenu(
-      in: probeHost, of: probeWindow, at: NSPoint(x: 100, y: probeHost.bounds.height - 20))
+    // Resolve the mounted menu instead of assuming which y-coordinate the
+    // hosting view gives its first VStack child in this macOS environment.
+    var probeMenu: NSMenu?
+    probeScan: for x in stride(from: CGFloat(6), to: probeHost.bounds.width, by: 12) {
+      for y in stride(from: CGFloat(6), to: probeHost.bounds.height, by: 12) {
+        if let menu = resolvedMenu(
+          in: probeHost, of: probeWindow, at: NSPoint(x: x, y: y))
+        {
+          menu.delegate?.menuNeedsUpdate?(menu)
+          probeMenu = menu
+          break probeScan
+        }
+      }
+    }
     let probeTitles = probeMenu.map(titles(of:)) ?? []
     XCTAssertTrue(
       forbidden.contains { marker in probeTitles.contains { $0.contains(marker) } },

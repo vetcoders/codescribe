@@ -122,6 +122,14 @@ outside channel zero. The waveform microphone, speaker and More button stay
 visible without hovering. Folding the list leaves a rail with channel numbers,
 the inbox and circular unread counts; the open conversation keeps its actions.
 
+Right-clicking a card opens the same secondary menu as **More**. It contains
+contact settings, the detected workspace and removal into saved conversations;
+recording and playback stay on their visible buttons. Opening the workspace
+brings the agent's detected client, terminal or Frame pane forward. Removal
+preserves the saved conversation; hang up the agent's microphone channel first.
+The floating pills retain their existing full menus. The
+[approved window mockup](bus-window-mockup.html) illustrates this card layout.
+
 In the full **Agents** list, **0 · All** stays just below the header while the
 other channels scroll underneath. Its recording and playback buttons stay
 available when you scroll to the last agent.
