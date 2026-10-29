@@ -88,6 +88,14 @@ timeout, nonzero exit, malformed output and stopped/zombie state remain distinct
 No failed observation relaxes the identity test or authorizes signaling a foreign
 process.
 
+Attach refusals name their stage: binding lock, takeover, existing follower
+verification, follower launch/readiness, voice profile, previous mailbox drain
+or binding commit. Readiness timeouts distinguish the first missing lease field,
+missing event file and unverified follower identity. Permission refusals reported
+by `ps` and undecodable process output remain explicit observation failures;
+raw process output is never copied into these diagnostics. A monitor PID without
+its recorded process incarnation cannot certify a live monitor.
+
 `wakeup` is configured intent. `pending_wakeups[].disposition` is the canonical
 queue attempt. Accepted is not a new turn, and ACK settlement is not wake success.
 Local idle acceptance requires a fresh recognizable message after final, the

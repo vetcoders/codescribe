@@ -6,8 +6,10 @@ from pathlib import Path
 import subprocess
 import select
 import sys
+import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -196,7 +198,8 @@ class SessionTests(fixtures.MailboxFixture):
 class ProcessProbeTests(unittest.TestCase):
     def test_process_probe_failures_stay_distinct_and_fail_closed(self):
         cases = [(PermissionError(), "process_probe_permission_denied"),
-                 (subprocess.TimeoutExpired("ps", 2), "process_probe_timeout")]
+                 (subprocess.TimeoutExpired("ps", 2), "process_probe_timeout"),
+                 (UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid"), "process_probe_malformed")]
         for error, reason in cases:
             with patch("subprocess.run", side_effect=error):
                 self.assertIsNone(DEMUX.process_identity(123))
@@ -206,6 +209,60 @@ class ProcessProbeTests(unittest.TestCase):
             with patch("subprocess.run", return_value=subprocess.CompletedProcess([], code, stdout, "")):
                 self.assertEqual(DEMUX.probe_process_identity(123)["error"], reason)
                 self.assertIsNone(DEMUX.process_identity(123))
+
+    def test_ps_permission_exit_is_distinct_and_does_not_disclose_stderr(self):
+        for message in ("Operation not permitted", "Permission denied"):
+            result = subprocess.CompletedProcess([], 1, "", message + " private argv")
+            with self.subTest(message=message), patch("subprocess.run", return_value=result):
+                probe = DEMUX.probe_process_identity(123)
+                self.assertIsNone(probe["identity"])
+                self.assertEqual(probe["error"], "process_probe_permission_denied")
+                self.assertNotIn("private argv", json.dumps(probe))
+
+    def test_startup_timeout_names_unmet_stage_and_preserves_lease(self):
+        for stage in ("lease_schema_not_ready", "lease_bus_not_ready",
+                      "events_file_missing", "follower_identity_unverified"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary:
+                root, lease = Path(temporary), "a" * 32
+                bus = str(root / "bus.jsonl")
+                state = {"schema": DEMUX.LEASE_SCHEMA, "pid": 123, "lease_id": lease,
+                         "active": True, "bus": bus, "pending": [{"text": "retained"}]}
+                if stage == "lease_schema_not_ready":
+                    state["schema"] = "wrong"
+                if stage == "lease_bus_not_ready":
+                    state["bus"] = "different"
+                lease_path = root / "leases" / (lease + ".json")
+                DEMUX.atomic_json(lease_path, state)
+                before = lease_path.read_bytes()
+                _log, events = DEMUX.follower_paths(root, lease)
+                events.parent.mkdir(parents=True, exist_ok=True)
+                if stage != "events_file_missing":
+                    events.touch()
+                child = SimpleNamespace(pid=123, returncode=None, poll=lambda: None)
+                with patch.object(DEMUX.time, "monotonic", side_effect=[0, 0, 6]), \
+                        patch.object(DEMUX.time, "sleep"), \
+                        patch.object(DEMUX, "verified_follower", return_value=False) as verify, \
+                        patch.object(DEMUX, "probe_process_identity", return_value={"identity": {}, "error": None}):
+                    with self.assertRaisesRegex(OSError, stage):
+                        DEMUX.confirm_follower(root, lease, "session", bus, child, {})
+                    self.assertEqual(verify.call_count, int(stage == "follower_identity_unverified"))
+                self.assertEqual(lease_path.read_bytes(), before)
+
+
+class MonitorIdentityTests(fixtures.MailboxFixture):
+    def test_live_pid_without_recorded_identity_does_not_certify_monitor(self):
+        observed = {"started": "Thu Oct 29 20:00:00 2026", "command": "test-owned monitor"}
+        for recorded, expected in ((None, False), (observed, True)):
+            with self.subTest(recorded=recorded):
+                DEMUX.atomic_json(DEMUX.watch_record_path(self.root, self.lease),
+                                  {"pid": 123, "process_identity": recorded})
+                args = SimpleNamespace(bridge_home=self.root, provider=self.PROVIDER,
+                                       session=self.session, lease_ttl=5, bus=self.bus)
+                with patch.object(DEMUX, "emit") as emit, \
+                        patch.object(DEMUX, "process_identity", return_value=recorded), \
+                        patch.object(DEMUX, "process_is_alive", return_value=True):
+                    self.assertEqual(DEMUX.status_command(args), 0)
+                self.assertEqual(emit.call_args.args[0]["listener"]["watch_alive"], expected)
 
 
 if __name__ == "__main__":

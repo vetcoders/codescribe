@@ -2881,9 +2881,14 @@ def probe_process_identity(pid: int) -> dict[str, Any]:
         return {"identity": None, "error": "process_probe_timeout"}
     except OSError as error:
         return {"identity": None, "error": "process_probe_os_error", "errno": error.errno}
+    except UnicodeError:
+        return {"identity": None, "error": "process_probe_malformed"}
     fields = result.stdout.strip().split(None, 6)
     if result.returncode:
-        return {"identity": None, "error": "process_probe_exit", "exit_code": result.returncode}
+        denied = any(message in result.stderr for message in ("Operation not permitted", "Permission denied"))
+        return {"identity": None,
+                "error": "process_probe_permission_denied" if denied else "process_probe_exit",
+                "exit_code": result.returncode}
     if len(fields) != 7:
         return {"identity": None, "error": "process_probe_malformed"}
     if fields[5].startswith(("T", "Z", "X")):
@@ -10004,20 +10009,27 @@ def confirm_follower(root: Path, lease_id: str, session: str, bus: str,
         "configuration": configuration,
     })
     deadline = time.monotonic() + 5.0
+    stage = "lease_not_ready"
     while time.monotonic() < deadline:
         if child.poll() is not None:
             raise OSError(f"follower exited during startup (follower_child_exit: {child.returncode}); see {errors_path}")
         state = read_json(lease_path) or {}
-        if (state.get("schema") == LEASE_SCHEMA and state.get("pid") == child.pid
-                and state.get("lease_id") == lease_id
-                and state.get("active") is True and state.get("bus") == bus
-                and events_path.exists()
-                and verified_follower(root, lease_id, session, child.pid)
-                and child.poll() is None):
+        expected = {"schema": LEASE_SCHEMA, "pid": child.pid, "lease_id": lease_id,
+                    "active": True, "bus": bus}
+        mismatched = next((key for key, value in expected.items() if state.get(key) != value), None)
+        if mismatched:
+            stage = "lease_" + mismatched + "_not_ready"
+        elif not events_path.exists():
+            stage = "events_file_missing"
+        elif not verified_follower(root, lease_id, session, child.pid):
+            stage = "follower_identity_unverified"
+        elif child.poll() is None:
             return
+        else:
+            stage = "child_exit_check"
         time.sleep(0.1)
     probe = probe_process_identity(child.pid)
-    reason = probe["error"] or "follower_identity_or_lease_mismatch"
+    reason = probe["error"] or stage
     raise OSError(f"follower readiness timed out: {reason}; see {errors_path}")
 
 
@@ -10865,11 +10877,13 @@ def attach_command(args: argparse.Namespace) -> int:
     configuration = wakeup_configuration(args)
     configuration["workspace"] = str(Path.cwd().resolve())
     log_path, events_path = follower_paths(root, lease_id)
+    stage = "binding_lock"
     try:
         # Old lease locks outlive the binding commit; the child owns its own
         # distinct lease. No competing attach can observe a half-started owner.
         with contextlib.ExitStack() as retirements:
             with channel_bindings(root) as bindings:
+                stage = "takeover"
                 original_entry = bindings.get(str(args.channel))
                 if str(args.channel) in bindings and (
                     not isinstance(original_entry, dict)
@@ -10888,6 +10902,7 @@ def attach_command(args: argparse.Namespace) -> int:
                     if disposition not in HANDOVER_CLEAR_STATES:
                         raise OSError(f"previous follower {disposition}; owner retained")
 
+                stage = "existing_follower_verification"
                 pid = live_follower_pid(root, lease_id)
                 lease_state = read_json(lease_path)
                 pid_record = read_json(follower_pidfile(root, lease_id)) or {}
@@ -10908,6 +10923,7 @@ def attach_command(args: argparse.Namespace) -> int:
                             atomic_json(lease_path, lease_state)
                     pid = None
                 if pid is None:
+                    stage = "follower_launch"
                     child = launch_follower(root, follower_command(
                         root, provider=args.provider, session=args.session, name=name,
                         channel=str(args.channel), bus=resolved_bus,
@@ -10915,15 +10931,19 @@ def attach_command(args: argparse.Namespace) -> int:
                         workspace=configuration["workspace"]))
                     pid = child.pid
                     child_state = "starting"
+                    stage = "follower_readiness"
                     confirm_follower(root, lease_id, args.session, resolved_bus, child, configuration)
                     child_state = "ready"
                 if persist_voice:
+                    stage = "voice_profile"
                     write_voice_profile(root, name, voice=args.voice, speed=args.speed, vendor=args.tts_vendor)
                 if previous is not None:
+                    stage = "previous_mailbox_drain"
                     # A producer may have completed another old-owner row while
                     # its reader was exiting. Never hide that row at cutover.
                     require_drained_lease(root, previous["lease_id"])
                 bindings[str(args.channel)] = claimed
+                stage = "binding_commit"
             # channel_bindings commits here, while retirement locks still hold.
     except (OSError, ValueError, RuntimeError) as error:
         if child is not None:
@@ -10949,7 +10969,7 @@ def attach_command(args: argparse.Namespace) -> int:
                   "previous": previous, "new_follower_state": child_state,
                   "binding_path": str(binding_path)})
         suffix = "unchanged" if unchanged else "state uncertain"
-        sys.stderr.write(f"bus-demux: attach failed: {error}; channel {args.channel} {suffix}\n")
+        sys.stderr.write(f"bus-demux: attach failed: {error}; stage={stage}; channel {args.channel} {suffix}\n")
         return 3
     # An explicit attachment is the agent's own decision to listen again.
     reset_listener_streak(root, lease_id, "attach")
@@ -11024,7 +11044,8 @@ def status_command(args: argparse.Namespace) -> int:
     lifecycle = read_json(lifecycle_paths(root, lease_id)[0]) or {}
     watch = read_json(watch_record_path(root, lease_id)) or {}
     watch_pid = watch.get("pid")
-    watch_alive = (isinstance(watch_pid, int) and process_is_alive(watch_pid)
+    watch_alive = (isinstance(watch_pid, int) and watch.get("process_identity") is not None
+                   and process_is_alive(watch_pid)
                    and process_identity(watch_pid) == watch.get("process_identity"))
     emit(
         {
