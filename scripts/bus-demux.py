@@ -10969,7 +10969,7 @@ def attach_command(args: argparse.Namespace) -> int:
                   "previous": previous, "new_follower_state": child_state,
                   "binding_path": str(binding_path)})
         suffix = "unchanged" if unchanged else "state uncertain"
-        sys.stderr.write(f"bus-demux: attach failed: {error}; stage={stage}; channel {args.channel} {suffix}\n")
+        sys.stderr.write(f"bus-demux: attach failed: {error}; channel {args.channel} {suffix}; stage={stage}\n")
         return 3
     # An explicit attachment is the agent's own decision to listen again.
     reset_listener_streak(root, lease_id, "attach")
