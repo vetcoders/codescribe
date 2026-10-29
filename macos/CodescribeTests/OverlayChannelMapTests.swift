@@ -891,8 +891,15 @@ final class OverlayChannelMapTests: XCTestCase {
     let header = try section(
       of: overlay, from: "private func justifiedHeader(density: OverlayHeaderDensity)",
       to: "private var transcriptionPreviewButton")
-    XCTAssertTrue(header.contains("if density == .midi, let map = channelMap {"))
-    XCTAssertTrue(header.contains("if mini, let map = channelMap {"), "mini carries the counter")
+    XCTAssertTrue(
+      header.contains("if density == .midi, state.channelMapInHeader, let map = channelMap {"),
+      "only the horizontal strip carries the chips between the clock and the actions")
+    XCTAssertTrue(
+      header.contains("let leadingCounter = mini || state.channelMapCounterStacked"),
+      "mini and every vertical form keep the counter beside the brand")
+    XCTAssertTrue(
+      header.contains("if leadingCounter, let map = channelMap {"),
+      "the leading counter is the way to the Intercom group, not a microphone")
     XCTAssertTrue(header.contains("showsWord: !mini"), "mini drops cs")
     XCTAssertTrue(header.contains(".frame(height: OverlayHeaderDensity.rowHeight)"))
     let map = try section(
