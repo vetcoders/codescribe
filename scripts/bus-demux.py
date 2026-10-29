@@ -1147,7 +1147,8 @@ def evidence_revision_rows(event: dict[str, Any]) -> list[dict[str, Any]] | None
 
 
 def normalized_revision_events(
-    raw: str, normalizer: EvidenceNormalizer, lease: SessionLease | None = None
+    raw: str, normalizer: EvidenceNormalizer, lease: SessionLease | None = None,
+    *, admit_row: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """One durable row may observe several original publication coordinates."""
     parsed = parse_line(raw)
@@ -1176,6 +1177,8 @@ def normalized_revision_events(
         rows = [snapshot]
     events: list[dict[str, Any]] = []
     for row in rows:
+        if admit_row is not None and not admit_row(row):
+            continue
         if row.get("schema") == PUBLICATION_SCHEMA:
             # A provider lease may retire only its frozen channel ownership.
             if lease and not lease.admits_channel_event(row):
@@ -1310,6 +1313,23 @@ def channel_event_admitted(event: dict[str, Any], *, provider: str, provider_ses
     if channel_of_session(str(event.get("session_id") or "")) is not None:
         return all(event.get(key) == value for key, value in expected.items())
     return frozen is None
+
+
+def has_valid_frozen_recipients(event: dict[str, Any]) -> bool:
+    """Prove foreign refusal ownership without assigning it to this lease."""
+    recipients = event.get("recipients")
+    if not isinstance(recipients, list) or not recipients:
+        return False
+    for owner in recipients:
+        if not isinstance(owner, dict):
+            return False
+        fields = ("provider", "provider_session_id", "lease_id", "bus")
+        if any(not isinstance(owner.get(key), str) or not owner[key] for key in fields):
+            return False
+        if (owner["lease_id"] != lease_identifier(owner["provider"], owner["provider_session_id"])
+                or not Path(owner["bus"]).is_absolute()):
+            return False
+    return True
 
 
 def capture_sample_rate(event: dict[str, Any]) -> int | None:
@@ -3781,7 +3801,8 @@ class SessionLease:
                 if (not isinstance(refusals, dict) or any(
                         not isinstance(receipt, dict)
                         or channel_publication_refusal_session(receipt) != session
-                        or not self.admits_channel_event(receipt)
+                        or (not self.admits_channel_event(receipt)
+                            and not has_valid_frozen_recipients(receipt))
                         for session, receipt in refusals.items())):
                     raise ValueError("invalid publication refusals; recovery state preserved")
                 self.channel_publication_refusals = refusals
@@ -3987,7 +4008,8 @@ class SessionLease:
 
     def queue_delivery(self, payload: dict[str, Any]) -> bool:
         delivery_id = payload["delivery_id"]
-        if (payload.get("session_id") in self.channel_publication_refusals
+        refusal = self.channel_publication_refusals.get(payload.get("session_id"))
+        if (refusal is not None and self.admits_channel_event(refusal)
                 and payload.get("producer_schema") == EVIDENCE_SCHEMA):
             return False
         if delivery_acknowledged(self.root, self.lease_id, delivery_id, payload):
@@ -4129,6 +4151,11 @@ class SessionLease:
         self.persist(active=True)
         return [dict(payload)]
 
+    def owned_publication_refusals(self) -> list[dict[str, Any]]:
+        """Only this lease's receipts may affect its normalizer."""
+        return [receipt for receipt in self.channel_publication_refusals.values()
+                if self.admits_channel_event(receipt)]
+
     def retire_channel_publication(self, event: dict[str, Any]) -> bool:
         """Retire only this owner's evidence envelopes of the refused capture.
 
@@ -4138,6 +4165,9 @@ class SessionLease:
         session = channel_publication_refusal_session(event)
         if session is None or not self.admits_channel_event(event):
             return False
+        previous = self.channel_publication_refusals.get(session)
+        if previous is not None and not self.admits_channel_event(previous):
+            raise ValueError("conflicting publication refusal; recovery state preserved")
         document = self.unclosed_channel_messages.get(session)
         if (document is not None and document.get("capture_epoch") is not None
                 and document["capture_epoch"] != event["capture_epoch"]):
@@ -5380,7 +5410,7 @@ def run(args: argparse.Namespace) -> int:
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
     if lease:
-        normalizer.restore_publication_refusals(list(lease.channel_publication_refusals.values()))
+        normalizer.restore_publication_refusals(lease.owned_publication_refusals())
         # Prune first: a draft left over from a message that was sealed and
         # acknowledged in an earlier run must not be restored as an unclosed
         # document for a session that is already settled.
@@ -10405,12 +10435,20 @@ def write_channel_binding(
     return path
 
 
-def source_closes_retained_documents(bus: Path, documents: dict[str, Any]) -> bool:
+def source_closes_retained_documents(
+    bus: Path, documents: dict[str, Any], *, provider: str,
+    provider_session_id: str, lease_id: str,
+) -> bool:
     """Resolve stale observer snapshots through the canonical source normalizer."""
     remaining = set(documents)
     normalizer = EvidenceNormalizer()
     for raw in replay(bus):
-        for event in normalized_revision_events(raw, normalizer):
+        for event in normalized_revision_events(
+            raw, normalizer, admit_row=lambda row: channel_event_admitted(
+                row, provider=provider, provider_session_id=provider_session_id,
+                lease_id=lease_id, bus=str(bus),
+            ),
+        ):
             if event.get("status") == SEALED:
                 remaining.discard(event.get("session_id"))
         remaining.difference_update(normalizer.publication_refusals())
@@ -10479,7 +10517,9 @@ def require_drained_lease(
     documents = state.get("unclosed_channel_messages", {})
     if not lenient_catch_up and state.get("held"):
         raise OSError("old source has held deliveries; release or withdraw before retiring it")
-    if not lenient_catch_up and documents and not source_closes_retained_documents(Path(state["bus"]), documents):
+    if (not lenient_catch_up and documents and not source_closes_retained_documents(
+            Path(state["bus"]), documents, provider=state["provider"],
+            provider_session_id=state["provider_session_id"], lease_id=lease_id)):
         raise OSError("old source has an unfinished capture; owner retained")
 
 

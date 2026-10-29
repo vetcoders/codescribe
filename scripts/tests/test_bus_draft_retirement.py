@@ -96,6 +96,64 @@ class MailboxTests(unittest.TestCase):
         self.acknowledge(payload)
         self.lease.collect_acknowledgments()
 
+    def refusal(self, session, provider, provider_session_id):
+        return {"schema": DEMUX.PUBLICATION_SCHEMA, "status": "channel_publication_refused",
+                "reason": "sound_without_speech", "entirely_unwitnessed": True,
+                "session_id": session, "capture_epoch": 1,
+                "recipients": [{"provider": provider, "provider_session_id": provider_session_id,
+                                "lease_id": DEMUX.lease_identifier(provider, provider_session_id),
+                                "bus": str(self.bus.resolve())}]}
+
+    def test_resume_preserves_foreign_refusal_without_granting_it_authority(self):
+        foreign = self.refusal(TAKE, "codex", "other-conversation")
+        pending = self.queue("draft", TAKE, message_id=DEMUX.channel_message_identity(TAKE))
+        self.lease.channel_publication_refusals[TAKE] = foreign
+        self.lease.persist(active=False)
+        self.reopen()
+        self.assertEqual(self.lease.channel_publication_refusals[TAKE], foreign)
+        self.assertEqual(self.stored()[0]["delivery_id"], pending["delivery_id"])
+        normalizer = DEMUX.EvidenceNormalizer()
+        normalizer.restore_publication_refusals(self.lease.owned_publication_refusals())
+        self.assertEqual(normalizer.publication_refusals(), {})
+        next_delivery = self.envelope("revised", TAKE, message_id=DEMUX.channel_message_identity(TAKE))
+        next_delivery["producer_schema"] = DEMUX.EVIDENCE_SCHEMA
+        self.assertTrue(self.lease.queue_delivery(next_delivery))
+        self.assertIn(next_delivery["delivery_id"], self.lease.pending)
+        self.lease.persist(active=False)
+        before = self.lease.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "conflicting publication refusal"):
+            self.lease.retire_channel_publication(self.refusal(TAKE, PROVIDER, CONVERSATION))
+        self.assertEqual(self.lease.path.read_bytes(), before)
+        self.assertEqual(self.lease.channel_publication_refusals[TAKE], foreign)
+        self.assertIn(pending["delivery_id"], self.lease.pending)
+        self.assertIn(next_delivery["delivery_id"], self.lease.pending)
+
+    def test_ambiguous_foreign_refusal_refuses_resume_and_preserves_state(self):
+        for invalid in ([], [{"provider": "codex"}],
+                        [{"provider": "codex", "provider_session_id": "other-conversation",
+                          "lease_id": "wrong", "bus": str(self.bus.resolve())}]):
+            with self.subTest(recipients=invalid):
+                receipt = self.refusal(TAKE, "codex", "other-conversation")
+                receipt["recipients"] = invalid
+                self.lease.channel_publication_refusals[TAKE] = receipt
+                self.lease.persist(active=False)
+                before = self.lease.path.read_bytes()
+                self.lease._release_lock()
+                with self.assertRaisesRegex(ValueError, "invalid publication refusals"):
+                    self.open_lease()
+                self.assertEqual(self.lease.path.read_bytes(), before)
+
+    def test_only_owned_source_refusal_can_close_retained_document(self):
+        foreign = self.refusal(TAKE, "codex", "other-conversation")
+        own = self.refusal(TAKE, PROVIDER, CONVERSATION)
+        self.bus.write_text(json.dumps(foreign) + "\n", encoding="utf-8")
+        args = {"provider": PROVIDER, "provider_session_id": CONVERSATION,
+                "lease_id": self.lease.lease_id}
+        self.assertFalse(DEMUX.source_closes_retained_documents(self.bus, {TAKE: {}}, **args))
+        with self.bus.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(own) + "\n")
+        self.assertTrue(DEMUX.source_closes_retained_documents(self.bus, {TAKE: {}}, **args))
+
     def test_an_unacknowledged_message_keeps_every_envelope_in_order(self):
         queued = [self.queue("draft", NAMED, document_index=1), self.queue("revised", NAMED, document_index=1),
                   self.queue("seal", NAMED, document_index=1)]
