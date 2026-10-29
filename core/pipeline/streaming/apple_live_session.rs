@@ -3538,7 +3538,9 @@ impl AppleSealState {
             {
                 let request_id = last.identity.request_id;
                 self.replayed_window_owners.retain(|(id, _)| *id != request_id);
-                self.admit_window_words(ev_tx, &last, false, true);
+                let end = self.window_plan.publication_band(&last.identity.range, head, true).1;
+                let start = self.window_plan.publication_band(&last.identity.range, head, false).1;
+                self.admit_window_publication(ev_tx, &last, false, (start, end), true);
             }
         }
         self.close_admission_horizon(ev_tx, self.window_plan.admission_horizon());
@@ -4496,17 +4498,29 @@ impl AppleSealState {
         returned: &TailProviderPayload,
         fresh: bool,
     ) {
-        self.admit_window_words(ev_tx, returned, fresh, false);
+        let band = whisper_publication_band(self, &returned.identity.range);
+        self.admit_window_publication(ev_tx, returned, fresh, band, false);
     }
 
-    fn admit_window_words(
+    fn admit_window_publication(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         returned: &TailProviderPayload,
         fresh: bool,
+        publication_band: (u64, u64),
         terminal_tail_only: bool,
     ) {
         let identity = &returned.identity;
+        let (band_start, band_end) = publication_band;
+        if band_start < identity.range.sample_start
+            || band_start >= band_end
+            || band_end > identity.range.sample_end
+            || (terminal_tail_only
+                && (!self.capture_stopping
+                    || identity.range.sample_end != self.audio.session_sample_end()))
+        {
+            return;
+        }
         let admit_sample_start = identity.range.sample_start;
         let admit_sample_end = identity.range.sample_end;
         let payload = Some(returned);
@@ -4541,12 +4555,6 @@ impl AppleSealState {
         }
         // The original payload remains bound as decode context. Only the
         // owning band's words enter admission or its speech-refusal path.
-        let (mut band_start, band_end) = whisper_publication_band(self, &identity.range);
-        if terminal_tail_only {
-            band_start = self.window_plan.publication_band(
-                &identity.range, self.audio.session_sample_end(), false,
-            ).1;
-        }
         let owned_segments = if word_grain {
             Some(segments.iter().filter(|segment| {
                 let midpoint = segment.range.sample_start
@@ -4686,8 +4694,9 @@ impl AppleSealState {
             }
             if word_grain {
                 if !route.exclusive.is_empty() {
-                    let terminal_tail = self.capture_stopping
-                        && identity.range.sample_end == self.audio.session_sample_end();
+                    let terminal_tail = terminal_tail_only
+                        || (self.capture_stopping
+                            && identity.range.sample_end == self.audio.session_sample_end());
                     mutation_admitted |= self.admit_routed_words_with_publication(
                         ev_tx,
                         *member_id,
