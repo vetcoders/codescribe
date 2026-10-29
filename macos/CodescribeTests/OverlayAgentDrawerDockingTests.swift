@@ -1013,7 +1013,10 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertEqual(items.count, 4)
     XCTAssertEqual(
       Set(items.map(\.title)),
-      Set([String(localized: "Channel 0"), String(localized: "Do not disturb"), focus.title, archive.title]))
+      Set([
+        String(localized: "Channel 0"), String(localized: "Do not disturb"), focus.title,
+        archive.title,
+      ]))
     let focusIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == focus.title })
     let archiveIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == archive.title })
     menu.performActionForItem(at: focusIndex)
