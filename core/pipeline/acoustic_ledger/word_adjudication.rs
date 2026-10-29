@@ -736,8 +736,22 @@ impl AcousticLedger {
         {
             self.decoded_word_windows
                 .insert(observation.clone(), (start, end));
-            if let Some(span) = heard_span {
-                self.record_complete_decode_span(observation, span);
+            if let Some((mut span_start, mut span_end)) = heard_span {
+                // A Whisper window's surrounding context is not publication
+                // work for another owner or for an unowned band. Keep the
+                // full decoder fences above for acoustic/lexical context.
+                if let Some(publication) = self
+                    .word_evidence_input(observation)
+                    .and_then(|input| input.publication.as_ref())
+                {
+                    span_start = span_start
+                        .max(publication.sample_start)
+                        .max(owner.sample_start);
+                    span_end = span_end
+                        .min(publication.sample_end)
+                        .min(owner.sample_end);
+                }
+                self.record_complete_decode_span(observation, (span_start, span_end));
             }
         }
     }
