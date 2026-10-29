@@ -2056,6 +2056,9 @@ struct OverlayChannelStatusView: View {
         if message.holdSecondsRemaining != nil {
           return display("pause.circle", String(localized: "Held"))
         }
+        if recipient.acknowledged {
+          return display("double-check", String(localized: "Read"))
+        }
         if let deliveryID = recipient.deliveryID,
           let state = message.receipt?.deliveries.first(where: { $0.deliveryID == deliveryID })?
             .state
@@ -2066,9 +2069,6 @@ struct OverlayChannelStatusView: View {
           case .skipped: return display("forward.end", OverlayConversationView.skippedBroadcastText)
           case .noReceipt: return display("circle.dotted", OverlayConversationView.noReceiptText)
           }
-        }
-        if recipient.acknowledged {
-          return display("double-check", String(localized: "Read"))
         }
         let symbol = recipient.broadcastSkipped == true ? "forward.end" : "clock"
         return display(symbol, OverlayConversationView.receiptStatusText(for: recipient))
