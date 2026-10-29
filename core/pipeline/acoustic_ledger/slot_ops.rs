@@ -352,6 +352,20 @@ impl AcousticLedger {
 }
 
 impl AcousticLedger {
+    pub(super) fn published_whisper_sources_protected(
+        &self,
+        observation: &ObservationIdentity,
+        sources: &[WordSlot],
+    ) -> bool {
+        observation.producer == ObservationProducer::Whisper
+            && self
+                .word_evidence_input(observation)
+                .is_some_and(|input| input.publication.is_some())
+            && sources.iter().any(|source| {
+                source.producer == ObservationProducer::Whisper && !self.coarse_word_source(source)
+            })
+    }
+
     /// Current and predecessor ranges are physical targets; labels never
     /// broaden this relation. A split child addresses its own range only.
     pub(super) fn pin_targets_source(&self, source: &WordSlot, pin: &WordSlot) -> bool {
@@ -1484,6 +1498,29 @@ impl AcousticLedger {
                 .map(|index| pins[*index].clone())
                 .collect::<Vec<_>>();
             outputs.sort_by_key(|word| (word.sample_start, word.sample_end));
+            // Published Whisper words keep their measured geometry and label.
+            // Check before resegmentation and retokenization can bypass the
+            // ordinary word adjudicator's publication guard.
+            if self.published_whisper_sources_protected(observation, &sources) {
+                self.record_word_choice(
+                    observation,
+                    &sources,
+                    &outputs,
+                    "published_whisper_word",
+                    false,
+                );
+                self.retain_slot_alternative(
+                    observation,
+                    &compose_label(&outputs),
+                    sources.clone(),
+                    "published_whisper_word",
+                );
+                for output in &outputs {
+                    self.record_word_slot_refusal(observation, output, false);
+                }
+                consumed.extend(word_indices.iter().copied());
+                continue;
+            }
             // Incomplete words can join this component by overlap alone,
             // without satisfying the ordinary target relation. Every output
             // of a changed component containing a CloudLive word needs context.
