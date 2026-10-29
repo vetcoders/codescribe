@@ -4757,6 +4757,17 @@ impl AppleSealState {
             } else {
                 String::new()
             };
+            // Untimed or phrase-level Whisper has no publication-band pins.
+            // It may fill an empty owner but cannot revise existing slots.
+            let owner_has_slots = self.acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .slots_of(occurrence)
+                .is_some_and(|slots| !slots.is_empty());
+            if !label.is_empty() && owner_has_slots {
+                self.refinement_receipt(occurrence, RefinementFailure::NoLabel.code());
+                continue;
+            }
             if !label.is_empty() {
                 let observation = self
                     .acoustic_ledger
@@ -7645,6 +7656,17 @@ fn admit_full_pass_gap_segments(
             continue;
         }
         if label.is_empty() {
+            continue;
+        }
+        // Gap recovery is insertion-only. Even a stale supplied gap cannot
+        // authorize a new occurrence over speech already owned by the ledger.
+        if producer == LedgerObservationProducer::Whisper
+            && state.acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .qualified_occurrences()
+                .any(|owner| range_overlaps_occurrence(&segment.range, owner))
+        {
             continue;
         }
         let Some(_) = material_gaps
