@@ -1,9 +1,9 @@
 import SwiftUI
 
-// Creator setup panel: interface language (the per-app macOS preference the
-// setup wizard also writes), live permission checklist, editable voice/formatting
-// controls (language, formatting level) written through the core
-// router, plus quick-start cards and launchpad chips.
+// General settings page (sidebar key "Creator", PL "Ogólne"): quick-start cards,
+// interface language (the per-app macOS preference the setup wizard also
+// writes), appearance, live permission checklist and editable formatting
+// controls written through the core router. Its title row reopens the wizard.
 // Permission rows reflect LIVE AVAuthorization / AX / IOHID / CG status.
 
 struct CreatorPanel: View {
@@ -14,6 +14,9 @@ struct CreatorPanel: View {
   /// 2026-10-18: skill installs never overwrite files unannounced).
   @State private var pendingSkillInstall: CreatorAgentBridgeInstallPlan?
   @State private var showingSkillLocations = false
+  /// Opens the folded checklist while every scope is granted; a missing scope
+  /// shows the full list whatever this says.
+  @State private var showingGrantedPermissions = false
 
   private static let permissionKinds: [PermissionKind] = [
     .microphone, .accessibility, .inputMonitoring, .screenRecording, .speechRecognition,
@@ -25,35 +28,49 @@ struct CreatorPanel: View {
       SettingsPageHeader(
         SettingsSection.creator.title,
         blurb: String(
-          localized: "Get Codescribe ready to work.",
-          comment: "Creator page blurb under the sidebar name")
+          localized: "Language, appearance, permissions and formatting.",
+          comment: "General page blurb under the sidebar name: what the page holds")
       )
-
       // The wizard's only entry after first run: the tray row that used to
-      // open it is gone (Founder, 2026-10-20), so the Creator offers it here.
-      // No explanation beside it: each step opens on the current value, but
-      // Continue on the shortcuts step writes that step's preset, so "your
-      // settings stay" would not be true.
-      Button(
-        String(
-          localized: "Open Setup Wizard…",
-          comment: "Creator: reopens the first-run setup wizard window")
-      ) {
-        model.onOpenSetupWizard()
+      // open it is gone (Founder, 2026-10-20), so this page offers it on its
+      // title line, on the title's baseline, instead of a row of its own.
+      .overlay(alignment: Alignment(horizontal: .trailing, vertical: .firstTextBaseline)) {
+        openWizardButton
       }
-      .buttonStyle(.bordered)
-      .controlSize(.small)
-      .accessibilityIdentifier("settings-creator-open-wizard")
+
+      // The three first actions sit right under the title, not at the bottom.
+      SettingsSectionLabel(String(localized: "Quick start"))
+        .padding(.top, SettingsScale.sectionGap)
+      HStack(spacing: 10) {
+        QuickStartCard(
+          icon: .mic,
+          title: "Test mic",
+          accessibilityId: "settings-quickstart-test-mic"
+        ) { model.performQuickStart(.testMic) }
+        QuickStartCard(
+          icon: .overlay,
+          title: "Open widget",
+          accessibilityId: "settings-quickstart-open-widget"
+        ) { model.performQuickStart(.openWidget) }
+        QuickStartCard(
+          icon: .shortcuts,
+          title: "Tune shortcuts",
+          accessibilityId: "settings-quickstart-tune-shortcuts"
+        ) { model.performQuickStart(.tuneShortcuts) }
+      }
       .padding(.top, SettingsScale.headerGap)
 
-      // Groups whose cards already name themselves carry no section header;
-      // the section gap alone separates them.
+      // Every group carries its own section title above its cards.
+      SettingsSectionLabel(String(localized: "Language"))
+        .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 8) {
         InterfaceLanguageRow(model: model)
         RecognitionLanguageRow(selection: languageBinding)
       }
-      .padding(.top, SettingsScale.sectionGap)
+      .padding(.top, SettingsScale.headerGap)
 
+      SettingsSectionLabel(String(localized: "Appearance"))
+        .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 8) {
         AppearanceRow(model: model)
         SheetShadeRows(model: model)
@@ -82,7 +99,7 @@ struct CreatorPanel: View {
           .accessibilityIdentifier("settings-overlay-intercom-layout")
         }
       }
-      .padding(.top, SettingsScale.sectionGap)
+      .padding(.top, SettingsScale.headerGap)
 
       // The checklist shows live status; the header link opens the privacy
       // pane itself so a granted scope can still be reviewed or revoked.
@@ -95,20 +112,17 @@ struct CreatorPanel: View {
         .accessibilityIdentifier("settings-permissions-system-settings")
       }
       .padding(.top, SettingsScale.sectionGap)
+      // With every scope granted the five rows fold into one verified line;
+      // a missing scope brings the full list back on its own.
       VStack(spacing: 0) {
-        ForEach(Self.permissionKinds) { kind in
-          PermissionChecklistRow(
-            kind: kind,
-            state: model.permissions.state(kind),
-            note: model.permissionRepairNote(for: kind),
-            onRequested: { model.notePermissionRequested(kind) },
-            // A grant can change recording admission, not only this row.
-            onStateChanged: { model.refreshDictationReadiness() }
-          )
-          if kind != Self.permissionKinds.last {
-            // Aligned with the row text: inset + badge + the row's own spacing.
-            Divider().padding(.leading, 2 * SettingsScale.rowInsetH + 20)
+        if allPermissionsGranted {
+          permissionsSummaryRow
+          if showingGrantedPermissions {
+            Divider()
+            permissionRows
           }
+        } else {
+          permissionRows
         }
       }
       .settingsGroupedInset(padding: 0)
@@ -149,27 +163,6 @@ struct CreatorPanel: View {
 
       agentBridgeSection
         .padding(.top, SettingsScale.sectionGap)
-
-      SettingsSectionLabel(String(localized: "Quick start"))
-        .padding(.top, SettingsScale.sectionGap)
-      HStack(spacing: 10) {
-        QuickStartCard(
-          icon: .mic,
-          title: "Test mic",
-          accessibilityId: "settings-quickstart-test-mic"
-        ) { model.performQuickStart(.testMic) }
-        QuickStartCard(
-          icon: .overlay,
-          title: "Open widget",
-          accessibilityId: "settings-quickstart-open-widget"
-        ) { model.performQuickStart(.openWidget) }
-        QuickStartCard(
-          icon: .shortcuts,
-          title: "Tune shortcuts",
-          accessibilityId: "settings-quickstart-tune-shortcuts"
-        ) { model.performQuickStart(.tuneShortcuts) }
-      }
-      .padding(.top, SettingsScale.headerGap)
     }
     .settingsPage()
     .onAppear { model.refreshCreatorAgentBridge() }
@@ -192,6 +185,77 @@ struct CreatorPanel: View {
       )
     }
     .task { await model.refreshMaxToolApprovals() }
+  }
+
+  /// A neutral action chip with its glyph before the label, like the other
+  /// Settings actions (D2: actions read through their shape, not a hue).
+  /// No explanation beside it: each step opens on the current value, but
+  /// Continue on the shortcuts step writes that step's preset, so "your
+  /// settings stay" would not be true.
+  private var openWizardButton: some View {
+    SettingsChipButton(action: { model.onOpenSetupWizard() }) {
+      HStack(spacing: 5) {
+        CSIconView(icon: .setupWizard, size: 10, weight: .semibold)
+        Text(
+          String(
+            localized: "Open Setup Wizard…",
+            comment: "General page title row: reopens the setup wizard window")
+        )
+        .font(SettingsScale.controlLabel)
+      }
+      .foregroundStyle(Color.primary)
+    }
+    .accessibilityIdentifier("settings-creator-open-wizard")
+  }
+
+  private var allPermissionsGranted: Bool {
+    Self.permissionKinds.allSatisfy { model.permissions.state($0).isGranted }
+  }
+
+  /// The folded checklist: one olive verified capsule with the count, and a
+  /// chevron that opens the granted rows for review.
+  private var permissionsSummaryRow: some View {
+    Button {
+      showingGrantedPermissions.toggle()
+    } label: {
+      HStack(spacing: SettingsScale.rowInsetH) {
+        CSIconView(
+          icon: showingGrantedPermissions ? .chevronDown : .chevronRight, size: 10,
+          weight: .semibold, color: CSColor.secondaryInk)
+        CSStatusBadge(
+          text: String(
+            localized: "All permissions granted (\(Self.permissionKinds.count))",
+            comment: "General page: the permission checklist folded while every scope is granted"
+          ),
+          mark: .verified)
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, SettingsScale.rowInsetH)
+      .padding(.vertical, 7)
+      .contentShape(Rectangle())
+    }
+    .csFocusRing()
+    .accessibilityValue(
+      showingGrantedPermissions ? String(localized: "Expanded") : String(localized: "Collapsed")
+    )
+    .accessibilityIdentifier("settings-permissions-all-granted")
+  }
+
+  @ViewBuilder private var permissionRows: some View {
+    ForEach(Self.permissionKinds) { kind in
+      PermissionChecklistRow(
+        kind: kind,
+        state: model.permissions.state(kind),
+        note: model.permissionRepairNote(for: kind),
+        onRequested: { model.notePermissionRequested(kind) },
+        // A grant can change recording admission, not only this row.
+        onStateChanged: { model.refreshDictationReadiness() }
+      )
+      if kind != Self.permissionKinds.last {
+        // Aligned with the row text: inset + badge + the row's own spacing.
+        Divider().padding(.leading, 2 * SettingsScale.rowInsetH + 20)
+      }
+    }
   }
 
   private var agentBridgeSection: some View {
@@ -732,15 +796,13 @@ private struct SheetShadeRows: View {
 
   var body: some View {
     SettingsControlRow(
-      title: String(localized: "Panel shade, dark", comment: "Settings row: sheet shade for dark"),
-      subtitle: "#\(model.sheetShadeDark.rawValue)"
+      title: String(localized: "Panel shade, dark", comment: "Settings row: sheet shade for dark")
     ) {
       shadePicker(SheetShade.darkChoices, selection: darkSelection, id: "settings-sheet-shade-dark")
     }
     SettingsControlRow(
       title: String(
-        localized: "Panel shade, light", comment: "Settings row: sheet shade for light"),
-      subtitle: "#\(model.sheetShadeLight.rawValue)"
+        localized: "Panel shade, light", comment: "Settings row: sheet shade for light")
     ) {
       shadePicker(
         SheetShade.lightChoices, selection: lightSelection, id: "settings-sheet-shade-light")
@@ -865,12 +927,17 @@ private struct QuickStartCard: View {
   let accessibilityId: String
   let action: () -> Void
 
+  private static let iconBox: CGFloat = 20
+
   @State private var hovered = false
 
   var body: some View {
     Button(action: action) {
       VStack(alignment: .leading, spacing: 0) {
+        // One fixed glyph box for every card: the mic, widget and keyboard
+        // glyphs differ in natural size, and the titles must share a line.
         CSIconView(icon: icon, size: 16, color: Color.primary)
+          .frame(width: Self.iconBox, height: Self.iconBox, alignment: .leading)
         Text(title)
           .font(CSFont.ui(13, .semibold))
           .foregroundStyle(Color.primary)

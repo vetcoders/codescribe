@@ -390,7 +390,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .creator:
-      return String(localized: "Creator", comment: "Settings section: first-run setup and basics")
+      return String(
+        localized: "Creator",
+        comment:
+          "Settings section: general settings (language, appearance, permissions, formatting)")
     case .shortcuts: return String(localized: "Hotkeys", comment: "Settings section")
     case .keys:
       return String(localized: "Providers", comment: "Settings section: AI provider accounts")

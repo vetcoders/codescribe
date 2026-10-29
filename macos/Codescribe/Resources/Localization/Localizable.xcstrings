@@ -3102,6 +3102,17 @@
         }
       }
     },
+    "All permissions granted (%lld)" : {
+      "comment" : "General page: the permission checklist folded while every scope is granted",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wszystkie uprawnienia przyznane (%lld)"
+          }
+        }
+      }
+    },
     "Allow" : {
       "comment" : "Tool permission level",
       "localizations" : {
@@ -6955,12 +6966,12 @@
       }
     },
     "Creator" : {
-      "comment" : "Settings section: first-run setup and basics",
+      "comment" : "Settings section: general settings (language, appearance, permissions, formatting)",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kreator"
+            "state" : "needs_review",
+            "value" : "Ogólne"
           }
         }
       }
@@ -8994,23 +9005,6 @@
         }
       }
     },
-    "Get Codescribe ready to work." : {
-      "comment" : "Creator page blurb under the sidebar name",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Get Codescribe ready to work."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przygotuj Codescribe do pracy."
-          }
-        }
-      }
-    },
     "Get license key" : {
       "localizations" : {
         "pl" : {
@@ -9022,12 +9016,12 @@
       }
     },
     "Getting started" : {
-      "comment" : "Setup wizard window title",
+      "comment" : "Setup wizard window title: the wizard itself, reopened from Settings (General)",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pierwsze kroki"
+            "state" : "needs_review",
+            "value" : "Kreator"
           }
         }
       }
@@ -9909,6 +9903,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Język"
+          }
+        }
+      }
+    },
+    "Language, appearance, permissions and formatting." : {
+      "comment" : "General page blurb under the sidebar name: what the page holds",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Język, wygląd, uprawnienia i formatowanie."
           }
         }
       }
@@ -13161,12 +13166,12 @@
       }
     },
     "Open Setup Wizard…" : {
-      "comment" : "Creator: reopens the first-run setup wizard window",
+      "comment" : "General page title row: reopens the setup wizard window",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Otwórz kreatora…"
+            "state" : "needs_review",
+            "value" : "Otwórz kreator…"
           }
         }
       }

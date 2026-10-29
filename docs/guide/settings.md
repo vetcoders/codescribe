@@ -44,25 +44,36 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 
 ## Creator
 
-The page is headed **Creator**, its sidebar name, with _Get Codescribe ready
-to work._ under it. Right below, **Open Setup Wizard…** reopens the first-run wizard
-from its first screen, with no explanation beside the button. Each step opens
-on your current value and writes it when you press Continue; the shortcuts step
-writes a preset (Hold, Toggle or Hybrid) to the three mode bindings only when
-you pick one, so custom shortcuts stay as they are if you continue past it.
-This is the wizard's only entry after first run — the tray menu no longer
-carries it. The wizard's steps and their layout are described in
+The page holds the general settings. In English its sidebar name and title
+are **Creator**; in Polish the page is **Ogólne** (General). Under the title,
+_Language, appearance, permissions and formatting._ says what it holds. On the
+title's own line, at the right, **Open Setup Wizard…** (PL **Otwórz kreator…**)
+is a small neutral button with the wizard glyph before its label; it reopens
+the first-run wizard from its first screen, with no explanation beside the
+button. The wizard window is titled **Getting started** (PL **Kreator**). Each
+step opens on your current value and writes it when you press Continue; the
+shortcuts step writes a preset (Hold, Toggle or Hybrid) to the three mode
+bindings only when you pick one, so custom shortcuts stay as they are if you
+continue past it. This is the wizard's only entry after first run — the tray
+menu no longer carries it. The wizard's steps and their layout are described in
 [Installation › First Launch](installation.md#first-launch).
 
-The first desk groups what a new install needs, separated by spacing rather
-than section headers (only Permissions, the coding-agent card and Quick start
-keep a header): the two language rows, appearance, the only permission
-checklist in Settings — with a **System Settings…** link in
-its header (the Privacy & Security pane, so a granted scope can be reviewed
-or revoked; a missing scope still carries its own request or deep link on the
-row) — voice and formatting, one **Max consultation** card that also holds
-the pending approval requests, the coding-agent skill rows with **Refresh
-status** on the section header, and the quick-start cards.
+The page reads top to bottom: **Quick start** (Test mic, Open widget, Tune
+shortcuts — three cards whose glyphs share one fixed box, so their titles sit
+on one line), then **Language** (interface and transcription language),
+**Appearance** (appearance, the two panel-shade menus, which name the shade
+without a hex code, and the intercom layout), **Permissions** — the only
+permission checklist in Settings, with a **System Settings…** link in its
+header (the Privacy & Security pane, so a granted scope can be reviewed or
+revoked) — voice and formatting, one **Max consultation** card that also holds
+the pending approval requests, and the coding-agent skill rows with **Refresh
+status** on the section header.
+
+While all five scopes are granted, the checklist folds into one line,
+**All permissions granted (5)** (PL _Wszystkie uprawnienia przyznane (5)_), in
+the olive capsule with the thin check; its chevron opens the five rows for
+review. As soon as one scope is missing, the full list comes back on its own,
+and the missing row carries its warning sign and its own request or deep link.
 
 **Formatting level** (Off, Correction, Smart, Max) is the only formatting
 switch: Off sends nothing to a formatting model and keeps the raw transcript;

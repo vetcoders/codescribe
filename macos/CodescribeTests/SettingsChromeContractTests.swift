@@ -140,18 +140,25 @@ final class SettingsChromeContractTests: XCTestCase {
         "\(file) has exactly one page header")
     }
     let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
-    XCTAssertTrue(creator.contains("localized: \"Get Codescribe ready to work.\""))
+    XCTAssertTrue(
+      creator.contains("localized: \"Language, appearance, permissions and formatting.\""))
 
     let polish = try polishCatalog()
-    XCTAssertEqual(polish["Get Codescribe ready to work."], "Przygotuj Codescribe do pracy.")
-    XCTAssertEqual(polish["Creator"], "Kreator")
+    XCTAssertEqual(
+      polish["Language, appearance, permissions and formatting."],
+      "Język, wygląd, uprawnienia i formatowanie.")
+    // The page holds general settings; "Kreator" names the wizard window it
+    // reopens (Founder, 2026-10-27).
+    XCTAssertEqual(polish["Creator"], "Ogólne")
+    XCTAssertEqual(polish["Getting started"], "Kreator")
+    XCTAssertEqual(polish["Open Setup Wizard…"], "Otwórz kreator…")
     XCTAssertEqual(polish["Dictionary"], "Słownik")
     XCTAssertEqual(polish["AI models"], "Modele AI")
     XCTAssertEqual(polish["Tools"], "Narzędzia")
     XCTAssertEqual(polish["Privacy"], "Prywatność")
     for retired in [
       "Get set up", "Dictionary and corrections", "Model configuration.", "Tool permissions",
-      "Cloud & privacy",
+      "Cloud & privacy", "Get Codescribe ready to work.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -308,9 +315,9 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertNil(polish["Text formatting"])
     XCTAssertNil(polish["Apple on-device (experimental)"])
 
-    // Shade menus name the shade; the hex reads as the row's subtitle.
+    // Shade menus name the shade; no raw hex code under the row title.
     XCTAssertTrue(creator.contains("Text(verbatim: shade.title).tag(shade)"))
-    XCTAssertTrue(creator.contains("subtitle: \"#\\(model.sheetShadeDark.rawValue)\""))
+    XCTAssertFalse(creator.contains("subtitle: \"#\\(model.sheetShade"))
 
     // Pickers that keep a fixed frame hold their Polish labels.
     let fixed: [(file: String, picker: String, titles: [String?])] = [
@@ -1228,19 +1235,60 @@ final class SettingsChromeContractTests: XCTestCase {
   /// Creator (round 14, 2026-10-18): a client row says whether its skill is
   /// the generation this app carries, the folders sit in one disclosure
   /// instead of inside a client's name, and Max says whether anything waits.
-  /// The tray row that reopened the wizard is gone; the Creator offers it
-  /// under its header through the view model's hook (Founder, 2026-10-20).
-  func testCreatorReopensTheSetupWizardUnderItsHeader() throws {
+  /// The tray row that reopened the wizard is gone; the General page offers
+  /// it on its title line through the view model's hook (Founder, 2026-10-20),
+  /// as a neutral chip with its glyph before the label.
+  func testCreatorReopensTheSetupWizardFromItsTitleRow() throws {
     let creator = try XCTUnwrap(try settingsSources()["CreatorPanel.swift"])
     XCTAssertTrue(creator.contains("localized: \"Open Setup Wizard…\""))
     XCTAssertTrue(creator.contains("model.onOpenSetupWizard()"))
     XCTAssertTrue(creator.contains("\"settings-creator-open-wizard\""))
+    let header = try XCTUnwrap(creator.range(of: "SettingsPageHeader("))
+    let titleRow = try XCTUnwrap(
+      creator.range(
+        of: ".overlay(alignment: Alignment(horizontal: .trailing, vertical: .firstTextBaseline))"))
+    XCTAssertLessThan(header.lowerBound, titleRow.lowerBound)
+    XCTAssertTrue(creator.contains("SettingsChipButton(action: { model.onOpenSetupWizard() })"))
+    XCTAssertTrue(creator.contains("CSIconView(icon: .setupWizard"))
+    XCTAssertFalse(creator.contains(".buttonStyle(.bordered)"))
     let tray = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/Tray/TrayMenuView.swift"),
       encoding: .utf8)
     XCTAssertFalse(tray.contains("Setup Wizard"), "the wizard is reached from the Creator only")
+  }
+
+  /// General page (K2, K5, K8): Quick start leads under the title, Language
+  /// and Appearance carry their own section titles, the five granted
+  /// permissions fold into one verified line that a missing scope reopens,
+  /// and the quick-start glyphs share one fixed box so the titles align.
+  func testGeneralPageLeadsWithQuickStartAndFoldsGrantedPermissions() throws {
+    let creator = try XCTUnwrap(try settingsSources()["CreatorPanel.swift"])
+    let order = try [
+      "SettingsPageHeader(",
+      "SettingsSectionLabel(String(localized: \"Quick start\"))",
+      "SettingsSectionLabel(String(localized: \"Language\"))",
+      "SettingsSectionLabel(String(localized: \"Appearance\"))",
+      "SettingsSectionHeaderRow(String(localized: \"Permissions\"))",
+      "agentBridgeSection\n",
+    ].map { try XCTUnwrap(creator.range(of: $0), $0).lowerBound }
+    XCTAssertEqual(order, order.sorted(), "General page sections out of order")
+
+    let fold = try XCTUnwrap(creator.range(of: "if allPermissionsGranted {"))
+    let full = try XCTUnwrap(creator.range(of: "} else {\n          permissionRows"))
+    XCTAssertLessThan(fold.lowerBound, full.lowerBound)
+    XCTAssertTrue(
+      creator.contains("Self.permissionKinds.allSatisfy { model.permissions.state($0).isGranted }"))
+    XCTAssertTrue(
+      creator.contains("localized: \"All permissions granted (\\(Self.permissionKinds.count))\""))
+    XCTAssertTrue(creator.contains("mark: .verified)"))
+    XCTAssertTrue(
+      creator.contains(".frame(width: Self.iconBox, height: Self.iconBox, alignment: .leading)"))
+
+    let polish = try polishCatalog()
+    XCTAssertEqual(
+      polish["All permissions granted (%lld)"], "Wszystkie uprawnienia przyznane (%lld)")
   }
 
   func testCreatorStatesTheSkillGenerationAndKeepsPathsInDetails() throws {

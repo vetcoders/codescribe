@@ -186,7 +186,7 @@ final class OnboardingViewModel: ObservableObject {
     String(
       localized: LocalizedStringResource(
         "Getting started", locale: interfaceLocale,
-        comment: "Setup wizard window title"
+        comment: "Setup wizard window title: the wizard itself, reopened from Settings (General)"
       ))
   }
   var totalSteps: Int { OnboardingStep.count }
