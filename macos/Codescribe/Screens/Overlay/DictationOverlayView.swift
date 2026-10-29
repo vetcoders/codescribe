@@ -591,7 +591,8 @@ struct DictationOverlayView: View {
                 },
                 focusAgentPanelHint: conversation.owner.flatMap { state.agentPanelFocusHelp($0) },
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
-                hidesNavigation: columnShown,
+                navigationActions: conversationHeaderActions(conversation),
+                navigationIndicators: conversationHeaderIndicators(conversation),
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
                 onComposerTypingActivity: { state.noteComposerTypingActivity() },
                 replySelection: state.conversationReplies[conversation.id],
@@ -924,14 +925,14 @@ struct DictationOverlayView: View {
       onFoldList: { state.foldAgentList() })
   }
 
-  /// A width drawn on the edge is the split's. Drawn across the window, it
-  /// chooses the agents view and keeps the remembered width for the way back.
+  /// A divider drag clamps to the split; only the explicit fold hides the canvas.
   private func commitAgentDrawerWidth(_ preferred: CGFloat, windowWidth: CGFloat) {
     guard
       let width = OverlayAgentDrawerLayout.rememberedWidth(
         textScale: textScale, preferredWidth: preferred, windowWidth: windowWidth)
     else {
-      state.setAgentsLayout(.agents)
+      preferredAgentDrawerWidth = OverlayAgentDrawerLayout.widestSplitWidth(
+        textScale: textScale, windowWidth: windowWidth)
       return
     }
     preferredAgentDrawerWidth = width
@@ -1336,6 +1337,30 @@ struct DictationOverlayView: View {
   var channelStatusView: OverlayChannelStatusView {
     OverlayChannelStatusView.intercomRoster(
       state: state, palette: palette, animates: overlayVisible)
+  }
+
+  /// A digit may be reused; roster actions belong only to the exact live lease.
+  private func conversationHeaderChannel(_ conversation: OverlayConversation)
+    -> OverlayChannelDelivery?
+  {
+    guard let owner = conversation.owner else { return nil }
+    return channelStatusView.channels.first { channel in
+      guard channel.channel == conversation.channel, let identity = channel.broadcastIdentity else {
+        return false
+      }
+      return identity.provider == owner.provider && identity.session == owner.providerSessionID
+        && identity.leaseID == owner.leaseID
+    }
+  }
+
+  private func conversationHeaderActions(_ conversation: OverlayConversation) -> AnyView? {
+    conversationHeaderChannel(conversation).map { AnyView(channelStatusView.compactAgentActions(for: $0)) }
+  }
+
+  private func conversationHeaderIndicators(_ conversation: OverlayConversation) -> AnyView? {
+    conversationHeaderChannel(conversation).map {
+      AnyView(channelStatusView.compactReceptionIndicators(for: $0))
+    }
   }
 
   private var transcriptPreviewHelp: String {
