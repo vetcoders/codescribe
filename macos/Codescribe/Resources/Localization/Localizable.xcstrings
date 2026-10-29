@@ -5391,7 +5391,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Codescribe wróci do trybu podstawowego, a tryb agentowy przestanie działać. Klucz zostanie usunięty z Pęku kluczy na tym Macu. Żeby znów aktywować licencję, potrzebny będzie sam klucz (Codescribe go nie pokaże) albo nowy klucz ze strony licencji."
           }
         }
@@ -15441,7 +15441,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Usunąć klucz licencji?"
           }
         }
