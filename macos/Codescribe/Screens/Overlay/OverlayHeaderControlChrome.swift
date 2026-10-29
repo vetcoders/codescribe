@@ -266,7 +266,8 @@ final class OverlayHintPanel {
               RoundedRectangle(cornerRadius: CSRadius.chip)
                 .strokeBorder(
                   palette.primaryText.color.opacity(palette.appearance == .dark ? 0.20 : 0.14),
-                  lineWidth: 1)
+                  lineWidth: 1
+                )
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }

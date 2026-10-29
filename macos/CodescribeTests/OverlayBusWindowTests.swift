@@ -554,12 +554,8 @@ final class OverlayBusWindowTests: XCTestCase {
       panel.contentView?.layoutSubtreeIfNeeded()
       return panel
     }
-    func attachPreview(_ panel: NSPanel, message: OverlayConversationMessage, name: String) throws {
-      let host = NSHostingView(
-        rootView: OverlayRosterMessagePreview(name: "Tola", message: message, palette: .dark)
-          .frame(width: panel.frame.width, height: panel.frame.height)
-          .background(OverlayAppearancePalette.dark.desktopBackground.color))
-      host.frame = NSRect(origin: .zero, size: panel.frame.size)
+    func attachPreview(_ panel: NSPanel, name: String) throws {
+      let host = try XCTUnwrap(panel.contentView)
       host.layoutSubtreeIfNeeded()
       let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
       host.cacheDisplay(in: host.bounds, to: bitmap)
@@ -572,13 +568,13 @@ final class OverlayBusWindowTests: XCTestCase {
     }
     let shortPanel = try show(short)
     let shortHeight = shortPanel.frame.height
-    try attachPreview(shortPanel, message: short, name: "Sidebar-hover-short")
+    try attachPreview(shortPanel, name: "Sidebar-hover-short")
     XCTAssertLessThan(shortHeight, 140, "a short message must not reserve the full preview height")
     XCTAssertTrue(shortPanel.hasShadow, "the preview separates from the conversation beneath it")
     XCTAssertEqual((shortPanel.contentView as? NSVisualEffectView)?.material, .popover)
     XCTAssertFalse(shortPanel.canBecomeKey)
     let longPanel = try show(long)
-    try attachPreview(longPanel, message: long, name: "Sidebar-hover-long")
+    try attachPreview(longPanel, name: "Sidebar-hover-long")
     XCTAssertGreaterThan(longPanel.frame.height, shortHeight)
     XCTAssertLessThanOrEqual(longPanel.frame.height, 240)
     XCTAssertEqual(longPanel.frame.width, 330, accuracy: 1)
@@ -589,6 +585,95 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertGreaterThan(
       try XCTUnwrap(scroll.documentView).bounds.height, scroll.contentView.bounds.height,
       "the full long message needs a real scrollable document")
+  }
+
+  /// Only a native window capture includes the material, edge and shadow
+  /// composited over another message. A content-only bitmap cannot prove glass.
+  func testRosterGlassPreviewOverConversationReview() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let target = try conversation("3", name: "Lena")
+    let backdrop = previewReply(
+      in: target,
+      text: String(
+        repeating:
+          "The conversation continues underneath this preview. Its words should stay a soft blurred hint behind the message you are reading. ",
+        count: 2))
+    let message = previewReply(
+      in: target,
+      text:
+        "The latest message stays readable over the conversation.\n\nA thin edge and a soft shadow keep this compact glass preview separate from the bubbles underneath."
+    )
+    for dark in [true, false] {
+      let palette: OverlayAppearancePalette = dark ? .dark : .light
+      let host = NSHostingView(
+        rootView: VStack(alignment: .leading, spacing: 16) {
+          Text("Conversation · Native hover review")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(palette.primaryText.color)
+          ForEach(0..<3, id: \.self) { _ in
+            OverlayConversationMessageContent(message: backdrop, palette: palette)
+              .padding(16)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .background(
+                palette.primaryText.color.opacity(0.06),
+                in: RoundedRectangle(cornerRadius: CSRadius.card))
+          }
+        }
+        .padding(24)
+        .frame(width: 860, height: 520, alignment: .topLeading)
+        .background(palette.desktopBackground.color)
+        .environment(\.colorScheme, dark ? .dark : .light))
+      let parent = NSPanel(
+        contentRect: NSRect(x: 100, y: 100, width: 860, height: 520),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      parent.isReleasedWhenClosed = false
+      parent.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+      parent.backgroundColor = palette.desktopBackground.nsColor
+      parent.contentView = host
+      parent.center()
+      BackgroundTestWindow.present(parent)
+      let control = NSView(frame: NSRect(x: 740, y: 250, width: 70, height: 30))
+      host.addSubview(control)
+      let owner = OverlayHintAnchor()
+      owner.view = control
+      let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "hover-glass-\(UUID().uuidString).png")
+      defer {
+        owner.hide()
+        parent.contentView = nil
+        parent.close()
+        try? FileManager.default.removeItem(at: url)
+      }
+      host.layoutSubtreeIfNeeded()
+      owner.show(
+        message.bodyText, palette: palette, leading: true,
+        content: AnyView(
+          OverlayRosterMessagePreview(name: "3 · Lena", message: message, palette: palette)),
+        size: CGSize(width: 330, height: 240), interactive: true)
+      RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+      // Window capture includes its attached preview and excludes other apps.
+      process.arguments = ["-x", "-l", String(parent.windowNumber), url.path]
+      process.standardOutput = Pipe()
+      process.standardError = Pipe()
+      try process.run()
+      let deadline = Date().addingTimeInterval(10)
+      while process.isRunning, Date() < deadline {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      }
+      if process.isRunning {
+        process.terminate()
+        throw XCTSkip("Native window capture exceeded its ten-second budget.")
+      }
+      try XCTSkipUnless(
+        process.terminationStatus == 0,
+        "Native glass capture needs Screen Recording access in the isolated GUI session.")
+      let attachment = XCTAttachment(image: try XCTUnwrap(NSImage(contentsOf: url)))
+      attachment.name = "Sidebar-native-glass-\(dark ? "dark" : "light")"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+    }
   }
 
   func testSidebarReviewAtStandardWidths() throws {
