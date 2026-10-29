@@ -2926,6 +2926,12 @@ impl AcousticLedger {
         let held = self.slots_of(owner).unwrap_or(&[]).to_vec();
         let protected = |source: &WordSlot| {
             observation.producer != ObservationProducer::ManualHuman
+                && !operations.iter().any(|operation| {
+                    operation.sources.contains(source)
+                        && self.independent_dt_partition_debt(
+                            observation, &operation.sources, &operation.outputs,
+                        ).is_some()
+                })
                 && source.producer.authority_rank() > observation.producer.authority_rank()
                 && !self.speech_evidence.as_ref().is_some_and(|speech| {
                     speech

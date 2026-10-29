@@ -352,6 +352,118 @@ impl AcousticLedger {
 }
 
 impl AcousticLedger {
+    /// An unsealed independent DT may propose one exact pin over a Whisper
+    /// partition in one acoustic component. Uncovered measured speech stays
+    /// explicit debt; this is not proof that the component has one word.
+    pub(super) fn independent_dt_partition_debt(
+        &self,
+        observation: &ObservationIdentity,
+        sources: &[WordSlot],
+        outputs: &[WordSlot],
+    ) -> Option<Vec<(u64, u64)>> {
+        let owner = &observation.occurrence;
+        if observation.producer != ObservationProducer::AppleDictation
+            || self.is_sealed(owner)
+            || sources.len() < 2
+            || outputs.len() != 1
+            || sources.iter().any(|source| {
+                source.producer != ObservationProducer::Whisper
+                    || source.observation.occurrence != *owner
+                    || !self.word_pin_observations.contains(&source.observation)
+            })
+            || outputs[0].observation != *observation
+            || outputs[0].producer != ObservationProducer::AppleDictation
+            || negation_contexts(&compose_label(sources)) != negation_contexts(&compose_label(outputs))
+        {
+            return None;
+        }
+        // Equal lexical positions are a conservative repetition veto only;
+        // labels never establish the physical identity of either occurrence.
+        let tokens = sources.iter().map(|source| normalize_word_token(&source.text)).collect::<BTreeSet<_>>();
+        if tokens.len() != sources.len() || tokens.contains("") {
+            return None;
+        }
+        let output = &outputs[0];
+        let input = self.word_evidence_input(observation)?;
+        let request = input.producer_request.as_ref()?;
+        if input.finality != "final"
+            || input.timing != "exact_sample_range"
+            || !input.backend.as_deref().is_some_and(|backend| backend.ends_with(":apple_dictation"))
+            || request.range.session != owner.session
+            || request.range.capture_epoch != owner.capture_epoch
+            || input.words.len() != 1
+            || input.words[0].original_text.is_none()
+            || input.words[0].decode != Some((request.range.sample_start, request.range.sample_end))
+            || input.words[0].sample_start != output.sample_start
+            || input.words[0].sample_end != output.sample_end
+            || sources.iter().any(|source| {
+                request.range.sample_start > source.sample_start
+                    || request.range.sample_end < source.sample_end
+                    || output.sample_start >= source.sample_end
+                    || source.sample_start >= output.sample_end
+            })
+            || !self.complete_decoded_words.get(observation).is_some_and(|complete| {
+                complete.contains(&(output.sample_start, output.sample_end))
+            })
+        {
+            return None;
+        }
+        let anchor = self.word_anchor_identity(output)?;
+        if anchor.anchors.len() != 1
+            || sources.iter().any(|source| {
+                self.word_anchor_identity(source).is_none_or(|identity| identity.anchors != anchor.anchors)
+            })
+        {
+            return None;
+        }
+        let mut ordered = sources.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|source| (source.sample_start, source.sample_end));
+        // A shared merged anchor is not enough: the capture can merge a
+        // quiet valley inside it. Every exact join needs its own persisted,
+        // same-observation hop receipt and no unobserved or quiet span.
+        let resolution = u64::from(self.capture_rate_hz?).div_ceil(50);
+        if resolution == 0 || ordered.windows(2).any(|pair| {
+            if pair[0].sample_end != pair[1].sample_start { return true; }
+            let boundary = pair[0].sample_end;
+            let left = SlotTarget::from(pair[0]);
+            let right = SlotTarget::from(pair[1]);
+            let mut facts = input.boundary_evidence.iter().filter(|fact| {
+                fact.left == left && fact.right == right
+                    && fact.probe_start == boundary.saturating_sub(resolution)
+                    && fact.probe_end == boundary.saturating_add(resolution)
+                    && fact.probe_start >= request.range.sample_start
+                    && fact.probe_start >= owner.sample_start
+                    && fact.probe_end <= owner.sample_end
+                    && fact.probe_end <= request.range.sample_end
+            });
+            !facts.next().is_some_and(|fact| fact.continuously_voiced) || facts.next().is_some()
+        }) {
+            return None;
+        }
+        let source_start = ordered.first()?.sample_start;
+        let source_end = ordered.iter().map(|source| source.sample_end).max()?;
+        let scope = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, source_start, source_end);
+        let speech = self.measured_speech_for(&scope)?;
+        let mut found = false;
+        let mut debt = Vec::new();
+        for range in speech.ranges() {
+            for source in sources {
+                let start = range.sample_start.max(source.sample_start);
+                let end = range.sample_end.min(source.sample_end);
+                if start >= end { continue; }
+                found = true;
+                if start < output.sample_start {
+                    debt.push((start, end.min(output.sample_start)));
+                }
+                if end > output.sample_end {
+                    debt.push((start.max(output.sample_end), end));
+                }
+            }
+        }
+        debt.retain(|(start, end)| start < end);
+        found.then_some(debt)
+    }
+
     pub(super) fn published_whisper_sources_protected(
         &self,
         observation: &ObservationIdentity,
@@ -1415,7 +1527,7 @@ impl AcousticLedger {
     ) -> (Vec<SlotOperationReceipt>, Vec<GroupSpeechCoverageReceipt>) {
         if !matches!(
             observation.producer,
-            ObservationProducer::Whisper | ObservationProducer::CloudLive
+            ObservationProducer::Whisper | ObservationProducer::CloudLive | ObservationProducer::AppleDictation
         ) {
             return (Vec::new(), Vec::new());
         }
@@ -1480,6 +1592,13 @@ impl AcousticLedger {
                 // Borrow the ledger only while discovering this component.
                 // Refusals and alternatives are recorded after discovery.
                 let connected = |source: usize, pin: usize| {
+                    if observation.producer == ObservationProducer::AppleDictation
+                        && prior[source].producer == ObservationProducer::Whisper
+                        && prior[source].sample_start < pins[pin].sample_end
+                        && pins[pin].sample_start < prior[source].sample_end
+                    {
+                        return true;
+                    }
                     if source_groups
                         .iter()
                         .any(|(sources, words)| words.contains(&pin) && sources.contains(&source))
@@ -1729,7 +1848,8 @@ impl AcousticLedger {
             // A completed word-grain window proves which PCM was observed.
             // It does not authorize a merge of already distinct word pins.
             // Pin or speech coverage alone cannot retire their word evidence.
-            let geometry = (!collapses_word_pins || preserves_group_words || retokenizes)
+            let dt_partition = self.independent_dt_partition_debt(observation, &sources, &outputs).is_some();
+            let geometry = (!collapses_word_pins || preserves_group_words || retokenizes || dt_partition)
                 && source_indices.last().unwrap() - source_indices.first().unwrap() + 1
                     == sources.len()
                 && outputs
@@ -1835,7 +1955,8 @@ impl AcousticLedger {
                     || range_refinement
                     || content_refinement
                     || partial_refinement
-                    || window_partition);
+                    || window_partition
+                    || dt_partition);
             // Word timestamps may refine a phrase's geometry, but cannot
             // silently reverse its polarity. Route that disagreement through
             // the existing lexical authority even while the source is coarse.
@@ -1882,7 +2003,8 @@ impl AcousticLedger {
                     && !range_refinement
                     && !content_refinement
                     && !partial_refinement
-                    && !window_partition)
+                    && !window_partition
+                    && !dt_partition)
             {
                 Some("resegmentation_unaccounted_speech")
             } else {
@@ -1945,7 +2067,9 @@ impl AcousticLedger {
                 source_ranges,
                 sources: sources.clone(),
                 outputs: outputs.clone(),
-                rule_id: if coverage.is_some() {
+                rule_id: if dt_partition {
+                    "acoustic_resegmentation/independent-dt-debt/v1"
+                } else if coverage.is_some() {
                     "acoustic_resegmentation/speech-coverage/v1"
                 } else if window_refinement {
                     "acoustic_resegmentation/decode-window/v1"
@@ -2554,6 +2678,17 @@ impl AcousticLedger {
                 }
             }
         }
+        if observation.producer == ObservationProducer::AppleDictation {
+            for operation in operations {
+                if operation.rule_id == "acoustic_resegmentation/independent-dt-debt/v1"
+                    && let Some(debt) = self.independent_dt_partition_debt(
+                        observation, &operation.sources, &operation.outputs,
+                    )
+                {
+                    new_sources.extend(debt);
+                }
+            }
+        }
         if !new_sources.is_empty() {
             self.publication_debt
                 .entry(owner.clone())
@@ -2599,7 +2734,11 @@ impl AcousticLedger {
         // A capture hop cannot locate speech more precisely than its own
         // extent. Account a voiced hop only when it overlaps one of these
         // authenticated committed pins, never a separate voiced hop.
-        if let (Some(energy), Some(rate)) = (&self.decode_fence_energy, self.capture_rate_hz) {
+        if let (Some(energy), Some(rate)) = (&self.decode_fence_energy, self.capture_rate_hz)
+            && !operations.iter().any(|operation| {
+                operation.rule_id == "acoustic_resegmentation/independent-dt-debt/v1"
+            })
+        {
             let resolution = u64::from(rate).div_ceil(50);
             for word in &words {
                 let start = word.sample_start.saturating_sub(resolution).max(owner.sample_start);
@@ -2751,6 +2890,9 @@ impl AcousticLedger {
         use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
 
         let owner = &source.observation.occurrence;
+        if self.independent_dt_partition_debt(observation, retired, outputs).is_some() {
+            return true;
+        }
         // A publication band may retire a coarse Apple source only as its
         // authenticated complete partition. Quiet-gap and one-word
         // continuation proofs cannot account for raw words filtered from the

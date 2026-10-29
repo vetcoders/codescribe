@@ -89,6 +89,16 @@ pub struct WordPublicationEvidence {
     pub decoded_words: Vec<SourceWord>,
 }
 
+/// Capture-hop observation at the physical join between two source pins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordBoundaryEvidence {
+    pub left: SlotTarget,
+    pub right: SlotTarget,
+    pub probe_start: u64,
+    pub probe_end: u64,
+    pub continuously_voiced: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WordEvidenceInput {
     pub producer_request: Option<crate::stt::tail_provider::TailRequestIdentity>,
@@ -96,6 +106,8 @@ pub struct WordEvidenceInput {
     pub words: Vec<SourceWord>,
     #[serde(default)]
     pub publication: Option<WordPublicationEvidence>,
+    #[serde(default)]
+    pub boundary_evidence: Vec<WordBoundaryEvidence>,
     pub backend: Option<String>,
     /// Unknown is deliberate: positive confidence does not prove finality.
     pub finality: String,
@@ -797,6 +809,7 @@ impl AcousticLedger {
                 })
                 .collect(),
             publication: None,
+            boundary_evidence: Vec::new(),
             backend: backend
                 .map(str::to_owned)
                 .or_else(|| provider.map(|p| p.1.clone())),
@@ -834,6 +847,64 @@ impl AcousticLedger {
                 decode: pin.decode_sample_start.zip(pin.decode_sample_end),
             }).collect(),
         });
+    }
+
+    /// Stage same-capture hop observations at candidate source joins. These
+    /// facts are carried by the word input into the ordinary durable trail.
+    pub(crate) fn stage_dt_boundary_evidence(
+        &mut self,
+        observation: &ObservationIdentity,
+        energy: &crate::audio::capture_receipt::CaptureEnergyOwner,
+        captured_samples: u64,
+    ) {
+        use crate::audio::capture_receipt::ACTIVE_SPEECH_LINEAR_FLOOR;
+        let Some(input) = self.word_evidence_input(observation) else { return; };
+        let Some(request) = input.producer_request.as_ref() else { return; };
+        if observation.producer != ObservationProducer::AppleDictation
+            || !energy.identity().matches(&observation.occurrence.session, observation.occurrence.capture_epoch)
+            || request.range.session != observation.occurrence.session
+            || request.range.capture_epoch != observation.occurrence.capture_epoch
+            || input.words.len() != 1
+        {
+            return;
+        }
+        let pin_start = input.words[0].sample_start;
+        let pin_end = input.words[0].sample_end;
+        let Some(rate) = self.capture_rate_hz else { return; };
+        let resolution = u64::from(rate).div_ceil(50);
+        let Some(levels) = energy.session_hop_levels(&observation.occurrence.session, observation.occurrence.capture_epoch) else { return; };
+        let mut sources = self.slots_of(&observation.occurrence).unwrap_or(&[]).iter()
+            .filter(|source| source.producer == ObservationProducer::Whisper
+                && source.sample_start < pin_end && pin_start < source.sample_end)
+            .cloned().collect::<Vec<_>>();
+        sources.sort_by_key(|source| (source.sample_start, source.sample_end));
+        let mut evidence = Vec::new();
+        for pair in sources.windows(2) {
+            if pair[0].sample_end != pair[1].sample_start { continue; }
+            let boundary = pair[0].sample_end;
+            let start = boundary.saturating_sub(resolution);
+            let end = boundary.saturating_add(resolution);
+            if resolution == 0 || start < request.range.sample_start
+                || start < observation.occurrence.sample_start
+                || end > observation.occurrence.sample_end
+                || end > request.range.sample_end || end > captured_samples { continue; }
+            let hops = levels.iter().filter(|hop| hop.sample_start < end && start < hop.sample_end).collect::<Vec<_>>();
+            let continuously_voiced = !hops.is_empty()
+                && hops.first().is_some_and(|hop| hop.sample_start <= start)
+                && hops.last().is_some_and(|hop| hop.sample_end >= end)
+                && hops.windows(2).all(|pair| pair[0].sample_end == pair[1].sample_start)
+                && hops.iter().all(|hop| hop.rms.is_finite() && hop.rms >= ACTIVE_SPEECH_LINEAR_FLOOR
+                    && energy.digital_zero_in(&observation.occurrence.session, observation.occurrence.capture_epoch, hop.sample_start, hop.sample_end) == Some(false));
+            evidence.push(WordBoundaryEvidence {
+                left: SlotTarget::from(&pair[0]), right: SlotTarget::from(&pair[1]),
+                probe_start: start, probe_end: end, continuously_voiced,
+            });
+        }
+        if let Some(input) = self.word_adjudication.input.as_mut()
+            && input.observation == *observation
+        {
+            input.boundary_evidence = evidence;
+        }
     }
 
     pub(crate) fn bind_word_provider(
@@ -1933,7 +2004,8 @@ impl AcousticLedger {
         // The independent witness contests a resolved physical partition,
         // not a spelling-nearest token or a provider rank. Its full original
         // decode and measured speech anchors must cover every target.
-        let independent_witness = coarse_witness || (observation.producer == ObservationProducer::AppleDictation
+        let independent_witness = self.independent_dt_partition_debt(observation, sources, outputs).is_some()
+            || coarse_witness || (observation.producer == ObservationProducer::AppleDictation
             && complete
             && candidate.acoustic_boundaries_complete
             && sources.len() == outputs.len()

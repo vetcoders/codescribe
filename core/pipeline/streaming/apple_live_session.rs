@@ -5433,6 +5433,11 @@ impl AppleSealState {
                 })
                 .collect::<Vec<_>>();
             ledger.stage_word_evidence(&observation, &original, None, "unknown");
+            if producer == LedgerObservationProducer::AppleDictation {
+                ledger.stage_dt_boundary_evidence(
+                    &observation, &self.capture_energy, self.audio.session_sample_end(),
+                );
+            }
             if let Some((payload, band, terminal_tail)) = publication {
                 let decode = &payload.identity.range;
                 let full = payload.segments.iter()
