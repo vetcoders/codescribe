@@ -556,6 +556,8 @@ struct DictationOverlayView: View {
               .allowsHitTesting(transcriptVisible)
               .accessibilityHidden(!transcriptVisible)
             if agentsSurface, let conversation = state.selectedConversation {
+              let resolvedTarget = state.resolvedComposerTarget(viewing: conversation)
+              let target = resolvedTarget ?? conversation
               OverlayConversationView(
                 conversation: conversation, palette: palette,
                 topInset: headerHeight + 8 + conversationControlsHeight, bottomInset: 20,
@@ -568,13 +570,13 @@ struct DictationOverlayView: View {
                 isPresented: !state.isCollapsed,
                 isCovered: canvasHidden,
                 draft: Binding(
-                  get: { state.conversationDraft(for: conversation.id) },
-                  set: { state.setConversationDraft($0, for: conversation.id) }),
-                sending: state.pendingTextMessages.contains(conversation.id),
-                sendError: state.draftSyncSendError(for: conversation.id)
-                  ?? (state.draftCapture.errorConversationID == conversation.id
+                  get: { state.conversationDraft(for: target.id) },
+                  set: { state.setConversationDraft($0, for: target.id) }),
+                sending: state.pendingTextMessages.contains(target.id),
+                sendError: state.draftSyncSendError(for: target.id)
+                  ?? (state.draftCapture.errorConversationID == target.id
                     ? state.draftCapture.error : nil),
-                onSend: { Task { await state.sendConversationText(conversation) } },
+                onSend: { Task { await state.sendConversationText(target) } },
                 microphoneOpen: state.conversationMicrophoneOpen(conversation),
                 microphoneEnabled: state.canToggleConversationMicrophone(conversation)
                   && !state.pendingChannelToggles.contains(conversation.channel),
@@ -593,40 +595,60 @@ struct DictationOverlayView: View {
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
                 navigationActions: conversationHeaderActions(conversation),
                 navigationIndicators: conversationHeaderIndicators(conversation),
+                composerConversation: target,
+                composerAvailable: resolvedTarget != nil,
+                composerMicrophoneOpen: state.conversationMicrophoneOpen(target),
+                composerRouting: AnyView(composerRouting(viewing: conversation)),
+                onReturnHeldText: { message, text in
+                  let heldTarget = message.sourceChannel == "0"
+                    ? OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+                    : conversation
+                  state.chooseComposerTarget(heldTarget)
+                  let old = state.conversationDraft(for: heldTarget.id)
+                  state.setConversationDraft(old.isEmpty ? text : old + "\n\n" + text, for: heldTarget.id)
+                },
+                onNavigateComposerReply: target.id == conversation.id ? nil : {
+                  state.selectConversation(target.id)
+                },
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
                 onComposerTypingActivity: { state.noteComposerTypingActivity() },
-                replySelection: state.conversationReplies[conversation.id],
-                onClearReply: { state.conversationReplies.removeValue(forKey: conversation.id) },
-                draftMicrophoneRecording: state.draftCapture.conversationID == conversation.id,
-                draftMicrophoneBusy: state.draftMicrophoneBusy(in: conversation),
+                replySelection: state.conversationReplies[target.id],
+                onClearReply: { state.conversationReplies.removeValue(forKey: target.id) },
+                draftMicrophoneRecording: state.draftCapture.conversationID == target.id,
+                draftMicrophoneBusy: state.draftMicrophoneBusy(in: target),
                 onToggleDraftMicrophone: {
-                  Task { await state.toggleDraftMicrophone(in: conversation) }
+                  Task { await state.toggleDraftMicrophone(in: target) }
                 },
                 onStageCaptureAttachments: {
-                  state.stageConversationAttachments($0, in: conversation)
+                  state.stageConversationAttachments($0, in: target)
                 },
-                pendingCaptureAttachments: state.captureAttachmentDrafts[conversation.id]?.paths
+                pendingCaptureAttachments: state.captureAttachmentDrafts[target.id]?.paths
                   ?? [],
                 onRemoveCaptureAttachment: {
-                  state.removeCaptureAttachment($0, in: conversation.id)
+                  state.removeCaptureAttachment($0, in: target.id)
                 },
-                captureAttachmentError: state.captureAttachmentErrors[conversation.id],
+                captureAttachmentError: state.captureAttachmentErrors[target.id],
                 onRetryCaptureAttachments: {
-                  Task { await state.retryCaptureAttachments(in: conversation.id) }
+                  Task { await state.retryCaptureAttachments(in: target.id) }
                 },
                 onReply: { message in
+                  state.chooseComposerTarget(conversation)
                   state.conversationReplies[conversation.id] = OverlayUserReplyReference(
                     message: message)
                 },
-                draftSyncChoices: state.draftSyncChoices(for: conversation),
-                draftSyncNames: state.draftSyncNames(for: conversation.id),
-                draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
-                draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
-                onActivateDraftSync: { state.activateDraftSync(for: conversation.id) },
-                onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
-                onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
-                onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
+                draftSyncChoices: state.draftSyncChoices(for: target),
+                draftSyncNames: state.draftSyncNames(for: target.id),
+                draftSyncArmed: state.armedDraftSyncConversationID == target.id,
+                draftSyncEnabled: state.canActivateDraftSync(for: target.id),
+                onActivateDraftSync: { state.activateDraftSync(for: target.id) },
+                onProseEdit: { state.applyConversationProseEdit($0, for: target.id) },
+                onToggleDraftSync: { state.toggleDraftSync(from: target.id, with: $0) },
+                onStopDraftSync: { state.stopDraftSync(for: target.id) }
               )
+              .onAppear { state.initializeComposerTarget(conversation) }
+              .onChange(of: conversation.id) { _, _ in
+                state.initializeComposerTarget(conversation)
+              }
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
               .accessibilityHidden(state.isCollapsed)
@@ -1337,6 +1359,50 @@ struct DictationOverlayView: View {
   var channelStatusView: OverlayChannelStatusView {
     OverlayChannelStatusView.intercomRoster(
       state: state, palette: palette, animates: overlayVisible)
+  }
+
+  private func composerRouting(viewing conversation: OverlayConversation) -> some View {
+    let target = state.composerTarget
+    let selected = state.resolvedComposerTarget(viewing: conversation)
+    let choices = state.conversations.filter { $0.owner != nil || $0.channel == "0" }
+    let openChannels = state.channelHudStates.filter { $0.value.open }.keys.sorted()
+    return VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 6) {
+        Text("To:")
+        Menu {
+          ForEach(choices) { choice in
+            Button(choice.displayTitle) { state.chooseComposerTarget(choice) }
+          }
+        } label: {
+          Text(verbatim: selected?.displayTitle ?? target?.title ?? "—")
+            .lineLimit(1).truncationMode(.middle)
+        }
+        .accessibilityIdentifier("overlay-composer-recipient")
+        if (conversation.owner != nil || conversation.channel == "0"),
+          selected?.id != conversation.id || selected?.owner?.id != conversation.owner?.id
+        {
+          Button {
+            state.chooseComposerTarget(conversation)
+          } label: {
+            Text("Write to \(conversation.displayTitle)")
+          }
+          .buttonStyle(.plain)
+        }
+        Spacer(minLength: 0)
+      }
+      HStack(spacing: 4) {
+        Image(systemName: "waveform.badge.mic")
+        if openChannels.isEmpty {
+          Text("Microphone closed")
+        } else {
+          Text("Microphone:")
+          Text(verbatim: openChannels.joined(separator: ", "))
+            .lineLimit(1).truncationMode(.middle)
+        }
+      }
+    }
+    .font(.system(size: 11 * textScale, weight: .medium))
+    .foregroundStyle(palette.mutedText.color)
   }
 
   /// A digit may be reused; roster actions belong only to the exact live lease.

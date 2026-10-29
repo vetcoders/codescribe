@@ -149,6 +149,13 @@ struct OverlayConversationView: View {
   /// Optional controls for the horizontal bus window only.
   var navigationActions: AnyView? = nil
   var navigationIndicators: AnyView? = nil
+  /// Standard window may compose for a different frozen conversation.
+  var composerConversation: OverlayConversation? = nil
+  var composerAvailable = true
+  var composerMicrophoneOpen: Bool? = nil
+  var composerRouting: AnyView? = nil
+  var onReturnHeldText: ((OverlayConversationMessage, String) -> Void)? = nil
+  var onNavigateComposerReply: (() -> Void)? = nil
   /// Intercom only tightens the container and composer insets. Messages keep
   /// the same formatted bubbles in attached, main and detached conversations.
   var presentation: OverlayConversationPresentation = .standard
@@ -403,19 +410,9 @@ struct OverlayConversationView: View {
 
   private var composer: some View {
     VStack(spacing: 8) {
-      if conversation.owner != nil || conversation.channel == "0" {
-        if presentation == .standard {
-          HStack(spacing: 4) {
-            Text("To:")
-            Text(verbatim: conversation.displayTitle)
-              .lineLimit(1)
-              .truncationMode(.middle)
-            Spacer(minLength: 0)
-          }
-          .font(.system(size: 11 * textScale, weight: .medium))
-          .foregroundStyle(palette.mutedText.color)
-          .accessibilityIdentifier("overlay-composer-recipient")
-        }
+      if let composerRouting { composerRouting }
+      let target = composerConversation ?? conversation
+      if composerAvailable && (target.owner != nil || target.channel == "0") {
         OverlayConversationComposer(
           palette: palette, draft: $draft, maximumEditorHeight: composerEditorHeightLimit,
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
@@ -426,14 +423,17 @@ struct OverlayConversationView: View {
           replySelection: replySelection, onClearReply: onClearReply,
           draftMicrophoneRecording: draftMicrophoneRecording,
           draftMicrophoneBusy: draftMicrophoneBusy,
-          liveSpeechActive: microphoneOpen,
+          liveSpeechActive: composerMicrophoneOpen ?? microphoneOpen,
           onToggleDraftMicrophone: onToggleDraftMicrophone,
           onStageCaptureAttachments: onStageCaptureAttachments,
           pendingCaptureAttachments: pendingCaptureAttachments,
           onRemoveCaptureAttachment: onRemoveCaptureAttachment,
           captureAttachmentError: captureAttachmentError,
           onRetryCaptureAttachments: onRetryCaptureAttachments,
-          onNavigateReply: { navigateToReply(replySelection?.messageID) },
+          onNavigateReply: {
+            if let onNavigateComposerReply { onNavigateComposerReply() }
+            else { navigateToReply(replySelection?.messageID) }
+          },
           draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
           draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
           onActivateDraftSync: onActivateDraftSync,
@@ -441,7 +441,7 @@ struct OverlayConversationView: View {
           onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync)
         // A reused native coordinator must never redirect an old owner's
         // proposal or undo history into a different conversation's binding.
-        .id([conversation.id, conversation.owner?.id ?? ""])
+        .id([target.id, target.owner?.id ?? ""])
         if let sendError { composerError(sendError) }
         if let playbackError {
           composerError(playbackError)
@@ -456,7 +456,7 @@ struct OverlayConversationView: View {
   }
 
   private var composerPlaceholder: String {
-    conversation.channel == "0"
+    (composerConversation ?? conversation).channel == "0"
       ? String(localized: "Send to everyone") : String(localized: "Message the Agent")
   }
 
@@ -746,7 +746,11 @@ struct OverlayConversationView: View {
     guard message.holdingSeconds(at: Date()) != nil else { return }
     let returning = message.text
     performDeliveryControl(.withdraw, message: message) {
-      draft = draft.isEmpty ? returning : draft + "\n\n" + returning
+      if let onReturnHeldText {
+        onReturnHeldText(message, returning)
+      } else {
+        draft = draft.isEmpty ? returning : draft + "\n\n" + returning
+      }
       revisionFocus &+= 1
       onComposerTypingActivity()
     }

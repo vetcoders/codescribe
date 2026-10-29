@@ -1374,6 +1374,40 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
+  /// A composer destination is pinned to its owner, never to a reusable digit.
+  struct ComposerTarget: Equatable {
+    let id: String
+    let channel: String
+    let ownerID: String?
+    let title: String
+
+    init(_ conversation: OverlayConversation) {
+      id = conversation.id
+      channel = conversation.channel
+      ownerID = conversation.owner?.id
+      title = conversation.displayTitle
+    }
+  }
+  private(set) var composerTarget: ComposerTarget?
+
+  func chooseComposerTarget(_ conversation: OverlayConversation) {
+    guard conversation.owner != nil || conversation.channel == "0" else { return }
+    composerTarget = ComposerTarget(conversation)
+  }
+
+  func initializeComposerTarget(_ conversation: OverlayConversation) {
+    if composerTarget == nil { chooseComposerTarget(conversation) }
+  }
+
+  func resolvedComposerTarget(viewing conversation: OverlayConversation) -> OverlayConversation? {
+    guard let target = composerTarget else {
+      return conversation.owner != nil || conversation.channel == "0" ? conversation : nil
+    }
+    return conversations.first {
+      $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.ownerID
+    }
+  }
+
   /// Folding hides the roster but retains which canvas will unfold.
   private(set) var windowContentSurface: OverlayContentSurface = .transcription
   /// Whether the current frame can host the roster column. Width never
