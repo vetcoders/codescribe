@@ -156,6 +156,7 @@ struct OverlayConversationView: View {
   var composerRouting: AnyView? = nil
   var onReturnHeldText: ((OverlayConversationMessage, String) -> Void)? = nil
   var onNavigateComposerReply: (() -> Void)? = nil
+  var conversationNavigationRequest: OverlayState.ConversationNavigationRequest? = nil
   /// Intercom only tightens the container and composer insets. Messages keep
   /// the same formatted bubbles in attached, main and detached conversations.
   var presentation: OverlayConversationPresentation = .standard
@@ -189,6 +190,7 @@ struct OverlayConversationView: View {
   var onToggleDraftSync: ((String) -> Void)? = nil
   var onStopDraftSync: (() -> Void)? = nil
   @State private var replyNavigationID: String?
+  @State private var handledConversationNavigation: UUID?
 
   @State private var scrollFollow = StreamScrollFollowState()
   /// Conversation and presentation the focus handler last observed. Written
@@ -391,6 +393,11 @@ struct OverlayConversationView: View {
             scrollToLatest(proxy)
           }
         }
+        .task(id: conversationNavigationRequest?.revision) {
+          await Task.yield()
+          guard !Task.isCancelled else { return }
+          navigateRequestedMessage()
+        }
         .onChange(of: orderedMessages.last) { _, _ in
           settleMessageWindow()
           if #available(macOS 15.0, *) {
@@ -400,6 +407,9 @@ struct OverlayConversationView: View {
           } else if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
             scrollToLatest(proxy)
           }
+        }
+        .onChange(of: orderedMessages) { _, _ in
+          navigateRequestedMessage()
         }
       }
       .foregroundStyle(palette.primaryText.color)
@@ -630,6 +640,16 @@ struct OverlayConversationView: View {
     let id = orderedMessages[start].id
     if windowStartID != id { windowStartID = id }
     if windowConversationID != conversation.id { windowConversationID = conversation.id }
+  }
+
+  private func navigateRequestedMessage() {
+    guard let request = conversationNavigationRequest,
+      request.conversationID == conversation.id,
+      request.revision != handledConversationNavigation,
+      orderedMessages.contains(where: { $0.id == request.messageID })
+    else { return }
+    handledConversationNavigation = request.revision
+    navigateToReply(request.messageID)
   }
 
   private func navigateToReply(_ id: String?) {

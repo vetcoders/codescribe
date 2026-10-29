@@ -1390,6 +1390,23 @@ final class OverlayState {
   }
   private(set) var composerTarget: ComposerTarget?
 
+  struct ConversationNavigationRequest: Equatable {
+    let conversationID: String
+    let messageID: String
+    let revision: UUID
+  }
+  private(set) var conversationNavigationRequest: ConversationNavigationRequest?
+
+  func navigateToConversationMessage(_ conversation: OverlayConversation, messageID: String) {
+    guard conversations.contains(where: {
+      $0.id == conversation.id && $0.channel == conversation.channel
+        && $0.owner?.id == conversation.owner?.id
+    }) else { return }
+    selectConversation(conversation.id)
+    conversationNavigationRequest = ConversationNavigationRequest(
+      conversationID: conversation.id, messageID: messageID, revision: UUID())
+  }
+
   func chooseComposerTarget(_ conversation: OverlayConversation) {
     guard conversation.owner != nil || conversation.channel == "0" else { return }
     composerTarget = ComposerTarget(conversation)
@@ -1397,6 +1414,12 @@ final class OverlayState {
 
   func initializeComposerTarget(_ conversation: OverlayConversation) {
     if composerTarget == nil { chooseComposerTarget(conversation) }
+  }
+
+  func composerTargetIsAvailable(_ target: OverlayConversation) -> Bool {
+    conversations.contains {
+      $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.owner?.id
+    }
   }
 
   func resolvedComposerTarget(viewing conversation: OverlayConversation) -> OverlayConversation? {
