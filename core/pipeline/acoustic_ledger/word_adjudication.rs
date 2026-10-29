@@ -1838,13 +1838,7 @@ impl AcousticLedger {
         // Once a Whisper word has entered the document, another overlapping
         // decode may supply context but cannot rewrite that physical word.
         // Coarse provisional slots still need their first word refinement.
-        if observation.producer == ObservationProducer::Whisper
-            && self.word_evidence_input(observation)
-                .is_some_and(|input| input.publication.is_some())
-            && sources.iter().any(|source| {
-                source.producer == ObservationProducer::Whisper && !self.coarse_word_source(source)
-            })
-        {
+        if self.published_whisper_sources_protected(observation, sources) {
             self.record_word_choice(observation, sources, outputs, "published_whisper_word", false);
             return Some(false);
         }
