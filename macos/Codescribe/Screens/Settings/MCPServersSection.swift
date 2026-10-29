@@ -42,9 +42,13 @@ struct MCPServersSection: View {
               onToggle: { model.toggleMcpServer(server) },
               onTest: { model.testMcpServer(server.name) },
               onRemove: { model.requestMcpServerRemoval(server.name) },
-              onSave: { command, args, endpoint, token in
+              authorizationPending: model.mcpAuthorizationPending.contains(server.name),
+              authNotice: model.mcpAuthNotices[server.name],
+              onAuthorize: { model.authorizeMcpServer(server) },
+              onSave: { command, args, endpoint, token, oauth in
                 model.updateMcpServer(
-                  server, command: command, args: args, endpoint: endpoint, token: token)
+                  server, command: command, args: args, endpoint: endpoint, token: token,
+                  oauth: oauth)
               }
             )
           }
@@ -60,10 +64,10 @@ struct MCPServersSection: View {
       )
       .padding(.top, model.mcpServers.isEmpty ? 0 : SettingsScale.sectionGap)
 
-      MCPServerForm { name, command, args, endpoint, token in
+      MCPServerForm { name, command, args, endpoint, token, oauth in
         model.addMcpServer(
           name: name, command: command, args: args,
-          endpoint: endpoint, token: token
+          endpoint: endpoint, token: token, oauth: oauth
         )
       }
       .padding(.top, SettingsScale.headerGap)
@@ -145,7 +149,10 @@ struct MCPServerRow: View {
   let onToggle: () -> Void
   let onTest: () -> Void
   let onRemove: () -> Void
-  let onSave: (String, [String], String, String) -> MCPAddFailure?
+  let authorizationPending: Bool
+  let authNotice: String?
+  let onAuthorize: () -> Void
+  let onSave: (String, [String], String, String, Bool) -> MCPAddFailure?
 
   @State private var showingDetails = false
   @State private var isEditing = false
@@ -154,8 +161,11 @@ struct MCPServerRow: View {
     server: CsMcpServer, pending: Bool, result: CsMcpTestResult?,
     permissionLevel: String?, initiallyShowingDetails: Bool = false,
     onToggle: @escaping () -> Void, onTest: @escaping () -> Void,
-    onRemove: @escaping () -> Void,
-    onSave: @escaping (String, [String], String, String) -> MCPAddFailure? = { _, _, _, _ in nil }
+    onRemove: @escaping () -> Void, authorizationPending: Bool = false,
+    authNotice: String? = nil, onAuthorize: @escaping () -> Void = {},
+    onSave: @escaping (String, [String], String, String, Bool) -> MCPAddFailure? = {
+      _, _, _, _, _ in nil
+    }
   ) {
     self.server = server
     self.pending = pending
@@ -164,6 +174,9 @@ struct MCPServerRow: View {
     self.onToggle = onToggle
     self.onTest = onTest
     self.onRemove = onRemove
+    self.authorizationPending = authorizationPending
+    self.authNotice = authNotice
+    self.onAuthorize = onAuthorize
     self.onSave = onSave
     _showingDetails = State(initialValue: initiallyShowingDetails)
   }
@@ -196,6 +209,18 @@ struct MCPServerRow: View {
         Spacer(minLength: CSSpace.sm)
         HStack(spacing: CSSpace.xs) {
           enabledToggle
+          if server.oauth && isRemote {
+            SettingsChipButton(action: onAuthorize) {
+              Text(
+                authorizationPending
+                  ? String(localized: "Signing in…")
+                  : (server.authRef.isEmpty
+                    ? String(localized: "Sign in") : String(localized: "Sign in again"))
+              )
+              .font(SettingsScale.controlLabel)
+            }
+            .disabled(authorizationPending)
+          }
           testButton
           SettingsChipButton(action: { isEditing.toggle() }) {
             Text("Edit").font(SettingsScale.controlLabel)
@@ -208,11 +233,15 @@ struct MCPServerRow: View {
 
       if isEditing {
         MCPServerForm(server: server, onCancel: { isEditing = false }) {
-          _, command, args, endpoint, token in
-          let failure = onSave(command, args, endpoint, token)
+          _, command, args, endpoint, token, oauth in
+          let failure = onSave(command, args, endpoint, token, oauth)
           if failure == nil { isEditing = false }
           return failure
         }
+      }
+
+      if let authNotice, !authNotice.isEmpty {
+        resultLine(text: authNotice, color: CSColor.secondaryInk)
       }
 
       DisclosureGroup(isExpanded: $showingDetails) {
@@ -300,8 +329,12 @@ struct MCPServerRow: View {
         detailRow(String(localized: "Server URL"), server.endpoint)
         detailRow(
           String(localized: "Authentication"),
-          server.authRef.isEmpty
-            ? String(localized: "No authentication") : String(localized: "Token in Keychain"))
+          server.oauth
+            ? (server.authRef.isEmpty
+              ? String(localized: "OAuth — not signed in")
+              : String(localized: "OAuth — signed in"))
+            : (server.authRef.isEmpty
+              ? String(localized: "No authentication") : String(localized: "Token in Keychain")))
       } else {
         detailRow(String(localized: "Launch command"), commandLine)
       }
@@ -437,7 +470,7 @@ private struct MCPServerForm: View {
   let onAdd:
     (
       _ name: String, _ command: String, _ args: [String],
-      _ endpoint: String, _ token: String
+      _ endpoint: String, _ token: String, _ oauth: Bool
     ) -> MCPAddFailure?
   let server: CsMcpServer?
   let onCancel: (() -> Void)?
@@ -453,6 +486,7 @@ private struct MCPServerForm: View {
   @State private var arguments: [Argument] = []
   @State private var endpoint: String = ""
   @State private var token: String = ""
+  @State private var oauth = false
   @State private var addError: MCPAddFailure?
   @FocusState private var focusedField: Field?
 
@@ -460,7 +494,7 @@ private struct MCPServerForm: View {
 
   init(
     server: CsMcpServer? = nil, onCancel: (() -> Void)? = nil,
-    onAdd: @escaping (String, String, [String], String, String) -> MCPAddFailure?
+    onAdd: @escaping (String, String, [String], String, String, Bool) -> MCPAddFailure?
   ) {
     self.server = server
     self.onCancel = onCancel
@@ -470,6 +504,7 @@ private struct MCPServerForm: View {
     _command = State(initialValue: server?.command ?? "")
     _arguments = State(initialValue: (server?.args ?? []).map { Argument(value: $0) })
     _endpoint = State(initialValue: server?.endpoint ?? "")
+    _oauth = State(initialValue: server?.oauth ?? false)
   }
 
   /// The field a refusal points at, if the form has one for it.
@@ -507,23 +542,33 @@ private struct MCPServerForm: View {
       if remote {
         labeledField(
           "Server URL", placeholder: "https://…/mcp", text: $endpoint, focus: .endpoint)
-        VStack(alignment: .leading, spacing: CSSpace.xxs) {
-          fieldLabel("Access token (optional)")
-          // The label is the field's accessibility name; the visible caption
-          // above stays a plain Text so the chrome matches the other fields.
-          SecureField(text: $token, prompt: nil) { Text("Access token (optional)") }
-            .labelsHidden()
-            .focused($focusedField, equals: .token)
-            .settingsInputChrome(isFocused: focusedField == .token)
-            .onSubmit(submit)
-          Text("The token is stored in the macOS Keychain, never in mcp.json.")
+        Toggle(String(localized: "Sign in with OAuth"), isOn: $oauth)
+          .toggleStyle(.checkbox)
+          .font(SettingsScale.helper)
+        if oauth {
+          Text("Save the server, then use Sign in on its row — the browser opens like for provider accounts.")
             .font(SettingsScale.helper)
             .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
-          if server?.authRef.isEmpty == false {
-            Text("Leave the token empty to keep the saved token.")
+        } else {
+          VStack(alignment: .leading, spacing: CSSpace.xxs) {
+            fieldLabel("Access token (optional)")
+            // The label is the field's accessibility name; the visible caption
+            // above stays a plain Text so the chrome matches the other fields.
+            SecureField(text: $token, prompt: nil) { Text("Access token (optional)") }
+              .labelsHidden()
+              .focused($focusedField, equals: .token)
+              .settingsInputChrome(isFocused: focusedField == .token)
+              .onSubmit(submit)
+            Text("The token is stored in the macOS Keychain, never in mcp.json.")
               .font(SettingsScale.helper)
               .foregroundStyle(CSColor.secondaryInk)
+              .fixedSize(horizontal: false, vertical: true)
+            if server?.authRef.isEmpty == false {
+              Text("Leave the token empty to keep the saved token.")
+                .font(SettingsScale.helper)
+                .foregroundStyle(CSColor.secondaryInk)
+            }
           }
         }
       } else {
@@ -622,7 +667,8 @@ private struct MCPServerForm: View {
       remote ? "" : command.trimmingCharacters(in: .whitespaces),
       remote ? [] : arguments.map(\.value),
       remote ? endpoint.trimmingCharacters(in: .whitespaces) : "",
-      remote ? token : ""
+      remote && !oauth ? token : "",
+      remote && oauth
     )?.forTransport(remote: remote, endpoint: endpoint)
     guard addError == nil else {
       if let field = Self.field(for: addError?.visibleField(remote: remote)) {
@@ -635,5 +681,6 @@ private struct MCPServerForm: View {
     arguments = []
     endpoint = ""
     token = ""
+    oauth = false
   }
 }

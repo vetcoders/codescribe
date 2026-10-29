@@ -15,6 +15,10 @@ data  CsAccountLoginResult.providerId
 data  CsAccountLoginResult.status
 prose CsAccountLoginResult.message
 data  CsAccountLoginResult.authUrl
+data  CsMcpSignInResult.server
+data  CsMcpSignInResult.status
+data  CsMcpSignInResult.detail
+data  CsMcpSignInResult.authUrl
 data  CsAdmissionReadiness.code
 prose CsAdmissionReadiness.message
 data  CsAdmissionReadiness.deviceName

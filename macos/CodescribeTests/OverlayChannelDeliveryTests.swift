@@ -420,6 +420,54 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.paths, ["/fixture/pending.png"])
   }
 
+  func testBusRefusalReturnsFilesToDraftWithoutWaitingForProjection() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let receiving = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first {
+        $0.owner?.channel == "1"
+      })
+    let state = OverlayState()
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [receiving], activeCaptureAttachmentSessions: []))
+    let root = ConversationAttachmentPointer.configDirectory
+    XCTAssertNotEqual(root.path, NSHomeDirectory() + "/.codescribe")
+    guard root.path != NSHomeDirectory() + "/.codescribe" else { return }
+    let file = root.appendingPathComponent("attachments/refused.png")
+    try FileManager.default.createDirectory(
+      at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("attachment fixture".utf8).write(to: file)
+    defer { try? FileManager.default.removeItem(at: file) }
+    let path = file.resolvingSymlinksInPath().path
+    let refused = expectation(description: "the bus refuses the frozen target")
+    refused.assertForOverFulfill = false
+    state.publishCaptureAttachments = { _, _ in
+      refused.fulfill()
+      throw NSError(
+        domain: "Codescribe.BusAttachment", code: 2,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Files could not be attached to this live capture.",
+          NSDebugDescriptionErrorKey:
+            "canonical bus publication refused: codescribe: "
+            + "capture attachment refused; target closed or changed; draft retained",
+        ])
+    }
+    XCTAssertTrue(state.stageConversationAttachments([path], in: receiving))
+    await fulfillment(of: [refused], timeout: 2)
+    // The take never projects `.finished`; the refusal alone must recover.
+    for _ in 0..<200 where state.captureAttachmentDrafts[receiving.id] != nil {
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTAssertNil(state.captureAttachmentDrafts[receiving.id])
+    XCTAssertNil(state.captureAttachmentErrors[receiving.id])
+    let draft = ConversationDraft.split(state.conversationDraft(for: receiving.id))
+    XCTAssertEqual(draft.attachments, [path])
+    XCTAssertNotNil(state.textMessageErrors[receiving.id])
+  }
+
   func testCaptureOpeningAndFrozenRecipientsAreAvailableBeforeWords() throws {
     let fixture = try Fixture()
     defer { fixture.remove() }

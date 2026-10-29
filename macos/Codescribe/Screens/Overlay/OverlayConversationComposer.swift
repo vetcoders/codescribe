@@ -79,15 +79,9 @@ struct OverlayConversationComposer: View {
     palette.mutedText.color.opacity(ComposerControlMetrics.restingActionOpacity)
   }
   private var editorViewportHeight: CGFloat {
-    max(
-      cornerLayout().actionHeight,
-      ComposerTextLayout.resolve(
-        contentHeight: editorHeight,
-        lineHeight: ComposerTextLayout.lineHeight(
-          fontSize: ComposerControlMetrics.textSize * textScale),
-        maximumHeight: maximumEditorHeight
-          ?? ComposerControlMetrics.conversationEditorMaximumHeight * textScale
-      ).height)
+    // AppKit already caps the measured height, including the released row's
+    // readable-line floor. Capping it again here can leave only the controls.
+    max(cornerLayout().minimumHeight, editorHeight)
   }
 
   var body: some View {
@@ -408,8 +402,12 @@ struct OverlayConversationComposer: View {
             .font(.system(size: ComposerControlMetrics.textSize * textScale))
             .lineLimit(1)
             .foregroundStyle(palette.mutedText.color)
-            .padding(.top, ComposerControlMetrics.textVerticalInset)
-            .padding(.leading, corners.placeholderInset(viewportHeight: geometry.size.height))
+            .padding(
+              .top,
+              ComposerControlMetrics.textVerticalInset
+                + corners.firstLineOffset(viewportHeight: geometry.size.height)
+            )
+            .padding(.leading, corners.leadingWidth + corners.clearance)
             .padding(.trailing, corners.trailingWidth + corners.clearance)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -507,9 +505,14 @@ private struct ConversationComposerCornerLayout: Equatable {
 
   var glyphSize: CGFloat { min(actionWidth, actionHeight) * 0.65 }
 
-  func placeholderInset(viewportHeight: CGFloat) -> CGFloat {
-    viewportHeight - actionHeight < ComposerControlMetrics.textVerticalInset + lineHeight
-      ? leadingWidth + clearance : 0
+  var minimumHeight: CGFloat {
+    max(
+      actionHeight,
+      ComposerTextLayout.resolve(contentHeight: 0, lineHeight: lineHeight).height)
+  }
+
+  func firstLineOffset(viewportHeight: CGFloat) -> CGFloat {
+    max(0, viewportHeight - minimumHeight)
   }
 
   func exclusions(viewport: NSRect, textOrigin: NSPoint) -> [NSRect] {
@@ -990,7 +993,6 @@ private struct ConversationMessageField: NSViewRepresentable {
     private var observedOrigin = NSPoint.zero
     private var exclusionRects: [NSRect] = []
     private var needsContentMeasurement = true
-    private var usesViewportCorners = false
     /// One-way per-draft latch: trips when the draft first needs a second
     /// row, resets only when the draft empties (send/cancel).
     private var rowReleasedForDraft = false
@@ -1021,7 +1023,7 @@ private struct ConversationMessageField: NSViewRepresentable {
       CATransaction.begin()
       CATransaction.setDisableActions(true)
       defer { CATransaction.commit() }
-      guard usesViewportCorners, let corners else {
+      guard rowReleasedForDraft, let corners else {
         layer.mask = nil
         return
       }
@@ -1032,17 +1034,6 @@ private struct ConversationMessageField: NSViewRepresentable {
       let path = CGMutablePath()
       // AppKit owns the backing layer's coordinate system (including flipping).
       path.addRect(contentView.convertToLayer(upper))
-      if !rowReleasedForDraft {
-        // A released row shows no text between the controls, so the writable
-        // middle gap exists only before the latch trips.
-        let middle = NSRect(
-          x: viewport.minX + corners.leadingWidth + corners.clearance, y: upper.maxY,
-          width: max(
-            0,
-            viewport.width - corners.leadingWidth - corners.trailingWidth - 2 * corners.clearance),
-          height: corners.actionHeight)
-        path.addRect(contentView.convertToLayer(middle))
-      }
       cornerClip.frame = layer.bounds
       cornerClip.bounds = layer.bounds
       cornerClip.path = path
@@ -1068,12 +1059,12 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
 
     func revealUnobscuredRange(_ range: NSRange, in editor: NSTextView) {
-      guard usesViewportCorners, let corners, range.location != NSNotFound else { return }
+      guard rowReleasedForDraft, let corners, range.location != NSNotFound else { return }
       let viewport = contentView.bounds
       let length = editor.textStorage?.length ?? 0
       let start = min(range.location, length)
       let end = start + min(range.length, length - start)
-      let blockedRects = effectiveExclusions(corners, viewport: viewport, textOrigin: .zero)
+      let blockedRects = corners.releasedRowExclusions(viewport: viewport, textOrigin: .zero)
       // Native scrolling chooses the visible end of a selection. Correct only
       // an endpoint actually under a control, never drag an offscreen endpoint
       // back into view or replace the native selected range.
@@ -1089,20 +1080,11 @@ private struct ConversationMessageField: NSViewRepresentable {
       }
     }
 
-    private func effectiveExclusions(
-      _ corners: ConversationComposerCornerLayout, viewport: NSRect, textOrigin: NSPoint
-    ) -> [NSRect] {
-      rowReleasedForDraft
-        ? corners.releasedRowExclusions(viewport: viewport, textOrigin: textOrigin)
-        : corners.exclusions(viewport: viewport, textOrigin: textOrigin)
-    }
-
     private func reserveCorners(
       _ corners: ConversationComposerCornerLayout, viewport: NSRect, editor: NSTextView,
       container: NSTextContainer
     ) {
-      let rects = effectiveExclusions(
-        corners, viewport: viewport, textOrigin: editor.textContainerOrigin)
+      let rects = corners.exclusions(viewport: viewport, textOrigin: editor.textContainerOrigin)
       guard rects != exclusionRects else { return }
       exclusionRects = rects
       container.exclusionPaths = rects.map { NSBezierPath(rect: $0) }
@@ -1116,9 +1098,9 @@ private struct ConversationMessageField: NSViewRepresentable {
       super.layout()
       guard let corners, let editor = documentView as? MessageTextView,
         let container = editor.textContainer, let textLayout = editor.layoutManager,
-        contentSize.width > 0
+        contentView.bounds.width > 0
       else { return }
-      let viewport = contentSize
+      let viewport = contentView.bounds.size
       if previousViewport != viewport {
         // Preserve a visible caret on resize, but never jump from a manually
         // scrolled passage to an offscreen selection.
@@ -1135,83 +1117,61 @@ private struct ConversationMessageField: NSViewRepresentable {
         textLayout.ensureLayout(for: container)
         return ceil(
           max(textLayout.usedRect(for: container).maxY, textLayout.extraLineFragmentRect.maxY)
-            + editor.textContainerOrigin.y + editor.textContainerInset.height)
+            + editor.textContainerOrigin.y - editor.firstLineOffset
+            + editor.textContainerInset.height)
       }
       if needsContentMeasurement {
-        // Full-width text is a lower bound for the fitting height. Start there
-        // each time, then admit native line increments for the bottom corners.
-        // Reusing yesterday's exclusions makes growth/shrink oscillate; starting
-        // at one row would relayout a long document at every candidate height.
-        let minimum = max(
-          corners.actionHeight,
-          ComposerTextLayout.resolve(contentHeight: 0, lineHeight: corners.lineHeight).height)
-        let limit = max(
-          minimum,
-          ComposerTextLayout.resolve(
-            contentHeight: .greatestFiniteMagnitude, lineHeight: corners.lineHeight,
-            maximumHeight: maximumEditorHeight
-          ).height)
-        editor.leadingTextInset = 0
+        let minimum = corners.minimumHeight
+        editor.firstLineOffset = 0
         exclusionRects = []
         container.exclusionPaths = []
         container.containerSize = NSSize(
           width: max(1, viewport.width), height: .greatestFiniteMagnitude)
         if (editor.textStorage?.length ?? 0) == 0 { rowReleasedForDraft = false }
-        var measuredHeight = documentHeight()
-        if measuredHeight > minimum { rowReleasedForDraft = true }
-        var candidate = min(limit, max(minimum, measuredHeight))
-        if measuredHeight <= limit {
-          // A fitting draft has stationary native corner wrapping. No scroll
-          // origin participates in these document coordinates.
-          var latchRetried = false
-          while true {
-            reserveCorners(
-              corners,
-              viewport: NSRect(
-                origin: .zero, size: NSSize(width: viewport.width, height: candidate)),
-              editor: editor, container: container)
-            measuredHeight = documentHeight()
-            if !rowReleasedForDraft, measuredHeight > minimum, !latchRetried {
-              // First transfer into the multiline body releases the whole
-              // control row for the rest of this draft; remeasure once with
-              // the full-row exclusion so text leaves the row immediately.
-              rowReleasedForDraft = true
-              latchRetried = true
-              exclusionRects = []
-              continue
-            }
-            if measuredHeight <= candidate || candidate >= limit { break }
-            candidate = min(limit, candidate + corners.lineHeight)
+        var measuredHeight: CGFloat
+        if !rowReleasedForDraft {
+          // The controls are at the CURRENT viewport bottom, not the height
+          // SwiftUI will accept on a later turn. Keep the first line beside
+          // them even while an old, taller viewport is shrinking.
+          editor.firstLineOffset = corners.firstLineOffset(viewportHeight: viewport.height)
+          reserveCorners(
+            corners, viewport: NSRect(origin: .zero, size: viewport),
+            editor: editor, container: container)
+          measuredHeight = documentHeight()
+          if measuredHeight > minimum {
+            rowReleasedForDraft = true
           }
+        } else {
+          measuredHeight = 0
         }
-        usesViewportCorners = measuredHeight > candidate
-        if usesViewportCorners {
+
+        let candidate: CGFloat
+        if rowReleasedForDraft {
+          // Once released, BOTH fitting and overflowing drafts have stationary
+          // full-width layout. No finite exclusion band can push glyphs below
+          // the controls, and shrinking never restores the writable middle.
+          editor.firstLineOffset = 0
           exclusionRects = []
           container.exclusionPaths = []
-          if viewport.height - corners.actionHeight
-            < corners.lineHeight + 2 * editor.textContainerInset.height
-          {
-            // In a one-row viewport the controls occupy every visible line.
-            // Lay out in its writable middle until resizing admits a full-width
-            // row above them; clipping must never make edge characters unreachable.
-            editor.leadingTextInset = corners.leadingWidth + corners.clearance
-            container.containerSize = NSSize(
-              width: max(
-                1,
-                viewport.width - corners.leadingWidth - corners.trailingWidth
-                  - 2 * corners.clearance), height: .greatestFiniteMagnitude)
-            usesViewportCorners = false
-          }
-          measuredHeight = documentHeight()
+          measuredHeight = documentHeight() + corners.actionHeight
+          // A released row needs at least one readable native line ABOVE it,
+          // even when an attachment or a small height budget reduces the cap.
+          let releasedMinimum = minimum + corners.actionHeight
+          let limit = max(
+            releasedMinimum,
+            ComposerTextLayout.resolve(
+              contentHeight: .greatestFiniteMagnitude, lineHeight: corners.lineHeight,
+              maximumHeight: maximumEditorHeight
+            ).height)
+          candidate = min(limit, max(releasedMinimum, measuredHeight))
+        } else {
+          candidate = minimum
+          measuredHeight += editor.firstLineOffset
         }
-        // Overflow has stable full-width layout plus one fixed corner-height
-        // tail. Every character can scroll above the cutouts. This extent is
-        // derived only from text/size/configuration, never the scroll origin or
-        // yesterday's frame, so roundtrips cannot accumulate a blank tail.
+        // The released document includes one fixed control-row tail. Its
+        // extent never depends on scroll origin or yesterday's document frame.
         let documentSize = NSSize(
-          width: viewport.width,
-          height: max(
-            viewport.height, measuredHeight + (usesViewportCorners ? corners.actionHeight : 0)))
+          width: viewport.width, height: max(viewport.height, measuredHeight))
         editor.minSize = NSSize(width: 0, height: viewport.height)
         if editor.frame.size != documentSize { editor.setFrameSize(documentSize) }
         needsContentMeasurement = false
@@ -1245,15 +1205,15 @@ private struct ConversationMessageField: NSViewRepresentable {
     private var isFirstResponderActive = false
     private var isWindowKey = false
     private var windowObservers: [NSObjectProtocol] = []
-    var leadingTextInset: CGFloat = 0 {
+    var firstLineOffset: CGFloat = 0 {
       didSet {
-        if oldValue != leadingTextInset { invalidateTextContainerOrigin() }
+        if oldValue != firstLineOffset { invalidateTextContainerOrigin() }
       }
     }
 
     override var textContainerOrigin: NSPoint {
       let origin = super.textContainerOrigin
-      return NSPoint(x: leadingTextInset > 0 ? leadingTextInset : origin.x, y: origin.y)
+      return NSPoint(x: origin.x, y: origin.y + firstLineOffset)
     }
 
     override func scrollRangeToVisible(_ range: NSRange) {

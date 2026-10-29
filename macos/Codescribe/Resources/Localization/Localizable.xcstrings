@@ -3293,6 +3293,16 @@
         }
       }
     },
+    "Another sign-in replaced this one." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inne logowanie zastąpiło to logowanie."
+          }
+        }
+      }
+    },
     "Answered, text unchanged" : {
       "comment" : "Formatting test verdict",
       "localizations" : {
@@ -3559,7 +3569,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Dołącz pliki…"
           }
         }
@@ -5890,7 +5900,7 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "Akcje pola wiadomości"
           }
         }
@@ -12823,6 +12833,26 @@
         }
       }
     },
+    "OAuth — not signed in" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OAuth — niezalogowano"
+          }
+        }
+      }
+    },
+    "OAuth — signed in" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OAuth — zalogowano"
+          }
+        }
+      }
+    },
     "OK" : {
       "localizations" : {
         "pl" : {
@@ -16368,6 +16398,16 @@
         }
       }
     },
+    "Save the server, then use Sign in on its row — the browser opens like for provider accounts." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisz serwer, a potem użyj Zaloguj się w jego wierszu — przeglądarka otworzy się jak przy kontach dostawców."
+          }
+        }
+      }
+    },
     "Saved" : {
       "comment" : "Lane auth: stored account identity\nSetup API key row status\nSetup Agent account row status",
       "localizations" : {
@@ -17487,12 +17527,42 @@
         }
       }
     },
+    "Sign in" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zaloguj się"
+          }
+        }
+      }
+    },
+    "Sign in again" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaloguj ponownie"
+          }
+        }
+      }
+    },
     "Sign in with %@" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zaloguj się przez %@"
+          }
+        }
+      }
+    },
+    "Sign in with OAuth" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zaloguj się przez OAuth"
           }
         }
       }
@@ -17523,6 +17593,66 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyloguj się z %@"
+          }
+        }
+      }
+    },
+    "Sign-in could not start." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się rozpocząć logowania."
+          }
+        }
+      }
+    },
+    "Sign-in failed." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Logowanie nie powiodło się."
+          }
+        }
+      }
+    },
+    "Sign-in failed: %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Logowanie nie powiodło się: %@"
+          }
+        }
+      }
+    },
+    "Sign-in was not completed in time. Try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Logowanie nie zostało ukończone na czas. Spróbuj ponownie."
+          }
+        }
+      }
+    },
+    "Signed in — the connector now sends the OAuth token." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zalogowano — konektor wysyła teraz token OAuth."
+          }
+        }
+      }
+    },
+    "Signing in…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Logowanie…"
           }
         }
       }

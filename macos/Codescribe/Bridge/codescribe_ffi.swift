@@ -4276,6 +4276,20 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func addServer(server: CsMcpServerInput) throws
 
     /**
+     * Block until the in-flight MCP sign-in completes, fails or times out.
+     * Swift calls this right after `start_mcp_sign_in` opened the browser.
+     * On success the credential is already in the Keychain and the server's
+     * mcp.json row flips to `auth_type: "oauth"`. On timeout the pending
+     * login is dropped, which shuts the loopback listener down.
+     */
+    func awaitMcpSignIn(name: String, timeoutSeconds: UInt64) async throws  -> CsMcpSignInResult
+
+    /**
+     * Cancel any in-flight MCP sign-in (closes the loopback listener).
+     */
+    func cancelMcpSignIn()
+
+    /**
      * Remove the durable per-tool rule so the tool inherits again.
      */
     func clearToolPermission(identity: String) throws
@@ -4330,6 +4344,15 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func setToolPermission(identity: String, level: String) throws
 
     /**
+     * Begin OAuth sign-in for a remote server: probe the 401 challenge,
+     * discover the authorization server, register a client and bind the
+     * loopback listener — everything short of the human. Returns the
+     * authorize URL for Swift to open; `await_mcp_sign_in` then blocks on
+     * the browser redirect. Nothing is stored until that completes.
+     */
+    func startMcpSignIn(name: String, endpoint: String) async throws  -> CsMcpSignInResult
+
+    /**
      * Spawn the named server, run the `initialize` + `tools/list` handshake, and
      * report its advertised identity + live tool count. Bounded by a 10s timeout.
      * A failed handshake is returned as `ok == false` with a reason, never as a
@@ -4340,6 +4363,8 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
 
     /**
      * Update the named server's spawn shape, preserving its env + unknown fields.
+     * Turning OAuth off clears the grant: the credential leaves the Keychain
+     * and `auth_type`/`auth_ref` leave mcp.json before any new bearer lands.
      */
     func updateServer(name: String, server: CsMcpServerInput) throws
 
@@ -4414,6 +4439,40 @@ open func addServer(server: CsMcpServerInput)throws   {try rustCallWithError(Ffi
     uniffi_codescribe_ffi_fn_method_codescribemcpadmin_add_server(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsMcpServerInput_lower(server),$0
+    )
+}
+}
+
+    /**
+     * Block until the in-flight MCP sign-in completes, fails or times out.
+     * Swift calls this right after `start_mcp_sign_in` opened the browser.
+     * On success the credential is already in the Keychain and the server's
+     * mcp.json row flips to `auth_type: "oauth"`. On timeout the pending
+     * login is dropped, which shuts the loopback listener down.
+     */
+open func awaitMcpSignIn(name: String, timeoutSeconds: UInt64)async throws  -> CsMcpSignInResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribemcpadmin_await_mcp_sign_in(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(name),FfiConverterUInt64.lower(timeoutSeconds)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsMcpSignInResult_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Cancel any in-flight MCP sign-in (closes the loopback listener).
+     */
+open func cancelMcpSignIn()  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_cancel_mcp_sign_in(
+            self.uniffiCloneHandle(),$0
     )
 }
 }
@@ -4537,6 +4596,30 @@ open func setToolPermission(identity: String, level: String)throws   {try rustCa
 }
 
     /**
+     * Begin OAuth sign-in for a remote server: probe the 401 challenge,
+     * discover the authorization server, register a client and bind the
+     * loopback listener — everything short of the human. Returns the
+     * authorize URL for Swift to open; `await_mcp_sign_in` then blocks on
+     * the browser redirect. Nothing is stored until that completes.
+     */
+open func startMcpSignIn(name: String, endpoint: String)async throws  -> CsMcpSignInResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribemcpadmin_start_mcp_sign_in(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(name),FfiConverterString.lower(endpoint)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsMcpSignInResult_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * Spawn the named server, run the `initialize` + `tools/list` handshake, and
      * report its advertised identity + live tool count. Bounded by a 10s timeout.
      * A failed handshake is returned as `ok == false` with a reason, never as a
@@ -4554,6 +4637,8 @@ open func testServer(name: String) -> CsMcpTestResult  {
 
     /**
      * Update the named server's spawn shape, preserving its env + unknown fields.
+     * Turning OAuth off clears the grant: the credential leaves the Keychain
+     * and `auth_type`/`auth_ref` leave mcp.json before any new bearer lands.
      */
 open func updateServer(name: String, server: CsMcpServerInput)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribemcpadmin_update_server(
@@ -11802,10 +11887,19 @@ public struct CsMcpServer: Equatable, Hashable {
     public var transport: String
     public var endpoint: String
     public var authRef: String
+    /**
+     * True when the credential behind `auth_ref` is an OAuth grant
+     * (`auth_type: "oauth"` in mcp.json), not a pasted bearer token.
+     */
+    public var oauth: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(name: String, command: String, args: [String], envKeys: [String], enabled: Bool, transport: String, endpoint: String, authRef: String) {
+    public init(name: String, command: String, args: [String], envKeys: [String], enabled: Bool, transport: String, endpoint: String, authRef: String,
+        /**
+         * True when the credential behind `auth_ref` is an OAuth grant
+         * (`auth_type: "oauth"` in mcp.json), not a pasted bearer token.
+         */oauth: Bool) {
         self.name = name
         self.command = command
         self.args = args
@@ -11814,6 +11908,7 @@ public struct CsMcpServer: Equatable, Hashable {
         self.transport = transport
         self.endpoint = endpoint
         self.authRef = authRef
+        self.oauth = oauth
     }
 
 
@@ -11837,7 +11932,8 @@ public struct FfiConverterTypeCsMcpServer: FfiConverterRustBuffer {
                 enabled: FfiConverterBool.read(from: &buf),
                 transport: FfiConverterString.read(from: &buf),
                 endpoint: FfiConverterString.read(from: &buf),
-                authRef: FfiConverterString.read(from: &buf)
+                authRef: FfiConverterString.read(from: &buf),
+                oauth: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -11850,6 +11946,7 @@ public struct FfiConverterTypeCsMcpServer: FfiConverterRustBuffer {
         FfiConverterString.write(value.transport, into: &buf)
         FfiConverterString.write(value.endpoint, into: &buf)
         FfiConverterString.write(value.authRef, into: &buf)
+        FfiConverterBool.write(value.oauth, into: &buf)
     }
 }
 
@@ -11891,6 +11988,11 @@ public struct CsMcpServerInput: Equatable, Hashable {
      * serialized into mcp.json or returned by `list_servers`.
      */
     public var token: String
+    /**
+     * The connector signs in with OAuth instead of a bearer token. The grant
+     * itself is obtained through `start_mcp_sign_in` / `await_mcp_sign_in`.
+     */
+    public var oauth: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -11904,7 +12006,11 @@ public struct CsMcpServerInput: Equatable, Hashable {
         /**
          * Write-only bearer token. It is saved straight to Keychain and never
          * serialized into mcp.json or returned by `list_servers`.
-         */token: String) {
+         */token: String,
+        /**
+         * The connector signs in with OAuth instead of a bearer token. The grant
+         * itself is obtained through `start_mcp_sign_in` / `await_mcp_sign_in`.
+         */oauth: Bool) {
         self.name = name
         self.command = command
         self.args = args
@@ -11912,6 +12018,7 @@ public struct CsMcpServerInput: Equatable, Hashable {
         self.endpoint = endpoint
         self.authRef = authRef
         self.token = token
+        self.oauth = oauth
     }
 
 
@@ -11934,7 +12041,8 @@ public struct FfiConverterTypeCsMcpServerInput: FfiConverterRustBuffer {
                 enabled: FfiConverterBool.read(from: &buf),
                 endpoint: FfiConverterString.read(from: &buf),
                 authRef: FfiConverterString.read(from: &buf),
-                token: FfiConverterString.read(from: &buf)
+                token: FfiConverterString.read(from: &buf),
+                oauth: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -11946,6 +12054,7 @@ public struct FfiConverterTypeCsMcpServerInput: FfiConverterRustBuffer {
         FfiConverterString.write(value.endpoint, into: &buf)
         FfiConverterString.write(value.authRef, into: &buf)
         FfiConverterString.write(value.token, into: &buf)
+        FfiConverterBool.write(value.oauth, into: &buf)
     }
 }
 
@@ -11962,6 +12071,94 @@ public func FfiConverterTypeCsMcpServerInput_lift(_ buf: RustBuffer) throws -> C
 #endif
 public func FfiConverterTypeCsMcpServerInput_lower(_ value: CsMcpServerInput) -> RustBuffer {
     return FfiConverterTypeCsMcpServerInput.lower(value)
+}
+
+
+/**
+ * One step of the MCP OAuth sign-in flow — the shape of
+ * `CsAccountLoginResult` for provider accounts, minus Rust-composed prose:
+ * `status` is a wire value Swift turns into a sentence it owns
+ * (LOCALIZATION_LEDGER.md §4), and `detail` carries only propagated content —
+ * an upstream error chain, or the superseding server's name. `auth_url` is
+ * present after `start_mcp_sign_in` when the UI should open a browser;
+ * `signed_in` flips once the exchange completed and the credential is in the
+ * Keychain.
+ */
+public struct CsMcpSignInResult: Equatable, Hashable {
+    public var server: String
+    /**
+     * `started` | `signed_in` | `failed` | `timeout` | `superseded` | `idle`.
+     */
+    public var status: String
+    /**
+     * Upstream content for `failed` (error chain) and `superseded` (the other
+     * server's name); empty otherwise. Never a sentence composed in Rust.
+     */
+    public var detail: String
+    public var authUrl: String?
+    public var signedIn: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(server: String,
+        /**
+         * `started` | `signed_in` | `failed` | `timeout` | `superseded` | `idle`.
+         */status: String,
+        /**
+         * Upstream content for `failed` (error chain) and `superseded` (the other
+         * server's name); empty otherwise. Never a sentence composed in Rust.
+         */detail: String, authUrl: String?, signedIn: Bool) {
+        self.server = server
+        self.status = status
+        self.detail = detail
+        self.authUrl = authUrl
+        self.signedIn = signedIn
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsMcpSignInResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsMcpSignInResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsMcpSignInResult {
+        return
+            try CsMcpSignInResult(
+                server: FfiConverterString.read(from: &buf),
+                status: FfiConverterString.read(from: &buf),
+                detail: FfiConverterString.read(from: &buf),
+                authUrl: FfiConverterOptionString.read(from: &buf),
+                signedIn: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsMcpSignInResult, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.server, into: &buf)
+        FfiConverterString.write(value.status, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
+        FfiConverterOptionString.write(value.authUrl, into: &buf)
+        FfiConverterBool.write(value.signedIn, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpSignInResult_lift(_ buf: RustBuffer) throws -> CsMcpSignInResult {
+    return try FfiConverterTypeCsMcpSignInResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpSignInResult_lower(_ value: CsMcpSignInResult) -> RustBuffer {
+    return FfiConverterTypeCsMcpSignInResult.lower(value)
 }
 
 
@@ -22737,6 +22934,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_add_server() != 12098) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_await_mcp_sign_in() != 28863) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_cancel_mcp_sign_in() != 3706) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_clear_tool_permission() != 37009) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -22767,10 +22970,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_set_tool_permission() != 12294) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_start_mcp_sign_in() != 12763) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_test_server() != 25786) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_update_server() != 22654) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_update_server() != 56083) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribenotes_notes_dir() != 5465) {
