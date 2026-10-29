@@ -2489,6 +2489,17 @@ impl AcousticLedger {
             let end = speech.sample_end.min(source_end);
             (start < end).then_some((start, end))
         }).collect::<Vec<_>>();
+        // The capture-energy speech envelope joins short pauses for VAD.
+        // Debt needs the owner's individual measured hops, otherwise a quiet
+        // pause inside that envelope is mistaken for uncovered speech.
+        if speech.producer() == CAPTURE_ENERGY_PRODUCER
+            && let Some(energy) = self.decode_fence_energy.as_ref()
+            && let Some(hops) = energy.owner.voiced_hops_in(
+                &owner.session, owner.capture_epoch, source_start, source_end,
+            )
+        {
+            spans = hops;
+        }
         spans.sort_unstable();
         let quiet = |start: u64, end: u64| {
             if let Some(energy) = self.decode_fence_energy.as_ref() {
@@ -2579,15 +2590,32 @@ impl AcousticLedger {
         }) {
             return;
         }
-        let Some(debt) = self.publication_debt.get_mut(owner) else {
-            return;
-        };
         // A word owned by its midpoint is published in full, including any
         // measured edge beyond the band's boundary. The surrounding decoder
         // window cannot account for speech absent from all committed pins.
-        let paid = words.iter().map(|word| {
+        let mut paid = words.iter().map(|word| {
             (word.sample_start.max(owner.sample_start), word.sample_end.min(owner.sample_end))
-        });
+        }).collect::<Vec<_>>();
+        // A capture hop cannot locate speech more precisely than its own
+        // extent. Account a voiced hop only when it overlaps one of these
+        // authenticated committed pins, never a separate voiced hop.
+        if let (Some(energy), Some(rate)) = (&self.decode_fence_energy, self.capture_rate_hz) {
+            let resolution = u64::from(rate).div_ceil(50);
+            for word in &words {
+                let start = word.sample_start.saturating_sub(resolution).max(owner.sample_start);
+                let end = word.sample_end.saturating_add(resolution).min(owner.sample_end);
+                if let Some(hops) = energy.owner.voiced_hops_in(
+                    &owner.session, owner.capture_epoch, start, end,
+                ) {
+                    paid.extend(hops.into_iter().filter(|&(lo, hi)| {
+                        lo < word.sample_end && word.sample_start < hi
+                    }));
+                }
+            }
+        }
+        let Some(debt) = self.publication_debt.get_mut(owner) else {
+            return;
+        };
         let mut remaining = debt.clone();
         for (paid_start, paid_end) in paid {
             let mut next = Vec::new();
