@@ -11,6 +11,9 @@
 #   category = "vad|audio|llm|..." # Grouping
 #   description = "..."         # Human-readable description
 #   deprecated = "NEW_VAR"      # If deprecated, points to replacement
+#   owner = "..."               # Feature-flag owner (required when flag metadata is set)
+#   metric = "..."              # Success/health metric for the flag
+#   removal_condition = "..."   # Falsifiable condition for removing the flag
 #
 # Created by Vetcoders (c)2026
 
@@ -730,6 +733,9 @@ type = "bool"
 reload = "restart"
 category = "stt"
 description = "Arm the DictationTranscriber lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Power-user override for the Voice Lab witness key audio.dictation_witness_armed: present env wins over Settings in either direction and is recorded by name in the snapshot provenance. The witness re-checks unresolved recovery debt in the background after each committed utterance seal and once more at Stop (docs/STT_CONTRACT.md, 2026-10-15). The Rust side sets this key explicitly on the spawned bridge child for a DT request, so the armed decision crosses the process boundary without depending on the app process environment. Not a shipped default — flipping it is an operator decision"
+owner = "stt-engine"
+metric = "pl-PL stop-path finalization latency and WER in Voice Lab witness takes"
+removal_condition = "Promote DictationTranscriber to default pl-PL backend or remove W4-A PoC once Apple SpeechAnalyzer catalog parity is settled"
 
 [vars.CODESCRIBE_SEAL_LEDGER_ENABLED]
 default = "0"
@@ -737,6 +743,9 @@ type = "bool"
 reload = "hot"
 category = "stt"
 description = "Promoted Settings write token for audio.seal_ledger_enabled. The next take reads this choice from its immutable settings snapshot. Disabling selects direct decoder publication without word-admission or acoustic-seal certification. This token is a settings router key, not a process-environment override."
+owner = "core-ledger"
+metric = "AcousticLedger word-admission and terminal seal coverage across live takes"
+removal_condition = "Remove direct-decoder toggle once ledger seal certification is unconditional in all capture modes"
 
 [vars.CODESCRIBE_APPLE_LIVE_ENABLED]
 default = "mode-dependent"
