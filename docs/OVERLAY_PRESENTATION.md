@@ -95,7 +95,9 @@ Native Undo remains scoped to the mounted editor. Switching the frozen text
 destination preserves each owner's stored draft, but starts a fresh native
 undo stack, as switching conversations did before. Undo never crosses owners.
 
-Replying to a displayed message explicitly chooses that message's conversation.
+Replying to a displayed message and the explicit Write/Forward menu command
+choose their own frozen conversation as the text destination. Ordinary row,
+map and rail navigation only change the viewed conversation.
 Returning a held message to the draft first completes its withdrawal, then
 returns text to that frozen private owner or to the original channel-zero
 conversation. Navigating to a quoted reply opens its own history and retains

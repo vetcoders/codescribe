@@ -1428,8 +1428,13 @@ struct DictationOverlayView: View {
 
   /// Internal so a test can assert that two body passes share one search model.
   var channelStatusView: OverlayChannelStatusView {
-    OverlayChannelStatusView.intercomRoster(
+    var roster = OverlayChannelStatusView.intercomRoster(
       state: state, palette: palette, animates: overlayVisible)
+    roster.onWriteConversation = { conversation in
+      state.chooseComposerTarget(conversation)
+      state.chooseConversation(conversation.id)
+    }
+    return roster
   }
 
   private func heldComposerTarget(

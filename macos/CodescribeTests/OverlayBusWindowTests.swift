@@ -115,6 +115,30 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertEqual(state.resolvedComposerTarget(viewing: privateConversation)?.id, broadcast.id)
   }
 
+  func testExplicitWriteChoosesItsRecipientWhileOrdinaryNavigationDoesNot() throws {
+    let first = try conversation("2")
+    let second = try conversation("3", lease: "b")
+    let state = OverlayState()
+    apply([first, second], to: state)
+    state.chooseComposerTarget(first)
+    state.selectConversation(first.id, expand: false)
+    state.setConversationDraft("First private draft", for: first.id)
+    state.setConversationDraft("Second private draft", for: second.id)
+    let roster = DictationOverlayView(state: state).channelStatusView
+    let write = try XCTUnwrap(roster.agentPillMenuActions(for: "3")?.write)
+    XCTAssertTrue(write.enabled)
+    write.perform()
+    XCTAssertEqual(state.selectedConversationID, second.id)
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: second)?.id, second.id)
+
+    roster.selectChannelConversation("2")
+    XCTAssertEqual(state.selectedConversationID, first.id)
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, second.id)
+    XCTAssertEqual(state.conversationDraft(for: first.id), "First private draft")
+    XCTAssertEqual(state.conversationDraft(for: second.id), "Second private draft")
+    XCTAssertFalse(state.conversationMicrophoneOpen(second))
+  }
+
   func testRetainedHistoryDoesNotKeepARetiredRecipientSendable() throws {
     let old = try conversation("2")
     let replacement = try conversation("2", session: "replacement", lease: "b")
@@ -354,6 +378,21 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertTrue(try XCTUnwrap(view.agentPillMenuActions(for: "2")?.playback).enabled)
     view.pendingMuteChannels = ["2"]
     XCTAssertFalse(view.agentPlaybackEnabled(for: row))
+  }
+
+  func testRailCountAndUnreadFlagUseTheSameConversationIdentity() throws {
+    let original = try conversation("2")
+    let replacement = try conversation("2", session: "replacement", lease: "b")
+    let view = OverlayChannelStatusView(
+      channels: [row], unavailable: false, palette: .dark, animates: false,
+      conversations: [original, replacement], unreadCounts: [original.id: 12],
+      onSelectConversation: { _ in })
+    let unread = view.railPillDisplay(original, channel: row)
+    XCTAssertEqual(unread.unreadCount, 12)
+    XCTAssertTrue(unread.unread)
+    let fresh = view.railPillDisplay(replacement, channel: row)
+    XCTAssertEqual(fresh.unreadCount, 0)
+    XCTAssertFalse(fresh.unread)
   }
 
   func testCompactCardsRenderWithinTheirHeightBudgetInBothAppearances() throws {

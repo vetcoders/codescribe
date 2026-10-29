@@ -389,8 +389,17 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   // MARK: - The keyboard follows the list (2026-10-19)
 
   func testTheListTakesTheKeyboardFromTheComposerAndGivesItBack() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (broadcast, lena, astra) = try rosterFixture()
     let state = OverlayState.previewFormatted()
+    state.applyChannelRoster(
+      [broadcast, lena, astra].map {
+        CsChannelRosterState(
+          channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+          providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: $0.owner == nil ? nil : true,
+          unreadSinceUnixMs: nil)
+      })
     state.applyConversationSnapshot(
       .init(deliveries: [], conversations: [broadcast, lena, astra]))
     state.selectConversation(lena.id)
@@ -406,7 +415,6 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       other.close()
     }
     let editor = try XCTUnwrap(composerEditor(in: host))
-    try BackgroundTestWindow.requireIsolatedGUI()
     panel.takeKeyForTranscript()
     XCTAssertTrue(panel.makeFirstResponder(editor))
     XCTAssertTrue(panel.isKeyWindow)
@@ -452,10 +460,19 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   }
 
   func testTheRosterOverTheWholeWindowTakesTheKeyboardToo() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
     defaults.set(480.0, forKey: "Overlay.agentDrawerWidth.v1")
     let (broadcast, lena, _) = try rosterFixture()
     let state = OverlayState.previewFormatted()
+    state.applyChannelRoster(
+      [broadcast, lena].map {
+        CsChannelRosterState(
+          channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+          providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: $0.owner == nil ? nil : true,
+          unreadSinceUnixMs: nil)
+      })
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
     state.selectConversation(lena.id)
     let (panel, host) = keyboardPanel(
@@ -466,7 +483,6 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       panel.close()
     }
     let editor = try XCTUnwrap(composerEditor(in: host))
-    try BackgroundTestWindow.requireIsolatedGUI()
     panel.takeKeyForTranscript()
     XCTAssertTrue(panel.makeFirstResponder(editor))
 
@@ -1388,7 +1404,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
   /// A bound channel whose reader died keeps its row, dimmed as one unit,
   /// and its microphone sleeps (Maciej, 2026-10-17).
-  func testDockedRowDimsADisconnectedReaderAndSleepsItsMicrophone() throws {
+  func testDockedRowDimsADisconnectedReaderAndUsesCentralAudioGuards() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let modifier = try section(
       of: source, from: "struct OverlayDisconnectedRowDim: ViewModifier {", to: "\n}\n")
@@ -1397,8 +1413,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let docked = try section(
       of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
     XCTAssertTrue(
-      docked.contains("&& !hasDeadFollower(channel),"),
-      "the docked row's microphone sleeps for a dead reader")
+      docked.contains("compactAgentActions(for: channel)"),
+      "the row uses the same guarded actions as its conversation header")
+    let actions = try section(
+      of: source, from: "func compactAgentActions(", to: "func compactReceptionIndicators(")
+    XCTAssertTrue(actions.contains("agentMicrophoneEnabled(for: channel)"))
+    XCTAssertTrue(actions.contains("agentPlaybackEnabled(for: channel)"))
     XCTAssertTrue(
       docked.contains("OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel))"),
       "the docked row dims as one unit")
@@ -1444,22 +1464,23 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   /// speaker, so the identity pill must leave with it: the host hands the
   /// column's visibility to the conversation view, and the view drops the
   /// whole navigation row (controls and pill) with a collapsed measurement.
-  func testDockedColumnEvacuatesTheIdentityPillAndItsControls() throws {
+  func testHorizontalHeaderKeepsActionsWithFullAndFoldedSidebar() throws {
     let overlay = try overlaySource("DictationOverlayView.swift")
     let canvas = try section(
       of: overlay, from: "private func canvasStack", to: "private var header: some View")
+    XCTAssertFalse(canvas.contains("hidesNavigation: columnShown"))
+    XCTAssertTrue(canvas.contains("navigationActions: conversationHeaderActions(conversation)"))
     XCTAssertTrue(
-      canvas.contains("hidesNavigation: columnShown"),
-      "the visible docked column is exactly when the pill evacuates")
+      canvas.contains("navigationIndicators: conversationHeaderIndicators(conversation)"))
     let conversation = try overlaySource("OverlayConversationView.swift")
     let anchor = try section(
       of: conversation, from: ".overlay(alignment: .top)", to: ".onChange(of: conversation.id)")
     XCTAssertTrue(
       anchor.contains("if hidesNavigation"),
-      "the navigation row is conditional, not just transparent")
+      "the shared Intercom presentation retains its explicit navigation choice")
     XCTAssertTrue(
       anchor.contains("navigationHeight = 0"),
-      "the content margin follows the evacuated row")
+      "the content margin follows the hidden Intercom navigation row")
   }
 
   /// Broadcast-policy choices in a roster row's context menu are checkboxes, so

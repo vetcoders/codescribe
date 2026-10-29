@@ -1078,6 +1078,8 @@ struct OverlayChannelStatusView: View {
   let selectedConversationID: String?
   let unreadCounts: [String: Int]
   let onSelectConversation: ((String?) -> Void)?
+  /// Explicit writing may choose a text destination independently of viewing.
+  var onWriteConversation: ((OverlayConversation) -> Void)? = nil
   let onShowMonitor: (() -> Void)?
   /// Explicitly show this agent in the list. Unlike the header toggle, this
   /// callback never closes a panel or stops a recording.
@@ -1477,11 +1479,12 @@ struct OverlayChannelStatusView: View {
     _ conversation: OverlayConversation?, channel: OverlayChannelDelivery?
   ) -> OverlayChannelPill.Display {
     let inbox = conversation?.isHumanInbox == true
+    let unreadCount = conversation.flatMap { unreadCounts[$0.id] } ?? 0
     return OverlayChannelPill.Display(
       figure: inbox ? "" : channel?.channel ?? "0", symbol: inbox ? "tray" : nil,
       dot: inbox ? nil : channel.map { statusDotKind(for: $0) } ?? .broadcast,
       disconnected: channel.map { hasDeadFollower($0) } ?? false,
-      unreadCount: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
+      unread: unreadCount > 0, unreadCount: unreadCount,
       selected: conversation != nil && conversation?.id == selectedConversationID,
       enabled: conversation != nil && onSelectConversation != nil)
   }
@@ -1515,7 +1518,11 @@ struct OverlayChannelStatusView: View {
   /// conversation is already selected; it never turns into panel focus.
   func writeToAgent(_ channel: OverlayChannelDelivery) {
     guard let conversation = conversation(for: channel) else { return }
-    onSelectConversation?(conversation.id)
+    if let onWriteConversation {
+      onWriteConversation(conversation)
+    } else {
+      onSelectConversation?(conversation.id)
+    }
   }
 
   func showAgentInMonitor(_ channel: OverlayChannelDelivery) {
