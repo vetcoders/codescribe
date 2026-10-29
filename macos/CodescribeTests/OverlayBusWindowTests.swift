@@ -444,6 +444,15 @@ final class OverlayBusWindowTests: XCTestCase {
           ),
           .init(channel: "3", agent: second.name, deliveryID: nil, stage: nil, isOpen: false),
         ], conversations: inventory))
+    state.applyBoundAgents(
+      Dictionary(uniqueKeysWithValues: [first, second].map { conversation in
+        let owner = conversation.owner!
+        let identity = AgentPlaybackIdentity(
+          provider: owner.provider, session: owner.providerSessionID,
+          bus: FileManager.default.temporaryDirectory.appendingPathComponent("window-review-bus.jsonl").path)
+        return (conversation.channel, AgentPlaybackBinding(
+          identity: identity, model: "Fixture model", repositoryName: "Codescribe"))
+      }))
     state.selectConversation(first.id)
     state.chooseComposerTarget(second)
     state.setConversationDraft("A retained draft for Lena", for: second.id)
