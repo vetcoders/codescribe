@@ -1467,9 +1467,9 @@ struct DictationOverlayView: View {
         }
       } label: {
         Text(verbatim: selected?.displayTitle ?? target?.title ?? "—")
+          .font(.system(size: 11 * textScale, weight: .medium))
           .lineLimit(1).truncationMode(.middle)
       }
-      .controlSize(.small)
       .accessibilityIdentifier("overlay-composer-recipient")
       if conversation.owner != nil || conversation.channel == "0",
         selected?.id != conversation.id || selected?.owner?.id != conversation.owner?.id
