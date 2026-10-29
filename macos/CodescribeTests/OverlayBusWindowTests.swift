@@ -38,6 +38,129 @@ final class OverlayBusWindowTests: XCTestCase {
     state.applyConversationSnapshot(.init(deliveries: [], conversations: conversations))
   }
 
+  func testScrollingHistoryKeepsCompactChromeOutsideTheMessageViewport() throws {
+    let target = try conversation("2", canonicalLease: true)
+    let messages = (0..<18).map { index in
+      OverlayConversationMessage(
+        id: "reply:scroll-\(index)", kind: .reply,
+        text: "Message \(index). "
+          + String(
+            repeating: "This conversation must scroll only between its fixed controls. ", count: 4),
+        order: UInt64(index), emittedAt: "2026-10-30T00:00:00Z", owner: target.owner,
+        recipients: [], deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil,
+        busPath: "")
+    }
+    let thread = withMessages(target, messages)
+    for (width, scale, attachments) in [
+      (CGFloat(700), CGFloat(1), false), (380, 1, true), (740, 1.5, true),
+    ] {
+      var navigationProbe: NSView?
+      var routingProbe: NSView?
+      let paths =
+        attachments
+        ? (0..<3).map {
+          FileManager.default.temporaryDirectory.appendingPathComponent(
+            "bus-scroll-\(UUID().uuidString)-\($0).png"
+          ).path
+        } : []
+      let view = OverlayConversationView(
+        conversation: thread, palette: .dark, topInset: 44, bottomInset: 16,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+        draft: .constant("A retained draft"), sending: false, sendError: nil, onSend: {},
+        agentDescriptor: "Codex · Fixture model · Codescribe",
+        navigationActions: AnyView(
+          Image(systemName: "ellipsis")
+            .frame(width: 24 * scale, height: 24 * scale)
+            .background(BusChromeFrameProbe { navigationProbe = $0 })),
+        composerRouting: AnyView(
+          Text(verbatim: "To: 3 · Lena · Voice channels closed")
+            .font(.system(size: 11 * scale))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(BusChromeFrameProbe { routingProbe = $0 })),
+        pendingCaptureAttachments: paths)
+      let host = NSHostingView(
+        rootView: view.environment(\.csTextScale, scale).environment(\.colorScheme, .dark)
+          .background(OverlayAppearancePalette.dark.desktopBackground.color))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: width, height: 560)
+      let panel = NSPanel(
+        contentRect: NSRect(x: -10_000, y: -10_000, width: width, height: 560),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      panel.isReleasedWhenClosed = false
+      panel.contentView = host
+      BackgroundTestWindow.present(panel)
+      defer {
+        panel.contentView = nil
+        panel.close()
+      }
+      func settle() {
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+        host.layoutSubtreeIfNeeded()
+      }
+      func scrollViews(_ root: NSView) -> [NSScrollView] {
+        (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+      }
+      func editor(_ root: NSView) -> NSTextView? {
+        if let text = root as? NSTextView, text.isEditable { return text }
+        return root.subviews.lazy.compactMap { editor($0) }.first
+      }
+      func frame(_ view: NSView) -> CGRect {
+        let rect = view.convert(view.bounds, to: host)
+        guard !host.isFlipped else { return rect }
+        return CGRect(
+          x: rect.minX, y: host.bounds.maxY - rect.maxY, width: rect.width, height: rect.height)
+      }
+      settle()
+      let navigation = try XCTUnwrap(navigationProbe)
+      let routing = try XCTUnwrap(routingProbe)
+      let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
+      let document = try XCTUnwrap(scroll.documentView)
+      let originalEditor = try XCTUnwrap(editor(host))
+      let navigationFrame = frame(navigation)
+      let routingFrame = frame(routing)
+      XCTAssertGreaterThan(navigationFrame.height, 10)
+      XCTAssertGreaterThan(routingFrame.height, 10)
+      XCTAssertGreaterThan(document.bounds.height, scroll.contentView.bounds.height + 200)
+      for (position, fraction) in [CGFloat(0), 0.5, 1].enumerated() {
+        NotificationCenter.default.post(
+          name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        let y = max(0, document.bounds.height - scroll.contentView.bounds.height) * fraction
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        NotificationCenter.default.post(
+          name: NSScrollView.didLiveScrollNotification, object: scroll)
+        NotificationCenter.default.post(
+          name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        settle()
+        let viewport = frame(scroll.contentView)
+        let header = frame(navigation)
+        let footer = frame(routing)
+        print(
+          "BUS_SCROLL_GEOMETRY width=\(width) scale=\(scale) position=\(position) header=\(header) routing=\(footer) viewport=\(viewport)"
+        )
+        XCTAssertEqual(header.minY, navigationFrame.minY, accuracy: 1, "header stays pinned")
+        XCTAssertEqual(footer.minY, routingFrame.minY, accuracy: 1, "recipient stays pinned")
+        XCTAssertGreaterThanOrEqual(
+          viewport.minY, header.maxY - 1, "messages cannot pass behind the header")
+        XCTAssertLessThanOrEqual(
+          viewport.maxY, footer.minY + 1, "messages cannot pass behind routing")
+        XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+        XCTAssertEqual(originalEditor.string, "A retained draft")
+        if position != 1 {
+          let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+          host.cacheDisplay(in: host.bounds, to: bitmap)
+          let image = NSImage(size: host.bounds.size)
+          image.addRepresentation(bitmap)
+          let attachment = XCTAttachment(image: image)
+          attachment.name = "Bus-scroll-\(Int(width))-scale-\(scale)-position-\(position)"
+          attachment.lifetime = .keepAlways
+          add(attachment)
+        }
+      }
+    }
+  }
+
   func testViewingAndFoldingKeepTheRecipientAndEachOwnersDraft() throws {
     let first = try conversation("2")
     let second = try conversation("3", lease: "b")
@@ -1038,5 +1161,20 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertFalse(state.conversationMicrophoneOpen(first))
     XCTAssertFalse(state.conversationMicrophoneOpen(second))
     XCTAssertFalse(panel.isVisible, "review fixtures do not claim the user's desktop")
+  }
+}
+
+@MainActor
+private struct BusChromeFrameProbe: NSViewRepresentable {
+  let capture: (NSView) -> Void
+
+  func makeNSView(context: Context) -> NSView {
+    let view = NSView()
+    capture(view)
+    return view
+  }
+
+  func updateNSView(_ nsView: NSView, context: Context) {
+    capture(nsView)
   }
 }
