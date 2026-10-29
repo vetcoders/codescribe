@@ -174,7 +174,11 @@ final class OnboardingPatternTests: XCTestCase {
     XCTAssertTrue(frame.contains("CSProgressBar(value: model.progressFraction)"), "progress")
     XCTAssertTrue(components.contains("struct CSProgressBar"), "the brand bar lives in the system")
     XCTAssertFalse(frame.contains("ProgressView("), "the native bar ignores a brand tint")
-    XCTAssertTrue(frame.contains(".foregroundStyle(CSColor.brandAccent)"), "the step icon")
+    // The step icon carries an explicit tone rather than a hardcoded colour
+    // (W0-20): every step wears the brand accent except the wizard's
+    // not-ready verdict, which is neutral ink — see
+    // testNotReadyHeadingWearsNeutralInk below.
+    XCTAssertTrue(frame.contains(".foregroundStyle(current.tone)"), "the step icon")
     for source in [steps, frame] {
       XCTAssertFalse(source.contains(".tint(CSColor.chromeAccent)"), "no chrome-accent progress")
     }
@@ -228,5 +232,28 @@ final class OnboardingPatternTests: XCTestCase {
     // both agent bridge errors, "Agent needs setup" and the required-grant note.
     XCTAssertEqual(steps.components(separatedBy: "OnboardingProblemText(").count, 10)
     XCTAssertTrue(steps.contains("if kind.isRequiredForSetup {"), "optional notes stay grey")
+  }
+
+  /// Founder decision of 2026-10-29 (W0-20): the final summary's not-ready
+  /// verdict heading is neutral ink, not the brand terracotta and not red —
+  /// terracotta is choice and progress, and the concrete blocking rows below
+  /// the heading already carry the red warning sign.
+  func testNotReadyHeadingWearsNeutralInk() throws {
+    let sources = try onboardingSources()
+    let frame = try XCTUnwrap(sources["OnboardingView.swift"])
+    XCTAssertTrue(
+      frame.contains(
+        "\"exclamationmark.circle\",\n        CSColor.secondaryInk,"),
+      "the not-ready heading icon is neutral ink")
+    XCTAssertFalse(
+      frame.contains(
+        "CSColor.brandAccent,\n        String(\n          localized: LocalizedStringResource(\n            \"Codescribe is not ready yet.\""
+      ), "the not-ready heading never wears the brand accent")
+    XCTAssertFalse(
+      frame.contains("\"exclamationmark.circle\",\n        CSColor.terracottaLight,"),
+      "the not-ready heading never wears terracotta")
+    XCTAssertFalse(
+      frame.contains("\"exclamationmark.circle\",\n        CSColor.dangerLight,"),
+      "the not-ready heading never wears red")
   }
 }

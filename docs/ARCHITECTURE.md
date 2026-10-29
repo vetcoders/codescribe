@@ -427,7 +427,11 @@ A panel reads the role, never a bare number.
 - **Brand accent for state, chrome accent for controls.** `CSColor.brandAccent`
   (`#BA5C3C` on paper, `#D97757` on ink; 3:1 as a mark on every sheet shade)
   colours what reports state: the setup progress bar, the mark of a selected
-  choice and the icon of a wizard step. A selected choice row is drawn by
+  choice and the icon of a wizard step — except the final summary's
+  not-ready verdict heading, which stays neutral `CSColor.secondaryInk`
+  rather than terracotta or red: the concrete blocking rows below it already
+  carry the warning in `dangerLight` (Founder, 2026-10-29). A selected choice
+  row is drawn by
   `csChoice(selected:)` (the wash at `CSAlpha.selectionWash`, the one-point
   edge at `CSAlpha.selectionStroke`), never by the prominent action surface.
   `CSColor.chromeAccent` stays the macOS accent for focus, switches, sliders,
