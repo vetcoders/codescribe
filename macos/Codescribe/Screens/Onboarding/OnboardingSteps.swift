@@ -45,7 +45,7 @@ struct InterfaceLanguageStepView: View {
         .fixedSize(horizontal: false, vertical: true)
       }
       if let error = model.lastError {
-        Text(error).font(CSFont.ui(12)).foregroundStyle(CSColor.dangerLight)
+        OnboardingProblemText(text: error)
           .accessibilityIdentifier("onboarding-interface-language-error")
       }
     }
@@ -56,6 +56,26 @@ struct InterfaceLanguageStepView: View {
 //
 // The heading, the category label and the reading column belong to the frame
 // in OnboardingView.swift; these components fill that column.
+
+/// A problem line: an error or a blocker reads in `dangerLight` behind the
+/// warning sign, so it never rests on colour alone. Terracotta stays the
+/// colour of choice and progress; a missing optional setting is grey and has
+/// no line of this kind.
+struct OnboardingProblemText: View {
+  let text: String
+  var font: Font = CSFont.ui(12)
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 5) {
+      CSIconView(icon: .warning, size: 11, weight: .semibold, color: CSColor.dangerLight)
+        .accessibilityHidden(true)
+      Text(text)
+        .font(font)
+        .foregroundStyle(CSColor.dangerLight)
+    }
+    .accessibilityElement(children: .combine)
+  }
+}
 
 /// A single radio-style selectable card: title + optional subtitle. The
 /// selected one carries the brand accent: a filled check, a wash and a
@@ -267,7 +287,7 @@ struct AgenticReadinessStepView: View {
                       comment: "Status below an agent client card; %@ is Codex or Claude Code"))
                 )
                 .font(CSFont.ui(11, .medium))
-                .foregroundStyle(CSColor.terracottaLight)
+                .foregroundStyle(CSColor.secondaryInk)
                 Spacer(minLength: 0)
                 Button(
                   String(
@@ -288,9 +308,7 @@ struct AgenticReadinessStepView: View {
             }
 
             if model.agentClientShowsError(client), let error = model.agentBridgeError {
-              Text(error)
-                .font(CSFont.ui(11, .medium))
-                .foregroundStyle(CSColor.terracottaLight)
+              OnboardingProblemText(text: error, font: CSFont.ui(11, .medium))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 12)
             }
@@ -316,14 +334,12 @@ struct AgenticReadinessStepView: View {
         .foregroundStyle(CSColor.secondaryInk)
       } else if model.agentNeedsGlobalSetup {
         HStack(spacing: 10) {
-          Text(
-            String(
+          OnboardingProblemText(
+            text: String(
               localized: LocalizedStringResource(
                 "Agent needs setup", locale: model.interfaceLocale,
-                comment: "Global provider or native readiness problem, not a client installation"))
-          )
-          .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.terracottaLight)
+                comment: "Global provider or native readiness problem, not a client installation")),
+            font: CSFont.ui(11, .medium))
           Spacer(minLength: 0)
           Button(
             String(
@@ -339,9 +355,7 @@ struct AgenticReadinessStepView: View {
       }
 
       if model.agentBridgeErrorClient == nil, let error = model.agentBridgeError {
-        Text(error)
-          .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.terracottaLight)
+        OnboardingProblemText(text: error, font: CSFont.ui(11, .medium))
           .fixedSize(horizontal: false, vertical: true)
       }
 
@@ -453,11 +467,19 @@ private struct OnboardingPermissionRow: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         if let note = model.permissionRepairNote(for: kind) {
-          Text(note)
-            .font(CSFont.ui(12))
-            .foregroundStyle(CSColor.terracottaLight)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityIdentifier("onboarding-permission-note-\(kind.id)")
+          // A required grant blocks setup, so its note is a problem; an
+          // optional one only explains a choice left open.
+          Group {
+            if kind.isRequiredForSetup {
+              OnboardingProblemText(text: note)
+            } else {
+              Text(note)
+                .font(CSFont.ui(12))
+                .foregroundStyle(CSColor.secondaryInk)
+            }
+          }
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("onboarding-permission-note-\(kind.id)")
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -801,9 +823,7 @@ struct ApiKeyStepView: View {
 
   private func inlineError(_ message: String) -> some View {
     HStack(spacing: 8) {
-      Text(message)
-        .font(CSFont.ui(12))
-        .foregroundStyle(CSColor.terracottaLight)
+      OnboardingProblemText(text: message)
         .lineLimit(1)
         .help(message)
       Spacer(minLength: 0)
@@ -820,9 +840,7 @@ struct ApiKeyStepView: View {
 
   private func providerSelectionError(_ message: String) -> some View {
     HStack(spacing: 8) {
-      Text(message)
-        .font(CSFont.ui(12))
-        .foregroundStyle(CSColor.terracottaLight)
+      OnboardingProblemText(text: message)
         .lineLimit(1)
         .help(message)
       Spacer(minLength: 0)
@@ -839,9 +857,7 @@ struct ApiKeyStepView: View {
 
   private func keySaveError(_ message: String) -> some View {
     HStack(spacing: 8) {
-      Text(message)
-        .font(CSFont.ui(12))
-        .foregroundStyle(CSColor.terracottaLight)
+      OnboardingProblemText(text: message)
         .lineLimit(1)
         .help(message)
       Spacer(minLength: 0)
@@ -1008,9 +1024,7 @@ struct DoneStepView: View {
         calibrationProgress(startedAt: startedAt)
       }
       if let error = model.calibrationError {
-        Text(verbatim: error)
-          .font(CSFont.ui(12))
-          .foregroundStyle(CSColor.terracottaLight)
+        OnboardingProblemText(text: error)
           .fixedSize(horizontal: false, vertical: true)
           .textSelection(.enabled)
       }

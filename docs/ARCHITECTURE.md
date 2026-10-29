@@ -449,7 +449,10 @@ A panel reads the role, never a bare number.
   the saved badge without claiming service liveness. Audio's committing
   fragments row spells out "Enabled"/"Disabled" ("Włączone"/"Wyłączone" in
   Polish). Blocked audio and missing or pending model states keep their
-  existing warning or neutral presentation.
+  existing warning or neutral presentation. A problem is never terracotta:
+  `CSStatusBadge(mark: .blocked)` and the wizard's `OnboardingProblemText`
+  draw an error or a blocker in `dangerLight` behind the warning sign, and a
+  missing optional setting stays `secondaryInk` without one.
 
 ### Agent window header
 

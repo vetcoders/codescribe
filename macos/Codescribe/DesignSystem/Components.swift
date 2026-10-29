@@ -541,9 +541,10 @@ struct CSProgressBar: View {
 /// 2026-10-10 rule: a thin check, never a filled badge);
 /// stored identity that nothing has tested ("Saved") is an empty circle on
 /// the same capsule, the deliberate exception of 2026-10-26 to the grey
-/// "saved" of 99758557a. A blocked state pairs a warning glyph with terracotta
-/// ink and a matching capsule; ordinary pending states and "Optional" remain
-/// plain ink. The dotted `StatusPill` stays the live-activity pill; this badge
+/// "saved" of 99758557a. A blocked state pairs a warning glyph with
+/// `dangerLight` ink and a matching capsule, because terracotta is the colour
+/// of choice and progress, never of a problem; ordinary pending states and
+/// "Optional" remain plain ink. The dotted `StatusPill` stays the live-activity pill; this badge
 /// never pulses.
 struct CSStatusBadge: View {
   enum Mark {
@@ -560,7 +561,7 @@ struct CSStatusBadge: View {
     switch mark {
     case .none: CSColor.secondaryInk
     case .saved, .verified: CSColor.oliveLight
-    case .blocked: CSColor.terracottaLight
+    case .blocked: CSColor.dangerLight
     }
   }
 
@@ -574,7 +575,7 @@ struct CSStatusBadge: View {
       case .verified:
         CSIconView(icon: .success, size: 9, weight: .semibold, color: CSColor.oliveLight)
       case .blocked:
-        CSIconView(icon: .warning, size: 9, weight: .semibold, color: CSColor.terracottaLight)
+        CSIconView(icon: .warning, size: 9, weight: .semibold, color: CSColor.dangerLight)
       }
       Text(text).font(CSFont.ui(11, .medium))
     }

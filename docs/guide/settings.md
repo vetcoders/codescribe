@@ -398,7 +398,7 @@ key. **Sign out** is a neutral chip like the other row actions, not a
 red one. A stored credential has an empty-circle **Saved** badge, which
 does not claim that the provider has been tested. After **Test**, a key the
 provider accepted reads **Key OK** with a thin check; a refused key or an
-exhausted usage limit carries the terracotta warning sign; a probe the
+exhausted usage limit carries the red warning sign; a probe the
 provider turned down for another reason, or a network error, is a plain word,
 because it says nothing about the key; a provider without a probe shows the
 empty-circle **Saved — no test for this key**. A key that is absent is

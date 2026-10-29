@@ -63,10 +63,15 @@ session. The summary's heading is **Codescribe is ready.** only when dictation
 and, on the agent path, the agent step are both ready; with dictation ready and
 the agent not, it reads **Dictation is ready.**
 
-On the summary, blocked recording readiness carries a warning glyph and a
-terracotta badge, so the state is readable without relying on colour alone.
+On the summary, blocked recording readiness carries a warning glyph and a red
+badge, so the state is readable without relying on colour alone.
 The ordinary **Checking…** state remains neutral; a completed check retains
-its verified badge.
+its verified badge. Every problem in the wizard reads the same way: an error,
+a failed check or **Agent needs setup** is red text behind the warning sign,
+and so is the note under a missing required permission. A note under an
+optional permission and **… needs setup** under an agent card you picked are
+grey, because they block nothing. Terracotta marks only what you chose and how
+far setup has come.
 
 The wizard never downloads the local Whisper model on its own: its model step
 shows one card with the model, its install state, its source, its size and

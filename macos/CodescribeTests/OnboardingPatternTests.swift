@@ -182,10 +182,15 @@ final class OnboardingPatternTests: XCTestCase {
     XCTAssertTrue(components.contains("struct CSStatusBadge"), "one badge for wizard and Settings")
     XCTAssertTrue(steps.contains("CSProgressBar(value: SettingsViewModel.calibrationProgress("))
     // The capsule takes the mark's tint (W0-03): olive for saved and verified,
-    // terracotta only for a state that blocks ("red only when blocking").
+    // the danger rung with the warning sign only for a state that blocks;
+    // terracotta is choice and progress, never a problem (W0-17).
     XCTAssertTrue(components.contains("Capsule().fill(tint.opacity(0.14))"))
     XCTAssertTrue(components.contains("case .saved, .verified: CSColor.oliveLight"))
-    XCTAssertTrue(components.contains("case .blocked: CSColor.terracottaLight"))
+    XCTAssertTrue(components.contains("case .blocked: CSColor.dangerLight"))
+    XCTAssertTrue(
+      components.contains(
+        "CSIconView(icon: .warning, size: 9, weight: .semibold, color: CSColor.dangerLight)"))
+    XCTAssertFalse(components.contains("CSColor.terracottaLight"), "no terracotta problem")
     XCTAssertTrue(
       components.contains("CSIconView(icon: .success, size: 9, weight: .semibold,"),
       "a verified status is the thin check of the glyph canon, never a filled badge")
@@ -205,5 +210,23 @@ final class OnboardingPatternTests: XCTestCase {
     XCTAssertFalse(steps.contains("private func statusBadge("), "one badge, not two")
     XCTAssertEqual(
       steps.components(separatedBy: "CSStatusBadge(").count, 8, "seven wizard statuses")
+  }
+
+  /// Problems in the wizard speak in `dangerLight` behind the warning sign;
+  /// a missing optional setting is grey without one; terracotta is left to
+  /// choice and progress (W0-17, D2 2026-10-26).
+  func testProblemsSpeakInTheDangerRungWithASign() throws {
+    let sources = try onboardingSources()
+    let steps = try XCTUnwrap(sources["OnboardingSteps.swift"])
+    XCTAssertFalse(steps.contains("CSColor.terracottaLight"), "no problem drawn in terracotta")
+    XCTAssertTrue(steps.contains("struct OnboardingProblemText"), "one problem line")
+    XCTAssertTrue(
+      steps.contains(
+        "CSIconView(icon: .warning, size: 11, weight: .semibold, color: CSColor.dangerLight)"),
+      "a problem never rests on colour alone")
+    // The three provider errors, the calibration error, the language error,
+    // both agent bridge errors, "Agent needs setup" and the required-grant note.
+    XCTAssertEqual(steps.components(separatedBy: "OnboardingProblemText(").count, 10)
+    XCTAssertTrue(steps.contains("if kind.isRequiredForSetup {"), "optional notes stay grey")
   }
 }
