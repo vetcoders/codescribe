@@ -132,6 +132,10 @@ final class OnboardingPatternTests: XCTestCase {
     let eyebrow =
       "EyebrowLabel(text: current.label, color: CSColor.textMuted, font: CSFont.ui(11, .semibold))"
     XCTAssertTrue(frame.contains(eyebrow), "the category label: system face, muted grey")
+    // The step heading sits on the 18 pt display role of the one text scale,
+    // not on a system text style (W0-17).
+    XCTAssertFalse(frame.contains(".title2"), "the step heading left the system title style")
+    XCTAssertTrue(frame.contains(".font(CSFont.ui(18, .semibold))"), "the step heading role")
     XCTAssertTrue(whisper.contains(".truncationMode(.middle)"), "the model path keeps both ends")
 
     let polish = try polishCatalog()

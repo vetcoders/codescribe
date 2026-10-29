@@ -236,17 +236,18 @@ struct OnboardingView: View {
   }
 
   /// Top of the reading column: the step icon with its one task message, then
-  /// the quieter category label.
+  /// the quieter category label. The message is the 18 pt display role of the
+  /// one text scale, the wizard's largest size; no system text style.
   private var stepHeading: some View {
     let current = heading
     return VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .firstTextBaseline, spacing: 10) {
         Image(systemName: current.symbol)
-          .font(.title2.weight(.regular))
+          .font(CSFont.ui(18))
           .foregroundStyle(CSColor.brandAccent)
           .accessibilityHidden(true)
         Text(current.title)
-          .font(.title2.weight(.semibold))
+          .font(CSFont.ui(18, .semibold))
           .foregroundStyle(.primary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityAddTraits(.isHeader)
