@@ -1793,6 +1793,17 @@ impl AcousticLedger {
             return Some(false);
         }
         let all_coarse = sources.iter().all(|source| self.coarse_word_source(source));
+        // Once a Whisper word has entered the document, another overlapping
+        // decode may supply context but cannot rewrite that physical word.
+        // Coarse provisional slots still need their first word refinement.
+        if observation.producer == ObservationProducer::Whisper
+            && sources.iter().any(|source| {
+                source.producer == ObservationProducer::Whisper && !self.coarse_word_source(source)
+            })
+        {
+            self.record_word_choice(observation, sources, outputs, "published_whisper_word", false);
+            return Some(false);
+        }
         let held_label = compose_label(sources);
         let candidate_label = compose_label(outputs);
         let coarse_witness = observation.producer == ObservationProducer::AppleDictation

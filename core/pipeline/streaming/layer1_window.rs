@@ -34,6 +34,7 @@ pub(crate) struct CaptureWindowPlan {
     offered: Option<TailSampleRange>,
     finished: bool,
     trial_offer: bool,
+    #[cfg(test)]
     last_trial_bucket: Option<u64>,
 }
 
@@ -51,6 +52,7 @@ impl CaptureWindowPlan {
             offered: None,
             finished: sample_rate == 0,
             trial_offer: false,
+            #[cfg(test)]
             last_trial_bucket: None,
         }
     }
@@ -116,6 +118,7 @@ impl CaptureWindowPlan {
     /// One additional lexical witness per nine seconds of capture, through the
     /// same offer/account corridor as grid work. Never advances the grid. Stop
     /// may only offer work wholly inside its final nine seconds.
+    #[cfg(test)]
     pub(crate) fn offer_trial(
         &mut self,
         start: u64,

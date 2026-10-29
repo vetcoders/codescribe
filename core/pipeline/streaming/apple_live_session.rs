@@ -129,6 +129,7 @@ const TAIL_PATCH_QUEUE_CAP: usize = 8;
 /// PCM chunk and partial, so without a bound a long take spends one core on
 /// the scan alone (2026-10-12: a 19-minute take, 91 % of the worker thread).
 /// A trial is a 9 s window; a quarter second between scans costs nothing.
+#[cfg(test)]
 const WORD_TRIAL_SCAN_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Bounded transport ownership for occurrence formatter jobs. Saturation skips
@@ -2078,7 +2079,9 @@ struct AppleSealState {
     /// Utterance-grain straddles still refuse whole-span replacement.
     whisper_span_refused: BTreeSet<OccurrenceIdentity>,
     refinement_clock: Instant,
+    #[cfg(test)]
     word_trial_scan_at: Option<Instant>,
+    terminal_window_tail_replayed: bool,
     refinement_lane_lost: bool,
     /// A matched provider completion returned at least once this session, so
     /// the local engine is demonstrably past cold start. Gates the choice
@@ -2766,7 +2769,9 @@ impl AppleSealState {
             admission_horizon: 0,
             whisper_span_refused: BTreeSet::new(),
             refinement_clock: Instant::now(),
+            #[cfg(test)]
             word_trial_scan_at: None,
+            terminal_window_tail_replayed: false,
             refinement_lane_lost: false,
             first_whisper_window_completed: false,
             refinement_started: Instant::now(),
@@ -3533,6 +3538,18 @@ impl AppleSealState {
             self.retry_refinements(ev_tx);
         }
         self.replay_completed_windows(ev_tx);
+        if self.capture_stopping && !self.terminal_window_tail_replayed {
+            self.terminal_window_tail_replayed = true;
+            let head = self.audio.session_sample_end();
+            if let Some(last) = self.retained_word_decodes.iter()
+                .find(|payload| payload.identity.range.sample_end == head)
+                .cloned()
+            {
+                let request_id = last.identity.request_id;
+                self.replayed_window_owners.retain(|(id, _)| *id != request_id);
+                self.admit_window_words(ev_tx, &last, false, true);
+            }
+        }
         self.close_admission_horizon(ev_tx, self.window_plan.admission_horizon());
     }
 
@@ -3903,6 +3920,7 @@ impl AppleSealState {
     /// A scheduled return offers every covered dispute its third witness before
     /// ordinary admission. The ledger requires full source and frame freshness
     /// for each component, including owners qualified after the original return.
+    #[cfg(test)]
     fn complete_covered_word_trials(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -4697,6 +4715,16 @@ impl AppleSealState {
         returned: &TailProviderPayload,
         fresh: bool,
     ) {
+        self.admit_window_words(ev_tx, returned, fresh, false);
+    }
+
+    fn admit_window_words(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        returned: &TailProviderPayload,
+        fresh: bool,
+        terminal_tail_only: bool,
+    ) {
         let identity = &returned.identity;
         let admit_sample_start = identity.range.sample_start;
         let admit_sample_end = identity.range.sample_end;
@@ -4708,7 +4736,6 @@ impl AppleSealState {
             .collect::<Vec<_>>();
         let mut mutation_admitted = false;
         if let Some(payload) = payload.as_ref() {
-            mutation_admitted |= self.complete_covered_word_trials(ev_tx, payload).1;
             self.acoustic_ledger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -4731,8 +4758,24 @@ impl AppleSealState {
             }
             return;
         }
-        // `word_grain` stays on the original segments. An all-refused window
-        // must not fall through to `payload.text`.
+        // The original payload remains bound as decode context. Only the
+        // owning band's words enter admission or its speech-refusal path.
+        let owned_segments = if word_grain {
+            let (start, end) = whisper_publication_band(self, &identity.range);
+            let start = if terminal_tail_only {
+                identity.range.sample_start.saturating_add(u64::from(self.sample_rate) * 6)
+            } else {
+                start
+            };
+            Some(segments.iter().filter(|segment| {
+                let midpoint = segment.range.sample_start
+                    + segment.range.sample_end.saturating_sub(segment.range.sample_start) / 2;
+                start <= midpoint && midpoint < end
+            }).cloned().collect::<Vec<_>>())
+        } else {
+            None
+        };
+        let segments = owned_segments.as_deref().unwrap_or(segments);
         let filtered_segments = payload
             .as_ref()
             .is_some_and(|payload| {
@@ -5628,6 +5671,7 @@ impl AppleSealState {
     /// Before expiring a live dispute, ask the sole range planner for one new
     /// bounded witness. The ledger chooses the component; transport and return
     /// retain the exact trial and capture identity. Context quality is not a vote.
+    #[cfg(test)]
     fn schedule_bounded_word_trial(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         if self.capture_stopping
             || self.tail_patch.is_none()
@@ -5738,7 +5782,6 @@ impl AppleSealState {
         }
         let sample_start = sample_start.min(self.window_plan.admission_horizon());
         self.admission_horizon = self.admission_horizon.max(sample_start);
-        self.schedule_bounded_word_trial(ev_tx);
         let owners = self.unsealed_word_owners();
         let mut expired_words = false;
         // Owners whose ledger can still expire a conflict. Unresolved owners
@@ -7458,6 +7501,24 @@ fn pin_text_tokens(text: &str, segments: &[TimedTailSegment]) -> Option<Vec<Opti
     (next == pinned.len()).then_some(tokens)
 }
 
+/// Decode context overlaps; publication belongs to exactly one grid window.
+fn whisper_publication_band(state: &AppleSealState, range: &TailSampleRange) -> (u64, u64) {
+    let step = u64::from(state.sample_rate) * 3;
+    let start = if range.sample_start == 0 { 0 } else { range.sample_start.saturating_add(step) };
+    let end = if state.capture_stopping && range.sample_end == state.audio.session_sample_end() {
+        range.sample_end
+    } else {
+        range.sample_start.saturating_add(step.saturating_mul(2)).min(range.sample_end)
+    };
+    (start.min(end), end)
+}
+
+fn whisper_word_in_publication_band(state: &AppleSealState, decode: &TailSampleRange, word: &TailSampleRange) -> bool {
+    let (start, end) = whisper_publication_band(state, decode);
+    let midpoint = word.sample_start + word.sample_end.saturating_sub(word.sample_start) / 2;
+    start <= midpoint && midpoint < end
+}
+
 fn retain_whisper_words_with_own_speech(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -7876,6 +7937,11 @@ fn admit_full_pass_gap_segments(
 
     for (generation, segment) in full_pass.segments.iter().enumerate() {
         let label = segment.text.trim();
+        if producer == LedgerObservationProducer::Whisper
+            && !whisper_word_in_publication_band(state, &full_pass.identity.range, &segment.range)
+        {
+            continue;
+        }
         if label.is_empty() {
             continue;
         }
@@ -8268,6 +8334,7 @@ fn admit_retained_unowned_words(
             continue;
         }
         if segment.grain != TailSegmentGrain::Word
+            || !whisper_word_in_publication_band(state, decode, &segment.range)
             || segment.text.split_whitespace().count() != 1
             || !decode.contains(&segment.range)
             || state
