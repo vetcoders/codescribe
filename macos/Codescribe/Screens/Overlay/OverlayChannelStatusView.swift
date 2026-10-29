@@ -1541,6 +1541,19 @@ struct OverlayChannelStatusView: View {
       focusState: showsButton ? panelFocusStates[digit] : nil)
   }
 
+  /// Both the card controls and the action menu use the same command guards.
+  func agentMicrophoneEnabled(for channel: OverlayChannelDelivery) -> Bool {
+    !unavailable && onToggleChannel != nil
+      && !pendingToggleChannels.contains(channel.channel)
+      && Self.toggleDigit(for: channel.channel) != nil
+      && (isOpen(channel) || !hasDeadFollower(channel))
+  }
+
+  func agentPlaybackEnabled(for channel: OverlayChannelDelivery) -> Bool {
+    onTogglePlayback != nil && mutedChannels[channel.channel] != nil
+      && !pendingMuteChannels.contains(channel.channel)
+  }
+
   /// The commands behind one agent's pill menu, with their real availability.
   /// The Intercom draws its focus button from the same `focus` action, so a
   /// fiszka and the menu never disagree on where the agent can be reached.
@@ -1550,10 +1563,8 @@ struct OverlayChannelStatusView: View {
     guard let channel = channels.first(where: { $0.channel == digit }), digit != "0" else {
       return nil
     }
-    let microphoneEnabled =
-      !unavailable && onToggleChannel != nil
-      && !pendingToggleChannels.contains(digit)
-      && Self.toggleDigit(for: digit) != nil && (isOpen(channel) || !hasDeadFollower(channel))
+    let microphoneEnabled = agentMicrophoneEnabled(for: channel)
+    let playbackEnabled = agentPlaybackEnabled(for: channel)
     let muted = mutedChannels[digit]
     let focusState = panelFocusStates[digit]
     let owner = archiveCandidates[digit]
@@ -1582,10 +1593,8 @@ struct OverlayChannelStatusView: View {
               : String(localized: "Mute agent replies"),
           symbol: muted == true ? "speaker.slash" : "speaker.wave.2",
           identifier: "overlay-agent-menu-playback-\(digit)",
-          enabled: muted != nil && !pendingMuteChannels.contains(digit),
-          perform: {
-            if muted != nil, !pendingMuteChannels.contains(digit) { onTogglePlayback?(digit) }
-          }),
+          enabled: playbackEnabled,
+          perform: { if playbackEnabled { onTogglePlayback?(digit) } }),
       showInAgents: onShowAgentInMonitor == nil
         ? nil
         : OverlayAgentPillMenuAction(
@@ -1967,11 +1976,8 @@ struct OverlayChannelStatusView: View {
     HStack(spacing: 6) {
       OverlayAgentAudioControls(
         open: isOpen(channel), muted: mutedChannels[channel.channel],
-        microphoneEnabled: !unavailable && onToggleChannel != nil
-          && !pendingToggleChannels.contains(channel.channel)
-          && Self.toggleDigit(for: channel.channel) != nil
-          && (isOpen(channel) || !hasDeadFollower(channel)),
-        playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains(channel.channel),
+        microphoneEnabled: agentMicrophoneEnabled(for: channel),
+        playbackEnabled: agentPlaybackEnabled(for: channel),
         palette: palette, onMicrophone: { toggle(channel) },
         onPlayback: { onTogglePlayback?(channel.channel) },
         speaking: conversation(for: channel)?.replySpeaking == true)
