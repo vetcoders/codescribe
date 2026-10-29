@@ -2913,8 +2913,12 @@ final class OverlayState {
       return
     }
     let draft = conversationDraft(for: conversation.id)
+    let hasWaitingCaptureAttachments =
+      captureAttachmentDrafts[conversation.id]?.target == nil
+      && !(captureAttachmentDrafts[conversation.id]?.paths.isEmpty ?? true)
+      && !pendingCaptureAttachmentSends.contains(conversation.id)
     guard conversation.owner != nil || conversation.channel == "0",
-      !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasWaitingCaptureAttachments,
       !pendingTextMessages.contains(conversation.id)
     else { return }
     pendingTextMessages.insert(conversation.id)
@@ -2931,6 +2935,7 @@ final class OverlayState {
       adopted.isEmpty
       ? draft
       : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
+    guard !outgoing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     do {
       try await publishConversationText(conversation.owner, outgoing, reply, [])
       // A newer draft belongs to the Founder, even if publication finishes late.
@@ -3106,14 +3111,19 @@ final class OverlayState {
     for (id, original) in captureAttachmentDrafts where original.target == nil {
       guard let conversation = projected.first(where: { $0.id == id }),
         let session = captureSessionForPaste(in: conversation, at: original.pastedAt),
-        original.captureSessionID == nil || original.captureSessionID == session.id,
+        original.captureSessionID == nil
+          || OverlayChannelDelivery.Bus.channelSessionID(of: original.captureSessionID ?? "")
+            == OverlayChannelDelivery.Bus.channelSessionID(of: session.id),
         let target = conversation.messages.reversed().compactMap(\.activeCaptureAttachmentTarget)
           .first(where: {
-            $0.captureSessionID == session.id && $0.recipientIDs.sorted() == session.recipientIDs
+            ($0.captureSessionID == session.id
+              || OverlayChannelDelivery.Bus.channelSessionID(of: $0.captureSessionID)
+                == OverlayChannelDelivery.Bus.channelSessionID(of: session.id))
+              && $0.recipientIDs.sorted() == session.recipientIDs
           })
       else { continue }
       var resolved = original
-      resolved.captureSessionID = session.id
+      resolved.captureSessionID = target.captureSessionID
       resolved.target = target
       captureAttachmentDrafts[id] = resolved
       captureAttachmentErrors.removeValue(forKey: id)

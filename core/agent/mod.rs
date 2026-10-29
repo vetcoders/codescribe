@@ -23,6 +23,8 @@ pub mod consultation;
 pub mod conversation_search;
 /// Streaming events: provider-level [`AgentEvent`] and UI-level [`AgentUiEvent`].
 pub mod event;
+/// Compact MCP tool projection, on-demand schema search, and lazy invocation gateway.
+pub mod mcp_projection;
 /// Tool permission policy — the allow / ask / deny gateway.
 pub mod permissions;
 /// The [`AgentProvider`] trait and its per-request [`StreamOptions`].
@@ -63,6 +65,10 @@ pub use conversation_search::{
     BusConversationSearch, BusConversationSearchHit, query_matches, search_bus_conversations,
 };
 pub use event::{AgentEvent, AgentUiEvent};
+pub use mcp_projection::{
+    MCP_CALL_TOOL_NAME, MCP_CATALOG_BUDGET_BYTES, MCP_SEARCH_TOOL_NAME, McpCallResolution,
+    McpToolEntry, json_schema_to_compact_signature, render_mcp_catalog,
+};
 pub use permissions::{
     AgentPermissions, PermissionLevel, PermissionSource, ToolCapability, tool_identity,
 };

@@ -1991,7 +1991,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nagranie Agenta bez trzymania, które nie słyszy głosu, kończy się i niczego nie wysyła."
+            "value" : "Gdy podczas nagrywania do Agenta nic nie powiesz przez ten czas, mikrofon wyłączy się bez wysyłania."
           }
         }
       }
@@ -2042,7 +2042,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sesja, która nie słyszy głosu, kończy się sama. Odpowiedzi agenta się nie liczą."
+            "value" : "Gdy przez ten czas nic nie powiesz, rozmowa zakończy się sama (odpowiedzi agenta nie wliczają się)."
           }
         }
       }
@@ -2667,7 +2667,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Po wiadomości"
+            "value" : "Po wysłaniu wypowiedzi"
           }
         }
       }
@@ -3374,7 +3374,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Najpierw Apple na Twoim Macu; ten dostawca przejmuje, gdy Apple zawiedzie."
+            "value" : "Gdy wybierzesz Apple na tym Macu, wybrany niżej dostawca zadziała awaryjnie."
           }
         }
       }
@@ -5220,7 +5220,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zamknij bez głosu po"
+            "value" : "Rozłącz przy ciszy po"
           }
         }
       }
@@ -7909,7 +7909,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Każda pauza wysyła wiadomość; rozmowa trwa do rozłączenia."
+            "value" : "Każda pauza wysyła wypowiedź, a mikrofon słucha dalej do rozłączenia."
           }
         }
       }
@@ -8043,7 +8043,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zakończ nagranie Agenta bez głosu po"
+            "value" : "Wyłącz mikrofon przy ciszy po"
           }
         }
       }
@@ -8440,7 +8440,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wykończenie każdej wiadomości"
+            "value" : "Obróbka tekstu przed wysłaniem"
           }
         }
       }
@@ -9294,7 +9294,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Przytrzymanie przed wysłaniem do Codescribe Bus"
+            "value" : "Czas na korektę przed wysłaniem (Codescribe Bus)"
           }
         }
       }
@@ -13074,7 +13074,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Jedno przejście formatowania na Twoim poziomie, w czasie czekania poniżej."
+            "value" : "Formatuje tekst wybranym modelem, jeśli zdąży w wyznaczonym niżej czasie."
           }
         }
       }
@@ -13723,7 +13723,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Po tym czasie wiadomość wychodzi tylko z interpunkcją."
+            "value" : "Gdy formatowanie trwa dłużej, wiadomość wychodzi od razu z samą interpunkcją."
           }
         }
       }
@@ -19774,7 +19774,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pauza wysyła wiadomość i rozłącza; następną zaczniesz kolejnym naciśnięciem."
+            "value" : "Po pauzie wypowiedź zostaje wysłana, a rozmowa się kończy."
           }
         }
       }
@@ -21308,7 +21308,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Czekanie na formatowanie"
+            "value" : "Limit czasu na formatowanie"
           }
         }
       }
