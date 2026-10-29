@@ -2007,7 +2007,8 @@ impl AcousticLedger {
         let resolution = u64::from(self.capture_rate_hz.unwrap_or(16_000))
             .div_ceil(50)
             .saturating_add(1);
-        let quiet_ranges = edges
+        let refresh_only = edges.iter().all(Option::is_none);
+        let measured_quiet = edges
             .into_iter()
             .flatten()
             .filter_map(|(range, samples)| {
@@ -2031,6 +2032,18 @@ impl AcousticLedger {
                 (rms.is_finite() && rms < ACTIVE_SPEECH_LINEAR_FLOOR).then(|| range.clone())
             })
             .collect();
+        // Refreshing the same capture without decoder edges must not erase
+        // the exact quiet fences already measured by an active decoder.
+        let quiet_ranges = if refresh_only {
+            self.decode_fence_energy.as_ref().map_or_else(Vec::new, |prior| {
+                prior.quiet_ranges.iter().filter(|range| {
+                    energy.identity().matches(&range.session, range.capture_epoch)
+                        && range.sample_end <= captured_samples
+                }).cloned().collect()
+            })
+        } else {
+            measured_quiet
+        };
         self.decode_fence_energy = Some(DecodeFenceEnergy {
             owner: energy.clone(),
             captured_samples,

@@ -2696,6 +2696,35 @@ impl AppleSealState {
         }
     }
 
+    /// Bind the original Apple pins to this capture's measured PCM before
+    /// admission. Missing or partial capture evidence creates no anchors.
+    fn bind_apple_word_measurement(
+        &self,
+        ledger: &mut AcousticLedger,
+        owner: &OccurrenceIdentity,
+    ) {
+        if owner.session != self.session_id
+            || owner.capture_epoch != self.capture_epoch
+            || owner.sample_end > self.audio.session_sample_end()
+            || !self.capture_energy.identity().matches(&owner.session, owner.capture_epoch)
+        {
+            return;
+        }
+        let capture = self.capture_energy.session_active_speech_ranges(
+            &self.session_id, self.capture_epoch, self.sample_rate,
+        );
+        if capture.availability().observed_samples().is_none_or(|end| end < owner.sample_end) {
+            return;
+        }
+        let speech = coverage_speech_evidence(self);
+        if speech.availability().observed_samples().is_some_and(|end| end >= owner.sample_end) {
+            ledger.record_speech_evidence(&speech);
+        } else {
+            ledger.record_speech_evidence(&capture);
+        }
+        self.record_decode_fence_measurement(ledger, None);
+    }
+
     fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self {
         let session_id_for_energy = session_id.clone();
         let speech_progress = SpeechProgress::new(session_id.clone(), capture_epoch, sample_rate);
@@ -6268,6 +6297,7 @@ fn admit_late_apple_words(
             .acoustic_ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.bind_apple_word_measurement(&mut ledger, &owner);
         for (start, end, text, confidence) in words {
             let pin =
                 OccurrenceIdentity::new(owner.session.clone(), owner.capture_epoch, start, end);
@@ -6981,6 +7011,9 @@ fn admit_ledger_label<'a>(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !ledger.is_qualified(&occurrence) {
         return None;
+    }
+    if producer == LedgerObservationProducer::Apple && !words.is_empty() {
+        state.bind_apple_word_measurement(&mut ledger, &occurrence);
     }
     if ledger.frontier_of(&occurrence).is_none() {
         let producers = if energy == EnergyAdmission::QualifyFinalPassGap {
