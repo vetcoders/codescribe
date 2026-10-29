@@ -27,14 +27,16 @@ struct OverlayAgentRosterLabel: View {
     HStack(alignment: .top, spacing: 6) {
       VStack(alignment: .leading, spacing: 1) {
         if !contentOnly {
-          HStack(spacing: 6) {
+          HStack(alignment: headerOnly ? .firstTextBaseline : .center, spacing: 6) {
             if let channel {
               Text(verbatim: channel)
                 .font(.system(size: 11 * textScale, weight: .medium, design: .monospaced))
                 .foregroundStyle(palette.mutedText.color)
+                .fixedSize(horizontal: true, vertical: false)
                 .accessibilityIdentifier("overlay-agent-digit-\(channel)")
             }
             OverlayAgentStatusDot(kind: dot, palette: palette)
+              .fixedSize()
               .accessibilityLabel(Text(verbatim: statusLabel))
               .accessibilityValue(Text(verbatim: statusDetail))
               .accessibilityIdentifier(
@@ -42,42 +44,46 @@ struct OverlayAgentRosterLabel: View {
               )
             Text(verbatim: title)
               .font(.system(size: 14 * textScale, weight: .semibold))
-              .lineLimit(1)
+              .lineLimit(headerOnly ? 2 : 1)
               .truncationMode(.tail)
               .layoutPriority(1)
               .help(Text(verbatim: title))
               .accessibilityIdentifier("overlay-agent-title-\(channel ?? "0")")
             if let titleAccessory {
               titleAccessory
+                .fixedSize()
             }
             if let receipt {
               OverlayRosterReceiptMark(receipt: receipt, palette: palette, textScale: textScale)
+                .fixedSize()
             }
-            Spacer(minLength: 4)
-            if unreadCount > 0, let conversationID {
-              OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)
-                .accessibilityIdentifier("overlay-agent-unread-replies-\(conversationID)")
-            }
-            if let timestamp {
-              MessageTimestampLabel(date: timestamp, compact: true)
-                .font(.system(size: 11 * textScale))
-                .foregroundStyle(palette.mutedText.color)
-                .fixedSize(horizontal: true, vertical: false)
-                .accessibilityIdentifier(
-                  "overlay-agent-timestamp-\(conversationID ?? channel ?? "0")")
+            if !headerOnly {
+              Spacer(minLength: 4)
+              unreadBadge
+              clock
             }
           }
-          .frame(maxWidth: .infinity, alignment: .leading)
+          .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
-        if !headerOnly, let descriptor, let channel {
-          Text(verbatim: descriptor)
-            .font(.system(size: 11 * textScale))
-            .foregroundStyle(palette.mutedText.color)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .help(Text(verbatim: descriptor))
-            .accessibilityLabel(Text(verbatim: descriptor))
-            .accessibilityIdentifier("overlay-agent-descriptor-\(channel)")
+        if !headerOnly {
+          HStack(spacing: 6) {
+            if let descriptor, let channel {
+              Text(verbatim: descriptor)
+                .font(.system(size: 11 * textScale))
+                .foregroundStyle(palette.mutedText.color)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(Text(verbatim: descriptor))
+                .accessibilityLabel(Text(verbatim: descriptor))
+                .accessibilityIdentifier("overlay-agent-descriptor-\(channel)")
+            }
+            if contentOnly {
+              Spacer(minLength: 4)
+              unreadBadge
+              clock
+            }
+          }
+          .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
         if !headerOnly, let preview {
           Text(verbatim: preview)
@@ -91,6 +97,26 @@ struct OverlayAgentRosterLabel: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .contentShape(Rectangle())
+  }
+
+  @ViewBuilder
+  private var unreadBadge: some View {
+    if unreadCount > 0, let conversationID {
+      OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)
+        .fixedSize()
+        .accessibilityIdentifier("overlay-agent-unread-replies-\(conversationID)")
+    }
+  }
+
+  @ViewBuilder
+  private var clock: some View {
+    if let timestamp {
+      MessageTimestampLabel(date: timestamp, compact: true)
+        .font(.system(size: 11 * textScale))
+        .foregroundStyle(palette.mutedText.color)
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityIdentifier("overlay-agent-timestamp-\(conversationID ?? channel ?? "0")")
+    }
   }
 }
 

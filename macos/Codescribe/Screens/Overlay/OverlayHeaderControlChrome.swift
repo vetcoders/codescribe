@@ -248,17 +248,24 @@ final class OverlayHintPanel {
     self.interactive = interactive
     let size: NSSize
     if let content, let desiredSize {
-      size = NSSize(
+      let maximumSize = NSSize(
         width: min(desiredSize.width, bounds.width - 2 * Self.screenInset),
         height: min(desiredSize.height, bounds.height - 2 * Self.screenInset))
       controller.rootView = AnyView(
-        content.frame(width: size.width, height: size.height)
+        content.frame(width: maximumSize.width, height: interactive ? nil : maximumSize.height)
           .background {
             OverlayMenuCursorRegion { [weak self, weak owner] inside in
               guard let owner else { return }
               self?.pointerHover(inside, owner: owner)
             }
           })
+      if interactive {
+        let fitted = controller.sizeThatFits(in: maximumSize)
+        size = NSSize(
+          width: maximumSize.width, height: min(maximumSize.height, max(1, ceil(fitted.height))))
+      } else {
+        size = maximumSize
+      }
     } else {
       controller.rootView = AnyView(
         OverlayTooltipChip(title: title, palette: palette, filled: false))
@@ -267,11 +274,12 @@ final class OverlayHintPanel {
           width: min(OverlayTooltipLayout.maxHintWidth, bounds.width - 2 * Self.screenInset),
           height: bounds.height - 2 * Self.screenInset))
     }
-    panel.hasShadow = content != nil
+    panel.hasShadow = content != nil && !interactive
     panel.ignoresMouseEvents = !interactive
     panel.alphaValue = parent.alphaValue
     if let effect = panel.contentView as? NSVisualEffectView {
-      effect.maskImage = Self.roundedMask(radius: content == nil ? CSRadius.chip : CSRadius.card)
+      effect.maskImage = Self.roundedMask(
+        radius: content == nil || interactive ? CSRadius.chip : CSRadius.card)
     }
     panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
     let frame =

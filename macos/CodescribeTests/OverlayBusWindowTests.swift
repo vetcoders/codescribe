@@ -451,10 +451,12 @@ final class OverlayBusWindowTests: XCTestCase {
       for width: CGFloat in [240, 300] {
         for name in ["Tola", "Lena", "lena2", "Wera", "Nina"] {
           var target = try conversation("2", canonicalLease: true, name: name)
-          target = withMessages(target, [
-            try outgoing(in: target, acknowledged: true),
-            previewReply(in: reporter, text: "Ready to review this window."),
-          ])
+          target = withMessages(
+            target,
+            [
+              try outgoing(in: target, acknowledged: true),
+              previewReply(in: reporter, text: "Ready to review this window."),
+            ])
           let channel = OverlayChannelDelivery(
             channel: "2", agent: name, deliveryID: "delivery", stage: .received, isOpen: false)
           var view = OverlayChannelStatusView(
@@ -462,7 +464,8 @@ final class OverlayBusWindowTests: XCTestCase {
             hudStates: [
               "2": .init(
                 open: false, loud: false, autosealDeadline: nil, followerAlive: true,
-                provider: target.owner?.provider, providerSessionID: target.owner?.providerSessionID)
+                provider: target.owner?.provider, providerSessionID: target.owner?.providerSessionID
+              )
             ], onToggleChannel: { _ in }, conversations: [target], unreadCounts: [target.id: 12],
             onSelectConversation: { _ in })
           view.mutedChannels = ["2": false]
@@ -500,7 +503,8 @@ final class OverlayBusWindowTests: XCTestCase {
           let names = text.filter { $0.0.contains(wanted) }
           XCTAssertFalse(
             names.isEmpty,
-            "name=\(name) width=\(width) scale=\(scale) became an ellipsis; painted text=\(text.map(\.0))")
+            "name=\(name) width=\(width) scale=\(scale) became an ellipsis; painted text=\(text.map(\.0))"
+          )
           if !names.isEmpty {
             let completeDigit = names.contains { candidate in
               if let range = candidate.0.range(of: wanted),
@@ -524,7 +528,8 @@ final class OverlayBusWindowTests: XCTestCase {
     let target = try conversation("2")
     let short = previewReply(in: target, text: "A short, complete reply.")
     let long = previewReply(
-      in: target, text: String(repeating: "A complete paragraph that remains available.\n\n", count: 40))
+      in: target,
+      text: String(repeating: "A complete paragraph that remains available.\n\n", count: 40))
     let parent = NSPanel(
       contentRect: NSRect(x: -10_000, y: -10_000, width: 400, height: 100),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -540,7 +545,8 @@ final class OverlayBusWindowTests: XCTestCase {
     func show(_ message: OverlayConversationMessage) throws -> NSPanel {
       owner.show(
         message.bodyText, palette: .dark, leading: true,
-        content: AnyView(OverlayRosterMessagePreview(name: "Tola", message: message, palette: .dark)),
+        content: AnyView(
+          OverlayRosterMessagePreview(name: "Tola", message: message, palette: .dark)),
         size: CGSize(width: 330, height: 240), interactive: true)
       let panel = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
       panel.contentView?.layoutSubtreeIfNeeded()
@@ -570,16 +576,23 @@ final class OverlayBusWindowTests: XCTestCase {
     let names = ["miksa-sztudio", "tola", "lena", "lena2", "wera", "nina"]
     let conversations = try names.enumerated().map { offset, name in
       let target = try conversation(String(offset + 1), canonicalLease: true, name: name)
-      return withMessages(target, [
-        try outgoing(in: target, acknowledged: true),
-        previewReply(in: target, text: "The full name and channel stay readable. The last message remains available on hover."),
-      ])
+      return withMessages(
+        target,
+        [
+          try outgoing(in: target, acknowledged: true),
+          previewReply(
+            in: target,
+            text:
+              "The full name and channel stay readable. The last message remains available on hover."
+          ),
+        ])
     }
     let state = OverlayState()
     apply(conversations, to: state)
     state.selectConversation(conversations[0].id)
     for width: CGFloat in [240, 300] {
-      let view = OverlayChannelStatusView.intercomRoster(state: state, palette: .dark, animates: false)
+      let view = OverlayChannelStatusView.intercomRoster(
+        state: state, palette: .dark, animates: false)
       let host = NSHostingView(
         rootView: view.monitorBody(maximumHeight: 900)
           .frame(width: width, height: 900)

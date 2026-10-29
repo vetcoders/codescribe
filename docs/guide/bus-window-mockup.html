@@ -744,8 +744,9 @@
     gap: var(--cs-card-gap);
   }
   #cs-bus-merged .cs-agent {
-    border: 1px solid var(--cs-line);
-    background: var(--cs-card);
+    border: 0;
+    border-bottom: 1px solid var(--cs-line);
+    background: transparent;
     border-radius: 10px;
     padding: var(--cs-card-padding);
     position: relative;
@@ -779,13 +780,36 @@
   #cs-bus-merged .cs-agent-name {
     font-size: 13px;
     font-weight: 600;
-    white-space: nowrap;
+    min-width: 0;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   #cs-bus-merged .cs-agent-header-controls {
     display: flex;
     gap: 1px;
+    flex-shrink: 0;
+  }
+  #cs-bus-merged .cs-rail-count {
+    display: none;
+  }
+  #cs-bus-merged.cs-collapsed .cs-rail-count {
+    display: inline-flex;
+  }
+  #cs-bus-merged .cs-agent-receipt {
+    display: inline-flex;
+    color: var(--cs-muted);
+    flex-shrink: 0;
+  }
+  #cs-bus-merged .cs-agent-receipt svg {
+    width: 14px;
+    height: 12px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent-receipt {
+    display: none;
   }
   #cs-bus-merged .cs-agent-header-controls .cs-icon {
     width: 23px;
@@ -1418,24 +1442,28 @@
             }"></span><span class="cs-agent-name">${escapeHtml(
               a.name
             )}</span>${statusMarks(a)}${
+              a.online
+                ? `<span class="cs-agent-receipt" aria-label="${
+                    a.receipt
+                  }" data-tooltip="${a.receipt}"><i data-lucide="${
+                    a.receipt === "Przeczytano" ? "check-check" : "check"
+                  }" aria-hidden="true"></i></span>`
+                : ""
+            }${
               a.unread
-                ? `<span class="cs-count" aria-label="${a.unread} nieobejrzane odpowiedzi">${a.unread}</span>`
+                ? `<span class="cs-count cs-rail-count" aria-label="${a.unread} nieobejrzane odpowiedzi">${a.unread}</span>`
                 : ""
             }</button><div class="cs-agent-header-controls">${actionSet(
               a
             )}</div></div><div class="cs-agent-meta"><span>${escapeHtml(
               a.meta
-            )}</span><span class="cs-agent-clock"><span class="cs-agent-time">${escapeHtml(
-              a.time
-            )}</span>${
-              a.online
-                ? `<span aria-label="${a.receipt}" data-tooltip="${
-                    a.receipt
-                  }"><i data-lucide="${
-                    a.receipt === "Przeczytano" ? "check-check" : "check"
-                  }" aria-hidden="true"></i></span>`
+            )}</span><span class="cs-agent-clock">${
+              a.unread
+                ? `<span class="cs-count" aria-label="${a.unread} nieobejrzane odpowiedzi">${a.unread}</span>`
                 : ""
-            }</span></div><p class="cs-agent-preview"><strong>${escapeHtml(
+            }<span class="cs-agent-time">${escapeHtml(
+              a.time
+            )}</span></span></div><p class="cs-agent-preview"><strong>${escapeHtml(
               a.route
             )}</strong> · ${escapeHtml(a.preview)}</p></article>`
         )

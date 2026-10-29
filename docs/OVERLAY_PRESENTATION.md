@@ -45,6 +45,13 @@ menu remain visible beside the identity without hover. The conversation button
 and these controls are siblings; opening a conversation never opens its
 microphone. Long names retain their full tooltip and accessibility label.
 
+The card header gives the channel digit, status dot, agent name and receipt
+priority over secondary metadata. Digits keep their intrinsic width; long names
+can use two lines. The clock and circular unread count share the metadata line
+below the header so standard sidebar widths do not squeeze names into an
+ellipsis or push channel digits outside the row. A theme-colored separator
+marks each row boundary even when it is neither selected nor hovered.
+
 Hovering the row's navigation area or a folded-rail entry for 350 ms opens
 the last loaded message in the shared `OverlayHintPanel`. The same message
 as the inline preview is used, including outgoing user messages; original
@@ -55,6 +62,12 @@ after leaving both targets. The window cannot become key. It mounts no
 composer, changes no selected conversation or recipient, acknowledges no
 message, and fetches no saved history. Audio and menu controls keep their own
 action hints. Empty entries retain their existing navigation hint.
+
+Roster previews use a maximum 330-by-240-point viewport at text scale 1.
+Short messages fit their natural height; long messages use the bounded native
+scroll view. The preview uses the shared tooltip material, compact insets and
+no window shadow. Message body text keeps its existing readable size. Fixed
+rich previews on the floating Intercom retain their existing presentation.
 
 The more menu contains channel-zero membership, Do not disturb, the detected
 client/terminal destination and removal into saved conversations. The same

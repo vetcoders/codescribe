@@ -1944,7 +1944,7 @@ struct OverlayChannelStatusView: View {
                 dot: statusDotKind(for: channel), headerOnly: true)
             }
           }
-          .frame(maxWidth: .infinity, alignment: .leading)
+          .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
           .foregroundStyle(palette.primaryText.color)
           .accessibilityLabel(Text(verbatim: notificationTitle(for: channel)))
           .accessibilityValue(Text(verbatim: tooltip))
@@ -1986,6 +1986,14 @@ struct OverlayChannelStatusView: View {
         palette: palette,
         selected: conversation != nil && selectedConversationID == conversation?.id)
     )
+    .overlay(alignment: .bottom) {
+      Rectangle()
+        .fill(palette.border.color)
+        .frame(height: 1)
+        .padding(.horizontal, 5)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
     .modifier(
       OverlayRowHoverHighlight(
         palette: palette, cornerRadius: CSRadius.chip,
@@ -2753,7 +2761,7 @@ struct OverlayRosterMessageHint: ViewModifier {
         title: conversation.flatMap { Self.fullText(in: $0) } ?? emptyHint,
         accent: nil, palette: palette, hintLeading: true,
         hintContent: preview,
-        hintSize: preview == nil ? nil : CGSize(width: 380 * textScale, height: 280 * textScale),
+        hintSize: preview == nil ? nil : CGSize(width: 330 * textScale, height: 240 * textScale),
         hintDelay: preview == nil ? 0 : 0.35, hintInteractive: preview != nil)
     )
     .id(conversation?.id)
@@ -2769,29 +2777,35 @@ struct OverlayRosterMessagePreview: View {
   let palette: OverlayAppearancePalette
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 6) {
       Text(verbatim: name)
-        .font(.system(size: 12 * textScale, weight: .semibold))
+        .font(.system(size: 11 * textScale, weight: .semibold))
         .foregroundStyle(palette.primaryText.color)
-      ScrollView(.vertical) {
-        VStack(alignment: .leading, spacing: 8) {
-          let route = OverlayChannelStatusView.messageRoute(of: message)
-          if !route.label.isEmpty {
-            Text(verbatim: route.label)
-              .font(.system(size: 10 * textScale, weight: .bold))
-              .foregroundStyle(palette.mutedText.color)
-          }
-          OverlayConversationMessageContent(message: message, palette: palette)
+      ViewThatFits(in: .vertical) {
+        messageContent
+          .fixedSize(horizontal: false, vertical: true)
+        ScrollView(.vertical) {
+          messageContent
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
-    .padding(12)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(palette.desktopBackground.color.opacity(0.9))
+    .padding(8)
+    .frame(maxWidth: .infinity, alignment: .topLeading)
     .contentShape(Rectangle())
     .accessibilityIdentifier("overlay-roster-message-preview")
+  }
+
+  private var messageContent: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      let route = OverlayChannelStatusView.messageRoute(of: message)
+      if !route.label.isEmpty {
+        Text(verbatim: route.label)
+          .font(.system(size: 10 * textScale, weight: .medium))
+          .foregroundStyle(palette.mutedText.color)
+      }
+      OverlayConversationMessageContent(message: message, palette: palette)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
