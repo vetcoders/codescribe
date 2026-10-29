@@ -1041,9 +1041,6 @@ struct DictationOverlayView: View {
     )
     .padding(.top, headerHeight + 8)
     .padding(.bottom, 16)
-    // The native panel owns the outer resize band before SwiftUI hit testing.
-    // Equal insets keep the buttons centered in the rail and outside that band.
-    .padding(.horizontal, OverlayResizeHit.band)
     .frame(width: width)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()

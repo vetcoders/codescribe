@@ -53,6 +53,7 @@ struct OverlayChannelPill: View {
   }
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.layoutDirection) private var layoutDirection
   let form: Form
   let display: Display
   let hint: String
@@ -76,9 +77,18 @@ struct OverlayChannelPill: View {
             stackedBadge
           } else if form == .rail && display.unreadCount > 0 {
             OverlayAgentUnreadBadge(
-              count: display.unreadCount, palette: palette, textScale: textScale
+              count: display.unreadCount, palette: palette, textScale: textScale,
+              presentation: .rail
             )
-            .offset(x: 7 * textScale, y: -5 * textScale)
+            .offset(
+              x: (layoutDirection == .rightToLeft ? -1 : 1)
+                * (OverlayAgentUnreadBadge.railDiameter(
+                  count: display.unreadCount, textScale: textScale)
+                  + OverlayAgentUnreadBadge.railGap * textScale),
+              y: -5 * textScale
+            )
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
           } else if display.unread {
             Circle()
               .fill(palette.processingStatus.color)
@@ -96,13 +106,20 @@ struct OverlayChannelPill: View {
     .modifier(OverlayDisconnectedRowDim(disconnected: display.disconnected))
     .modifier(OverlayChannelPillHint(form: form, hint: hint, palette: palette, enabled: showsHint))
     .accessibilityLabel(Text(verbatim: accessibilityText))
-    .accessibilityValue(Text(verbatim: accessibilityValue))
+    .accessibilityValue(Text(verbatim: resolvedAccessibilityValue))
     .accessibilityAddTraits(display.selected ? .isSelected : [])
     .accessibilityIdentifier(identifier)
   }
 
   private var height: CGFloat {
     form == .rail ? 24 * textScale : Self.headerHeight
+  }
+
+  private var resolvedAccessibilityValue: String {
+    let unread =
+      form == .rail && display.unreadCount > 0
+      ? String(localized: "\(display.unreadCount) unread replies") : ""
+    return [accessibilityValue, unread].filter { !$0.isEmpty }.joined(separator: ", ")
   }
 
   private var recording: Bool { display.microphoneOpen && form != .rail }

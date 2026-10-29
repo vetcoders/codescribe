@@ -569,7 +569,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
           textScale: 1.0, preferredWidth: widest, windowWidth: 780),
         windowWidth: 780),
       "the conversation slides out at its 320-point minimum")
-    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 76.44, accuracy: 0.001)
+    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 106.84, accuracy: 0.001)
   }
 
   func testTheLayoutIsRememberedAndTheDraggedAgentsViewMigrates() throws {

@@ -1413,7 +1413,11 @@ struct OverlayChannelStatusView: View {
       gapCount == 0
       ? 0
       : min(
-        6, max(0, (viewportHeight - CGFloat(rowCount) * 24 * textScale - 4) / CGFloat(gapCount)))
+        6,
+        max(
+          0,
+          (viewportHeight - CGFloat(rowCount) * 24 * textScale - 5 * textScale - 4)
+            / CGFloat(gapCount)))
     return VStack(spacing: 8) {
       OverlaySidebarToggleButton(
         symbol: "sidebar.right", title: String(localized: "Show agents list"),
@@ -1431,7 +1435,11 @@ struct OverlayChannelStatusView: View {
             railPill(conversation(for: channel), channel: channel)
           }
         }
-        .padding(.vertical, 2)
+        .padding(.top, 5 * textScale + 2)
+        .padding(.bottom, 2)
+        // Keep the badge gutters inside the full-width scroll viewport.
+        // The numbered buttons stay centered and clear of the resize band.
+        .padding(.horizontal, OverlayAgentDrawerLayout.railHorizontalInset(textScale: textScale))
         .frame(maxWidth: .infinity)
         .csAutohidingScrollers(.verticalHidden)
       }

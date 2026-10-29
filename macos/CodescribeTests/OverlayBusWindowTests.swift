@@ -630,6 +630,65 @@ final class OverlayBusWindowTests: XCTestCase {
     }
   }
 
+  func testFoldedRailKeepsChannelDigitsSeparateFromUnreadCounts() throws {
+    let digits = ["3", "4", "5", "8"]
+    let counts = [7, 13, 11, 156]
+    let conversations = try digits.map { try conversation($0, canonicalLease: true) }
+    let channels = digits.map {
+      OverlayChannelDelivery(
+        channel: $0, agent: "Agent \($0)", deliveryID: nil, stage: .received, isOpen: false)
+    }
+    let hud = Dictionary(
+      uniqueKeysWithValues: conversations.map { target in
+        (
+          target.channel,
+          OverlayChannelHudProjection(
+            open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+            provider: target.owner?.provider, providerSessionID: target.owner?.providerSessionID)
+        )
+      })
+    let unread = Dictionary(
+      uniqueKeysWithValues: zip(conversations, counts).map { ($0.0.id, $0.1) })
+    let view = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false, hudStates: hud,
+      conversations: conversations, unreadCounts: unread, onSelectConversation: { _ in })
+    let scale: CGFloat = 2
+    let width = OverlayAgentDrawerLayout.railWidth(textScale: scale)
+    let host = NSHostingView(
+      rootView: view.railBody(maximumHeight: 700, onUnfold: {})
+        .frame(width: width, height: 700, alignment: .top)
+        .environment(\.csTextScale, scale)
+        .background(OverlayAppearancePalette.dark.desktopBackground.color))
+    host.frame = NSRect(x: 0, y: 0, width: width, height: 700)
+    host.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.recognitionLanguages = ["en-US"]
+    request.usesLanguageCorrection = false
+    try VNImageRequestHandler(cgImage: try XCTUnwrap(bitmap.cgImage), options: [:]).perform([
+      request
+    ])
+    let words = (request.results ?? []).flatMap { observation -> [String] in
+      guard let value = observation.topCandidates(1).first?.string else { return [] }
+      return value.split(whereSeparator: \.isWhitespace).map { word in
+        let numeric = word.filter { $0.isNumber || $0 == "+" }
+        return numeric.contains("+") ? numeric : Int(numeric).map(String.init) ?? ""
+      }
+    }
+    for expected in ["3", "7", "4", "13", "5", "11", "8", "99+"] {
+      XCTAssertTrue(
+        words.contains(expected), "separate number \(expected) missing; painted words=\(words)")
+    }
+    let image = NSImage(size: host.bounds.size)
+    image.addRepresentation(bitmap)
+    let attachment = XCTAttachment(image: image)
+    attachment.name = "Sidebar-rail-distinct-counts"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
   private func previewReply(
     in conversation: OverlayConversation, text: String
   ) -> OverlayConversationMessage {

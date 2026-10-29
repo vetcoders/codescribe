@@ -90,11 +90,16 @@ enum OverlayAgentDrawerLayout {
     (12 + 7.2 + 12) * textScale + 3
   }
 
-  /// A 2-point inset on each side of the widest pill, plus equal gutters
-  /// matching the panel's native resize band. The pills stay centered in the
-  /// full column while ending before the trailing resize target starts.
+  /// Equal gutters reserve the native resize band and the unread badge beside
+  /// a capsule. The capsule remains centered in the full folded column.
+  static func railHorizontalInset(textScale: CGFloat) -> CGFloat {
+    max(
+      OverlayResizeHit.band,
+      (OverlayAgentUnreadBadge.maximumRailDiameter + OverlayAgentUnreadBadge.railGap) * textScale)
+  }
+
   static func railWidth(textScale: CGFloat) -> CGFloat {
-    railPillWidth(textScale: textScale) + 4 + 2 * OverlayResizeHit.band
+    railPillWidth(textScale: textScale) + 4 + 2 * railHorizontalInset(textScale: textScale)
   }
 
   /// The name pill's width: 224 at 1.0.

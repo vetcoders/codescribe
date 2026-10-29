@@ -114,6 +114,10 @@ actions visible with either the full sidebar or its folded rail. The sidebar
 choice does not replace the current conversation, draft or microphone target.
 Folded-rail controls sit on the full column's centerline, with equal horizontal
 gutters that keep the numbered buttons clear of the native resize band.
+Unread badges occupy a separate trailing gutter outside the capsule, with a
+visible gap from the channel digit. That gutter remains inside the scroll
+viewport so the count is neither painted over the digit nor clipped. Rail
+badges cap their visual label at `99+`; accessibility retains the exact count.
 The existing All, Inbox and saved-conversation views keep their current data
 and routing semantics; the earlier proposal's additional history filters are
 not part of this change.

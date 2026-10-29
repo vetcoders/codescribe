@@ -130,6 +130,8 @@ name while Do not disturb is on; a crossed antenna remains while the agent is
 outside channel zero. The waveform microphone, speaker and More button stay
 visible without hovering. Folding the list leaves a rail with channel numbers,
 the inbox and circular unread counts; the open conversation keeps its actions.
+Each unread count sits beside its channel capsule with a clear gap. Counts
+above 99 use `99+` in the folded rail while accessibility keeps the full number.
 
 Right-clicking a card opens the same secondary menu as **More**. It contains
 contact settings, the detected workspace and removal into saved conversations;

@@ -122,17 +122,33 @@ struct OverlayAgentRosterLabel: View {
 
 /// One badge for both the current roster and saved conversations.
 struct OverlayAgentUnreadBadge: View {
+  enum Presentation: Equatable { case row, rail }
+
+  static let maximumRailDiameter: CGFloat = 24
+  static let railGap: CGFloat = 2
+
+  static func railDiameter(count: Int, textScale: CGFloat) -> CGFloat {
+    max(18, CGFloat(min(3, String(count).count)) * 6 + 6) * textScale
+  }
+
   let count: Int
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
+  var presentation: Presentation = .row
+
+  private var countLabel: String {
+    presentation == .rail && count > 99 ? "99+" : String(count)
+  }
 
   private var badgeDiameter: CGFloat {
-    max(20, CGFloat(String(count).count) * 8 + 8) * textScale
+    presentation == .rail
+      ? Self.railDiameter(count: count, textScale: textScale)
+      : max(20, CGFloat(String(count).count) * 8 + 8) * textScale
   }
 
   var body: some View {
-    Text(verbatim: String(count))
-      .font(.system(size: 11 * textScale, weight: .semibold))
+    Text(verbatim: countLabel)
+      .font(.system(size: (presentation == .rail ? 10 : 11) * textScale, weight: .semibold))
       .monospacedDigit()
       .foregroundStyle(palette.processingStatus.color)
       .frame(width: badgeDiameter, height: badgeDiameter)

@@ -1005,7 +1005,7 @@
     display: flex;
   }
   #cs-bus-merged.cs-collapsed .cs-workspace {
-    grid-template-columns: minmax(0, 1fr) 59px;
+    grid-template-columns: minmax(0, 1fr) 90px;
   }
   #cs-bus-merged.cs-collapsed .cs-sidebar-heading {
     justify-content: center;
@@ -1022,20 +1022,27 @@
     gap: 8px;
   }
   #cs-bus-merged.cs-collapsed .cs-special-row {
-    padding: 8px 4px;
+    padding: 4px;
     justify-content: center;
-    min-height: 40px;
+    width: 34px;
+    min-height: 28px;
+    margin-inline: auto;
+    position: relative;
     background: var(--cs-card);
     border-color: transparent;
-    border-radius: 9px;
+    border-radius: 999px;
   }
   #cs-bus-merged.cs-collapsed .cs-special-row .cs-channel-digit {
     background: transparent;
   }
   #cs-bus-merged.cs-collapsed .cs-special-row .cs-count {
     position: absolute;
-    right: -2px;
-    top: -4px;
+    left: calc(100% + 2px);
+    right: auto;
+    top: -5px;
+    min-width: 18px;
+    height: 18px;
+    font-size: 10px;
   }
   #cs-bus-merged.cs-collapsed .cs-roster {
     padding: 13px 7px;
@@ -1043,17 +1050,22 @@
   }
   #cs-bus-merged.cs-collapsed .cs-agent {
     padding: 0;
-    border-color: transparent;
-    border-radius: 9px;
+    width: 34px;
+    align-self: center;
+    border: 0;
+    background: var(--cs-card);
+    border-radius: 999px;
   }
   #cs-bus-merged.cs-collapsed .cs-agent.cs-selected {
     border-color: var(--cs-selected-border);
   }
   #cs-bus-merged.cs-collapsed .cs-agent-header {
-    height: 41px;
+    height: 28px;
     justify-content: center;
   }
   #cs-bus-merged.cs-collapsed .cs-agent-open {
+    flex: 0 0 auto;
+    width: 34px;
     justify-content: center;
     gap: 4px;
     height: 100%;
@@ -1071,8 +1083,12 @@
   }
   #cs-bus-merged.cs-collapsed .cs-agent-open .cs-count {
     position: absolute;
-    top: -6px;
-    right: -3px;
+    top: -5px;
+    left: calc(100% + 2px);
+    right: auto;
+    min-width: 18px;
+    height: 18px;
+    font-size: 10px;
     order: 3;
   }
   #cs-bus-merged.cs-collapsed .cs-agent-name,
@@ -1451,7 +1467,11 @@
                 : ""
             }${
               a.unread
-                ? `<span class="cs-count cs-rail-count" aria-label="${a.unread} nieobejrzane odpowiedzi">${a.unread}</span>`
+                ? `<span class="cs-count cs-rail-count" aria-label="${
+                    a.unread
+                  } nieobejrzane odpowiedzi">${
+                    a.unread > 99 ? "99+" : a.unread
+                  }</span>`
                 : ""
             }</button><div class="cs-agent-header-controls">${actionSet(
               a
