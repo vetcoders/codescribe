@@ -1972,6 +1972,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let body = components[style.lowerBound...].prefix(600)
     XCTAssertTrue(body.contains(".underline()"))
     XCTAssertTrue(body.contains("CSColor.terracottaText"))
+    XCTAssertTrue(body.contains(".pointerStyle(isEnabled ? .link : nil)"), "the pointing hand")
     XCTAssertFalse(body.contains("chromeAccent"))
   }
 

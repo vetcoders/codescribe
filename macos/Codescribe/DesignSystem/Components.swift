@@ -335,8 +335,9 @@ extension View {
 
 /// A link in prose — one that opens a page, a window or another place in
 /// Settings — is underlined brick text, one style in the whole app (Founder,
-/// 2026-10-26). Unlike an action it does take the brand text rung; unlike a
-/// control it never follows the macOS accent.
+/// 2026-10-26), and turns the pointer into the pointing hand like any macOS
+/// link. Unlike an action it does take the brand text rung; unlike a control
+/// it never follows the macOS accent.
 private struct CSLinkButtonStyle: ButtonStyle {
   @Environment(\.isEnabled) private var isEnabled
 
@@ -345,6 +346,7 @@ private struct CSLinkButtonStyle: ButtonStyle {
       .underline()
       .foregroundStyle(CSColor.terracottaText.opacity(isEnabled ? 1 : 0.4))
       .contentShape(Rectangle())
+      .pointerStyle(isEnabled ? .link : nil)
       .opacity(configuration.isPressed && isEnabled ? 0.7 : 1)
   }
 }
