@@ -17,7 +17,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
             preview: "Founder → Astra: a message preview that can wrap onto two lines.",
             timestamp: Date(timeIntervalSince1970: 1_792_512_000), unreadCount: 8,
             dot: .idle, statusLabel: "Attached", statusDetail: "Fixture",
-            reception: nil, palette: .dark, textScale: scale
+            palette: .dark, textScale: scale
           ).frame(width: width))
         let window = show(host, width: width)
         defer { window.close() }
@@ -35,15 +35,16 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     }
   }
 
-  func testRosterAndIntercomReadAddressReceptionActivityThenName() throws {
+  func testCompactRosterUsesPassiveRestrictionsWhileIntercomKeepsItsOwnControls() throws {
     let label = try sourceSection(
       "OverlayAgentRosterLabel.swift", from: "struct OverlayAgentRosterLabel: View {",
       to: "struct OverlayAgentUnreadBadge: View {")
     try assertOrder(
       [
-        "Text(verbatim: channel)", "OverlayReceptionMarks(", "OverlayAgentStatusDot(",
-        "Text(verbatim: title)", "Spacer(minLength: 4)",
+        "Text(verbatim: channel)", "OverlayAgentStatusDot(",
+        "Text(verbatim: title)", "titleAccessory", "Spacer(minLength: 4)",
       ], in: label)
+    XCTAssertFalse(label.contains("OverlayReceptionMarks("))
 
     let card = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func cardHeader(",
@@ -68,18 +69,18 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       ], in: String(instance[drawn.lowerBound...]))
   }
 
-  func testRosterActionsLeadWithFocusThenSpeakerAndMicrophone() throws {
+  func testCompactRosterKeepsAudioAndMoreSeparateFromConversationNavigation() throws {
     let row = try sourceSection(
       "OverlayChannelStatusView.swift", from: "func channelRow(",
       to: "private func rosterRowLabel(")
-    try assertOrder(
-      [".accessibilityIdentifier(\"overlay-focus-panel-", "OverlayAgentAudioControls("], in: row)
-    XCTAssertTrue(row.contains("title: conversation?.name ?? channel.agent"))
+    XCTAssertTrue(row.contains("compactAgentActions(for: channel)"))
+    XCTAssertFalse(row.contains("rosterRowState("))
+    XCTAssertFalse(row.contains("panelFocusAccessory("))
 
     let audio = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayAgentAudioControls: View {",
       to: "struct OverlayAgentPillMenuAction {")
-    try assertOrder(["Button(action: onPlayback)", "Button(action: onMicrophone)"], in: audio)
+    try assertOrder(["Button(action: onMicrophone)", "Button(action: onPlayback)"], in: audio)
   }
 
   func testIntercomWidthBudgetsEveryReorderedSlotAtEachScale() {

@@ -389,8 +389,17 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   // MARK: - The keyboard follows the list (2026-10-19)
 
   func testTheListTakesTheKeyboardFromTheComposerAndGivesItBack() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (broadcast, lena, astra) = try rosterFixture()
     let state = OverlayState.previewFormatted()
+    state.applyChannelRoster(
+      [broadcast, lena, astra].map {
+        CsChannelRosterState(
+          channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+          providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: $0.owner == nil ? nil : true,
+          unreadSinceUnixMs: nil)
+      })
     state.applyConversationSnapshot(
       .init(deliveries: [], conversations: [broadcast, lena, astra]))
     state.selectConversation(lena.id)
@@ -406,7 +415,6 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       other.close()
     }
     let editor = try XCTUnwrap(composerEditor(in: host))
-    try BackgroundTestWindow.requireIsolatedGUI()
     panel.takeKeyForTranscript()
     XCTAssertTrue(panel.makeFirstResponder(editor))
     XCTAssertTrue(panel.isKeyWindow)
@@ -452,10 +460,19 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   }
 
   func testTheRosterOverTheWholeWindowTakesTheKeyboardToo() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
     defaults.set(480.0, forKey: "Overlay.agentDrawerWidth.v1")
     let (broadcast, lena, _) = try rosterFixture()
     let state = OverlayState.previewFormatted()
+    state.applyChannelRoster(
+      [broadcast, lena].map {
+        CsChannelRosterState(
+          channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+          providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: $0.owner == nil ? nil : true,
+          unreadSinceUnixMs: nil)
+      })
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
     state.selectConversation(lena.id)
     let (panel, host) = keyboardPanel(
@@ -466,7 +483,6 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       panel.close()
     }
     let editor = try XCTUnwrap(composerEditor(in: host))
-    try BackgroundTestWindow.requireIsolatedGUI()
     panel.takeKeyForTranscript()
     XCTAssertTrue(panel.makeFirstResponder(editor))
 
@@ -553,7 +569,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
           textScale: 1.0, preferredWidth: widest, windowWidth: 780),
         windowWidth: 780),
       "the conversation slides out at its 320-point minimum")
-    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 60.44, accuracy: 0.001)
+    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 76.44, accuracy: 0.001)
   }
 
   func testTheLayoutIsRememberedAndTheDraggedAgentsViewMigrates() throws {
@@ -770,6 +786,10 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
           x: button.x, y: screenTop - button.y - button.height,
           width: button.width, height: button.height)
         let rect = panel.convertFromScreen(screenRect)
+        XCTAssertEqual(
+          rect.midX,
+          panel.frame.width - OverlayAgentDrawerLayout.railWidth(textScale: scale) / 2,
+          accuracy: 1, "the channel button is centered across the full folded sidebar")
         XCTAssertLessThan(rect.maxX, panel.frame.width - OverlayResizeHit.band)
         for x in [rect.minX + 1, rect.midX, rect.maxX - 1] {
           let point = NSPoint(x: x, y: rect.midY)
@@ -1094,8 +1114,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     // The custom hint panel is the other tooltip owner (overlayFastHint →
     // OverlayHintPanel). The probe proves hover really presents a readable
     // hint; then every roster region is hovered, and a hint repeating the
-    // inline metadata — descriptor, preview, session — is the duplicated
-    // tooltip the contract forbids. An action label is not a duplicate.
+    // inline metadata — descriptor or session — is the duplicated tooltip
+    // the contract forbids. Full last-message previews are allowed by the
+    // sidebar request of 2026-10-29; action labels remain allowed as well.
     func regions(in view: NSView) -> [OverlayMenuCursorRegionView] {
       var found: [OverlayMenuCursorRegionView] = []
       if let region = view as? OverlayMenuCursorRegionView { found.append(region) }
@@ -1120,7 +1141,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     }
     XCTAssertTrue(sawProbeHint, "hover must present the probe hint, or absence proves nothing")
 
-    let metadata = ["codex", "gpt-6", "PR is green", "on it", "lena-session", "astra-session"]
+    let metadata = ["codex", "gpt-6", "lena-session", "astra-session"]
     let rosterRegions = regions(in: host)
     XCTAssertFalse(rosterRegions.isEmpty, "the roster composes hover regions")
     for region in rosterRegions {
@@ -1348,21 +1369,24 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "a visual reply control is not a delivery until the envelope carries the source id")
   }
 
-  func testAgentRowStaysWithinFiveLinesAndKeepsUnreadApartFromReceipts() throws {
-    // Maciej (2026-10-17): "ustalmy budżet 5 wierszy". Title, descriptor,
-    // two preview lines, one state line; unread is a badge on the title line.
+  func testCompactAgentRowDropsTheFooterAndKeepsUnreadApartFromReceipts() throws {
+    // The compact card has identity, descriptor and up to two preview lines.
+    // Receipt and unread are distinct marks, neither adds a footer row.
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let label = try section(
-      of: source, from: "private func rosterRowLabel(", to: "func rowStateText(")
+      of: source, from: "private func rosterRowLabel(", to: "func compactAgentActions(")
     let visual = try overlaySource("OverlayAgentRosterLabel.swift")
     let limits = (visual + label).components(separatedBy: ".lineLimit(").dropFirst().compactMap {
       Int($0.prefix { $0.isNumber })
     }
-    XCTAssertEqual(limits.reduce(0, +), 5, "every text in the row is capped, five lines in all")
+    XCTAssertEqual(limits.reduce(0, +), 4, "identity, descriptor and two preview lines")
     XCTAssertTrue(
       visual.contains("OverlayAgentUnreadBadge("), "unread rides the title line as a badge")
     XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
-    XCTAssertTrue(label.contains("rowStateText("), "receipt and reader share one state line")
+    XCTAssertTrue(
+      label.contains("deliveryReceiptDisplay("), "receipt follows frozen delivery evidence")
+    let row = try section(of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
+    XCTAssertFalse(row.contains("rosterRowState("), "compact cards have no separate footer")
   }
 
   func testBroadcastPolicyRidesTheRowsContextMenuWithNoDisclosureList() throws {
@@ -1385,7 +1409,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
   /// A bound channel whose reader died keeps its row, dimmed as one unit,
   /// and its microphone sleeps (Maciej, 2026-10-17).
-  func testDockedRowDimsADisconnectedReaderAndSleepsItsMicrophone() throws {
+  func testDockedRowDimsADisconnectedReaderAndUsesCentralAudioGuards() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let modifier = try section(
       of: source, from: "struct OverlayDisconnectedRowDim: ViewModifier {", to: "\n}\n")
@@ -1394,8 +1418,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let docked = try section(
       of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
     XCTAssertTrue(
-      docked.contains("&& !hasDeadFollower(channel),"),
-      "the docked row's microphone sleeps for a dead reader")
+      docked.contains("compactAgentActions(for: channel)"),
+      "the row uses the same guarded actions as its conversation header")
+    let actions = try section(
+      of: source, from: "func compactAgentActions(", to: "func compactReceptionIndicators(")
+    XCTAssertTrue(actions.contains("agentMicrophoneEnabled(for: channel)"))
+    XCTAssertTrue(actions.contains("agentPlaybackEnabled(for: channel)"))
     XCTAssertTrue(
       docked.contains("OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel))"),
       "the docked row dims as one unit")
@@ -1441,22 +1469,23 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   /// speaker, so the identity pill must leave with it: the host hands the
   /// column's visibility to the conversation view, and the view drops the
   /// whole navigation row (controls and pill) with a collapsed measurement.
-  func testDockedColumnEvacuatesTheIdentityPillAndItsControls() throws {
+  func testHorizontalHeaderKeepsActionsWithFullAndFoldedSidebar() throws {
     let overlay = try overlaySource("DictationOverlayView.swift")
     let canvas = try section(
       of: overlay, from: "private func canvasStack", to: "private var header: some View")
+    XCTAssertFalse(canvas.contains("hidesNavigation: columnShown"))
+    XCTAssertTrue(canvas.contains("navigationActions: conversationHeaderActions(conversation)"))
     XCTAssertTrue(
-      canvas.contains("hidesNavigation: columnShown"),
-      "the visible docked column is exactly when the pill evacuates")
+      canvas.contains("navigationIndicators: conversationHeaderIndicators(conversation)"))
     let conversation = try overlaySource("OverlayConversationView.swift")
     let anchor = try section(
       of: conversation, from: ".overlay(alignment: .top)", to: ".onChange(of: conversation.id)")
     XCTAssertTrue(
       anchor.contains("if hidesNavigation"),
-      "the navigation row is conditional, not just transparent")
+      "the shared Intercom presentation retains its explicit navigation choice")
     XCTAssertTrue(
       anchor.contains("navigationHeight = 0"),
-      "the content margin follows the evacuated row")
+      "the content margin follows the hidden Intercom navigation row")
   }
 
   /// Broadcast-policy choices in a roster row's context menu are checkboxes, so

@@ -1374,6 +1374,91 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
+  /// A composer destination is pinned to its owner, never to a reusable digit.
+  struct ComposerTarget: Equatable {
+    let id: String
+    let channel: String
+    let ownerID: String?
+    let title: String
+
+    init(_ conversation: OverlayConversation) {
+      id = conversation.id
+      channel = conversation.channel
+      ownerID = conversation.owner?.id
+      title = conversation.displayTitle
+    }
+  }
+  private(set) var composerTarget: ComposerTarget?
+  private(set) var composerTargetRevision = UUID()
+
+  /// The same current owners that text publication accepts, plus broadcast.
+  var availableComposerRecipients: [OverlayConversation] {
+    let broadcast = conversations.filter { $0.id == "0" && $0.channel == "0" && $0.owner == nil }
+    return broadcast + draftSyncConversations
+  }
+
+  struct ConversationNavigationRequest: Equatable {
+    let conversationID: String
+    let messageID: String
+    let revision: UUID
+  }
+  private(set) var conversationNavigationRequest: ConversationNavigationRequest?
+
+  func navigateToConversationMessage(_ conversation: OverlayConversation, messageID: String) {
+    guard
+      conversations.contains(where: {
+        $0.id == conversation.id && $0.channel == conversation.channel
+          && $0.owner?.id == conversation.owner?.id
+      })
+    else { return }
+    selectConversation(conversation.id)
+    conversationNavigationRequest = ConversationNavigationRequest(
+      conversationID: conversation.id, messageID: messageID, revision: UUID())
+  }
+
+  func chooseComposerTarget(_ conversation: OverlayConversation) {
+    guard conversation.owner != nil || conversation.channel == "0" else { return }
+    composerTarget = ComposerTarget(conversation)
+    composerTargetRevision = UUID()
+  }
+
+  /// Select at the click, before withdrawal can suspend.
+  func prepareHeldComposerEdit(_ target: OverlayConversation) -> UUID {
+    chooseComposerTarget(target)
+    return composerTargetRevision
+  }
+
+  /// Append to the frozen draft even if its owner retired. A later explicit
+  /// selection wins, including when the user switched away and back again.
+  func returnHeldComposerText(_ text: String, to target: OverlayConversation, revision: UUID)
+    -> Bool
+  {
+    let old = conversationDraft(for: target.id)
+    setConversationDraft(old.isEmpty ? text : old + "\n\n" + text, for: target.id)
+    return composerTargetRevision == revision && composerTargetIsAvailable(target)
+      && composerTarget?.id == target.id && composerTarget?.ownerID == target.owner?.id
+      && composerTarget?.channel == target.channel
+  }
+
+  func initializeComposerTarget(_ conversation: OverlayConversation) {
+    if composerTarget == nil { chooseComposerTarget(conversation) }
+  }
+
+  func composerTargetIsAvailable(_ target: OverlayConversation) -> Bool {
+    availableComposerRecipients.contains {
+      $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.owner?.id
+    }
+  }
+
+  func resolvedComposerTarget(viewing conversation: OverlayConversation) -> OverlayConversation? {
+    guard let target = composerTarget else {
+      return composerTargetIsAvailable(conversation) ? conversation : nil
+    }
+    return availableComposerRecipients.first {
+      $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.ownerID
+    }
+  }
+
   /// Folding hides the roster but retains which canvas will unfold.
   private(set) var windowContentSurface: OverlayContentSurface = .transcription
   /// Whether the current frame can host the roster column. Width never
@@ -2903,10 +2988,13 @@ final class OverlayState {
     // A retired Sync member may already have lost its group. Revalidate at
     // the routing boundary so that a stale callback cannot send it singly.
     if conversation.channel != "0" {
-      guard draftSyncConversations.contains(where: {
-        $0.id == conversation.id && $0.owner?.id == conversation.owner?.id
-          && $0.channel == conversation.channel && $0.owner?.channel == conversation.owner?.channel
-      }) else { return }
+      guard
+        draftSyncConversations.contains(where: {
+          $0.id == conversation.id && $0.owner?.id == conversation.owner?.id
+            && $0.channel == conversation.channel
+            && $0.owner?.channel == conversation.owner?.channel
+        })
+      else { return }
     }
     if hasSynchronizedDraft(conversation.id) {
       await sendSynchronizedDraft(from: conversation)
@@ -2963,7 +3051,9 @@ final class OverlayState {
     return current == publication
   }
 
-  private func draftPublicationOwnerIsCurrent(_ publication: OverlayComposerDraftPublication) -> Bool {
+  private func draftPublicationOwnerIsCurrent(_ publication: OverlayComposerDraftPublication)
+    -> Bool
+  {
     draftSyncConversations.contains {
       $0.id == publication.id && $0.owner?.id == publication.owner.id
         && $0.channel == publication.owner.channel && $0.owner?.channel == publication.owner.channel

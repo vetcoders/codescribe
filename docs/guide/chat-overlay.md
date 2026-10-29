@@ -87,16 +87,40 @@ next to **0 · All** for a broadcast. Selecting a row only changes what you view
 the microphone control changes whom you speak to. The named agent must be
 attached with its own provider and session identity.
 
-The conversation's name pill brings that agent's Frame pane or terminal to the
-front when Codescribe knows where it runs; to change conversations, use the
-channel menu or, in the compact form, the channel chips. Rows you can open in the
-sidebar show a faint highlight under the pointer.
+In the horizontal window, the conversation header keeps the viewed agent and
+its microphone, speaker and **More (…)** menu visible with either the full
+sidebar or its folded rail. To change what you view, use the channel list or,
+in the compact form, the channel chips. Rows you can open show a faint
+highlight under the pointer.
 
-An agent row in the **Agents** list has a button that brings that agent's own
-terminal to the front: its vc-frame pane when it runs in Frame, otherwise its
-iTerm2 or Terminal tab. The button appears only when Codescribe knows where the
-agent runs. If macOS asks whether the terminal may be controlled, allow it, or
-turn it on later in System Settings › Privacy & Security › Automation.
+An agent row's **More** menu includes the detected workspace action: its
+vc-frame pane when it runs in Frame, otherwise its iTerm2 or Terminal tab. It
+is available only when Codescribe knows where the agent runs. The same action
+is available in the row's right-click menu. If macOS asks whether the terminal
+may be controlled, allow it, or turn it on later in System Settings › Privacy &
+Security › Automation.
+
+The horizontal list uses compact cards: identity and audio controls, the
+provider/model/project, then a routed preview of up to two lines. A single
+check is a delivered receipt; the compact double check is a read receipt. Its
+hint names the outgoing message it describes. The circular number counts
+replies you have not viewed and is independent of the agent's receipt. A
+disconnected card dims but its history remains readable.
+
+Rest the pointer over an agent's name or message preview to read the full last
+message in a floating preview. This also works on the folded sidebar's channel
+entries and the inbox. Move the pointer into the preview to scroll longer
+messages; leaving both the entry and preview dismisses it. Previewing does not
+open that conversation, mark replies as viewed, change the text recipient or
+open a microphone. The last message can be yours or the agent's, matching the
+message shown on the card.
+
+Use **More** to change channel-zero membership or **Do not disturb**, open the
+workspace, or remove the agent into saved conversations. A moon remains by the
+name while Do not disturb is on; a crossed antenna remains while the agent is
+outside channel zero. The waveform microphone, speaker and More button stay
+visible without hovering. Folding the list leaves a rail with channel numbers,
+the inbox and circular unread counts; the open conversation keeps its actions.
 
 In the full **Agents** list, **0 · All** stays just below the header while the
 other channels scroll underneath. Its recording and playback buttons stay
@@ -113,8 +137,8 @@ stays in the group, greyed with a window glyph, and clicking that row brings
 the window forward. Each pill carries the agents list's status dot, the
 channel-0 antenna and the do-not-disturb moon beside the name, the microphone
 and speaker drawn flat on the pill, and the same button that brings the
-agent's pane or terminal tab forward. The antenna and the moon are the same
-one-click switches as in the agents list: the antenna joins or leaves channel
+agent's pane or terminal tab forward. On the floating pills the antenna and
+moon remain one-click switches: the antenna joins or leaves channel
 0, the lit moon holds every message from every channel in the agent's mailbox
 without waking it, and either can be set without the other. Click **Intercom** to fold or unfold the group, and drag
 any free spot on that bar to move the whole group. On a short screen with
@@ -157,6 +181,24 @@ again. Selecting a conversation does not replay old speech.
 **Read N/M** is the number of recipients that acknowledged reading a message.
 It does not mean they completed the work, accepted the transcript's acoustic
 coverage or answered aloud.
+
+## Choose where your text goes
+
+The horizontal window names the text destination beside the composer as
+**To:**. Choosing another conversation changes what you view without changing
+that text destination or opening a microphone. Use the destination chooser,
+**Write to …**, or an agent's **Write / Forward…** command to choose where to
+write explicitly. Your stored drafts stay with their original conversations.
+
+The **Voice channels** line names the channels you are speaking to live. It is
+separate from the composer's plain microphone, which dictates into a draft.
+The composer has its own space below the messages and does not cover them.
+
+If a pinned text recipient is no longer current, **Recipient unavailable**
+keeps that identity visible and the chooser remains available. A new agent on
+the same digit never inherits the old recipient's draft. Returning a held
+message to its draft also preserves any newer destination choice you made
+while withdrawal was in progress.
 
 ## Type or paste to several agents
 

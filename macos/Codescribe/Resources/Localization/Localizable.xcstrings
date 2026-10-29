@@ -2735,6 +2735,18 @@
         }
       }
     },
+    "Agent actions" : {
+      "comment" : "More menu for the horizontal bus window agent card",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Działania agenta"
+          }
+        }
+      }
+    },
     "Agent attached" : {
       "localizations" : {
         "pl" : {
@@ -7285,6 +7297,18 @@
         }
       }
     },
+    "Delivered" : {
+      "comment" : "A delivery file exists for the frozen recipient",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Doręczono"
+          }
+        }
+      }
+    },
     "Delivery interrupted" : {
       "localizations" : {
         "pl" : {
@@ -9973,6 +9997,30 @@
         }
       }
     },
+    "Last sent message at %@: %@" : {
+      "comment" : "Outgoing message time, followed by its frozen delivery receipt",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatnia wysłana wiadomość, %@: %@"
+          }
+        }
+      }
+    },
+    "Last sent message: %@" : {
+      "comment" : "Receipt of the latest completed user delivery to this owner",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatnia wysłana wiadomość: %@"
+          }
+        }
+      }
+    },
     "Last take on this Mac: %@" : {
       "localizations" : {
         "pl" : {
@@ -11120,6 +11168,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mikrofon niedostępny"
+          }
+        }
+      }
+    },
+    "Microphone:" : {
+      "comment" : "Actual open voice channels, independent of text destination",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mikrofon:"
           }
         }
       }
@@ -12967,6 +13027,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Domyślnie wyłączone. Po włączeniu wszystkie cztery pliki promptów trafią do Kosza razem z resztą danych aplikacji."
+          }
+        }
+      }
+    },
+    "Off channel 0" : {
+      "comment" : "Passive reception restriction beside an agent name",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poza kanałem Wszyscy"
           }
         }
       }
@@ -14951,6 +15023,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdź ponownie"
+          }
+        }
+      }
+    },
+    "Recipient unavailable" : {
+      "comment" : "The pinned text recipient no longer resolves to its original owner",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Adresat jest niedostępny"
           }
         }
       }
@@ -20276,6 +20360,18 @@
         }
       }
     },
+    "To:" : {
+      "comment" : "Persistent text destination, independent of the viewed conversation",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tekst do:"
+          }
+        }
+      }
+    },
     "Today" : {
       "comment" : "Day separator between conversation turns\nSheet shade: the value shipped today\nThread rail section",
       "localizations" : {
@@ -21313,6 +21409,30 @@
         }
       }
     },
+    "Voice channels closed" : {
+      "comment" : "No live agent channel is open; this is separate from draft dictation",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanały głosowe zamknięte"
+          }
+        }
+      }
+    },
+    "Voice channels:" : {
+      "comment" : "Actual open live agent channels, listed by number and name",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanały głosowe:"
+          }
+        }
+      }
+    },
     "Voice chat" : {
       "comment" : "Fallback title for a dictated thread",
       "localizations" : {
@@ -22022,6 +22142,18 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Napisz albo podyktuj wiadomość, żeby rozpocząć rozmowę."
+          }
+        }
+      }
+    },
+    "Write to %@" : {
+      "comment" : "Explicitly use the viewed conversation as the text destination",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pisz do: %@"
           }
         }
       }

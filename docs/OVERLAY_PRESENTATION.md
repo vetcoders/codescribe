@@ -34,11 +34,92 @@ surface. Keep the policy symbol/help from `AgentBroadcastPolicy`; its meaning
 does not belong to the visual style. `OverlayAgentUnreadBadge` is shared by
 current and saved conversations.
 
-An agent row's primary action and its microphone, speaker, Frame and archive
-actions are siblings. Identity, the clock, the descriptor and the preview take
-the full row width; the footer owns only its compact action group. That budget
-is five text lines: identity, descriptor, up to two preview lines, and footer
-state. Preserve it for agent rows.
+An agent row has three blocks: identity and controls, the provider/model/project
+descriptor, and a routed message preview of at most two lines. There is no
+separate state-and-actions footer. The waveform microphone, speaker and more
+menu remain visible beside the identity without hover. The conversation button
+and these controls are siblings; opening a conversation never opens its
+microphone. Long names retain their full tooltip and accessibility label.
+
+Hovering the row's navigation area or a folded-rail entry for 350 ms opens
+the last loaded message in the shared `OverlayHintPanel`. The same message
+as the inline preview is used, including outgoing user messages; original
+paragraphs, rich formatting and attachments use `OverlayConversationMessageContent`.
+The preview is bounded to the display and scrollable. Its pointer target stays
+open while the cursor crosses the gap or rests on the preview, then dismisses
+after leaving both targets. The window cannot become key. It mounts no
+composer, changes no selected conversation or recipient, acknowledges no
+message, and fetches no saved history. Audio and menu controls keep their own
+action hints. Empty entries retain their existing navigation hint.
+
+The more menu contains channel-zero membership, Do not disturb, the detected
+client/terminal destination and removal into saved conversations. The same
+commands are available from the row's context menu. Existing pending,
+availability, frozen-owner and archive guards remain in force. An open
+microphone can still be stopped after its reader disconnects, and playback can
+still be muted. A client-focus request keeps its progress and result on the
+more control and in the menu; removing the footer must not erase that feedback.
+
+Reception controls live in the menu, but restrictions remain visible by the
+name: a moon while Do not disturb is on, and a crossed antenna while the agent
+is outside channel zero. These are passive projections of the existing
+`OverlayBroadcastPolicyLedger`, not another policy writer. Disconnected rows
+dim without adding a Disconnected text line and remain available for history.
+
+The compact receipt mark describes the newest completed user delivery to the
+exact frozen recipient. A single check means a delivered receipt; the compact
+double-check shape means a read receipt or the canonical agent acknowledgment.
+Queue admission and provider acceptance are not delivered/read evidence. Held,
+skipped and unreceipted deliveries keep distinct marks and explanations. The
+mark sits near the identity, separately from the last-preview clock; its help
+and accessibility text name the time of its own outgoing message. A later
+incoming reply must not lend its time to that receipt. The circular unread
+reply count is a separate projection, also shown on the folded rail; compact
+map and floating Intercom badge rendering retain their existing form.
+
+## Horizontal conversation and text destination
+
+The horizontal window keeps the conversation header and its current-agent
+actions visible with either the full sidebar or its folded rail. The sidebar
+choice does not replace the current conversation, draft or microphone target.
+Folded-rail controls sit on the full column's centerline, with equal horizontal
+gutters that keep the numbered buttons clear of the native resize band.
+The existing All, Inbox and saved-conversation views keep their current data
+and routing semantics; the earlier proposal's additional history filters are
+not part of this change.
+
+The standard conversation reserves its composer space below the message
+viewport. The shared `.intercom` presentation keeps its existing floating
+composer arrangement. Text scale, resize, retained history, reply navigation,
+attachments, draft dictation and draft synchronization remain supported.
+
+The visible conversation, text destination and open microphone are independent.
+The text destination is always named beside the composer and can be selected
+explicitly. A separate action chooses the viewed conversation as the text
+destination. Selection pins conversation ID, channel and frozen owner identity;
+reusing a channel digit cannot adopt another owner's draft or pending reply.
+All drafts, replies, attachments, editor identity and send callbacks continue
+to use the existing per-conversation stores. A missing destination stays named
+as unavailable with a usable chooser instead of falling back to the viewed
+conversation. The microphone status reports actual open channels, separately
+from dictation into the text field.
+
+Native Undo remains scoped to the mounted editor. Switching the frozen text
+destination preserves each owner's stored draft, but starts a fresh native
+undo stack, as switching conversations did before. Undo never crosses owners.
+
+Replying to a displayed message and the explicit Write/Forward menu command
+choose their own frozen conversation as the text destination. Ordinary row,
+map and rail navigation only change the viewed conversation.
+Returning a held message to the draft first completes its withdrawal, then
+returns text to that frozen private owner or to the original channel-zero
+conversation. Navigating to a quoted reply opens its own history and retains
+the requested message ID while history loads. None of these changes creates a
+second document, recorder, bus writer or delivery route.
+
+The floating Intercom windows and the mini/compact top bar are outside this
+horizontal-window cut. Shared view parameters default to the existing Intercom
+behavior, and shared control renderers retain their existing appearance.
 
 `0 · All` is the exception. Its title button keeps the identity line and the
 clock. The outline megaphone and the speaker sit beside a three-line preview
@@ -58,6 +139,9 @@ read `sender → You`. Attachment-only messages use the same route. The receipt
 menu lists the frozen recipient set of a broadcast. A speaker who is not the
 open conversation stays a button that opens their conversation; the arrow and
 the audience are text.
+
+User-message bubbles retain a quiet warm outline using `terracottaDeep` at
+`CSAlpha.selectionStroke` strength. Incoming bubbles use the neutral panel edge.
 
 The channel map in mini and compact is another surface of the same
 projections. `OverlayChannelStatusView.channelMapModel` builds
@@ -371,8 +455,10 @@ dictation control keeps the plain `mic`, the dictation verb (Maciej,
 2026-10-23).
 Channel activity updates an already visible main overlay, but the vertical
 Intercom does not summon a closed main overlay; Show in Agents remains explicit.
-Rich informational hover and agent action menus belong
-to the floating pills; the classic Agents list retains its inline actions.
+The floating pills retain their rich informational hover. The classic Agents
+list keeps its inline actions and also offers the last-message hover described
+above; provider, model, status and session metadata are not repeated in a
+second tooltip.
 The same `OverlayChannelMapPreference` stores the layout; switching it preserves
 the selected conversation, drafts and active route. No second inventory or
 recorder is created. The default remains horizontal, and an absent opt-in stays off.
