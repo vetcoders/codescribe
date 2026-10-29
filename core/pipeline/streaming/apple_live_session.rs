@@ -4775,6 +4775,10 @@ impl AppleSealState {
                 if route.blocked {
                     self.whisper_span_refused.insert(occurrence.clone());
                 }
+                self.acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .require_text_recovery(occurrence);
                 self.keep_routed_visible(ev_tx, request_id, &route.exclusive);
                 self.emit_span_refusal(
                     ev_tx,
@@ -4833,6 +4837,45 @@ impl AppleSealState {
                 self.refinement_receipt(occurrence, RefinementFailure::NoLabel.code());
                 continue;
             }
+            // A phrase has no individual word ownership. It can fill an
+            // empty owner only when its complete physical scope belongs to
+            // this publication band, not merely to the overlapping decode.
+            let phrase_scope_owned = returned.validate().is_ok()
+                && returned.evidence.source == crate::stt::tail_provider::TailEvidenceSource::Whisper
+                && returned.evidence.stability == crate::stt::tail_provider::TailEvidenceStability::Final
+                && returned.evidence.timing_quality
+                    == crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
+                && identity.range.session == self.session_id
+                && identity.range.capture_epoch == self.capture_epoch
+                && band_start <= occurrence.sample_start
+                && occurrence.sample_end <= band_end
+                && route.exclusive.iter().all(|pin| {
+                    pin.pin.same_capture(occurrence)
+                        && band_start <= pin.pin.sample_start
+                        && pin.pin.sample_end <= band_end
+                });
+            if !label.is_empty() && !phrase_scope_owned {
+                let (observation, receipt) = {
+                    let mut ledger = self.acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    ledger.require_text_recovery(occurrence);
+                    let observation = ledger.next_word_observation(
+                        LedgerObservationProducer::Whisper, request_id, occurrence,
+                    );
+                    let receipt = ledger.refuse_replacement(
+                        &observation, &label, RefuseReason::SlotAdmissionRejected,
+                    );
+                    (observation, receipt)
+                };
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                });
+                self.refinement_receipt(occurrence, RefinementFailure::NoLabel.code());
+                continue;
+            }
             if !label.is_empty() {
                 let observation = self
                     .acoustic_ledger
@@ -4855,15 +4898,15 @@ impl AppleSealState {
                 .is_some_and(|receipt| receipt.grants_mutation());
                 self.refresh_pending_label(*member_id, occurrence);
             } else {
-                let observation = self
-                    .acoustic_ledger
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .next_word_observation(
-                        LedgerObservationProducer::Whisper,
-                        request_id,
-                        occurrence,
-                    );
+                let observation = {
+                    let mut ledger = self.acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    ledger.require_text_recovery(occurrence);
+                    ledger.next_word_observation(
+                        LedgerObservationProducer::Whisper, request_id, occurrence,
+                    )
+                };
                 let _ = admit_ledger_label(
                     self,
                     ev_tx,
