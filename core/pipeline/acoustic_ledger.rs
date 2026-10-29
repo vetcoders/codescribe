@@ -2188,10 +2188,7 @@ impl AcousticLedger {
                 slots.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
             } else if incoming
                 .iter()
-                .filter(|other| {
-                    self.same_anchored_word(other, &word)
-                        && normalize_word_token(&other.text) == normalize_word_token(&word.text)
-                })
+                .filter(|other| self.same_anchored_word(other, &word))
                 .count()
                 > 1
             {

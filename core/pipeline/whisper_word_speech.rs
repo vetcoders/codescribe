@@ -14,22 +14,8 @@
 use super::acoustic_ledger::{RefuseReason, SilenceUnderSpan};
 use super::engine_tuning::EngineTuning;
 
-/// Shortest voiced span, in milliseconds, that can be one syllable of an
-/// identical Whisper repeat.
-///
-/// Div0 corpus of 15–17 X (`whisper-dup-runs-15-17X-div0.txt`): one-syllable
-/// loops that sit on silence or a pause are 60 ms ("no" ×4) and 74 ms
-/// ("to" ×7). Repeats the same scan marks plausible start at 147 ms ("to" ×3),
-/// 160 ms ("nie" ×6) and 180 ms ("i" ×3). 100 ms per syllable sits between
-/// those two groups. A repeat that is separated by a valley or a Silero dip
-/// and is at least this long stays. A shorter measured repeat is not its own
-/// syllable. Digital zero and a span below the existence floor are refused by
-/// [`RefuseReason::NoVoicedHopInPin`] before this floor is consulted.
-///
-/// Missing speech evidence grants visibility only, never an insertion. The
-/// historical capture trace used 3,000-sample pins at 16 kHz (187 ms, two
-/// vowel groups, so 200 ms at this floor); unmeasured separation cannot
-/// establish an independent repeat occurrence.
+/// Historical tuning default retained by the existing settings surface.
+/// Word admission does not infer occurrence identity from syllable duration.
 pub const WHISPER_REPEAT_MIN_MS_PER_SYLLABLE: u64 = 100;
 
 /// Radius retained for distance diagnostics and the existing tuning surface.
@@ -95,7 +81,7 @@ pub struct WhisperWordSpeech {
 /// What the judge did with one word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WhisperWordSpeechVerdict {
-    /// Speech was measured on this span and the repeat rule passed.
+    /// Speech was measured on this span.
     Admit,
     /// A required speech channel was not measured. Visibility only.
     Unmeasured,
@@ -130,35 +116,27 @@ impl WhisperWordSpeechDecision {
 
 /// Judge every word of one Whisper window, in order.
 ///
-/// The first word of an identical run is judged only on its own span. Each
-/// later word also needs its own voiced segment: a measured valley or Silero
-/// dip behind it, and at least [`WHISPER_REPEAT_MIN_MS_PER_SYLLABLE`] per
-/// syllable. A missing measurement grants visibility only.
+/// Each pin is judged on its own speech measurement. Word identity and
+/// overlapping pins are resolved by the ledger, independently of spelling.
 pub fn judge_whisper_words(words: &[WhisperWordSpeech]) -> Vec<WhisperWordSpeechDecision> {
     judge_whisper_words_tuned(words, &EngineTuning::DEFAULT)
 }
 
-/// [`judge_whisper_words`] with the take's repeat-duration floor. The near
-/// radius remains a diagnostic setting and grants no word admission.
+/// The tuning remains available for the existing take configuration; neither
+/// duration nor nearness grants word admission.
 pub fn judge_whisper_words_tuned(
     words: &[WhisperWordSpeech],
-    tuning: &EngineTuning,
+    _tuning: &EngineTuning,
 ) -> Vec<WhisperWordSpeechDecision> {
     words
         .iter()
-        .enumerate()
-        .map(|(index, word)| WhisperWordSpeechDecision {
-            verdict: judge_one(words, index, word, tuning),
+        .map(|word| WhisperWordSpeechDecision {
+            verdict: judge_one(word),
         })
         .collect()
 }
 
-fn judge_one(
-    words: &[WhisperWordSpeech],
-    index: usize,
-    word: &WhisperWordSpeech,
-    tuning: &EngineTuning,
-) -> WhisperWordSpeechVerdict {
+fn judge_one(word: &WhisperWordSpeech) -> WhisperWordSpeechVerdict {
     // Silero is the speech witness: its island decides, and energy cannot
     // promote room noise it rejected to speech. A word on an island keeps its
     // place even where its own pin covers a pause. Energy decides only where
@@ -173,31 +151,7 @@ fn judge_one(
         (None, None) => return WhisperWordSpeechVerdict::Unmeasured,
         _ => {}
     }
-    if !is_identical_repeat(words, index) {
-        return WhisperWordSpeechVerdict::Admit;
-    }
-    match word.separated_from_previous {
-        Some(false) => {
-            WhisperWordSpeechVerdict::Refuse(RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment)
-        }
-        Some(true) => {
-            match span_meets_syllable_floor(word, tuning.whisper_repeat_min_ms_per_syllable) {
-                Some(true) => WhisperWordSpeechVerdict::Admit,
-                Some(false) => WhisperWordSpeechVerdict::Refuse(
-                    RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment,
-                ),
-                None => WhisperWordSpeechVerdict::Unmeasured,
-            }
-        }
-        None => WhisperWordSpeechVerdict::Unmeasured,
-    }
-}
-
-fn is_identical_repeat(words: &[WhisperWordSpeech], index: usize) -> bool {
-    let Some(key) = repeat_key(&words[index].text) else {
-        return false;
-    };
-    index > 0 && repeat_key(&words[index - 1].text).as_deref() == Some(key.as_str())
+    WhisperWordSpeechVerdict::Admit
 }
 
 /// One whitespace token, compared case-insensitively. A phrase is not a run.
@@ -240,48 +194,6 @@ pub(crate) fn window_has_silero_dip(
     mut speech_ranges: impl Iterator<Item = (u64, u64)>,
 ) -> bool {
     !speech_ranges.any(|(start, end)| start <= window.0 && window.1 <= end)
-}
-
-/// `Some` when the sample rate can turn the span into milliseconds.
-fn span_meets_syllable_floor(word: &WhisperWordSpeech, min_ms_per_syllable: u64) -> Option<bool> {
-    if word.sample_rate == 0 || word.sample_end <= word.sample_start {
-        return None;
-    }
-    let syllables = u64::from(syllable_groups(&word.text).max(1));
-    let milliseconds =
-        word.sample_end.saturating_sub(word.sample_start) * 1_000 / u64::from(word.sample_rate);
-    Some(milliseconds >= min_ms_per_syllable.saturating_mul(syllables))
-}
-
-/// Vowel groups in lowercase. Polish `i`/`y` immediately before another vowel
-/// is a glide and does not open a syllable: "nie" is 1, "Iwo" is 2,
-/// "dziękuję" is 3.
-fn syllable_groups(text: &str) -> u32 {
-    let chars: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
-    let mut count = 0u32;
-    let mut index = 0;
-    while index < chars.len() {
-        if !is_vowel(chars[index]) {
-            index += 1;
-            continue;
-        }
-        let glide = matches!(chars[index], 'i' | 'y')
-            && chars.get(index + 1).is_some_and(|next| is_vowel(*next));
-        if glide {
-            index += 1;
-            continue;
-        }
-        count += 1;
-        index += 1;
-        while index < chars.len() && is_vowel(chars[index]) {
-            index += 1;
-        }
-    }
-    count
-}
-
-fn is_vowel(c: char) -> bool {
-    matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'ą' | 'ę' | 'ó')
 }
 
 #[cfg(test)]
