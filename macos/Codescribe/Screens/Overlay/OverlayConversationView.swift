@@ -480,37 +480,85 @@ struct OverlayConversationView: View {
       .font(.system(size: 10 * textScale)).foregroundStyle(palette.errorStatus.color)
   }
 
+  @ViewBuilder
   private var navigation: some View {
-    navigationGlassContainer(
-      HStack(spacing: 0) {
-        Spacer(minLength: 0)
-        HStack(spacing: 6) {
-          if let navigationActions {
-            navigationActions
-          } else if conversation.owner != nil || conversation.channel == "0" {
-            OverlayAgentAudioControls(
-              open: microphoneOpen, muted: playbackMuted,
-              microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
-              palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
-              broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
-              diameter: navigationPillHeight
-            )
-            .fixedSize()
-          }
-          navigationIndicators
-          conversationNamePill
-            .onGeometryChange(for: CGFloat.self) {
-              $0.size.height
-            } action: {
-              navigationPillHeight = max(28, $0)
+    if presentation == .intercom {
+      navigationGlassContainer(
+        HStack(spacing: 0) {
+          Spacer(minLength: 0)
+          HStack(spacing: 6) {
+            if let navigationActions {
+              navigationActions
+            } else if conversation.owner != nil || conversation.channel == "0" {
+              OverlayAgentAudioControls(
+                open: microphoneOpen, muted: playbackMuted,
+                microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
+                palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
+                broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
+                diameter: navigationPillHeight
+              )
+              .fixedSize()
             }
+            navigationIndicators
+            conversationNamePill
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                navigationPillHeight = max(28, $0)
+              }
+          }
+          .background { OverlayMenuCursorRegion() }
         }
-        // The gap between the controls and the name is not text either.
-        .background { OverlayMenuCursorRegion() }
+      )
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("overlay-conversation-navigation")
+    } else {
+      HStack(alignment: .center, spacing: 8) {
+        VStack(alignment: .leading, spacing: 2) {
+          HStack(spacing: 6) {
+            Group {
+              if conversation.channel == "0" { Text("0 · All") }
+              else { Text(verbatim: conversation.displayTitle) }
+            }
+            .font(.system(size: 13 * textScale, weight: .bold))
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .layoutPriority(-1)
+            navigationIndicators
+              .fixedSize()
+          }
+          if let descriptor = agentDescriptor ?? conversation.owner?.provider, !descriptor.isEmpty {
+            Text(verbatim: descriptor)
+              .font(.system(size: 11 * textScale))
+              .foregroundStyle(palette.mutedText.color)
+              .lineLimit(1)
+              .truncationMode(.middle)
+              .accessibilityIdentifier("overlay-conversation-agent-descriptor")
+          }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(palette.primaryText.color)
+        .help(Text(verbatim: conversation.displayTitle))
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("overlay-conversation-name")
+        if let navigationActions {
+          navigationActions
+            .fixedSize()
+        } else if conversation.owner != nil || conversation.channel == "0" {
+          OverlayAgentAudioControls(
+            open: microphoneOpen, muted: playbackMuted,
+            microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
+            palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
+            broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
+            diameter: navigationPillHeight
+          )
+          .fixedSize()
+        }
       }
-    )
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-conversation-navigation")
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("overlay-conversation-navigation")
+    }
   }
 
   @ViewBuilder
