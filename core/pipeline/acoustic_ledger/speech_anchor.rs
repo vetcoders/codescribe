@@ -1265,7 +1265,8 @@ impl AcousticLedger {
             })
         };
         let dt_crosses_whisper = |index: usize| {
-            observation.producer == ObservationProducer::AppleDictation
+            pins.len() == 1
+                && self.dt_partition_preflight(observation)
                 && prior.iter().filter(|source| {
                     source.producer == ObservationProducer::Whisper
                         && source.sample_start < pins[index].sample_end

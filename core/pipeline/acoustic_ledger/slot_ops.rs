@@ -352,6 +352,53 @@ impl AcousticLedger {
 }
 
 impl AcousticLedger {
+    /// A staged single-pin DT boundary fact selects the narrow partition
+    /// path. It is not mutation authority: the full ledger check follows.
+    pub(super) fn dt_partition_preflight(&self, observation: &ObservationIdentity) -> bool {
+        if observation.producer != ObservationProducer::AppleDictation
+            || self.is_sealed(&observation.occurrence)
+        {
+            return false;
+        }
+        let Some(input) = self.word_evidence_input(observation) else { return false; };
+        let Some(request) = input.producer_request.as_ref() else { return false; };
+        let Some(rate) = self.capture_rate_hz else { return false; };
+        let [pin] = input.words.as_slice() else { return false; };
+        if input.finality != "final"
+            || input.timing != "exact_sample_range"
+            || !input.backend.as_deref().is_some_and(|backend| backend.ends_with(":apple_dictation"))
+            || request.range.session != observation.occurrence.session
+            || request.range.capture_epoch != observation.occurrence.capture_epoch
+            || pin.original_text.is_none()
+            || pin.decode != Some((request.range.sample_start, request.range.sample_end))
+        {
+            return false;
+        }
+        let resolution = u64::from(rate).div_ceil(50);
+        let held = self.slots_of(&observation.occurrence).unwrap_or(&[]);
+        resolution > 0 && input.boundary_evidence.iter().any(|fact| {
+            let boundary = fact.left.sample_end;
+            fact.continuously_voiced
+                && fact.left.observation.producer == ObservationProducer::Whisper
+                && fact.right.observation.producer == ObservationProducer::Whisper
+                && fact.left.observation.occurrence == observation.occurrence
+                && fact.right.observation.occurrence == observation.occurrence
+                && boundary == fact.right.sample_start
+                && fact.probe_start == boundary.saturating_sub(resolution)
+                && fact.probe_end == boundary.saturating_add(resolution)
+                && fact.probe_start >= request.range.sample_start
+                && fact.probe_start >= observation.occurrence.sample_start
+                && fact.probe_end <= observation.occurrence.sample_end
+                && fact.probe_end <= request.range.sample_end
+                && pin.sample_start < fact.left.sample_end
+                && fact.left.sample_start < pin.sample_end
+                && pin.sample_start < fact.right.sample_end
+                && fact.right.sample_start < pin.sample_end
+                && held.iter().any(|source| SlotTarget::from(source) == fact.left)
+                && held.iter().any(|source| SlotTarget::from(source) == fact.right)
+        })
+    }
+
     /// An unsealed independent DT may propose one exact pin over a Whisper
     /// partition in one acoustic component. Uncovered measured speech stays
     /// explicit debt; this is not proof that the component has one word.
@@ -1527,8 +1574,8 @@ impl AcousticLedger {
     ) -> (Vec<SlotOperationReceipt>, Vec<GroupSpeechCoverageReceipt>) {
         if !matches!(
             observation.producer,
-            ObservationProducer::Whisper | ObservationProducer::CloudLive | ObservationProducer::AppleDictation
-        ) {
+            ObservationProducer::Whisper | ObservationProducer::CloudLive
+        ) && !(incoming.len() == 1 && self.dt_partition_preflight(observation)) {
             return (Vec::new(), Vec::new());
         }
         let prior = slots.clone();
