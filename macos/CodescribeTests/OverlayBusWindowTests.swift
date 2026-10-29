@@ -118,6 +118,7 @@ final class OverlayBusWindowTests: XCTestCase {
       let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
       let document = try XCTUnwrap(scroll.documentView)
       let originalEditor = try XCTUnwrap(editor(host))
+      originalEditor.setSelectedRange(NSRange(location: 2, length: 5))
       let navigationFrame = frame(navigation)
       let routingFrame = frame(routing)
       XCTAssertGreaterThan(navigationFrame.height, 10)
@@ -148,6 +149,7 @@ final class OverlayBusWindowTests: XCTestCase {
           viewport.maxY, footer.minY + 1, "messages cannot pass behind routing")
         XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
         XCTAssertEqual(originalEditor.string, "A retained draft")
+        XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
         if position != 1 {
           let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
           host.cacheDisplay(in: host.bounds, to: bitmap)
@@ -158,6 +160,18 @@ final class OverlayBusWindowTests: XCTestCase {
           attachment.lifetime = .keepAlways
           add(attachment)
         }
+      }
+      for resizedWidth in [max(320, width - 180), width] {
+        panel.setContentSize(NSSize(width: resizedWidth, height: 560))
+        settle()
+        let viewport = frame(scroll.contentView)
+        XCTAssertGreaterThanOrEqual(
+          viewport.minY, frame(try XCTUnwrap(navigationProbe)).maxY - 1)
+        XCTAssertLessThanOrEqual(
+          viewport.maxY, frame(try XCTUnwrap(routingProbe)).minY + 1)
+        XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+        XCTAssertEqual(originalEditor.string, "A retained draft")
+        XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
       }
     }
   }
