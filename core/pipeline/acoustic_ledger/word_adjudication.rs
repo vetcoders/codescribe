@@ -2081,7 +2081,6 @@ impl AcousticLedger {
                 });
                 input.finality == "final"
                     && input.timing == "exact_sample_range"
-                    && request.request_id == observation.request
                     && request.range.session == observation.occurrence.session
                     && request.range.capture_epoch == observation.occurrence.capture_epoch
                     && request.range.sample_start <= publication.sample_start
