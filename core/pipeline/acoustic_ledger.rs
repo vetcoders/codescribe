@@ -4222,6 +4222,7 @@ impl AcousticLedger {
             super::trail::TrailEvent::Qualification {
                 evidence: evidence.clone(),
                 calibration: calibration.clone(),
+                capture_rate_hz: self.capture_rate_hz,
             },
         );
         AdmissionReceipt::Qualified { occurrence, serial }

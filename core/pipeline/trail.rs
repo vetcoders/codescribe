@@ -673,6 +673,8 @@ pub enum TrailEvent {
     Qualification {
         evidence: AcousticEvidence,
         calibration: EnergyCalibration,
+        #[serde(default)]
+        capture_rate_hz: Option<u32>,
     },
     Decision {
         decision: Box<TrailDecision>,
@@ -1785,7 +1787,14 @@ fn replay_validated(
             TrailEvent::Qualification {
                 evidence,
                 calibration,
+                capture_rate_hz,
             } => {
+                if let Some(rate) = capture_rate_hz {
+                    if *rate == 0 || ledger.capture_rate().is_some_and(|bound| bound != *rate) {
+                        return Err(io::Error::other("qualification capture rate differs"));
+                    }
+                    ledger.bind_capture_rate(*rate);
+                }
                 if !ledger.qualify(evidence, calibration).is_qualified() {
                     return Err(io::Error::other("recorded qualification refused"));
                 }
