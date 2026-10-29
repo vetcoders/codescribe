@@ -459,6 +459,12 @@ final class OverlayMenuCursorTests: XCTestCase {
     defer { saved.set() }
     for control in controls {
       let point = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil)
+      // Each probe arrives from text that set the I-beam outside the panel's
+      // ownership. Nested regions share a centre (the close dot's own region
+      // and its header chrome's): without this reset, the second probe at the
+      // same point is an unchanged decision the panel correctly skips, and
+      // the hash table's order decides whether the test fails.
+      panel.invalidateCursorOwnership()
       NSCursor.iBeam.set()
       XCTAssertTrue(panel.refreshCursor(at: point), "Mounted control at \(point)")
       XCTAssertEqual(NSCursor.current, .arrow)
