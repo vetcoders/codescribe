@@ -1362,7 +1362,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       visual.contains("OverlayAgentUnreadBadge("), "unread rides the title line as a badge")
     XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
-    XCTAssertTrue(label.contains("deliveryReceiptDisplay("), "receipt follows frozen delivery evidence")
+    XCTAssertTrue(
+      label.contains("deliveryReceiptDisplay("), "receipt follows frozen delivery evidence")
     let row = try section(of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
     XCTAssertFalse(row.contains("rosterRowState("), "compact cards have no separate footer")
   }

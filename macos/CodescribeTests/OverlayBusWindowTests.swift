@@ -10,7 +10,8 @@ final class OverlayBusWindowTests: XCTestCase {
     _ digit: String, session: String = "initial", lease: String = "a", canonicalLease: Bool = false
   ) throws -> OverlayConversation {
     let sessionID = "window-\(digit)-\(session)"
-    let leaseID = canonicalLease
+    let leaseID =
+      canonicalLease
       ? AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: sessionID)
       : String(repeating: lease, count: 32)
     let owner = try XCTUnwrap(
