@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Settings › User › License: **Remove key** asks for confirmation before deleting the key, and says that the app cannot show the key again, so activating later needs the key itself or a new one from the license page. Until now one click removed it at once.
 - Settings: Voice Lab, Restore default template, the User page's information links and Privacy's "Configure cloud services" are one link style — underlined, semibold, in the brand's brick instead of the macOS accent or the system link blue, with the pointing-hand pointer on hover; Creator's permission repair buttons use neutral text.
 - Settings: provider check times omit seconds while keeping the system's clock format, recording indicator sizes read Off / Small / Medium / Large (Wyłączony / Mały / Średni / Duży in Polish), and the dictation preview's update delay is shown in locale-formatted seconds instead of milliseconds.
 - Settings: Audio's healthy recording summary and Whisper's ready model status use the shared thin-check badge; saved provider keys and accounts use its empty-circle mark. Audio's committing fragments status spells out "Włączone"/"Wyłączone" in Polish instead of "Wł."/"Wył."; English keeps "On"/"Off". Blocked audio, missing or pending models, and the wording of saved-account messages are unchanged.

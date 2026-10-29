@@ -5375,6 +5375,17 @@
         }
       }
     },
+    "Codescribe goes back to Basic mode and Agent mode stops working. The key is deleted from this Mac's Keychain. To activate again you will need the key itself, which Codescribe cannot show, or a new key from the license page." : {
+      "comment" : "License card: what removing the key does, in the confirmation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe wróci do trybu podstawowego, a tryb agentowy przestanie działać. Klucz zostanie usunięty z Pęku kluczy na tym Macu. Żeby znów aktywować licencję, potrzebny będzie sam klucz (Codescribe go nie pokaże) albo nowy klucz ze strony licencji."
+          }
+        }
+      }
+    },
     "Codescribe has measured how loudly you speak into this microphone." : {
       "localizations" : {
         "pl" : {
@@ -15421,6 +15432,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Usuń serwer"
+          }
+        }
+      }
+    },
+    "Remove the license key?" : {
+      "comment" : "License card: title of the confirmation before removing the key",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usunąć klucz licencji?"
           }
         }
       }

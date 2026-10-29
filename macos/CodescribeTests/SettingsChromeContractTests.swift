@@ -1976,6 +1976,23 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(body.contains("chromeAccent"))
   }
 
+  /// Remove key asks first: the app never shows a stored key, so one stray
+  /// click must not delete it (Founder, 2026-10-29: removed at once, no warning).
+  func testRemovingTheLicenseKeyAsksFirst() throws {
+    let license = try XCTUnwrap(try settingsSources()["LicenseSection.swift"])
+    XCTAssertEqual(
+      license.components(separatedBy: "model.removeLicense()").count - 1, 1,
+      "one removal path")
+    let dialog = try XCTUnwrap(license.range(of: ".confirmationDialog("))
+    let removal = try XCTUnwrap(license.range(of: "model.removeLicense()"))
+    XCTAssertLessThan(dialog.lowerBound, removal.lowerBound, "removal lives in the dialog")
+    XCTAssertTrue(license.contains("confirmingRemove = true"))
+    XCTAssertTrue(license.contains("Button(\"Remove key\", role: .destructive)"))
+
+    let polish = try polishCatalog()
+    XCTAssertEqual(polish["Remove the license key?"], "Usunąć klucz licencji?")
+  }
+
   /// True when `token` occurs and the next character is not a letter, so
   /// `CSColor.olive` does not pass merely because `CSColor.oliveLight` exists.
   private func containsToken(_ source: String, _ token: String) -> Bool {

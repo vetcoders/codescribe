@@ -1237,7 +1237,10 @@ Agent mode._ Everything else sits in one card.
   the field is empty or an operation runs) and **Cancel**, which closes the
   editor and keeps the saved key. Under it **Get license key** (opens the
   self-service page) on the left and **Remove key**, in red, set apart on the
-  right.
+  right. **Remove key** asks first (_Remove the license key?_): Codescribe goes
+  back to Basic mode, the key is deleted from this Mac's Keychain, and since
+  the app never shows a stored key, activating again needs the key itself or a
+  new one from the license page. Only **Remove key** in that dialog removes it.
 - **Without a key** — the activation editor is open at once inside the card
   (_License key_, the field and **Activate**), followed by **Get license key**
   alone; there is no Manage key and no Remove key.

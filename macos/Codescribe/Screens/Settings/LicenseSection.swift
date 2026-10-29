@@ -29,6 +29,9 @@ struct LicenseSection: View {
   @State private var managingKey = false
   /// "Change key" is open: the replacement-key editor shows in the band.
   @State private var changingKey = false
+  /// "Remove key" asked first: the stored key is never shown, so a removal
+  /// the user did not mean cannot be undone from the app.
+  @State private var confirmingRemove = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -303,7 +306,7 @@ struct LicenseSection: View {
 
       if hasKey {
         SettingsChipButton {
-          Task { @MainActor in await model.removeLicense() }
+          confirmingRemove = true
         } label: {
           Text("Remove key")
             .font(SettingsScale.controlLabel)
@@ -311,6 +314,24 @@ struct LicenseSection: View {
         }
         .disabled(model.licenseBusy)
       }
+    }
+    .confirmationDialog(
+      String(
+        localized: "Remove the license key?",
+        comment: "License card: title of the confirmation before removing the key"),
+      isPresented: $confirmingRemove,
+      titleVisibility: .visible
+    ) {
+      Button("Remove key", role: .destructive) {
+        Task { @MainActor in await model.removeLicense() }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(
+        String(
+          localized:
+            "Codescribe goes back to Basic mode and Agent mode stops working. The key is deleted from this Mac's Keychain. To activate again you will need the key itself, which Codescribe cannot show, or a new key from the license page.",
+          comment: "License card: what removing the key does, in the confirmation"))
     }
   }
 
