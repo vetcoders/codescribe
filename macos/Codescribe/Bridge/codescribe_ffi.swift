@@ -11092,6 +11092,78 @@ public func FfiConverterTypeCsHotkeyConflict_lower(_ value: CsHotkeyConflict) ->
 
 
 /**
+ * One entry of the pointer dot's palette: the colour the dot is painted in
+ * (RGBA, 0…1) and, for a dot that needs one, the state whose colour rims it.
+ */
+public struct CsIndicatorSwatch: Equatable, Hashable {
+    public var state: CsIndicatorState
+    public var red: Double
+    public var green: Double
+    public var blue: Double
+    public var alpha: Double
+    public var rim: CsIndicatorState?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(state: CsIndicatorState, red: Double, green: Double, blue: Double, alpha: Double, rim: CsIndicatorState?) {
+        self.state = state
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.alpha = alpha
+        self.rim = rim
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsIndicatorSwatch: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsIndicatorSwatch: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsIndicatorSwatch {
+        return
+            try CsIndicatorSwatch(
+                state: FfiConverterTypeCsIndicatorState.read(from: &buf),
+                red: FfiConverterDouble.read(from: &buf),
+                green: FfiConverterDouble.read(from: &buf),
+                blue: FfiConverterDouble.read(from: &buf),
+                alpha: FfiConverterDouble.read(from: &buf),
+                rim: FfiConverterOptionTypeCsIndicatorState.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsIndicatorSwatch, into buf: inout [UInt8]) {
+        FfiConverterTypeCsIndicatorState.write(value.state, into: &buf)
+        FfiConverterDouble.write(value.red, into: &buf)
+        FfiConverterDouble.write(value.green, into: &buf)
+        FfiConverterDouble.write(value.blue, into: &buf)
+        FfiConverterDouble.write(value.alpha, into: &buf)
+        FfiConverterOptionTypeCsIndicatorState.write(value.rim, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsIndicatorSwatch_lift(_ buf: RustBuffer) throws -> CsIndicatorSwatch {
+    return try FfiConverterTypeCsIndicatorSwatch.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsIndicatorSwatch_lower(_ value: CsIndicatorSwatch) -> RustBuffer {
+    return FfiConverterTypeCsIndicatorSwatch.lower(value)
+}
+
+
+/**
  * Presence-only view of the Keychain-backed API keys. Booleans only — the
  * secret values themselves never cross FFI. A key counts as "set" when its
  * account env var or Keychain account is present and non-empty.
@@ -18157,6 +18229,102 @@ public func FfiConverterTypeCsIndicatorMode_lower(_ value: CsIndicatorMode) -> R
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * A state the pointer dot can show, as the Settings legend names it.
+ */
+
+public enum CsIndicatorState: Equatable, Hashable {
+
+    case recording
+    case wordsOwed
+    case processing
+    case agent
+    case agentQuiet
+    case refused
+
+
+
+}
+
+#if compiler(>=6)
+extension CsIndicatorState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsIndicatorState: FfiConverterRustBuffer {
+    typealias SwiftType = CsIndicatorState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsIndicatorState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .recording
+
+        case 2: return .wordsOwed
+
+        case 3: return .processing
+
+        case 4: return .agent
+
+        case 5: return .agentQuiet
+
+        case 6: return .refused
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsIndicatorState, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .recording:
+            writeInt(&buf, Int32(1))
+
+
+        case .wordsOwed:
+            writeInt(&buf, Int32(2))
+
+
+        case .processing:
+            writeInt(&buf, Int32(3))
+
+
+        case .agent:
+            writeInt(&buf, Int32(4))
+
+
+        case .agentQuiet:
+            writeInt(&buf, Int32(5))
+
+
+        case .refused:
+            writeInt(&buf, Int32(6))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsIndicatorState_lift(_ buf: RustBuffer) throws -> CsIndicatorState {
+    return try FfiConverterTypeCsIndicatorState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsIndicatorState_lower(_ value: CsIndicatorState) -> RustBuffer {
+    return FfiConverterTypeCsIndicatorState.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Language shared across the config (whisper language setting) and recording
  * (dictation language) surfaces. Maps 1:1 to `codescribe_core::config::Language`.
  */
@@ -20517,6 +20685,30 @@ fileprivate struct FfiConverterOptionTypeCsCoverageUnavailableReason: FfiConvert
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCsIndicatorState: FfiConverterRustBuffer {
+    typealias SwiftType = CsIndicatorState?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsIndicatorState.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsIndicatorState.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -20809,6 +21001,31 @@ fileprivate struct FfiConverterSequenceTypeCsHotkeyConflict: FfiConverterRustBuf
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCsHotkeyConflict.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsIndicatorSwatch: FfiConverterRustBuffer {
+    typealias SwiftType = [CsIndicatorSwatch]
+
+    public static func write(_ value: [CsIndicatorSwatch], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsIndicatorSwatch.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsIndicatorSwatch] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsIndicatorSwatch]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsIndicatorSwatch.read(from: &buf))
         }
         return seq
     }
@@ -21620,6 +21837,17 @@ public func downloadWhisperModel(listener: CsWhisperDownloadListener?)async thro
         )
 }
 /**
+ * The pointer dot's palette in legend order, read from the core's one owner
+ * (`IndicatorState::color`). Swift draws the Settings legend and the
+ * recording lamp from it instead of keeping its own copy.
+ */
+public func indicatorPalette() -> [CsIndicatorSwatch]  {
+    return try!  FfiConverterSequenceTypeCsIndicatorSwatch.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_indicator_palette($0
+    )
+})
+}
+/**
  * Latest Option double-tap outcome, or `None` before the first attempt.
  */
 public func lastDoubleTapOutcome() -> CsDoubleTapOutcome?  {
@@ -21997,6 +22225,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_download_whisper_model() != 26167) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_indicator_palette() != 64865) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_last_double_tap_outcome() != 16470) {
