@@ -1398,10 +1398,12 @@ final class OverlayState {
   private(set) var conversationNavigationRequest: ConversationNavigationRequest?
 
   func navigateToConversationMessage(_ conversation: OverlayConversation, messageID: String) {
-    guard conversations.contains(where: {
-      $0.id == conversation.id && $0.channel == conversation.channel
-        && $0.owner?.id == conversation.owner?.id
-    }) else { return }
+    guard
+      conversations.contains(where: {
+        $0.id == conversation.id && $0.channel == conversation.channel
+          && $0.owner?.id == conversation.owner?.id
+      })
+    else { return }
     selectConversation(conversation.id)
     conversationNavigationRequest = ConversationNavigationRequest(
       conversationID: conversation.id, messageID: messageID, revision: UUID())
@@ -2960,10 +2962,13 @@ final class OverlayState {
     // A retired Sync member may already have lost its group. Revalidate at
     // the routing boundary so that a stale callback cannot send it singly.
     if conversation.channel != "0" {
-      guard draftSyncConversations.contains(where: {
-        $0.id == conversation.id && $0.owner?.id == conversation.owner?.id
-          && $0.channel == conversation.channel && $0.owner?.channel == conversation.owner?.channel
-      }) else { return }
+      guard
+        draftSyncConversations.contains(where: {
+          $0.id == conversation.id && $0.owner?.id == conversation.owner?.id
+            && $0.channel == conversation.channel
+            && $0.owner?.channel == conversation.owner?.channel
+        })
+      else { return }
     }
     if hasSynchronizedDraft(conversation.id) {
       await sendSynchronizedDraft(from: conversation)
@@ -3020,7 +3025,9 @@ final class OverlayState {
     return current == publication
   }
 
-  private func draftPublicationOwnerIsCurrent(_ publication: OverlayComposerDraftPublication) -> Bool {
+  private func draftPublicationOwnerIsCurrent(_ publication: OverlayComposerDraftPublication)
+    -> Bool
+  {
     draftSyncConversations.contains {
       $0.id == publication.id && $0.owner?.id == publication.owner.id
         && $0.channel == publication.owner.channel && $0.owner?.channel == publication.owner.channel

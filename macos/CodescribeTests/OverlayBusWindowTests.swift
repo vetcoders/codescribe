@@ -283,7 +283,10 @@ final class OverlayBusWindowTests: XCTestCase {
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
           window.isReleasedWhenClosed = false
           window.contentView = host
-          defer { window.contentView = nil; window.close() }
+          defer {
+            window.contentView = nil
+            window.close()
+          }
           host.layoutSubtreeIfNeeded()
           let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
           host.cacheDisplay(in: host.bounds, to: bitmap)
@@ -302,6 +305,7 @@ final class OverlayBusWindowTests: XCTestCase {
 
   func testReceptionRestrictionSymbolExistsInTheSystemLibrary() {
     XCTAssertNotNil(
-      NSImage(systemSymbolName: "antenna.radiowaves.left.and.right.slash", accessibilityDescription: nil))
+      NSImage(
+        systemSymbolName: "antenna.radiowaves.left.and.right.slash", accessibilityDescription: nil))
   }
 }

@@ -831,7 +831,9 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     } else {
       VStack(alignment: errorAlignment, spacing: 2) {
         if showsButton {
-          Menu { menuContents } label: {
+          Menu {
+            menuContents
+          } label: {
             Image(systemName: "ellipsis")
               .font(.system(size: 12, weight: .semibold))
               .frame(width: 16, height: 16)
@@ -842,11 +844,15 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
                       .scaleEffect(0.6)
                       .offset(x: 7, y: -5)
                   } else {
-                    Image(systemName: focusState.isFailed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                      .font(.system(size: 8, weight: .semibold))
-                      .foregroundStyle(
-                        focusState.isFailed ? palette.errorStatus.color : palette.successStatus.color)
-                      .offset(x: 5, y: -4)
+                    Image(
+                      systemName: focusState.isFailed
+                        ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+                    )
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(
+                      focusState.isFailed ? palette.errorStatus.color : palette.successStatus.color
+                    )
+                    .offset(x: 5, y: -4)
                   }
                 }
               }
@@ -1388,12 +1394,16 @@ struct OverlayChannelStatusView: View {
   ) -> some View {
     let unfold = 22 * textScale
     let viewportHeight = max(0, maximumHeight - 8 - unfold - 8)
-    let rowCount = channels.count
+    let rowCount =
+      channels.count
       + (currentConversations.contains(where: { $0.channel == "0" }) ? 1 : 0)
       + (currentConversations.contains(where: \.isHumanInbox) ? 1 : 0)
     let gapCount = max(0, rowCount - 1)
-    let rowSpacing = gapCount == 0 ? 0 : min(
-      6, max(0, (viewportHeight - CGFloat(rowCount) * 24 * textScale - 4) / CGFloat(gapCount)))
+    let rowSpacing =
+      gapCount == 0
+      ? 0
+      : min(
+        6, max(0, (viewportHeight - CGFloat(rowCount) * 24 * textScale - 4) / CGFloat(gapCount)))
     return VStack(spacing: 8) {
       OverlaySidebarToggleButton(
         symbol: "sidebar.right", title: String(localized: "Show agents list"),
@@ -1850,7 +1860,8 @@ struct OverlayChannelStatusView: View {
     _ channel: OverlayChannelDelivery, rowFocus: FocusState<String?>.Binding? = nil
   ) -> some View {
     let conversation = conversation(for: channel)
-    let receiptText = deliveryReceiptDisplay(for: channel, conversation: conversation)?.text
+    let receiptText =
+      deliveryReceiptDisplay(for: channel, conversation: conversation)?.text
       ?? deliveryReceiptText(for: channel, conversation: conversation)
     let descriptor = agentDescriptor(for: channel)
     let status = statusHelp(for: channel)
@@ -1873,7 +1884,9 @@ struct OverlayChannelStatusView: View {
         HStack(alignment: .top, spacing: 4) {
           Group {
             if let conversation, onSelectConversation != nil {
-              Button { viewConversation(channel) } label: {
+              Button {
+                viewConversation(channel)
+              } label: {
                 rosterRowLabel(
                   title: conversation.name, statusChannel: channel, conversation: conversation,
                   dot: statusDotKind(for: channel), headerOnly: true)
@@ -1884,7 +1897,9 @@ struct OverlayChannelStatusView: View {
               let owner = archiveCandidates[channel.channel],
               !panelFocusUnreachable(channel), let onFocusAgentPanel
             {
-              Button { onFocusAgentPanel(owner) } label: {
+              Button {
+                onFocusAgentPanel(owner)
+              } label: {
                 rosterRowLabel(
                   title: channel.agent, statusChannel: channel, conversation: conversation,
                   dot: statusDotKind(for: channel), headerOnly: true)
@@ -1901,11 +1916,14 @@ struct OverlayChannelStatusView: View {
           .accessibilityLabel(Text(verbatim: notificationTitle(for: channel)))
           .accessibilityValue(Text(verbatim: tooltip))
           .accessibilityHint(Text(verbatim: identityHint))
-          .accessibilityIdentifier("overlay-view-conversation-\(conversation?.id ?? channel.channel)")
+          .accessibilityIdentifier(
+            "overlay-view-conversation-\(conversation?.id ?? channel.channel)")
           compactAgentActions(for: channel)
         }
         if let conversation, onSelectConversation != nil {
-          Button { viewConversation(channel) } label: {
+          Button {
+            viewConversation(channel)
+          } label: {
             rosterRowLabel(
               title: conversation.name, statusChannel: channel, conversation: conversation,
               dot: statusDotKind(for: channel), contentOnly: true)
@@ -1965,11 +1983,13 @@ struct OverlayChannelStatusView: View {
       unreadCount: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
       dot: dot, statusLabel: statusChannel.map { shortStatus(for: $0) } ?? "",
       statusDetail: statusChannel.map { detail(for: $0) } ?? "",
-      titleAccessory: titleAccessory ?? statusChannel.map {
-        AnyView(compactReceptionIndicators(for: $0))
-      }, palette: palette,
+      titleAccessory: titleAccessory
+        ?? statusChannel.map {
+          AnyView(compactReceptionIndicators(for: $0))
+        }, palette: palette,
       textScale: textScale, headerOnly: headerOnly, contentOnly: contentOnly,
-      receipt: statusChannel.flatMap { deliveryReceiptDisplay(for: $0, conversation: conversation) })
+      receipt: statusChannel.flatMap { deliveryReceiptDisplay(for: $0, conversation: conversation) }
+    )
   }
 
   func compactAgentActions(for channel: OverlayChannelDelivery) -> some View {
@@ -1980,10 +2000,12 @@ struct OverlayChannelStatusView: View {
         playbackEnabled: agentPlaybackEnabled(for: channel),
         palette: palette, onMicrophone: { toggle(channel) },
         onPlayback: { onTogglePlayback?(channel.channel) },
-        speaking: conversation(for: channel)?.replySpeaking == true)
+        speaking: conversation(for: channel)?.replySpeaking == true
+      )
       .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
-      EmptyView().modifier(agentPillMenu(
-        for: channel.channel, showsInlineError: false, showsButton: true))
+      EmptyView().modifier(
+        agentPillMenu(
+          for: channel.channel, showsInlineError: false, showsButton: true))
     }
     .fixedSize()
     .accessibilityIdentifier("overlay-agent-row-controls-\(channel.channel)")
@@ -2013,11 +2035,13 @@ struct OverlayChannelStatusView: View {
     if let conversation, let owner = conversation.owner {
       for message in conversation.messages.reversed()
       where message.kind == .user && message.showsDeliveryReceipts {
-        guard let recipient = message.recipients.first(where: {
-          $0.owner.provider == owner.provider
-            && $0.owner.providerSessionID == owner.providerSessionID
-            && $0.owner.leaseID == owner.leaseID
-        }) else { continue }
+        guard
+          let recipient = message.recipients.first(where: {
+            $0.owner.provider == owner.provider
+              && $0.owner.providerSessionID == owner.providerSessionID
+              && $0.owner.leaseID == owner.leaseID
+          })
+        else { continue }
         guard message.withdrawn != true else { return nil }
         func display(_ symbol: String, _ text: String) -> OverlayRosterReceipt {
           let detail: String
@@ -2033,7 +2057,8 @@ struct OverlayChannelStatusView: View {
           return display("pause.circle", String(localized: "Held"))
         }
         if let deliveryID = recipient.deliveryID,
-          let state = message.receipt?.deliveries.first(where: { $0.deliveryID == deliveryID })?.state
+          let state = message.receipt?.deliveries.first(where: { $0.deliveryID == deliveryID })?
+            .state
         {
           switch state {
           case .read: return display("double-check", String(localized: "Read"))

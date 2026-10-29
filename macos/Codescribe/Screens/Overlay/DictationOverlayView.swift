@@ -571,7 +571,8 @@ struct DictationOverlayView: View {
                 draft: Binding(
                   get: { resolvedTarget.map { state.conversationDraft(for: $0.id) } ?? "" },
                   set: { value in
-                    guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return }
+                    guard let target = resolvedTarget, state.composerTargetIsAvailable(target)
+                    else { return }
                     state.setConversationDraft(value, for: target.id)
                   }),
                 sending: resolvedTarget.map { state.pendingTextMessages.contains($0.id) } ?? false,
@@ -581,7 +582,9 @@ struct DictationOverlayView: View {
                       ? state.draftCapture.error : nil)
                 },
                 onSend: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
                   Task {
                     guard state.composerTargetIsAvailable(target) else { return }
                     await state.sendConversationText(target)
@@ -610,52 +613,70 @@ struct DictationOverlayView: View {
                 composerMicrophoneOpen: resolvedTarget.map { state.conversationMicrophoneOpen($0) },
                 composerRouting: AnyView(composerRouting(viewing: conversation)),
                 onReturnHeldText: { message, text in
-                  let heldTarget = message.sourceChannel == "0"
-                    ? OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+                  let heldTarget =
+                    message.sourceChannel == "0"
+                    ? OverlayConversation(
+                      id: "0", channel: "0", name: "All", owner: nil, messages: [])
                     : conversation
                   state.chooseComposerTarget(heldTarget)
                   let old = state.conversationDraft(for: heldTarget.id)
-                  state.setConversationDraft(old.isEmpty ? text : old + "\n\n" + text, for: heldTarget.id)
+                  state.setConversationDraft(
+                    old.isEmpty ? text : old + "\n\n" + text, for: heldTarget.id)
                 },
-                onNavigateComposerReply: resolvedTarget?.id == conversation.id ? nil : {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target),
-                    let messageID = state.conversationReplies[target.id]?.messageID
-                  else { return }
-                  state.navigateToConversationMessage(target, messageID: messageID)
-                },
+                onNavigateComposerReply: resolvedTarget?.id == conversation.id
+                  ? nil
+                  : {
+                    guard let target = resolvedTarget, state.composerTargetIsAvailable(target),
+                      let messageID = state.conversationReplies[target.id]?.messageID
+                    else { return }
+                    state.navigateToConversationMessage(target, messageID: messageID)
+                  },
                 conversationNavigationRequest: state.conversationNavigationRequest,
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
                 onComposerTypingActivity: { state.noteComposerTypingActivity() },
                 replySelection: resolvedTarget.flatMap { state.conversationReplies[$0.id] },
                 onClearReply: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
                   state.conversationReplies.removeValue(forKey: target.id)
                 },
                 draftMicrophoneRecording: resolvedTarget.map {
                   state.draftCapture.conversationID == $0.id
                 } ?? false,
-                draftMicrophoneBusy: resolvedTarget.map { state.draftMicrophoneBusy(in: $0) } ?? true,
+                draftMicrophoneBusy: resolvedTarget.map { state.draftMicrophoneBusy(in: $0) }
+                  ?? true,
                 onToggleDraftMicrophone: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
                   Task {
                     guard state.composerTargetIsAvailable(target) else { return }
                     await state.toggleDraftMicrophone(in: target)
                   }
                 },
                 onStageCaptureAttachments: { paths in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return false }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return false
+                  }
                   return state.stageConversationAttachments(paths, in: target)
                 },
                 pendingCaptureAttachments: resolvedTarget.flatMap {
                   state.captureAttachmentDrafts[$0.id]?.paths
                 } ?? [],
                 onRemoveCaptureAttachment: { path in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
                   state.removeCaptureAttachment(path, in: target.id)
                 },
-                captureAttachmentError: resolvedTarget.flatMap { state.captureAttachmentErrors[$0.id] },
+                captureAttachmentError: resolvedTarget.flatMap {
+                  state.captureAttachmentErrors[$0.id]
+                },
                 onRetryCaptureAttachments: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
                   Task {
                     guard state.composerTargetIsAvailable(target) else { return }
                     await state.retryCaptureAttachments(in: target.id)
@@ -671,21 +692,30 @@ struct DictationOverlayView: View {
                 draftSyncArmed: resolvedTarget.map {
                   state.armedDraftSyncConversationID == $0.id
                 } ?? false,
-                draftSyncEnabled: resolvedTarget.map { state.canActivateDraftSync(for: $0.id) } ?? false,
+                draftSyncEnabled: resolvedTarget.map { state.canActivateDraftSync(for: $0.id) }
+                  ?? false,
                 onActivateDraftSync: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
                   state.activateDraftSync(for: target.id)
                 },
                 onProseEdit: { edit in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
                   state.applyConversationProseEdit(edit, for: target.id)
                 },
                 onToggleDraftSync: { id in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
                   state.toggleDraftSync(from: target.id, with: id)
                 },
                 onStopDraftSync: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else { return }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
                   state.stopDraftSync(for: target.id)
                 }
               )
@@ -1422,7 +1452,7 @@ struct DictationOverlayView: View {
             .lineLimit(1).truncationMode(.middle)
         }
         .accessibilityIdentifier("overlay-composer-recipient")
-        if (conversation.owner != nil || conversation.channel == "0"),
+        if conversation.owner != nil || conversation.channel == "0",
           selected?.id != conversation.id || selected?.owner?.id != conversation.owner?.id
         {
           Button {
@@ -1468,7 +1498,9 @@ struct DictationOverlayView: View {
   }
 
   private func conversationHeaderActions(_ conversation: OverlayConversation) -> AnyView? {
-    conversationHeaderChannel(conversation).map { AnyView(channelStatusView.compactAgentActions(for: $0)) }
+    conversationHeaderChannel(conversation).map {
+      AnyView(channelStatusView.compactAgentActions(for: $0))
+    }
   }
 
   private func conversationHeaderIndicators(_ conversation: OverlayConversation) -> AnyView? {

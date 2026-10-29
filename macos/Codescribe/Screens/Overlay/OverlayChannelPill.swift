@@ -75,8 +75,10 @@ struct OverlayChannelPill: View {
           if stackedFace {
             stackedBadge
           } else if form == .rail && display.unreadCount > 0 {
-            OverlayAgentUnreadBadge(count: display.unreadCount, palette: palette, textScale: textScale)
-              .offset(x: 7 * textScale, y: -5 * textScale)
+            OverlayAgentUnreadBadge(
+              count: display.unreadCount, palette: palette, textScale: textScale
+            )
+            .offset(x: 7 * textScale, y: -5 * textScale)
           } else if display.unread {
             Circle()
               .fill(palette.processingStatus.color)

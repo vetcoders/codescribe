@@ -441,14 +441,18 @@ struct OverlayConversationView: View {
           captureAttachmentError: captureAttachmentError,
           onRetryCaptureAttachments: onRetryCaptureAttachments,
           onNavigateReply: {
-            if let onNavigateComposerReply { onNavigateComposerReply() }
-            else { navigateToReply(replySelection?.messageID) }
+            if let onNavigateComposerReply {
+              onNavigateComposerReply()
+            } else {
+              navigateToReply(replySelection?.messageID)
+            }
           },
           draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
           draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
           onActivateDraftSync: onActivateDraftSync,
           onProseEdit: onProseEdit,
-          onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync)
+          onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync
+        )
         // A reused native coordinator must never redirect an old owner's
         // proposal or undo history into a different conversation's binding.
         .id([target.id, target.owner?.id ?? ""])
