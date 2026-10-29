@@ -41,6 +41,17 @@ menu remain visible beside the identity without hover. The conversation button
 and these controls are siblings; opening a conversation never opens its
 microphone. Long names retain their full tooltip and accessibility label.
 
+Hovering the row's navigation area or a folded-rail entry for 350 ms opens
+the last loaded message in the shared `OverlayHintPanel`. The same message
+as the inline preview is used, including outgoing user messages; original
+paragraphs, rich formatting and attachments use `OverlayConversationMessageContent`.
+The preview is bounded to the display and scrollable. Its pointer target stays
+open while the cursor crosses the gap or rests on the preview, then dismisses
+after leaving both targets. The window cannot become key. It mounts no
+composer, changes no selected conversation or recipient, acknowledges no
+message, and fetches no saved history. Audio and menu controls keep their own
+action hints. Empty entries retain their existing navigation hint.
+
 The more menu contains channel-zero membership, Do not disturb, the detected
 client/terminal destination and removal into saved conversations. The same
 commands are available from the row's context menu. Existing pending,
@@ -444,8 +455,10 @@ dictation control keeps the plain `mic`, the dictation verb (Maciej,
 2026-10-23).
 Channel activity updates an already visible main overlay, but the vertical
 Intercom does not summon a closed main overlay; Show in Agents remains explicit.
-Rich informational hover and agent action menus belong
-to the floating pills; the classic Agents list retains its inline actions.
+The floating pills retain their rich informational hover. The classic Agents
+list keeps its inline actions and also offers the last-message hover described
+above; provider, model, status and session metadata are not repeated in a
+second tooltip.
 The same `OverlayChannelMapPreference` stores the layout; switching it preserves
 the selected conversation, drafts and active route. No second inventory or
 recorder is created. The default remains horizontal, and an absent opt-in stays off.

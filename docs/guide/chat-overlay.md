@@ -107,6 +107,14 @@ hint names the outgoing message it describes. The circular number counts
 replies you have not viewed and is independent of the agent's receipt. A
 disconnected card dims but its history remains readable.
 
+Rest the pointer over an agent's name or message preview to read the full last
+message in a floating preview. This also works on the folded sidebar's channel
+entries and the inbox. Move the pointer into the preview to scroll longer
+messages; leaving both the entry and preview dismisses it. Previewing does not
+open that conversation, mark replies as viewed, change the text recipient or
+open a microphone. The last message can be yours or the agent's, matching the
+message shown on the card.
+
 Use **More** to change channel-zero membership or **Do not disturb**, open the
 workspace, or remove the agent into saved conversations. A moon remains by the
 name while Do not disturb is on; a crossed antenna remains while the agent is

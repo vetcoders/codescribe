@@ -440,6 +440,166 @@ final class OverlayBusWindowTests: XCTestCase {
         systemSymbolName: "antenna.radiowaves.left.and.right.slash", accessibilityDescription: nil))
   }
 
+  private func previewReply(
+    in conversation: OverlayConversation, text: String
+  ) -> OverlayConversationMessage {
+    OverlayConversationMessage(
+      id: "reply:hover-review", kind: .reply, text: text, order: 2,
+      emittedAt: "2026-10-29T10:01:00Z", owner: conversation.owner, recipients: [],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+  }
+
+  func testRosterHoverKeepsTheFullLatestMessageAndItsParagraphs() throws {
+    var target = try conversation("2")
+    XCTAssertNil(OverlayRosterMessageHint.fullText(in: target))
+    let body =
+      "## Latest message\n\n" + String(repeating: "A complete paragraph.\n\n", count: 100)
+      + "END-OF-LAST-MESSAGE"
+    let reply = previewReply(in: target, text: body)
+    target = withMessages(target, [try outgoing(in: target), reply])
+    let preview = try XCTUnwrap(OverlayRosterMessageHint.fullText(in: target))
+    XCTAssertTrue(preview.contains(body), "the preview must not apply the card's two-line cap")
+    XCTAssertTrue(preview.hasSuffix("END-OF-LAST-MESSAGE"))
+    XCTAssertFalse(preview.contains("Please review the window"))
+    XCTAssertTrue(preview.contains("Tola → You"))
+
+    var sent = try outgoing(in: target)
+    sent.text = "A newer user message\n\nWith a second paragraph"
+    target = withMessages(target, [reply, sent])
+    let outgoingPreview = try XCTUnwrap(OverlayRosterMessageHint.fullText(in: target))
+    XCTAssertTrue(outgoingPreview.contains(sent.text))
+    XCTAssertFalse(outgoingPreview.contains("END-OF-LAST-MESSAGE"))
+  }
+
+  func testRosterHoverWaitsAndKeepsConversationRecipientAndDraftUntouched() async throws {
+    var first = try conversation("2")
+    first = withMessages(
+      first, [previewReply(in: first, text: "First paragraph\n\nFinal paragraph")])
+    let second = try conversation("3", lease: "b")
+    let state = OverlayState()
+    apply([first, second], to: state)
+    state.selectConversation(second.id)
+    state.chooseComposerTarget(second)
+    state.setConversationDraft("Keep the second recipient's draft", for: second.id)
+    let generation = state.captureGeneration
+    let firstRow = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
+    let (panel, host) = previewPanel(
+      AnyView(DictationOverlayView(state: state).channelStatusView.channelRow(firstRow)))
+    defer {
+      setPreviewHover(false, in: host)
+      panel.contentView = nil
+      panel.orderOut(nil)
+    }
+    XCTAssertGreaterThan(setPreviewHover(true, in: host), 0)
+    XCTAssertNil(OverlayHintPanel.shared.presentedTitle, "passing over a row must not flash a card")
+    try await Task.sleep(for: .milliseconds(150))
+    XCTAssertNil(OverlayHintPanel.shared.presentedTitle)
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertEqual(
+      OverlayHintPanel.shared.presentedTitle, OverlayRosterMessageHint.fullText(in: first))
+    XCTAssertFalse(try XCTUnwrap(OverlayHintPanel.shared.presentedPanel).canBecomeKey)
+    XCTAssertEqual(state.selectedConversationID, second.id)
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: second)?.id, second.id)
+    XCTAssertEqual(state.conversationDraft(for: second.id), "Keep the second recipient's draft")
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertFalse(state.conversationMicrophoneOpen(first))
+    XCTAssertFalse(state.conversationMicrophoneOpen(second))
+    setPreviewHover(false, in: host)
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertNil(OverlayHintPanel.shared.presentedTitle)
+  }
+
+  func testBriefOrRemovedRosterHoverCannotPresentAStaleMessage() async throws {
+    var target = try conversation("2")
+    target = withMessages(target, [previewReply(in: target, text: "Retired owner message")])
+    let (panel, host) = previewPanel(
+      AnyView(
+        Text("Tola").frame(maxWidth: .infinity, maxHeight: .infinity)
+          .modifier(OverlayRosterMessageHint(conversation: target, palette: .dark, textScale: 1))))
+    defer {
+      setPreviewHover(false, in: host)
+      panel.contentView = nil
+      panel.orderOut(nil)
+    }
+    XCTAssertGreaterThan(setPreviewHover(true, in: host), 0)
+    setPreviewHover(false, in: host)
+    try await Task.sleep(for: .milliseconds(450))
+    XCTAssertNil(OverlayHintPanel.shared.presentedTitle)
+
+    setPreviewHover(true, in: host)
+    host.rootView = AnyView(Text("The old row has left the roster"))
+    host.layoutSubtreeIfNeeded()
+    try await Task.sleep(for: .milliseconds(450))
+    XCTAssertNil(
+      OverlayHintPanel.shared.presentedTitle, "a pending old owner cannot reopen a preview")
+  }
+
+  private func previewPanel(_ view: AnyView) -> (NSPanel, NSHostingView<AnyView>) {
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 320, height: 140)
+    let panel = NSPanel(
+      contentRect: NSRect(x: 300, y: 400, width: 320, height: 140),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.contentView = host
+    BackgroundTestWindow.present(panel)
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+    host.layoutSubtreeIfNeeded()
+    return (panel, host)
+  }
+
+  @discardableResult
+  private func setPreviewHover(_ inside: Bool, in view: NSView) -> Int {
+    var count = 0
+    if let region = view as? OverlayMenuCursorRegionView,
+      region.onHover != nil, region.bounds.width > 100
+    {
+      let point =
+        inside
+        ? region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+        : NSPoint(x: -10_000, y: -10_000)
+      region.updateHover(at: point)
+      count += 1
+    }
+    for child in view.subviews { count += setPreviewHover(inside, in: child) }
+    return count
+  }
+
+  func testLastMessageHoverPreviewReview() throws {
+    let target = try conversation("2")
+    let message = previewReply(
+      in: target,
+      text: """
+        ## Window review
+
+        The sidebar now keeps the last message available without leaving the conversation you are writing in.
+
+        - Hover over an agent's name or preview.
+        - Move into this card to scroll longer messages.
+        - The recipient, draft and microphone stay as you left them.
+
+        **The complete message remains available below the fold.**
+
+        A final paragraph confirms that the preview keeps the message's original structure.
+        """)
+    let host = NSHostingView(
+      rootView: OverlayRosterMessagePreview(name: target.name, message: message, palette: .dark)
+        .frame(width: 380, height: 280)
+        .environment(\.colorScheme, .dark))
+    host.frame = NSRect(x: 0, y: 0, width: 380, height: 280)
+    host.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    let image = NSImage(size: host.bounds.size)
+    image.addRepresentation(bitmap)
+    let attachment = XCTAttachment(image: image)
+    attachment.name = "Bus-last-message-hover-preview"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
   func testHorizontalWindowReviewInDarkSplitLayout() throws {
     try renderWindowForReview(dark: true, rail: false, scale: 1, width: 1000)
   }

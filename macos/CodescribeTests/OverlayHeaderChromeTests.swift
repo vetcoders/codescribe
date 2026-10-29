@@ -87,6 +87,72 @@ final class OverlayHeaderChromeTests: XCTestCase {
     withExtendedLifetime(detached) {}
   }
 
+  func testScrollableMessageHintKeepsFocusAndRejectsAnEarlierOwnersExit() async throws {
+    let parent = NSPanel(
+      contentRect: NSRect(x: 300, y: 500, width: 400, height: 100),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let control = NSView(frame: NSRect(x: 300, y: 12, width: 80, height: 50))
+    parent.contentView?.addSubview(control)
+    BackgroundTestWindow.present(parent)
+    let first = OverlayHintAnchor()
+    first.view = control
+    let second = OverlayHintAnchor()
+    second.view = control
+    defer {
+      first.hide()
+      second.hide()
+      parent.orderOut(nil)
+    }
+    let responder = parent.firstResponder
+    first.show(
+      "Full message", palette: .dark, leading: true,
+      content: AnyView(ScrollView { Text(String(repeating: "Message paragraph\n", count: 50)) }),
+      size: CGSize(width: 380, height: 280), interactive: true)
+    let hint = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
+    XCTAssertFalse(hint.ignoresMouseEvents, "the full message accepts pointer scrolling")
+    XCTAssertFalse(hint.canBecomeKey, "hover cannot take the composer's keyboard")
+    XCTAssertTrue(parent.firstResponder === responder)
+    XCTAssertEqual(hint.alphaValue, parent.alphaValue, "the preview follows its owner's visibility")
+
+    first.hide(allowPointerRetention: true)
+    OverlayHintPanel.shared.pointerHover(true, owner: first)
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertTrue(first.isPresented, "the pointer can move from the row into its message")
+
+    OverlayHintPanel.shared.pointerHover(false, owner: first)
+    second.show("Next control", palette: .dark)
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertEqual(OverlayHintPanel.shared.presentedTitle, "Next control")
+    XCTAssertTrue(hint.ignoresMouseEvents, "ordinary hints remain click-through")
+    XCTAssertFalse(hint.hasShadow)
+    first.hide()
+    XCTAssertTrue(second.isPresented, "an old row cannot dismiss its successor")
+  }
+
+  func testScrollableMessageHintDismissesAfterLeavingBothTargets() async throws {
+    let parent = NSPanel(
+      contentRect: NSRect(x: 300, y: 500, width: 400, height: 100),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let control = NSView(frame: NSRect(x: 300, y: 12, width: 80, height: 50))
+    parent.contentView?.addSubview(control)
+    BackgroundTestWindow.present(parent)
+    let owner = OverlayHintAnchor()
+    owner.view = control
+    defer {
+      owner.hide()
+      parent.orderOut(nil)
+    }
+    owner.show(
+      "Full message", palette: .dark,
+      content: AnyView(Text("Message")), size: CGSize(width: 380, height: 280),
+      interactive: true)
+    owner.hide(allowPointerRetention: true)
+    XCTAssertTrue(owner.isPresented, "the row-to-preview gap has a short grace period")
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertFalse(owner.isPresented)
+    XCTAssertNil(OverlayHintPanel.shared.presentedTitle)
+  }
+
   func testAccentsShareOneHoverHue() {
     for palette in [OverlayAppearancePalette.light, .dark] {
       let hover = OverlayHeaderAccent.transcription.color(in: palette)

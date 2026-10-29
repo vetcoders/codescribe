@@ -1464,10 +1464,15 @@ struct OverlayChannelStatusView: View {
       form: .rail,
       display: railPillDisplay(conversation, channel: channel),
       hint: hint, accessibilityText: title, identifier: "overlay-agent-rail-\(digit)",
-      palette: palette, textScale: textScale
+      palette: palette, textScale: textScale,
+      showsHint: conversation?.messages.isEmpty ?? true
     ) {
       if let conversation { onSelectConversation?(conversation.id) }
     }
+    .modifier(
+      OverlayRosterMessageHint(
+        conversation: conversation, palette: palette, textScale: textScale)
+    )
     .accessibilityHint(Text(verbatim: hint))
     .modifier(
       inbox
@@ -1707,6 +1712,9 @@ struct OverlayChannelStatusView: View {
                           localized: "View conversation without changing the microphone"))
                     )
                     .accessibilityIdentifier("overlay-all-preview")
+                    .modifier(
+                      OverlayRosterMessageHint(
+                        conversation: broadcast, palette: palette, textScale: textScale))
                   } else {
                     Spacer(minLength: 0)
                   }
@@ -1926,7 +1934,11 @@ struct OverlayChannelStatusView: View {
           .accessibilityValue(Text(verbatim: tooltip))
           .accessibilityHint(Text(verbatim: identityHint))
           .accessibilityIdentifier(
-            "overlay-view-conversation-\(conversation?.id ?? channel.channel)")
+            "overlay-view-conversation-\(conversation?.id ?? channel.channel)"
+          )
+          .modifier(
+            OverlayRosterMessageHint(
+              conversation: conversation, palette: palette, textScale: textScale))
           compactAgentActions(for: channel)
         }
         if let conversation, onSelectConversation != nil {
@@ -1939,6 +1951,9 @@ struct OverlayChannelStatusView: View {
           }
           .buttonStyle(.plain)
           .accessibilityLabel(Text(verbatim: identityHint))
+          .modifier(
+            OverlayRosterMessageHint(
+              conversation: conversation, palette: palette, textScale: textScale))
         } else {
           rosterRowLabel(
             title: channel.agent, statusChannel: channel, conversation: conversation,
@@ -2206,8 +2221,10 @@ struct OverlayChannelStatusView: View {
     .buttonStyle(.plain)
     .modifier(OptionalRowFocus(binding: rowFocus, id: broadcast.id))
     .foregroundStyle(palette.primaryText.color)
-    .overlayFastHint(
-      String(localized: "View conversation without changing the microphone"), palette: palette
+    .modifier(
+      OverlayRosterMessageHint(
+        conversation: broadcast, palette: palette, textScale: textScale,
+        emptyHint: String(localized: "View conversation without changing the microphone"))
     )
     .accessibilityHint(
       Text(verbatim: String(localized: "View conversation without changing the microphone"))
@@ -2259,8 +2276,10 @@ struct OverlayChannelStatusView: View {
     .buttonStyle(.plain)
     .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
     .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: CSRadius.chip, outset: 6))
-    .overlayFastHint(
-      String(localized: "View conversation without changing the microphone"), palette: palette
+    .modifier(
+      OverlayRosterMessageHint(
+        conversation: conversation, palette: palette, textScale: textScale,
+        emptyHint: String(localized: "View conversation without changing the microphone"))
     )
     .accessibilityHint(
       Text(verbatim: String(localized: "View conversation without changing the microphone"))
@@ -2683,6 +2702,82 @@ struct OverlayChannelStatusView: View {
     if names.count == 1 { return first }
     let named = names.prefix(2).joined(separator: ", ")
     return names.count == 2 ? named : "\(named) +\(names.count - 2)"
+  }
+}
+
+/// A full-message hover is confined to navigation regions, leaving each audio
+/// control's own hint intact. It observes loaded conversation values only.
+struct OverlayRosterMessageHint: ViewModifier {
+  let conversation: OverlayConversation?
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+  var emptyHint = ""
+
+  static func fullText(in conversation: OverlayConversation) -> String? {
+    guard let message = conversation.messages.last else { return nil }
+    return [
+      conversation.displayTitle,
+      OverlayChannelStatusView.messageRoute(of: message).label,
+      message.bodyText,
+    ].filter { !$0.isEmpty }.joined(separator: "\n\n")
+  }
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let conversation, let message = conversation.messages.last,
+      let title = Self.fullText(in: conversation)
+    {
+      content.modifier(
+        OverlayHeaderControlChrome(
+          title: title, accent: nil, palette: palette, hintLeading: true,
+          hintContent: AnyView(
+            OverlayRosterMessagePreview(
+              name: conversation.displayTitle, message: message, palette: palette
+            )
+            .environment(\.csTextScale, textScale)
+            .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light)),
+          hintSize: CGSize(width: 380 * textScale, height: 280 * textScale),
+          hintDelay: 0.35, hintInteractive: true)
+      )
+      .id(conversation.id)
+    } else {
+      content.overlayFastHint(emptyHint, palette: palette, leading: true)
+    }
+  }
+}
+
+/// A bounded, scrollable shell over the conversation's existing body renderer.
+/// It mounts no composer, routing command or read-receipt observer.
+struct OverlayRosterMessagePreview: View {
+  @Environment(\.csTextScale) private var textScale
+  let name: String
+  let message: OverlayConversationMessage
+  let palette: OverlayAppearancePalette
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(verbatim: name)
+        .font(.system(size: 12 * textScale, weight: .semibold))
+        .foregroundStyle(palette.primaryText.color)
+      ScrollView(.vertical) {
+        VStack(alignment: .leading, spacing: 8) {
+          let route = OverlayChannelStatusView.messageRoute(of: message)
+          if !route.label.isEmpty {
+            Text(verbatim: route.label)
+              .font(.system(size: 10 * textScale, weight: .bold))
+              .foregroundStyle(palette.mutedText.color)
+          }
+          OverlayConversationMessageContent(message: message, palette: palette)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+    .padding(12)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .background(palette.desktopBackground.color.opacity(0.9))
+    .contentShape(Rectangle())
+    .accessibilityIdentifier("overlay-roster-message-preview")
   }
 }
 

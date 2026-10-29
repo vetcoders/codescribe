@@ -1114,8 +1114,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     // The custom hint panel is the other tooltip owner (overlayFastHint →
     // OverlayHintPanel). The probe proves hover really presents a readable
     // hint; then every roster region is hovered, and a hint repeating the
-    // inline metadata — descriptor, preview, session — is the duplicated
-    // tooltip the contract forbids. An action label is not a duplicate.
+    // inline metadata — descriptor or session — is the duplicated tooltip
+    // the contract forbids. Full last-message previews are allowed by the
+    // sidebar request of 2026-10-29; action labels remain allowed as well.
     func regions(in view: NSView) -> [OverlayMenuCursorRegionView] {
       var found: [OverlayMenuCursorRegionView] = []
       if let region = view as? OverlayMenuCursorRegionView { found.append(region) }
@@ -1140,7 +1141,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     }
     XCTAssertTrue(sawProbeHint, "hover must present the probe hint, or absence proves nothing")
 
-    let metadata = ["codex", "gpt-6", "PR is green", "on it", "lena-session", "astra-session"]
+    let metadata = ["codex", "gpt-6", "lena-session", "astra-session"]
     let rosterRegions = regions(in: host)
     XCTAssertFalse(rosterRegions.isEmpty, "the roster composes hover regions")
     for region in rosterRegions {
