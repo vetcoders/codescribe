@@ -1426,10 +1426,10 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(markers.contains("DisclosureGroup(isExpanded: $showingTemplate)"))
     XCTAssertTrue(markers.contains("\"Edit template and preview\""))
     XCTAssertTrue(markers.contains("model.insertTranscriptTagPlaceholder(placeholder)"))
-    // W0-06: a text action reads as one link style, an underlined label.
+    // A text action reads as the one link style (see testProseLinksShareTheBrickLinkStyle).
     XCTAssertTrue(
       markers.contains(
-        "Text(String(localized: \"Restore default template\", comment: \"Dictation panel: button\"))\n            .underline()"
+        "Button(String(localized: \"Restore default template\", comment: \"Dictation panel: button\")) {"
       ))
     XCTAssertTrue(markers.contains("model.transcriptTagTemplateWarning"))
     // One box, two faces: the segment flips the same inset between the raw
