@@ -2582,16 +2582,26 @@ impl AcousticLedger {
         let Some(debt) = self.publication_debt.get_mut(owner) else {
             return;
         };
-        let mut remaining = Vec::new();
-        for &(start, end) in debt.iter() {
-            if start < bounds.0 {
-                remaining.push((start, end.min(bounds.0)));
+        // A word owned by its midpoint is published in full, including any
+        // measured edge beyond the band's boundary. Only the original pins
+        // verified as complete and committed above may settle that edge.
+        let paid = std::iter::once(bounds).chain(words.iter().map(|word| {
+            (word.sample_start.max(owner.sample_start), word.sample_end.min(owner.sample_end))
+        }));
+        let mut remaining = debt.clone();
+        for (paid_start, paid_end) in paid {
+            let mut next = Vec::new();
+            for &(start, end) in &remaining {
+                if start < paid_start {
+                    next.push((start, end.min(paid_start)));
+                }
+                if end > paid_end {
+                    next.push((start.max(paid_end), end));
+                }
             }
-            if end > bounds.1 {
-                remaining.push((start.max(bounds.1), end));
-            }
+            next.retain(|(start, end)| start < end);
+            remaining = next;
         }
-        remaining.retain(|(start, end)| start < end);
         *debt = remaining;
         if debt.is_empty() {
             self.publication_debt.remove(owner);
