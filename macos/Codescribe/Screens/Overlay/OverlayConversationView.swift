@@ -154,7 +154,8 @@ struct OverlayConversationView: View {
   var composerAvailable = true
   var composerMicrophoneOpen: Bool? = nil
   var composerRouting: AnyView? = nil
-  var onReturnHeldText: ((OverlayConversationMessage, String) -> Void)? = nil
+  var onPrepareHeldEdit: ((OverlayConversationMessage) -> UUID)? = nil
+  var onReturnHeldText: ((OverlayConversationMessage, String, UUID) -> Bool)? = nil
   var onNavigateComposerReply: (() -> Void)? = nil
   var conversationNavigationRequest: OverlayState.ConversationNavigationRequest? = nil
   /// Intercom only tightens the container and composer insets. Messages keep
@@ -767,16 +768,24 @@ struct OverlayConversationView: View {
   private func edit(_ message: OverlayConversationMessage) {
     // The painted countdown is a poll-time projection; a tap after the deadline
     // must not pull back text the follower has already handed to the agent.
-    guard message.holdingSeconds(at: Date()) != nil else { return }
+    guard message.holdingSeconds(at: Date()) != nil, allowsLiveActions,
+      !pendingDeliveryControls.contains(message.id),
+      message.sourceChannel == "0" || conversation.owner != nil
+    else { return }
     let returning = message.text
+    let selectionRevision = onPrepareHeldEdit?(message)
     performDeliveryControl(.withdraw, message: message) {
-      if let onReturnHeldText {
-        onReturnHeldText(message, returning)
+      let shouldFocus: Bool
+      if let onReturnHeldText, let selectionRevision {
+        shouldFocus = onReturnHeldText(message, returning, selectionRevision)
       } else {
         draft = draft.isEmpty ? returning : draft + "\n\n" + returning
+        shouldFocus = true
       }
-      revisionFocus &+= 1
-      onComposerTypingActivity()
+      if shouldFocus {
+        revisionFocus &+= 1
+        onComposerTypingActivity()
+      }
     }
   }
 

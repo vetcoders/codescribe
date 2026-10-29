@@ -1389,6 +1389,13 @@ final class OverlayState {
     }
   }
   private(set) var composerTarget: ComposerTarget?
+  private(set) var composerTargetRevision = UUID()
+
+  /// The same current owners that text publication accepts, plus broadcast.
+  var availableComposerRecipients: [OverlayConversation] {
+    let broadcast = conversations.filter { $0.id == "0" && $0.channel == "0" && $0.owner == nil }
+    return broadcast + draftSyncConversations
+  }
 
   struct ConversationNavigationRequest: Equatable {
     let conversationID: String
@@ -1412,6 +1419,23 @@ final class OverlayState {
   func chooseComposerTarget(_ conversation: OverlayConversation) {
     guard conversation.owner != nil || conversation.channel == "0" else { return }
     composerTarget = ComposerTarget(conversation)
+    composerTargetRevision = UUID()
+  }
+
+  /// Select at the click, before withdrawal can suspend.
+  func prepareHeldComposerEdit(_ target: OverlayConversation) -> UUID {
+    chooseComposerTarget(target)
+    return composerTargetRevision
+  }
+
+  /// Append to the frozen draft even if its owner retired. A later explicit
+  /// selection wins, including when the user switched away and back again.
+  func returnHeldComposerText(_ text: String, to target: OverlayConversation, revision: UUID) -> Bool {
+    let old = conversationDraft(for: target.id)
+    setConversationDraft(old.isEmpty ? text : old + "\n\n" + text, for: target.id)
+    return composerTargetRevision == revision && composerTargetIsAvailable(target)
+      && composerTarget?.id == target.id && composerTarget?.ownerID == target.owner?.id
+      && composerTarget?.channel == target.channel
   }
 
   func initializeComposerTarget(_ conversation: OverlayConversation) {
@@ -1419,16 +1443,16 @@ final class OverlayState {
   }
 
   func composerTargetIsAvailable(_ target: OverlayConversation) -> Bool {
-    conversations.contains {
+    availableComposerRecipients.contains {
       $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.owner?.id
     }
   }
 
   func resolvedComposerTarget(viewing conversation: OverlayConversation) -> OverlayConversation? {
     guard let target = composerTarget else {
-      return conversation.owner != nil || conversation.channel == "0" ? conversation : nil
+      return composerTargetIsAvailable(conversation) ? conversation : nil
     }
-    return conversations.first {
+    return availableComposerRecipients.first {
       $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.ownerID
     }
   }

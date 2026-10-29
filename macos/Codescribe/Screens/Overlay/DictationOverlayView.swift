@@ -612,16 +612,12 @@ struct DictationOverlayView: View {
                 composerAvailable: resolvedTarget != nil,
                 composerMicrophoneOpen: resolvedTarget.map { state.conversationMicrophoneOpen($0) },
                 composerRouting: AnyView(composerRouting(viewing: conversation)),
-                onReturnHeldText: { message, text in
-                  let heldTarget =
-                    message.sourceChannel == "0"
-                    ? OverlayConversation(
-                      id: "0", channel: "0", name: "All", owner: nil, messages: [])
-                    : conversation
-                  state.chooseComposerTarget(heldTarget)
-                  let old = state.conversationDraft(for: heldTarget.id)
-                  state.setConversationDraft(
-                    old.isEmpty ? text : old + "\n\n" + text, for: heldTarget.id)
+                onPrepareHeldEdit: { message in
+                  state.prepareHeldComposerEdit(heldComposerTarget(message, viewing: conversation))
+                },
+                onReturnHeldText: { message, text, revision in
+                  state.returnHeldComposerText(
+                    text, to: heldComposerTarget(message, viewing: conversation), revision: revision)
                 },
                 onNavigateComposerReply: resolvedTarget?.id == conversation.id
                   ? nil
@@ -1435,10 +1431,18 @@ struct DictationOverlayView: View {
       state: state, palette: palette, animates: overlayVisible)
   }
 
+  private func heldComposerTarget(
+    _ message: OverlayConversationMessage, viewing conversation: OverlayConversation
+  ) -> OverlayConversation {
+    message.sourceChannel == "0"
+      ? OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+      : conversation
+  }
+
   private func composerRouting(viewing conversation: OverlayConversation) -> some View {
     let target = state.composerTarget
     let selected = state.resolvedComposerTarget(viewing: conversation)
-    let choices = state.conversations.filter { $0.owner != nil || $0.channel == "0" }
+    let choices = state.availableComposerRecipients
     let openChannels = state.channelHudStates.filter { $0.value.open }.keys.sorted()
     return VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 6) {
@@ -1471,9 +1475,9 @@ struct DictationOverlayView: View {
       HStack(spacing: 4) {
         Image(systemName: "waveform.badge.mic")
         if openChannels.isEmpty {
-          Text("Microphone closed")
+          Text("Voice channels closed")
         } else {
-          Text("Microphone:")
+          Text("Voice channels:")
           Text(verbatim: openChannels.joined(separator: ", "))
             .lineLimit(1).truncationMode(.middle)
         }
