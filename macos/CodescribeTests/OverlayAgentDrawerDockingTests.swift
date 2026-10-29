@@ -1465,18 +1465,15 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   }
 
   func testCompactAgentRowDropsTheFooterAndKeepsUnreadApartFromReceipts() throws {
-    // The compact card has identity, descriptor and up to two preview lines.
+    // Identity may wrap; rendered card height and painted names are checked in
+    // OverlayBusWindowTests rather than inferred from numeric lineLimit syntax.
     // Receipt and unread are distinct marks, neither adds a footer row.
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let label = try section(
       of: source, from: "private func rosterRowLabel(", to: "func compactAgentActions(")
     let visual = try overlaySource("OverlayAgentRosterLabel.swift")
-    let limits = (visual + label).components(separatedBy: ".lineLimit(").dropFirst().compactMap {
-      Int($0.prefix { $0.isNumber })
-    }
-    XCTAssertEqual(limits.reduce(0, +), 4, "identity, descriptor and two preview lines")
     XCTAssertTrue(
-      visual.contains("OverlayAgentUnreadBadge("), "unread rides the title line as a badge")
+      visual.contains("OverlayAgentUnreadBadge("), "unread remains a badge distinct from receipts")
     XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
     XCTAssertTrue(
       label.contains("deliveryReceiptDisplay("), "receipt follows frozen delivery evidence")
