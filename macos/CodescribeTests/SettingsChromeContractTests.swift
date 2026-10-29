@@ -1751,17 +1751,46 @@ final class SettingsChromeContractTests: XCTestCase {
     let details = try XCTUnwrap(privacy.range(of: "private var privacyDetails"))
     XCTAssertLessThan(link.lowerBound, details.lowerBound, "the link sits in the main part")
     XCTAssertTrue(privacy.contains("anchor: .providersCloudTranscription"))
-    // UI-45/46: one license card, Manage key inside it, the offline countdown
-    // named for what it is, the old repeated rows gone.
+    // UI-45/46, W0-16: one license card with one layout, the offline countdown
+    // named for what it is, the old repeated rows gone. The actions follow the
+    // state: Change key / Remove key with a saved key, the field and Get
+    // license key without one; no "Manage key" band.
     XCTAssertTrue(license.contains("\"A license unlocks Agent mode.\""))
     XCTAssertFalse(license.contains("Basic mode stays free"))
     for key in [
-      "Manage key", "Change key", "Key management", "Get license key", "Remove key",
+      "Change key", "Get license key", "Remove key", "Paste license key",
       "Key stored in the macOS Keychain", "One-time purchase", "No active license",
-      "Works offline for \\(daysLeft) more days",
+      "Works offline for \\(daysLeft) more days", "Activating the key…",
+      "Your current key is still saved.", "Try again",
     ] {
       XCTAssertTrue(license.contains(key), key)
     }
+    for retired in ["Manage key", "Key management", "managingKey"] {
+      XCTAssertFalse(license.contains(retired), retired)
+    }
+    // Get license key lives only in the no-key branch; Change key and Remove
+    // key only in the saved-key row.
+    XCTAssertEqual(license.components(separatedBy: "\"Get license key\"").count - 1, 1)
+    let noKey = try XCTUnwrap(license.range(of: "case .noKey:\n        divider"))
+    let saved = try XCTUnwrap(license.range(of: "case .saved:\n        divider"))
+    let noKeyBranch = license[noKey.upperBound..<saved.lowerBound]
+    XCTAssertTrue(noKeyBranch.contains("getKeyRow"))
+    XCTAssertFalse(noKeyBranch.contains("keyArea"))
+    let cardEnd = try XCTUnwrap(license.range(of: ".clipShape(RoundedRectangle("))
+    XCTAssertFalse(license[saved.upperBound..<cardEnd.lowerBound].contains("getKeyRow"))
+    let getKey = try XCTUnwrap(license.range(of: "private var getKeyRow"))
+    XCTAssertTrue(license[getKey.upperBound...].contains("Text(\"Get license key\")"))
+    let actions = try XCTUnwrap(license.range(of: "private var keyActionsRow"))
+    let actionsBody = license[actions.upperBound..<getKey.lowerBound]
+    XCTAssertTrue(actionsBody.contains("\"Change key\""))
+    XCTAssertTrue(actionsBody.contains("Text(\"Remove key\")"))
+    XCTAssertFalse(actionsBody.contains("Get license key"))
+    // A read failure is not a missing key: the unknown state offers Try again,
+    // never the empty-state field.
+    let unknown = try XCTUnwrap(license.range(of: "case .unknown:"))
+    let unknownBranch = license[unknown.upperBound..<noKey.lowerBound]
+    XCTAssertTrue(unknownBranch.contains("problemBlock"))
+    XCTAssertFalse(unknownBranch.contains("keyEditor("))
     XCTAssertTrue(license.contains("\"Codescribe Agent\""))
     XCTAssertFalse(license.contains("license.mode.agent"))
     XCTAssertFalse(license.contains("license.offer.agentLifetime"))
@@ -1781,11 +1810,15 @@ final class SettingsChromeContractTests: XCTestCase {
       "Set up the cloud in Providers": "Skonfiguruj chmurę w Dostawcach",
       "A license unlocks Agent mode.": "Licencja odblokowuje tryb agentowy.",
       "Key stored in the macOS Keychain": "Klucz zapisany w Pęku kluczy macOS",
-      "Manage key": "Zarządzaj kluczem",
       "Change key": "Zmień klucz",
-      "Key management": "Zarządzanie kluczem",
+      "Remove key": "Usuń klucz",
+      "Get license key": "Uzyskaj klucz",
+      "License key": "Klucz licencyjny",
+      "Paste license key": "Wklej klucz licencyjny",
+      "Activating the key…": "Aktywowanie klucza…",
+      "Your current key is still saved.": "Dotychczasowy klucz pozostaje zapisany.",
       "One-time purchase": "Zakup jednorazowy",
-      "No active license": "Bez aktywnej licencji",
+      "No active license": "Brak aktywnej licencji",
       "Basic mode": "Tryb podstawowy",
       // Kept on purpose: the markers switch's accessibility label (UI-33).
       "Add markers to text": "Dodawaj znaczniki do tekstu",
@@ -1800,6 +1833,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Browse corrections and dictionary rules.",
       // W2-09: onboarding presets are gone; Settings › Shortcuts is the only editor.
       "Your custom shortcuts stay as they are unless you pick a preset.",
+      // W0-16: the license card has one layout, no key-management band.
+      "Manage key", "Key management",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }

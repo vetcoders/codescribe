@@ -1142,8 +1142,9 @@ replaced the separate About and License tabs. Everyday facts stay visible;
 technical values and the resets open on demand. From top to bottom:
 
 - **License** — one card: the product name and purchase kind with one status,
-  the saved key with **Manage key**, or the activation field when there is no
-  key. Described under [License access](#license-access) below.
+  then **Change key** and **Remove key** with a saved key, or the activation
+  field and **Get license key** without one. Described under
+  [License access](#license-access) below.
 - **Version** — one line, _Codescribe 0.16.0_ with _Build 526_ under it.
   **Check for Updates…** beside it starts Sparkle's manual check (the same
   updater the app runs in the background); it is disabled while a check is
@@ -1211,42 +1212,67 @@ _Created by Vetcoders (c)2026_
 
 ## License access
 
-Open **Settings → User** to activate, restore or remove a CSK1 license; the
-**License** section opens the page, under one sentence: _A license unlocks
-Agent mode._ Everything else sits in one card.
+Open **Settings → User** to activate, restore, change or remove a CSK1 license;
+the **License** section opens the page, under one sentence: _A license unlocks
+Agent mode._ Everything else sits in one card with one layout. There is no
+separate key-management panel: what the card offers depends on the license
+state, and every message appears in the card where its operation happened.
 
 - **Head** — the product name on the left: **Codescribe Agent** while the
   license allows Agent mode, with the purchase kind under it (_One-time
   purchase_ for the lifetime offer; other offers get no invented name), or
   **Basic mode** with _No active license_ under it. A key that verifies but
-  does not include Agent mode says so in that line instead. On the right one
-  status: a green dot and **Active** while the license works (also on offline
-  grace), **Inactive** with no key or once a time limit has elapsed,
-  **Checking license…** while storage is read, **Unknown** when it cannot be
-  read. No raw SKU is shown anywhere and there is no updates-window row.
-- **Key row** — only with a saved key. While a verified key runs on offline
-  grace its title is the countdown, _Works offline for N more days_: the days
-  left of the 30-day window since the last successful validation (for now,
-  the activation itself). It is not license expiry, not an updates window and
-  not a trial; when it reaches zero the status reads **Inactive** until the key
-  is activated again. Under it, or alone when the license is plainly active,
-  the note _Key stored in the macOS Keychain_. On the right, **Manage key**
-  with a chevron expands key management inside the same card.
-- **Key management** — a _Key management_ head with **Change key**, which opens
-  the editor: _New license key_, the key field and **Activate** (disabled while
-  the field is empty or an operation runs) and **Cancel**, which closes the
-  editor and keeps the saved key. Under it **Get license key** (opens the
-  self-service page) on the left and **Remove key**, in red, set apart on the
-  right. **Remove key** asks first (_Remove the license key?_): Codescribe goes
-  back to Basic mode, the key is deleted from this Mac's Keychain, and since
-  the app never shows a stored key, activating again needs the key itself or a
-  new one from the license page. Only **Remove key** in that dialog removes it.
-- **Without a key** — the activation editor is open at once inside the card
-  (_License key_, the field and **Activate**), followed by **Get license key**
-  alone; there is no Manage key and no Remove key.
+  does not include Agent mode keeps the status **Active** and says _This
+  license does not include Agent mode_ in that line instead. On the right one
+  status: a green dot and **Active** on an olive capsule while the license
+  works (also on offline grace), plain **Inactive** with no key or once a time
+  limit has elapsed, **Checking license…** while storage is read, **Unknown**
+  when it cannot be read. No raw SKU is shown anywhere and there is no
+  updates-window row.
+- **Saved key** (active, active offline, inactive, or active without Agent
+  mode) — under the head, while a verified key runs on offline grace, the
+  countdown _Works offline for N more days_: the days left of the 30-day window
+  since the last successful validation (for now, the activation itself). It is
+  not license expiry, not an updates window and not a trial; when it reaches
+  zero the status reads **Inactive** until the key is activated again. Then the
+  note _Key stored in the macOS Keychain_. Below a line, **Change key** on the
+  left and **Remove key**, in red, on the right. There is no **Get license
+  key** with a saved key.
+- **Change key** — the field opens in the same card in place of the two
+  buttons: _New license key_, the field, **Activate** (disabled while the field
+  is empty or an operation runs) and **Cancel**, which closes the field and
+  keeps the saved key. The new key is verified before anything is written, so
+  a key that does not verify, or a save that fails, leaves the saved license in
+  place; the message under the field says so (_Your current key is still
+  saved._).
+- **Remove key** — asks first (_Remove the license key?_): Codescribe goes back
+  to Basic mode, Agent mode stops working, the key is deleted from this Mac's
+  Keychain, and since the app never shows a stored key, activating again needs
+  the key itself or a new one from the license page. **Cancel** keeps the key;
+  only **Remove key** in that dialog removes it.
+- **Without a key** — _License key_, the field (_Paste license key_) and
+  **Activate**, then, below a line, **Get license key**, which opens the
+  self-service page. There is no Change key and no Remove key.
+- **Activating** — while an activation runs, _Activating the key…_ with a
+  small spinner sits under the field; no result is suggested until it returns.
+- **Invalid key** — the field is outlined in red and the message sits under it
+  (_Couldn't verify the key. Check that it's correct and complete._), with
+  **Details** when the check gave a cause. The key stays in the field to be
+  corrected. A failed save says _Couldn't save the key on this Mac. Try
+  again._ in the same place; **Activate** retries it.
+- **Saved license unreadable** — when storage cannot be read, or the saved
+  license cannot be verified, and no verified license is known, the card does
+  not pretend there is no key: the status reads **Unknown**, the message names
+  the failure (_Couldn't read the saved license. Try again._ or _Couldn't
+  verify the saved license. Try again._), with **Try again** and **Details**,
+  and **Change key** / **Remove key** stay available. The empty-state field
+  is not shown. When a read fails while a verified license is already known,
+  the same message, **Try again** and **Details** appear under the key's
+  buttons and the license keeps its verified state.
+- **Removal failed** — _Couldn't remove the key. Try again._ under the key's
+  buttons, with **Details**; **Try again** asks for confirmation again.
 
-Errors, their details and **Try again** stay under the card. The Agent window's
-**Enter license** opens Settings → User at this section.
+The Agent window's **Enter license** opens Settings → User at this section.
 
 License storage runs in the background, and **Checking license…** or an access
 error remains visible while Settings stays interactive. **Retry license access**

@@ -2274,6 +2274,17 @@
         }
       }
     },
+    "Activating the key…" : {
+      "comment" : "License card: an activation is running; no result yet",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Aktywowanie klucza…"
+          }
+        }
+      }
+    },
     "Active" : {
       "comment" : "License status: active",
       "localizations" : {
@@ -5655,7 +5666,7 @@
       }
     },
     "Collapsed" : {
-      "comment" : "Accessibility value: a disclosure row is closed\nLicense card: key management is closed",
+      "comment" : "Accessibility value: a disclosure row is closed",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8204,7 +8215,7 @@
       }
     },
     "Expanded" : {
-      "comment" : "Accessibility value: a disclosure row is open\nLicense card: key management is open",
+      "comment" : "Accessibility value: a disclosure row is open",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9807,17 +9818,6 @@
         }
       }
     },
-    "Key management" : {
-      "comment" : "License card: heading of the expanded key management",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zarządzanie kluczem"
-          }
-        }
-      }
-    },
     "Key stored in the macOS Keychain" : {
       "comment" : "License card, key row: where the saved key lives",
       "localizations" : {
@@ -10635,17 +10635,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zarządzaj"
-          }
-        }
-      }
-    },
-    "Manage key" : {
-      "comment" : "License card: opens key management inside the card",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zarządzaj kluczem"
           }
         }
       }
@@ -11874,8 +11863,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bez aktywnej licencji"
+            "state" : "needs_review",
+            "value" : "Brak aktywnej licencji"
           }
         }
       }
@@ -13694,6 +13683,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wklej klucz…"
+          }
+        }
+      }
+    },
+    "Paste license key" : {
+      "comment" : "License card: placeholder of the license-key field",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wklej klucz licencyjny"
           }
         }
       }
@@ -21961,6 +21961,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twoja poprawka (tekst przekazany → poprawiony)"
+          }
+        }
+      }
+    },
+    "Your current key is still saved." : {
+      "comment" : "License card, Change key: a failed new key left the saved key in place",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Dotychczasowy klucz pozostaje zapisany."
           }
         }
       }
