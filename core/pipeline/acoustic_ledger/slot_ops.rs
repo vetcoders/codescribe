@@ -2425,6 +2425,57 @@ impl AcousticLedger {
         if gaps.is_empty() {
             return true;
         }
+        // A provisional Apple group has no individual words to disappear in
+        // the timestamp gaps. A complete returned word partition can refine
+        // it when this very decode heard the entire source and every original
+        // word intersecting it is represented by a complete output. This is
+        // not evidence for deleting an independently measured word.
+        let complete_coarse_partition = source.producer == ObservationProducer::Apple
+            && self.coarse_word_source(source)
+            && !self.complete_word_slot(source)
+            && outputs.len() >= 2
+            && self
+                .decoded_word_windows
+                .get(observation)
+                .is_some_and(|&(start, end)| {
+                    start <= source.sample_start
+                        && source.sample_end <= end
+                        && self.slot_source_ranges(source).iter().all(|range| {
+                            range.same_capture(owner)
+                                && start <= range.sample_start
+                                && range.sample_end <= end
+                        })
+                })
+            && self
+                .complete_decoded_words
+                .get(observation)
+                .is_some_and(|complete| {
+                    outputs.iter().all(|word| {
+                        word.observation == *observation
+                            && word.sample_start < source.sample_end
+                            && source.sample_start < word.sample_end
+                            && complete.contains(&(word.sample_start, word.sample_end))
+                    })
+                })
+            && self.word_evidence_input(observation).is_some_and(|input| {
+                let in_source = input.words.iter().filter(|word| {
+                    word.sample_start < source.sample_end
+                        && source.sample_start < word.sample_end
+                });
+                let matches = |word: &super::word_adjudication::SourceWord, output: &WordSlot| {
+                    output.sample_start == word.sample_start.max(owner.sample_start)
+                        && output.sample_end == word.sample_end.min(owner.sample_end)
+                };
+                in_source
+                    .clone()
+                    .all(|word| outputs.iter().any(|output| matches(word, output)))
+                    && outputs
+                        .iter()
+                        .all(|output| in_source.clone().any(|word| matches(word, output)))
+            });
+        if complete_coarse_partition {
+            return true;
+        }
         // One word corrected by one word over it keeps its word: the successor
         // is its continuation, and any speech its new edges leave is coverage
         // debt the seal accounts for, not a vanished word. A coarse group is
