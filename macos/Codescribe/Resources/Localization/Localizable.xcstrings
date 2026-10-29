@@ -3980,6 +3980,28 @@
         }
       }
     },
+    "Built-in rule" : {
+      "comment" : "The tool's own rule turned its category's Allow into Ask",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Reguła wbudowana"
+          }
+        }
+      }
+    },
+    "Built-in rule: the clipboard may hold passwords" : {
+      "comment" : "Why reading the clipboard asks by default; shown beside the tool's level",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Reguła wbudowana: w schowku bywają hasła"
+          }
+        }
+      }
+    },
     "Built-in tool, enriched by IntelliJ for the matched project" : {
       "localizations" : {
         "pl" : {

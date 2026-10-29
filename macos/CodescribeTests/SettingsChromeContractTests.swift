@@ -886,7 +886,9 @@ final class SettingsChromeContractTests: XCTestCase {
       section.contains("let category = ToolPermissionLabels.risk(risk)"),
       "the category rides the card's one facts line (sourceSummary)")
     XCTAssertTrue(section.contains("Text(verbatim: item.sourceSummary)"))
-    XCTAssertTrue(section.contains("ToolPermissionLabels.ruleCaption(item.ruleSource)"))
+    XCTAssertTrue(
+      section.contains(
+        "ToolPermissionLabels.ruleCaption(item.ruleSource, identity: item.identity)"))
     XCTAssertTrue(section.contains("if item.hasIndividualRule, let restoreInheritance {"))
     XCTAssertTrue(
       section.contains("if model.toolCatalogLoading {"),
@@ -934,6 +936,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Individual rule": "Własna reguła",
       "Category default": "Ustawienie kategorii",
       "Server rule": "Reguła serwera",
+      "Built-in rule": "Reguła wbudowana",
+      "Built-in rule: the clipboard may hold passwords": "Reguła wbudowana: w schowku bywają hasła",
       "Remove rule": "Usuń regułę",
       "Discovering tools from the MCP servers…": "Wykrywanie narzędzi z serwerów MCP…",
       "tools.native.read_file": "Odczytaj plik",

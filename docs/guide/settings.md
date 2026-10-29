@@ -708,7 +708,16 @@ repeated caption.
   instead of ending in an ellipsis, with the rule that produced the current
   level opposite it: "Individual rule" when the tool carries one of its own,
   otherwise "Server rule" or "Category default", which is how a tool says it
-  follows the rule above it. The word "inheritance" appears nowhere. Then one
+  follows the rule above it, or "Built-in rule" when the tool's own rule turned
+  its category's Allow into Ask. The word "inheritance" appears nowhere.
+- **Read the clipboard asks by default** — `native:read_clipboard` is a
+  read-only tool, but a password or a token often sits on the clipboard, so a
+  built-in rule makes it Ask where the Read data default says Allow. Its card
+  reads "Built-in rule: the clipboard may hold passwords". Choosing Allow (or
+  Deny) on the card is an individual rule and wins; "Remove rule" returns it to
+  Ask. A stricter Read data default (Deny) still applies. Nothing is migrated:
+  a `settings.json` that already holds a rule for `native:read_clipboard`
+  keeps it, and Settings writes a tool rule only when you pick a level. Then one
   quiet line for source, server and localized risk class
   ("MCP · aicx-http · Read data"), the raw identity in the quietest mono rung —
   selectable, so it can be copied into a config or a bug report — and, on a
