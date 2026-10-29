@@ -2417,10 +2417,12 @@ impl AcousticLedger {
             return;
         };
         let mut new_sources = Vec::new();
-        for operation in operations {
-            for source in &operation.sources {
-                if self.complete_coarse_partition(observation, source, &operation.outputs) {
-                    new_sources.push((source.sample_start, source.sample_end));
+        if observation.producer == ObservationProducer::Whisper && input.publication.is_some() {
+            for operation in operations {
+                for source in &operation.sources {
+                    if self.complete_coarse_partition(observation, source, &operation.outputs) {
+                        new_sources.push((source.sample_start, source.sample_end));
+                    }
                 }
             }
         }
@@ -2484,7 +2486,12 @@ impl AcousticLedger {
     ) -> bool {
         let owner = &source.observation.occurrence;
         source.producer == ObservationProducer::Apple
-            && self.coarse_word_source(source)
+            && source.text.split_whitespace().count() == 1
+            && !self.word_pin_observations.contains(&source.observation)
+            && matches!(
+                observation.producer,
+                ObservationProducer::Whisper | ObservationProducer::AppleDictation
+            )
             && !self.complete_word_slot(source)
             && !outputs.is_empty()
             && self
@@ -2552,7 +2559,7 @@ impl AcousticLedger {
                         }
                         // Whisper's full decoder window is only context;
                         // another producer may offer its full measured decode.
-                        None => observation.producer != ObservationProducer::Whisper,
+                        None => observation.producer == ObservationProducer::AppleDictation,
                     }
             })
     }
@@ -2595,7 +2602,8 @@ impl AcousticLedger {
         // band; accepting those paths would also lose the unowned debt.
         if observation.producer == ObservationProducer::Whisper
             && source.producer == ObservationProducer::Apple
-            && self.coarse_word_source(source)
+            && source.text.split_whitespace().count() == 1
+            && !self.word_pin_observations.contains(&source.observation)
             && self
                 .word_evidence_input(observation)
                 .is_some_and(|input| input.publication.is_some())
