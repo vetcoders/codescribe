@@ -167,7 +167,8 @@ final class OverlayBusWindowTests: XCTestCase {
     let revision = state.prepareHeldComposerEdit(old)
     apply([replacement], to: state)
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [old, replacement]))
-    XCTAssertFalse(state.returnHeldComposerText("Retained original text", to: old, revision: revision))
+    XCTAssertFalse(
+      state.returnHeldComposerText("Retained original text", to: old, revision: revision))
     XCTAssertEqual(state.conversationDraft(for: old.id), "Retained original text")
     XCTAssertEqual(state.conversationDraft(for: replacement.id), "")
     XCTAssertNil(state.resolvedComposerTarget(viewing: replacement))
@@ -419,19 +420,23 @@ final class OverlayBusWindowTests: XCTestCase {
     let sent = try outgoing(in: first, acknowledged: true)
     let reply = OverlayConversationMessage(
       id: "reply:window-review", kind: .reply,
-      text: "The compact sidebar keeps the controls visible. The text destination stays separate from the conversation you are viewing.",
+      text:
+        "The compact sidebar keeps the controls visible. The text destination stays separate from the conversation you are viewing.",
       order: 2, emittedAt: "2026-10-29T10:01:00Z", owner: first.owner, recipients: [],
       deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
     first = withMessages(first, [sent, reply])
     let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
-    let inbox = OverlayConversation(id: "10", channel: "10", name: "Your Inbox", owner: nil, messages: [])
+    let inbox = OverlayConversation(
+      id: "10", channel: "10", name: "Your Inbox", owner: nil, messages: [])
     let inventory = [all, inbox, first, second]
     let state = OverlayState()
     apply(inventory, to: state)
     state.applyConversationSnapshot(
       .init(
         deliveries: [
-          .init(channel: "2", agent: first.name, deliveryID: "delivery", stage: .received, isOpen: false),
+          .init(
+            channel: "2", agent: first.name, deliveryID: "delivery", stage: .received, isOpen: false
+          ),
           .init(channel: "3", agent: second.name, deliveryID: nil, stage: nil, isOpen: false),
         ], conversations: inventory))
     state.selectConversation(first.id)
@@ -454,7 +459,10 @@ final class OverlayBusWindowTests: XCTestCase {
     panel.isReleasedWhenClosed = false
     panel.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
     panel.contentView = host
-    defer { panel.contentView = nil; panel.close() }
+    defer {
+      panel.contentView = nil
+      panel.close()
+    }
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.12))
     host.layoutSubtreeIfNeeded()
@@ -463,7 +471,8 @@ final class OverlayBusWindowTests: XCTestCase {
     let image = NSImage(size: host.bounds.size)
     image.addRepresentation(bitmap)
     let attachment = XCTAttachment(image: image)
-    attachment.name = "Bus-window-\(dark ? "dark" : "light")-\(rail ? "rail" : "split")-scale-\(scale)"
+    attachment.name =
+      "Bus-window-\(dark ? "dark" : "light")-\(rail ? "rail" : "split")-scale-\(scale)"
     attachment.lifetime = .keepAlways
     add(attachment)
     XCTAssertEqual(state.selectedConversationID, first.id)

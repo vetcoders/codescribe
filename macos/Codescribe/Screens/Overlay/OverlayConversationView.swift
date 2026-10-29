@@ -517,8 +517,11 @@ struct OverlayConversationView: View {
         VStack(alignment: .leading, spacing: 2) {
           HStack(spacing: 6) {
             Group {
-              if conversation.channel == "0" { Text("0 · All") }
-              else { Text(verbatim: conversation.displayTitle) }
+              if conversation.channel == "0" {
+                Text("0 · All")
+              } else {
+                Text(verbatim: conversation.displayTitle)
+              }
             }
             .font(.system(size: 13 * textScale, weight: .bold))
             .lineLimit(1)

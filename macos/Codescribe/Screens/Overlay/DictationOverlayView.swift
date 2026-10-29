@@ -617,7 +617,8 @@ struct DictationOverlayView: View {
                 },
                 onReturnHeldText: { message, text, revision in
                   state.returnHeldComposerText(
-                    text, to: heldComposerTarget(message, viewing: conversation), revision: revision)
+                    text, to: heldComposerTarget(message, viewing: conversation), revision: revision
+                  )
                 },
                 onNavigateComposerReply: resolvedTarget?.id == conversation.id
                   ? nil

@@ -1430,7 +1430,9 @@ final class OverlayState {
 
   /// Append to the frozen draft even if its owner retired. A later explicit
   /// selection wins, including when the user switched away and back again.
-  func returnHeldComposerText(_ text: String, to target: OverlayConversation, revision: UUID) -> Bool {
+  func returnHeldComposerText(_ text: String, to target: OverlayConversation, revision: UUID)
+    -> Bool
+  {
     let old = conversationDraft(for: target.id)
     setConversationDraft(old.isEmpty ? text : old + "\n\n" + text, for: target.id)
     return composerTargetRevision == revision && composerTargetIsAvailable(target)
