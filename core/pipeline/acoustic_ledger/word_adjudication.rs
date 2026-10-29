@@ -80,11 +80,22 @@ pub struct SourceWord {
     pub decode: Option<(u64, u64)>,
 }
 
+/// Raw decoder evidence and the disjoint interval this observation may publish.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordPublicationEvidence {
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub terminal_tail: bool,
+    pub decoded_words: Vec<SourceWord>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WordEvidenceInput {
     pub producer_request: Option<crate::stt::tail_provider::TailRequestIdentity>,
     pub observation: ObservationIdentity,
     pub words: Vec<SourceWord>,
+    #[serde(default)]
+    pub publication: Option<WordPublicationEvidence>,
     pub backend: Option<String>,
     /// Unknown is deliberate: positive confidence does not prove finality.
     pub finality: String,
@@ -771,12 +782,43 @@ impl AcousticLedger {
                     decode: pin.decode_sample_start.zip(pin.decode_sample_end),
                 })
                 .collect(),
+            publication: None,
             backend: backend
                 .map(str::to_owned)
                 .or_else(|| provider.map(|p| p.1.clone())),
             finality: provider.map_or_else(|| finality.to_owned(), |p| p.2.clone()),
             timing: provider.map_or_else(|| "capture_word_pins".into(), |p| p.3.clone()),
             trial: None,
+        });
+    }
+
+    /// Attach the untouched full decode independently of selected publication pins.
+    pub(crate) fn stage_word_publication(
+        &mut self,
+        observation: &ObservationIdentity,
+        band: (u64, u64),
+        terminal_tail: bool,
+        original: &[WordPin],
+    ) {
+        let Some(input) = self.word_adjudication.input.as_mut()
+            .filter(|input| input.observation == *observation)
+        else {
+            return;
+        };
+        input.publication = Some(WordPublicationEvidence {
+            sample_start: band.0,
+            sample_end: band.1,
+            terminal_tail,
+            decoded_words: original.iter().map(|pin| SourceWord {
+                lexical_position: None,
+                sample_start: pin.sample_start,
+                sample_end: pin.sample_end,
+                original_text: (!pin.surface_rewritten).then(|| pin.text.clone()),
+                surface: pin.text.clone(),
+                confidence: pin.confidence,
+                surface_rewritten: pin.surface_rewritten,
+                decode: pin.decode_sample_start.zip(pin.decode_sample_end),
+            }).collect(),
         });
     }
 

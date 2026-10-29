@@ -4872,7 +4872,15 @@ impl AppleSealState {
             }
             if word_grain {
                 if !route.exclusive.is_empty() {
-                    mutation_admitted |= self.admit_routed_words_with_decode_window(
+                    let (band_start, band_end) = whisper_publication_band(self, &identity.range);
+                    let band_start = if terminal_tail_only {
+                        identity.range.sample_start.saturating_add(u64::from(self.sample_rate) * 6)
+                    } else {
+                        band_start
+                    };
+                    let terminal_tail = self.capture_stopping
+                        && identity.range.sample_end == self.audio.session_sample_end();
+                    mutation_admitted |= self.admit_routed_words_with_publication(
                         ev_tx,
                         *member_id,
                         occurrence,
@@ -4887,6 +4895,7 @@ impl AppleSealState {
                             ),
                         },
                         LedgerObservationProducer::Whisper,
+                        Some((returned, (band_start, band_end), terminal_tail)),
                     );
                 }
                 continue;
@@ -5408,6 +5417,21 @@ impl AppleSealState {
         batch: RoutedWords<'_>,
         producer: LedgerObservationProducer,
     ) -> bool {
+        self.admit_routed_words_with_publication(
+            ev_tx, id, owner, request_window, batch, producer, None,
+        )
+    }
+
+    fn admit_routed_words_with_publication(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        id: u64,
+        owner: &OccurrenceIdentity,
+        request_window: (u64, Option<(u64, u64)>),
+        batch: RoutedWords<'_>,
+        producer: LedgerObservationProducer,
+        publication: Option<(&TailProviderPayload, (u64, u64), bool)>,
+    ) -> bool {
         let (request, decode_window) = request_window;
         let RoutedWords { pins, neighbours } = batch;
         let merge_sources = super::live_lexicon::registered_merges(
@@ -5481,6 +5505,19 @@ impl AppleSealState {
                 })
                 .collect::<Vec<_>>();
             ledger.stage_word_evidence(&observation, &original, None, "unknown");
+            if let Some((payload, band, terminal_tail)) = publication {
+                let decode = &payload.identity.range;
+                let full = payload.segments.iter()
+                    .filter(|segment| segment.grain == crate::stt::tail_provider::TailSegmentGrain::Word)
+                    .map(|segment| {
+                        let mut word = crate::pipeline::acoustic_ledger::WordPin::new(
+                            segment.range.sample_start, segment.range.sample_end, &segment.text,
+                        ).with_decode_window(decode.sample_start, decode.sample_end);
+                        word.confidence = segment.confidence;
+                        word
+                    }).collect::<Vec<_>>();
+                ledger.stage_word_publication(&observation, band, terminal_tail, &full);
+            }
             ledger.record_speech_evidence(&speech);
             self.record_decode_fence_measurement(
                 &mut ledger,
