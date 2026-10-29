@@ -1582,6 +1582,13 @@ impl AcousticLedger {
                                 ranges.contains(&(word.sample_start, word.sample_end))
                             })
                     });
+            let publication_refinement = all_coarse
+                && self.word_evidence_input(observation).is_some_and(|input| {
+                    input.publication.is_some()
+                })
+                && sources.iter().all(|source| {
+                    self.complete_coarse_partition(observation, source, &outputs)
+                });
             // Overlapping windows can split one stretch of speech into
             // different tokens. In take dcc26684 the window that held a word
             // 0.18 s before its fence returned "gabowa to.", and a window that
@@ -1626,6 +1633,7 @@ impl AcousticLedger {
                 });
             if sources.len() == 1
                 && outputs.len() == 1
+                && !publication_refinement
                 && (ordinary_targets[*word_indices.first().unwrap()].is_some()
                     || (!window_refinement
                         && sources[0].sample_start == outputs[0].sample_start
@@ -1738,7 +1746,8 @@ impl AcousticLedger {
             // Scope proof stays available for a real partition. It cannot
             // clear ambiguity or speech debt for an unproved contraction.
             let window_partition =
-                window_refinement && (!collapses_word_pins || preserves_group_words || retokenizes);
+                (window_refinement || publication_refinement)
+                    && (!collapses_word_pins || preserves_group_words || retokenizes);
             let ambiguous = self.repetition_target_ambiguous(&sources, &outputs)
                 && !(coverage.is_some()
                     || range_refinement
@@ -2358,6 +2367,159 @@ impl AcousticLedger {
             })
     }
 
+    /// Record only publication that actually landed in committed slots. The
+    /// original coarse source supplies the physical debt; decoder context is
+    /// not a publication receipt and cannot discharge that debt.
+    pub(super) fn account_published_coarse_words(
+        &mut self,
+        observation: &ObservationIdentity,
+        operations: &[SlotOperationReceipt],
+    ) {
+        let owner = &observation.occurrence;
+        let Some(input) = self.word_evidence_input(observation).cloned() else {
+            return;
+        };
+        let mut new_sources = Vec::new();
+        for operation in operations {
+            for source in &operation.sources {
+                if self.complete_coarse_partition(observation, source, &operation.outputs) {
+                    new_sources.push((source.sample_start, source.sample_end));
+                }
+            }
+        }
+        if !new_sources.is_empty() {
+            self.publication_debt
+                .entry(owner.clone())
+                .or_default()
+                .extend(new_sources);
+        }
+        let bounds = match &input.publication {
+            Some(publication) => (publication.sample_start, publication.sample_end),
+            None if observation.producer == ObservationProducer::AppleDictation => {
+                let Some(&window) = self.decoded_word_windows.get(observation) else {
+                    return;
+                };
+                window
+            }
+            None => return,
+        };
+        let raw = input.publication.as_ref().map_or(&input.words, |p| &p.decoded_words);
+        let words = raw.iter().filter(|word| {
+            let midpoint = word.sample_start
+                + word.sample_end.saturating_sub(word.sample_start) / 2;
+            bounds.0 <= midpoint && midpoint < bounds.1
+                && word.sample_start < owner.sample_end && owner.sample_start < word.sample_end
+        }).collect::<Vec<_>>();
+        let Some(complete) = self.complete_decoded_words.get(observation) else {
+            return;
+        };
+        let held = self.slots_of(owner).unwrap_or(&[]);
+        if words.is_empty() || !words.iter().all(|word| {
+            let range = (word.sample_start.max(owner.sample_start), word.sample_end.min(owner.sample_end));
+            complete.contains(&range) && held.iter().any(|slot| {
+                slot.observation == *observation
+                    && (slot.sample_start, slot.sample_end) == range
+            })
+        }) {
+            return;
+        }
+        let Some(debt) = self.publication_debt.get_mut(owner) else {
+            return;
+        };
+        let mut remaining = Vec::new();
+        for &(start, end) in debt.iter() {
+            if start < bounds.0 {
+                remaining.push((start, end.min(bounds.0)));
+            }
+            if end > bounds.1 {
+                remaining.push((start.max(bounds.1), end));
+            }
+        }
+        remaining.retain(|(start, end)| start < end);
+        *debt = remaining;
+        if debt.is_empty() {
+            self.publication_debt.remove(owner);
+        }
+    }
+
+    pub(super) fn complete_coarse_partition(
+        &self, observation: &ObservationIdentity, source: &WordSlot, outputs: &[WordSlot],
+    ) -> bool {
+        let owner = &source.observation.occurrence;
+        source.producer == ObservationProducer::Apple
+            && self.coarse_word_source(source)
+            && !self.complete_word_slot(source)
+            && !outputs.is_empty()
+            && self
+                .decoded_word_windows
+                .get(observation)
+                .is_some_and(|&(start, end)| {
+                    self.word_evidence_input(observation).is_some_and(|input| {
+                        input.publication.as_ref().map_or_else(
+                            || start <= source.sample_start && source.sample_end <= end,
+                            |publication| {
+                                start <= publication.sample_start
+                                    && publication.sample_end <= end
+                                    && publication.sample_start < source.sample_end
+                                    && source.sample_start < publication.sample_end
+                            },
+                        )
+                    })
+                })
+            && self
+                .complete_decoded_words
+                .get(observation)
+                .is_some_and(|complete| {
+                    outputs.iter().all(|word| {
+                        word.observation == *observation
+                            && word.sample_start < source.sample_end
+                            && source.sample_start < word.sample_end
+                            && complete.contains(&(word.sample_start, word.sample_end))
+                    })
+                })
+            && self.word_evidence_input(observation).is_some_and(|input| {
+                let in_source = input.words.iter().filter(|word| {
+                    word.sample_start < source.sample_end
+                        && source.sample_start < word.sample_end
+                });
+                let matches = |word: &super::word_adjudication::SourceWord, output: &WordSlot| {
+                    output.sample_start == word.sample_start.max(owner.sample_start)
+                        && output.sample_end == word.sample_end.min(owner.sample_end)
+                };
+                in_source
+                    .clone()
+                    .all(|word| outputs.iter().any(|output| matches(word, output)))
+                    && outputs
+                        .iter()
+                        .all(|output| in_source.clone().any(|word| matches(word, output)))
+                    && match &input.publication {
+                        Some(publication) => {
+                            publication.sample_start < publication.sample_end
+                                && publication.decoded_words.iter().filter(|word| {
+                                    let midpoint = word.sample_start
+                                        + word.sample_end.saturating_sub(word.sample_start) / 2;
+                                    publication.sample_start <= midpoint
+                                        && midpoint < publication.sample_end
+                                        && word.sample_start < source.sample_end
+                                        && source.sample_start < word.sample_end
+                                }).all(|word| outputs.iter().any(|output| matches(word, output)))
+                                && outputs.iter().all(|output| {
+                                    publication.decoded_words.iter().any(|word| {
+                                        let midpoint = word.sample_start
+                                            + word.sample_end.saturating_sub(word.sample_start) / 2;
+                                        publication.sample_start <= midpoint
+                                            && midpoint < publication.sample_end
+                                            && matches(word, output)
+                                    })
+                                })
+                        }
+                        // Whisper's full decoder window is only context;
+                        // another producer may offer its full measured decode.
+                        None => observation.producer != ObservationProducer::Whisper,
+                    }
+            })
+    }
+
     /// A replacement may retire a source's geometry only where words that
     /// stay in the document cover it, or where every acoustic observer that
     /// measured the uncovered stretch heard it quiet. A missing label is never
@@ -2425,55 +2587,7 @@ impl AcousticLedger {
         if gaps.is_empty() {
             return true;
         }
-        // A provisional Apple group has no individual words to disappear in
-        // the timestamp gaps. A complete returned word partition can refine
-        // it when this very decode heard the entire source and every original
-        // word intersecting it is represented by a complete output. This is
-        // not evidence for deleting an independently measured word.
-        let complete_coarse_partition = source.producer == ObservationProducer::Apple
-            && self.coarse_word_source(source)
-            && !self.complete_word_slot(source)
-            && outputs.len() >= 2
-            && self
-                .decoded_word_windows
-                .get(observation)
-                .is_some_and(|&(start, end)| {
-                    start <= source.sample_start
-                        && source.sample_end <= end
-                        && self.slot_source_ranges(source).iter().all(|range| {
-                            range.same_capture(owner)
-                                && start <= range.sample_start
-                                && range.sample_end <= end
-                        })
-                })
-            && self
-                .complete_decoded_words
-                .get(observation)
-                .is_some_and(|complete| {
-                    outputs.iter().all(|word| {
-                        word.observation == *observation
-                            && word.sample_start < source.sample_end
-                            && source.sample_start < word.sample_end
-                            && complete.contains(&(word.sample_start, word.sample_end))
-                    })
-                })
-            && self.word_evidence_input(observation).is_some_and(|input| {
-                let in_source = input.words.iter().filter(|word| {
-                    word.sample_start < source.sample_end
-                        && source.sample_start < word.sample_end
-                });
-                let matches = |word: &super::word_adjudication::SourceWord, output: &WordSlot| {
-                    output.sample_start == word.sample_start.max(owner.sample_start)
-                        && output.sample_end == word.sample_end.min(owner.sample_end)
-                };
-                in_source
-                    .clone()
-                    .all(|word| outputs.iter().any(|output| matches(word, output)))
-                    && outputs
-                        .iter()
-                        .all(|output| in_source.clone().any(|word| matches(word, output)))
-            });
-        if complete_coarse_partition {
+        if self.complete_coarse_partition(observation, source, outputs) {
             return true;
         }
         // One word corrected by one word over it keeps its word: the successor

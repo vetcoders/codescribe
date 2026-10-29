@@ -926,6 +926,9 @@ pub struct AcousticLedger {
     /// Returned Whisper and cloud fences merged per capture, so asking whether
     /// complete decode covered an owner is one lookup, not a scan per tick.
     complete_decode_spans: BTreeMap<String, BTreeMap<u64, Vec<(u64, u64)>>>,
+    /// Parts of a retired coarse label that have not yet been published by
+    /// an accepted measured word partition. Decoder context does not pay it.
+    publication_debt: BTreeMap<OccurrenceIdentity, Vec<(u64, u64)>>,
     /// Matched successful empty finals; these observations mint no Word.
     successful_empty_decodes: std::collections::HashSet<ObservationIdentity>,
     answered: std::collections::HashSet<ObservationIdentity>,
@@ -2634,7 +2637,9 @@ impl AcousticLedger {
 
     /// Debt is open until complete decode windows cover its whole range.
     pub fn text_recovery_pending(&self, occurrence: &OccurrenceIdentity) -> bool {
-        self.pending_text_recovery.contains(occurrence) && !self.complete_decode_covers(occurrence)
+        self.publication_debt.contains_key(occurrence)
+            || (self.pending_text_recovery.contains(occurrence)
+                && !self.complete_decode_covers(occurrence))
     }
 
     pub fn pending_text_recoveries(
@@ -2644,11 +2649,14 @@ impl AcousticLedger {
     ) -> Vec<OccurrenceIdentity> {
         self.pending_text_recovery
             .iter()
+            .chain(self.publication_debt.keys())
             .filter(|occurrence| {
                 occurrence.session == session
                     && occurrence.capture_epoch == capture_epoch
-                    && !self.complete_decode_covers(occurrence)
+                    && self.text_recovery_pending(occurrence)
             })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .cloned()
             .collect()
     }
@@ -3406,6 +3414,9 @@ impl AcousticLedger {
         self.record_layer_decision(observation, text, &decision, None);
         let accepted = decision.grants_mutation()
             || (slot_revision && matches!(decision, MutationReceipt::Preserve { .. }));
+        if applies_slots && decision.grants_mutation() {
+            self.account_published_coarse_words(observation, operations);
+        }
         if authorized_recovery
             && observation.producer == ObservationProducer::ManualHuman
             && !slot_revision
