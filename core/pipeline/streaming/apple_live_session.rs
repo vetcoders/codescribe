@@ -4807,6 +4807,27 @@ impl AppleSealState {
                 .slots_of(occurrence)
                 .is_some_and(|slots| !slots.is_empty());
             if !label.is_empty() && owner_has_slots {
+                let (observation, receipt) = {
+                    let mut ledger = self.acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let observation = ledger.next_word_observation(
+                        LedgerObservationProducer::Whisper, request_id, occurrence,
+                    );
+                    let sources = ledger.slots_of(occurrence).unwrap_or(&[]).to_vec();
+                    ledger.retain_slot_alternative(
+                        &observation, &label, sources, "phrase_without_word_targets",
+                    );
+                    let receipt = ledger.refuse_replacement(
+                        &observation, &label, RefuseReason::SlotAdmissionRejected,
+                    );
+                    (observation, receipt)
+                };
+                let _ = ev_tx.send(EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    receipt,
+                });
                 self.refinement_receipt(occurrence, RefinementFailure::NoLabel.code());
                 continue;
             }
