@@ -2724,25 +2724,24 @@ struct OverlayRosterMessageHint: ViewModifier {
 
   @ViewBuilder
   func body(content: Content) -> some View {
-    if let conversation, let message = conversation.messages.last,
-      let title = Self.fullText(in: conversation)
-    {
-      content.modifier(
-        OverlayHeaderControlChrome(
-          title: title, accent: nil, palette: palette, hintLeading: true,
-          hintContent: AnyView(
-            OverlayRosterMessagePreview(
-              name: conversation.displayTitle, message: message, palette: palette
-            )
-            .environment(\.csTextScale, textScale)
-            .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light)),
-          hintSize: CGSize(width: 380 * textScale, height: 280 * textScale),
-          hintDelay: 0.35, hintInteractive: true)
-      )
-      .id(conversation.id)
-    } else {
-      content.overlayFastHint(emptyHint, palette: palette, leading: true)
+    let preview = conversation.flatMap { conversation -> AnyView? in
+      guard let message = conversation.messages.last else { return nil }
+      return AnyView(
+        OverlayRosterMessagePreview(
+          name: conversation.displayTitle, message: message, palette: palette
+        )
+        .environment(\.csTextScale, textScale)
+        .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light))
     }
+    content.modifier(
+      OverlayHeaderControlChrome(
+        title: conversation.flatMap { Self.fullText(in: $0) } ?? emptyHint,
+        accent: nil, palette: palette, hintLeading: true,
+        hintContent: preview,
+        hintSize: preview == nil ? nil : CGSize(width: 380 * textScale, height: 280 * textScale),
+        hintDelay: preview == nil ? 0 : 0.35, hintInteractive: preview != nil)
+    )
+    .id(conversation?.id)
   }
 }
 
