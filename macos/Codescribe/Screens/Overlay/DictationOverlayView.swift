@@ -1444,6 +1444,13 @@ struct DictationOverlayView: View {
     let selected = state.resolvedComposerTarget(viewing: conversation)
     let choices = state.availableComposerRecipients
     let openChannels = state.channelHudStates.filter { $0.value.open }.keys.sorted()
+    let openChannelTitles = openChannels.map { digit in
+      if digit == "0" { return String(localized: "0 · All") }
+      if let row = state.visibleChannelRows.first(where: { $0.channel == digit }) {
+        return "\(digit) · \(row.agent)"
+      }
+      return digit
+    }
     return VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 6) {
         Text("To:")
@@ -1478,7 +1485,7 @@ struct DictationOverlayView: View {
           Text("Voice channels closed")
         } else {
           Text("Voice channels:")
-          Text(verbatim: openChannels.joined(separator: ", "))
+          Text(verbatim: openChannelTitles.joined(separator: ", "))
             .lineLimit(1).truncationMode(.middle)
         }
       }

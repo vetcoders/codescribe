@@ -858,6 +858,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
               }
           }
           .menuStyle(.borderlessButton)
+          .menuIndicator(.hidden)
           .fixedSize()
           .accessibilityLabel(Text("Agent actions"))
           .accessibilityValue(Text(verbatim: focusState?.statusText ?? ""))

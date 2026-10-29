@@ -21263,6 +21263,30 @@
         }
       }
     },
+    "Voice channels closed" : {
+      "comment" : "No live agent channel is open; this is separate from draft dictation",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanały głosowe zamknięte"
+          }
+        }
+      }
+    },
+    "Voice channels:" : {
+      "comment" : "Actual open live agent channels, listed by number and name",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanały głosowe:"
+          }
+        }
+      }
+    },
     "Voice chat" : {
       "comment" : "Fallback title for a dictated thread",
       "localizations" : {

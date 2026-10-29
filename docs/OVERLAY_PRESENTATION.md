@@ -91,6 +91,10 @@ as unavailable with a usable chooser instead of falling back to the viewed
 conversation. The microphone status reports actual open channels, separately
 from dictation into the text field.
 
+Native Undo remains scoped to the mounted editor. Switching the frozen text
+destination preserves each owner's stored draft, but starts a fresh native
+undo stack, as switching conversations did before. Undo never crosses owners.
+
 Replying to a displayed message explicitly chooses that message's conversation.
 Returning a held message to the draft first completes its withdrawal, then
 returns text to that frozen private owner or to the original channel-zero
