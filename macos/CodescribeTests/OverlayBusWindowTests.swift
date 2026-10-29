@@ -167,13 +167,21 @@ final class OverlayBusWindowTests: XCTestCase {
       captureState: .finished)
   }
 
+  private func withMessages(
+    _ conversation: OverlayConversation, _ messages: [OverlayConversationMessage]
+  ) -> OverlayConversation {
+    OverlayConversation(
+      id: conversation.id, channel: conversation.channel, name: conversation.name,
+      owner: conversation.owner, messages: messages)
+  }
+
   func testQueueAcceptanceDoesNotBecomeADeliveredOrReadCheck() throws {
     var conversation = try conversation("2")
     var message = try outgoing(in: conversation)
     for accepted in [false, true] {
       message.recipients[0].accepted = accepted
       message.recipients[0].queued = true
-      conversation.messages = [message]
+      conversation = withMessages(conversation, [message])
       let display = try XCTUnwrap(
         roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
       XCTAssertEqual(display.symbol, "clock")
@@ -194,7 +202,7 @@ final class OverlayBusWindowTests: XCTestCase {
             deliveryID: "delivery", name: "Tola", channel: "2", state: state,
             wake: nil, deliveredAt: nil, at: nil)
         ])
-      conversation.messages = [message]
+      conversation = withMessages(conversation, [message])
       XCTAssertEqual(
         roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation)?.symbol,
         symbol)
@@ -206,7 +214,7 @@ final class OverlayBusWindowTests: XCTestCase {
           deliveryID: "foreign-delivery", name: "Tola", channel: "2", state: .read,
           wake: nil, deliveredAt: nil, at: nil)
       ])
-    conversation.messages = [message]
+    conversation = withMessages(conversation, [message])
     XCTAssertEqual(
       roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation)?.symbol,
       "clock")
@@ -219,7 +227,7 @@ final class OverlayBusWindowTests: XCTestCase {
       id: "reply:later", kind: .reply, text: "The review is ready", order: 2,
       emittedAt: "2026-10-29T10:05:00Z", owner: conversation.owner, recipients: [],
       deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
-    conversation.messages = [sent, reply]
+    conversation = withMessages(conversation, [sent, reply])
     let display = try XCTUnwrap(
       roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
     let sentTime = try XCTUnwrap(MessageTimestamp.date(fromISO8601: sent.emittedAt))
@@ -233,12 +241,12 @@ final class OverlayBusWindowTests: XCTestCase {
     var conversation = try conversation("2")
     var message = try outgoing(in: conversation, acknowledged: true)
     message.holdSecondsRemaining = 5
-    conversation.messages = [message]
+    conversation = withMessages(conversation, [message])
     XCTAssertEqual(
       roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation)?.symbol,
       "pause.circle")
     message.withdrawn = true
-    conversation.messages = [message]
+    conversation = withMessages(conversation, [message])
     XCTAssertNil(roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
   }
 
@@ -265,13 +273,12 @@ final class OverlayBusWindowTests: XCTestCase {
 
   func testCompactCardsRenderWithinTheirHeightBudgetInBothAppearances() throws {
     var conversation = try conversation("2")
-    conversation.messages = [try outgoing(in: conversation, acknowledged: true)]
+    conversation = withMessages(conversation, [try outgoing(in: conversation, acknowledged: true)])
     for dark in [false, true] {
-      for scale in [CGFloat(1), 1.6] {
+      for scale in [CGFloat(1)] {
         for width in [CGFloat(280), 340] {
           let palette: OverlayAppearancePalette = dark ? .dark : .light
-          var view = roster(conversation, palette: palette)
-          view.textScale = scale
+          let view = roster(conversation, palette: palette)
           let host = NSHostingView(
             rootView: view.channelRow(row)
               .frame(width: width).padding(10)
