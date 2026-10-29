@@ -3807,6 +3807,10 @@ impl AcousticLedger {
         }
     }
 
+    pub(super) fn capture_rate(&self) -> Option<u32> {
+        self.capture_rate_hz
+    }
+
     /// Spans whose character rate over the declared range is a clock-lie.
     pub fn clock_lie_count(&self) -> usize {
         self.clock_lie_occurrences.len()

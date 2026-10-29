@@ -923,32 +923,27 @@ pub(super) fn record_decode_work(
 }
 
 pub(super) fn record_quiet_publication_band(
-    ledger: &AcousticLedger,
     observation: &ObservationIdentity,
     band: &OccurrenceIdentity,
+    speech: &crate::audio::capture_receipt::AcousticSpeechEvidence,
+    floor: Option<&crate::audio::capture_receipt::AcousticSpeechEvidence>,
+    floor_ungated: Option<bool>,
+    rate: u32,
 ) {
     if !is_enabled(&observation.occurrence) {
         return;
     }
-    let (Some(speech), Some(rate)) = (&ledger.speech_evidence, ledger.capture_rate_hz) else {
-        return;
-    };
-    let floor = ledger.decode_fence_energy.as_ref().map(|energy| {
-        TrailSpeechEvidence::from_evidence(&energy.owner.session_active_speech_ranges(
-            &band.session, band.capture_epoch, rate,
-        ))
-    });
-    let floor_ungated = ledger.decode_fence_energy.as_ref().and_then(|energy| {
-        energy.owner.digital_zero_in(&band.session, band.capture_epoch, band.sample_start, band.sample_end)
-    }).map(|gated| !gated);
-    record(&observation.occurrence, TrailEvent::QuietPublicationBand {
-        observation: observation.clone(),
-        band: band.clone(),
-        speech: TrailSpeechEvidence::from_evidence(speech),
-        floor,
-        floor_ungated,
-        capture_rate_hz: rate,
-    });
+    record(
+        &observation.occurrence,
+        TrailEvent::QuietPublicationBand {
+            observation: observation.clone(),
+            band: band.clone(),
+            speech: TrailSpeechEvidence::from_evidence(speech),
+            floor: floor.map(TrailSpeechEvidence::from_evidence),
+            floor_ungated,
+            capture_rate_hz: rate,
+        },
+    );
 }
 
 pub(super) fn record(occurrence: &OccurrenceIdentity, event: TrailEvent) {
@@ -1645,7 +1640,7 @@ fn replay_validated(
                     || band.sample_start < observation.occurrence.sample_start
                     || band.sample_end > observation.occurrence.sample_end
                     || *capture_rate_hz == 0
-                    || ledger.capture_rate_hz.is_some_and(|rate| rate != *capture_rate_hz)
+                    || ledger.capture_rate() != Some(*capture_rate_hz)
                 {
                     return Err(io::Error::other("quiet publication identity differs"));
                 }
@@ -1669,7 +1664,7 @@ fn replay_validated(
                 } else if floor_ungated.is_some() || evidence.producer() != CAPTURE_ENERGY_PRODUCER {
                     return Err(io::Error::other("quiet publication lacks floor evidence"));
                 }
-                ledger.capture_rate_hz = Some(*capture_rate_hz);
+                ledger.bind_capture_rate(*capture_rate_hz);
                 ledger.record_speech_evidence(&evidence);
                 let prior_fences = ledger.replay_quiet_fences.clone();
                 ledger.replay_quiet_fences = floor_evidence.as_ref().map(|_| vec![band.clone()]);
