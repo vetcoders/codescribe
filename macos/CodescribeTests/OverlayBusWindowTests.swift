@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Vision
 import XCTest
 
 @testable import Codescribe
@@ -441,24 +442,19 @@ final class OverlayBusWindowTests: XCTestCase {
         systemSymbolName: "antenna.radiowaves.left.and.right.slash", accessibilityDescription: nil))
   }
 
-  private func accessibleElements(in root: NSView) -> [any NSAccessibilityProtocol] {
-    var visited: Set<ObjectIdentifier> = []
-    func walk(_ object: Any) -> [any NSAccessibilityProtocol] {
-      guard let element = object as? any NSAccessibilityProtocol,
-        visited.insert(ObjectIdentifier(element as AnyObject)).inserted
-      else { return [] }
-      let native = (object as? NSView)?.subviews ?? []
-      return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(walk)
-    }
-    return walk(root)
-  }
-
   func testStandardSidebarKeepsShortNamesAndCompleteChannelDigitsVisible() throws {
+    let reporter = try conversation("3", name: "Reporter")
+    func normalized(_ text: String) -> String {
+      text.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
     for scale: CGFloat in [1, 1.5] {
       for width: CGFloat in [240, 300] {
         for name in ["Tola", "Lena", "lena2", "Wera", "Nina"] {
           var target = try conversation("2", canonicalLease: true, name: name)
-          target = withMessages(target, [try outgoing(in: target, acknowledged: true)])
+          target = withMessages(target, [
+            try outgoing(in: target, acknowledged: true),
+            previewReply(in: reporter, text: "Ready to review this window."),
+          ])
           let channel = OverlayChannelDelivery(
             channel: "2", agent: name, deliveryID: "delivery", stage: .received, isOpen: false)
           var view = OverlayChannelStatusView(
@@ -467,13 +463,16 @@ final class OverlayBusWindowTests: XCTestCase {
               "2": .init(
                 open: false, loud: false, autosealDeadline: nil, followerAlive: true,
                 provider: target.owner?.provider, providerSessionID: target.owner?.providerSessionID)
-            ], conversations: [target], unreadCounts: [target.id: 12], onSelectConversation: { _ in })
+            ], onToggleChannel: { _ in }, conversations: [target], unreadCounts: [target.id: 12],
+            onSelectConversation: { _ in })
           view.mutedChannels = ["2": false]
           view.onTogglePlayback = { _ in }
           let host = NSHostingView(
             rootView: view.monitorBody(maximumHeight: 400 * scale)
               .frame(width: width * scale)
-              .environment(\.csTextScale, scale))
+              .environment(\.csTextScale, scale)
+              .environment(\.colorScheme, .dark)
+              .background(OverlayAppearancePalette.dark.desktopBackground.color))
           let size = host.fittingSize
           let panel = NSPanel(
             contentRect: NSRect(origin: NSPoint(x: -10_000, y: -10_000), size: size),
@@ -485,28 +484,37 @@ final class OverlayBusWindowTests: XCTestCase {
           host.layoutSubtreeIfNeeded()
           RunLoop.main.run(until: Date().addingTimeInterval(0.06))
           host.layoutSubtreeIfNeeded()
-          let tree = accessibleElements(in: host)
-          let nameElement = try XCTUnwrap(
-            tree.first { $0.accessibilityIdentifier() == "overlay-agent-title-2" },
-            "name=\(name) width=\(width) scale=\(scale); ids=\(tree.compactMap { $0.accessibilityIdentifier() })")
-          let digit = try XCTUnwrap(
-            tree.first { $0.accessibilityIdentifier() == "overlay-agent-digit-2" })
-          func scrollViews(_ view: NSView) -> [NSScrollView] {
-            (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
+          let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+          host.cacheDisplay(in: host.bounds, to: bitmap)
+          let request = VNRecognizeTextRequest()
+          request.recognitionLevel = .accurate
+          request.recognitionLanguages = ["en-US"]
+          request.usesLanguageCorrection = false
+          try VNImageRequestHandler(cgImage: try XCTUnwrap(bitmap.cgImage), options: [:])
+            .perform([request])
+          let text = (request.results ?? []).compactMap { observation -> (String, CGRect)? in
+            guard let value = observation.topCandidates(1).first?.string else { return nil }
+            return (normalized(value), observation.boundingBox)
           }
-          let viewport = try XCTUnwrap(scrollViews(host).first).contentView
-          let visible = panel.convertToScreen(viewport.convert(viewport.bounds, to: nil))
-            .insetBy(dx: -1, dy: -1)
-          let nameFrame = nameElement.accessibilityFrame()
-          let digitFrame = digit.accessibilityFrame()
-          XCTAssertFalse(nameFrame.isEmpty)
-          XCTAssertFalse(digitFrame.isEmpty)
-          XCTAssertTrue(visible.contains(nameFrame), "name clipped: \(nameFrame), row: \(visible)")
-          XCTAssertTrue(visible.contains(digitFrame), "digit clipped: \(digitFrame), row: \(visible)")
-          let nameWidth = (name as NSString).size(withAttributes: [
-            .font: NSFont.systemFont(ofSize: 14 * scale, weight: .semibold)
-          ]).width
-          XCTAssertGreaterThanOrEqual(nameFrame.width + 1, nameWidth, "short name became an ellipsis")
+          let wanted = normalized(name)
+          let names = text.filter { $0.0.contains(wanted) }
+          XCTAssertFalse(
+            names.isEmpty,
+            "name=\(name) width=\(width) scale=\(scale) became an ellipsis; painted text=\(text.map(\.0))")
+          if !names.isEmpty {
+            let completeDigit = names.contains { candidate in
+              if let range = candidate.0.range(of: wanted),
+                candidate.0[..<range.lowerBound].contains("2")
+              {
+                return true
+              }
+              return text.contains { number in
+                number.0 == "2" && number.1.maxX <= candidate.1.minX + 0.01
+                  && abs(number.1.midY - candidate.1.midY) < candidate.1.height
+              }
+            }
+            XCTAssertTrue(completeDigit, "the complete channel digit must precede the painted name")
+          }
         }
       }
     }
