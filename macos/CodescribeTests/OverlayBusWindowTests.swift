@@ -554,12 +554,30 @@ final class OverlayBusWindowTests: XCTestCase {
       panel.contentView?.layoutSubtreeIfNeeded()
       return panel
     }
+    func attachPreview(_ panel: NSPanel, message: OverlayConversationMessage, name: String) throws {
+      let host = NSHostingView(
+        rootView: OverlayRosterMessagePreview(name: "Tola", message: message, palette: .dark)
+          .frame(width: panel.frame.width, height: panel.frame.height)
+          .background(OverlayAppearancePalette.dark.desktopBackground.color))
+      host.frame = NSRect(origin: .zero, size: panel.frame.size)
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let image = NSImage(size: panel.frame.size)
+      image.addRepresentation(bitmap)
+      let attachment = XCTAttachment(image: image)
+      attachment.name = name
+      attachment.lifetime = .keepAlways
+      add(attachment)
+    }
     let shortPanel = try show(short)
     let shortHeight = shortPanel.frame.height
+    try attachPreview(shortPanel, message: short, name: "Sidebar-hover-short")
     XCTAssertLessThan(shortHeight, 140, "a short message must not reserve the full preview height")
     XCTAssertFalse(shortPanel.hasShadow)
     XCTAssertFalse(shortPanel.canBecomeKey)
     let longPanel = try show(long)
+    try attachPreview(longPanel, message: long, name: "Sidebar-hover-long")
     XCTAssertGreaterThan(longPanel.frame.height, shortHeight)
     XCTAssertLessThanOrEqual(longPanel.frame.height, 240)
     XCTAssertEqual(longPanel.frame.width, 330, accuracy: 1)

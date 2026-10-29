@@ -140,6 +140,12 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertFalse(hint.hasShadow)
     first.hide()
     XCTAssertTrue(second.isPresented, "an old row cannot dismiss its successor")
+    second.show(
+      "Passive rich preview", palette: .dark,
+      content: AnyView(Text("A short passive preview")), size: CGSize(width: 360, height: 240))
+    XCTAssertTrue(hint.ignoresMouseEvents)
+    XCTAssertTrue(hint.hasShadow, "floating Intercom rich previews retain their existing chrome")
+    XCTAssertEqual(hint.frame.size, NSSize(width: 360, height: 240))
   }
 
   func testScrollableMessageHintDismissesAfterLeavingBothTargets() async throws {
