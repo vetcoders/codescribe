@@ -2045,6 +2045,54 @@ impl AcousticLedger {
         let raw_disagrees = raw
             .zip(component.incumbent.original_text.as_deref())
             .is_some_and(|(a, b)| !label_equal(a, b));
+        // Apple is provisional until the unique owning Whisper window returns.
+        // One complete, physically identical word may replace it without
+        // inventing an extra Whisper vote or changing the word partition.
+        let owned_apple_word = fresh
+            && complete
+            && candidate.acoustic_boundaries_complete
+            && observation.producer == ObservationProducer::Whisper
+            && sources.len() == 1
+            && outputs.len() == 1
+            && candidate.pins.len() == 1
+            && sources[0].producer == ObservationProducer::Apple
+            && !self.coarse_word_source(&sources[0])
+            && !negation_disagrees
+            && outputs[0].sample_start <= sources[0].sample_start
+            && sources[0].sample_end <= outputs[0].sample_end
+            && self.word_anchor_identity(&sources[0]).is_some()
+            && self.word_anchor_identity(&outputs[0]).is_some()
+            && self.same_anchored_word(&sources[0], &outputs[0])
+            && self.word_evidence_input(observation).is_some_and(|input| {
+                let Some(publication) = input.publication.as_ref() else {
+                    return false;
+                };
+                let Some(request) = input.producer_request.as_ref() else {
+                    return false;
+                };
+                let pin = &candidate.pins[0];
+                let midpoint = pin.sample_start
+                    + pin.sample_end.saturating_sub(pin.sample_start) / 2;
+                let mut originals = publication.decoded_words.iter().filter(|raw| {
+                    raw.sample_start == pin.sample_start
+                        && raw.sample_end == pin.sample_end
+                        && raw.decode == pin.decode
+                        && raw.original_text == pin.original_text
+                });
+                input.finality == "final"
+                    && input.timing == "exact_sample_range"
+                    && request.request_id == observation.request
+                    && request.range.session == observation.occurrence.session
+                    && request.range.capture_epoch == observation.occurrence.capture_epoch
+                    && request.range.sample_start <= publication.sample_start
+                    && publication.sample_start <= midpoint
+                    && midpoint < publication.sample_end
+                    && publication.sample_end <= request.range.sample_end
+                    && pin.decode == Some((request.range.sample_start, request.range.sample_end))
+                    && pin.original_text.is_some()
+                    && originals.next().is_some()
+                    && originals.next().is_none()
+            });
         let geometry_preserves_complete_source = candidate.acoustic_boundaries_complete
             || !sources.iter().any(|source| self.complete_word_slot(source));
         // Publication band: a Whisper recognition from the edge of its decode
@@ -2165,6 +2213,7 @@ impl AcousticLedger {
                         .is_some_and(|held| heard.iter().any(|label| label_equal(label, held)))
             };
         let lexical_resolved = independent_witness
+            || owned_apple_word
             || complete_fence_authority
             || window_position_authority
             || provisional_apple
@@ -2190,6 +2239,8 @@ impl AcousticLedger {
             (false, "incomplete_source_scope")
         } else if independent_witness {
             (true, "independent_same_speech_range")
+        } else if owned_apple_word {
+            (true, "owned_whisper_apple_word")
         } else if complete_fence_authority {
             (true, "live_complete_fences")
         } else if window_position_authority {
