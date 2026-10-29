@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ledger_slider_moves_the_repeat_floor() {
+    fn slider_cannot_reclassify_measured_speech_from_spelling_or_duration() {
         let strict = EngineTuning::with_ledger_sensitivity(-100);
         let loose = EngineTuning::with_ledger_sensitivity(100);
 
@@ -311,18 +311,23 @@ mod tests {
             word("nie", 0, 6_240, Some(true), Some(true), None),
             word("nie", 9_600, 15_840, Some(true), Some(true), Some(true)),
         ];
-        assert!(judge_whisper_words(&repeat)[1].admits());
-        assert_eq!(
-            judge_whisper_words_tuned(&repeat, &strict)[1].verdict,
-            WhisperWordSpeechVerdict::Refuse(RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment)
-        );
-        // 80 ms: below today's floor, above the loose 60 ms one.
         let short_repeat = [
             word("nie", 0, 3_840, Some(true), Some(true), None),
             word("nie", 9_600, 13_440, Some(true), Some(true), Some(true)),
         ];
-        assert!(!judge_whisper_words(&short_repeat)[1].admits());
-        assert!(judge_whisper_words_tuned(&short_repeat, &loose)[1].admits());
+        for tuning in [&strict, &loose] {
+            assert!(
+                judge_whisper_words_tuned(&repeat, tuning)
+                    .iter()
+                    .all(|word| word.admits())
+            );
+            assert!(
+                judge_whisper_words_tuned(&short_repeat, tuning)
+                    .iter()
+                    .all(|word| word.admits()),
+                "sensitivity cannot erase independently measured short spoken pins"
+            );
+        }
 
         assert_eq!(
             judge_whisper_words_tuned(&repeat, &EngineTuning::with_ledger_sensitivity(0)),
@@ -468,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn flat_noise_repeat_without_a_valley_keeps_only_the_first() {
+    fn disjoint_measured_pins_do_not_require_a_valley_between_equal_labels() {
         // 400 ms, above the one-syllable floor, so duration is not the reason.
         // One voiced region on one speech island, no valley and no dip inside.
         let span = 19_200u64;
@@ -490,19 +495,14 @@ mod tests {
             .filter(|decision| decision.admits())
             .count();
         assert_eq!(
-            admitted, 1,
-            "one region admits the first trzy; fifteen copies that share it must not"
+            admitted, 16,
+            "each supplied span is measured as speech; one continuous island cannot erase disjoint word pins"
         );
-        assert!(
-            decisions.iter().skip(1).all(|decision| {
-                decision.receipt() == RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment.as_str()
-            }),
-            "a repeat with no valley and no Silero dip is not its own voiced segment"
-        );
+        assert!(decisions.iter().all(|decision| decision.admits()));
     }
 
     #[test]
-    fn separated_iwo_shorter_than_two_syllables_is_refused() {
+    fn short_measured_words_do_not_need_a_letter_derived_duration_floor() {
         // 150 ms at 48 kHz. Two vowel groups need 200 ms. "nie" at 120 ms is one.
         let short_iwo = vec![
             word("Iwo", 0, 12_000, Some(true), Some(true), None),
@@ -513,10 +513,9 @@ mod tests {
             short[0].admits(),
             "the first Iwo is not a repeat and its own speech is enough"
         );
-        assert_eq!(
-            short[1].receipt(),
-            RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment.as_str(),
-            "a separated Iwo of 150 ms is under 100 ms per syllable and is not its own repeat"
+        assert!(
+            short[1].admits(),
+            "letter-derived syllable counts cannot overrule the pin's measured speech"
         );
         let nie = judge_whisper_words(&[
             word("nie", 0, 5_760, Some(true), Some(true), None),

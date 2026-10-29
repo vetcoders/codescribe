@@ -1,13 +1,56 @@
 # STT contract — capture, recognition, admission and formatting
 
-> Current source checkpoint: 2026-10-11, `b282dc14cc5a79bcb2732a79e01f7138602257e5`.
+> Historical source checkpoint: 2026-10-11, `b282dc14cc5a79bcb2732a79e01f7138602257e5`.
 > Engine sources match build 798; later UI and closed Junie changes are retained.
 > Start with [ENGINE_MAP.md](ENGINE_MAP.md) for the stage map,
 > source owners, mode differences, Stop sequence and dated acceptance limits.
 > [THE_ENGINE_CONTRACT.md](THE_ENGINE_CONTRACT.md) owns the product invariants;
 > this file describes runtime wiring. A source checkpoint is not native quality acceptance.
 
-## Current runtime summary (2026-10-11)
+## Forward publication ownership (2026-10-29)
+
+`CaptureWindowPlan` owns both decoder coordinates and publication coordinates.
+The normal live grid decodes nine seconds every three seconds. The first frame
+publishes `[0, 6s)`; later frames publish their middle three seconds. A word's
+original sample midpoint selects its single publication band. The final frame
+extends publication to actual capture EOF. If that frame already returned while
+recording, Stop admits only its retained unpublished tail; it does not launch
+another lexical decode. Direct mode with disjoint decoder frames publishes each
+whole frame, including its short EOF frame.
+
+The full returned word evidence remains bound to the provider request separately
+from the selected publication pins. Extra lexical-trial scheduling is removed
+from native capture. An owned Whisper publication cannot relabel or retime a
+previously measured Whisper word, including through resegmentation or
+retokenization. Independent DictationTranscriber evidence retains its existing
+authority. A phrase-grain Whisper result cannot replace existing word slots.
+
+A provisional single-token Apple utterance label has no independently measured
+word identity. Authentic complete words in the owning band may refine it without requiring speech
+between those words to be silent. Its unpublished remainder remains explicit
+ledger recovery debt. Full decoder context, an empty answer, or a refused answer
+cannot clear this publication debt or authorize a terminal seal. Later accepted
+publication bands or an authorized complete measured DT recovery settle it.
+Measured words, negation, human edits and sealed text retain their protections.
+
+Before sealing, one final exact DT pin may propose a different partition of
+adjacent Whisper slots in one measured speech component. Each join requires
+persisted capture-hop evidence of continuous ungated voice. The operation retains
+all source slots and source ranges, and leaves the DT pin unchanged. Measured
+speech outside that pin stays explicit debt and prevents sealing. Missing or
+quiet boundary evidence, repeated source labels, polarity changes, human edits,
+separate acoustic anchors and sealed owners do not obtain this authority.
+
+Voice Lab displays the session-linked committed reducer document separately from
+timed word pins. Missing word timestamps do not imply an empty transcript. A
+committed empty document and an unavailable document remain distinct; no word
+timings are invented to fill the lane.
+
+The dated descriptions below describe earlier source generations. In particular,
+their live lexical-trial scheduling is superseded by this section. Source and
+synthetic geometry checks do not constitute native recognition-quality acceptance.
+
+## Historical runtime summary (2026-10-11)
 
 - `RecordingController` owns capture; `StreamingRecorder` fans one physical
   stream out to registered subscribers. Dictation and Agent channels do not

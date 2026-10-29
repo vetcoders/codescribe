@@ -79,7 +79,8 @@ impl CaptureWindowPlan {
         let end = if stopping && range.sample_end == capture_end {
             range.sample_end
         } else {
-            range.sample_start
+            range
+                .sample_start
                 .saturating_add(self.step_samples.saturating_mul(2))
                 .min(range.sample_end)
         };

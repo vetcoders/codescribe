@@ -1267,11 +1267,15 @@ impl AcousticLedger {
         let dt_partition_preflight = pins.len() == 1 && self.dt_partition_preflight(observation);
         let dt_crosses_whisper = |index: usize| {
             dt_partition_preflight
-                && prior.iter().filter(|source| {
-                    source.producer == ObservationProducer::Whisper
-                        && source.sample_start < pins[index].sample_end
-                        && pins[index].sample_start < source.sample_end
-                }).count() > 1
+                && prior
+                    .iter()
+                    .filter(|source| {
+                        source.producer == ObservationProducer::Whisper
+                            && source.sample_start < pins[index].sample_end
+                            && pins[index].sample_start < source.sample_end
+                    })
+                    .count()
+                    > 1
         };
         for (index, held) in correspondence.iter().enumerate() {
             if let Some(held) = held {

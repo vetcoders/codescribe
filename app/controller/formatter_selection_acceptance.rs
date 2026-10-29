@@ -348,7 +348,10 @@ async fn formatter_selection_first_stop_defers_pending_nonterminal_take() {
         })
         .await
         .unwrap();
-        assert_eq!(*payloads.lock().unwrap(), [selected.clone()]);
+        assert_eq!(
+            payloads.lock().unwrap().as_slice(),
+            std::slice::from_ref(&selected)
+        );
         let projection = fixture
             .emitter
             .delivery_projection(policy, &request.source_text)

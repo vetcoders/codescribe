@@ -74,6 +74,9 @@ mod slot_ops;
 #[path = "acoustic_ledger/speech_anchor.rs"]
 mod speech_anchor;
 pub use speech_anchor::WordAnchorIdentity;
+#[cfg(test)]
+#[path = "acoustic_ledger/forward_publication_tests.rs"]
+mod forward_publication_tests;
 #[path = "acoustic_ledger/word_adjudication.rs"]
 pub mod word_adjudication;
 #[cfg(test)]
@@ -2639,11 +2642,12 @@ impl AcousticLedger {
     pub fn text_recovery_pending(&self, occurrence: &OccurrenceIdentity) -> bool {
         self.publication_debt.get(occurrence).is_some_and(|ranges| {
             ranges.iter().any(|&(start, end)| {
-                !self.publication_range_debt(occurrence, start, end).is_empty()
+                !self
+                    .publication_range_debt(occurrence, start, end)
+                    .is_empty()
             })
-        })
-            || (self.pending_text_recovery.contains(occurrence)
-                && !self.complete_decode_covers(occurrence))
+        }) || (self.pending_text_recovery.contains(occurrence)
+            && !self.complete_decode_covers(occurrence))
     }
 
     pub fn pending_text_recoveries(
@@ -2928,9 +2932,13 @@ impl AcousticLedger {
             observation.producer != ObservationProducer::ManualHuman
                 && !operations.iter().any(|operation| {
                     operation.sources.contains(source)
-                        && self.independent_dt_partition_debt(
-                            observation, &operation.sources, &operation.outputs,
-                        ).is_some()
+                        && self
+                            .independent_dt_partition_debt(
+                                observation,
+                                &operation.sources,
+                                &operation.outputs,
+                            )
+                            .is_some()
                 })
                 && source.producer.authority_rank() > observation.producer.authority_rank()
                 && !self.speech_evidence.as_ref().is_some_and(|speech| {
