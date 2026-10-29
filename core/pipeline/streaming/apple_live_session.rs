@@ -4556,6 +4556,39 @@ impl AppleSealState {
         } else {
             None
         };
+        // A successful grid return with no raw word in this band can still
+        // close a measured-quiet tail. Context words outside the band are not
+        // empty decoder output, and rejected in-band words are never silence.
+        let no_owned_words = owned_segments.as_ref().is_some_and(Vec::is_empty)
+            || (segments.is_empty() && returned.text.trim().is_empty());
+        if no_owned_words
+            && band_start < band_end
+            && returned.validate().is_ok()
+            && returned.evidence.source == crate::stt::tail_provider::TailEvidenceSource::Whisper
+            && returned.evidence.stability == crate::stt::tail_provider::TailEvidenceStability::Final
+            && returned.evidence.timing_quality
+                == crate::stt::tail_provider::TailTimingQuality::ExactSampleRange
+            && identity.range.session == self.session_id
+            && identity.range.capture_epoch == self.capture_epoch
+        {
+            let band = OccurrenceIdentity::new(
+                &self.session_id, self.capture_epoch, band_start, band_end,
+            );
+            let speech = coverage_speech_evidence(self);
+            let mut ledger = self.acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger.record_speech_evidence(&speech);
+            self.record_decode_fence_measurement(&mut ledger, Some((band_start, band_end)));
+            for (_, owner) in &exact_open_members {
+                if band.sample_start < owner.sample_end && owner.sample_start < band.sample_end {
+                    let observation = ledger.next_word_observation(
+                        LedgerObservationProducer::Whisper, request_id, owner,
+                    );
+                    ledger.record_quiet_publication_band(&observation, &band);
+                }
+            }
+        }
         let segments = owned_segments.as_deref().unwrap_or(segments);
         let filtered_segments = payload
             .as_ref()
