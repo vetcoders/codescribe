@@ -26,26 +26,26 @@ struct AgentLanesTab: View {
 
       SettingsSectionLabel(
         String(
-          localized: "Voice conversation with an agent",
-          comment: "AI models section: how a spoken Codescribe Bus channel session behaves")
+          localized: "Built-in Agent", comment: "AI models section: the built-in Agent's timers")
       )
       .padding(.top, SettingsScale.sectionGap)
 
-      // The slider card is the width pattern: the rows below share its edges
+      // The slider card is the width pattern: the rows share its edges
       // instead of stretching to the pane like the lane editors above.
       PatternWidthStack {
-        voiceConversationCard
+        builtInAgentCard
       }
       .padding(.top, SettingsScale.headerGap)
 
       SettingsSectionLabel(
         String(
-          localized: "Built-in Agent", comment: "AI models section: the built-in Agent's timers")
+          localized: "Voice conversation with an agent",
+          comment: "AI models section: how a spoken Codescribe Bus channel session behaves")
       )
       .padding(.top, SettingsScale.sectionGap)
 
       PatternWidthStack {
-        builtInAgentCard
+        voiceConversationCard
       }
       .padding(.top, SettingsScale.headerGap)
 

@@ -251,7 +251,7 @@ final class SettingsChromeContractTests: XCTestCase {
       ("Formatting engine", "Silnik formatowania"),
       (
         "Apple on your Mac first; this provider steps in when Apple fails.",
-        "Najpierw Apple na Twoim Macu; ten dostawca przejmuje, gdy Apple zawiedzie."
+        "Gdy wybierzesz Apple na tym Macu, wybrany niżej dostawca zadziała awaryjnie."
       ),
       ("Cloud provider", "Dostawca w chmurze"),
       ("Apple on this Mac (experimental)", "Apple na tym Macu (eksperymentalne)"),
@@ -532,8 +532,8 @@ final class SettingsChromeContractTests: XCTestCase {
     let delay = try XCTUnwrap(lanes.range(of: "\"agent-auto-send-delay\""))
     let takeEnd = try XCTUnwrap(lanes.range(of: "\"agent-take-voiceless-end\""))
     let ordered = [
-      voiceHeader, policy, pause, voiceless, finish, formatWait, hold, chain, agentHeader,
-      autoSend, delay, takeEnd,
+      agentHeader, autoSend, delay, takeEnd, voiceHeader, policy, pause, voiceless, finish,
+      formatWait, hold, chain,
     ]
     for (earlier, later) in zip(ordered, ordered.dropFirst()) {
       XCTAssertLessThan(earlier.lowerBound, later.lowerBound)
@@ -546,7 +546,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(audio.contains("\"dictation-toggle-silence\""))
     XCTAssertTrue(audio.contains("value: $model.toggleSilenceSlider"))
     let details = try XCTUnwrap(lanes.range(of: "Active configuration details"))
-    XCTAssertLessThan(takeEnd.lowerBound, details.lowerBound)
+    XCTAssertLessThan(chain.lowerBound, details.lowerBound)
     XCTAssertTrue(lanes.contains("ForEach(channelRuntimeRows, id: \\.key)"))
     XCTAssertFalse(lanes.contains("Resolved runtime truth"))
 
@@ -581,7 +581,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Built-in Agent": "Wbudowany Agent",
       "Send automatically": "Wysyłaj automatycznie",
       "After how many seconds": "Po ilu sekundach",
-      "End the Agent recording without voice after": "Zakończ nagranie Agenta bez głosu po",
+      "End the Agent recording without voice after": "Wyłącz mikrofon przy ciszy po",
       "Pause before sending": "Pauza przed wysłaniem",
       "settings.agentChannel.finish.off": "Wył.",
       "Punctuation (Light+)": "Interpunkcja (Light+)",
@@ -589,7 +589,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "sent; the conversation lasts until you hang up": "wysłane; rozmowa trwa do rozłączenia",
       "sent and hung up": "wysłane i rozłączone",
       "Silence limit in hands-free dictation": "Limit ciszy w dyktowaniu bez trzymania",
-      "Hold before sending to Codescribe Bus": "Przytrzymanie przed wysłaniem do Codescribe Bus",
+      "Hold before sending to Codescribe Bus": "Czas na korektę przed wysłaniem (Codescribe Bus)",
       "The API key was rejected, so there is no model list. The account still works.":
         "Klucz API został odrzucony, więc nie ma listy modeli. Konto nadal działa.",
     ]
