@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Settings › Shortcuts: the recording indicator legend shows the colours the dot next to the cursor really draws and all six of its states — Recording, Words still arriving, Processing, Agent, Agent between phrases and Shortcut refused. Before, it showed terracotta, violet and amber for three states the dot paints red, purple and orange, and left out the rest. Recording has one red, `#FF3B30`, on the cursor dot, the overlay lamp and the menu-bar dot; the cursor dot used to draw a pure `#FF0000`.
 - Settings: the prompt segment is named **Agent**, and the Intercom menu shortens **Floating pills** (PL **Lewitujące pigułki**) while its description keeps the experimental status. The shared Whisper download card shows the model ID in muted ink and only its location in monospace.
 - Settings: Creator explains the selected formatting level, and Agent › AI models explains the selected cloud or Apple engine. With Max selected, the Formatting lane says that Max uses the Agent model instead of suggesting a cloud fallback.
 - Settings › Agent › MCP: each server's Enabled/Disabled setting is a native switch instead of a coloured action chip. It still changes only the saved configuration; Test, Edit and Remove remain separate actions.

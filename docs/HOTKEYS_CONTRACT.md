@@ -605,6 +605,15 @@ Selection is captured in the trigger handler, never at send time. Rust remains
 the indicator/tray authority, while the transcription overlay is exclusive to
 Dictation and Formatting.
 
+The pointer dot has one palette, `IndicatorState::color` in
+`app/os/hold_badge.rs`: recording (hold and hands-free, `#FF3B30`), words still
+arriving (amber), processing (orange), Agent (purple), Agent between phrases
+(white with a purple rim) and a refused shortcut (slate). The badge paints from
+it, and the bridge hands it to Swift (`indicator_palette()`), where the
+Settings › Shortcuts legend lists every state in the colour the dot draws and
+`CSPalette.indicatorRecording` / `indicatorAgentQuiet` take their hue, opaque.
+No other surface writes its own copy of these colours.
+
 After capture completion, retained reducer text is editable in the same native
 canvas even when coverage is refused or a later document observation is
 nonterminal. Document observations cannot reopen that capture; new controller

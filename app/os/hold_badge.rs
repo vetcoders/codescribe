@@ -106,12 +106,60 @@ fn classify_input_capability(
 
 pub use crate::presentation::emitter::CursorVoice;
 
-/// Amber of a voice whose words are owed, in every mode.
-const LAGGING_COLOR: (f64, f64, f64, f64) = (1.0, 0.62, 0.0, 1.0);
-/// Agent mode between phrases.
-const AGENT_QUIET_COLOR: (f64, f64, f64, f64) = (0.97, 0.97, 0.97, 0.95);
-/// A refused chord: slate, so the flash never reads as a recording dot.
-const REFUSED_COLOR: (f64, f64, f64, f64) = (0.45, 0.45, 0.5, 0.92);
+/// One state the pointer dot can show, in the order the Settings legend lists
+/// them. [`IndicatorState::color`] is the only palette of the dot: the badge
+/// paints from it and the bridge hands it to Swift for the legend and the
+/// recording lamp, so no surface writes its own copy of these values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndicatorState {
+    /// Hold and hands-free capture; hands-free pulses, hold stays solid.
+    Recording,
+    /// Speech outran its words, or the ledger still owes text (dictation).
+    WordsOwed,
+    /// Transcribing and formatting after the capture ended.
+    Processing,
+    /// Agent mode while the voice speaks or its words are owed.
+    Agent,
+    /// Agent mode between phrases: white with an Agent rim.
+    AgentQuiet,
+    /// A refused chord (a vacant channel digit); nothing is capturing.
+    Refused,
+}
+
+impl IndicatorState {
+    /// Every state, in legend order.
+    pub const ALL: [IndicatorState; 6] = [
+        IndicatorState::Recording,
+        IndicatorState::WordsOwed,
+        IndicatorState::Processing,
+        IndicatorState::Agent,
+        IndicatorState::AgentQuiet,
+        IndicatorState::Refused,
+    ];
+
+    /// The dot's fill for this state (RGBA). Recording is #FF3B30, the red the
+    /// app's recording lamp already drew, so "recording" has one red.
+    pub fn color(self) -> (f64, f64, f64, f64) {
+        match self {
+            IndicatorState::Recording => (1.0, 59.0 / 255.0, 48.0 / 255.0, 0.8),
+            IndicatorState::WordsOwed => (1.0, 0.62, 0.0, 1.0),
+            IndicatorState::Processing => (1.0, 0.5, 0.0, 0.85),
+            IndicatorState::Agent => (0.6, 0.2, 0.9, 0.85),
+            IndicatorState::AgentQuiet => (0.97, 0.97, 0.97, 0.95),
+            // Slate, so the flash never reads as a recording dot.
+            IndicatorState::Refused => (0.45, 0.45, 0.5, 0.92),
+        }
+    }
+
+    /// The state whose colour rims this dot. A white dot vanishes over a white
+    /// page, so the quiet Agent dot keeps an Agent rim.
+    pub fn rim(self) -> Option<IndicatorState> {
+        match self {
+            IndicatorState::AgentQuiet => Some(IndicatorState::Agent),
+            _ => None,
+        }
+    }
+}
 
 /// Badge display mode for different recording/processing states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,15 +178,19 @@ pub enum BadgeMode {
 }
 
 impl BadgeMode {
+    /// The palette state this mode shows at rest.
+    pub fn indicator_state(&self) -> IndicatorState {
+        match self {
+            BadgeMode::Hold | BadgeMode::Toggle => IndicatorState::Recording,
+            BadgeMode::Processing => IndicatorState::Processing,
+            BadgeMode::Assistive => IndicatorState::Agent,
+            BadgeMode::Refused => IndicatorState::Refused,
+        }
+    }
+
     /// Get the base color for this mode (RGBA)
     pub fn color(&self) -> (f64, f64, f64, f64) {
-        match self {
-            BadgeMode::Hold => (1.0, 0.0, 0.0, 0.8),        // Red
-            BadgeMode::Toggle => (1.0, 0.0, 0.0, 0.8),      // Red (will pulse)
-            BadgeMode::Processing => (1.0, 0.5, 0.0, 0.85), // Orange
-            BadgeMode::Assistive => (0.6, 0.2, 0.9, 0.85),  // Purple
-            BadgeMode::Refused => REFUSED_COLOR,
-        }
+        self.indicator_state().color()
     }
 
     /// Whether this mode should pulse (opacity animation)
@@ -170,9 +222,9 @@ impl BadgeMode {
         voice: CursorVoice,
     ) -> (f64, f64, f64, f64) {
         match (self, voice) {
-            (BadgeMode::Assistive, CursorVoice::Quiet) => AGENT_QUIET_COLOR,
+            (BadgeMode::Assistive, CursorVoice::Quiet) => IndicatorState::AgentQuiet.color(),
             (BadgeMode::Assistive, _) => base,
-            (_, CursorVoice::Lagging) => LAGGING_COLOR,
+            (_, CursorVoice::Lagging) => IndicatorState::WordsOwed.color(),
             _ => base,
         }
     }
@@ -185,7 +237,11 @@ impl BadgeMode {
     /// A white dot vanishes over a white page; the quiet Agent dot keeps a
     /// purple rim so it still reads as Agent mode.
     pub fn voice_ring(&self, voice: CursorVoice) -> Option<(f64, f64, f64, f64)> {
-        (*self == BadgeMode::Assistive && voice == CursorVoice::Quiet).then(|| self.color())
+        if *self != BadgeMode::Assistive || voice != CursorVoice::Quiet {
+            return None;
+        }
+        let rim = IndicatorState::AgentQuiet.rim()?;
+        Some(rim.color())
     }
 }
 
@@ -205,13 +261,13 @@ pub struct HoldBadgeConfig {
 }
 
 impl Default for HoldBadgeConfig {
-    /// Default hold badge: 12 px red dot, 150 ms updates, Hold mode.
+    /// Default hold badge: 12 px recording-red dot, 150 ms updates, Hold mode.
     fn default() -> Self {
         Self {
             diameter: 12.0,
             offset: (10.0, -10.0),
             update_interval_ms: 150,
-            color: (1.0, 0.0, 0.0, 0.8), // Red with 80% opacity
+            color: BadgeMode::Hold.color(),
             mode: BadgeMode::Hold,
         }
     }
@@ -238,7 +294,50 @@ impl HoldBadgeConfig {
 /// Mode visual contracts and size-change-without-mutate visible config.
 #[cfg(test)]
 mod tests {
-    use super::{BadgeMode, CursorVoice, FocusedInputField, HoldBadgeConfig, classify_input_role};
+    use super::{
+        BadgeMode, CursorVoice, FocusedInputField, HoldBadgeConfig, IndicatorState,
+        classify_input_role,
+    };
+
+    /// S5 (Founder smoke, 2026-10-26): the legend drew colours the dot never
+    /// showed, and "recording" had two reds. One palette, one red, every state.
+    #[test]
+    fn indicator_palette_has_one_recording_red_and_a_colour_for_every_state() {
+        let recording = IndicatorState::Recording.color();
+        assert_eq!(
+            (recording.0, recording.1, recording.2),
+            (1.0, 59.0 / 255.0, 48.0 / 255.0)
+        );
+        assert_eq!(BadgeMode::Hold.color(), recording);
+        assert_eq!(BadgeMode::Toggle.color(), recording);
+        assert_eq!(HoldBadgeConfig::default().color, recording);
+
+        for (index, state) in IndicatorState::ALL.iter().enumerate() {
+            let (r, g, b, a) = state.color();
+            for channel in [r, g, b, a] {
+                assert!((0.0..=1.0).contains(&channel), "{state:?}");
+            }
+            assert!(a > 0.0, "{state:?} must be visible");
+            for other in &IndicatorState::ALL[index + 1..] {
+                assert_ne!(state.color(), other.color(), "{state:?} vs {other:?}");
+            }
+        }
+
+        for mode in [
+            BadgeMode::Hold,
+            BadgeMode::Toggle,
+            BadgeMode::Processing,
+            BadgeMode::Assistive,
+            BadgeMode::Refused,
+        ] {
+            assert!(IndicatorState::ALL.contains(&mode.indicator_state()));
+        }
+        assert_eq!(
+            IndicatorState::AgentQuiet.rim(),
+            Some(IndicatorState::Agent)
+        );
+        assert_eq!(IndicatorState::Recording.rim(), None);
+    }
 
     #[test]
     fn refused_flash_is_a_still_slate_dot_unlike_any_recording_mode() {
@@ -258,7 +357,7 @@ mod tests {
         assert_eq!(refused.diameter_multiplier(), 1.0);
         let config = HoldBadgeConfig::from_mode(refused);
         assert_eq!(config.mode, BadgeMode::Refused);
-        assert_eq!(config.color, super::REFUSED_COLOR);
+        assert_eq!(config.color, IndicatorState::Refused.color());
     }
 
     #[test]
@@ -419,7 +518,10 @@ mod tests {
             purple,
             "no observer keeps the mode"
         );
-        assert_eq!(agent(CursorVoice::Quiet), super::AGENT_QUIET_COLOR);
+        assert_eq!(
+            agent(CursorVoice::Quiet),
+            IndicatorState::AgentQuiet.color()
+        );
         assert_eq!(
             agent(CursorVoice::Lagging),
             purple,
@@ -439,7 +541,7 @@ mod tests {
         assert_eq!(BadgeMode::Hold.voice_color(red, CursorVoice::Quiet), red);
         assert_eq!(
             BadgeMode::Hold.voice_color(red, CursorVoice::Lagging),
-            super::LAGGING_COLOR
+            IndicatorState::WordsOwed.color()
         );
         assert!(!BadgeMode::Hold.voice_pulses(CursorVoice::Lagging));
         assert!(BadgeMode::Toggle.voice_pulses(CursorVoice::Quiet));

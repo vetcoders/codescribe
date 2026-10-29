@@ -332,10 +332,12 @@ struct ShortcutsPanel: View {
         .frame(width: 372)
         // The dots belong under the size they are sized by, at the helper rung
         // the rest of the page explains itself in (Founder review, 2026-10-18).
-        HStack(alignment: .top, spacing: SettingsScale.rowInsetH) {
-          legendItem(color: CSColor.terracotta, text: "Recording")
-          legendItem(color: CSColor.assistive, text: "Agent")
-          legendItem(color: CSColor.amber, text: "Processing")
+        // Every state the pointer dot shows, in the colour it is painted in:
+        // the list and the colours come from the core palette (S5).
+        LazyVGrid(columns: legendColumns, alignment: .leading, spacing: CSSpace.xs) {
+          ForEach(IndicatorPalette.swatches, id: \.state) { swatch in
+            legendItem(swatch)
+          }
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -564,10 +566,25 @@ struct ShortcutsPanel: View {
     )
   }
 
-  private func legendItem(color: Color, text: LocalizedStringKey) -> some View {
+  /// Three captions a row: six states read as two short rows.
+  private var legendColumns: [GridItem] {
+    Array(
+      repeating: GridItem(.flexible(), spacing: SettingsScale.rowInsetH, alignment: .topLeading),
+      count: 3)
+  }
+
+  private func legendItem(_ swatch: CsIndicatorSwatch) -> some View {
     HStack(alignment: .top, spacing: CSSpace.xs) {
-      Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
-      Text(text)
+      Circle()
+        .fill(Color(nsColor: swatch.nsColor))
+        .overlay {
+          if let rim = swatch.rimColor {
+            Circle().strokeBorder(Color(nsColor: rim), lineWidth: 1)
+          }
+        }
+        .frame(width: 7, height: 7)
+        .padding(.top, 4)
+      Text(swatch.state.legendName)
         .font(SettingsScale.helper)
         .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)

@@ -2745,6 +2745,16 @@
         }
       }
     },
+    "Agent between phrases" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Agent między frazami"
+          }
+        }
+      }
+    },
     "Agent bridge installation could not be completed atomically: %@" : {
       "comment" : "The placeholder is a technical diagnostic produced by the installer",
       "localizations" : {
@@ -17151,6 +17161,16 @@
         }
       }
     },
+    "Shortcut refused" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Skrót odrzucony"
+          }
+        }
+      }
+    },
     "Shortcuts need Input Monitoring + Accessibility" : {
       "localizations" : {
         "pl" : {
@@ -21769,6 +21789,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się odczytać pinów słów. Nie odtworzono czasów na podstawie tekstu."
+          }
+        }
+      }
+    },
+    "Words still arriving" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zaległe słowa"
           }
         }
       }

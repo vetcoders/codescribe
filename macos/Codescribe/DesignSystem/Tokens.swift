@@ -54,12 +54,15 @@ enum CSPalette {
   static let terracottaTintBars = NSColor(hex: 0xE6A98F)
   static let assistive = NSColor(hex: 0x9B72F2)
   static let olive = NSColor(hex: 0x5F6B3E)
-  static let indicatorRecording = NSColor(hex: 0xFF3B30)
+  /// The recording red is the pointer dot's, from the core palette
+  /// (`IndicatorPalette`), opaque; the lamp and the menu-bar dot never keep a
+  /// red of their own.
+  static let indicatorRecording = IndicatorPalette.opaqueColor(.recording)
   /// Capture is live but nothing reaches speaking level. Founder intent
   /// s04-027 (2026-09-25): the indicator is yellow while you are not speaking.
   static let indicatorSilence = NSColor(hex: 0xFFCC00)
-  /// Agent mode between phrases: the pointer dot's white.
-  static let indicatorAgentQuiet = NSColor(white: 0.97, alpha: 1)
+  /// Agent mode between phrases: the pointer dot's white, from the core palette.
+  static let indicatorAgentQuiet = IndicatorPalette.opaqueColor(.agentQuiet)
   static let danger = NSColor(hex: 0xD84A4A)
 
   // Surfaces — warm ink in dark, warm paper in light.

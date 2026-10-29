@@ -378,9 +378,13 @@ command and password-field safeguards are unchanged.
 channels**, **Extra shortcuts** and **Paste after dictation**. Inside, the size
 of the indicator next to the cursor comes first, with its picker on its own
 line under the name (Off / Small / Medium / Large; the
-Agent indicator stays proportionally larger), and the three dot states —
-Recording, Agent, Processing — read as captions below the size they are sized
-by.
+Agent indicator stays proportionally larger), and every state the dot shows
+reads as a caption below the size it is sized by, each beside a dot in the
+colour the pointer indicator really draws: Recording (red), Words still
+arriving (amber), Processing (orange), Agent (purple), Agent between phrases
+(white with a purple rim) and Shortcut refused (slate). The list and the
+colours come from the app's one indicator palette
+(`docs/HOTKEYS_CONTRACT.md`).
 
 `HOLD_START_DELAY_MS` and `DOUBLE_TAP_INTERVAL_MS` govern the same gestures but
 have no control on this tab; they are settings keys
