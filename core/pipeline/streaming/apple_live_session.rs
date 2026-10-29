@@ -4541,17 +4541,17 @@ impl AppleSealState {
         }
         // The original payload remains bound as decode context. Only the
         // owning band's words enter admission or its speech-refusal path.
+        let (mut band_start, band_end) = whisper_publication_band(self, &identity.range);
+        if terminal_tail_only {
+            band_start = self.window_plan.publication_band(
+                &identity.range, self.audio.session_sample_end(), false,
+            ).1;
+        }
         let owned_segments = if word_grain {
-            let (start, end) = whisper_publication_band(self, &identity.range);
-            let start = if terminal_tail_only {
-                identity.range.sample_start.saturating_add(u64::from(self.sample_rate) * 6)
-            } else {
-                start
-            };
             Some(segments.iter().filter(|segment| {
                 let midpoint = segment.range.sample_start
                     + segment.range.sample_end.saturating_sub(segment.range.sample_start) / 2;
-                start <= midpoint && midpoint < end
+                band_start <= midpoint && midpoint < band_end
             }).cloned().collect::<Vec<_>>())
         } else {
             None
@@ -4653,12 +4653,6 @@ impl AppleSealState {
             }
             if word_grain {
                 if !route.exclusive.is_empty() {
-                    let (band_start, band_end) = whisper_publication_band(self, &identity.range);
-                    let band_start = if terminal_tail_only {
-                        identity.range.sample_start.saturating_add(u64::from(self.sample_rate) * 6)
-                    } else {
-                        band_start
-                    };
                     let terminal_tail = self.capture_stopping
                         && identity.range.sample_end == self.audio.session_sample_end();
                     mutation_admitted |= self.admit_routed_words_with_publication(
@@ -7216,14 +7210,9 @@ fn pin_text_tokens(text: &str, segments: &[TimedTailSegment]) -> Option<Vec<Opti
 
 /// Decode context overlaps; publication belongs to exactly one grid window.
 fn whisper_publication_band(state: &AppleSealState, range: &TailSampleRange) -> (u64, u64) {
-    let step = u64::from(state.sample_rate) * 3;
-    let start = if range.sample_start == 0 { 0 } else { range.sample_start.saturating_add(step) };
-    let end = if state.capture_stopping && range.sample_end == state.audio.session_sample_end() {
-        range.sample_end
-    } else {
-        range.sample_start.saturating_add(step.saturating_mul(2)).min(range.sample_end)
-    };
-    (start.min(end), end)
+    state.window_plan.publication_band(
+        range, state.audio.session_sample_end(), state.capture_stopping,
+    )
 }
 
 fn whisper_word_in_publication_band(state: &AppleSealState, decode: &TailSampleRange, word: &TailSampleRange) -> bool {

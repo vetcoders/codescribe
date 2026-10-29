@@ -59,6 +59,33 @@ impl CaptureWindowPlan {
         self.step_samples = self.window_samples;
     }
 
+    /// Decode context may overlap; each word belongs to one publication band.
+    /// A disjoint decoder owns its entire issued range. At EOF the last
+    /// overlapping window also owns the remaining right-hand context.
+    pub(crate) fn publication_band(
+        &self,
+        range: &TailSampleRange,
+        capture_end: u64,
+        stopping: bool,
+    ) -> (u64, u64) {
+        if self.step_samples == self.window_samples {
+            return (range.sample_start, range.sample_end);
+        }
+        let start = if range.sample_start == 0 {
+            0
+        } else {
+            range.sample_start.saturating_add(self.step_samples)
+        };
+        let end = if stopping && range.sample_end == capture_end {
+            range.sample_end
+        } else {
+            range.sample_start
+                .saturating_add(self.step_samples.saturating_mul(2))
+                .min(range.sample_end)
+        };
+        (start.min(end), end)
+    }
+
     /// Peeking never spends work. Backpressure retains the exact offered frame.
     /// The first Stop observation freezes the head. A later, larger sample
     /// count neither hides that offer nor opens another grid past the freeze.
