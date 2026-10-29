@@ -1159,6 +1159,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     probeWindow.contentView = probeHost
     BackgroundTestWindow.present(probeWindow)
     probeHost.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+    probeHost.layoutSubtreeIfNeeded()
 
     func resolvedMenu(in container: NSView, of window: NSWindow, at point: NSPoint) -> NSMenu? {
       guard
@@ -1175,8 +1177,20 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       }
       return nil
     }
-    let probeMenu = resolvedMenu(
-      in: probeHost, of: probeWindow, at: NSPoint(x: 100, y: probeHost.bounds.height - 20))
+    // Resolve the mounted menu instead of assuming which y-coordinate the
+    // hosting view gives its first VStack child in this macOS environment.
+    var probeMenu: NSMenu?
+    probeScan: for x in stride(from: CGFloat(6), to: probeHost.bounds.width, by: 12) {
+      for y in stride(from: CGFloat(6), to: probeHost.bounds.height, by: 12) {
+        if let menu = resolvedMenu(
+          in: probeHost, of: probeWindow, at: NSPoint(x: x, y: y))
+        {
+          menu.delegate?.menuNeedsUpdate?(menu)
+          probeMenu = menu
+          break probeScan
+        }
+      }
+    }
     let probeTitles = probeMenu.map(titles(of:)) ?? []
     XCTAssertTrue(
       forbidden.contains { marker in probeTitles.contains { $0.contains(marker) } },
