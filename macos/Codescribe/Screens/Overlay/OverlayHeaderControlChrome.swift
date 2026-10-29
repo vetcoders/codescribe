@@ -254,6 +254,24 @@ final class OverlayHintPanel {
       controller.rootView = AnyView(
         content.frame(width: maximumSize.width, height: interactive ? nil : maximumSize.height)
           .background {
+            if interactive {
+              RoundedRectangle(cornerRadius: CSRadius.chip)
+                .fill(palette.desktopBackground.color.opacity(0.28))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+          }
+          .overlay {
+            if interactive {
+              RoundedRectangle(cornerRadius: CSRadius.chip)
+                .strokeBorder(
+                  palette.primaryText.color.opacity(palette.appearance == .dark ? 0.20 : 0.14),
+                  lineWidth: 1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+          }
+          .background {
             OverlayMenuCursorRegion { [weak self, weak owner] inside in
               guard let owner else { return }
               self?.pointerHover(inside, owner: owner)
@@ -274,10 +292,11 @@ final class OverlayHintPanel {
           width: min(OverlayTooltipLayout.maxHintWidth, bounds.width - 2 * Self.screenInset),
           height: bounds.height - 2 * Self.screenInset))
     }
-    panel.hasShadow = content != nil && !interactive
+    panel.hasShadow = content != nil
     panel.ignoresMouseEvents = !interactive
     panel.alphaValue = parent.alphaValue
     if let effect = panel.contentView as? NSVisualEffectView {
+      effect.material = interactive ? .popover : .toolTip
       effect.maskImage = Self.roundedMask(
         radius: content == nil || interactive ? CSRadius.chip : CSRadius.card)
     }
@@ -287,6 +306,7 @@ final class OverlayHintPanel {
       ? Self.frame(size: size, leading: anchorRect, within: bounds)
       : Self.frame(size: size, below: anchorRect, within: bounds)
     panel.setFrame(frame, display: true)
+    panel.invalidateShadow()
     if panel.parent !== parent {
       panel.parent?.removeChildWindow(panel)
       parent.addChildWindow(panel, ordered: .above)

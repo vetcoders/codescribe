@@ -524,7 +524,7 @@ final class OverlayBusWindowTests: XCTestCase {
     }
   }
 
-  func testRosterPreviewFitsShortMessagesAndScrollsLongMessagesWithoutShadow() throws {
+  func testRosterPreviewFitsShortMessagesAndScrollsLongMessagesWithSeparatedGlass() throws {
     let target = try conversation("2")
     let short = previewReply(in: target, text: "A short, complete reply.")
     let long = previewReply(
@@ -574,7 +574,8 @@ final class OverlayBusWindowTests: XCTestCase {
     let shortHeight = shortPanel.frame.height
     try attachPreview(shortPanel, message: short, name: "Sidebar-hover-short")
     XCTAssertLessThan(shortHeight, 140, "a short message must not reserve the full preview height")
-    XCTAssertFalse(shortPanel.hasShadow)
+    XCTAssertTrue(shortPanel.hasShadow, "the preview separates from the conversation beneath it")
+    XCTAssertEqual((shortPanel.contentView as? NSVisualEffectView)?.material, .popover)
     XCTAssertFalse(shortPanel.canBecomeKey)
     let longPanel = try show(long)
     try attachPreview(longPanel, message: long, name: "Sidebar-hover-long")

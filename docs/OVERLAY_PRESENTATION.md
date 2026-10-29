@@ -65,9 +65,11 @@ action hints. Empty entries retain their existing navigation hint.
 
 Roster previews use a maximum 330-by-240-point viewport at text scale 1.
 Short messages fit their natural height; long messages use the bounded native
-scroll view. The preview uses the shared tooltip material, compact insets and
-no window shadow. Message body text keeps its existing readable size. Fixed
-rich previews on the floating Intercom retain their existing presentation.
+scroll view. The preview uses native popover glass with a light sheet-color
+veil, a thin appearance-aware edge and a window shadow. These separate it from
+conversation bubbles beneath it while retaining compact insets. Message body
+text keeps its existing readable size. Ordinary hints and fixed rich previews
+on the floating Intercom retain their tooltip material and existing presentation.
 
 The more menu contains channel-zero membership, Do not disturb, the detected
 client/terminal destination and removal into saved conversations. The same

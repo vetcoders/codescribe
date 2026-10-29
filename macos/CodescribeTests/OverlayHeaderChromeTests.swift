@@ -111,6 +111,8 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let hint = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
     XCTAssertFalse(hint.ignoresMouseEvents, "the full message accepts pointer scrolling")
     XCTAssertFalse(hint.canBecomeKey, "hover cannot take the composer's keyboard")
+    XCTAssertTrue(hint.hasShadow)
+    XCTAssertEqual((hint.contentView as? NSVisualEffectView)?.material, .popover)
     XCTAssertTrue(parent.firstResponder === responder)
     XCTAssertEqual(hint.alphaValue, parent.alphaValue, "the preview follows its owner's visibility")
 
@@ -138,6 +140,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertEqual(OverlayHintPanel.shared.presentedTitle, "Next control")
     XCTAssertTrue(hint.ignoresMouseEvents, "ordinary hints remain click-through")
     XCTAssertFalse(hint.hasShadow)
+    XCTAssertEqual((hint.contentView as? NSVisualEffectView)?.material, .toolTip)
     first.hide()
     XCTAssertTrue(second.isPresented, "an old row cannot dismiss its successor")
     second.show(
@@ -145,6 +148,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       content: AnyView(Text("A short passive preview")), size: CGSize(width: 360, height: 240))
     XCTAssertTrue(hint.ignoresMouseEvents)
     XCTAssertTrue(hint.hasShadow, "floating Intercom rich previews retain their existing chrome")
+    XCTAssertEqual((hint.contentView as? NSVisualEffectView)?.material, .toolTip)
     XCTAssertEqual(hint.frame.size, NSSize(width: 360, height: 240))
   }
 

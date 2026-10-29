@@ -121,7 +121,8 @@ open a microphone. The last message can be yours or the agent's, matching the
 message shown on the card.
 
 The preview fits short messages closely and uses a smaller bounded window for
-longer ones. Its lighter surface keeps the message text at the normal readable
+longer ones. Its subtle glass surface, thin outline and soft shadow separate it
+from the conversation underneath. Message text stays at the normal readable
 size, with scrolling available for the full content.
 
 Use **More** to change channel-zero membership or **Do not disturb**, open the
