@@ -8034,6 +8034,13 @@ fn admit_retained_unowned_words(
     let whisper_speech = measure_whisper_window_speech(state, &payload.segments);
     let mut qualified = false;
     for (index, segment) in payload.segments.iter().enumerate() {
+        // Context words cannot emit visible refusal receipts before their
+        // own publication window has had its turn.
+        if segment.grain != TailSegmentGrain::Word
+            || !whisper_word_in_publication_band(state, decode, &segment.range)
+        {
+            continue;
+        }
         if let Some(decision) = whisper_speech.decisions.get(index)
             && !decision.admits()
         {
@@ -8057,9 +8064,7 @@ fn admit_retained_unowned_words(
             );
             continue;
         }
-        if segment.grain != TailSegmentGrain::Word
-            || !whisper_word_in_publication_band(state, decode, &segment.range)
-            || segment.text.split_whitespace().count() != 1
+        if segment.text.split_whitespace().count() != 1
             || !decode.contains(&segment.range)
             || state
                 .capture_energy
