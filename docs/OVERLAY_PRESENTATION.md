@@ -124,10 +124,14 @@ The existing All, Inbox and saved-conversation views keep their current data
 and routing semantics; the earlier proposal's additional history filters are
 not part of this change.
 
-The standard conversation reserves its composer space below the message
-viewport. The shared `.intercom` presentation keeps its existing floating
-composer arrangement. Text scale, resize, retained history, reply navigation,
-attachments, draft dictation and draft synchronization remain supported.
+The horizontal `.busWindow` presentation gives its compact navigation and
+composer real layout space above and below a clipped message viewport. Only
+history scrolls; messages never pass behind the agent identity, controls or text
+destination. The destination and voice status share one quiet row when they
+fit, and use two compact rows at narrower widths. The standalone `.standard`
+and floating `.intercom` presentations keep their existing layout. Text scale,
+resize, retained history, reply navigation, attachments, draft dictation and
+draft synchronization remain supported.
 
 The visible conversation, text destination and open microphone are independent.
 The text destination is always named beside the composer and can be selected

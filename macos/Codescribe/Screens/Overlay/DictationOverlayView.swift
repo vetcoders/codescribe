@@ -559,7 +559,7 @@ struct DictationOverlayView: View {
               let resolvedTarget = state.resolvedComposerTarget(viewing: conversation)
               OverlayConversationView(
                 conversation: conversation, palette: palette,
-                topInset: headerHeight + 8 + conversationControlsHeight, bottomInset: 20,
+                topInset: headerHeight + 8 + conversationControlsHeight, bottomInset: 16,
                 pendingControls: state.pendingReplyControls,
                 controlErrors: state.replyControlErrors,
                 onControl: { message, stop in
@@ -629,6 +629,7 @@ struct DictationOverlayView: View {
                     state.navigateToConversationMessage(target, messageID: messageID)
                   },
                 conversationNavigationRequest: state.conversationNavigationRequest,
+                presentation: .busWindow,
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
                 onComposerTypingActivity: { state.noteComposerTypingActivity() },
                 replySelection: resolvedTarget.flatMap { state.conversationReplies[$0.id] },
@@ -1458,43 +1459,54 @@ struct DictationOverlayView: View {
       }
       return digit
     }
-    return VStack(alignment: .leading, spacing: 4) {
-      HStack(spacing: 6) {
-        Text("To:")
-        Menu {
-          ForEach(choices) { choice in
-            Button(choice.displayTitle) { state.chooseComposerTarget(choice) }
-          }
+    let recipient = HStack(spacing: 6) {
+      Text("To:")
+      Menu {
+        ForEach(choices) { choice in
+          Button(choice.displayTitle) { state.chooseComposerTarget(choice) }
+        }
+      } label: {
+        Text(verbatim: selected?.displayTitle ?? target?.title ?? "—")
+          .lineLimit(1).truncationMode(.middle)
+      }
+      .controlSize(.small)
+      .accessibilityIdentifier("overlay-composer-recipient")
+      if conversation.owner != nil || conversation.channel == "0",
+        selected?.id != conversation.id || selected?.owner?.id != conversation.owner?.id
+      {
+        Button {
+          state.chooseComposerTarget(conversation)
         } label: {
-          Text(verbatim: selected?.displayTitle ?? target?.title ?? "—")
-            .lineLimit(1).truncationMode(.middle)
+          Text("Write to \(conversation.displayTitle)")
         }
-        .accessibilityIdentifier("overlay-composer-recipient")
-        if conversation.owner != nil || conversation.channel == "0",
-          selected?.id != conversation.id || selected?.owner?.id != conversation.owner?.id
-        {
-          Button {
-            state.chooseComposerTarget(conversation)
-          } label: {
-            Text("Write to \(conversation.displayTitle)")
-          }
-          .buttonStyle(.plain)
+        .buttonStyle(.plain)
+      }
+    }
+    let voice = HStack(spacing: 4) {
+      Image(systemName: "waveform.badge.mic")
+      if openChannels.isEmpty {
+        Text("Voice channels closed")
+      } else {
+        Text("Voice channels:")
+        Text(verbatim: openChannelTitles.joined(separator: ", "))
+          .lineLimit(1).truncationMode(.middle)
+      }
+    }
+    return VStack(alignment: .leading, spacing: 2) {
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 12) {
+          recipient.fixedSize(horizontal: true, vertical: false)
+          Spacer(minLength: 0)
+          voice.fixedSize(horizontal: true, vertical: false)
         }
-        Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 2) {
+          recipient
+          voice
+        }
       }
       if target != nil && selected == nil {
         Text("Recipient unavailable")
           .accessibilityIdentifier("overlay-composer-recipient-unavailable")
-      }
-      HStack(spacing: 4) {
-        Image(systemName: "waveform.badge.mic")
-        if openChannels.isEmpty {
-          Text("Voice channels closed")
-        } else {
-          Text("Voice channels:")
-          Text(verbatim: openChannelTitles.joined(separator: ", "))
-            .lineLimit(1).truncationMode(.middle)
-        }
       }
     }
     .font(.system(size: 11 * textScale, weight: .medium))

@@ -77,6 +77,7 @@ final class OverlayBusWindowTests: XCTestCase {
             .font(.system(size: 11 * scale))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(BusChromeFrameProbe { routingProbe = $0 })),
+        presentation: .busWindow,
         pendingCaptureAttachments: paths)
       let host = NSHostingView(
         rootView: view.environment(\.csTextScale, scale).environment(\.colorScheme, .dark)

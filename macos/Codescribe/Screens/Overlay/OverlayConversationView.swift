@@ -50,8 +50,10 @@ private struct OverlayHeldControlButton: View {
   }
 }
 
+/// Active containers of the shared conversation renderer: standalone fiszka,
+/// floating Intercom and the horizontal bus with fixed chrome.
 enum OverlayConversationPresentation: Equatable, Sendable {
-  case standard, intercom
+  case standard, intercom, busWindow
 }
 
 /// The same rich body and attachment chips on a conversation bubble or a
@@ -158,8 +160,8 @@ struct OverlayConversationView: View {
   var onReturnHeldText: ((OverlayConversationMessage, String, UUID) -> Bool)? = nil
   var onNavigateComposerReply: (() -> Void)? = nil
   var conversationNavigationRequest: OverlayState.ConversationNavigationRequest? = nil
-  /// Intercom only tightens the container and composer insets. Messages keep
-  /// the same formatted bubbles in attached, main and detached conversations.
+  /// The container owns chrome placement; messages and command owners are shared
+  /// by attached, horizontal and detached conversations.
   var presentation: OverlayConversationPresentation = .standard
   var showsComposer = true
   /// Saved-owner windows retain reading and copying, without live commands.
@@ -247,170 +249,24 @@ struct OverlayConversationView: View {
   var body: some View {
     GeometryReader { geometry in
       ScrollViewReader { proxy in
-        trackedMessages(
-          maxBubbleWidth: Self.bubbleCap(contentWidth: geometry.size.width, textScale: textScale)
-        )
-        .onChange(of: replyNavigationID) { _, id in
-          guard let id else { return }
-          proxy.scrollTo(id, anchor: .center)
-          replyNavigationID = nil
-        }
-        // One ScrollView per conversation. `.initialOffset` then starts at the
-        // bottom instead of reusing the previous list's offset through the morph.
-        // It places a list once, so the list is recreated when the history
-        // finishes loading and when a list born empty gets its first rows;
-        // otherwise it stayed at the top of everything that came after
-        // (Maciej, 2026-10-19). The composer stays put.
-        .id([
-          conversation.id, conversation.historyLoaded ? "loaded" : "loading",
-          orderedMessages.isEmpty ? "empty" : "rows",
-        ])
-
-        .padding(.trailing, OverlayResizeHit.scrollbarInset)
-        .transaction { transaction in
-          // Keep retained message geometry stable during the panel's transition.
-          transaction.animation = nil
-          transaction.disablesAnimations = true
-        }
-        .overlay(alignment: .bottom) {
-          if showsComposer && presentation == .intercom {
-            composer
-              .onGeometryChange(for: CGFloat.self) {
-                $0.size.height
-              } action: {
-                composerHeight = $0
-              }
-          }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-          if showsComposer && presentation == .standard {
-            composer
-          }
-        }
-        .overlay(alignment: .bottom) {
-          ZStack {
-            if !followsLatest {
-              Button {
-                scrollToLatest(proxy)
-              } label: {
-                Image(systemName: "chevron.down")
-                  .font(.system(size: 12, weight: .semibold))
-                  .foregroundStyle(palette.primaryText.color)
-                  .frame(width: 16, height: 16)
-              }
-              .modifier(OverlayAgentControlStyle())
-              .csFocusOutline()
-              .accessibilityLabel("Jump to current")
-              .overlayFastHint(
-                String(localized: "Jump to the current reply"), palette: palette
-              )
-              .accessibilityHint(Text("Jump to the current reply"))
-              .accessibilityIdentifier("overlay-conversation-jump-to-current")
-              .padding(.bottom, (presentation == .intercom ? visibleComposerHeight : 0) + 10)
-              .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-          }
-          .animation(.easeOut(duration: CSMotion.Tempo.hover), value: followsLatest)
-        }
-        .overlay(alignment: .top) {
+        if presentation == .busWindow {
           VStack(spacing: 0) {
             Color.clear.frame(height: topInset)
               .allowsHitTesting(false)
               .accessibilityHidden(true)
-            if hidesNavigation {
-              // The content margin follows: no phantom gap under the header.
-              Color.clear.frame(height: 0)
-                .onAppear { navigationHeight = 0 }
-            } else {
+            if !hidesNavigation {
               navigation
-                .padding(.horizontal, 20)
-                .padding(.top, 4)
-                .padding(.bottom, 8)
-                .onGeometryChange(for: CGFloat.self) {
-                  $0.size.height
-                } action: {
-                  navigationHeight = $0
-                }
+                .padding(.horizontal, contentInset)
+                .padding(.top, 2)
+                .padding(.bottom, 4)
+                .overlay(alignment: .bottom) { busChromeDivider }
             }
+            messageViewport(size: geometry.size, proxy: proxy)
+              .frame(minHeight: 0, maxHeight: .infinity)
+            if showsComposer { composer }
           }
-        }
-        .onAppear {
-          settleMessageWindow(reset: true)
-          scrollFocusConversationID = conversation.id
-          scrollFocusWasPresented = isPresented
-          if #available(macOS 15.0, *) {
-            // `.initialOffset` places a new list. scrollTo here races the morph's
-            // lazy row remeasurement, the same race the geometry handler refuses.
-          } else {
-            scrollToLatest(proxy)
-          }
-        }
-        .onChange(of: conversation.id) { _, _ in
-          settleMessageWindow(reset: true)
-          if #available(macOS 15.0, *) {
-            // The new `.id` rebuilds the list at the bottom anchor. scrollTo on
-            // this frame races that remeasurement.
-            _ = scrollFollow.handle(.jumpToCurrent)
-          } else {
-            scrollToLatest(proxy)
-          }
-          rememberScrollFocusAnchor()
-        }
-        .onChange(of: messageWindowLimit) { _, _ in
-          // Opening a preview restores the ordinary history window instead of
-          // leaving its three-row start pinned inside the complete projection.
-          settleMessageWindow(reset: true)
-        }
-        .onChange(of: focusRevision) { _, _ in
-          let reselectingOpenConversation =
-            scrollFocusConversationID == conversation.id && scrollFocusWasPresented
-          if #available(macOS 15.0, *) {
-            if reselectingOpenConversation {
-              scrollToLatest(proxy)
-            } else {
-              // Opening or switching during the morph: keep following, no scrollTo.
-              _ = scrollFollow.handle(.jumpToCurrent)
-            }
-          } else {
-            scrollToLatest(proxy)
-          }
-          rememberScrollFocusAnchor()
-        }
-        .onChange(of: isPresented) { _, presented in
-          if #available(macOS 15.0, *) {
-            // The size-change anchor keeps a following list at the bottom through
-            // the morph; a list the user scrolled up stays where it was.
-          } else if presented, followsLatest {
-            scrollToLatest(proxy)
-          }
-          rememberScrollFocusAnchor()
-        }
-        .onChange(of: geometry.size) { _, _ in
-          // Modern ScrollView owns size-change anchoring. A second scrollTo
-          // on every resize frame races its lazy row remeasurement.
-          if #available(macOS 15.0, *) {
-            return
-          } else if isPresented, followsLatest {
-            scrollToLatest(proxy)
-          }
-        }
-        .task(id: conversationNavigationRequest?.revision) {
-          await Task.yield()
-          guard !Task.isCancelled else { return }
-          navigateRequestedMessage()
-        }
-        .onChange(of: orderedMessages.last) { _, _ in
-          settleMessageWindow()
-          if #available(macOS 15.0, *) {
-            // Size-change anchoring keeps the bottom while the morph grows the list.
-            // scrollTo on the new last row races the lazy remeasurement.
-            _ = scrollFollow.handle(.contentChanged)
-          } else if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
-            scrollToLatest(proxy)
-          }
-        }
-        .onChange(of: orderedMessages) { _, _ in
-          navigateRequestedMessage()
+        } else {
+          messageViewport(size: geometry.size, proxy: proxy)
         }
       }
       .foregroundStyle(palette.primaryText.color)
@@ -419,8 +275,187 @@ struct OverlayConversationView: View {
     .accessibilityIdentifier("overlay-conversation-body")
   }
 
+  private func messageViewport(size: CGSize, proxy: ScrollViewProxy) -> some View {
+    trackedMessages(
+      maxBubbleWidth: Self.bubbleCap(contentWidth: size.width, textScale: textScale)
+    )
+    .onChange(of: replyNavigationID) { _, id in
+      guard let id else { return }
+      proxy.scrollTo(id, anchor: .center)
+      replyNavigationID = nil
+    }
+    // One ScrollView per conversation. `.initialOffset` then starts at the
+    // bottom instead of reusing the previous list's offset through the morph.
+    // It places a list once, so the list is recreated when the history
+    // finishes loading and when a list born empty gets its first rows;
+    // otherwise it stayed at the top of everything that came after
+    // (Maciej, 2026-10-19). The composer stays put.
+    .id([
+      conversation.id, conversation.historyLoaded ? "loaded" : "loading",
+      orderedMessages.isEmpty ? "empty" : "rows",
+    ])
+
+    .padding(.trailing, OverlayResizeHit.scrollbarInset)
+    .transaction { transaction in
+      // Keep retained message geometry stable during the panel's transition.
+      transaction.animation = nil
+      transaction.disablesAnimations = true
+    }
+    .overlay(alignment: .bottom) {
+      if showsComposer && presentation == .intercom {
+        composer
+          .onGeometryChange(for: CGFloat.self) {
+            $0.size.height
+          } action: {
+            composerHeight = $0
+          }
+      }
+    }
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      if showsComposer && presentation == .standard {
+        composer
+      }
+    }
+    .overlay(alignment: .bottom) {
+      ZStack {
+        if !followsLatest {
+          Button {
+            scrollToLatest(proxy)
+          } label: {
+            Image(systemName: "chevron.down")
+              .font(.system(size: 12, weight: .semibold))
+              .foregroundStyle(palette.primaryText.color)
+              .frame(width: 16, height: 16)
+          }
+          .modifier(OverlayAgentControlStyle())
+          .csFocusOutline()
+          .accessibilityLabel("Jump to current")
+          .overlayFastHint(
+            String(localized: "Jump to the current reply"), palette: palette
+          )
+          .accessibilityHint(Text("Jump to the current reply"))
+          .accessibilityIdentifier("overlay-conversation-jump-to-current")
+          .padding(.bottom, (presentation == .intercom ? visibleComposerHeight : 0) + 10)
+          .transition(.opacity.combined(with: .move(edge: .bottom)))
+        }
+      }
+      .animation(.easeOut(duration: CSMotion.Tempo.hover), value: followsLatest)
+    }
+    .overlay(alignment: .top) {
+      if presentation != .busWindow {
+        VStack(spacing: 0) {
+          Color.clear.frame(height: topInset)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+          if hidesNavigation {
+            // The content margin follows: no phantom gap under the header.
+            Color.clear.frame(height: 0)
+              .onAppear { navigationHeight = 0 }
+          } else {
+            navigation
+              .padding(.horizontal, 20)
+              .padding(.top, 4)
+              .padding(.bottom, 8)
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                navigationHeight = $0
+              }
+          }
+        }
+      }
+    }
+    .onAppear {
+      settleMessageWindow(reset: true)
+      scrollFocusConversationID = conversation.id
+      scrollFocusWasPresented = isPresented
+      if #available(macOS 15.0, *) {
+        // `.initialOffset` places a new list. scrollTo here races the morph's
+        // lazy row remeasurement, the same race the geometry handler refuses.
+      } else {
+        scrollToLatest(proxy)
+      }
+    }
+    .onChange(of: conversation.id) { _, _ in
+      settleMessageWindow(reset: true)
+      if #available(macOS 15.0, *) {
+        // The new `.id` rebuilds the list at the bottom anchor. scrollTo on
+        // this frame races that remeasurement.
+        _ = scrollFollow.handle(.jumpToCurrent)
+      } else {
+        scrollToLatest(proxy)
+      }
+      rememberScrollFocusAnchor()
+    }
+    .onChange(of: messageWindowLimit) { _, _ in
+      // Opening a preview restores the ordinary history window instead of
+      // leaving its three-row start pinned inside the complete projection.
+      settleMessageWindow(reset: true)
+    }
+    .onChange(of: focusRevision) { _, _ in
+      let reselectingOpenConversation =
+        scrollFocusConversationID == conversation.id && scrollFocusWasPresented
+      if #available(macOS 15.0, *) {
+        if reselectingOpenConversation {
+          scrollToLatest(proxy)
+        } else {
+          // Opening or switching during the morph: keep following, no scrollTo.
+          _ = scrollFollow.handle(.jumpToCurrent)
+        }
+      } else {
+        scrollToLatest(proxy)
+      }
+      rememberScrollFocusAnchor()
+    }
+    .onChange(of: isPresented) { _, presented in
+      if #available(macOS 15.0, *) {
+        // The size-change anchor keeps a following list at the bottom through
+        // the morph; a list the user scrolled up stays where it was.
+      } else if presented, followsLatest {
+        scrollToLatest(proxy)
+      }
+      rememberScrollFocusAnchor()
+    }
+    .onChange(of: size) { _, _ in
+      // Modern ScrollView owns size-change anchoring. A second scrollTo
+      // on every resize frame races its lazy row remeasurement.
+      if #available(macOS 15.0, *) {
+        return
+      } else if isPresented, followsLatest {
+        scrollToLatest(proxy)
+      }
+    }
+    .task(id: conversationNavigationRequest?.revision) {
+      await Task.yield()
+      guard !Task.isCancelled else { return }
+      navigateRequestedMessage()
+    }
+    .onChange(of: orderedMessages.last) { _, _ in
+      settleMessageWindow()
+      if #available(macOS 15.0, *) {
+        // Size-change anchoring keeps the bottom while the morph grows the list.
+        // scrollTo on the new last row races the lazy remeasurement.
+        _ = scrollFollow.handle(.contentChanged)
+      } else if scrollFollow.handle(.contentChanged) == .scrollToLiveEdge {
+        scrollToLatest(proxy)
+      }
+    }
+    .onChange(of: orderedMessages) { _, _ in
+      navigateRequestedMessage()
+    }
+  }
+
+  private var busChromeDivider: some View {
+    Rectangle()
+      .fill(palette.border.color.opacity(0.65))
+      .frame(height: 1 / max(displayScale, 1))
+      .padding(.horizontal, contentInset)
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
+  }
+
   private var composer: some View {
-    VStack(spacing: 8) {
+    VStack(spacing: presentation == .busWindow ? 4 : 8) {
       if let composerRouting { composerRouting }
       let target = composerConversation ?? conversation
       if composerAvailable && (target.owner != nil || target.channel == "0") {
@@ -465,9 +500,12 @@ struct OverlayConversationView: View {
       }
     }
     .padding(.horizontal, contentInset)
-    .padding(.top, 6)
+    .padding(.top, presentation == .busWindow ? 4 : 6)
     .padding(.bottom, bottomInset)
     .frame(maxWidth: .infinity)
+    .overlay(alignment: .top) {
+      if presentation == .busWindow { busChromeDivider }
+    }
   }
 
   private var composerPlaceholder: String {
@@ -754,9 +792,19 @@ struct OverlayConversationView: View {
     }
     .contentMargins(
       .bottom,
-      presentation == .intercom && showsComposer
-        ? (visibleComposerHeight > 0 ? visibleComposerHeight : bottomInset + 54) : bottomInset)
-    if #available(macOS 26.0, *) {
+      presentation == .busWindow
+        ? 4
+        : presentation == .intercom && showsComposer
+          ? (visibleComposerHeight > 0 ? visibleComposerHeight : bottomInset + 54) : bottomInset)
+    if presentation == .busWindow {
+      if #available(macOS 26.0, *) {
+        list
+          .scrollEdgeEffectHidden(true, for: [.top, .bottom])
+          .clipped()
+      } else {
+        list.clipped()
+      }
+    } else if #available(macOS 26.0, *) {
       // The header's glass alone is not a shade: bubbles stayed readable right
       // behind the mark (Founder, 2026-10-18). Apple pairs a glass bar with the
       // scroll edge effect, so the pinned header becomes a safe-area bar — an

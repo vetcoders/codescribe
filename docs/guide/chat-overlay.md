@@ -89,7 +89,8 @@ attached with its own provider and session identity.
 
 In the horizontal window, the conversation header keeps the viewed agent and
 its microphone, speaker and **More (…)** menu visible with either the full
-sidebar or its folded rail. To change what you view, use the channel list or,
+sidebar or its folded rail. Its compact header stays above the scrolling
+history, with no messages passing behind it. To change what you view, use the channel list or,
 in the compact form, the channel chips. Rows you can open show a faint
 highlight under the pointer.
 
@@ -212,7 +213,9 @@ write explicitly. Your stored drafts stay with their original conversations.
 
 The **Voice channels** line names the channels you are speaking to live. It is
 separate from the composer's plain microphone, which dictates into a draft.
-The composer has its own space below the messages and does not cover them.
+The destination and voice status share a compact row when there is room and
+stack at narrower widths. They and the composer keep their own space below
+the scrolling messages, so history never passes behind these controls.
 
 If a pinned text recipient is no longer current, **Recipient unavailable**
 keeps that identity visible and the chooser remains available. A new agent on
