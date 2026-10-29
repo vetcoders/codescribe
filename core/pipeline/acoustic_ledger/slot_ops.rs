@@ -2589,6 +2589,19 @@ impl AcousticLedger {
         use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
 
         let owner = &source.observation.occurrence;
+        // A publication band may retire a coarse Apple source only as its
+        // authenticated complete partition. Quiet-gap and one-word
+        // continuation proofs cannot account for raw words filtered from the
+        // band; accepting those paths would also lose the unowned debt.
+        if observation.producer == ObservationProducer::Whisper
+            && source.producer == ObservationProducer::Apple
+            && self.coarse_word_source(source)
+            && self
+                .word_evidence_input(observation)
+                .is_some_and(|input| input.publication.is_some())
+        {
+            return self.complete_coarse_partition(observation, source, outputs);
+        }
         let staying = self
             .slots_of(owner)
             .unwrap_or(&[])
