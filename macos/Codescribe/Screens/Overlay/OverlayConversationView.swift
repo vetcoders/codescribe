@@ -151,8 +151,6 @@ struct OverlayConversationView: View {
   /// Optional controls for the horizontal bus window only.
   var navigationActions: AnyView? = nil
   var navigationIndicators: AnyView? = nil
-  /// A stable window-owned pane toggle occupies this leading header slot.
-  var paneHeaderLeadingSpace: CGFloat = 0
   /// Standard window may compose for a different frozen conversation.
   var composerConversation: OverlayConversation? = nil
   var composerAvailable = true
@@ -258,7 +256,6 @@ struct OverlayConversationView: View {
               .accessibilityHidden(true)
             if !hidesNavigation {
               navigation
-                .padding(.leading, paneHeaderLeadingSpace)
                 .padding(.horizontal, contentInset)
                 .frame(height: OverlayAgentDrawerLayout.paneHeaderHeight(textScale: textScale))
                 .overlay(alignment: .bottom) { busChromeDivider }
@@ -1067,23 +1064,15 @@ struct OverlayConversationView: View {
       if allowsLiveActions, let remaining = message.holdSecondsRemaining {
         heldMessageControls(message, seconds: remaining)
       } else {
-        HStack {
-          messageFooter(message)
-          if allowsLiveActions, !conversation.isHumanInbox, let onReply,
-            message.captureState != .receiving, message.withdrawn != true
-          {
-            Spacer(minLength: 8)
-            Button("Reply", systemImage: "arrowshape.turn.up.left") {
-              onReply(message)
-              revisionFocus &+= 1
+        Group {
+          if presentation == .busWindow {
+            ViewThatFits(in: .horizontal) {
+              messageActions(message, stacked: false)
+                .fixedSize(horizontal: true, vertical: false)
+              messageActions(message, stacked: true)
             }
-            .buttonStyle(.plain)
-            .font(.system(size: 10 * textScale, weight: .semibold))
-            .conversationActionHover(
-              restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-            )
-            .accessibilityHint(Text("Reply to this message"))
-            .accessibilityIdentifier("overlay-message-reply-\(message.id)")
+          } else {
+            messageActions(message, stacked: false)
           }
         }
         .background { OverlayMenuCursorRegion() }
@@ -1102,6 +1091,45 @@ struct OverlayConversationView: View {
           lineWidth: 1 / max(displayScale, 1)
         )
         .allowsHitTesting(false)
+    }
+  }
+
+  @ViewBuilder
+  private func messageActions(_ message: OverlayConversationMessage, stacked: Bool) -> some View {
+    if stacked {
+      VStack(alignment: .leading, spacing: 5) {
+        messageFooter(message)
+        replyButton(message)
+      }
+    } else {
+      HStack {
+        messageFooter(message)
+        if allowsLiveActions, !conversation.isHumanInbox, onReply != nil,
+          message.captureState != .receiving, message.withdrawn != true
+        {
+          Spacer(minLength: 8)
+          replyButton(message)
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func replyButton(_ message: OverlayConversationMessage) -> some View {
+    if allowsLiveActions, !conversation.isHumanInbox, let onReply,
+      message.captureState != .receiving, message.withdrawn != true
+    {
+      Button("Reply", systemImage: "arrowshape.turn.up.left") {
+        onReply(message)
+        revisionFocus &+= 1
+      }
+      .buttonStyle(.plain)
+      .font(.system(size: 10 * textScale, weight: .semibold))
+      .conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+      )
+      .accessibilityHint(Text("Reply to this message"))
+      .accessibilityIdentifier("overlay-message-reply-\(message.id)")
     }
   }
 
@@ -1151,7 +1179,8 @@ struct OverlayConversationView: View {
       message: message, palette: palette,
       pending: pendingControls.contains(message.id), error: controlErrors[message.id],
       onControl: { stop in onControl(message, stop) },
-      receipts: messageReceipts(message), allowsPlayback: allowsLiveActions)
+      receipts: messageReceipts(message), allowsPlayback: allowsLiveActions,
+      adaptsToWidth: presentation == .busWindow)
   }
 
   private func addressedQuestion(
@@ -1196,6 +1225,7 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
   let onControl: (Bool) -> Void
   let receipts: Receipts
   var allowsPlayback = true
+  var adaptsToWidth = false
 
   private var supportsPlayback: Bool {
     allowsPlayback && message.kind == .reply && message.supportsSpeechPlayback
@@ -1213,44 +1243,19 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
-      HStack(spacing: 4) {
-        if supportsPlayback {
-          Button {
-            onControl(active)
-          } label: {
-            Image(systemName: active ? "stop.fill" : "play.fill")
-              .font(.system(size: 10 * textScale))
-              .frame(width: 24, alignment: .trailing)
-              .contentShape(Rectangle())
+      Group {
+        if adaptsToWidth {
+          ViewThatFits(in: .horizontal) {
+            footerRow.fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 5) {
+              playbackControls
+              receipts
+              copyControl
+            }
           }
-          .buttonStyle(.plain)
-          .conversationActionHover(
-            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-          )
-          .disabled(!active && pending)
-          .accessibilityLabel(Text(verbatim: playHint))
-          .accessibilityHint(Text(verbatim: playHint))
-          .accessibilityIdentifier("overlay-reply-\(active ? "stop" : "play")-\(message.id)")
-          if let playback = message.playback {
-            let label = ReplyPlaybackCopy.label(state: playback.state, reason: playback.reason)
-            Text(verbatim: label)
-              .lineLimit(1)
-              .accessibilityHint(Text(verbatim: label))
-              .accessibilityIdentifier("overlay-playback-status-\(message.id)")
-          } else if pending {
-            Text("Requesting playback").lineLimit(1)
-          }
+        } else {
+          footerRow
         }
-        receipts
-        Spacer(minLength: 8)
-        CopyMessageButton(
-          text: message.text,
-          labelFont: .system(size: 10 * textScale, weight: .semibold),
-          restingColor: palette.mutedText.color,
-          palette: palette
-        )
-        .fixedSize()
-        .accessibilityIdentifier("overlay-message-copy-\(message.id)")
       }
       // Play, receipts and Copy are controls: the arrow, never the I-beam.
       .background { OverlayMenuCursorRegion() }
@@ -1264,6 +1269,57 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
           .font(.system(size: 10 * textScale)).foregroundStyle(palette.mutedText.color)
       }
     }
+  }
+
+  private var footerRow: some View {
+    HStack(spacing: 4) {
+      playbackControls
+      receipts
+      Spacer(minLength: 8)
+      copyControl
+    }
+  }
+
+  @ViewBuilder
+  private var playbackControls: some View {
+    if supportsPlayback {
+      Button {
+        onControl(active)
+      } label: {
+        Image(systemName: active ? "stop.fill" : "play.fill")
+          .font(.system(size: 10 * textScale))
+          .frame(width: 24, alignment: .trailing)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+      )
+      .disabled(!active && pending)
+      .accessibilityLabel(Text(verbatim: playHint))
+      .accessibilityHint(Text(verbatim: playHint))
+      .accessibilityIdentifier("overlay-reply-\(active ? "stop" : "play")-\(message.id)")
+      if let playback = message.playback {
+        let label = ReplyPlaybackCopy.label(state: playback.state, reason: playback.reason)
+        Text(verbatim: label)
+          .lineLimit(1)
+          .accessibilityHint(Text(verbatim: label))
+          .accessibilityIdentifier("overlay-playback-status-\(message.id)")
+      } else if pending {
+        Text("Requesting playback").lineLimit(1)
+      }
+    }
+  }
+
+  private var copyControl: some View {
+    CopyMessageButton(
+      text: message.text,
+      labelFont: .system(size: 10 * textScale, weight: .semibold),
+      restingColor: palette.mutedText.color,
+      palette: palette
+    )
+    .fixedSize()
+    .accessibilityIdentifier("overlay-message-copy-\(message.id)")
   }
 }
 
