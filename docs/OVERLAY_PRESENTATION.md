@@ -332,9 +332,9 @@ closing their durable instances. Entering Intercom hides the default Agents
 widget; a separate transcription canvas retains its capture presentation.
 Drafts, recipients and microphone state do not change with this visibility.
 
-Automatic collapse set to Never also excludes folding when another application
-window becomes key. An explicit Compact/Mini choice remains available. Window
-presence and layering keep their existing owner; Never is not a new pin policy.
+Automatic collapse set to Never also excludes folding when another window of
+this application becomes key. An explicit Compact/Mini choice remains available.
+Window presence and layering keep their existing owner; Never is not a new pin policy.
 
 The transcription and agents canvases use the same native panel, with a last
 expanded size for each `OverlayContentSurface`. `OverlayState.windowContentSurface`

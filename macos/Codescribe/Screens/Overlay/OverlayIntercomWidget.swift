@@ -2121,10 +2121,11 @@ private struct OverlayIntercomCard: View {
         .trimmingCharacters(in: .whitespacesAndNewlines)
       return (text?.isEmpty ?? true) ? nil : text
     }()
+    let detached = controller.desktop.openInstance(for: identity) != nil
     let nameHint = OverlayHeaderControlChrome(
       title: identity.displayDigit + " · " + name, accent: nil, palette: palette,
       hintLeading: true,
-      showsHint: !expanded
+      showsHint: !expanded && !detached
         && controller.groupCardHeight <= OverlayIntercomWidgetLayout.controlHeight(scale: scale)
         && !hasInlinePreview,
       hintContent: hasMessage
@@ -2135,7 +2136,6 @@ private struct OverlayIntercomCard: View {
       hintSize: hasMessage ? CGSize(width: 360 * scale, height: 240 * scale) : nil)
     // The grip stays separate from the open button at every content tier.
     // Its full-height native hit area never overlaps audio or the agent name.
-    let detached = controller.desktop.openInstance(for: identity) != nil
     let detachGrip = OverlayIntercomDetachGrip(palette: palette, highlighted: hovering)
       .offset(x: detachPull.width, y: detachPull.height)
       .frame(
