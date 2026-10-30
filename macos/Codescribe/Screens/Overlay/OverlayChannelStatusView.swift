@@ -2043,28 +2043,35 @@ struct OverlayChannelStatusView: View {
         }
         // Identity owns the full first line. Audio and More spend the preview's
         // width below it, never the agent name (Founder recording, 2026-10-30).
+        // Under the preview, the delivery state of the last sent message in
+        // the bubble's own words, then the reader's state: the mini status
+        // Maciej asked back for in place of the name row's checkmarks
+        // (2026-10-30: "mini statusy pod podglądem wiadomości").
         HStack(alignment: .center, spacing: 4) {
-          Group {
-            if let conversation, onSelectConversation != nil {
-              Button {
-                viewConversation(channel)
-              } label: {
+          VStack(alignment: .leading, spacing: 2) {
+            Group {
+              if let conversation, onSelectConversation != nil {
+                Button {
+                  viewConversation(channel)
+                } label: {
+                  rosterRowLabel(
+                    title: conversation.name, statusChannel: channel, conversation: conversation,
+                    dot: statusDotKind(for: channel), contentOnly: true)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(verbatim: identityHint))
+                .modifier(
+                  OverlayRosterMessageHint(
+                    conversation: conversation, palette: palette, textScale: textScale,
+                    isOpen: conversation.id == selectedConversationID,
+                    onOpen: { viewConversation(channel) }))
+              } else {
                 rosterRowLabel(
-                  title: conversation.name, statusChannel: channel, conversation: conversation,
+                  title: channel.agent, statusChannel: channel, conversation: conversation,
                   dot: statusDotKind(for: channel), contentOnly: true)
               }
-              .buttonStyle(.plain)
-              .accessibilityLabel(Text(verbatim: identityHint))
-              .modifier(
-                OverlayRosterMessageHint(
-                  conversation: conversation, palette: palette, textScale: textScale,
-                  isOpen: conversation.id == selectedConversationID,
-                  onOpen: { viewConversation(channel) }))
-            } else {
-              rosterRowLabel(
-                title: channel.agent, statusChannel: channel, conversation: conversation,
-                dot: statusDotKind(for: channel), contentOnly: true)
             }
+            rosterRowState(channel, receiptText: receiptText)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
           compactAgentActions(for: channel)
@@ -2122,15 +2129,12 @@ struct OverlayChannelStatusView: View {
           AnyView(compactReceptionIndicators(for: $0))
         }, palette: palette,
       textScale: textScale, headerOnly: headerOnly, contentOnly: contentOnly,
-      receipt: statusChannel.flatMap {
-        deliveryReceiptDisplay(for: $0, conversation: conversation)
-      },
       trailingMarks: rowMarks(for: statusChannel, conversation: conversation)
     )
   }
 
-  /// Beside the read receipt: the sync chain, a toggle as on the fiszki, and
-  /// the one-press jump to the agent's panel, both out of the "…" menu
+  /// After the name: the sync chain, a toggle as on the fiszki, and the
+  /// one-press jump to the agent's panel, both out of the "…" menu
   /// (Maciej, 2026-10-30 14:08 and 14:12). Nothing on the All row.
   func rowMarks(for channel: OverlayChannelDelivery?, conversation: OverlayConversation?)
     -> AnyView?
@@ -2252,9 +2256,7 @@ struct OverlayChannelStatusView: View {
           })
         else { continue }
         guard message.withdrawn != true else { return nil }
-        func display(_ symbol: String, _ text: String, isRead: Bool = false)
-          -> OverlayRosterReceipt
-        {
+        func display(_ text: String, isRead: Bool = false) -> OverlayRosterReceipt {
           let detail: String
           if let date = MessageTimestamp.date(fromISO8601: message.emittedAt) {
             let timestamp = date.formatted(date: .abbreviated, time: .shortened)
@@ -2262,27 +2264,26 @@ struct OverlayChannelStatusView: View {
           } else {
             detail = String(localized: "Last sent message: \(text)")
           }
-          return OverlayRosterReceipt(symbol: symbol, text: text, helpText: detail, isRead: isRead)
+          return OverlayRosterReceipt(text: text, helpText: detail, isRead: isRead)
         }
         if message.holdSecondsRemaining != nil {
-          return display("pause.circle", String(localized: "Held"))
+          return display(String(localized: "Held"))
         }
         if recipient.acknowledged {
-          return display("double-check", String(localized: "Read"), isRead: true)
+          return display(String(localized: "Read"), isRead: true)
         }
         if let deliveryID = recipient.deliveryID,
           let state = message.receipt?.deliveries.first(where: { $0.deliveryID == deliveryID })?
             .state
         {
           switch state {
-          case .read: return display("double-check", String(localized: "Read"), isRead: true)
-          case .delivered: return display("checkmark", String(localized: "Delivered"))
-          case .skipped: return display("forward.end", OverlayConversationView.skippedBroadcastText)
-          case .noReceipt: return display("circle.dotted", OverlayConversationView.noReceiptText)
+          case .read: return display(String(localized: "Read"), isRead: true)
+          case .delivered: return display(String(localized: "Delivered"))
+          case .skipped: return display(OverlayConversationView.skippedBroadcastText)
+          case .noReceipt: return display(OverlayConversationView.noReceiptText)
           }
         }
-        let symbol = recipient.broadcastSkipped == true ? "forward.end" : "clock"
-        return display(symbol, OverlayConversationView.receiptStatusText(for: recipient))
+        return display(OverlayConversationView.receiptStatusText(for: recipient))
       }
     }
     return nil

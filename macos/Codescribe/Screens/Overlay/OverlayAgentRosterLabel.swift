@@ -21,8 +21,10 @@ struct OverlayAgentRosterLabel: View {
   let textScale: CGFloat
   var headerOnly = false
   var contentOnly = false
-  var receipt: OverlayRosterReceipt? = nil
-  /// After the receipt: the caller's sync chain and panel button.
+  /// After the name: the caller's sync chain and panel button. The name row
+  /// carries no receipt glyph; delivery state is the line under the preview
+  /// (Maciej, 2026-10-30: "ptaszki są zbędną semantyką. ważniejsze dla mnie
+  /// były mini statusy pod podglądem wiadomości").
   var trailingMarks: AnyView? = nil
 
   var body: some View {
@@ -51,9 +53,6 @@ struct OverlayAgentRosterLabel: View {
               .accessibilityIdentifier("overlay-agent-title-\(channel ?? "0")")
             if let titleAccessory {
               titleAccessory
-            }
-            if let receipt {
-              OverlayRosterReceiptMark(receipt: receipt, palette: palette, textScale: textScale)
             }
             if let trailingMarks {
               trailingMarks
@@ -138,44 +137,10 @@ struct OverlayRosterSyncMark: View {
   }
 }
 
-/// Compact projection of a frozen recipient's delivery evidence.
+/// Compact projection of a frozen recipient's delivery evidence: the words
+/// the conversation bubble uses for the same receipt, for the row's state line.
 struct OverlayRosterReceipt {
-  let symbol: String
   let text: String
   let helpText: String
   var isRead = false
-}
-
-private struct OverlayRosterReceiptMark: View {
-  let receipt: OverlayRosterReceipt
-  let palette: OverlayAppearancePalette
-  let textScale: CGFloat
-
-  var body: some View {
-    Group {
-      if receipt.symbol == "double-check" || receipt.symbol == "checkmark" {
-        OverlayRosterDoubleCheckmark()
-          .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-          .frame(width: 16 * textScale, height: 10 * textScale)
-      } else {
-        Image(systemName: receipt.symbol)
-          .font(.system(size: 11 * textScale, weight: .medium))
-      }
-    }
-    .foregroundStyle(receipt.isRead ? palette.bodyText.color : palette.mutedText.color)
-    .help(Text(verbatim: receipt.helpText))
-    .accessibilityLabel(Text(verbatim: receipt.helpText))
-  }
-}
-
-private struct OverlayRosterDoubleCheckmark: Shape {
-  func path(in rect: CGRect) -> Path {
-    var check = Path()
-    check.move(to: CGPoint(x: rect.minX + rect.width * 0.05, y: rect.minY + rect.height * 0.53))
-    check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.28, y: rect.minY + rect.height * 0.82))
-    check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.68, y: rect.minY + rect.height * 0.18))
-    var path = check
-    path.addPath(check, transform: CGAffineTransform(translationX: rect.width * 0.27, y: 0))
-    return path
-  }
 }
