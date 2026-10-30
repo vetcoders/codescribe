@@ -489,7 +489,8 @@ actor OverlayChannelDeliveryReader {
       guard let cursor = buses[bus] else { continue }
       for conversation in cursor.projection.conversations(
         busPath: bus.path,
-        verifiedCaptureAttachmentCommits: verifiedCaptureAttachmentCommits)
+        verifiedCaptureAttachmentCommits: verifiedCaptureAttachmentCommits,
+        sharedCaptureAttachmentBusPath: sharedBus?.path)
       {
         if bus == openedArchiveBus { historyReplyIDs.formUnion(conversation.replyIDs) }
         if conversation.id == "0" {
@@ -545,9 +546,8 @@ actor OverlayChannelDeliveryReader {
     cursor.lineage = nextLineage
   }
 
-  /// Stage receipts can name only a canonical bus under this bridge's buses
-  /// directory. The returned URL is then read by `refresh`, which verifies its
-  /// generation manifest and stream identity before consuming any rows.
+  /// A commit belongs to a recipient bus or the configured shared journal.
+  /// `refresh` verifies its generation and stream before consuming its rows.
   private func captureCommitBusURL(_ rawPath: String) -> URL? {
     guard rawPath.hasPrefix("/"), rawPath.utf8.count <= 4096 else { return nil }
     let candidate = URL(fileURLWithPath: rawPath).standardizedFileURL
@@ -556,9 +556,11 @@ actor OverlayChannelDeliveryReader {
     let resolvedBuses = resolvedRoot.appendingPathComponent("buses", isDirectory: true)
       .resolvingSymlinksInPath().standardizedFileURL
     let resolvedCandidate = candidate.resolvingSymlinksInPath().standardizedFileURL
+    let resolvedShared = sharedBus?.resolvingSymlinksInPath().standardizedFileURL
     guard resolvedCandidate.pathExtension == "jsonl",
       resolvedCandidate.path == rawPath,
-      resolvedCandidate.path.hasPrefix(resolvedBuses.path + "/")
+      resolvedCandidate == resolvedShared
+        || resolvedCandidate.path.hasPrefix(resolvedBuses.path + "/")
     else { return nil }
     return resolvedCandidate
   }
@@ -960,7 +962,7 @@ actor OverlayChannelDeliveryReader {
     if persisted == nil { persisted = OverlayDeliveryCursorStore.load(cacheRoot: cacheRoot) }
     guard let mark = persisted?[url.path], let data = mark.projection,
       let projection = try? JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: data),
-      projection.destinationVersion == 1
+      projection.destinationVersion == 2
     else { return nil }
     guard (0...256).contains(mark.headLength) else { return nil }
     savedRevisions[url] = projection.revision
