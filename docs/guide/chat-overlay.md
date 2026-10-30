@@ -90,7 +90,11 @@ attached with its own provider and session identity.
 In the horizontal window, the conversation header keeps the viewed agent and
 its microphone, speaker and **More (…)** menu visible with either the full
 sidebar or its folded rail. Its compact header stays above the scrolling
-history, with no messages passing behind it. To change what you view, use the channel list or,
+history, with no messages passing behind it. Conversation and agent-list
+headers share the same height. Their show/hide buttons stay on their pane
+edges in all three layouts, with a small directional arrow showing the action.
+Opening both panes no longer adds an empty row above the conversation.
+To change what you view, use the channel list or,
 in the compact form, the channel chips. Rows you can open show a faint
 highlight under the pointer.
 

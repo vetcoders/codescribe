@@ -540,8 +540,6 @@ struct DictationOverlayView: View {
             - (columnShown ? splitDrawerWidth : 0) - (railShown ? railWidth : 0)
             - transcriptActionsWidth)
         let canvasHidden = canvasWidth < 1 || conversationFolded
-        // The conversation toggle has a reserved row, clear of message text.
-        let conversationControlsHeight: CGFloat = columnShown ? 30 * textScale : 0
         HStack(alignment: .top, spacing: 0) {
           ZStack {
             // Both ends are numbers, so the fold interpolates with the window's
@@ -559,7 +557,8 @@ struct DictationOverlayView: View {
               let resolvedTarget = state.resolvedComposerTarget(viewing: conversation)
               OverlayConversationView(
                 conversation: conversation, palette: palette,
-                topInset: headerHeight + 8 + conversationControlsHeight, bottomInset: 16,
+                topInset: headerHeight + OverlayAgentDrawerLayout.paneHeaderTopInset,
+                bottomInset: 16,
                 pendingControls: state.pendingReplyControls,
                 controlErrors: state.replyControlErrors,
                 onControl: { message, stop in
@@ -608,6 +607,8 @@ struct DictationOverlayView: View {
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
                 navigationActions: conversationHeaderActions(conversation),
                 navigationIndicators: conversationHeaderIndicators(conversation),
+                paneHeaderLeadingSpace: OverlayAgentDrawerLayout.conversationHeaderLeadingSpace(
+                  textScale: textScale),
                 composerConversation: resolvedTarget,
                 composerAvailable: resolvedTarget != nil,
                 composerMicrophoneOpen: resolvedTarget.map { state.conversationMicrophoneOpen($0) },
@@ -744,9 +745,9 @@ struct DictationOverlayView: View {
           .frame(width: canvasWidth, height: geometry.size.height, alignment: .leading)
           .clipped()
           .overlay(alignment: .topLeading) {
-            if columnShown {
+            if agentsSurface && !state.isCollapsed {
               conversationEdgeControls(canvasShown: !canvasHidden)
-                .padding(.top, headerHeight + 16)
+                .padding(.top, headerHeight + OverlayAgentDrawerLayout.paneHeaderTopInset)
             }
           }
           .animation(
@@ -790,6 +791,16 @@ struct DictationOverlayView: View {
           reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter),
           value: state.agentsLayout
         )
+        .overlay(alignment: .topTrailing) {
+          if agentsSurface && !state.isCollapsed {
+            agentListHeaderControl(listShown: columnShown)
+              .frame(
+                width: railWidth,
+                height: OverlayAgentDrawerLayout.paneHeaderHeight(textScale: textScale)
+              )
+              .padding(.top, headerHeight + OverlayAgentDrawerLayout.paneHeaderTopInset)
+          }
+        }
         .onAppear { state.setAgentDrawerDocked(docked) }
         .onChange(of: docked) { _, docked in
           state.setAgentDrawerDocked(docked)
@@ -955,6 +966,7 @@ struct DictationOverlayView: View {
   ) -> some View {
     var roster = channelStatusView
     roster.sidebarControls = agentsSidebarControls(canvasShown: state.agentsLayout != .agents)
+    roster.paneHeaderHeight = OverlayAgentDrawerLayout.paneHeaderHeight(textScale: textScale)
     return roster.monitorBody(
       maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
       focusRevision: state.agentDrawerFocusRevision
@@ -985,24 +997,36 @@ struct DictationOverlayView: View {
     }
   }
 
-  /// A real slot on the conversation's own edge, with equal insets on both
-  /// sides. The row above the messages is reserved by their top inset.
+  /// The same native hit target occupies the conversation header and its
+  /// folded edge, outside the content cell that is clipped during the slide.
   private func conversationEdgeControls(canvasShown: Bool) -> some View {
     let controls = agentsSidebarControls(canvasShown: canvasShown)
     return HStack(spacing: 0) {
       OverlaySidebarToggleButton(
         symbol: "sidebar.left", title: controls.canvasTitle,
         identifier: "overlay-agent-sidebar-toggle-canvas", palette: palette,
-        textScale: textScale, action: controls.onToggleCanvas)
+        textScale: textScale, paneHeader: true,
+        arrow: canvasShown ? "chevron.left" : "chevron.right",
+        action: controls.onToggleCanvas)
       Spacer(minLength: 0)
-      if canvasShown {
-        Color.clear
-          .frame(width: 22 * textScale, height: 22 * textScale)
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
-      }
     }
-    .padding(.horizontal, 8 * textScale)
+    .padding(.leading, OverlayAgentDrawerLayout.paneControlLeadingInset)
+    .frame(height: OverlayAgentDrawerLayout.paneHeaderHeight(textScale: textScale))
+  }
+
+  /// Its rail-sized slot fixes the right button's screen point while the
+  /// list switches between the full column and the numbered rail.
+  private func agentListHeaderControl(listShown: Bool) -> some View {
+    OverlaySidebarToggleButton(
+      symbol: "sidebar.right",
+      title: listShown
+        ? String(localized: "Hide agents list") : String(localized: "Show agents list"),
+      identifier: listShown ? "overlay-agent-sidebar-fold" : "overlay-agent-rail-unfold",
+      palette: palette, textScale: textScale, paneHeader: true,
+      arrow: listShown ? "chevron.right" : "chevron.left"
+    ) {
+      if listShown { state.foldAgentList() } else { state.unfoldAgentList() }
+    }
   }
 
   private func agentsSidebarControls(canvasShown: Bool) -> OverlayAgentsSidebarControls {
@@ -1038,6 +1062,7 @@ struct DictationOverlayView: View {
   private func agentRail(maximumHeight: CGFloat, width: CGFloat) -> some View {
     channelStatusView.railBody(
       maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
+      paneHeaderHeight: OverlayAgentDrawerLayout.paneHeaderHeight(textScale: textScale),
       onUnfold: { state.unfoldAgentList() }
     )
     .padding(.top, headerHeight + 8)

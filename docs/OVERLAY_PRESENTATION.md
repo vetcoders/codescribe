@@ -114,6 +114,12 @@ map and floating Intercom badge rendering retain their existing form.
 The horizontal window keeps the conversation header and its current-agent
 actions visible with either the full sidebar or its folded rail. The sidebar
 choice does not replace the current conversation, draft or microphone target.
+Conversation, roster and folded-edge headers share one compact band. Pane
+toggles occupy slots in that band rather than a separate row above the
+conversation. Their stable window-level hit targets stay on the pane edges
+across split, rail and agents-only layouts; directional chevrons show whether
+the action folds or reveals the pane. Shared geometry reserves their slots and
+keeps them clear of native resizing.
 Folded-rail controls sit on the full column's centerline, with equal horizontal
 gutters that keep the numbered buttons clear of the native resize band.
 Unread badges occupy a separate trailing gutter outside the capsule, with a

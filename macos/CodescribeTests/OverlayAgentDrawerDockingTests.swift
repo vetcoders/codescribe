@@ -698,10 +698,20 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       of: overlay, from: "private func conversationEdgeControls",
       to: "private func agentsSidebarControls")
     XCTAssertTrue(controls.contains("sidebar.left"))
-    XCTAssertTrue(controls.contains("state.hideAgentsCanvas()"))
+    let commands = try section(
+      of: overlay, from: "private func agentsSidebarControls",
+      to: "private func commitAgentDrawerWidth")
+    XCTAssertTrue(commands.contains("state.hideAgentsCanvas()"))
+    XCTAssertTrue(commands.contains("state.showAgentsCanvas()"))
+    let listControl = try section(
+      of: overlay, from: "private func agentListHeaderControl",
+      to: "private func agentsSidebarControls")
+    XCTAssertTrue(listControl.contains("state.foldAgentList()"))
+    XCTAssertTrue(listControl.contains("state.unfoldAgentList()"))
     let rail = try section(
       of: overlay, from: "private func agentRail", to: "private func agentDrawerResizeHandle")
     XCTAssertTrue(rail.contains("onUnfold: { state.unfoldAgentList() }"))
+    XCTAssertTrue(rail.contains("paneHeaderHeight:"), "the folded list keeps the same header slot")
     XCTAssertFalse(rail.contains("onContinuousHover"))
   }
 

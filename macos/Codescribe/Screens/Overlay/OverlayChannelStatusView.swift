@@ -273,14 +273,34 @@ struct OverlaySidebarToggleButton: View {
   let identifier: String
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
+  var paneHeader = false
+  var arrow: String? = nil
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
-      Image(systemName: symbol)
-        .font(.system(size: 13 * textScale))
-        .frame(width: 22 * textScale, height: 22 * textScale)
-        .contentShape(Rectangle())
+      ZStack {
+        Image(systemName: symbol)
+          .font(.system(size: 13 * textScale))
+        if let arrow {
+          Image(systemName: arrow)
+            .font(.system(size: 6 * textScale, weight: .bold))
+            .offset(x: (symbol == "sidebar.left" ? 3 : -3) * textScale)
+        }
+      }
+      .frame(
+        width: paneHeader
+          ? OverlayAgentDrawerLayout.paneToggleSize(textScale: textScale) : 22 * textScale,
+        height: paneHeader
+          ? OverlayAgentDrawerLayout.paneToggleSize(textScale: textScale) : 22 * textScale
+      )
+      .contentShape(Rectangle())
+      .background {
+        if paneHeader {
+          RoundedRectangle(cornerRadius: 6)
+            .fill(palette.primaryText.color.opacity(0.035))
+        }
+      }
     }
     .buttonStyle(.plain)
     .focusable(false)
@@ -1110,6 +1130,8 @@ struct OverlayChannelStatusView: View {
   var onGestureHover: ((String) -> Void)?
   /// The list header's corner buttons; nil leaves the header bare.
   var sidebarControls: OverlayAgentsSidebarControls?
+  /// The horizontal window owns stable toggle hit targets over these slots.
+  var paneHeaderHeight: CGFloat? = nil
   var searchModel: OverlayConversationSearchModel?
   @State private var internalSearchModel = OverlayConversationSearchModel()
 
@@ -1391,18 +1413,21 @@ struct OverlayChannelStatusView: View {
   /// The folded list (Maciej, 2026-10-19: "zostawia pigułki"): one pill per
   /// row of the list, channel 0 first, under the `sidebar.right` that
   /// unfolds it. A pill switches the conversation and the list stays folded.
-  func railBody(maximumHeight: CGFloat, onUnfold: @escaping () -> Void) -> some View {
+  func railBody(
+    maximumHeight: CGFloat, paneHeaderHeight: CGFloat? = nil, onUnfold: @escaping () -> Void
+  ) -> some View {
     OverlayTextScaleReader { scale in
       var installed = self
       installed.textScale = scale
-      return installed.scaledRailBody(maximumHeight: maximumHeight, onUnfold: onUnfold)
+      return installed.scaledRailBody(
+        maximumHeight: maximumHeight, paneHeaderHeight: paneHeaderHeight, onUnfold: onUnfold)
     }
   }
 
   private func scaledRailBody(
-    maximumHeight: CGFloat, onUnfold: @escaping () -> Void
+    maximumHeight: CGFloat, paneHeaderHeight: CGFloat?, onUnfold: @escaping () -> Void
   ) -> some View {
-    let unfold = 22 * textScale
+    let unfold = paneHeaderHeight ?? 22 * textScale
     let viewportHeight = max(0, maximumHeight - 8 - unfold - 8)
     let rowCount =
       channels.count
@@ -1419,10 +1444,16 @@ struct OverlayChannelStatusView: View {
           (viewportHeight - CGFloat(rowCount) * 24 * textScale - 5 * textScale - 4)
             / CGFloat(gapCount)))
     return VStack(spacing: 8) {
-      OverlaySidebarToggleButton(
-        symbol: "sidebar.right", title: String(localized: "Show agents list"),
-        identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
-        action: onUnfold)
+      if let paneHeaderHeight {
+        Color.clear.frame(height: paneHeaderHeight)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      } else {
+        OverlaySidebarToggleButton(
+          symbol: "sidebar.right", title: String(localized: "Show agents list"),
+          identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
+          action: onUnfold)
+      }
       ScrollView(.vertical, showsIndicators: false) {
         VStack(spacing: rowSpacing) {
           if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
@@ -1684,17 +1715,37 @@ struct OverlayChannelStatusView: View {
     ) {
       HStack(spacing: 6) {
         Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
-        Spacer()
+        if paneHeaderHeight == nil { Spacer() }
         Text(verbatim: String(channels.count))
           .font(.system(size: 11 * textScale))
           .monospacedDigit()
           .foregroundStyle(palette.mutedText.color)
           .accessibilityHidden(true)
-        if let sidebarControls {
+        if paneHeaderHeight != nil { Spacer(minLength: 0) }
+        if paneHeaderHeight == nil, let sidebarControls {
           OverlaySidebarToggleButton(
             symbol: "sidebar.right", title: String(localized: "Hide agents list"),
             identifier: "overlay-agent-sidebar-fold", palette: palette,
             textScale: textScale, action: sidebarControls.onFoldList)
+        }
+      }
+      .padding(
+        .trailing,
+        paneHeaderHeight == nil
+          ? 0
+          : max(
+            0,
+            (OverlayAgentDrawerLayout.railWidth(textScale: textScale)
+              + OverlayAgentDrawerLayout.paneToggleSize(textScale: textScale)) / 2
+              + 8 * textScale - 12)
+      )
+      .padding(.top, paneHeaderHeight == nil ? 0 : 2 * textScale)
+      .frame(height: paneHeaderHeight, alignment: .top)
+      .overlay(alignment: .bottom) {
+        if paneHeaderHeight != nil {
+          Rectangle().fill(palette.border.color.opacity(0.65)).frame(height: 0.5)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
       }
     } pinned: { rowFocus in

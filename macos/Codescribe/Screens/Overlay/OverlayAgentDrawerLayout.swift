@@ -51,8 +51,21 @@ enum OverlayAgentDrawerLayout {
 
   static func minimumConversationWidth(textScale: CGFloat) -> CGFloat { 320 * textScale }
 
-  /// A folded conversation keeps a real edge column for its reveal control.
-  static func conversationEdgeWidth(textScale: CGFloat) -> CGFloat { 38 * textScale }
+  /// One compact header band for the conversation, roster and folded edges.
+  static func paneHeaderHeight(textScale: CGFloat) -> CGFloat { 36 * textScale }
+  static func paneToggleSize(textScale: CGFloat) -> CGFloat { 24 * textScale }
+  static let paneHeaderTopInset: CGFloat = 16
+  static let paneControlLeadingInset: CGFloat = 20
+
+  static func conversationHeaderLeadingSpace(textScale: CGFloat) -> CGFloat {
+    paneToggleSize(textScale: textScale) + 8 * textScale
+  }
+
+  /// The reveal button keeps its expanded position and clears the window's
+  /// native resize band; only the small trailing gutter belongs to the divider.
+  static func conversationEdgeWidth(textScale: CGFloat) -> CGFloat {
+    paneControlLeadingInset + conversationHeaderLeadingSpace(textScale: textScale)
+  }
 
   /// The roster covers the window: the conversation beside it is hidden.
   static func fillsWindow(drawerWidth: CGFloat, windowWidth: CGFloat) -> Bool {

@@ -151,6 +151,8 @@ struct OverlayConversationView: View {
   /// Optional controls for the horizontal bus window only.
   var navigationActions: AnyView? = nil
   var navigationIndicators: AnyView? = nil
+  /// A stable window-owned pane toggle occupies this leading header slot.
+  var paneHeaderLeadingSpace: CGFloat = 0
   /// Standard window may compose for a different frozen conversation.
   var composerConversation: OverlayConversation? = nil
   var composerAvailable = true
@@ -256,9 +258,9 @@ struct OverlayConversationView: View {
               .accessibilityHidden(true)
             if !hidesNavigation {
               navigation
+                .padding(.leading, paneHeaderLeadingSpace)
                 .padding(.horizontal, contentInset)
-                .padding(.top, 2)
-                .padding(.bottom, 4)
+                .frame(height: OverlayAgentDrawerLayout.paneHeaderHeight(textScale: textScale))
                 .overlay(alignment: .bottom) { busChromeDivider }
             }
             messageViewport(size: geometry.size, proxy: proxy)

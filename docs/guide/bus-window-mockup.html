@@ -51,6 +51,16 @@
     <div class="cs-workspace">
       <main class="cs-conversation">
         <header class="cs-conversation-heading">
+          <button
+            type="button"
+            class="cs-icon cursor-interaction"
+            data-action="conversation"
+            aria-label="Zwiń rozmowę"
+            aria-expanded="true"
+            data-tooltip="Zwiń rozmowę"
+          >
+            <i data-lucide="panel-left-close" aria-hidden="true"></i>
+          </button>
           <div class="cs-heading-text">
             <div class="cs-heading-name">
               <h2 data-title>Rozmowa · Tola</h2>
@@ -382,14 +392,24 @@
     min-width: 0;
   }
   #cs-bus-merged .cs-conversation-heading {
-    padding: 6px 20px;
+    height: 44px;
+    padding: 4px 14px;
     display: flex;
-    gap: 12px;
+    gap: 8px;
     justify-content: space-between;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     border-bottom: 1px solid var(--cs-line);
     min-height: 0;
+  }
+  #cs-bus-merged .cs-heading-text {
+    min-width: 0;
+    flex: 1;
+  }
+  #cs-bus-merged .cs-conversation-heading > .cs-icon {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
   }
   #cs-bus-merged h2 {
     margin: 0;
@@ -637,12 +657,13 @@
     flex-direction: column;
   }
   #cs-bus-merged .cs-sidebar-heading {
-    min-height: 65px;
+    height: 44px;
+    min-height: 44px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 16px 13px 10px;
+    padding: 4px 31px 4px 13px;
   }
   #cs-bus-merged .cs-sidebar-heading-copy {
     display: flex;
@@ -1019,8 +1040,20 @@
   }
   #cs-bus-merged.cs-collapsed .cs-sidebar-heading {
     justify-content: center;
-    padding: 13px 6px;
-    min-height: 65px;
+    padding: 4px 0;
+    min-height: 44px;
+  }
+  #cs-bus-merged.cs-conversation-folded .cs-workspace {
+    grid-template-columns: 52px minmax(0, 1fr);
+  }
+  #cs-bus-merged.cs-conversation-folded .cs-heading-text,
+  #cs-bus-merged.cs-conversation-folded .cs-current-actions,
+  #cs-bus-merged.cs-conversation-folded .cs-message-area,
+  #cs-bus-merged.cs-conversation-folded .cs-composer-area {
+    display: none;
+  }
+  #cs-bus-merged.cs-conversation-folded .cs-conversation-heading {
+    overflow: hidden;
   }
   #cs-bus-merged.cs-collapsed .cs-sidebar-heading-copy,
   #cs-bus-merged.cs-collapsed .cs-special-copy,
@@ -1354,6 +1387,7 @@
       view: "2",
       recipient: "2",
       collapsed: false,
+      conversationFolded: false,
       mic: null,
       filter: "all",
     };
@@ -1673,6 +1707,11 @@
     function render() {
       closeMenu();
       root.classList.toggle("cs-collapsed", Boolean(state.collapsed));
+      if (state.collapsed) state.conversationFolded = false;
+      root.classList.toggle(
+        "cs-conversation-folded",
+        Boolean(state.conversationFolded)
+      );
       root.style.setProperty("--cs-sidebar-width", design.sidebarWidth + "px");
       root.style.setProperty(
         "--cs-card-padding",
@@ -1718,6 +1757,19 @@
         Boolean(micAgent)
       );
       const toggle = $('[data-action="sidebar"]');
+      const conversationToggle = $('[data-action="conversation"]');
+      const conversationTitle = state.conversationFolded
+        ? "Rozwiń rozmowę"
+        : "Zwiń rozmowę";
+      conversationToggle.setAttribute(
+        "aria-expanded",
+        String(!state.conversationFolded)
+      );
+      conversationToggle.setAttribute("aria-label", conversationTitle);
+      conversationToggle.setAttribute("data-tooltip", conversationTitle);
+      conversationToggle.innerHTML = `<i data-lucide="${
+        state.conversationFolded ? "panel-left-open" : "panel-left-close"
+      }" aria-hidden="true"></i>`;
       toggle.setAttribute("aria-expanded", String(!state.collapsed));
       toggle.setAttribute(
         "aria-label",
@@ -1779,6 +1831,7 @@
       if (!b || !root.contains(b) || b.disabled) return;
       if (b.dataset.view) {
         state.view = b.dataset.view;
+        state.conversationFolded = false;
         render();
         persist();
         return;
@@ -1810,6 +1863,13 @@
           break;
         case "sidebar":
           state.collapsed = !state.collapsed;
+          if (state.collapsed) state.conversationFolded = false;
+          render();
+          persist();
+          break;
+        case "conversation":
+          state.conversationFolded = !state.conversationFolded;
+          if (state.conversationFolded) state.collapsed = false;
           render();
           persist();
           break;
