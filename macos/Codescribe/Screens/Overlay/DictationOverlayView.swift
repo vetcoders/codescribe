@@ -1235,7 +1235,11 @@ struct DictationOverlayView: View {
       // agent count, the agents on hover, the open channel's digit with the
       // violet open-channel dot (spec §14). This replaces Maciej's 2026-10-20 rule that mini
       // always reads "cs"; his agents button and its stop meaning stay.
-      HStack(spacing: DictationOverlayWindow.miniBrandGap) {
+      HStack(
+        spacing: state.channelMapCounterStacked
+          ? (mini ? DictationOverlayWindow.miniStackedBrandGap : 12)
+          : DictationOverlayWindow.miniBrandGap
+      ) {
         Wordmark(size: density.brandSize, spacing: mini ? 6 : 5, showsWord: !mini || !mapEnabled) {
           closeButton
         }

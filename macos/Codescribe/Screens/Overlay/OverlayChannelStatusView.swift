@@ -180,6 +180,8 @@ struct OverlayMicrophoneGlyph: View {
   private let mark: Mark
   let tint: Color
   var plateOpacity: Double = 0.12
+  /// Leave room for a small, in-bounds accessory without moving the plate.
+  var markOffset: CGSize = .zero
   /// Flips a symbol horizontally; only the agent megaphone, which faces left
   /// toward the wordmark (Maciej, 2026-10-20).
   var mirrored = false
@@ -191,11 +193,15 @@ struct OverlayMicrophoneGlyph: View {
     case character(String, pointSize: CGFloat)
   }
 
-  init(symbol: String, tint: Color, plateOpacity: Double = 0.12, mirrored: Bool = false) {
+  init(
+    symbol: String, tint: Color, plateOpacity: Double = 0.12, mirrored: Bool = false,
+    markOffset: CGSize = .zero
+  ) {
     mark = .symbol(symbol)
     self.tint = tint
     self.plateOpacity = plateOpacity
     self.mirrored = mirrored
+    self.markOffset = markOffset
   }
 
   init(character: String, tint: Color, plateOpacity: Double = 0.12) {
@@ -207,6 +213,7 @@ struct OverlayMicrophoneGlyph: View {
   var body: some View {
     markView
       .foregroundStyle(tint)
+      .offset(markOffset)
       .frame(width: Self.diameter, height: Self.diameter)
       .background { Circle().fill(tint.opacity(plateOpacity)) }
       .overlay {
@@ -443,12 +450,14 @@ struct OverlayGlyphInk: ViewModifier {
 }
 
 /// Audio and reception controls share one disabled-aware native hover owner.
-/// Off rests in muted ink; on keeps its canonical accent even without motion.
+/// Each caller supplies its idle ink; on keeps its canonical accent without motion.
 /// The button supplies ink so an inner glyph cannot defeat hover feedback.
 private struct OverlayAudioControlInk: ViewModifier {
+  @Environment(\.isEnabled) private var isEnabled
   let palette: OverlayAppearancePalette
   let lit: Color?
   var unlitOpacity: Double = 1
+  var idleInk: Color? = nil
 
   func body(content: Content) -> some View {
     // The resolved primary ink darkens a light canvas and brightens a dark
@@ -458,9 +467,17 @@ private struct OverlayAudioControlInk: ViewModifier {
         let color = NSColor(ink)
         return Color(
           nsColor: color.blended(withFraction: 0.3, of: palette.primaryText.nsColor) ?? color)
-      } ?? palette.primaryText.color
+      }
+      ?? (idleInk == nil
+        ? palette.primaryText.color
+        : Color(
+          nsColor: palette.primaryText.nsColor.blended(
+            withFraction: 0.25, of: palette.appearance == .dark ? .white : .black)
+            ?? palette.primaryText.nsColor))
     content.conversationActionHover(
-      restingColor: lit ?? palette.mutedText.color.opacity(unlitOpacity),
+      restingColor: isEnabled || idleInk == nil
+        ? (lit ?? idleInk ?? palette.mutedText.color.opacity(unlitOpacity))
+        : palette.mutedText.color,
       hoverColor: hover)
   }
 }
@@ -641,7 +658,10 @@ struct OverlayAgentAudioControls: View {
               width: glyphBox, height: glyphBox,
               alignment: chrome ? .center : .trailing)
         }
-        .modifier(OverlayAudioControlInk(palette: palette, lit: open ? recordingAccent : nil))
+        .modifier(
+          OverlayAudioControlInk(
+            palette: palette, lit: open ? recordingAccent : nil, idleInk: palette.primaryText.color)
+        )
         .tint(Self.litGlass(open ? recordingAccent : nil))
         .disabled(!microphoneEnabled)
         .overlayFastHint(microphoneHint, palette: palette)
@@ -673,7 +693,8 @@ struct OverlayAgentAudioControls: View {
         // Violet means speech is playing; enabled playback alone rests neutral.
         .modifier(
           OverlayAudioControlInk(
-            palette: palette, lit: speakingNow ? palette.agentAccent.color : nil)
+            palette: palette, lit: speakingNow ? palette.agentAccent.color : nil,
+            idleInk: palette.primaryText.color)
         )
         .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
         .disabled(!playbackEnabled || muted == nil)

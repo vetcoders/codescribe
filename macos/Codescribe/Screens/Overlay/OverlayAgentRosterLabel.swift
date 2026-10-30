@@ -55,8 +55,12 @@ struct OverlayAgentRosterLabel: View {
             }
             Spacer(minLength: 4)
             if unreadCount > 0, let conversationID {
-              OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)
-                .accessibilityIdentifier("overlay-agent-unread-replies-\(conversationID)")
+              ViewThatFits(in: .horizontal) {
+                OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)
+                Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
+              }
+              .layoutPriority(2)
+              .accessibilityIdentifier("overlay-agent-unread-replies-\(conversationID)")
             }
             if let timestamp {
               MessageTimestampLabel(date: timestamp, compact: true)
@@ -111,6 +115,7 @@ struct OverlayAgentUnreadBadge: View {
       .foregroundStyle(palette.processingStatus.color)
       .frame(width: badgeDiameter, height: badgeDiameter)
       .background(palette.processingStatus.color.opacity(0.12), in: Circle())
+      .fixedSize()
       .accessibilityLabel("\(count) unread replies")
   }
 }

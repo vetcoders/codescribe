@@ -1269,6 +1269,8 @@ enum DictationOverlayWindow {
   static let miniBrandDot: CGFloat = 9
   static let miniRowSpacing: CGFloat = 4
   static let miniBrandGap: CGFloat = 6
+  /// The vertical counter uses the same eight-point rhythm as trailing controls.
+  static let miniStackedBrandGap: CGFloat = 8
   static let miniTrailingControls: CGFloat = 81
   /// Mini with no counter: padding, the close dot, the two row gaps around the
   /// empty centre and the trailing controls = 130. The capsule never gets
@@ -1289,7 +1291,7 @@ enum DictationOverlayWindow {
     let counter = OverlayChannelPill.counterWidth(
       figure: String(map.count), openDigitCount: map.openDigits.count,
       scale: OverlayChannelPill.headerScale(textScale), stacked: stacked)
-    return ceil(miniFloorWidth + miniBrandGap + counter)
+    return ceil(miniFloorWidth + (stacked ? miniStackedBrandGap : miniBrandGap) + counter)
   }
 
   /// Compact's floor, and its whole width while no channel is mapped.
