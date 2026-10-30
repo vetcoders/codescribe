@@ -5038,6 +5038,18 @@
         }
       }
     },
+    "Choose recipients" : {
+      "comment" : "Inbox composer placeholder and recipient chooser label while no agent is linked",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz odbiorców"
+          }
+        }
+      }
+    },
     "Choose the Agent and formatting models. Accounts and keys live under Providers." : {
       "localizations" : {
         "pl" : {
@@ -17027,6 +17039,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyślij teraz"
+          }
+        }
+      }
+    },
+    "Send only to…" : {
+      "comment" : "Label of the one-shot recipient chooser above the 0 · All composer",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyślij tylko do…"
           }
         }
       }

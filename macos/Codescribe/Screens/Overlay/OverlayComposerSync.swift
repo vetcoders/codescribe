@@ -40,12 +40,17 @@ struct OverlayComposerProseEdit: Equatable {
 }
 
 struct OverlayDraftSyncMember: Equatable {
-  let owner: OverlayConversationOwner
+  /// nil for the two ownerless sources, the human inbox and 0 · All: neither
+  /// has a lease to publish to. Their typing mirrors into the linked agents'
+  /// drafts and Send publishes each of those (Maciej, 2026-10-30 13:58 and
+  /// 14:24: the recipient menu is the sync mechanism moved out of "+").
+  let owner: OverlayConversationOwner?
   var proseAnchor: Int
   var privateAttachments: Set<String>
 
   func owns(_ conversation: OverlayConversation) -> Bool {
-    conversation.id == owner.id && conversation.owner?.id == owner.id
+    guard let owner else { return conversation.isDraftSyncSource }
+    return conversation.id == owner.id && conversation.owner?.id == owner.id
       && conversation.channel == owner.channel && conversation.owner?.channel == owner.channel
   }
 }
@@ -89,6 +94,7 @@ extension OverlayState {
       conversations: conversations, archivedOwners: archivedAgentOwners,
       hudStates: channelHudStates
     ).filter { conversation in
+      if conversation.isDraftSyncSource { return true }
       guard let owner = conversation.owner else { return false }
       return owner.id == conversation.id && owner.channel == conversation.channel
         && (1...9).contains(Int(conversation.channel) ?? 0)
@@ -274,7 +280,8 @@ extension OverlayState {
     guard current.contains(where: { $0.id == conversation.id && $0.owner == conversation.owner })
     else { return [] }
     let group = draftGroupIndex(for: conversation.id).map { conversationDraftGroups[$0] }
-    return current.filter { $0.id != conversation.id }.map { target in
+    // Agents only: the inbox and 0 · All are chosen from, never offered.
+    return current.filter { $0.id != conversation.id && $0.owner != nil }.map { target in
       let selected = group?.participants[target.id]?.owns(target) == true
       return OverlayComposerSyncChoice(
         id: target.id, title: target.name, selected: selected,
@@ -348,16 +355,20 @@ extension OverlayState {
     let members = (sourceGroup?.members ?? [source]).union(targetGroup?.members ?? [target])
     var participants: [String: OverlayDraftSyncMember] = [:]
     for conversation in draftSyncConversations where members.contains(conversation.id) {
-      guard let owner = conversation.owner else { return false }
+      guard conversation.owner != nil || conversation.isDraftSyncSource else { return false }
       let parts = ConversationDraft.split(conversationDraft(for: conversation.id))
       participants[conversation.id] = OverlayDraftSyncMember(
-        owner: owner, proseAnchor: parts.text.utf16.count, privateAttachments: Set(parts.attachments))
+        owner: conversation.owner, proseAnchor: parts.text.utf16.count,
+        privateAttachments: Set(parts.attachments))
     }
     guard Set(participants.keys) == members else { return false }
     conversationDraftGroups.removeAll { !$0.members.isDisjoint(with: members) }
     conversationDraftGroups.append(OverlayDraftSyncGroup(
       id: "draft-sync:\(UUID().uuidString)", participants: participants))
     armedDraftSyncConversationID = nil
+    // Linking changes who receives the open draft: a held edit started before
+    // this must not steal focus on return.
+    composerTargetRevision = UUID()
     return true
   }
 
@@ -371,6 +382,7 @@ extension OverlayState {
 
   private func unlinkConversationDraft(_ id: String) {
     guard let index = draftGroupIndex(for: id) else { return }
+    composerTargetRevision = UUID()
     conversationDraftGroups[index].participants.removeValue(forKey: id)
     if conversationDraftGroups[index].members.count < 2 {
       conversationDraftGroups.remove(at: index)

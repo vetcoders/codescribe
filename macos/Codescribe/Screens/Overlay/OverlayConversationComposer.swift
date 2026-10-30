@@ -63,7 +63,13 @@ struct OverlayConversationComposer: View {
 
   /// The height budget caps the editor viewport, never the draft's line count.
   private var isCompact: Bool { maximumEditorHeight != nil }
-  private var showsDraftSync: Bool { !draftSyncChoices.isEmpty || draftSyncActive }
+  /// The main window links drafts in the roster chain and the inbox's "To:";
+  /// its "+" is a plain attach button (Maciej, 2026-10-30 14:03: "+ ma być
+  /// czystym Załącz plik…"). A fiszka still offers the choices here.
+  private var offersDraftSyncHere: Bool { onToggleDraftSync != nil || onActivateDraftSync != nil }
+  private var showsDraftSync: Bool {
+    offersDraftSyncHere && (!draftSyncChoices.isEmpty || draftSyncActive)
+  }
   private func cornerLayout(width: CGFloat = .greatestFiniteMagnitude)
     -> ConversationComposerCornerLayout
   {
@@ -290,9 +296,37 @@ struct OverlayConversationComposer: View {
       : draftMicrophoneRecording ? "mic.fill" : "mic"
   }
 
-  /// One "+" opens the composer actions; the former paperclip and link
-  /// buttons live inside it.
+  private func plusGlyph(_ corners: ConversationComposerCornerLayout) -> some View {
+    Image(systemName: "plus")
+      .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
+      .frame(width: corners.actionWidth, height: corners.actionHeight)
+      .contentShape(Rectangle())
+  }
+
+  /// One "+". Where this composer still offers draft linking it opens the
+  /// actions menu; otherwise it is the attach button itself and opens the
+  /// file panel directly, no submenu.
+  @ViewBuilder
   private func composerPlusMenu(_ corners: ConversationComposerCornerLayout) -> some View {
+    if showsDraftSync {
+      composerPlusActionsMenu(corners)
+    } else {
+      Button(action: pickAttachments) { plusGlyph(corners) }
+        .buttonStyle(.plain)
+        .frame(width: corners.actionWidth, height: corners.actionHeight)
+        .conversationActionHover(
+          restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+          hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+        )
+        .disabled(sending)
+        .overlayFastHint(String(localized: "Attach files…"), palette: palette)
+        .accessibilityLabel(Text("Attach files…"))
+        .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+        .accessibilityIdentifier("overlay-conversation-plus")
+    }
+  }
+
+  private func composerPlusActionsMenu(_ corners: ConversationComposerCornerLayout) -> some View {
     Menu {
       Button("Attach files…", systemImage: "paperclip", action: pickAttachments)
         .disabled(sending)
@@ -322,10 +356,7 @@ struct OverlayConversationComposer: View {
         }
       }
     } label: {
-      Image(systemName: "plus")
-        .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
-        .frame(width: corners.actionWidth, height: corners.actionHeight)
-        .contentShape(Rectangle())
+      plusGlyph(corners)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)

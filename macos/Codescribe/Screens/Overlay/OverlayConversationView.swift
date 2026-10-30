@@ -426,7 +426,10 @@ struct OverlayConversationView: View {
     VStack(spacing: 8) {
       if let composerRouting { composerRouting }
       let target = composerConversation ?? conversation
-      if composerAvailable && (target.owner != nil || target.channel == "0") {
+      // The inbox has no owner and no digit; it composes to its linked agents.
+      if composerAvailable
+        && (target.owner != nil || target.channel == "0" || conversation.isDraftSyncSource)
+      {
         OverlayConversationComposer(
           palette: palette, draft: $draft, maximumEditorHeight: composerEditorHeightLimit,
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
@@ -468,7 +471,11 @@ struct OverlayConversationView: View {
   }
 
   private var composerPlaceholder: String {
-    (composerConversation ?? conversation).channel == "0"
+    // A source's names include itself once linked; the inbox alone has no
+    // recipient, 0 · All alone is everyone.
+    let linked = draftSyncNames.count > 1
+    if conversation.isHumanInbox && !linked { return String(localized: "Choose recipients") }
+    return (composerConversation ?? conversation).channel == "0" && !linked
       ? String(localized: "Send to everyone") : String(localized: "Message the Agent")
   }
 

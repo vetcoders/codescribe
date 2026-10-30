@@ -1997,6 +1997,10 @@ struct OverlayConversation: Equatable, Identifiable, Sendable {
   /// The human mailbox has no agent lease, microphone or numeric shortcut.
   /// Its internal route remains channel 10; only the presentation is named.
   var isHumanInbox: Bool { id == "10" && channel == "10" && owner == nil }
+  /// The ownerless conversations whose composer writes to a chosen set of
+  /// agents through draft sync: the human inbox builds the set ("To:"),
+  /// 0 · All narrows one message to it ("Send only to…").
+  var isDraftSyncSource: Bool { owner == nil && (isHumanInbox || (id == "0" && channel == "0")) }
   var displayTitle: String {
     isHumanInbox || channel.isEmpty ? name : "\(channel) · \(name)"
   }

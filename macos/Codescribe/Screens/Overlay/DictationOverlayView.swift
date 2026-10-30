@@ -635,6 +635,9 @@ struct DictationOverlayView: View {
               .accessibilityHidden(!transcriptVisible)
             if agentsSurface, let conversation = state.selectedConversation {
               let resolvedTarget = state.resolvedComposerTarget(viewing: conversation)
+              // The inbox composes with no recipient of its own: the agents
+              // linked to it are the destination (Maciej, 2026-10-30 13:58).
+              let composesText = resolvedTarget != nil || conversation.isDraftSyncSource
               OverlayConversationView(
                 conversation: conversation, palette: palette,
                 topInset: headerHeight + 8 + conversationControlsHeight, bottomInset: 20,
@@ -649,7 +652,7 @@ struct DictationOverlayView: View {
                 draft: Binding(
                   get: { state.conversationDraft(for: conversation.id) },
                   set: { value in
-                    guard state.composerTargetIsAvailable(conversation) else { return }
+                    guard composesText else { return }
                     state.setConversationDraft(value, for: conversation.id)
                   }),
                 sending: state.pendingTextMessages.contains(conversation.id),
@@ -657,8 +660,8 @@ struct DictationOverlayView: View {
                   ?? (state.draftCapture.errorConversationID == conversation.id
                     ? state.draftCapture.error : nil),
                 onSend: {
-                  guard let target = resolvedTarget else { return }
-                  Task { await state.sendConversationText(conversation, to: target) }
+                  guard composesText else { return }
+                  Task { await state.sendConversationText(conversation) }
                 },
                 microphoneOpen: state.conversationMicrophoneOpen(conversation),
                 microphoneEnabled: state.canToggleConversationMicrophone(conversation)
@@ -679,10 +682,13 @@ struct DictationOverlayView: View {
                 navigationActions: conversationHeaderActions(conversation),
                 navigationIndicators: conversationHeaderIndicators(conversation),
                 composerConversation: resolvedTarget,
-                composerAvailable: state.composerTargetIsAvailable(conversation)
-                  && resolvedTarget != nil,
+                composerAvailable: composesText,
                 composerMicrophoneOpen: state.conversationMicrophoneOpen(conversation),
-                composerRouting: AnyView(composerRouting(viewing: conversation)),
+                // The inbox and 0 · All choose their recipients; an agent's
+                // conversation is its own recipient and the roster chain links
+                // further agents (Maciej, 2026-10-30 14:12–14:24).
+                composerRouting: conversation.isDraftSyncSource
+                  ? AnyView(composerRouting(viewing: conversation)) : nil,
                 onPrepareHeldEdit: { message in
                   state.prepareHeldComposerEdit(
                     state.heldComposerTarget(message, viewing: conversation))
@@ -701,16 +707,13 @@ struct DictationOverlayView: View {
                 draftMicrophoneRecording: state.draftCapture.conversationID == conversation.id,
                 draftMicrophoneBusy: state.draftMicrophoneBusy(in: conversation),
                 onToggleDraftMicrophone: {
-                  guard state.composerTargetIsAvailable(conversation) else { return }
+                  guard composesText else { return }
                   Task { await state.toggleDraftMicrophone(in: conversation) }
                 },
                 onStageCaptureAttachments: { paths in
-                  // A main-window text override cannot reroute the live take.
-                  guard state.composerTargetIsAvailable(conversation),
-                    state.resolvedComposerTarget(viewing: conversation).map({
-                      OverlayState.ComposerContext($0)
-                    }) == OverlayState.ComposerContext(conversation)
-                  else { return false }
+                  // Only a live take of this exact agent may adopt the files;
+                  // the inbox keeps them in its draft for manual Send.
+                  guard state.composerTargetIsAvailable(conversation) else { return false }
                   return state.stageConversationAttachments(paths, in: conversation)
                 },
                 pendingCaptureAttachments: state.captureAttachmentDrafts[conversation.id]?.paths
@@ -723,23 +726,15 @@ struct DictationOverlayView: View {
                   Task { await state.retryCaptureAttachments(in: conversation.id) }
                 },
                 onReply: { message in
-                  state.chooseComposerTarget(conversation, viewing: conversation)
                   state.conversationReplies[conversation.id] = OverlayUserReplyReference(
                     message: message)
                 },
-                draftSyncChoices: state.draftSyncChoices(for: conversation),
+                // Linking lives in the roster chain and the inbox's "To:"; the
+                // composer's "+" is a plain attach button here (Maciej,
+                // 2026-10-30 14:03). Names still tint and label the status.
                 draftSyncNames: state.draftSyncNames(for: conversation.id),
-                draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
-                draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
-                onActivateDraftSync: { state.activateDraftSync(for: conversation.id) },
-                onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
-                onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
-                onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
+                onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) }
               )
-              .onAppear { state.initializeComposerTarget(conversation) }
-              .onChange(of: conversation.id) { _, _ in
-                state.initializeComposerTarget(conversation)
-              }
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
               .accessibilityHidden(state.isCollapsed)
@@ -1415,76 +1410,55 @@ struct DictationOverlayView: View {
     var roster = OverlayChannelStatusView.intercomRoster(
       state: state, palette: palette, animates: overlayVisible, includesGestureFocus: false)
     roster.onWriteConversation = { conversation in
-      state.chooseComposerTarget(conversation, viewing: conversation)
       state.chooseConversation(conversation.id)
     }
     return roster
   }
 
+  /// The bar above the composer on the two conversations that have no agent
+  /// of their own. Its menu is the draft sync moved out of "+" (Maciej,
+  /// 2026-10-30 14:24): the agents whose drafts are linked to this source
+  /// receive what is typed here, the same link the roster chain toggles. The
+  /// inbox's "To:" builds the set; 0 · All's "Send only to…" narrows one
+  /// message to it and goes back to everyone after the send. An agent's
+  /// conversation has no bar: the open agent is the recipient. The bar is the
+  /// composer's sibling and wears its surface.
   private func composerRouting(viewing conversation: OverlayConversation) -> some View {
-    let target = state.composerTarget(viewing: conversation)
-    let selected = state.resolvedComposerTarget(viewing: conversation)
-    let choices = state.availableComposerRecipients
-    let openChannels = state.channelHudStates.filter { $0.value.open }.keys.sorted()
-    let openChannelTitles = openChannels.map { digit in
-      if digit == "0" { return String(localized: "0 · All") }
-      if let row = state.visibleChannelRows.first(where: { $0.channel == digit }) {
-        return "\(digit) · \(row.agent)"
-      }
-      return digit
-    }
-    // The destination bar is the composer's sibling and wears its surface:
-    // the same glass, corner and Reduce Transparency sheet, the same insets.
-    // Before, the label and a bordered pull-down floated over the scrolling
-    // conversation with message text running through them (Maciej,
-    // 2026-10-30 13:25: "identycznie jak kompozer"). The chooser stays the
-    // system menu; its label drops the bordered pull-down box, as the
-    // composer's own plus menu does.
-    return VStack(alignment: .leading, spacing: 4) {
-      HStack(spacing: 6) {
-        Text("To:")
-        Menu {
-          ForEach(choices) { choice in
-            Button(choice.displayTitle) {
-              state.chooseComposerTarget(choice, viewing: conversation)
-            }
+    let choices = state.draftSyncChoices(for: conversation)
+    let linked = choices.filter(\.selected).map(\.title)
+    let broadcast = conversation.channel == "0"
+    let unlinkedLabel =
+      broadcast ? String(localized: "0 · All") : String(localized: "Choose recipients")
+    return HStack(spacing: 6) {
+      Text(broadcast ? "Send only to…" : "To:")
+      Menu {
+        ForEach(choices) { choice in
+          Toggle(
+            isOn: Binding(
+              get: { choice.selected },
+              set: { _ in state.toggleDraftSync(from: conversation.id, with: choice.id) })
+          ) {
+            Text(verbatim: choice.title)
           }
-        } label: {
-          Text(verbatim: selected?.displayTitle ?? target?.title ?? "—")
-            .font(.system(size: 11 * textScale, weight: .semibold))
-            .foregroundStyle(palette.primaryText.color)
-            .lineLimit(1).truncationMode(.middle)
+          .disabled(!choice.enabled)
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .fixedSize()
-        .accessibilityIdentifier("overlay-composer-recipient")
-        if conversation.owner != nil || conversation.channel == "0",
-          selected?.id != conversation.id || selected?.owner?.id != conversation.owner?.id
-        {
-          Button {
-            state.chooseComposerTarget(conversation, viewing: conversation)
-          } label: {
-            Text("Write to \(conversation.displayTitle)")
+        if !linked.isEmpty {
+          Divider()
+          Button(broadcast ? "Send to everyone" : "Stop syncing") {
+            state.stopDraftSync(for: conversation.id)
           }
-          .buttonStyle(.plain)
         }
-        Spacer(minLength: 0)
+      } label: {
+        Text(verbatim: linked.isEmpty ? unlinkedLabel : linked.joined(separator: ", "))
+          .font(.system(size: 11 * textScale, weight: .semibold))
+          .foregroundStyle(palette.primaryText.color)
+          .lineLimit(1).truncationMode(.middle)
       }
-      if target != nil && selected == nil {
-        Text("Recipient unavailable")
-          .accessibilityIdentifier("overlay-composer-recipient-unavailable")
-      }
-      HStack(spacing: 4) {
-        Image(systemName: "waveform.badge.mic")
-        if openChannels.isEmpty {
-          Text("Voice channels closed")
-        } else {
-          Text("Voice channels:")
-          Text(verbatim: openChannelTitles.joined(separator: ", "))
-            .lineLimit(1).truncationMode(.middle)
-        }
-      }
+      .menuStyle(.button)
+      .buttonStyle(.plain)
+      .layoutPriority(1)
+      .accessibilityIdentifier("overlay-composer-recipient")
+      Spacer(minLength: 0)
     }
     .font(.system(size: 11 * textScale, weight: .medium))
     .foregroundStyle(palette.mutedText.color)

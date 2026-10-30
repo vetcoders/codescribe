@@ -1402,16 +1402,16 @@ final class OverlayState {
       title = conversation.displayTitle
     }
   }
-  private(set) var composerTargets: [ComposerContext: ComposerTarget] = [:]
-  var composerTarget: ComposerTarget? {
-    selectedConversation.flatMap { composerTarget(viewing: $0) }
-  }
-  private(set) var composerTargetRevision = UUID()
+  /// Bumped when the set of recipients of the open draft changes (a draft
+  /// link made or broken). A held edit that returns under an older revision
+  /// appends its words without taking focus.
+  var composerTargetRevision = UUID()
 
   /// The same current owners that text publication accepts, plus broadcast.
+  /// The inbox and 0 · All are draft-sync sources, never destinations.
   var availableComposerRecipients: [OverlayConversation] {
     let broadcast = conversations.filter { $0.id == "0" && $0.channel == "0" && $0.owner == nil }
-    return broadcast + draftSyncConversations
+    return broadcast + draftSyncConversations.filter { $0.owner != nil }
   }
 
   struct ConversationNavigationRequest: Equatable {
@@ -1433,19 +1433,6 @@ final class OverlayState {
       conversationID: conversation.id, messageID: messageID, revision: UUID())
   }
 
-  func composerTarget(viewing conversation: OverlayConversation) -> ComposerTarget? {
-    composerTargets[ComposerContext(conversation)]
-  }
-
-  func chooseComposerTarget(
-    _ recipient: OverlayConversation, viewing conversation: OverlayConversation? = nil
-  ) {
-    guard recipient.owner != nil || recipient.channel == "0" else { return }
-    let source = conversation ?? selectedConversation ?? recipient
-    composerTargets[ComposerContext(source)] = ComposerTarget(recipient)
-    composerTargetRevision = UUID()
-  }
-
   func heldComposerTarget(
     _ message: OverlayConversationMessage, viewing conversation: OverlayConversation
   ) -> OverlayConversation {
@@ -1457,7 +1444,6 @@ final class OverlayState {
   /// Select at the click, before withdrawal can suspend.
   func prepareHeldComposerEdit(_ target: OverlayConversation) -> UUID {
     selectConversation(target.id)
-    chooseComposerTarget(target, viewing: target)
     return composerTargetRevision
   }
 
@@ -1473,23 +1459,18 @@ final class OverlayState {
         == ComposerContext(target)
   }
 
-  func initializeComposerTarget(_ conversation: OverlayConversation) {
-    if composerTarget(viewing: conversation) == nil {
-      chooseComposerTarget(conversation, viewing: conversation)
-    }
-  }
-
   func composerTargetIsAvailable(_ target: OverlayConversation) -> Bool {
     availableComposerRecipients.contains {
       $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.owner?.id
     }
   }
 
+  /// The open conversation is the recipient; nothing routes a message away
+  /// from it (Maciej, 2026-10-30 13:58). Further recipients are the agents
+  /// whose drafts are linked to it, sent by the sync path. The inbox and a
+  /// retired owner resolve to nil: nothing of their own to publish to.
   func resolvedComposerTarget(viewing conversation: OverlayConversation) -> OverlayConversation? {
-    guard let target = composerTarget(viewing: conversation) else {
-      return composerTargetIsAvailable(conversation) ? conversation : nil
-    }
-    return resolveComposerRecipient(target)
+    composerTargetIsAvailable(conversation) ? conversation : nil
   }
 
   private func resolveComposerRecipient(_ target: ComposerTarget) -> OverlayConversation? {
@@ -3024,19 +3005,17 @@ final class OverlayState {
           owner: owner, text: text, userReplyTo: reply, alsoSentTo: alsoSentTo)
       }
 
-  func sendConversationText(
-    _ conversation: OverlayConversation, to recipient: OverlayConversation? = nil
-  ) async {
-    // Cards send to themselves. The main window passes its explicit recipient.
-    let usesComposerTargets = recipient != nil
-    let destination = recipient ?? conversation
-    guard composerTargetIsAvailable(conversation), composerTargetIsAvailable(destination)
-    else { return }
+  func sendConversationText(_ conversation: OverlayConversation) async {
+    // The open conversation is the destination. A linked draft goes to every
+    // linked agent instead: the inbox has no destination of its own, and
+    // 0 · All with a chosen set sends only to that set.
+    guard composerTargetIsAvailable(conversation) || conversation.isHumanInbox else { return }
     if hasSynchronizedDraft(conversation.id) {
-      await sendSynchronizedDraft(
-        from: conversation, to: destination, usesComposerTargets: usesComposerTargets)
+      await sendSynchronizedDraft(from: conversation)
       return
     }
+    guard !conversation.isHumanInbox else { return }
+    let destination = conversation
     let draft = conversationDraft(for: conversation.id)
     let hasWaitingCaptureAttachments =
       captureAttachmentDrafts[conversation.id]?.target == nil
@@ -3069,10 +3048,7 @@ final class OverlayState {
       // A newer draft or reply belongs to the Founder, even if publication finishes late.
       if conversationDraftRevisions[conversation.id] == draftRevision,
         conversationReplyRevisions[conversation.id] == replyRevision,
-        conversationDraft(for: conversation.id) == draft,
-        !usesComposerTargets
-          || resolvedComposerTarget(viewing: conversation).map({ ComposerContext($0) })
-            == ComposerContext(destination)
+        conversationDraft(for: conversation.id) == draft
       {
         setConversationDraft("", for: conversation.id)
         if conversationReplies[conversation.id] == reply {
@@ -3098,13 +3074,9 @@ final class OverlayState {
       replyRevision: conversationReplyRevisions[conversation.id])
   }
 
-  private func draftPublicationIsCurrent(
-    _ publication: OverlayComposerDraftPublication, usesComposerTargets: Bool
-  ) -> Bool {
+  private func draftPublicationIsCurrent(_ publication: OverlayComposerDraftPublication) -> Bool {
     guard let conversation = draftSyncConversations.first(where: { $0.id == publication.id }),
-      let recipient = usesComposerTargets
-        ? resolvedComposerTarget(viewing: conversation) : conversation,
-      let current = draftPublication(for: conversation, recipient: recipient)
+      let current = draftPublication(for: conversation, recipient: conversation)
     else { return false }
     return current == publication
   }
@@ -3122,10 +3094,7 @@ final class OverlayState {
 
   /// Freeze each exact owner's own payload and reply. A late receipt may clear
   /// only that same edit generation; a changed draft, including ABA, survives.
-  private func sendSynchronizedDraft(
-    from conversation: OverlayConversation, to recipient: OverlayConversation,
-    usesComposerTargets: Bool
-  ) async {
+  private func sendSynchronizedDraft(from conversation: OverlayConversation) async {
     reconcileDraftSyncOwners()
     guard let index = draftGroupIndex(for: conversation.id) else { return }
     let group = conversationDraftGroups[index]
@@ -3138,16 +3107,14 @@ final class OverlayState {
     guard Set(recipients.map(\.id)) == group.members,
       recipients.allSatisfy({ group.participants[$0.id]?.owns($0) == true })
     else { return }
-    let publications = recipients.compactMap { source -> OverlayComposerDraftPublication? in
-      let destination =
-        source.id == conversation.id
-        ? recipient
-        : (usesComposerTargets ? resolvedComposerTarget(viewing: source) : source)
-      guard let destination else { return nil }
-      return draftPublication(for: source, recipient: destination)
+    // Each linked agent receives its own draft. The inbox and 0 · All are
+    // sources only: no lease to publish to; their draft clears with the agents'.
+    let agents = recipients.filter { $0.owner != nil }
+    let publications = agents.compactMap { source in
+      draftPublication(for: source, recipient: source)
     }
-    // An unavailable pinned recipient must not silently drop one linked draft.
-    guard publications.count == recipients.count else { return }
+    // A member without a current owner must not silently drop one linked draft.
+    guard publications.count == agents.count else { return }
     let frozen = publications.filter {
       !$0.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -3176,7 +3143,7 @@ final class OverlayState {
           destination.owner, recipient.payload, recipient.reply, alsoSentTo)
         // Membership can retire while the publication is in flight. Its
         // receipt still belongs to an unchanged, still-current exact owner.
-        if draftPublicationIsCurrent(recipient, usesComposerTargets: usesComposerTargets) {
+        if draftPublicationIsCurrent(recipient) {
           conversationDraftReceipts[id] = recipient
         }
       } catch {
@@ -3188,12 +3155,24 @@ final class OverlayState {
     var cleared = false
     for recipient in frozen {
       guard conversationDraftReceipts[recipient.id] == recipient,
-        draftPublicationIsCurrent(recipient, usesComposerTargets: usesComposerTargets)
+        draftPublicationIsCurrent(recipient)
       else { continue }
       conversationDrafts[recipient.id] = ""
       conversationReplies.removeValue(forKey: recipient.id)
       textMessageErrors.removeValue(forKey: recipient.id)
       cleared = true
+    }
+    // A source's draft is the same words: it clears once every linked agent
+    // holds its receipt, and stays for a retry while any of them failed.
+    // "Send only to…" on 0 · All is one shot (Maciej, 2026-10-30 14:18): the
+    // set dissolves after the send and the next message goes to everyone.
+    if cleared, frozen.allSatisfy({ conversationDraftReceipts[$0.id] == $0 }) {
+      for source in recipients where source.owner == nil {
+        conversationDrafts[source.id] = ""
+        conversationReplies.removeValue(forKey: source.id)
+        textMessageErrors.removeValue(forKey: source.id)
+        if source.channel == "0" { stopDraftSync(for: source.id) }
+      }
     }
     // A partial send leaves failed/newer drafts intact. All subsequent input
     // starts at the resulting prose ends, while Sync membership stays enabled.
