@@ -62,6 +62,7 @@ struct OverlayDraftSyncGroup: Equatable {
 struct OverlayComposerDraftPublication: Equatable {
   let id: String
   let owner: OverlayConversationOwner
+  let recipient: OverlayState.ComposerTarget
   let payload: String
   let reply: OverlayUserReplyReference?
   let draftRevision: UUID?
@@ -69,6 +70,7 @@ struct OverlayComposerDraftPublication: Equatable {
 
   static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.id == rhs.id && lhs.owner.id == rhs.owner.id && lhs.owner.channel == rhs.owner.channel
+      && lhs.recipient == rhs.recipient
       && OverlayComposerProseEdit.identical(lhs.payload, rhs.payload) && lhs.reply == rhs.reply
       && lhs.draftRevision == rhs.draftRevision && lhs.replyRevision == rhs.replyRevision
   }
