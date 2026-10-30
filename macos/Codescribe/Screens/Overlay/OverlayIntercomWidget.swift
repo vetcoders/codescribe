@@ -1951,6 +1951,15 @@ private struct OverlayIntercomCard: View {
         palette: palette, expanded: expanded, roster: roster, inactive: inactive,
         audioBelowName: audioBelowName)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+        .background {
+          if expanded && reduceTransparency {
+            RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+              .fill(palette.desktopBackground.color)
+          }
+        }
+        .modifier(
+          OverlayControlGlass(
+            cornerRadius: CSRadius.composer, isEnabled: expanded && !reduceTransparency))
       if expanded || content != .header, let conversation {
         // One physical metadata line uses the card width, not the narrow name
         // button between status marks and audio controls. The complete card
@@ -3112,11 +3121,14 @@ private struct OverlayIntercomInstanceCard: View {
     // pill, not a glass of its own (Maciej, 2026-10-23). The drag surface
     // sits inside the glass: outside it, the glass takes the hit and no
     // drag reaches the window (Klaudiusz-div0's HID probe).
+    .background {
+      if reduceTransparency {
+        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+          .fill(palette.desktopBackground.color)
+      }
+    }
     .modifier(
-      OverlayControlGlass(
-        cornerRadius: mini
-          ? OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
-          : OverlayIntercomWidgetLayout.conversationCornerRadius)
+      OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
     )
     // The wheel reaches an agent in its own window: the same ring as its row.
     .modifier(
