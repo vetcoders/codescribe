@@ -2593,11 +2593,12 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     return painted
   }
 
-  /// The header card is glass floating over the scrolling rows, as the
-  /// composer is (Maciej, 2026-10-30 on build 2981: "nie zrobiliście z tego
-  /// tafli ponad tekstem tylko położyliście na desce pod spodem"): the rows
-  /// take its height as the scroll view's top content margin and only the
-  /// window's own inset as padding.
+  /// The window inset and the header card are glass floating over the
+  /// scrolling rows, as the composer is (Maciej, 2026-10-30 on build 2981:
+  /// "nie zrobiliście z tego tafli ponad tekstem tylko położyliście na desce
+  /// pod spodem"): the rows take both as the scroll view's one top content
+  /// margin and no top padding of their own, so they scroll beneath the
+  /// fixed header without a clipped strip.
   func testConversationHeaderHeightIsAContentMarginNotRowPadding() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent()
@@ -2607,15 +2608,14 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       encoding: .utf8
     ).split(whereSeparator: \.isWhitespace).joined(separator: " ")
     XCTAssertFalse(
-      view.contains(".padding(.top, topInset + visibleNavigationHeight)"),
-      "the rows no longer sit on a board under the header")
-    XCTAssertTrue(view.contains(".padding(.top, topInset)"), "only the window inset is padding")
+      view.contains(".padding(.top, topInset"),
+      "the rows carry no top padding, neither the inset nor the header")
     XCTAssertTrue(
-      view.contains(".contentMargins(.top, visibleNavigationHeight)"),
-      "the header's height is the scroll view's top margin")
+      view.contains(".contentMargins(.top, topInset + visibleNavigationHeight)"),
+      "the inset and the header's height are the scroll view's top margin")
     XCTAssertEqual(
       view.components(separatedBy: ".contentMargins(.top,").count - 1, 1,
-      "one top margin: the header card's")
+      "one top margin carries both")
   }
 }
 
