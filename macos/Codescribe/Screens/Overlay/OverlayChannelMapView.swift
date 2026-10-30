@@ -215,7 +215,8 @@ struct OverlayAgentsHoverList: View {
             Text(
               verbatim: [
                 row.statusHelp, row.chip.unread ? String(localized: "Unread replies") : "",
-              ].filter { !$0.isEmpty }.joined(separator: ", ")))
+              ].filter { !$0.isEmpty }.joined(separator: ", "))
+          )
           .accessibilityIdentifier("overlay-agents-list-\(row.chip.digit)")
           if let channel = row.channel {
             OverlayReceptionMarks(channel: channel, palette: palette, textScale: 1)
