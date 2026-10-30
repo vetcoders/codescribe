@@ -3264,8 +3264,13 @@ final class OverlayState {
       else { return false }
       return opened <= pastedAt
     }
-    guard Set(candidates.map(\.id)).count == 1 else { return nil }
-    return candidates.first
+    let parents = Set(candidates.map { OverlayChannelDelivery.Bus.channelSessionID(of: $0.id) })
+    let documents = Set(
+      candidates.map(\.id).filter {
+        $0 != OverlayChannelDelivery.Bus.channelSessionID(of: $0)
+      })
+    guard parents.count == 1, documents.count <= 1 else { return nil }
+    return candidates.first(where: { documents.contains($0.id) }) ?? candidates.first
   }
 
   private func resolveWaitingCaptureAttachments(in projected: [OverlayConversation]) {
@@ -3273,13 +3278,14 @@ final class OverlayState {
       guard let conversation = projected.first(where: { $0.id == id }),
         let session = captureSessionForPaste(in: conversation, at: original.pastedAt),
         original.captureSessionID == nil
-          || OverlayChannelDelivery.Bus.channelSessionID(of: original.captureSessionID ?? "")
-            == OverlayChannelDelivery.Bus.channelSessionID(of: session.id),
+          || OverlayChannelDelivery.Bus.sameCaptureSession(
+            original.captureSessionID ?? "", session.id),
         let target = conversation.messages.reversed().compactMap(\.activeCaptureAttachmentTarget)
           .first(where: {
-            ($0.captureSessionID == session.id
-              || OverlayChannelDelivery.Bus.channelSessionID(of: $0.captureSessionID)
-                == OverlayChannelDelivery.Bus.channelSessionID(of: session.id))
+            OverlayChannelDelivery.Bus.sameCaptureSession($0.captureSessionID, session.id)
+              && (original.captureSessionID == nil
+                || OverlayChannelDelivery.Bus.sameCaptureSession(
+                  $0.captureSessionID, original.captureSessionID ?? ""))
               && $0.recipientIDs.sorted() == session.recipientIDs
           })
       else { continue }
@@ -3309,13 +3315,29 @@ final class OverlayState {
   /// choice, instead of capturing every later paste in an unretryable target.
   private func recoverClosedCaptureAttachments(in projected: [OverlayConversation]) {
     for (id, staged) in captureAttachmentDrafts {
-      guard captureAttachmentErrors[id] != nil,
-        !pendingCaptureAttachmentSends.contains(id),
-        let target = staged.target,
-        let conversation = projected.first(where: { $0.id == id }),
-        conversation.messages.contains(where: {
-          $0.captureSessionID == target.captureSessionID && $0.captureState == .finished
-        })
+      guard !pendingCaptureAttachmentSends.contains(id),
+        let conversation = projected.first(where: { $0.id == id })
+      else { continue }
+      let sessionID = staged.target?.captureSessionID ?? staged.captureSessionID
+      let matchesSession: (OverlayConversationMessage) -> Bool = { message in
+        guard let sessionID else { return true }
+        guard let document = message.captureSessionID else { return false }
+        return OverlayChannelDelivery.Bus.sameCaptureSession(document, sessionID)
+      }
+      let finished =
+        sessionID != nil
+        && conversation.messages.contains {
+          $0.captureState == .finished && matchesSession($0)
+        }
+      let receiving = conversation.messages.contains {
+        $0.captureState == .receiving && matchesSession($0)
+      }
+      let stillOpen = activeCaptureAttachmentSessions.contains { session in
+        session.includes(conversation)
+          && (sessionID == nil
+            || OverlayChannelDelivery.Bus.sameCaptureSession(session.id, sessionID ?? ""))
+      }
+      guard finished || (!stillOpen && !receiving && !conversationMicrophoneOpen(conversation))
       else { continue }
       returnCaptureAttachmentsToDraft(in: id)
     }
