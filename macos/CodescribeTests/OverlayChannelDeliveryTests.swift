@@ -423,6 +423,16 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testSendConversationTextAdoptsWaitingCaptureAttachmentWhenTextDraftIsEmpty() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
+    let store = ConversationAttachmentPointer.configDirectory
+      .appendingPathComponent("attachments/\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: store) }
+    let image = store.appendingPathComponent("screenshot.png")
+    let png = try XCTUnwrap(
+      Data(base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN9kAAAAASUVORK5CYII="))
+    try png.write(to: image)
+    let imagePath = image.resolvingSymlinksInPath().path
     let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
     var bus = OverlayChannelDelivery.Bus()
     bus.consume(source)
@@ -447,9 +457,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         providerSessionId: empty.owner?.providerSessionID, open: true, loud: true,
         autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
     ])
-    XCTAssertTrue(state.stageConversationAttachments(["/fixture/screenshot.png"], in: empty))
+    XCTAssertTrue(state.stageConversationAttachments([imagePath], in: empty))
     XCTAssertEqual(state.conversationDraft(for: empty.id), "")
-    XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.paths, ["/fixture/screenshot.png"])
+    XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.paths, [imagePath])
     var publishedText: String?
     state.publishConversationText = { owner, outgoing, _, _ in
       XCTAssertEqual(owner, empty.owner)
@@ -458,7 +468,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     await state.sendConversationText(empty)
     let parts = ConversationDraft.split(try XCTUnwrap(publishedText))
     XCTAssertEqual(parts.text, "")
-    XCTAssertEqual(parts.attachments, ["/fixture/screenshot.png"])
+    XCTAssertEqual(parts.attachments, [imagePath])
     XCTAssertNil(state.captureAttachmentDrafts[empty.id])
   }
 

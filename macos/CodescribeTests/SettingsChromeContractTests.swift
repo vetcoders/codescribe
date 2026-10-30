@@ -467,7 +467,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(keyRowSource.contains("Text(account)"))
     XCTAssertTrue(keyRowSource.contains("isSet ? \"Change\" : \"Add\""))
     XCTAssertTrue(
-      keyRowSource.contains("isSet ? \"Set\" : (optional ? \"Optional\" : \"Not set\")"))
+      keyRowSource.contains("CSStatusBadge(text: String(localized: \"Saved\"), mark: .saved)"))
+    XCTAssertTrue(keyRowSource.contains("Text(optional ? \"Optional\" : \"Not set\")"))
     let chip = try XCTUnwrap(keyRowSource.range(of: "editing.toggle()"))
     let field = try XCTUnwrap(keyRowSource.range(of: "if editing {"))
     XCTAssertLessThan(chip.lowerBound, field.lowerBound)
@@ -482,8 +483,10 @@ final class SettingsChromeContractTests: XCTestCase {
         "} else {\n        SettingsChipButton(\n          enabled: provider.accountLoginEnabled"))
     XCTAssertFalse(accountSource.contains("Advanced · OAuth client id…"))
 
-    // Red only for a real failure: an absent key and Sign out stay neutral.
-    XCTAssertTrue(keyRowSource.contains("isSet ? CSColor.olive : CSColor.secondaryInk"))
+    // Stored credentials are presence, not a successful service request.
+    // Only the explicit probe supplies the status tone; Sign out stays neutral.
+    XCTAssertTrue(keyRowSource.contains("private var accent: Color { CSColor.secondaryInk }"))
+    XCTAssertTrue(keyRowSource.contains("probeResult?.status.tone ?? .neutral"))
     XCTAssertFalse(rows.contains("\"Sign out\", tint: CSColor.terracotta"))
     XCTAssertFalse(panel.contains("\"Sign out\", tint: CSColor.terracotta"))
     XCTAssertTrue(panel.contains("optional: !provider.keyRequired || accountServesRequests"))
@@ -507,7 +510,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Keychain account",
       "Settings keys",
       "OAuth client id…",
-      "Set", "Not set", "Optional", "Change", "Add",
+      "Saved", "Not set", "Optional", "Change", "Add",
       "%@ account", "Connected", "Connected as %@", "Not connected", "Sign out", "Sign in with %@",
       "This address needs http:// or https://.",
       "This address needs ws:// or wss://.",
@@ -603,7 +606,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let formatWait = try XCTUnwrap(lanes.range(of: "\"agent-channel-format-wait\""))
     let hold = try XCTUnwrap(lanes.range(of: "\"agent-send-hold-seconds\""))
     let chain = try XCTUnwrap(lanes.range(of: "\"agent-channel-chain\""))
-    let agentHeader = try XCTUnwrap(lanes.range(of: "String(localized: \"Built-in Agent\""))
+    let agentHeader = try XCTUnwrap(lanes.range(of: "localized: \"Built-in Agent\""))
     let autoSend = try XCTUnwrap(lanes.range(of: "String(localized: \"Send automatically\")"))
     let delay = try XCTUnwrap(lanes.range(of: "\"agent-auto-send-delay\""))
     let takeEnd = try XCTUnwrap(lanes.range(of: "\"agent-take-voiceless-end\""))
@@ -1126,10 +1129,14 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(
       section.contains("String(localized: \"mcp.server.enabled\", defaultValue: \"Enabled\")"))
     XCTAssertTrue(view.contains("HostingWindowReader(onWindow: adoptHostWindow)"))
-    for label in ["Server name", "Launch command", "Command arguments", "Server URL"] {
+    for label in ["Server name", "Launch command", "Server URL"] {
       XCTAssertTrue(section.contains("\"\(label)\", placeholder: \""), label)
     }
-    XCTAssertEqual(section.components(separatedBy: "labeledField(").count, 6)
+    XCTAssertEqual(section.components(separatedBy: "labeledField(").count, 5)
+    // Arguments are separate argv entries, each with its own editable field.
+    XCTAssertTrue(section.contains("fieldLabel(\"Command arguments\")"))
+    XCTAssertTrue(section.contains("ForEach($arguments) { $argument in"))
+    XCTAssertTrue(section.contains("TextField(\"Argument\", text: $argument.value)"))
     XCTAssertTrue(section.contains("fieldLabel(\"Access token (optional)\")"))
     XCTAssertTrue(
       section.contains("guard addError == nil else {"),
@@ -1202,7 +1209,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Local process": "Proces lokalny",
       "HTTP connection": "Połączenie HTTP",
       "Server name": "Nazwa serwera",
-      "Launch command": "Polecenie uruchomieniowe",
+      "Launch command": "Polecenie",
       "Command arguments": "Argumenty polecenia",
       "Server URL": "Adres URL serwera",
       "Access token (optional)": "Token dostępu (opcjonalnie)",
@@ -1731,8 +1738,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(tokens.contains("static var sheetDarkHex:"))
     XCTAssertEqual(SheetShade.todayDark.hex, 0x16161C)
     XCTAssertEqual(SheetShade.todayLight.hex, 0xF6F3EE)
-    XCTAssertEqual(SheetShade.darkChoices.map(\.rawValue), ["16161C", "1B1B1D", "201F1E"])
-    XCTAssertEqual(SheetShade.lightChoices.map(\.rawValue), ["F6F3EE", "DED9D3", "D9D3CD"])
+    XCTAssertEqual(SheetShade.darkChoices.map(\.rawValue), ["16161C", "1B1B1D", "201F1E", "070707"])
+    XCTAssertEqual(SheetShade.lightChoices.map(\.rawValue), ["F6F3EE", "DED9D3", "D9D3CD", "F0F0F0"])
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Appearance": "Wygląd",
@@ -1743,12 +1750,11 @@ final class SettingsChromeContractTests: XCTestCase {
       // "Today" already lived in the catalog (thread rail) as "Dzisiaj"; one key, one word.
       "Today": "Dzisiaj", "Soft graphite": "Miękki grafit", "Warm carbon": "Ciepły węgiel",
       "Limestone": "Wapień", "Travertine": "Trawertyn",
-      "Codescribe will restart with the new shade. Your recording must finish first.":
-        "Codescribe uruchomi się ponownie z nowym odcieniem. Nagranie musi się najpierw zakończyć.",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
     }
+    XCTAssertNil(polish["Codescribe will restart with the new shade. Your recording must finish first."])
   }
 
   /// One switch, one track width (Founder, 2026-10-20): every switch in
