@@ -283,6 +283,12 @@ struct OverlayBarGeometry: Equatable, Sendable {
   let inlineGap: CGFloat
   /// The bar never grows past this for one row; a wider team takes two.
   var oneRowBudget: CGFloat = Self.defaultOneRowBudget
+  /// How far a one-row map's hanging names reach below the bar's lower
+  /// padding at the current text scale: 0 at scale 1, more with larger
+  /// text. The bar grows by exactly this instead of clipping the names
+  /// (Monika's brief: text is never shrunk, height grows only by what is
+  /// needed). `DictationOverlayWindow.midiBarGeometry` measures it.
+  var oneRowOverhang: CGFloat = 0
 
   static let groupGap: CGFloat = 10
   static let oneRowNaturalGap: CGFloat = 8
@@ -364,9 +370,11 @@ struct OverlayBarGeometry: Equatable, Sendable {
   }
 
   /// The height the bar adds at a width: the second row's own height and
-  /// its gap, nothing in one row.
+  /// its gap; in one row, only the names' overhang past the lower padding.
   func extraHeight(width: CGFloat) -> CGFloat {
-    layout(width: width).arrangement == .twoRows ? Self.rowGap + Self.secondRowHeight : 0
+    guard count > 0 else { return 0 }
+    return layout(width: width).arrangement == .twoRows
+      ? Self.rowGap + Self.secondRowHeight : oneRowOverhang
   }
 
   /// The map at a bar width. Half a point absorbs fractional rounding.

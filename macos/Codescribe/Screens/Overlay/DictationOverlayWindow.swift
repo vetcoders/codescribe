@@ -1351,7 +1351,13 @@ enum DictationOverlayWindow {
         $0.isBroadcast ? 0 : OverlayChannelPill.shortestNameWidth($0.name, scale: scale)
       },
       circle: OverlayChannelPill.mapCircle * scale,
-      inlineGap: OverlayChannelPill.chipGap * scale)
+      inlineGap: OverlayChannelPill.chipGap * scale,
+      // Hanging names past the 10 pt lower padding grow the bar, never
+      // clip; the header fills the taller window, so its clip follows and
+      // the circles stay on the tools' line.
+      oneRowOverhang: ceil(
+        max(
+          0, OverlayChannelPill.mapOverhang(scale: scale) - OverlayHeaderDensity.verticalPadding)))
   }
 
   static func minimumSize(for mode: OverlayPresentationMode) -> NSSize {

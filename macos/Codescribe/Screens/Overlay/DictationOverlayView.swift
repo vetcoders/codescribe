@@ -353,9 +353,10 @@ enum OverlayHeaderDensity: Equatable {
 
   /// The clip's room below the row. The expanded bar's one-row map hangs its
   /// names into the bar's lower padding (Monika, 2026-10-30), so there the
-  /// clip reaches the bar's bottom edge
-  /// (`OverlayChannelPill.mapOverhang(scale:)` stays within it at text
-  /// scale 1); the other forms keep the plain inset.
+  /// clip reaches the bar's bottom edge. At text scale 1 the names fit the
+  /// padding; with larger text the window grows by the rest
+  /// (`OverlayBarGeometry.oneRowOverhang`) and this header fills it, so the
+  /// clip follows. The other forms keep the plain inset.
   var bottomClipInset: CGFloat {
     self == .midi ? Self.verticalPadding : Self.clipInset
   }

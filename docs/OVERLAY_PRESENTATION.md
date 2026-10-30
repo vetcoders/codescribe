@@ -162,7 +162,14 @@ in the bar's lower padding, without making the bar taller (Monika,
 ikonkami belki a imiona … niżej"). `OverlayChannelPill.mapCircleTop` places
 the circle, `mapItemHeight` (circle, −1 pt, a 14 pt name line) sizes the
 item, and the expanded bar's header clip reaches the bar's bottom edge
-(`OverlayHeaderDensity.bottomClipInset`) so descenders stay visible.
+(`OverlayHeaderDensity.bottomClipInset`) so descenders stay visible. With
+larger text the names would reach past the 10 pt lower padding; instead of
+clipping them or shrinking the text, the one-row bar grows by exactly that
+overhang (`OverlayBarGeometry.oneRowOverhang`, measured in
+`DictationOverlayWindow.midiBarGeometry` from `OverlayChannelPill.mapOverhang`):
+0 at text scale 1, so the bar stays 46 pt there. The window owner's
+`midiHeight(forWidth:)` and the header read the same geometry, and the circles
+stay on the tools' line because the extra height is added below the row.
 
 Mini and the expanded bar wear the hover preview's glass through
 `OverlayCanvasSurface(glass: .popover)`; the open window keeps the `.sheet`
