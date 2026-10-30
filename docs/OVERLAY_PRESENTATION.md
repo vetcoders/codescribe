@@ -15,6 +15,8 @@ alternative arrangements; this document does not select one as the final UI.
 | Channel map in mini and compact: tiers, counter, its click              | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
 | Header, waveform placement, embedded list/rail and hover region         | `DictationOverlayView.swift`                                                            |
 | List width, docking threshold and rail/pill dimensions                  | `OverlayAgentDrawerLayout.swift`                                                        |
+| Panel presentation, selection and recipient projection                  | `OverlayState.swift`                                                                    |
+| Read evidence, conversation messages and delivery metadata              | `OverlayChannelDelivery.swift`, `OverlayChannelDeliveryReader.swift`                    |
 | Native mini/midi/expanded window size, position and morph               | `DictationOverlayWindow.swift`                                                          |
 | Overlay colors                                                          | `OverlayAppearancePalette.swift`, projecting `CSPalette` in `DesignSystem/Tokens.swift` |
 | Shared microphone/speaker symbols, glass and hit areas                  | `OverlayAgentAudioControls` in `OverlayChannelStatusView.swift`                         |
@@ -133,6 +135,33 @@ comes only from channel status, the yellow number only from unread replies,
 and the button background only from the viewed conversation, including Inbox.
 Unread changes never recolor all status dots.
 
+### Panel state and status signals
+
+`OverlayState.agentPanelPresentation` is the persisted owner of the three
+panel forms: `expanded` shows the full list, `compact` shows the rail, and
+`hidden` reserves no rail width. `showsAgentMonitor` is a projection of this
+state. The primary panel control switches expanded and compact; its context
+menu can hide the panel completely. The hidden state retains a header control
+for reopening it. Earlier visibility and layout preferences are adopted once;
+the new presentation then owns subsequent writes.
+
+The 38-point rail button width scales with text. Symmetric horizontal gutters
+leave room both for the resize hit band and the largest unread badge; the
+button, not the overhanging badge, is centered. The badge is on the upper
+trailing corner, mirrored in right-to-left layouts, and does not add a hit
+area. Inbox uses the same selection and unread treatment as agent buttons.
+
+The status dot is a separate projection from `statusDotKind(for:)` in
+`OverlayChannelStatusView`; unread does not determine its color. The status
+check handles an unavailable status or disconnected follower before checking
+whether the channel is listening, stalled or skipped, then its delivery stage.
+A listening dot uses `listeningStatus`, a received dot `successStatus`, a
+waiting or held dot `processingStatus`, and idle or sleeping states use an
+unfilled `mutedText` ring. The shared broadcast marker uses `agentAccent`.
+These palette roles adapt to the current appearance; they are not delivery
+receipts or evidence that the agent is actively reading. A selected button
+uses the agent-accent background independently of both dot and unread badge.
+
 Conversation and panel headers share one compact band with one panel control
 at the window's trailing edge. The conversation has no independent fold or
 reveal edge. Divider resizing clamps the full column without hiding the chat.
@@ -158,10 +187,23 @@ and floating `.intercom` presentations keep their existing layout. Text scale,
 resize, retained history, reply navigation, attachments, draft dictation and
 draft synchronization remain supported.
 
-The visible conversation, text destination and open microphone are independent.
-The text destination is always named beside the composer and can be selected
-explicitly. A separate action chooses the viewed conversation as the text
-destination. Selection pins conversation ID, channel and frozen owner identity;
+### Conversation, destination and microphone
+
+In candidate 19 the visible conversation, text destination and open microphone
+are independent. This is a description of the current implementation, not a
+settlement of the different recipient model under review.
+The text destination is named beside the composer and can be selected
+explicitly. `OverlayState.composerTarget` is one current selection: ordinary
+row, map and rail navigation changes the viewed conversation but does not reset
+that selection. For example, after choosing agent A as the text destination,
+opening agent B's conversation can still show A in the destination field and
+use A's draft and Send route. The explicit Write/Forward and Reply actions
+choose their own conversation as the destination. The send path freezes and
+validates the selected identity; a UI label or successful selection alone is
+not a delivery receipt.
+
+A separate action chooses the viewed conversation as the text destination.
+Selection pins conversation ID, channel and frozen owner identity;
 reusing a channel digit cannot adopt another owner's draft or pending reply.
 All drafts, replies, attachments, editor identity and send callbacks continue
 to use the existing per-conversation stores. A missing destination stays named
@@ -181,6 +223,23 @@ returns text to that frozen private owner or to the original channel-zero
 conversation. Navigating to a quoted reply opens its own history and retains
 the requested message ID while history loads. None of these changes creates a
 second document, recorder, bus writer or delivery route.
+
+### Acceptance for the Agents panel and conversation
+
+Before calling a change accepted, inspect the full list, compact rail and
+hidden state in both wide and narrow windows. Check a covering list returns to
+the rail on selection while a docked list stays open, and that the composer,
+draft, selection and scroll position survive the transition. In light and
+dark appearances, including enlarged text and right-to-left layout, check
+centered buttons, an Inbox selection, independent status and unread signals,
+and counts 1, 42, 99 and 99+ without clipping. Check the full count through
+accessibility. Exercise actual pointer and keyboard controls, not only a static
+render. Separately verify viewed conversation, displayed text destination,
+frozen recipient, open microphone and Sync membership before a real send; use
+consenting test recipients and verify the resulting receipt. Test the explicit
+Write/Forward and Reply actions, a missing owner, channel reuse and a draft
+retained during navigation. Native interaction and delivery are distinct from
+source review, test fixtures and image rendering.
 
 The floating Intercom windows and the mini/compact top bar are outside this
 horizontal-window cut. Shared view parameters default to the existing Intercom
