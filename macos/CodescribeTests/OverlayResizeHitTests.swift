@@ -178,7 +178,7 @@ final class OverlayResizeHitTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Resize.presentationFloors"))
         as? FloatingOverlayPanel)
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     for mode in [OverlayPresentationMode.expanded, .midi] {
       state.setPresentationMode(.mini)
       panel.settleFrameTransition()
@@ -301,7 +301,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testCompactIsTheFloorWithoutAMapAndItsNaturalWidthWithOne() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.natural")
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let bare = barGeometry(state)
     XCTAssertTrue(bare.nameWidths.isEmpty)
     XCTAssertEqual(
@@ -339,7 +339,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testCompactGrowsAndShrinksWithTheRosterAtItsPin() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.roster")
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let three = [mapRosterRow("0", "All"), mapRosterRow("2", "Miksa"), mapRosterRow("3", "Igor")]
     state.applyChannelRoster(three)
     let threeWidth = panel.frame.width
@@ -393,7 +393,7 @@ final class OverlayResizeHitTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Resize.miniRecipients"))
         as? FloatingOverlayPanel)
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     state.setPresentationMode(.mini)
     panel.settleFrameTransition()
     let visible = try XCTUnwrap((panel.screen ?? NSScreen.main)?.visibleFrame)
@@ -460,7 +460,7 @@ final class OverlayResizeHitTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Resize.miniLeftAnchor"))
         as? FloatingOverlayPanel)
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     state.setPresentationMode(.mini)
     panel.settleFrameTransition()
     XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5)
@@ -489,7 +489,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testOpenChannelShowsTheMeterAndRefitsTheBarAtItsPin() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.meter")
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     func roster(open: Bool) -> [CsChannelRosterState] {
       [
         mapRosterRow("0", "All"), mapRosterRow("3", "Igor"),
@@ -531,7 +531,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testNineAgentsTakeASecondRowThatGrowsDownwardAtThePin() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.nine")
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
     state.applyChannelRoster(nineAgentRoster())
     XCTAssertEqual(state.channelMapLayoutModel.count, 9)
@@ -655,7 +655,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testCompactKeepsAWidthTheUserNarrowedAndDoesNotRegrowIt() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.shrink")
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let three = [mapRosterRow("0", "All"), mapRosterRow("2", "Miksa"), mapRosterRow("3", "Igor")]
     state.applyChannelRoster(three)
     let natural = panel.frame.width
@@ -687,7 +687,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testCompactWidenedByTheUserGrowsOnlyWhenTheMapOutgrowsIt() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.widen")
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let three = [mapRosterRow("0", "All"), mapRosterRow("2", "Miksa"), mapRosterRow("3", "Igor")]
     state.applyChannelRoster(three)
     let natural = panel.frame.width
@@ -710,10 +710,7 @@ final class OverlayResizeHitTests: XCTestCase {
         state: state, textScale: TextScaleController(key: "Resize.threeForms"))
         as? FloatingOverlayPanel)
     BackgroundTestWindow.present(panel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let text = state.activeText
     let generation = state.captureGeneration
     let sizes: [(OverlayPresentationMode, NSSize)] = [
@@ -799,10 +796,7 @@ final class OverlayResizeHitTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.miniClick"))
         as? FloatingOverlayPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
     panel.setFrameOrigin(NSPoint(x: visible.minX + 100, y: visible.minY + 100))
     BackgroundTestWindow.present(panel)
@@ -847,10 +841,7 @@ final class OverlayResizeHitTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.midiClick"))
         as? FloatingOverlayPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
     panel.setFrameOrigin(NSPoint(x: visible.minX + 100, y: visible.minY + 100))
     BackgroundTestWindow.present(panel)
@@ -1083,10 +1074,7 @@ final class OverlayResizeHitTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.edgeWheel"))
         as? FloatingOverlayPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setContentSize(NSSize(width: 470, height: 280))
     BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
@@ -1123,10 +1111,7 @@ final class OverlayResizeHitTests: XCTestCase {
       panelFactory: { _, _ in panel }, orderPanelFront: { BackgroundTestWindow.present($0) },
       orderPanelOut: { $0.orderOut(nil) })
     controller.show()
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setFrame(NSRect(x: 300, y: 300, width: 470, height: 560), display: false)
     let root = try XCTUnwrap(panel.contentView)
     func editor(in view: NSView) -> NSTextView? {
@@ -1193,10 +1178,7 @@ final class OverlayResizeHitTests: XCTestCase {
       panelFactory: { _, _ in panel }, orderPanelFront: { BackgroundTestWindow.present($0) },
       orderPanelOut: { $0.orderOut(nil) })
     controller.show()
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setFrame(NSRect(x: 300, y: 300, width: 470, height: 280), display: false)
     let start = panel.frame
     let pointer = NSPoint(x: start.maxX, y: start.midY)
@@ -1455,10 +1437,7 @@ final class OverlayResizeHitTests: XCTestCase {
           state: state,
           textScale: TextScaleController(key: "OverlayResizeHitTests.mic.\(width)"))
           as? FloatingOverlayPanel)
-      defer {
-        panel.orderOut(nil)
-        panel.invalidatePresence()
-      }
+      defer { BackgroundTestWindow.tearDown(panel, state: state) }
       panel.setContentSize(NSSize(width: width, height: 280))
       BackgroundTestWindow.present(panel)
       let root = try XCTUnwrap(panel.contentView)
@@ -1538,10 +1517,7 @@ final class OverlayResizeHitTests: XCTestCase {
         textScale: TextScaleController(key: "OverlayResizeHitTests.resizeBand.textScale")
       ) as? FloatingOverlayPanel
     )
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setContentSize(NSSize(width: 470, height: 280))
     BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
@@ -1592,10 +1568,7 @@ final class OverlayResizeHitTests: XCTestCase {
         textScale: TextScaleController(key: "OverlayResizeHitTests.headerWidth.textScale")
       ) as? FloatingOverlayPanel
     )
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setContentSize(NSSize(width: 470, height: 280))
     BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
@@ -1707,10 +1680,7 @@ final class OverlayResizeHitTests: XCTestCase {
           channel: "2", agent: "agent", deliveryID: nil, stage: nil, isOpen: true)
       ])
       let panel = try XCTUnwrap(builtPanel, "an open channel must show the panel")
-      defer {
-        panel.orderOut(nil)
-        panel.invalidatePresence()
-      }
+      defer { BackgroundTestWindow.tearDown(panel, state: state) }
       panel.setContentSize(size)
       let root = try XCTUnwrap(panel.contentView)
       root.layoutSubtreeIfNeeded()
@@ -1756,10 +1726,7 @@ final class OverlayResizeHitTests: XCTestCase {
         textScale: TextScaleController(key: "OverlayResizeHitTests.textScale")
       ) as? FloatingOverlayPanel
     )
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setContentSize(NSSize(width: 470, height: 280))
     BackgroundTestWindow.present(panel)
 
@@ -1819,10 +1786,7 @@ final class OverlayResizeHitTests: XCTestCase {
         textScale: TextScaleController(key: "OverlayResizeHitTests.dragEffect.textScale")
       ) as? FloatingOverlayPanel
     )
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
 
     panel.setContentSize(NSSize(width: 470, height: 280))
     let visibleFrame = try XCTUnwrap(NSScreen.main?.visibleFrame)
@@ -1888,10 +1852,7 @@ final class OverlayResizeHitTests: XCTestCase {
         textScale: TextScaleController(key: "OverlayResizeHitTests.layout.textScale")
       ) as? FloatingOverlayPanel
     )
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setContentSize(
       NSSize(width: 470, height: DictationOverlayWindow.minSize.height))
     BackgroundTestWindow.present(panel)
@@ -1944,10 +1905,7 @@ final class OverlayResizeHitTests: XCTestCase {
     )
     controller.show()
     let panel = try XCTUnwrap(builtPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let savedSize = panel.sizeForPersistence
     let text = (1...80).map { "recorded words \($0)" }.joined(separator: "\n")
     project(text, sequence: 1, to: state)
@@ -1998,10 +1956,7 @@ final class OverlayResizeHitTests: XCTestCase {
     )
     controller.show()
     let panel = try XCTUnwrap(builtPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let screen = try XCTUnwrap(panel.screen ?? NSScreen.main)
     XCTAssertEqual(panel.frame.width, 470, accuracy: 0.5)
     XCTAssertEqual(panel.frame.height, DictationOverlayWindow.minSize.height, accuracy: 0.5)
@@ -2057,10 +2012,7 @@ final class OverlayResizeHitTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.byteExact"))
         as? FloatingOverlayPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     for (index, text) in ["  raz raz\né 👩‍💻  ", "  raz raz\ne\u{301} 👩‍💻  ", "", "raz raz"].enumerated()
@@ -2237,10 +2189,7 @@ final class OverlayResizeHitTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "OverlayResizeHitTests.grabPad")
       ) as? FloatingOverlayPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setContentSize(NSSize(width: 470, height: 280))
     BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)

@@ -459,10 +459,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "OverlayCollapse.default")
       ) as? FloatingOverlayPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
     XCTAssertFalse(panel.styleMask.contains(.resizable), "MINI is a drag surface")
   }
@@ -556,10 +553,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Widget.Tray")) as? FloatingOverlayPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     var creations = 0
     let controller = OverlayController(
       state: state, engine: nil,
@@ -1744,10 +1738,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         textScale: TextScaleController(key: "OverlayChromeFounderCutTests.scale"),
         sizeDefaults: defaults
       ) as? FloatingOverlayPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setContentSize(NSSize(width: width, height: DictationOverlayWindow.minSize.height))
     if let visible = NSScreen.main?.visibleFrame {
       // Anchor by the top-right corner, 40 pt inside the visible frame, at

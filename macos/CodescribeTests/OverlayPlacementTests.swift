@@ -101,7 +101,7 @@ final class OverlayPlacementTests: XCTestCase {
         textScale: TextScaleController(key: "OverlayPlacementTests.textScale")
       ) as? FloatingOverlayPanel
     )
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let controller = OverlayController(
       state: state,
       engine: nil,
@@ -296,10 +296,7 @@ final class OverlayPlacementTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "OverlayPlacementTests.dragScale")
       ) as? FloatingOverlayPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     // The panel size is part of every anchor's origin. Pin it instead of
     // inheriting whatever size an earlier run or the app persisted; the odd
     // width keeps the center anchors on the half-point case AppKit rounds.

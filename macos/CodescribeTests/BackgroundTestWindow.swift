@@ -28,4 +28,25 @@ enum BackgroundTestWindow {
     try requireIsolatedGUI()
     window.makeKeyAndOrderFront(nil)
   }
+
+  /// Ends an overlay panel built by `DictationOverlayWindow.make` together
+  /// with its state. `make` wires the state to the panel, and an ordered-out
+  /// panel that is never closed can outlive its test: a state left behind (its
+  /// automatic fold, a roster or preference change) would still drive that
+  /// panel's presentation, and every transition of it lands in the shared
+  /// `OverlayPresentationTrace` while a later test reads the ledger. Disconnect
+  /// the state first, then stop the panel's monitors and close it.
+  static func tearDown(_ panel: FloatingOverlayPanel, state: OverlayState?) {
+    if let state {
+      state.suspendAutoCollapse()
+      state.onPresentationModeChanged = nil
+      state.onChannelMapLayoutChanged = nil
+      state.onPinChanged = nil
+      state.onAgentSidebarPresented = nil
+    }
+    panel.invalidatePresence()
+    panel.orderOut(nil)
+    panel.isReleasedWhenClosed = false
+    panel.close()
+  }
 }

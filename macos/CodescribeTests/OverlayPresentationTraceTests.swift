@@ -48,11 +48,14 @@ final class OverlayPresentationTraceTests: XCTestCase {
   }
 
   /// Pumps the main run loop until the ledger holds the landing of `generation`.
-  private func pump(untilCompleted generation: UInt64, deadline: TimeInterval = 2) -> Bool {
+  private func pump(
+    untilCompleted generation: UInt64, target: NSRect? = nil, deadline: TimeInterval = 2
+  ) -> Bool {
     let end = Date().addingTimeInterval(deadline)
     while Date() < end {
       if trace.entries.contains(where: {
         $0.kind == .frameTransitionCompleted && $0.generation == generation
+          && (target == nil || $0.target == target)
       }) {
         return true
       }
@@ -105,7 +108,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     let beforeOrderFront = panelReadiness(panel, label: "beforeOrderFront")
     BackgroundTestWindow.present(panel)
-    defer { panel.orderOut(nil) }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let afterOrderFront = panelReadiness(panel, label: "afterOrderFront")
     panel.setPresentationMode(.mini)
     // Synchronous display alone can leave both visibility and hosting layout
@@ -128,17 +131,28 @@ final class OverlayPresentationTraceTests: XCTestCase {
     for mode in [OverlayPresentationMode.midi, .expanded, .mini] {
       let mark = trace.recorded
       let preMorph = panelReadiness(panel, label: "preMorph(\(mode))")
+      // The ledger is shared by every panel in the process and its entries
+      // carry no window identity. This panel's entries are told apart by
+      // what only it can write: its begin starts from its own frame toward
+      // this mode, and its landing names that begin's generation and target.
+      let departure = panel.frame
       panel.setPresentationMode(mode, animated: true)
       let postStart = panelReadiness(panel, label: "postStart(\(mode))")
       let began = try XCTUnwrap(
-        trace.entries(after: mark).first { $0.kind == .frameTransitionBegan },
-        "\(mode): the panel ledgers its target before animating")
+        trace.entries(after: mark).first {
+          $0.kind == .frameTransitionBegan && $0.mode == mode && $0.frame == departure
+        }, "\(mode): the panel ledgers its target before animating")
       let generation = try XCTUnwrap(began.generation)
       let target = try XCTUnwrap(began.target)
-      XCTAssertTrue(pump(untilCompleted: generation), "\(mode): the animator never landed")
+      XCTAssertTrue(
+        pump(untilCompleted: generation, target: target), "\(mode): the animator never landed")
 
       let after = trace.entries(after: mark)
-      let completed = try XCTUnwrap(after.first { $0.kind == .frameTransitionCompleted })
+      let completed = try XCTUnwrap(
+        after.first {
+          $0.kind == .frameTransitionCompleted && $0.generation == generation
+            && $0.target == target
+        })
       let postMorph = panelReadiness(panel, label: "postMorph(\(mode))")
       XCTAssertEqual(completed.generation, generation)
       XCTAssertEqual(completed.frame, target, "\(mode): the landing is the chosen target")
@@ -234,7 +248,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
     let (state, panel) = try makePanel("unroll")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     BackgroundTestWindow.present(panel)
-    defer { panel.orderOut(nil) }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setPresentationMode(.mini)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
     XCTAssertEqual(root.contentFrame, root.bounds, "a resting panel fills its window")
@@ -271,7 +285,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
     let (state, panel) = try makePanel("fold")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     BackgroundTestWindow.present(panel)
-    defer { panel.orderOut(nil) }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setPresentationMode(.expanded)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
     let departing = panel.frame
@@ -312,10 +326,10 @@ final class OverlayPresentationTraceTests: XCTestCase {
   /// The fold then covers that held layout until it lands on mini.
   func testFoldCatchingAnUnrollKeepsTheHeldLayout() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
-    let (_, panel) = try makePanel("unroll-caught")
+    let (state, panel) = try makePanel("unroll-caught")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     BackgroundTestWindow.present(panel)
-    defer { panel.orderOut(nil) }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setPresentationMode(.mini)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
     panel.setPresentationMode(.expanded, animated: true)
@@ -346,10 +360,10 @@ final class OverlayPresentationTraceTests: XCTestCase {
   /// A caller that settles an unroll before its first step lands it once; the
   /// deferred start then finds nothing left to animate.
   func testSettlingAnUnrollBeforeItsFirstStepLandsItOnce() throws {
-    let (_, panel) = try makePanel("unroll-settled")
+    let (state, panel) = try makePanel("unroll-settled")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     BackgroundTestWindow.present(panel)
-    defer { panel.orderOut(nil) }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setPresentationMode(.mini)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
 
@@ -372,10 +386,10 @@ final class OverlayPresentationTraceTests: XCTestCase {
   /// the panel had before the fold started, from wherever the morph had got to.
   func testFoldCaughtMidwayReturnsToThePreFoldFrame() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
-    let (_, panel) = try makePanel("fold-caught")
+    let (state, panel) = try makePanel("fold-caught")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     BackgroundTestWindow.present(panel)
-    defer { panel.orderOut(nil) }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     panel.setPresentationMode(.expanded)
     let before = panel.frame
 
@@ -398,6 +412,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
 
   func testModeRequestPrecedesTheFrameAndCarriesItsCause() throws {
     let (state, panel) = try makePanel("cause")
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let other: OverlayPresentationMode = state.presentationMode == .midi ? .mini : .midi
     let mark = trace.recorded
     state.setPresentationMode(other)

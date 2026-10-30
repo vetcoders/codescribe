@@ -213,10 +213,7 @@ final class OverlayHeaderMorphTests: XCTestCase {
     from start: OverlayPresentationMode, to end: OverlayPresentationMode, name: String
   ) -> (samples: [MorphSample], before: MorphSample, after: MorphSample) {
     let (rig, _) = makeRig(start: start)
-    defer {
-      rig.panel.orderOut(nil)
-      rig.panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(rig.panel, state: rig.state) }
     let before = observe(rig, label: "\(name) rest before")
     let endRig = rig  // same objects; end rest is read after the morph
     rig.state.setPresentationMode(end)
@@ -303,10 +300,7 @@ final class OverlayHeaderMorphTests: XCTestCase {
       let minimum = DictationOverlayWindow.minimumSize(for: mode).width
       let (rig, flag) = makeRig(start: mode)
       flag.value = false
-      defer {
-        rig.panel.orderOut(nil)
-        rig.panel.invalidatePresence()
-      }
+      defer { BackgroundTestWindow.tearDown(rig.panel, state: rig.state) }
       var bad: [String] = []
       var width = minimum
       while width <= max(target, minimum) {
