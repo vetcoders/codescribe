@@ -2029,7 +2029,7 @@ private struct OverlayIntercomCard: View {
       }
     }
     .foregroundStyle(palette.primaryText.color)
-    .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
+    .modifier(OverlayDisconnectedRowDim(disconnected: current && inactive))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     // Header-only icons retain their compact row; text uses its measured space.
     .frame(
@@ -2220,6 +2220,7 @@ private struct OverlayIntercomCard: View {
         .opacity(detached ? 0.72 : 1)
         .modifier(nameHint)
         .simultaneousGesture(moveGesture)
+        .modifier(OverlayDisconnectedRowDim(disconnected: !current))
         .modifier(OverlayDetachedRosterValue(detached: detached))
         .accessibilityLabel(
           Text(verbatim: identity.isHumanInbox ? name : identity.digit + " · " + name)
@@ -2342,6 +2343,7 @@ private struct OverlayIntercomCard: View {
           .accessibilityIdentifier("overlay-intercom-collapse-\(identity.digit)")
         }
       }
+      .modifier(OverlayDisconnectedRowDim(disconnected: !current))
       .modifier(
         current && !identity.isHumanInbox
           ? roster.agentPillMenu(for: identity.digit, showsInlineError: false)
@@ -2914,7 +2916,8 @@ private struct OverlayIntercomInstanceCard: View {
       }
     }
     .foregroundStyle(palette.primaryText.color)
-    .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
+    // Saved history keeps readable words; only its header marks the old owner.
+    .modifier(OverlayDisconnectedRowDim(disconnected: current && inactive))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(
       OverlayCanvasBackdrop(
@@ -3100,6 +3103,7 @@ private struct OverlayIntercomInstanceCard: View {
       .allowsHitTesting(!mini || hovering)
       .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
     }
+    .modifier(OverlayDisconnectedRowDim(disconnected: !current))
     .padding(.leading, 12)
     .padding(.trailing, 4)
     // Any free spot on the header moves the fiszka, not one grip on one side
