@@ -3152,6 +3152,11 @@ final class OverlayState {
         }
       }
     }
+    // Decided before any draft clears: clearing a draft drops its receipt
+    // (the `conversationDrafts` observer), so this must be read first.
+    let everyAgentHoldsItsReceipt = frozen.allSatisfy {
+      conversationDraftReceipts[$0.id] == $0 && draftPublicationIsCurrent($0)
+    }
     var cleared = false
     for recipient in frozen {
       guard conversationDraftReceipts[recipient.id] == recipient,
@@ -3166,7 +3171,7 @@ final class OverlayState {
     // holds its receipt, and stays for a retry while any of them failed. The
     // set itself persists, on 0 · All as in the inbox (Maciej, 2026-10-30
     // 14:3x: "wyślij nie jest one shot"); only the chain or the menu changes it.
-    if cleared, frozen.allSatisfy({ conversationDraftReceipts[$0.id] == $0 }) {
+    if cleared, everyAgentHoldsItsReceipt {
       for source in recipients where source.owner == nil {
         conversationDrafts[source.id] = ""
         conversationReplies.removeValue(forKey: source.id)
