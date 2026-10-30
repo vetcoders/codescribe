@@ -57,17 +57,20 @@ final class OverlayWindowDragRegionView: NSView {
 /// Cursor decisions stay with the existing FloatingOverlayPanel owner.
 struct OverlayMenuCursorRegion: NSViewRepresentable {
   var cursor: NSCursor = .arrow
+  var coalescesHover = true
   var onHover: ((Bool) -> Void)? = nil
 
   func makeNSView(context: Context) -> OverlayMenuCursorRegionView {
     let view = OverlayMenuCursorRegionView()
     view.cursor = cursor
+    view.coalescesHover = coalescesHover
     view.onHover = onHover
     return view
   }
 
   func updateNSView(_ nsView: OverlayMenuCursorRegionView, context: Context) {
     nsView.cursor = cursor
+    nsView.coalescesHover = coalescesHover
     nsView.onHover = onHover
   }
 }
@@ -75,9 +78,12 @@ struct OverlayMenuCursorRegion: NSViewRepresentable {
 final class OverlayMenuCursorRegionView: NSView {
   private weak var owner: FloatingOverlayPanel?
   var cursor: NSCursor = .arrow
+  var coalescesHover = true
   var onHover: ((Bool) -> Void)?
   private(set) var hovered = false
   private var hoverArea: NSTrackingArea?
+  private var deliveredHover = false
+  private var hoverTask: Task<Void, Never>?
 
   func updateHover(at point: NSPoint?) {
     let inside =
@@ -91,7 +97,32 @@ final class OverlayMenuCursorRegionView: NSView {
   private func setHovered(_ inside: Bool) {
     guard hovered != inside else { return }
     hovered = inside
-    onHover?(inside)
+    if !coalescesHover {
+      deliverHover()
+      return
+    }
+    guard onHover != nil, hoverTask == nil else { return }
+    // Hit geometry and cursor ownership stay synchronous. Only SwiftUI paint
+    // and hint callbacks take the latest enter/leave within one display beat.
+    let framesPerSecond = max(30, min(window?.screen?.maximumFramesPerSecond ?? 60, 120))
+    let delay = Duration.nanoseconds(1_000_000_000 / framesPerSecond)
+    hoverTask = Task { @MainActor [weak self] in
+      do {
+        try await Task.sleep(for: delay)
+      } catch {
+        return
+      }
+      guard !Task.isCancelled, let self else { return }
+      self.hoverTask = nil
+      guard self.window != nil else { return }
+      self.deliverHover()
+    }
+  }
+
+  private func deliverHover() {
+    guard deliveredHover != hovered else { return }
+    deliveredHover = hovered
+    onHover?(hovered)
   }
 
   override func updateTrackingAreas() {
@@ -134,7 +165,12 @@ final class OverlayMenuCursorRegionView: NSView {
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    setHovered(false)
+    hoverTask?.cancel()
+    hoverTask = nil
+    hovered = false
+    // Removal must withdraw an already delivered hint even when no next frame
+    // will run. A pending entry is discarded rather than replayed after unmount.
+    deliverHover()
     owner?.menuCursorRegions.remove(self)
     owner = window as? FloatingOverlayPanel
     owner?.menuCursorRegions.add(self)

@@ -371,6 +371,84 @@ enum OverlayHeaderDensity: Equatable {
   }
 }
 
+/// Pointer paint owns its state outside the canvas's observation scope. Crossing
+/// the window boundary changes these indicators without rebuilding its geometry.
+private struct OverlayPointerHoverChrome: ViewModifier {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var pointerInsideOverlay = false
+  let palette: OverlayAppearancePalette
+  let showsIndicators: Bool
+  let onHover: (Bool) -> Void
+
+  func body(content: Content) -> some View {
+    content
+      .overlay {
+        if showsIndicators {
+          HStack {
+            Capsule().frame(width: 3, height: 28)
+            Spacer()
+            Capsule().frame(width: 3, height: 28)
+          }
+          .foregroundStyle(palette.primaryText.color)
+          .padding(.horizontal, 5)
+          .opacity(OverlayResizeChrome.sideIndicatorOpacity(pointerInside: pointerInsideOverlay))
+          .animation(
+            OverlayResizeChrome.sideIndicatorAnimation(reduceMotion: reduceMotion),
+            value: pointerInsideOverlay
+          )
+          .transaction { transaction in
+            if reduceMotion {
+              transaction.animation = nil
+              transaction.disablesAnimations = true
+            }
+          }
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+        }
+      }
+      .onHover { inside in
+        guard pointerInsideOverlay != inside else { return }
+        pointerInsideOverlay = inside
+        onHover(inside)
+      }
+  }
+}
+
+/// The brand's hover changes only the close control, never the canvas layout.
+private struct OverlayCloseButton: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var closeDotHovered = false
+  let palette: OverlayAppearancePalette
+  let onClose: () -> Void
+
+  var body: some View {
+    Button(action: onClose) {
+      ModeDot(color: CSColor.terracotta, size: 9)
+        .overlay {
+          if closeDotHovered {
+            OverlayCloseCross()
+              .stroke(palette.desktopBackground.color, style: StrokeStyle(lineWidth: 1))
+              .accessibilityHidden(true)
+          }
+        }
+        .scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)
+        .contentShape(Circle().inset(by: -7.5))
+    }
+    .buttonStyle(.plain)
+    .background { OverlayMenuCursorRegion { closeDotHovered = $0 } }
+    .animation(
+      reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered
+    )
+    .focusable(false)
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: OverlayIntent.close.helpText, accent: nil, palette: palette)
+    )
+    .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
+    .accessibilityIdentifier("overlay-brand-close-dot")
+  }
+}
+
 struct DictationOverlayView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
@@ -381,8 +459,6 @@ struct DictationOverlayView: View {
   @AppStorage(OverlayAgentDrawerLayout.widthDefaultsKey) private var preferredAgentDrawerWidth =
     300.0
   @State private var agentDrawerResize: (start: CGFloat, width: CGFloat)?
-  @State private var closeDotHovered = false
-  @State private var pointerInsideOverlay = false
   @State private var overlayVisible = false
   @State private var headerHeight: CGFloat = 48
   @State private var footerHeight: CGFloat = 0
@@ -468,10 +544,12 @@ struct DictationOverlayView: View {
       )
     }
     .animation(reduceMotion ? nil : CSMotion.floatIn, value: state.toast)
-    .onHover { inside in
-      pointerInsideOverlay = inside
-      state.setPointerHovering(inside)
-    }
+    .modifier(
+      OverlayPointerHoverChrome(
+        palette: palette, showsIndicators: !state.isCollapsed,
+        onHover: { state.setPointerHovering($0) }
+      )
+    )
 
     .onAppear {
       FontLoader.register()
@@ -888,30 +966,6 @@ struct DictationOverlayView: View {
           .accessibilityHidden(true)
       }
     }
-    .overlay {
-      if !state.isCollapsed {
-        HStack {
-          Capsule().frame(width: 3, height: 28)
-          Spacer()
-          Capsule().frame(width: 3, height: 28)
-        }
-        .foregroundStyle(palette.primaryText.color)
-        .padding(.horizontal, 5)
-        .opacity(OverlayResizeChrome.sideIndicatorOpacity(pointerInside: pointerInsideOverlay))
-        .animation(
-          OverlayResizeChrome.sideIndicatorAnimation(reduceMotion: reduceMotion),
-          value: pointerInsideOverlay
-        )
-        .transaction { transaction in
-          if reduceMotion {
-            transaction.animation = nil
-            transaction.disablesAnimations = true
-          }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-      }
-    }
     .onChange(of: state.captureGeneration) { _, _ in
       if state.windowContentSurface == .transcription {
         state.refreshRetranscriptionAvailability()
@@ -952,12 +1006,15 @@ struct DictationOverlayView: View {
   private func agentDrawerColumn(
     maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
   ) -> some View {
-    var roster = channelStatusView
-    roster.sidebarControls = agentsSidebarControls(canvasShown: state.agentsLayout != .agents)
-    return roster.monitorBody(
-      maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
-      focusRevision: state.agentDrawerFocusRevision
-    )
+    OverlayObservationScope {
+      var roster = channelStatusView
+      roster.gestureFocusID = state.agentGestureFocusID
+      roster.sidebarControls = agentsSidebarControls(canvasShown: state.agentsLayout != .agents)
+      return roster.monitorBody(
+        maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
+        focusRevision: state.agentDrawerFocusRevision
+      )
+    }
     .padding(.top, headerHeight + 8)
     .padding(.horizontal, 8)
     .padding(.bottom, 16)
@@ -1035,10 +1092,14 @@ struct DictationOverlayView: View {
   /// The folded list beside the conversation: its pills, under the
   /// `sidebar.right` that unfolds it, where the list's own button was.
   private func agentRail(maximumHeight: CGFloat, width: CGFloat) -> some View {
-    channelStatusView.railBody(
-      maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
-      onUnfold: { state.unfoldAgentList() }
-    )
+    OverlayObservationScope {
+      var roster = channelStatusView
+      roster.gestureFocusID = state.agentGestureFocusID
+      return roster.railBody(
+        maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
+        onUnfold: { state.unfoldAgentList() }
+      )
+    }
     .padding(.top, headerHeight + 8)
     .padding(.bottom, 16)
     // The native panel owns the outer resize band before SwiftUI hit testing.
@@ -1174,34 +1235,7 @@ struct DictationOverlayView: View {
   }
 
   private var closeButton: some View {
-    Button {
-      state.relayIntent(.close)
-    } label: {
-      ModeDot(color: CSColor.terracotta, size: 9)
-        .overlay {
-          if closeDotHovered {
-            OverlayCloseCross()
-              .stroke(palette.desktopBackground.color, style: StrokeStyle(lineWidth: 1))
-              .accessibilityHidden(true)
-          }
-        }
-        .scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)
-        .contentShape(Circle().inset(by: -7.5))
-    }
-    .buttonStyle(.plain)
-    .background {
-      OverlayMenuCursorRegion { closeDotHovered = $0 }
-    }
-    .animation(
-      reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered
-    )
-    .focusable(false)
-    .modifier(
-      OverlayHeaderControlChrome(
-        title: OverlayIntent.close.helpText, accent: nil, palette: palette)
-    )
-    .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
-    .accessibilityIdentifier("overlay-brand-close-dot")
+    OverlayCloseButton(palette: palette) { state.relayIntent(.close) }
   }
 
   private func recordingControls(compact: Bool, showsMicrophone: Bool = true) -> some View {
@@ -1437,7 +1471,7 @@ struct DictationOverlayView: View {
   /// Internal so a test can assert that two body passes share one search model.
   var channelStatusView: OverlayChannelStatusView {
     var roster = OverlayChannelStatusView.intercomRoster(
-      state: state, palette: palette, animates: overlayVisible)
+      state: state, palette: palette, animates: overlayVisible, includesGestureFocus: false)
     roster.onWriteConversation = { conversation in
       state.chooseComposerTarget(conversation)
       state.chooseConversation(conversation.id)
