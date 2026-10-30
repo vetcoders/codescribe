@@ -220,12 +220,16 @@ final class OverlayCompactAgentPanelTests: XCTestCase {
     try renderWindowReview(width: 470, scale: 1.5, selectsInbox: false)
   }
 
+  func testCompactPanelLightAppearanceReview() throws {
+    try renderWindowReview(width: 900, scale: 1.5, selectsInbox: true, dark: false)
+  }
+
   private func renderWindowReview(width: CGFloat, scale: CGFloat, selectsInbox: Bool) throws {
     let (state, agents) = try fixture()
     if !selectsInbox { state.chooseConversation(agents[1].id) }
     let host = NSHostingView(
       rootView: DictationOverlayView(state: state)
-        .frame(width: width, height: 680).environment(\.colorScheme, .dark)
+        .frame(width: width, height: 680).environment(\.colorScheme, dark ? .dark : .light)
         .environment(\.csTextScale, scale)
         .transaction { $0.disablesAnimations = true })
     host.frame = CGRect(x: 0, y: 0, width: width, height: 680)
@@ -237,7 +241,8 @@ final class OverlayCompactAgentPanelTests: XCTestCase {
     let image = NSImage(size: host.bounds.size)
     image.addRepresentation(bitmap)
     let attachment = XCTAttachment(image: image)
-    attachment.name = "Compact-panel-window-\(Int(width))-scale-\(scale)-inbox-\(selectsInbox)"
+    attachment.name =
+      "Compact-panel-window-\(Int(width))-scale-\(scale)-inbox-\(selectsInbox)-dark-\(dark)"
     attachment.lifetime = .keepAlways
     add(attachment)
   }
