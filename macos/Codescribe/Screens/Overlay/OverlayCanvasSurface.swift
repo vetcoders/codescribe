@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 
+/// Which glass a canvas wears. The open window keeps its near-black sheet;
+/// the bar (mini and the expanded bar) wears the hover preview's lighter
+/// glass, so the app speaks one glass language (Monika, 2026-10-30).
+enum OverlayCanvasGlass: Equatable {
+  case sheet
+  case popover
+}
+
 /// Appearance-aware physical sheet. Window interaction is owned by explicit
 /// inert regions in `DictationOverlayView`, not by a full-sheet AppKit layer.
 struct OverlayCanvasSurface<Content: View>: View {
@@ -9,6 +17,7 @@ struct OverlayCanvasSurface<Content: View>: View {
   @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
   @Environment(\.csContrastOverride) private var contrastOverride
   let palette: OverlayAppearancePalette
+  var glass: OverlayCanvasGlass = .sheet
   @ViewBuilder let content: Content
 
   var body: some View {
@@ -17,12 +26,16 @@ struct OverlayCanvasSurface<Content: View>: View {
         OverlayCanvasBackdrop(
           palette: palette,
           reduceTransparency: reduceTransparencyOverride ?? reduceTransparency,
-          increasedContrast: (contrastOverride ?? contrast) == .increased)
+          increasedContrast: (contrastOverride ?? contrast) == .increased,
+          glass: glass)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
       .overlay {
         RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
-          .strokeBorder(palette.border.color, lineWidth: 1)
+          .strokeBorder(
+            glass == .popover ? OverlayPopoverGlass.edge(palette) : palette.border.color,
+            lineWidth: OverlayPopoverGlass.edgeWidth
+          )
           .allowsHitTesting(false)
       }
       .shadow(
@@ -43,6 +56,7 @@ struct OverlayCanvasBackdrop: View {
   let reduceTransparency: Bool
   var increasedContrast = false
   var cornerRadius: CGFloat = CSRadius.window
+  var glass: OverlayCanvasGlass = .sheet
 
   var body: some View {
     ZStack {
@@ -50,6 +64,12 @@ struct OverlayCanvasBackdrop: View {
         || (contrastOverride ?? contrast) == .increased
       {
         Rectangle().fill(palette.desktopBackground.color)
+      } else if glass == .popover {
+        OverlayPopoverMaterial(palette: palette, cornerRadius: cornerRadius)
+        Rectangle()
+          .fill(OverlayPopoverGlass.veil(palette, opacity: OverlayPopoverGlass.barVeilOpacity))
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
       } else {
         OverlayDesktopMaterial(palette: palette, cornerRadius: cornerRadius)
         Rectangle()
@@ -75,6 +95,71 @@ struct OverlayCanvasBackdrop: View {
   static func glassVeil(_ palette: OverlayAppearancePalette) -> NSColor {
     let alpha: CGFloat = palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
     return palette.desktopBackground.nsColor.withAlphaComponent(alpha)
+  }
+}
+
+/// The hover preview's glass (Nina, candidate 16), shared with the bar so the
+/// app has one glass language: the native popover material behind the
+/// window, a veil in the palette's sheet colour above it, a 1 pt edge in the
+/// text colour and a shadow. `OverlayHintPanel` and the bar's canvas both
+/// read it; neither keeps its own copy.
+@MainActor
+enum OverlayPopoverGlass {
+  static let material: NSVisualEffectView.Material = .popover
+  /// The hover preview's veil: a hint over the desktop.
+  static let previewVeilOpacity: Double = 0.28
+  /// The bar's veil. Digits and names must read over any desktop, so the
+  /// bar takes a stronger veil than the preview; still lighter than the open
+  /// window's 84 % sheet (`OverlayCanvasBackdrop.glassVeil`).
+  static let barVeilOpacity: Double = 0.56
+  static let edgeWidth: CGFloat = 1
+
+  static func veil(_ palette: OverlayAppearancePalette, opacity: Double) -> Color {
+    palette.desktopBackground.color.opacity(opacity)
+  }
+
+  static func edge(_ palette: OverlayAppearancePalette) -> Color {
+    palette.primaryText.color.opacity(palette.appearance == .dark ? 0.20 : 0.14)
+  }
+
+  /// Native effect views blur behind the window outside SwiftUI's clip; a
+  /// mask gives the blur the same rounded corner as its shape.
+  static func roundedMask(radius: CGFloat) -> NSImage {
+    let edge = radius * 2 + 1
+    let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+      NSColor.black.setFill()
+      NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+      return true
+    }
+    image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+    image.resizingMode = .stretch
+    return image
+  }
+
+  /// Configures an effect view as the popover glass.
+  static func apply(to view: NSVisualEffectView, cornerRadius: CGFloat) {
+    view.material = material
+    view.blendingMode = .behindWindow
+    view.state = .active
+    view.maskImage = roundedMask(radius: cornerRadius)
+  }
+}
+
+/// The bar's backdrop: the popover glass of `OverlayPopoverGlass`.
+private struct OverlayPopoverMaterial: NSViewRepresentable {
+  let palette: OverlayAppearancePalette
+  let cornerRadius: CGFloat
+
+  func makeNSView(context: Context) -> OverlayDesktopEffectView {
+    let view = OverlayDesktopEffectView()
+    OverlayPopoverGlass.apply(to: view, cornerRadius: cornerRadius)
+    view.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
+    return view
+  }
+
+  func updateNSView(_ view: OverlayDesktopEffectView, context: Context) {
+    let name: NSAppearance.Name = palette.appearance == .dark ? .darkAqua : .aqua
+    if view.appearance?.name != name { view.appearance = NSAppearance(named: name) }
   }
 }
 

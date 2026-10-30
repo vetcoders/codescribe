@@ -256,7 +256,9 @@ final class OverlayHintPanel {
           .background {
             if interactive {
               RoundedRectangle(cornerRadius: CSRadius.chip)
-                .fill(palette.desktopBackground.color.opacity(0.28))
+                .fill(
+                  OverlayPopoverGlass.veil(
+                    palette, opacity: OverlayPopoverGlass.previewVeilOpacity))
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
@@ -265,9 +267,7 @@ final class OverlayHintPanel {
             if interactive {
               RoundedRectangle(cornerRadius: CSRadius.chip)
                 .strokeBorder(
-                  palette.primaryText.color.opacity(palette.appearance == .dark ? 0.20 : 0.14),
-                  lineWidth: 1
-                )
+                  OverlayPopoverGlass.edge(palette), lineWidth: OverlayPopoverGlass.edgeWidth)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
@@ -297,8 +297,8 @@ final class OverlayHintPanel {
     panel.ignoresMouseEvents = !interactive
     panel.alphaValue = parent.alphaValue
     if let effect = panel.contentView as? NSVisualEffectView {
-      effect.material = interactive ? .popover : .toolTip
-      effect.maskImage = Self.roundedMask(
+      effect.material = interactive ? OverlayPopoverGlass.material : .toolTip
+      effect.maskImage = OverlayPopoverGlass.roundedMask(
         radius: content == nil || interactive ? CSRadius.chip : CSRadius.card)
     }
     panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
@@ -405,7 +405,7 @@ final class OverlayHintPanel {
     effect.material = .toolTip
     effect.blendingMode = .behindWindow
     effect.state = .active
-    effect.maskImage = Self.roundedMask(radius: CSRadius.chip)
+    effect.maskImage = OverlayPopoverGlass.roundedMask(radius: CSRadius.chip)
     let controller = NSHostingController(
       rootView: AnyView(OverlayTooltipChip(title: "", palette: .light, filled: false)))
     controller.view.frame = effect.bounds
@@ -415,17 +415,5 @@ final class OverlayHintPanel {
     self.panel = panel
     self.controller = controller
     return (panel, controller)
-  }
-
-  private static func roundedMask(radius: CGFloat) -> NSImage {
-    let edge = radius * 2 + 1
-    let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
-      NSColor.black.setFill()
-      NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
-      return true
-    }
-    image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
-    image.resizingMode = .stretch
-    return image
   }
 }

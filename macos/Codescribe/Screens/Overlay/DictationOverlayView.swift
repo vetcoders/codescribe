@@ -414,7 +414,9 @@ struct DictationOverlayView: View {
   }
 
   var body: some View {
-    OverlayCanvasSurface(palette: palette) {
+    OverlayCanvasSurface(
+      palette: palette, glass: state.presentationMode == .expanded ? .sheet : .popover
+    ) {
       // The rail reads the live transcript (intents, versions, history
       // refusal). Scoped, a capture tick re-renders the rail, not the root.
       canvasStack(
