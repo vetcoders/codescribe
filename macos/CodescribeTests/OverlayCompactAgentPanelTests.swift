@@ -123,7 +123,10 @@ final class OverlayCompactAgentPanelTests: XCTestCase {
         unreadCounts: Dictionary(
           uniqueKeysWithValues: state.conversations.map {
             ($0.id, state.unreadReplies(in: $0))
-          }), onSelectConversation: { state.chooseConversation($0) })
+          }),
+        onSelectConversation: { id in
+          if let id { state.chooseConversation(id) }
+        })
       let host = NSHostingView(
         rootView: view.compactBody(
           maximumHeight: 680,
