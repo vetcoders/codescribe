@@ -174,25 +174,28 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.finishControllerRecording()
   }
 
-  /// Header-click cut (2026-10-17): the header is an upward switch. Mini opens
-  /// midi and each further click alternates midi <-> expanded; it never folds
-  /// back to mini, which stays the rotating preview control's exit.
-  func testHeaderClickClimbsThenAlternatesBetweenMidiAndExpanded() {
+  /// Monika, 2026-10-30: a still click on the bar's empty background
+  /// switches mini and the expanded bar in both directions; it never opens
+  /// the window. The window opens through its own controls (the chevron
+  /// here) and a click on its header folds it to the expanded bar.
+  func testBackgroundClickSwitchesMiniAndTheExpandedBarBothWays() {
     let state = OverlayState()
     state.engine = OverlayChromePolicyEngine()
     state.attach()
     XCTAssertEqual(state.presentationMode, .mini)
+    for expected in [OverlayPresentationMode.midi, .mini, .midi, .mini] {
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, expected, "the background never opens the window")
+    }
     state.advancePresentationFromHeader()
     XCTAssertEqual(state.presentationMode, .midi)
-    state.advancePresentationFromHeader()
-    XCTAssertEqual(state.presentationMode, .expanded)
-    state.advancePresentationFromHeader()
-    XCTAssertEqual(state.presentationMode, .midi, "the header never returns to mini")
-    state.advancePresentationFromHeader()
-    XCTAssertEqual(state.presentationMode, .expanded)
-    // The preview control explicitly folds back to mini.
     state.toggleCollapsed()
-    XCTAssertEqual(state.presentationMode, .mini)
+    XCTAssertEqual(state.presentationMode, .expanded, "the chevron opens the window")
+    state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .midi, "the window's header folds it to the bar")
+    state.setPresentationMode(.expanded)
+    state.toggleCollapsed()
+    XCTAssertEqual(state.presentationMode, .mini, "the chevron returns the window to mini")
   }
 
   /// Outside mini only the header band advances the presentation: a still
@@ -1458,28 +1461,26 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(stop.recordingIdentifier, "overlay-stop-recording")
   }
 
-  /// Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini; the
-  /// brand dot leads and the channel counter takes the word's place, and mini
-  /// is as wide as its content ("brzydko to wygląda, ta dziura"), so no
-  /// neighbouring controls stand further apart than the trailing controls do.
-  /// Maciej's 2026-10-20 rule stays for the rest: mini always carries the
-  /// agents button beside the ordinary microphone and the expand arrow,
-  /// whether or not an agent records. An AX walk of the test panel does not
-  /// surface the SwiftUI header, so the probe reads AppKit truth: one mounted
-  /// hover region per header control and the drag region behind the dot.
-  func testMiniCarriesTheChannelCounterInPlaceOfCsAndHugsItsContent() throws {
+  /// Monika's bar brief (2026-10-30): mini is the brand dot, transcription,
+  /// microphone, ✦ and the chevron, exactly as wide as those controls. A
+  /// bound agent adds nothing; while she speaks to agents mini stays mini,
+  /// the ✦ slot shows the recipients' digits and widens only for a second
+  /// one. An AX walk of the test panel does not surface the SwiftUI header,
+  /// so the probe reads AppKit truth: one mounted hover region per header
+  /// control and the drag region behind the dot.
+  func testMiniHugsItsControlsAndWidensOnlyForSeveralRecipients() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     optIntoChannelMap(state)
     state.setPresentationMode(.mini)
     XCTAssertFalse(state.channelAudioCaptureActive)
-    func roster(open: Bool) -> [CsChannelRosterState] {
-      [
+    func roster(open: Set<String>) -> [CsChannelRosterState] {
+      [("4", "bruno"), ("6", "zofia")].map { channel, name in
         .init(
-          channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
-          open: open, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
-          unreadSinceUnixMs: nil)
-      ]
+          channel: channel, audience: name, provider: "codex",
+          providerSessionId: "bus-agent-\(channel)", open: open.contains(channel), loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+      }
     }
     try withPanel(state: state) { panel, root in
       @MainActor func headerControls() -> [NSRect] {
@@ -1507,7 +1508,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       }
       /// The capsule hugs its content: its width is the measured natural
       /// width, and no two neighbouring controls stand further apart than the
-      /// 8 pt the trailing controls keep.
+      /// 8 pt the controls keep.
       @MainActor func assertHugsContent(_ context: String) {
         let natural = DictationOverlayWindow.miniNaturalWidth(
           map: state.channelMapLayoutModel, textScale: 1)
@@ -1518,11 +1519,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         let controls = headerControls()
         for (left, right) in zip(controls, controls.dropFirst()) {
           XCTAssertLessThanOrEqual(
-            right.minX - left.maxX, 8.5, "\(context): a hole between header controls")
+            right.minX - left.maxX, DictationOverlayWindow.miniControlSpacing + 0.5,
+            "\(context): a hole between header controls")
           XCTAssertGreaterThanOrEqual(right.minX - left.maxX, 0, "\(context): controls overlap")
         }
         if let last = controls.last {
-          XCTAssertLessThanOrEqual(last.maxX, root.bounds.maxX, "\(context): the toggle clips")
+          XCTAssertLessThanOrEqual(last.maxX, root.bounds.maxX, "\(context): the chevron clips")
         }
       }
       // The rig sizes the panel by hand; land mini on its own width first.
@@ -1530,43 +1532,147 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       settleHeader()
       let restingControls = headerControls().count
       XCTAssertGreaterThanOrEqual(
-        restingControls, 3, "mini with no agent: agents, microphone and expand arrow")
-      XCTAssertLessThan(try brandWidth(), 12, "mini draws the brand dot alone, no cs")
+        restingControls, 4, "mini: transcription, microphone, ✦ and the chevron")
+      XCTAssertLessThan(try brandWidth(), 12, "mini draws the brand dot alone")
       XCTAssertEqual(
         panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5,
         "no agent: mini is its controls")
       assertHugsContent("no agent")
       let trailing = panel.frame.maxX
 
-      // A bound agent puts the counter beside the dot; mini widens for it.
-      state.applyChannelRoster(roster(open: false))
+      state.applyChannelRoster(roster(open: []))
       state.setPresentationMode(.mini)
       settleHeader()
-      XCTAssertEqual(headerControls().count, restingControls + 1, "the counter joins mini")
-      XCTAssertLessThan(try brandWidth(), 12, "the counter, not cs, follows the dot")
-      XCTAssertGreaterThan(panel.frame.width, DictationOverlayWindow.miniFloorWidth)
-      assertHugsContent("counter 1 ▾")
+      XCTAssertEqual(headerControls().count, restingControls, "a bound agent adds no counter")
+      XCTAssertEqual(
+        panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5)
+      assertHugsContent("agents at rest")
       XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
-      let counting = panel.frame.width
 
-      // The agent records: the counter becomes the open digit with its dot
-      // and mini narrows with it; the 164 pt variant is this same rule. With
-      // the map on, the chord keeps mini (bus intercom spec §14 W3).
-      state.applyChannelRoster(roster(open: true))
-      XCTAssertEqual(state.presentationMode, .mini, "the chord keeps mini while the map is on")
+      state.applyChannelRoster(roster(open: ["4"]))
+      XCTAssertEqual(state.presentationMode, .mini, "speaking to an agent keeps mini")
       settleHeader()
-      XCTAssertEqual(headerControls().count, restingControls + 1, "capture adds no control")
-      assertHugsContent("recording counter")
-      XCTAssertLessThan(panel.frame.width, counting, "the open digit is narrower than 1 ▾")
+      XCTAssertEqual(headerControls().count, restingControls, "the digits take the ✦'s slot")
+      assertHugsContent("one recipient")
+      let one = panel.frame.width
+      XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
+
+      state.applyChannelRoster(roster(open: ["4", "6"]))
+      XCTAssertEqual(state.presentationMode, .mini, "speaking to several agents keeps mini")
+      settleHeader()
+      XCTAssertEqual(headerControls().count, restingControls, "capture adds no control")
+      assertHugsContent("two recipients")
+      XCTAssertGreaterThan(panel.frame.width, one, "a second recipient widens the slot")
       XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
 
       state.applyChannelRoster([])
       settleHeader()
-      XCTAssertEqual(headerControls().count, restingControls, "the agents button stays")
+      XCTAssertEqual(headerControls().count, restingControls, "the ✦ stays")
       XCTAssertEqual(
         panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5)
       XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
     }
+  }
+
+  /// Brief §2–§3 in the header's source: mini is, from the left, the brand
+  /// dot, transcription, microphone, ✦ and the chevron, with no waveform,
+  /// clock, pin, map or counter; the expanded bar reads the window's
+  /// geometry and draws its meter only while recording.
+  func testMiniAndTheExpandedBarComposeTheBriefsControls() throws {
+    let source = try overlaySource()
+    let mini = try section(
+      of: source, from: "private var miniBar: some View",
+      to: "private func expandedBar(width: CGFloat)")
+    let order = [
+      "brandLockup(density: .mini)", "transcriptionPreviewButton",
+      "recordingControls(compact: false, showsPreview: false)", "miniAgentsSlot",
+      "recordingControls(compact: false, showsMicrophone: false)",
+    ]
+    let positions = try order.map { try XCTUnwrap(mini.range(of: $0)?.lowerBound, $0) }
+    XCTAssertEqual(positions, positions.sorted(), "mini's controls in the brief's order")
+    for absent in [
+      "chromeWaveform", "sessionTimer", "barMeter", "channelStrip", "OverlayPinButton",
+      "channelCounter",
+    ] {
+      XCTAssertFalse(mini.contains(absent), "mini carries no \(absent)")
+    }
+    XCTAssertTrue(mini.contains(".fixedSize()"), "mini hugs its controls")
+
+    let bar = try section(
+      of: source, from: "private func expandedBar(width: CGFloat)",
+      to: "private var windowHeader: some View")
+    XCTAssertTrue(bar.contains("let showsMeter = state.channelMapBarShowsMeter"))
+    XCTAssertTrue(bar.contains("if showsMeter {\n          barMeter"))
+    XCTAssertTrue(
+      bar.contains("DictationOverlayWindow.midiBarGeometry("),
+      "the header lays the map out with the window's geometry")
+    XCTAssertTrue(bar.contains("barTools(roster: roster)"))
+    XCTAssertFalse(bar.contains("sessionTimer"), "the clock comes only with the meter")
+
+    let state = OverlayState()
+    XCTAssertFalse(state.channelMapBarShowsMeter, "at rest the bar has no meter")
+    state.applyChannelRoster([
+      .init(
+        channel: "4", audience: "bruno", provider: "codex", providerSessionId: "meter-agent",
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+        unreadSinceUnixMs: nil)
+    ])
+    XCTAssertTrue(state.channelMapBarShowsMeter, "speaking to an agent shows the meter")
+  }
+
+  /// Monika, 2026-10-30: the bar (mini and the expanded bar) wears the hover
+  /// preview's popover glass, one recipe with the hint panel; the open
+  /// window keeps its sheet.
+  func testBarWearsThePopoverGlassAndTheWindowKeepsTheSheet() throws {
+    func descendants(_ view: NSView) -> [NSView] {
+      [view] + view.subviews.flatMap(descendants)
+    }
+    func isSheet(_ view: NSView) -> Bool {
+      if #available(macOS 26, *), view is NSGlassEffectView { return true }
+      return (view as? NSVisualEffectView)?.material == .hudWindow
+    }
+    for mode in [OverlayPresentationMode.mini, .midi, .expanded] {
+      let state = OverlayState.previewFormatted()
+      state.setPresentationMode(mode)
+      let size =
+        mode == .expanded
+        ? NSSize(width: 600, height: 420)
+        : NSSize(width: 420, height: DictationOverlayWindow.collapsedHeight)
+      let host = NSHostingView(
+        rootView: DictationOverlayView(state: state)
+          .defaultAppStorage(try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))))
+      host.frame = NSRect(origin: .zero, size: size)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      host.layoutSubtreeIfNeeded()
+      let views = descendants(host)
+      let popover = views.contains {
+        ($0 as? NSVisualEffectView)?.material == OverlayPopoverGlass.material
+      }
+      if mode == .expanded {
+        XCTAssertFalse(popover, "the window keeps its sheet, not the bar's glass")
+        XCTAssertTrue(views.contains(where: isSheet), "the window's sheet material")
+      } else {
+        XCTAssertTrue(popover, "\(mode): the bar wears the popover glass")
+      }
+    }
+    XCTAssertEqual(OverlayPopoverGlass.material, .popover)
+    XCTAssertLessThan(
+      OverlayPopoverGlass.previewVeilOpacity, OverlayPopoverGlass.barVeilOpacity,
+      "digits and names need a stronger veil than the hint")
+    XCTAssertLessThan(
+      CGFloat(OverlayPopoverGlass.barVeilOpacity),
+      OverlayCanvasBackdrop.glassVeil(.dark).alphaComponent,
+      "the bar's glass stays lighter than the window's sheet")
+    let hint = try source(at: "Codescribe/Screens/Overlay/OverlayHeaderControlChrome.swift")
+    XCTAssertTrue(hint.contains("OverlayPopoverGlass.material"), "one glass recipe")
+    XCTAssertTrue(hint.contains("opacity: OverlayPopoverGlass.previewVeilOpacity"))
+    XCTAssertFalse(hint.contains("private static func roundedMask"), "no second copy")
   }
 
   /// The All pair is an outline megaphone and a speaker of one optical size.
@@ -1610,11 +1716,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         "symbol: \"megaphone.fill\", tint: OverlayRecordingLight.agent.color, mirrored: true"))
     XCTAssertTrue(roster.contains(".scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
     let header = try headerSource(try overlaySource())
-    // Spec §13.4: mini draws the dot without the word; the counter follows,
-    // beside the brand in mini and in every vertical form.
+    // Mini draws the dot without the word; the vertical layout's counter
+    // follows the brand in every form, and only there.
     XCTAssertTrue(header.contains("showsWord: !mini"))
-    XCTAssertTrue(header.contains("let leadingCounter = mini || state.channelMapCounterStacked"))
-    XCTAssertTrue(header.contains("if leadingCounter, let map = channelMap {"))
+    XCTAssertTrue(header.contains("if let counter = channelCounter {"))
+    XCTAssertTrue(header.contains("guard state.channelMapCounterStacked else { return nil }"))
     XCTAssertFalse(header.contains("short: mini"))
     XCTAssertFalse(header.contains("miniAgentMicrophone"))
   }
@@ -1688,12 +1794,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     return try String(contentsOf: url, encoding: .utf8)
   }
 
-  /// `justifiedHeader(density:)` — the single header tree behind mini, midi and
-  /// expanded, so one guard covers every density.
+  /// The header's forms behind mini, the expanded bar and the window, from
+  /// the close button to the shared waveform, so one guard covers every
+  /// form. The end anchor carries its parenthesis: `chromeWaveformWithFrame`
+  /// sits inside the header.
   private func headerSource(_ source: String) throws -> String {
     try section(
       of: source, from: "private var closeButton: some View",
-      to: "private func chromeWaveform")
+      to: "private func chromeWaveform(")
   }
 
   private func containsGuardedIntentRail(_ source: String) -> Bool {

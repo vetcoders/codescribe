@@ -1315,6 +1315,49 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(try XCTUnwrap(recorder.frames.preview).size, fold.size)
   }
 
+  /// Brief §2–§3: mini never draws the waveform; the expanded bar draws it,
+  /// with the clock, only while audio is captured, so at rest it takes no
+  /// room.
+  @MainActor
+  func testExpandedBarDrawsTheMeterOnlyWhileAudioIsCaptured() throws {
+    let state = OverlayState()
+    optIntoChannelMap(state)
+    let recorder = MicrophoneFrameRecorder()
+    let host = NSHostingView(rootView: MicrophoneFrameCapture(state: state, recorder: recorder))
+    host.sizingOptions = []
+    let size = NSSize(width: 560, height: DictationOverlayWindow.collapsedHeight)
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(origin: NSPoint(x: 700, y: 500), size: size),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    BackgroundTestWindow.present(panel)
+    defer { panel.orderOut(nil) }
+    func show(_ mode: OverlayPresentationMode) {
+      state.setPresentationMode(mode)
+      host.frame = NSRect(origin: .zero, size: size)
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      host.layoutSubtreeIfNeeded()
+    }
+    func roster(open: Bool) -> [CsChannelRosterState] {
+      [mapRosterRow("3", "Igor", open: open)]
+    }
+    state.applyChannelRoster(roster(open: false))
+    show(.midi)
+    XCTAssertFalse(state.channelMapBarShowsMeter)
+    XCTAssertNil(recorder.frames.waveform, "at rest the expanded bar draws no waveform")
+    state.applyChannelRoster(roster(open: true))
+    show(.midi)
+    XCTAssertEqual(state.presentationMode, .midi)
+    let waveform = try XCTUnwrap(recorder.frames.waveform, "a capture draws the waveform")
+    XCTAssertGreaterThan(waveform.width, 0)
+    show(.mini)
+    XCTAssertNil(recorder.frames.waveform, "mini never draws the waveform")
+    state.applyChannelRoster(roster(open: false))
+    show(.midi)
+    XCTAssertNil(recorder.frames.waveform, "the meter leaves with the capture")
+  }
+
   @MainActor
   func testConversationKeepsCommonHeaderControlsWhenFoldedAndReopened() throws {
     let owner = try XCTUnwrap(
