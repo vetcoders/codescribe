@@ -35,11 +35,11 @@ struct OverlayChannelPill: View {
     /// The chip's name sits under its circle (the bar's one row) instead of
     /// beside it (the second row).
     var nameBelow = false
-    /// The chip's slot in the one-row map. Narrower than the circle when the
-    /// circles overlap; the slot, not the circle, is the hit area.
+    /// The chip's slot in the one-row map, never narrower than the circle;
+    /// the slot is the hit area.
     var slotWidth: CGFloat? = nil
     /// False where the map draws the unread dots on its own top layer, above
-    /// overlapping circles.
+    /// every circle and name.
     var drawsUnreadDot = true
     /// The rail's status dot.
     var dot: OverlayAgentDotKind? = nil
@@ -237,8 +237,8 @@ struct OverlayChannelPill: View {
             .foregroundStyle(palette.agentAccent.color)
             .frame(width: Self.headerHeight, height: Self.headerHeight)
         } else if display.microphoneOpen {
-          // Several recipients overlap like the bar's dense map; the later
-          // circle lies on the earlier one.
+          // Several recipients overlap here, in mini's Agents slot only (the
+          // bar's map never overlaps); the later circle lies on the earlier.
           HStack(spacing: -Self.counterOverlap * textScale) {
             ForEach(display.openDigits, id: \.self) { digit in
               circledDigit(digit)
@@ -420,19 +420,40 @@ extension OverlayChannelPill {
     textWidth(name, size: nameSize * scale)
   }
 
+  /// A shortened name keeps at least this many characters before `…`; a
+  /// name of one more character or fewer is never shortened (Monika,
+  /// 2026-10-30: one letter under a circle "wygląda po prostu źle").
+  static let shortenedNameMinimumCharacters = 3
+
+  /// The narrowest a name may become in the map: its first three
+  /// characters and `…`, or the whole name when it has four characters or
+  /// fewer. Measured in the chip's own font.
+  @MainActor
+  static func shortestNameWidth(_ name: String, scale: CGFloat) -> CGFloat {
+    guard name.count > shortenedNameMinimumCharacters + 1 else {
+      return nameWidth(name, scale: scale)
+    }
+    return nameWidth(
+      String(name.prefix(shortenedNameMinimumCharacters)) + "\u{2026}", scale: scale)
+  }
+
   /// A name cut to the width its slot allows: the full name, else its
-  /// longest prefix with `…`, else its initial, so every slot keeps a mark
-  /// of its own. The hint carries the full name with its digit.
+  /// longest prefix with `…`, never shorter than three characters and `…`,
+  /// and a name of four characters or fewer is never cut. The layout never
+  /// offers less room than that (`OverlayBarGeometry.minimumNameWidths`); the
+  /// hint carries the full name with its digit.
   @MainActor
   static func truncatedName(_ name: String, width: CGFloat, scale: CGFloat) -> String {
-    guard nameWidth(name, scale: scale) > width + 0.5 else { return name }
+    guard name.count > shortenedNameMinimumCharacters + 1,
+      nameWidth(name, scale: scale) > width + 0.5
+    else { return name }
     var prefix = name
-    while prefix.count > 1 {
+    while prefix.count > shortenedNameMinimumCharacters {
       prefix.removeLast()
       let candidate = prefix + "\u{2026}"
       if nameWidth(candidate, scale: scale) <= width + 0.5 { return candidate }
     }
-    return String(name.prefix(1))
+    return String(name.prefix(shortenedNameMinimumCharacters)) + "\u{2026}"
   }
 
   /// The counter's width: `4 ▾`, the stacked cards (a header circle; the

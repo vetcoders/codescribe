@@ -224,9 +224,13 @@ struct OverlayChannelMapModel: Equatable, Sendable {
 ///
 /// Narrowing the bar walks one ladder: full names under their circles with
 /// the gaps shrinking to their floor; then two rows, the tools on top and
-/// the map below with each name beside its circle; then one row again with
-/// the names truncated; then the circles overlapping. Every name keeps its own
-/// slot and gap, so names never run together and every slot stays a hit area.
+/// the map below with each name beside its circle; then shortened names, in
+/// whichever of one or two rows reaches the narrower floor. A shortened name
+/// keeps at least three characters and `…`, and a name of four characters or
+/// fewer is never shortened. Circles never overlap: Monika rejected one-letter
+/// names under overlapping circles on 2026-10-30 ("ten widok odpada
+/// całkowicie"). Every name keeps its own slot and gap, so names never run
+/// together and every slot stays a hit area.
 struct OverlayChannelMapLayout: Equatable, Sendable {
   enum Arrangement: Equatable, Sendable {
     /// One row: a name under its circle.
@@ -239,16 +243,14 @@ struct OverlayChannelMapLayout: Equatable, Sendable {
   /// The gap between two items.
   let spacing: CGFloat
   /// Each item's slot: in one row its width (the wider of circle and name,
-  /// narrower than the circle once circles overlap); in two rows the width
-  /// the name may take beside its circle.
+  /// never narrower than the circle); in two rows the width the name may
+  /// take beside its circle.
   let slots: [CGFloat]
   /// The width each name may take; a name wider than this is truncated.
   let nameWidths: [CGFloat]
   /// The map's width.
   let width: CGFloat
 
-  /// Circles overlap: a slot is narrower than the circle.
-  var overlaps: Bool { arrangement == .oneRow && slots.contains { $0 + 0.5 < circle } }
   let circle: CGFloat
 
   /// Each item's leading edge in the one-row map.
@@ -272,6 +274,10 @@ struct OverlayBarGeometry: Equatable, Sendable {
   let horizontalPadding: CGFloat
   /// Full name width per map item, 0 for channel 0, which has no name.
   let nameWidths: [CGFloat]
+  /// The narrowest each name may become: three characters and `…`, or the
+  /// full name when it has four characters or fewer
+  /// (`OverlayChannelPill.shortestNameWidth`).
+  let minimumNameWidths: [CGFloat]
   let circle: CGFloat
   /// The gap between a circle and the name beside it (two rows).
   let inlineGap: CGFloat
@@ -284,8 +290,6 @@ struct OverlayBarGeometry: Equatable, Sendable {
   static let oneRowMinimumGap: CGFloat = 3
   static let twoRowNaturalGap: CGFloat = 10
   static let twoRowMinimumGap: CGFloat = 6
-  /// The densest slot: an initial under circles that overlap by a third.
-  static let densestSlot: CGFloat = 10
   static let defaultOneRowBudget: CGFloat = 520
   /// The second row's height and its distance from the first.
   static let secondRowHeight: CGFloat = 20
@@ -299,8 +303,8 @@ struct OverlayBarGeometry: Equatable, Sendable {
     caps.reduce(0) { $0 + max(circle, $1) } + gaps(gap)
   }
 
-  private func twoRowWidth(gap: CGFloat) -> CGFloat {
-    nameWidths.reduce(0) { $0 + circle + ($1 > 0 ? inlineGap + $1 : 0) } + gaps(gap)
+  private func twoRowWidth(caps: [CGFloat], gap: CGFloat) -> CGFloat {
+    caps.reduce(0) { $0 + circle + ($1 > 0 ? inlineGap + $1 : 0) } + gaps(gap)
   }
 
   /// The bar with its map in one row at a gap; without agents, the base.
@@ -308,12 +312,31 @@ struct OverlayBarGeometry: Equatable, Sendable {
     count == 0 ? baseWidth : baseWidth + Self.groupGap + oneRowWidth(caps: caps, gap: gap)
   }
 
+  /// The bar with its map on the second row at a gap.
+  private func twoRowBar(caps: [CGFloat], gap: CGFloat) -> CGFloat {
+    max(baseWidth, horizontalPadding + twoRowWidth(caps: caps, gap: gap))
+  }
+
   private var oneRowNatural: CGFloat {
     oneRowBar(caps: nameWidths, gap: Self.oneRowNaturalGap)
   }
 
   private var twoRowMinimum: CGFloat {
-    max(baseWidth, horizontalPadding + twoRowWidth(gap: Self.twoRowMinimumGap))
+    twoRowBar(caps: nameWidths, gap: Self.twoRowMinimumGap)
+  }
+
+  /// The densest each arrangement gets: every name at its shortest.
+  private var oneRowDensest: CGFloat {
+    oneRowBar(caps: minimumNameWidths, gap: Self.oneRowMinimumGap)
+  }
+
+  private var twoRowDensest: CGFloat {
+    twoRowBar(caps: minimumNameWidths, gap: Self.twoRowMinimumGap)
+  }
+
+  /// Shortened names take the arrangement whose floor is narrower.
+  private var shortenedArrangement: OverlayChannelMapLayout.Arrangement {
+    twoRowDensest < oneRowDensest ? .twoRows : .oneRow
   }
 
   /// The width at which one row with full names still holds. A team whose
@@ -329,16 +352,15 @@ struct OverlayBarGeometry: Equatable, Sendable {
   var naturalWidth: CGFloat {
     guard count > 0 else { return baseWidth }
     if oneRowNatural <= oneRowBudget { return oneRowNatural }
-    return max(baseWidth, horizontalPadding + twoRowWidth(gap: Self.twoRowNaturalGap))
+    return twoRowBar(caps: nameWidths, gap: Self.twoRowNaturalGap)
   }
 
-  /// The narrowest bar: the densest layout the ladder reaches.
+  /// The narrowest bar: the densest layout the ladder reaches, every name
+  /// at its shortest in the narrower arrangement. The user cannot drag the
+  /// bar below it.
   var floorWidth: CGFloat {
     guard count > 0 else { return baseWidth }
-    let densest =
-      baseWidth + Self.groupGap + Self.densestSlot * CGFloat(count)
-      + gaps(Self.oneRowMinimumGap)
-    return min(naturalWidth, densest, twoRowMinimum)
+    return min(naturalWidth, oneRowDensest, twoRowDensest)
   }
 
   /// The height the bar adds at a width: the second row's own height and
@@ -353,51 +375,71 @@ struct OverlayBarGeometry: Equatable, Sendable {
       return OverlayChannelMapLayout(
         arrangement: .oneRow, spacing: 0, slots: [], nameWidths: [], width: 0, circle: circle)
     }
-    let available = width - baseWidth - Self.groupGap
+    let oneRowAvailable = width - baseWidth - Self.groupGap
+    let twoRowAvailable = width - horizontalPadding
     if width + 0.5 >= oneRowThreshold {
       let fixed = oneRowWidth(caps: nameWidths, gap: 0)
-      let gap =
-        count > 1
-        ? min(
-          Self.oneRowNaturalGap,
-          max(Self.oneRowMinimumGap, (available - fixed) / CGFloat(count - 1)))
-        : Self.oneRowNaturalGap
-      return oneRow(caps: nameWidths, gap: gap)
+      return oneRow(
+        caps: nameWidths,
+        gap: spacing(
+          available: oneRowAvailable, fixed: fixed, natural: Self.oneRowNaturalGap,
+          minimum: Self.oneRowMinimumGap))
     }
     if width + 0.5 >= twoRowMinimum {
-      let fixed = twoRowWidth(gap: 0)
-      let gap =
-        count > 1
-        ? min(
-          Self.twoRowNaturalGap,
-          max(Self.twoRowMinimumGap, (width - horizontalPadding - fixed) / CGFloat(count - 1)))
-        : Self.twoRowNaturalGap
-      return OverlayChannelMapLayout(
-        arrangement: .twoRows, spacing: gap, slots: nameWidths, nameWidths: nameWidths,
-        width: fixed + gaps(gap), circle: circle)
+      let fixed = twoRowWidth(caps: nameWidths, gap: 0)
+      return twoRows(
+        caps: nameWidths,
+        gap: spacing(
+          available: twoRowAvailable, fixed: fixed, natural: Self.twoRowNaturalGap,
+          minimum: Self.twoRowMinimumGap))
     }
-    let gap = Self.oneRowMinimumGap
-    // Truncate: the widest names give way first, never below the circle.
-    if oneRowWidth(caps: nameWidths.map { min($0, circle) }, gap: gap) <= available + 0.5 {
-      var low = circle
-      var high = nameWidths.max() ?? circle
-      for _ in 0..<24 {
-        let mid = (low + high) / 2
-        if oneRowWidth(caps: nameWidths.map { min($0, mid) }, gap: gap) <= available {
-          low = mid
-        } else {
-          high = mid
-        }
+    // Shorten: the widest names give way first, each never below its
+    // shortest form, in the arrangement with the narrower floor.
+    switch shortenedArrangement {
+    case .oneRow:
+      let gap = Self.oneRowMinimumGap
+      let caps = shortenedCaps(available: oneRowAvailable) {
+        oneRowWidth(caps: $0, gap: gap)
       }
-      return oneRow(caps: nameWidths.map { min($0, floor(low)) }, gap: gap)
+      return oneRow(caps: caps, gap: gap)
+    case .twoRows:
+      let gap = Self.twoRowMinimumGap
+      let caps = shortenedCaps(available: twoRowAvailable) {
+        twoRowWidth(caps: $0, gap: gap)
+      }
+      return twoRows(caps: caps, gap: gap)
     }
-    // Overlap: every slot narrows below the circle to the densest slot.
-    let slot = max(
-      Self.densestSlot, floor((available - gaps(gap)) / CGFloat(count)))
-    return OverlayChannelMapLayout(
-      arrangement: .oneRow, spacing: gap, slots: Array(repeating: slot, count: count),
-      nameWidths: nameWidths.map { min($0, slot) },
-      width: slot * CGFloat(count) + gaps(gap), circle: circle)
+  }
+
+  /// The gap that fills the room between the natural and the minimum gap.
+  private func spacing(
+    available: CGFloat, fixed: CGFloat, natural: CGFloat, minimum: CGFloat
+  ) -> CGFloat {
+    guard count > 1 else { return natural }
+    return min(natural, max(minimum, (available - fixed) / CGFloat(count - 1)))
+  }
+
+  /// The largest common cap whose row fits, each name kept between its
+  /// shortest and its full width. At the floor every name is at its shortest.
+  private func shortenedCaps(
+    available: CGFloat, rowWidth: ([CGFloat]) -> CGFloat
+  ) -> [CGFloat] {
+    func caps(_ cap: CGFloat) -> [CGFloat] {
+      zip(nameWidths, minimumNameWidths).map { full, shortest in
+        max(shortest, min(full, cap))
+      }
+    }
+    var low: CGFloat = 0
+    var high = nameWidths.max() ?? 0
+    for _ in 0..<24 {
+      let mid = (low + high) / 2
+      if rowWidth(caps(mid)) <= available {
+        low = mid
+      } else {
+        high = mid
+      }
+    }
+    return caps(floor(low))
   }
 
   private func oneRow(caps: [CGFloat], gap: CGFloat) -> OverlayChannelMapLayout {
@@ -405,5 +447,11 @@ struct OverlayBarGeometry: Equatable, Sendable {
     return OverlayChannelMapLayout(
       arrangement: .oneRow, spacing: gap, slots: slots, nameWidths: caps,
       width: slots.reduce(0, +) + gaps(gap), circle: circle)
+  }
+
+  private func twoRows(caps: [CGFloat], gap: CGFloat) -> OverlayChannelMapLayout {
+    OverlayChannelMapLayout(
+      arrangement: .twoRows, spacing: gap, slots: caps, nameWidths: caps,
+      width: twoRowWidth(caps: caps, gap: gap), circle: circle)
   }
 }

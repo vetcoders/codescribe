@@ -146,7 +146,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private(set) var midiGeometry = OverlayBarGeometry(
     baseWidth: DictationOverlayWindow.midiSize.width,
     horizontalPadding: DictationOverlayWindow.miniOuterPadding, nameWidths: [],
-    circle: OverlayChannelPill.digitCircle, inlineGap: OverlayChannelPill.chipGap)
+    minimumNameWidths: [], circle: OverlayChannelPill.digitCircle, inlineGap: OverlayChannelPill.chipGap)
   /// The expanded bar's natural width: one row with full names, or two rows
   /// when that row passes the budget.
   var midiNaturalWidth: CGFloat { midiGeometry.naturalWidth }
@@ -1345,6 +1345,9 @@ enum DictationOverlayWindow {
       baseWidth: ceil(base), horizontalPadding: miniOuterPadding,
       nameWidths: chips.map {
         $0.isBroadcast ? 0 : OverlayChannelPill.nameWidth($0.name, scale: scale)
+      },
+      minimumNameWidths: chips.map {
+        $0.isBroadcast ? 0 : OverlayChannelPill.shortestNameWidth($0.name, scale: scale)
       },
       circle: OverlayChannelPill.digitCircle * scale,
       inlineGap: OverlayChannelPill.chipGap * scale)

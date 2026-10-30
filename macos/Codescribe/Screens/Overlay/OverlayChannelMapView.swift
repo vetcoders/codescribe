@@ -56,14 +56,13 @@ struct OverlayChannelMapView: View {
     case .oneRow:
       let origins = layout.origins
       ZStack(alignment: .topLeading) {
-        // Later circles lie on earlier ones once they overlap; each slot,
-        // not its circle, is the chip's hit area, so every channel stays
-        // clickable.
+        // Each slot, never narrower than its circle, is the chip's hit
+        // area, so every channel stays clickable.
         ForEach(chips, id: \.element.id) { index, chip in
           chipPill(chip, layout: layout, index: index, scale: scale)
             .offset(x: origins[index])
         }
-        // The unread dots lie above every circle, so no overlap hides one.
+        // The unread dots lie on their own top layer, above every circle.
         ForEach(chips, id: \.element.id) { index, chip in
           if chip.unread {
             OverlayChannelPill.unreadDot(palette: palette, scale: scale)

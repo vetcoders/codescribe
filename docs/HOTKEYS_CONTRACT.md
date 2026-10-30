@@ -54,8 +54,10 @@ the agent map in the horizontal layout, then transcription, ✦, Pin,
 microphone and chevron. `OverlayBarGeometry` decides the map's arrangement
 from measured widths: full names under their circles in one row; when they
 do not fit, a second 20 pt row (plus a 4 pt gap) holds the map with each name
-beside its circle; narrower still, one row with truncated names, then
-overlapping circles. Its natural width is one row up to a 520 pt budget, else
+beside its circle; narrower still, names shortened to at least three
+characters and `…` (four or fewer stay whole) in whichever of one or two rows
+reaches the narrower floor. Circles never overlap (Monika rejected one-letter
+names under overlapping circles, 2026-10-30). Its natural width is one row up to a 520 pt budget, else
 two rows; the window and the header use the same geometry
 (`DictationOverlayWindow.midiBarGeometry`). A roster change, the meter coming
 or going, or channel 0 opening refits the bar in one step at its upper-right

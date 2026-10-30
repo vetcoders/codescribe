@@ -297,9 +297,11 @@ actions.
 When the full names do not fit beside the tools, the bar takes a second row:
 the brand, waveform, clock and tools on top, the map below with each number
 beside its name. Only that row's height is added. Narrow the bar by hand and
-the map gets denser in steps: the gaps shrink, then names are shortened (the
-full name stays in the hint), then the circles overlap. Each name keeps its
-own space, every circle stays clickable, and unread dots stay on top.
+the map gets denser in steps: the gaps shrink, then names are shortened to no
+fewer than three letters and `…` (names of four letters or fewer stay whole,
+and the full name stays in the hint). The circles never overlap, and the bar
+stops narrowing there. Each name keeps its own space, every circle stays
+clickable, and unread dots stay on top.
 
 ## Type a message and attach clipboard content
 

@@ -94,15 +94,19 @@ densifies the map in this order:
 
 1. one row, names under circles, gaps 8 → 3 pt;
 2. two rows, names beside circles, gaps 10 → 6 pt;
-3. one row with names shortened (`OverlayChannelPill.truncatedName`, the full
-   name in the hint);
-4. one row with overlapping circles, down to a 10 pt slot.
+3. names shortened (`OverlayChannelPill.truncatedName`, the full name in the
+   hint), in one row or two, whichever reaches the narrower floor. A shortened
+   name keeps at least three characters and `…`, measured in the chip's font
+   (`OverlayChannelPill.shortestNameWidth`); a name of four characters or
+   fewer is never shortened.
 
-Circles may overlap; names never run together, because each slot keeps its own
-3 pt gap. Each slot is its chip's hit area, so every channel stays selectable
+Circles never overlap: Monika rejected one-letter names under overlapping
+circles on 2026-10-30. Names never run together, because each slot keeps its
+own gap. Each slot is its chip's hit area, so every channel stays selectable
 at every density. Unread dots are drawn on a layer above all circles. The
 natural width is one row up to a 520 pt budget, otherwise two rows; the floor
-is the densest layout. The window owner and the header compute the same
+is the densest layout, every name at its shortest, and the bar cannot be
+dragged narrower. The window owner and the header compute the same
 geometry (`DictationOverlayWindow.midiBarGeometry`,
 `FloatingOverlayPanel.setMidiBarGeometry`), and the height follows the row
 count (`midiHeight(forWidth:)`). Placement and the saved position still
@@ -185,7 +189,7 @@ transcript and explicit width.
 Before a bar change is called done, check it visually at real scale: four and
 nine agents; full and similar names (`Lena`, `Lena2`); densification while
 narrowing by hand; legibility of numbers, names and unread dots; selecting one
-channel among overlapping circles; speaking to one agent and to several; the
+channel at the floor; speaking to one agent and to several; the
 agent list in mini; the bar's proportions; and the existing transcription,
 Agents, pin, microphone and window actions.
 
