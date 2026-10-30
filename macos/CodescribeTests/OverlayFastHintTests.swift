@@ -58,6 +58,8 @@ final class OverlayFastHintTests: XCTestCase {
     let expected = [
       "Microphone unavailable": "Mikrofon niedostępny",
       "Show agents list": "Pokaż listę agentów",
+      "Channel bar": "Wąski pasek",
+      "No conversation on this channel": "Na tym kanale nie ma rozmowy",
       "Hide agents list": "Schowaj listę agentów",
       "Nothing to copy": "Nie ma czego skopiować",
       "Playback unavailable": "Odtwarzanie niedostępne",
