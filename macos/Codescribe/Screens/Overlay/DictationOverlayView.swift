@@ -1419,8 +1419,8 @@ struct DictationOverlayView: View {
   /// of their own. Its menu is the draft sync moved out of "+" (Maciej,
   /// 2026-10-30 14:24): the agents whose drafts are linked to this source
   /// receive what is typed here, the same link the roster chain toggles. The
-  /// inbox's "To:" builds the set; 0 · All's "Send only to…" narrows one
-  /// message to it and goes back to everyone after the send. An agent's
+  /// inbox's "To:" builds the set; 0 · All's "Send only to…" narrows the
+  /// broadcast to it until the set is changed or unlinked. An agent's
   /// conversation has no bar: the open agent is the recipient. The bar is the
   /// composer's sibling and wears its surface.
   private func composerRouting(viewing conversation: OverlayConversation) -> some View {

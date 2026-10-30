@@ -3163,15 +3163,14 @@ final class OverlayState {
       cleared = true
     }
     // A source's draft is the same words: it clears once every linked agent
-    // holds its receipt, and stays for a retry while any of them failed.
-    // "Send only to…" on 0 · All is one shot (Maciej, 2026-10-30 14:18): the
-    // set dissolves after the send and the next message goes to everyone.
+    // holds its receipt, and stays for a retry while any of them failed. The
+    // set itself persists, on 0 · All as in the inbox (Maciej, 2026-10-30
+    // 14:3x: "wyślij nie jest one shot"); only the chain or the menu changes it.
     if cleared, frozen.allSatisfy({ conversationDraftReceipts[$0.id] == $0 }) {
       for source in recipients where source.owner == nil {
         conversationDrafts[source.id] = ""
         conversationReplies.removeValue(forKey: source.id)
         textMessageErrors.removeValue(forKey: source.id)
-        if source.channel == "0" { stopDraftSync(for: source.id) }
       }
     }
     // A partial send leaves failed/newer drafts intact. All subsequent input
