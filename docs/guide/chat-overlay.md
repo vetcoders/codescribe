@@ -14,33 +14,35 @@ conversations. Open the native Settings window from the menu bar.
 
 ## Show and resize the overlay
 
-Use the preview control to cycle through mini, compact and expanded forms, or
-choose a form from its context menu. The upper-right corner stays pinned while
-expanding; moving the window changes that pin.
+The bar has two sizes: **mini** and the **expanded bar**. Click the bar's
+empty background to switch between them, in either direction; drag the
+background to move the bar. The buttons keep their own actions: the brand dot
+closes the overlay, the chevron opens the window (transcription or Agents)
+and folds it back to mini, and its context menu picks any form directly. The
+upper-right corner stays pinned while the bar or the window grows; moving the
+window changes that pin.
 
-The channel map is optional. In Settings → Creator, enable **Channel map in the
-overlay** to show its counter in mini and its chips in compact. It is off until
-you opt in. Switching it updates open overlays immediately without selecting a
-conversation or changing the microphone. With it off, mini keeps the `cs` wordmark
-and the earlier 200 pt width (164 pt during agent recording); compact returns to
-its 410 pt natural width. A width you explicitly resized is still yours.
+Mini shows, from the left, the brand dot, transcription (✍︎), the
+microphone, Agents (✦) and the chevron, and is exactly as wide as those
+controls. Point at ✦ to see the agents on the bus, `N · Name` in channel
+order, with a yellow dot beside unread replies; move the pointer into the list
+and click an agent to open its conversation. Click ✦ itself to open the
+**Agents** window. While you speak to agents, mini stays mini: the microphone
+becomes Stop, and the ✦ slot shows the violet channel number of each agent
+who hears you (overlapping circles for several, `0` for everyone); point at it
+for their names.
 
-With the channel map enabled, mini is as wide as its content: the brand dot, the channel counter and its
-controls, with no empty space between them, so it narrows or widens a little
-when the counter changes. Compact supports horizontal resizing. Expanded
-supports edge and corner resizing. The minimum visible sizes are 130 × 46,
-410 × 46 and 320 × 260 points respectively. Compact's own width follows its channel map: with
-agents on the bus it opens wide enough for every named chip, up to 820 points,
-and it grows or shrinks at its upper-right corner when a channel is added or
-archived. Past 820 points the chips drop their names instead of widening the
-strip. Narrow it by hand and it keeps your width for the rest of the session,
-with the chips showing digits only or folded into the counter; clicking the
-counter gives the strip its natural width back. Widen it and it keeps your
-width, growing only when the map needs more. During dragging the current form
-keeps its
-readable floor. A sufficiently small requested drag can select a compact form
-when released; it does not squeeze an expanded transcript into a tiny frame
-while the gesture is still in progress.
+The expanded bar shows the brand, the agent map (with the horizontal Intercom
+layout), transcription, ✦, the pin, the microphone and the chevron. The
+waveform and the recording clock appear only while you record; at rest they
+take no room. Drag its left or right edge to make it wider or narrower; that
+changes the width only, never the form, and the bar keeps your width for the
+session. Expanded supports edge and corner resizing. The minimum visible
+sizes are 161 × 46 points for mini, the bar's densest map layout for the
+expanded bar, and 320 × 260 points for the window. A sufficiently small
+requested resize of the window can fold it into a bar when released; it does
+not squeeze an expanded transcript into a tiny frame while the gesture is
+still in progress.
 
 During a manual resize the grabbed edge follows the pointer and its opposite
 edge stays fixed. Pointer events are coalesced to the latest position per
@@ -60,7 +62,7 @@ Pointing at a header control shows its hint just below it, in the same chip as
 the action pill's hints, and rings the control in the color of what it opens:
 green for the transcription, violet for agents, orange for the pin and the
 recording controls. The hint floats outside the panel, so it also appears on
-the 46-point mini and compact strips.
+mini and the expanded bar.
 
 A secondary click (right-click or Control-click) anywhere on the header opens
 the same menu in every form: **Agents**, **Transcription**, **Pin** / **Unpin**,
@@ -95,8 +97,8 @@ and covers it in a narrow window. Choosing a row from the covering list returns
 to the bar. Right-click the same panel button to choose the full list, channel
 bar or complete hiding; hiding gives all panel width back to the conversation.
 The window keeps its size, draft and text recipient. The conversation has no
-separate hide/show button or folded edge. Compact-overlay channel chips keep
-their own presentation.
+separate hide/show button or folded edge. The expanded bar's agent map keeps
+its own presentation.
 
 Conversation and agent-list headers share the same compact height, without an
 extra toggle row. Message action labels use another row when necessary on a
@@ -256,63 +258,45 @@ owners are not added to a sync group. A replacement agent on the same channel
 does not inherit its predecessor's group. This feature shares manual drafts;
 it does not change a live recording's audience.
 
-## Channel map in the collapsed overlay
+## Agent map in the bar
 
-Mini and compact carry a map of the bus, so you can see which agent answers
-which channel chord without unfolding the **Agents** canvas.
+With Settings → Creator → **Intercom layout** set to **Horizontal strip**, the
+expanded bar carries a map of the bus, so you can see who answers which
+channel chord without opening the **Agents** window. **Classic** is the same
+bar without the map; **Floating pills** keeps its stacked counter beside the
+brand, which brings the floating Intercom forward.
 
-In compact the map sits between the clock and the header buttons: one chip per
-channel bound to an agent, in digit order. A chip shows the digit in a circle
-and the agent's name, written with a capital first letter, for example
-`2 Miksa · 3 Igor · 5 Kuba`. Only agents appear: channel 0 broadcasts to
-everyone and has no chip of its own, except while the microphone is open on it
-(see below). Only channels the roster binds appear; delivery history alone does
-not add one. A chip whose agent has disconnected is dimmed like its row in the
-**Agents** list; the digit stays, because the channel chord still reaches the
-channel. A dot marks unread replies.
+Every agent on the bus appears, in channel order: the channel number in a
+circle with the agent's name under it, written with a capital first letter.
+Only agents appear: channel 0 broadcasts to everyone and has no circle of its
+own, except while the microphone is open on it. A circle whose agent has
+disconnected is dimmed like its row in the **Agents** list. Pointing at a
+circle names the channel, the agent and the chord, for example
+`4 · Lena2 · Ctrl+4`, which also tells similar names apart. The modifier is
+the one chosen in Settings › Shortcuts › Fn and Agent channels › **Agent
+channel** (Ctrl or Fn).
 
-In mini the brand dot is followed by a counter, `3 ▾`, the number of agents,
-then the agents button, the microphone and the form control. Mini no longer
-shows the "cs" wordmark.
+The marks keep their meanings apart:
 
-Pointing at a chip names the channel, the agent and the chord, for example
-`5 · Kuba · Ctrl+5`. Pointing at the counter lists the agents, for example
-`3 Igor · 4 Hania · 6 Konfig`. The modifier is the one chosen in Settings ›
-Shortcuts › Fn and Agent channels › **Agent channel** (Ctrl or Fn); the map reads it
-when it appears and when you point at it.
+- a **yellow dot** means an unread reply from that agent; it clears as you
+  read the conversation, as in the **Agents** list;
+- a **violet ring with a small violet dot** marks every channel the
+  microphone feeds now, the audience of what you are saying, one agent or
+  several;
+- a **muted violet fill** marks the conversation you are viewing.
 
-Clicking a chip opens that agent's conversation on the **Agents** canvas, as its
-numbered pill in the folded **Agents** list does. Clicking the counter in mini
-switches the overlay to compact, where the chips are; clicking it in a compact
-strip you narrowed gives the strip its natural width back, and the chips
-return; the counter never selects a conversation. Neither a chip nor the
-counter opens or closes the microphone or changes the destination of a
-recording in progress; use the channel chord or a microphone control to speak.
+Clicking a circle opens that agent's conversation, as its pill in the folded
+**Agents** list does. It never opens or closes the microphone or changes where
+a recording goes; use the channel chord or a microphone control to speak. A
+secondary click on a circle offers the agent's microphone, playback and panel
+actions.
 
-While the microphone feeds a channel, that channel's digit carries a small
-violet dot, and its chip takes the same tint, in its usual place. The digit
-carries no symbol: the **Agents** button shows a violet microphone while you
-speak to one agent and a megaphone only while you broadcast to all. While you
-broadcast on channel 0, a `0` chip with the dot leads the row. In mini, and in
-a compact strip folded to its counter, the counter shows the open channel's
-digit with the dot instead of the count. When the channel closes, the plain
-chip and the count return. The dot says where your voice goes; it is not a
-receipt.
-
-With the map shown, pressing the channel chord in mini or compact keeps that
-form: the chip or the counter shows the open digit, and the overlay does not
-unfold onto the **Agents** canvas. Unfold it yourself when you want to read the
-conversation. Without the map, the chord unfolds the overlay onto that
-agent's conversation.
-
-When compact has no room for the names, the chips show digits only; the chip of
-the conversation you have selected keeps its name, and pointing at a chip still
-names it. When even the digits do not fit the width you set by hand, the chips
-collapse into the counter. If even the counter does not fit, the map steps
-aside so the header buttons and the fold control keep their place. By default
-the strip is as wide as its chips need, up to 820 points, so the counter
-appears only after you narrow it. The strip stays 46 points tall, and larger
-text grows the chips only as far as that height allows.
+When the full names do not fit beside the tools, the bar takes a second row:
+the brand, waveform, clock and tools on top, the map below with each number
+beside its name. Only that row's height is added. Narrow the bar by hand and
+the map gets denser in steps: the gaps shrink, then names are shortened (the
+full name stays in the hint), then the circles overlap. Each name keeps its
+own space, every circle stays clickable, and unread dots stay on top.
 
 ## Type a message and attach clipboard content
 

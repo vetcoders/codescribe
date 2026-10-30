@@ -11,8 +11,8 @@ alternative arrangements; this document does not select one as the final UI.
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Agent name, clock, descriptor and message preview                       | `OverlayAgentRosterLabel.swift`                                                         |
 | Row footer, action grouping, broadcast row and compact channel pills    | `OverlayChannelStatusView.swift`                                                        |
-| Numbered channel pill: rail pills, map chips, counter, open-channel dot | `OverlayChannelPill.swift`                                                              |
-| Channel map in mini and compact: tiers, counter, its click              | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
+| Numbered channel pill: rail pills, map chips, counter, recipient marks  | `OverlayChannelPill.swift`                                                              |
+| Bar agent map, its layout ladder, mini Agents slot, stacked counter     | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
 | Header, waveform placement, embedded list/rail and hover region         | `DictationOverlayView.swift`                                                            |
 | List width, docking threshold and rail/pill dimensions                  | `OverlayAgentDrawerLayout.swift`                                                        |
 | Panel presentation, selection and recipient projection                  | `OverlayState.swift`                                                                    |
@@ -241,7 +241,7 @@ Write/Forward and Reply actions, a missing owner, channel reuse and a draft
 retained during navigation. Native interaction and delivery are distinct from
 source review, test fixtures and image rendering.
 
-The floating Intercom windows and the mini/compact top bar are outside this
+The floating Intercom windows and the mini/expanded bar are outside this
 horizontal-window cut. Shared view parameters default to the existing Intercom
 behavior, and shared control renderers retain their existing appearance.
 
@@ -267,45 +267,65 @@ the audience are text.
 User-message bubbles retain a quiet warm outline using `terracottaDeep` at
 `CSAlpha.selectionStroke` strength. Incoming bubbles use the neutral panel edge.
 
-The channel map in mini and compact is another surface of the same
-projections. `OverlayChannelStatusView.channelMapModel` builds
-`OverlayChannelMapModel` from the roster's rows, `hudStates`, current
-conversations, the selection and unread counts. It lists the bound agents
-1–9, with lease names capitalised for display only; channel 0 joins it only
-while the microphone broadcasts on it. A chip calls
-`selectChannelConversation`, the rail pill's selection path. The counter calls
-`OverlayState.activateChannelMapCounter`: in mini it selects compact, in
-compact it asks the window owner, through `onRestoreMidiNaturalWidth`, to drop
-a width the user set (`FloatingOverlayPanel.restoreMidiNaturalWidth`). There is
-no map popover; the counter's hint lists the agents. While the map is
-enabled, a channel the controller opens in mini or compact keeps that form
+The bar has two sizes (Monika's bar brief, 2026-10-30): mini and the
+expanded bar (`OverlayPresentationMode.midi`); `.expanded` is the window. A
+still click on the bar's background calls
+`OverlayState.advancePresentationFromHeader`, which switches mini ↔ expanded
+bar both ways (`FloatingOverlayPanel.isPresentationClickHit` keeps drags and
+buttons out). Mini is the brand dot (close), transcription, microphone, the
+Agents slot and the chevron, sized by `DictationOverlayWindow.miniNaturalWidth`.
+The slot is `OverlayMiniAgentsControl`: at rest the ✦ with its interactive
+hover list (`OverlayAgentsHoverList` in the shared `OverlayHintPanel`'s
+interactive mode), while agent channels are open the recipients' overlapping
+circled digits; its press is the roster's Agents press. The vertical layout
+keeps the roster's own ✦ in mini, since its stacked counter shows the digits.
+
+The bar's agent map is another surface of the same projections.
+`OverlayChannelStatusView.channelMapModel` builds `OverlayChannelMapModel`
+from the roster's rows, `hudStates`, current conversations, the selection and
+unread counts. It lists the bound agents 1–9, with lease names capitalised for
+display only; channel 0 joins it only while the microphone broadcasts on it. A
+chip calls `selectChannelConversation`, the rail pill's selection path; its
+secondary click is the roster's `agentPillMenu` (microphone, playback, panel).
+The vertical layout's counter calls `OverlayState.activateChannelMapCounter`,
+which brings the Intercom group forward. While the map is enabled, a channel
+the controller opens in mini or the expanded bar keeps that form
 (`OverlayState.channelOpenExpandsSurface`): the selection follows the open
-channel and the strip shows its digit, and the Agents canvas unfolds for it
-only with the map off or when the overlay is already expanded.
+channel and the map or mini's slot shows its digit, and the Agents canvas
+unfolds for it only with the map off or when the overlay is already expanded.
 
 `OverlayChannelPill` is the single owner of the numbered pill visual: the rail
-pill, the map's chips and its counter render the digit through it, from
-immutable display values and one action, and an open channel's digit carries
-a small dot in the agent accent there (spec §14: a dot, no symbol, never
-`MIC →` text; the microphone and megaphone signs belong to the Agents header
-button). The dot overlaps the digit's circle, so it adds no width, and pulses
-only while the pill animates and Reduce Motion is off. It receives
-no `OverlayState`, conversation or command. Compact's strip picks the first
-tier that fits its width: named chips, digit-only chips (the selected
-conversation's chip keeps its name), the counter, nothing. Every threshold is
-measured from the same text metrics the pill draws with, and the window owner
-sizes compact from them too: `FloatingOverlayPanel.setMidiNaturalWidth`
-receives `DictationOverlayWindow.midiNaturalWidth`, bounded by the 820 pt
-`midiChannelMapBudget`, whenever `OverlayState.onChannelMapLayoutChanged`
-reports new agents or names. The same hook, which also fires when the open
-digits change, feeds `FloatingOverlayPanel.setChannelMapPresentation` with
-`DictationOverlayWindow.miniNaturalWidth`: mini is as wide as its content, its
-130 pt floor of controls plus the counter as drawn, at the same header scale
-as compact. Placement and the saved position still describe the 200 pt
+pill, the map's chips, the stacked counter and mini's recipient digits render
+the digit through it, from immutable display values and one action. A chip
+has no capsule; its circle carries three distinct marks: every channel the
+microphone feeds (`channelHudStates[digit].open`, the co-audience cohort) wears
+a violet ring and the violet open-channel dot, which pulses only while the
+pill animates and Reduce Motion is off; the viewed conversation wears a muted
+violet fill; an unread reply wears the yellow dot. It receives no
+`OverlayState`, conversation or command.
+
+`OverlayBarGeometry` decides the map's arrangement from measured widths:
+everything but the map in one row (`DictationOverlayWindow.midiBarGeometry`:
+padding, the 13 pt lockup, the 56 pt waveform and the clock only while
+`OverlayState.channelMapBarShowsMeter`, the tools) and each full name. The
+ladder, as the bar narrows: one row, names under circles, gaps 8 → 3 pt; two
+rows, the map on a 20 pt second row with names beside circles, gaps 10 → 6 pt;
+one row with names truncated (`OverlayChannelPill.truncatedName`, never below
+the circle's width); one row with overlapping circles down to a 10 pt slot.
+Each slot is the chip's hit area and keeps a 3 pt gap, so names never run
+together; the one-row map draws unread dots on a top layer above every
+circle. The natural width is one row up to the 520 pt budget, else two rows;
+the floor is the densest layout. The window owner and the header compute the
+same geometry: `FloatingOverlayPanel.setMidiBarGeometry` receives it whenever
+`OverlayState.onChannelMapLayoutChanged` reports new agents, names or open
+digits, or the header reports the meter coming or going, and sets the width
+and the height (`midiHeight(forWidth:)`) at the upper-right pin. A manual
+edge resize changes only the width; the height follows the row count.
+Placement and the saved position still describe the 200 pt
 `miniPlacementSize` strip, with mini drawn at its trailing edge.
 
 Moving controls must not turn a whole row into one button or nest buttons
-inside another button. A list row or compact channel chip selects its
+inside another button. A list row or bar map chip selects its
 conversation, including `0` for All. Selection does not open a microphone
 and does not retarget a capture that is already running.
 
@@ -466,21 +486,22 @@ to follow the new owner.
 
 ### Channel map opt-in
 
-Settings → Creator → **Channel map in the overlay** controls the map's mini
-counter and compact chips together. It is off for an absent preference.
-`OverlayChannelMapPreference` owns this process-only chrome choice in the app
-preference domain, as `AppearancePreference` does; it is not core configuration.
-Creator and every overlay observe that same owner. The view's change handler
-asks its existing window owner to refit, including while a take is open.
-When disabled, mini draws `cs` at its earlier 200 pt width (164 while an agent
-records), and compact's natural width is 410. The microphone, selected owner,
-transcript and explicit resize choice are retained.
+Settings → Creator → **Intercom layout** controls the map: **Classic** (the
+default for an absent preference) is the same bar without the map,
+**Horizontal strip (experimental)** puts the agent map in the expanded bar, and
+**Floating pills** shows the vertical Intercom with its stacked counter beside
+the brand. `OverlayChannelMapPreference` owns this process-only chrome choice
+in the app preference domain, as `AppearancePreference` does; it is not core
+configuration. Creator and every overlay observe that same owner. The view's
+change handler asks its existing window owner to refit, including while a
+take is open. Mini is the same in Classic and Horizontal. The microphone,
+selected owner, transcript and explicit resize choice are retained.
 
 ### Intercom layouts and independent panes
 
-Creator's channel-map opt-in also offers **Intercom layout**. Horizontal keeps
-Monika's strip and gives names and separate microphone/playback/focus controls
-priority over the waveform at wide widths. Vertical is an independent desktop
+Creator's **Intercom layout** picks the layout. Horizontal puts the agent map
+in the expanded bar; each agent's microphone, playback and panel actions live
+in its chip's secondary-click menu. Vertical is an independent desktop
 Intercom, available with the main overlay closed or folded. Its header and
 agent pills share a 30 pt base height, 11 pt semibold names and a 30 pt
 microphone beside a 30 pt speaker. Text scale grows these metrics. The common
@@ -589,7 +610,7 @@ recorder is created. The default remains horizontal, and an absent opt-in stays 
 
 The horizontal Agents panel follows the responsive placement and single
 visibility contract in “Horizontal conversation and text destination” above.
-Floating Intercom groups, detached cards and the compact channel map retain
+Floating Intercom groups, detached cards and the bar's agent map retain
 their separate presentation rules.
 
 Open nonzero capture uses a violet microphone; only an open channel zero uses
