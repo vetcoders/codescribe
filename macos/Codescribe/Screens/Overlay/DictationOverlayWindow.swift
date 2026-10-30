@@ -143,7 +143,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var channelCapturing = false
   var miniSize: NSSize {
     NSSize(
-      width: channelMapEnabled ? miniNaturalWidth : (channelCapturing ? 164 : 200),
+      width: channelMapEnabled ? miniNaturalWidth : DictationOverlayWindow.miniBrandWidth,
       height: DictationOverlayWindow.collapsedHeight)
   }
 
@@ -1285,6 +1285,29 @@ enum DictationOverlayWindow {
   /// narrower than its controls.
   static let miniFloorWidth =
     miniOuterPadding + miniBrandDot + 2 * miniRowSpacing + miniTrailingControls
+
+  /// Mini with the brand word, while the channel map stays out of mini: the
+  /// padding, the close dot, the word after its gap, the 6 pt row gaps either
+  /// side of the 4 pt closed centre and the trailing controls. Measured the
+  /// way the counter form is. The former fixed 200 pt (164 while capturing)
+  /// was narrower than this row, so the header's clip cut the fold control
+  /// at the capsule's edge (Maciej, 2026-10-30 14:24: "w pigułce mini jest
+  /// bug rozmieszczenia"). The capsule never gets narrower than its controls.
+  static let miniWordRowSpacing: CGFloat = 6
+  static let miniWordClosedCentre: CGFloat = 4
+  static let miniWordSize: CGFloat = 13
+  static let miniWordTracking: CGFloat = -0.3
+  @MainActor
+  static let miniBrandWidth: CGFloat = {
+    let font = NSFont.systemFont(ofSize: miniWordSize, weight: .bold)
+    let word =
+      ceil(
+        ("codescribe" as NSString).size(withAttributes: [.font: font, .kern: miniWordTracking])
+          .width) + 1
+    return ceil(
+      miniOuterPadding + miniBrandDot + miniBrandGap + word + 2 * miniWordRowSpacing
+        + miniWordClosedCentre + miniTrailingControls)
+  }()
 
   /// Mini's natural width (spec §13.4): its floor plus, while the map holds a
   /// channel, the brand gap and the channel counter as it is drawn, the agent
