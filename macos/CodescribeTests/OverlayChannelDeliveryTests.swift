@@ -297,7 +297,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let identities = intercomIdentities(state: state, chips: state.channelMapLayoutModel.agents)
     XCTAssertFalse(identities.contains(where: \.isHumanInbox), "mailboxes occupy the header")
     state.conversationDrafts[inbox.id] = "This cannot be sent to myself"
-    state.publishConversationText = { _, _, _, _ in XCTFail("The inbox is read-only") }
+    state.publishConversationText = { _, _, _, _ in
+      XCTFail("An inbox with no linked agents has no recipient to publish to")
+    }
     await state.sendConversationText(inbox)
     XCTAssertEqual(state.conversationDrafts[inbox.id], "This cannot be sent to myself")
   }

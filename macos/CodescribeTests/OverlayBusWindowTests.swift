@@ -36,30 +36,27 @@ final class OverlayBusWindowTests: XCTestCase {
     state.applyConversationSnapshot(.init(deliveries: [], conversations: conversations))
   }
 
+  /// The open conversation is its own recipient (Maciej, 2026-10-30 13:58);
+  /// viewing, folding and drafts elsewhere never move it.
   func testViewingAndFoldingKeepTheRecipientAndEachOwnersDraft() throws {
     let first = try conversation("2")
     let second = try conversation("3", lease: "b")
     let state = OverlayState()
     apply([first, second], to: state)
-    state.initializeComposerTarget(first)
     state.setConversationDraft("Private first draft", for: first.id)
     state.setConversationDraft("Private second draft", for: second.id)
 
     state.selectConversation(second.id, expand: false)
-    state.initializeComposerTarget(second)
     state.foldAgentList()
     state.unfoldAgentList()
 
     XCTAssertEqual(state.selectedConversationID, second.id)
     XCTAssertEqual(state.resolvedComposerTarget(viewing: second)?.id, second.id)
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, first.id)
     XCTAssertEqual(state.conversationDraft(for: first.id), "Private first draft")
     XCTAssertEqual(state.conversationDraft(for: second.id), "Private second draft")
     XCTAssertFalse(state.conversationMicrophoneOpen(first))
     XCTAssertFalse(state.conversationMicrophoneOpen(second))
-
-    state.chooseComposerTarget(second)
-    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, first.id)
-    XCTAssertEqual(state.conversationDraft(for: first.id), "Private first draft")
   }
 
   func testReusedDigitCannotAdoptTheOldRecipientsDraftOrSelection() throws {
@@ -67,7 +64,6 @@ final class OverlayBusWindowTests: XCTestCase {
     let replacement = try conversation("2", session: "replacement", lease: "b")
     let state = OverlayState()
     apply([old], to: state)
-    state.chooseComposerTarget(old)
     state.setConversationDraft("Keep for the original owner", for: old.id)
     apply([replacement], to: state)
     state.selectConversation(replacement.id, expand: false)
@@ -77,10 +73,6 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertFalse(state.composerTargetIsAvailable(old))
     XCTAssertTrue(state.composerTargetIsAvailable(replacement))
     XCTAssertEqual(state.conversationDraft(for: old.id), "Keep for the original owner")
-    XCTAssertEqual(state.conversationDraft(for: replacement.id), "")
-
-    state.chooseComposerTarget(replacement)
-    XCTAssertEqual(state.resolvedComposerTarget(viewing: replacement)?.id, replacement.id)
     XCTAssertEqual(state.conversationDraft(for: replacement.id), "")
   }
 
@@ -92,13 +84,14 @@ final class OverlayBusWindowTests: XCTestCase {
       owner: wrongOwner.owner, messages: [])
     let state = OverlayState()
     apply([old], to: state)
-    state.chooseComposerTarget(old)
     apply([wrongOwner], to: state)
     XCTAssertNil(state.resolvedComposerTarget(viewing: wrongOwner))
     XCTAssertFalse(state.composerTargetIsAvailable(old))
   }
 
-  func testInboxCannotBorrowAnotherConversationsBroadcastRecipient() throws {
+  /// The inbox has no recipient of its own: it is a draft-sync source, never
+  /// a destination; broadcast and agents resolve to themselves.
+  func testInboxHasNoRecipientOfItsOwnWhileBroadcastAndAgentsResolveToThemselves() throws {
     let privateConversation = try conversation("2")
     let broadcast = OverlayConversation(
       id: "0", channel: "0", name: "All", owner: nil, messages: [])
@@ -106,23 +99,26 @@ final class OverlayBusWindowTests: XCTestCase {
       id: "10", channel: "10", name: "Your Inbox", owner: nil, messages: [])
     let state = OverlayState()
     apply([broadcast, inbox, privateConversation], to: state)
-    state.chooseComposerTarget(broadcast)
     state.selectConversation(inbox.id, expand: false)
-    state.chooseComposerTarget(inbox)
-    XCTAssertNil(state.composerTarget)
+    XCTAssertTrue(inbox.isDraftSyncSource)
+    XCTAssertTrue(broadcast.isDraftSyncSource)
+    XCTAssertFalse(privateConversation.isDraftSyncSource)
     XCTAssertNil(state.resolvedComposerTarget(viewing: inbox))
+    XCTAssertFalse(state.composerTargetIsAvailable(inbox))
+    XCTAssertFalse(state.availableComposerRecipients.contains { $0.id == inbox.id })
+    XCTAssertEqual(
+      Set(state.availableComposerRecipients.map(\.id)), [broadcast.id, privateConversation.id])
     XCTAssertEqual(state.resolvedComposerTarget(viewing: broadcast)?.id, broadcast.id)
     state.selectConversation(privateConversation.id, expand: false)
     XCTAssertEqual(
       state.resolvedComposerTarget(viewing: privateConversation)?.id, privateConversation.id)
   }
 
-  func testExplicitWriteChoosesItsRecipientWhileOrdinaryNavigationDoesNot() throws {
+  func testExplicitWriteOpensItsConversationWhileOrdinaryNavigationKeepsDrafts() throws {
     let first = try conversation("2")
     let second = try conversation("3", lease: "b")
     let state = OverlayState()
     apply([first, second], to: state)
-    state.chooseComposerTarget(first)
     state.selectConversation(first.id, expand: false)
     state.setConversationDraft("First private draft", for: first.id)
     state.setConversationDraft("Second private draft", for: second.id)
@@ -146,7 +142,6 @@ final class OverlayBusWindowTests: XCTestCase {
     let replacement = try conversation("2", session: "replacement", lease: "b")
     let state = OverlayState()
     apply([old], to: state)
-    state.chooseComposerTarget(old)
     apply([replacement], to: state)
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [old, replacement]))
 
@@ -156,10 +151,11 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertFalse(state.composerTargetIsAvailable(old))
     XCTAssertNil(state.resolvedComposerTarget(viewing: old))
     XCTAssertEqual(state.resolvedComposerTarget(viewing: replacement)?.id, replacement.id)
-    XCTAssertEqual(state.composerTarget(viewing: old)?.id, old.id)
   }
 
-  func testLateHeldReturnKeepsANewerExplicitRecipientAndItsDraft() async throws {
+  /// Linking another agent's draft changes who receives the open draft; a
+  /// held edit that started before the link returns its words without focus.
+  func testLateHeldReturnAfterLinkingAnotherDraftDoesNotTakeFocus() async throws {
     let first = try conversation("2")
     let second = try conversation("3", lease: "b")
     let state = OverlayState()
@@ -169,12 +165,14 @@ final class OverlayBusWindowTests: XCTestCase {
     let completion = Task { @MainActor in
       state.returnHeldComposerText("Returned held words", to: first, revision: revision)
     }
-    state.chooseComposerTarget(second)
+    XCTAssertTrue(state.toggleDraftSync(from: first.id, with: second.id))
     state.setConversationDraft("Newer second draft", for: second.id)
     let mayFocus = await completion.value
 
     XCTAssertFalse(mayFocus)
-    XCTAssertEqual(state.composerTarget?.id, second.id)
+    XCTAssertNotEqual(state.composerTargetRevision, revision, "a link is a recipient change")
+    XCTAssertEqual(state.selectedConversationID, first.id)
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, first.id)
     XCTAssertEqual(state.conversationDraft(for: first.id), "Keep first\n\nReturned held words")
     XCTAssertEqual(state.conversationDraft(for: second.id), "Newer second draft")
   }
@@ -185,10 +183,17 @@ final class OverlayBusWindowTests: XCTestCase {
     let state = OverlayState()
     apply([first, second], to: state)
     let revision = state.prepareHeldComposerEdit(first)
-    state.chooseComposerTarget(second)
-    state.chooseComposerTarget(first)
+    state.selectConversation(second.id, expand: false)
+    state.selectConversation(first.id, expand: false)
     XCTAssertFalse(state.returnHeldComposerText("Returned", to: first, revision: revision))
     XCTAssertEqual(state.conversationDraft(for: first.id), "Returned")
+    // Unlinking is a recipient change as well.
+    XCTAssertTrue(state.toggleDraftSync(from: first.id, with: second.id))
+    let linked = state.prepareHeldComposerEdit(first)
+    state.stopDraftSync(for: first.id)
+    XCTAssertFalse(state.returnHeldComposerText("Later", to: first, revision: linked))
+    let steady = state.prepareHeldComposerEdit(first)
+    XCTAssertTrue(state.returnHeldComposerText("Now", to: first, revision: steady))
   }
 
   func testHeldReturnToRetiredOwnerDoesNotMakeItsReplacementTheRecipient() throws {
@@ -212,7 +217,6 @@ final class OverlayBusWindowTests: XCTestCase {
     let second = try conversation("3", lease: "b")
     let state = OverlayState()
     apply([first, second], to: state)
-    state.chooseComposerTarget(first)
     state.selectConversation(second.id, expand: false)
     state.navigateToConversationMessage(first, messageID: "reply:retained")
     let initial = try XCTUnwrap(state.conversationNavigationRequest)
@@ -272,25 +276,37 @@ final class OverlayBusWindowTests: XCTestCase {
       owner: conversation.owner, messages: messages)
   }
 
-  func testQueueAcceptanceDoesNotBecomeADeliveredOrReadCheck() throws {
+  // The row states the last sent message's delivery under the preview, in the
+  // conversation bubble's own words; the name row carries no receipt glyph
+  // (Maciej, 2026-10-30: "ptaszki są zbędną semantyką. ważniejsze dla mnie
+  // były mini statusy pod podglądem wiadomości").
+
+  func testQueueAcceptanceDoesNotBecomeADeliveredOrReadState() throws {
     var conversation = try conversation("2")
     var message = try outgoing(in: conversation)
-    for accepted in [false, true] {
+    for (accepted, words) in [(false, "Queued"), (true, "Queue accepted")] {
       message.recipients[0].accepted = accepted
       message.recipients[0].queued = true
       conversation = withMessages(conversation, [message])
       let display = try XCTUnwrap(
         roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
-      XCTAssertEqual(display.symbol, "clock")
+      XCTAssertEqual(display.text, String(localized: String.LocalizationValue(words)))
+      XCTAssertFalse(display.isRead)
+      XCTAssertNotEqual(display.text, String(localized: "Delivered"))
+      XCTAssertEqual(
+        roster(conversation).rowStateText(for: row, receiptText: display.text), display.text,
+        "a live reader adds nothing to the receipt words")
     }
   }
 
-  func testCanonicalReceiptGlyphBelongsOnlyToItsFrozenDelivery() throws {
+  func testCanonicalReceiptWordsBelongOnlyToTheirFrozenDelivery() throws {
     var conversation = try conversation("2")
     var message = try outgoing(in: conversation)
-    for (state, symbol) in [
-      (OverlayReceiptState.State.delivered, "checkmark"), (.read, "double-check"),
-      (.skipped, "forward.end"), (.noReceipt, "circle.dotted"),
+    for (state, words, read) in [
+      (OverlayReceiptState.State.delivered, String(localized: "Delivered"), false),
+      (.read, String(localized: "Read"), true),
+      (.skipped, OverlayConversationView.skippedBroadcastText, false),
+      (.noReceipt, OverlayConversationView.noReceiptText, false),
     ] {
       message.receipt = OverlayMessageReceipt(
         messageID: message.id,
@@ -300,9 +316,10 @@ final class OverlayBusWindowTests: XCTestCase {
             wake: nil, deliveredAt: nil, at: nil)
         ])
       conversation = withMessages(conversation, [message])
-      XCTAssertEqual(
-        roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation)?.symbol,
-        symbol)
+      let display = try XCTUnwrap(
+        roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
+      XCTAssertEqual(display.text, words)
+      XCTAssertEqual(display.isRead, read)
     }
     message.receipt = OverlayMessageReceipt(
       messageID: message.id,
@@ -312,9 +329,10 @@ final class OverlayBusWindowTests: XCTestCase {
           wake: nil, deliveredAt: nil, at: nil)
       ])
     conversation = withMessages(conversation, [message])
-    XCTAssertEqual(
-      roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation)?.symbol,
-      "clock")
+    let foreign = try XCTUnwrap(
+      roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
+    XCTAssertEqual(foreign.text, String(localized: "Addressed"))
+    XCTAssertFalse(foreign.isRead, "another delivery's receipt cannot lend its Read")
   }
 
   func testLaterReplyCannotLendItsTimeToAnOutgoingReceipt() throws {
@@ -329,7 +347,8 @@ final class OverlayBusWindowTests: XCTestCase {
       roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
     let sentTime = try XCTUnwrap(MessageTimestamp.date(fromISO8601: sent.emittedAt))
       .formatted(date: .abbreviated, time: .shortened)
-    XCTAssertEqual(display.symbol, "double-check")
+    XCTAssertEqual(display.text, String(localized: "Read"))
+    XCTAssertTrue(display.isRead)
     XCTAssertTrue(display.helpText.contains(sentTime))
     XCTAssertEqual(conversation.messages.last?.id, reply.id)
   }
@@ -345,9 +364,10 @@ final class OverlayBusWindowTests: XCTestCase {
           wake: nil, deliveredAt: nil, at: nil)
       ])
     conversation = withMessages(conversation, [message])
-    XCTAssertEqual(
-      roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation)?.symbol,
-      "double-check")
+    let display = try XCTUnwrap(
+      roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
+    XCTAssertEqual(display.text, String(localized: "Read"))
+    XCTAssertTrue(display.isRead)
   }
 
   func testHeldAndWithdrawnMessagesCannotAdvertiseRead() throws {
@@ -355,12 +375,17 @@ final class OverlayBusWindowTests: XCTestCase {
     var message = try outgoing(in: conversation, acknowledged: true)
     message.holdSecondsRemaining = 5
     conversation = withMessages(conversation, [message])
-    XCTAssertEqual(
-      roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation)?.symbol,
-      "pause.circle")
+    let held = try XCTUnwrap(
+      roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
+    XCTAssertEqual(held.text, String(localized: "Held"))
+    XCTAssertFalse(held.isRead)
     message.withdrawn = true
     conversation = withMessages(conversation, [message])
     XCTAssertNil(roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
+    let readerOnly = roster(conversation).rowStateText(for: row, receiptText: nil)
+    XCTAssertFalse(readerOnly.isEmpty, "without a receipt the line states the reader")
+    XCTAssertNotEqual(readerOnly, String(localized: "Read"))
+    XCTAssertNotEqual(readerOnly, String(localized: "Held"))
   }
 
   func testDisconnectedOpenMicrophoneCanStillBeStoppedButNotStarted() throws {
@@ -483,7 +508,6 @@ final class OverlayBusWindowTests: XCTestCase {
     let state = OverlayState()
     apply([first, second], to: state)
     state.selectConversation(second.id)
-    state.chooseComposerTarget(second)
     state.setConversationDraft("Keep the second recipient's draft", for: second.id)
     let generation = state.captureGeneration
     let firstRow = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
@@ -629,7 +653,7 @@ final class OverlayBusWindowTests: XCTestCase {
     let reply = OverlayConversationMessage(
       id: "reply:window-review", kind: .reply,
       text:
-        "The compact sidebar keeps the controls visible. The text destination stays separate from the conversation you are viewing.",
+        "The compact sidebar keeps the controls visible. The conversation you are viewing is the one you write to.",
       order: 2, emittedAt: "2026-10-29T10:01:00Z", owner: first.owner, recipients: [],
       deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
     first = withMessages(first, [sent, reply])
@@ -663,8 +687,7 @@ final class OverlayBusWindowTests: XCTestCase {
           )
         }))
     state.selectConversation(first.id)
-    state.chooseComposerTarget(second)
-    state.setConversationDraft("A retained draft addressed to Lena", for: first.id)
+    state.setConversationDraft("A retained draft for Tola", for: first.id)
     state.setConversationDraft("Lena's independent draft", for: second.id)
     if rail { state.foldAgentList() }
     let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
@@ -703,8 +726,8 @@ final class OverlayBusWindowTests: XCTestCase {
     attachment.lifetime = .keepAlways
     add(attachment)
     XCTAssertEqual(state.selectedConversationID, first.id)
-    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, second.id)
-    XCTAssertEqual(state.conversationDraft(for: first.id), "A retained draft addressed to Lena")
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, first.id)
+    XCTAssertEqual(state.conversationDraft(for: first.id), "A retained draft for Tola")
     XCTAssertEqual(state.conversationDraft(for: second.id), "Lena's independent draft")
     XCTAssertFalse(state.conversationMicrophoneOpen(first))
     XCTAssertFalse(state.conversationMicrophoneOpen(second))

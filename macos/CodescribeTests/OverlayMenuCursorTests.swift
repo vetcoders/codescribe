@@ -415,7 +415,9 @@ final class OverlayMenuCursorTests: XCTestCase {
     content.addSubview(region)
     BackgroundTestWindow.present(panel)
     content.layoutSubtreeIfNeeded()
-    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    // `run(until:)` is unavailable from an async context; a synchronous helper spins it.
+    func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    settle()
     defer { panel.close() }
     func move(_ point: NSPoint) throws {
       panel.sendEvent(

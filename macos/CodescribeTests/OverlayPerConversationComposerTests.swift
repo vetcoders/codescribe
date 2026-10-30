@@ -59,7 +59,6 @@ final class OverlayPerConversationComposerTests: XCTestCase {
 
     func view(_ conversation: OverlayConversation) {
       state.selectConversation(conversation.id)
-      state.initializeComposerTarget(conversation)
       settle()
     }
 
@@ -189,7 +188,10 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     }
   }
 
-  func testPinningAToBEditsOnlyTheViewedDraftAndKeepsEachOverride() throws {
+  /// The open conversation is always the recipient (Maciej, 2026-10-30 13:58):
+  /// typing in A's view edits only A's draft and A stays A's recipient however
+  /// the Founder navigates.
+  func testEditingTheViewedDraftLeavesOthersAloneAndEachViewIsItsOwnRecipient() throws {
     let f = try Fixture()
     defer { f.cleanup() }
     let attachment = try f.file("only-a")
@@ -199,28 +201,21 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     f.state.setConversationDraft("Broadcast private words", for: f.all.id)
     f.view(f.a)
     let host = f.mainWindow()
-    f.state.chooseComposerTarget(f.b)
-    f.settle()
     XCTAssertTrue(try editor(in: host).string.contains("A private words"))
-    try append(" to B", in: host, fixture: f)
+    try append(" more", in: host, fixture: f)
     XCTAssertEqual(
-      ConversationDraft.split(f.state.conversationDraft(for: f.a.id)).text, "A private words to B")
+      ConversationDraft.split(f.state.conversationDraft(for: f.a.id)).text, "A private words more")
     XCTAssertEqual(
       ConversationDraft.split(f.state.conversationDraft(for: f.a.id)).attachments, [attachment])
     XCTAssertEqual(f.state.conversationDraft(for: f.b.id), "B private words")
-    f.view(f.b)
-    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.b)?.id, f.b.id)
-    f.state.chooseComposerTarget(f.all)
-    f.view(f.all)
-    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.all)?.id, f.all.id)
-    f.view(f.a)
-    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.a)?.id, f.b.id)
-    f.view(f.b)
-    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.b)?.id, f.all.id)
+    for conversation in [f.b, f.all, f.a, f.b] {
+      f.view(conversation)
+      XCTAssertEqual(f.state.resolvedComposerTarget(viewing: conversation)?.id, conversation.id)
+    }
     XCTAssertEqual(f.state.conversationDraft(for: f.all.id), "Broadcast private words")
   }
 
-  func testMainAndCardShareDraftButCardSendIgnoresMainRecipientOverride() async throws {
+  func testMainAndCardShareDraftAndCardSendGoesToItsOwnAgent() async throws {
     let f = try Fixture()
     defer { f.cleanup() }
     let attachment = try f.file("shared-a")
@@ -228,7 +223,6 @@ final class OverlayPerConversationComposerTests: XCTestCase {
       ConversationDraft.compose(text: "Shared A", attachments: [attachment]), for: f.a.id)
     f.state.setConversationDraft("Separate B", for: f.b.id)
     f.view(f.a)
-    f.state.chooseComposerTarget(f.b)
     let main = f.mainWindow()
     let card = try f.card(for: f.a)
     XCTAssertTrue(try editor(in: main).string.contains("Shared A"))
@@ -246,9 +240,9 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     XCTAssertEqual(f.state.conversationDraft(for: f.a.id), shared)
     XCTAssertEqual(f.state.conversationDraft(for: f.b.id), "Separate B stays B")
     f.view(f.a)
-    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.a)?.id, f.b.id)
+    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.a)?.id, f.a.id)
     XCTAssertTrue(try editor(in: main).string.contains("Shared A from main from card"))
-    let published = expectation(description: "card A sends to A despite the main A-to-B pin")
+    let published = expectation(description: "card A sends to A")
     f.state.publishConversationText = { owner, text, _, _ in
       XCTAssertEqual(owner?.id, f.a.id)
       XCTAssertEqual(text, shared)
@@ -265,35 +259,38 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     f.settle()
     XCTAssertEqual(f.state.conversationDraft(for: f.a.id), "")
     XCTAssertEqual(f.state.conversationDraft(for: f.b.id), "Separate B stays B")
-    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.a)?.id, f.b.id)
+    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.a)?.id, f.a.id)
     XCTAssertEqual(try editor(in: main).string, "")
     XCTAssertEqual(try editor(in: card).string, "")
   }
 
-  func testUnavailablePinAndReusedDigitNeverBorrowAnotherConversationsOverride() throws {
+  /// A reused digit is a new owner: the retired conversation has no recipient,
+  /// its successor is its own, and neither inherits a draft or a link.
+  func testReusedDigitNeverBorrowsTheRetiredOwnersRecipientDraftOrLink() throws {
     let f = try Fixture()
     defer { f.cleanup() }
-    f.view(f.a)
-    f.state.chooseComposerTarget(f.b)
-    f.view(f.b)
-    f.state.chooseComposerTarget(f.all)
+    f.state.setConversationDraft("Old B words", for: f.b.id)
+    XCTAssertTrue(f.state.toggleDraftSync(from: f.a.id, with: f.b.id))
     let replacement = try Fixture.agent(f.b.channel, session: "replacement-b")
     f.apply([f.a, replacement, f.all])
     f.view(f.a)
-    XCTAssertNil(f.state.resolvedComposerTarget(viewing: f.a), "The explicit pin stays unavailable")
+    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.a)?.id, f.a.id)
+    XCTAssertNil(
+      f.state.resolvedComposerTarget(viewing: f.b), "the retired owner cannot be sent to")
+    XCTAssertFalse(f.state.hasSynchronizedDraft(f.a.id), "retirement dissolves the link")
     f.view(replacement)
     XCTAssertEqual(f.state.resolvedComposerTarget(viewing: replacement)?.id, replacement.id)
     XCTAssertEqual(f.state.conversationDraft(for: replacement.id), "")
+    XCTAssertFalse(f.state.hasSynchronizedDraft(replacement.id))
+    XCTAssertEqual(f.state.conversationDraft(for: f.b.id), "Old B words")
     f.view(f.all)
     XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.all)?.id, f.all.id)
-    f.view(f.a)
     let roster = DictationOverlayView(state: f.state).channelStatusView
     let write = try XCTUnwrap(roster.agentPillMenuActions(for: f.a.channel)?.write)
     XCTAssertTrue(write.enabled)
     write.perform()
+    XCTAssertEqual(f.state.selectedConversationID, f.a.id)
     XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.a)?.id, f.a.id)
-    f.view(replacement)
-    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: replacement)?.id, replacement.id)
   }
 
   func testHoldReturnAfterNavigationRestoresOriginalDraftWithoutStealingFocus() throws {
@@ -317,7 +314,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     XCTAssertEqual(f.state.conversationDraft(for: f.a.id), "Original A\n\nHeld A\n\nLater A")
   }
 
-  func testWaitingCaptureAttachmentStaysInAWhenItsTextRecipientChanges() throws {
+  func testWaitingCaptureAttachmentStaysInAThroughNavigation() throws {
     let f = try Fixture()
     defer { f.cleanup() }
     let path = try f.file("waiting-capture-a")
@@ -327,7 +324,6 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     f.view(f.a)
     XCTAssertTrue(f.state.stageConversationAttachments([path], in: f.a))
     let host = f.mainWindow()
-    f.state.chooseComposerTarget(f.b)
     f.settle()
     XCTAssertTrue(try editor(in: host).string.contains("A beside its waiting attachment"))
     f.view(f.b)
@@ -339,7 +335,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     XCTAssertEqual(f.state.captureAttachmentDrafts[f.a.id]?.paths, [path])
     XCTAssertNil(f.state.captureAttachmentDrafts[f.a.id]?.target)
     XCTAssertTrue(FileManager.default.fileExists(atPath: path))
-    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.a)?.id, f.b.id)
+    XCTAssertEqual(f.state.resolvedComposerTarget(viewing: f.a)?.id, f.a.id)
   }
 
   private final class MicrophoneFixture: ComposerCaptureControlling, @unchecked Sendable {
@@ -413,7 +409,6 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     f.state.setConversationDraft("Keep B", for: f.b.id)
     f.state.setConversationDraft("Keep zero", for: f.all.id)
     f.view(f.a)
-    f.state.chooseComposerTarget(f.b)
     let entered = expectation(description: "frozen source publication is suspended")
     let gate = PublicationGate()
     defer { gate.release() }
@@ -431,7 +426,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     f.view(f.all)
     gate.release()
     await send.value
-    XCTAssertEqual(owners, [f.b.id])
+    XCTAssertEqual(owners, [f.a.id])
     XCTAssertEqual(f.state.conversationDraft(for: f.a.id), "")
     XCTAssertNil(f.state.conversationReplies[f.a.id])
     XCTAssertEqual(f.state.conversationDraft(for: f.b.id), "Keep B")
@@ -440,7 +435,9 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     XCTAssertTrue(f.state.pendingTextMessages.isEmpty)
   }
 
-  func testRecipientRetirementDuringSuspendedSendPreservesDraftAndRefusesSuccessor() async throws {
+  /// A's own digit is reused while A's send is in flight: the frozen send was
+  /// A's, the successor inherits nothing, and a retired owner cannot send again.
+  func testOwnerRetirementDuringSuspendedSendPreservesDraftAndRefusesSuccessor() async throws {
     let f = try Fixture()
     defer { f.cleanup() }
     let reference = try reply("retired-reply")
@@ -448,8 +445,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     f.state.conversationReplies[f.a.id] = reference
     f.state.setConversationDraft("Private B", for: f.b.id)
     f.view(f.a)
-    f.state.chooseComposerTarget(f.b)
-    let entered = expectation(description: "old recipient owns the in-flight send")
+    let entered = expectation(description: "the retiring owner owns the in-flight send")
     let gate = PublicationGate()
     defer { gate.release() }
     var owners: [String?] = []
@@ -461,8 +457,8 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     }
     let send = Task { await f.state.sendConversationText(f.a) }
     await fulfillment(of: [entered], timeout: 2)
-    let replacement = try Fixture.agent(f.b.channel, session: "retired-during-send")
-    f.apply([f.a, replacement, f.all])
+    let replacement = try Fixture.agent(f.a.channel, session: "retired-during-send")
+    f.apply([replacement, f.b, f.all])
     f.view(replacement)
     f.state.setConversationDraft("Successor private draft", for: replacement.id)
     // Even an ABA edit is a new source generation.
@@ -470,7 +466,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     f.state.setConversationDraft("Frozen A", for: f.a.id)
     gate.release()
     await send.value
-    XCTAssertEqual(owners, [f.b.id])
+    XCTAssertEqual(owners, [f.a.id])
     XCTAssertEqual(f.state.conversationDraft(for: f.a.id), "Frozen A")
     XCTAssertEqual(f.state.conversationReplies[f.a.id], reference)
     XCTAssertEqual(f.state.conversationDraft(for: f.b.id), "Private B")
@@ -479,7 +475,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     XCTAssertEqual(f.state.resolvedComposerTarget(viewing: replacement)?.id, replacement.id)
     XCTAssertTrue(f.state.pendingTextMessages.isEmpty)
     await f.state.sendConversationText(f.a)
-    XCTAssertEqual(owners, [f.b.id], "Unavailable pins never retry onto a reused digit")
+    XCTAssertEqual(owners, [f.a.id], "A retired owner never retries onto its reused digit")
   }
 
   func testSuspendedSendKeepsNewerSourceGenerationAndErrorsOutOfViewedB() async throws {
@@ -489,7 +485,6 @@ final class OverlayPerConversationComposerTests: XCTestCase {
       f.state.setConversationDraft("Original A", for: f.a.id)
       f.state.setConversationDraft("Private B", for: f.b.id)
       f.view(f.a)
-      f.state.chooseComposerTarget(f.b)
       let entered = expectation(description: "suspended publication, refusal=\(refusal)")
       let gate = PublicationGate()
       defer { gate.release() }
@@ -508,7 +503,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
       f.state.setConversationDraft("Original A", for: f.a.id)
       gate.release()
       await send.value
-      XCTAssertEqual(owners, [f.b.id])
+      XCTAssertEqual(owners, [f.a.id])
       XCTAssertEqual(f.state.conversationDraft(for: f.a.id), "Original A")
       XCTAssertEqual(f.state.conversationDraft(for: f.b.id), "Private B")
       XCTAssertEqual(f.state.selectedConversationID, f.b.id)
@@ -542,10 +537,9 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     f.state.conversationReplies[f.b.id] = bReply
     f.state.setConversationDraft("Zero's private text", for: f.all.id)
     f.view(f.a)
-    f.state.chooseComposerTarget(f.b)
     let recipient = try XCTUnwrap(
       f.state.resolvedComposerTarget(viewing: f.a), file: file, line: line)
-    XCTAssertEqual(recipient.id, f.b.id, file: file, line: line)
+    XCTAssertEqual(recipient.id, f.a.id, file: file, line: line)
     XCTAssertFalse(f.state.hasSynchronizedDraft(f.a.id), file: file, line: line)
     let draftRevision = f.state.conversationDraftRevisions[f.a.id]
     let entered = expectation(description: "ordinary send with a frozen reply is suspended")
@@ -562,8 +556,8 @@ final class OverlayPerConversationComposerTests: XCTestCase {
       await gate.wait(entered: entered)
       if refusal { throw CocoaError(.fileWriteNoPermission) }
     }
-    // Match the main window's real send seam, including its explicit recipient.
-    let send = Task { await f.state.sendConversationText(f.a, to: recipient) }
+    // The main window's real send seam: the open conversation, no recipient argument.
+    let send = Task { await f.state.sendConversationText(f.a) }
     await fulfillment(of: [entered], timeout: 2)
     XCTAssertEqual(owners.count, 1, file: file, line: line)
     XCTAssertEqual(f.state.pendingTextMessages, [f.a.id], file: file, line: line)
@@ -597,7 +591,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     XCTAssertEqual(
       owners.count, 1, "Reply edits must not automatically publish again",
       file: file, line: line)
-    XCTAssertEqual(owners, [f.b.owner], file: file, line: line)
+    XCTAssertEqual(owners, [f.a.owner], file: file, line: line)
     XCTAssertEqual(texts, [payload], file: file, line: line)
     XCTAssertEqual(parents, [first], file: file, line: line)
     var shouldClear = false
@@ -620,7 +614,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     f.view(f.a)
     XCTAssertEqual(f.state.textMessageErrors[f.a.id] != nil, refusal, file: file, line: line)
     XCTAssertEqual(
-      f.state.resolvedComposerTarget(viewing: f.a)?.id, f.b.id, file: file, line: line)
+      f.state.resolvedComposerTarget(viewing: f.a)?.id, f.a.id, file: file, line: line)
   }
 
   func testSuspendedSendReplyChangePreservesTextOnSuccess() async throws {
@@ -647,7 +641,10 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     try await assertSuspendedSendReplyGeneration(.unchanged, refusal: true)
   }
 
-  func testSyncKeepsSeparatePublicationsWhenMainAIsPinnedToB() async throws {
+  /// Linked drafts with the same words: each agent receives its own
+  /// publication and is told who else got it (Maciej, 2026-10-30 14:24: further
+  /// recipients are the sync mechanism moved out of "+").
+  func testLinkedIdenticalDraftsPublishToEachOwnerAndCoAddressTheOther() async throws {
     let f = try Fixture()
     defer { f.cleanup() }
     let path = try f.file("shared-publication")
@@ -658,17 +655,19 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     f.state.conversationReplies[f.a.id] = reference
     f.state.conversationReplies[f.b.id] = reference
     f.view(f.a)
-    f.state.chooseComposerTarget(f.b)
     XCTAssertTrue(f.state.toggleDraftSync(from: f.a.id, with: f.b.id))
     var owners: [String?] = []
+    var peersByOwner: [String: [String]] = [:]
     f.state.publishConversationText = { owner, text, reply, peers in
       owners.append(owner?.id)
+      if let owner { peersByOwner[owner.id] = peers.map(\.id) }
       XCTAssertEqual(text, payload)
       XCTAssertEqual(reply, reference)
-      XCTAssertTrue(peers.isEmpty, "The only recipient cannot co-address itself")
     }
     await f.state.sendConversationText(f.a)
-    XCTAssertEqual(owners, [f.b.id, f.b.id], "Each source keeps its own publication")
+    XCTAssertEqual(owners, [f.a.id, f.b.id], "Each linked agent gets its own publication")
+    XCTAssertEqual(peersByOwner[f.a.id], [f.b.id])
+    XCTAssertEqual(peersByOwner[f.b.id], [f.a.id])
     for conversation in [f.a, f.b] {
       XCTAssertEqual(f.state.conversationDraft(for: conversation.id), "")
       XCTAssertNil(f.state.conversationReplies[conversation.id])

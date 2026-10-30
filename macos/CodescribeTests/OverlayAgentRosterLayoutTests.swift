@@ -74,7 +74,9 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       "OverlayChannelStatusView.swift", from: "func channelRow(",
       to: "private func rosterRowLabel(")
     XCTAssertTrue(row.contains("compactAgentActions(for: channel)"))
-    XCTAssertFalse(row.contains("rosterRowState("))
+    // The delivery state is the line under the preview, not a glyph on the
+    // name row (Maciej, 2026-10-30: "ptaszki są zbędną semantyką").
+    XCTAssertTrue(row.contains("rosterRowState("))
     XCTAssertFalse(row.contains("panelFocusAccessory("))
 
     let audio = try sourceSection(
