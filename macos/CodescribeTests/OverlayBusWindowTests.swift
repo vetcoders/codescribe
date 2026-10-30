@@ -51,14 +51,14 @@ final class OverlayBusWindowTests: XCTestCase {
     state.unfoldAgentList()
 
     XCTAssertEqual(state.selectedConversationID, second.id)
-    XCTAssertEqual(state.resolvedComposerTarget(viewing: second)?.id, first.id)
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: second)?.id, second.id)
     XCTAssertEqual(state.conversationDraft(for: first.id), "Private first draft")
     XCTAssertEqual(state.conversationDraft(for: second.id), "Private second draft")
     XCTAssertFalse(state.conversationMicrophoneOpen(first))
     XCTAssertFalse(state.conversationMicrophoneOpen(second))
 
     state.chooseComposerTarget(second)
-    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, second.id)
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, first.id)
     XCTAssertEqual(state.conversationDraft(for: first.id), "Private first draft")
   }
 
@@ -72,8 +72,8 @@ final class OverlayBusWindowTests: XCTestCase {
     apply([replacement], to: state)
     state.selectConversation(replacement.id, expand: false)
 
-    XCTAssertEqual(state.composerTarget?.id, old.id)
-    XCTAssertNil(state.resolvedComposerTarget(viewing: replacement))
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: replacement)?.id, replacement.id)
+    XCTAssertNil(state.resolvedComposerTarget(viewing: old))
     XCTAssertFalse(state.composerTargetIsAvailable(old))
     XCTAssertTrue(state.composerTargetIsAvailable(replacement))
     XCTAssertEqual(state.conversationDraft(for: old.id), "Keep for the original owner")
@@ -98,7 +98,7 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertFalse(state.composerTargetIsAvailable(old))
   }
 
-  func testInboxDoesNotReplaceAnExplicitBroadcastRecipient() throws {
+  func testInboxCannotBorrowAnotherConversationsBroadcastRecipient() throws {
     let privateConversation = try conversation("2")
     let broadcast = OverlayConversation(
       id: "0", channel: "0", name: "All", owner: nil, messages: [])
@@ -109,10 +109,12 @@ final class OverlayBusWindowTests: XCTestCase {
     state.chooseComposerTarget(broadcast)
     state.selectConversation(inbox.id, expand: false)
     state.chooseComposerTarget(inbox)
-    XCTAssertEqual(state.composerTarget?.id, broadcast.id)
-    XCTAssertEqual(state.resolvedComposerTarget(viewing: inbox)?.id, broadcast.id)
+    XCTAssertNil(state.composerTarget)
+    XCTAssertNil(state.resolvedComposerTarget(viewing: inbox))
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: broadcast)?.id, broadcast.id)
     state.selectConversation(privateConversation.id, expand: false)
-    XCTAssertEqual(state.resolvedComposerTarget(viewing: privateConversation)?.id, broadcast.id)
+    XCTAssertEqual(
+      state.resolvedComposerTarget(viewing: privateConversation)?.id, privateConversation.id)
   }
 
   func testExplicitWriteChoosesItsRecipientWhileOrdinaryNavigationDoesNot() throws {
@@ -133,7 +135,7 @@ final class OverlayBusWindowTests: XCTestCase {
 
     roster.selectChannelConversation("2")
     XCTAssertEqual(state.selectedConversationID, first.id)
-    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, second.id)
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, first.id)
     XCTAssertEqual(state.conversationDraft(for: first.id), "First private draft")
     XCTAssertEqual(state.conversationDraft(for: second.id), "Second private draft")
     XCTAssertFalse(state.conversationMicrophoneOpen(second))
@@ -152,8 +154,9 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertFalse(state.availableComposerRecipients.contains { $0.id == old.id })
     XCTAssertTrue(state.availableComposerRecipients.contains { $0.id == replacement.id })
     XCTAssertFalse(state.composerTargetIsAvailable(old))
-    XCTAssertNil(state.resolvedComposerTarget(viewing: replacement))
-    XCTAssertEqual(state.composerTarget?.id, old.id)
+    XCTAssertNil(state.resolvedComposerTarget(viewing: old))
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: replacement)?.id, replacement.id)
+    XCTAssertEqual(state.composerTarget(viewing: old)?.id, old.id)
   }
 
   func testLateHeldReturnKeepsANewerExplicitRecipientAndItsDraft() async throws {
@@ -200,7 +203,8 @@ final class OverlayBusWindowTests: XCTestCase {
       state.returnHeldComposerText("Retained original text", to: old, revision: revision))
     XCTAssertEqual(state.conversationDraft(for: old.id), "Retained original text")
     XCTAssertEqual(state.conversationDraft(for: replacement.id), "")
-    XCTAssertNil(state.resolvedComposerTarget(viewing: replacement))
+    XCTAssertNil(state.resolvedComposerTarget(viewing: old))
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: replacement)?.id, replacement.id)
   }
 
   func testReplyNavigationRetainsMessageAndOwnerAcrossRepeatedRequests() throws {
@@ -660,7 +664,8 @@ final class OverlayBusWindowTests: XCTestCase {
         }))
     state.selectConversation(first.id)
     state.chooseComposerTarget(second)
-    state.setConversationDraft("A retained draft for Lena", for: second.id)
+    state.setConversationDraft("A retained draft addressed to Lena", for: first.id)
+    state.setConversationDraft("Lena's independent draft", for: second.id)
     if rail { state.foldAgentList() }
     let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
     XCTAssertEqual(row.broadcastIdentity?.leaseID, first.owner?.leaseID)
@@ -699,7 +704,8 @@ final class OverlayBusWindowTests: XCTestCase {
     add(attachment)
     XCTAssertEqual(state.selectedConversationID, first.id)
     XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, second.id)
-    XCTAssertEqual(state.conversationDraft(for: second.id), "A retained draft for Lena")
+    XCTAssertEqual(state.conversationDraft(for: first.id), "A retained draft addressed to Lena")
+    XCTAssertEqual(state.conversationDraft(for: second.id), "Lena's independent draft")
     XCTAssertFalse(state.conversationMicrophoneOpen(first))
     XCTAssertFalse(state.conversationMicrophoneOpen(second))
     XCTAssertFalse(panel.isVisible, "review fixtures do not claim the user's desktop")
