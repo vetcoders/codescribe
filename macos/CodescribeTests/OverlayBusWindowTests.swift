@@ -91,11 +91,13 @@ final class OverlayBusWindowTests: XCTestCase {
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     var drawer = CGRect.zero
+    var canvas = CGRect.zero
     let host = NSHostingView(
       rootView: DictationOverlayView(state: state)
         .defaultAppStorage(defaults)
         .environment(\.colorScheme, .dark)
         .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { drawer = $0 }
+        .onPreferenceChange(OverlayConversationFramePreferenceKey.self) { canvas = $0 }
         .transaction { $0.disablesAnimations = true })
     host.sizingOptions = []
     host.frame = NSRect(x: 0, y: 0, width: 1100, height: 680)
@@ -135,15 +137,21 @@ final class OverlayBusWindowTests: XCTestCase {
       settle()
       let scroll = try XCTUnwrap(conversationScroll(host))
       let frame = scroll.convert(scroll.bounds, to: host)
-      print("BUS_PANEL_WIDTH window=\(width) shown=\(shown) chat=\(frame) panel=\(drawer)")
+      print(
+        "BUS_PANEL_WIDTH window=\(width) shown=\(shown) canvas=\(canvas) scroll=\(frame) panel=\(drawer)"
+      )
       if shown && state.agentDrawerDocked {
-        XCTAssertEqual(frame.width + drawer.width, width, accuracy: 1)
-        XCTAssertGreaterThanOrEqual(frame.width, 320)
+        XCTAssertEqual(canvas.width + drawer.width, width, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(canvas.width, 320)
       } else {
         XCTAssertEqual(
-          frame.width, width, accuracy: 1, "no permanent edge or rail takes chat width")
+          canvas.width, width, accuracy: 1, "no permanent edge or rail takes chat width")
         XCTAssertEqual(drawer.width, shown ? width : 0, accuracy: 1)
       }
+      let scroller = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+      XCTAssertGreaterThanOrEqual(frame.width, canvas.width - scroller - 1)
+      XCTAssertLessThanOrEqual(frame.maxX, canvas.maxX + 1)
+      if shown { XCTAssertEqual(drawer.maxY, 680, accuracy: 1) }
       XCTAssertEqual(panel.frame.width, width, accuracy: 1, "panel reveal never widens the host")
       XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
       XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 4))
@@ -1291,6 +1299,14 @@ final class OverlayBusWindowTests: XCTestCase {
 
   func testHorizontalWindowReviewWithCoveringAgentsPanel() throws {
     try renderWindowForReview(dark: true, panelShown: true, scale: 1, width: 380)
+  }
+
+  func testHorizontalWindowReviewWithNarrowConversation() throws {
+    try renderWindowForReview(dark: true, panelShown: false, scale: 1, width: 380)
+  }
+
+  func testHorizontalWindowReviewWithNarrowLargeTextConversation() throws {
+    try renderWindowForReview(dark: true, panelShown: false, scale: 1.5, width: 380)
   }
 
   func testHorizontalWindowReviewAtLargerTextScale() throws {

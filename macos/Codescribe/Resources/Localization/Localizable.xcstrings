@@ -9294,32 +9294,12 @@
         }
       }
     },
-    "Hide conversation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schowaj rozmowę"
-          }
-        }
-      }
-    },
     "Hide full comparison" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ukryj pełne porównanie"
-          }
-        }
-      }
-    },
-    "Hide transcription" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schowaj transkrypcję"
           }
         }
       }
@@ -12098,17 +12078,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nie ma jeszcze wiadomości w tej rozmowie"
-          }
-        }
-      }
-    },
-    "No conversation on this channel" : {
-      "comment" : "Disabled mini-rail channel pill",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Na tym kanale nie ma rozmowy"
           }
         }
       }
@@ -17338,16 +17307,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż listę agentów"
-          }
-        }
-      }
-    },
-    "Show conversation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż rozmowę"
           }
         }
       }

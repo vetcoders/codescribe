@@ -921,7 +921,7 @@ struct DictationOverlayView: View {
     .padding(.top, headerHeight + 8)
     .padding(.horizontal, 8)
     .padding(.bottom, 16)
-    .frame(width: width)
+    .frame(width: width, height: max(0, maximumHeight), alignment: .top)
     // The list lays out at its new width at once and only the column's frame
     // slides over it, anchored to the window edge: a row never re-wraps its
     // title and preview inside a half-way frame (Founder, 2026-10-26).
