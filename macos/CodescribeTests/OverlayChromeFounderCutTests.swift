@@ -487,7 +487,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       }
       state.setPresentationMode(.midi)
       settle(root)
-      XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width, accuracy: 0.5)
+      // The expanded bar hugs its measured content (Monika's bar brief).
+      XCTAssertEqual(panel.frame.width, panel.midiPresentationWidth, accuracy: 0.5)
       state.showAgentMonitor()
       settle(root)
       XCTAssertEqual(state.presentationMode, .expanded)
