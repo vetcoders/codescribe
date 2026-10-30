@@ -2291,7 +2291,8 @@ private struct OverlayIntercomCard: View {
         if expanded {
           // This folds the conversation back into its one-row fiszka. An X
           // here read as the agent pill's X, which archives the agent
-          // (Maciej, 2026-10-23). The fiszka's ⇱ points back into its group.
+          // (Maciej, 2026-10-23). The fiszka's ⇱, mirrored to point up-right
+          // from the top-right corner, points back into its group.
           Button {
             controller.close(identity)
           } label: {
@@ -2299,6 +2300,7 @@ private struct OverlayIntercomCard: View {
               Text("Collapse")
             } icon: {
               Text(verbatim: "⇱").font(.system(size: 14, weight: .semibold))
+                .scaleEffect(x: -1, y: 1)
                 .accessibilityHidden(true)
             }
           }
@@ -3029,6 +3031,7 @@ private struct OverlayIntercomInstanceCard: View {
         } icon: {
           if current {
             Text(verbatim: "⇱").font(.system(size: 14, weight: .semibold))
+              .scaleEffect(x: -1, y: 1)
               .accessibilityHidden(true)
           } else {
             Image(systemName: "xmark")
