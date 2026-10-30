@@ -347,6 +347,19 @@ enum OverlayHeaderDensity: Equatable {
   /// growth (10/7 of 9 pt) and the 1 pt focus outlines.
   static let clipInset: CGFloat = 4
 
+  /// The header's padding above and below its row: 46 pt bars around the
+  /// 26 pt row.
+  static let verticalPadding: CGFloat = 10
+
+  /// The clip's room below the row. The expanded bar's one-row map hangs its
+  /// names into the bar's lower padding (Monika, 2026-10-30), so there the
+  /// clip reaches the bar's bottom edge
+  /// (`OverlayChannelPill.mapOverhang(scale:)` stays within it at text
+  /// scale 1); the other forms keep the plain inset.
+  var bottomClipInset: CGFloat {
+    self == .midi ? Self.verticalPadding : Self.clipInset
+  }
+
   init(_ mode: OverlayPresentationMode) {
     switch mode {
     case .mini: self = .mini
@@ -1082,7 +1095,8 @@ struct DictationOverlayView: View {
     // steps never re-choose a layout candidate (no ViewThatFits; Founder
     // report 2026-10-17 01:44Z). Each form is its own row (Monika's bar
     // brief, 2026-10-30); the window's morph is the only motion.
-    justifiedHeader(density: OverlayHeaderDensity(state.presentationMode))
+    let density = OverlayHeaderDensity(state.presentationMode)
+    return justifiedHeader(density: density)
       // The row is offered the full width first, so the clip below trims the
       // window's width and not the row's own ideal width. `minWidth: 0` pins
       // this frame to the offered width even when the row is wider mid-morph:
@@ -1094,7 +1108,8 @@ struct DictationOverlayView: View {
       // Hover growth of the close dot and the focus outlines live in this
       // inset; the clip then only trims a transient overflow mid-morph.
       .padding(.horizontal, OverlayHeaderDensity.clipInset)
-      .padding(.vertical, OverlayHeaderDensity.clipInset)
+      .padding(.top, OverlayHeaderDensity.clipInset)
+      .padding(.bottom, density.bottomClipInset)
       .clipped()
       // One clock: the window's frame morph is the only animation. A second
       // SwiftUI interpolation of spacing, font and positions is retargeted on
@@ -1102,7 +1117,8 @@ struct DictationOverlayView: View {
       // that overlap their neighbours mid-morph.
       .transaction { $0.animation = nil }
       .padding(.horizontal, 16 - OverlayHeaderDensity.clipInset)
-      .padding(.vertical, 10 - OverlayHeaderDensity.clipInset)
+      .padding(.top, OverlayHeaderDensity.verticalPadding - OverlayHeaderDensity.clipInset)
+      .padding(.bottom, OverlayHeaderDensity.verticalPadding - density.bottomClipInset)
       .coordinateSpace(name: "overlay-header")
       // Keep the explicit drag region above the passive glass background.
       // OverlayResizeHitTests verifies header dragging across its width.

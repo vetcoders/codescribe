@@ -130,7 +130,8 @@ struct OverlayChannelPill: View {
   private var height: CGFloat {
     switch form {
     case .rail: 24 * textScale
-    case .chip: display.nameBelow ? Self.mapRowHeight : OverlayBarGeometry.secondRowHeight
+    case .chip:
+      display.nameBelow ? Self.mapItemHeight * textScale : OverlayBarGeometry.secondRowHeight
     case .counter: Self.headerHeight
     }
   }
@@ -197,8 +198,11 @@ struct OverlayChannelPill: View {
         circledDigit(display.figure)
         if let name = display.name { nameText(name) }
       }
-      // The circle keeps the row's top, so the map's unread layer finds it.
-      .frame(width: display.slotWidth, height: Self.mapRowHeight, alignment: .top)
+      // The circle keeps the item's top, so the map's unread layer finds it;
+      // the map lifts the item so the circle sits on the tools' centre line
+      // and the name hangs below it toward the bar's bottom edge.
+      .frame(
+        width: display.slotWidth, height: Self.mapItemHeight * textScale, alignment: .top)
     } else {
       HStack(spacing: Self.chipGap * textScale) {
         circledDigit(display.figure)
@@ -277,8 +281,10 @@ struct OverlayChannelPill: View {
   /// the yellow dot. The opaque base lets overlapping circles lie on one
   /// another cleanly; the dots overlap the circle and add no width.
   private func circledDigit(_ digit: String) -> some View {
-    let diameter = Self.digitCircle * textScale
-    return figure(digit, size: Self.digitSize)
+    // The map's circles are larger than mini's recipient digits (Monika,
+    // 2026-10-30: "kółka z cyframi powinny być nieco większe").
+    let diameter = (form == .chip ? Self.mapCircle : Self.digitCircle) * textScale
+    return figure(digit, size: form == .chip ? Self.mapDigitSize : Self.digitSize)
       .foregroundStyle(recording ? palette.agentAccent.color : palette.primaryText.color)
       .frame(width: diameter, height: diameter)
       .background {
@@ -357,10 +363,28 @@ struct OverlayChannelPill: View {
 extension OverlayChannelPill {
   /// The header's control diameter: the counter stands as tall as its buttons.
   static let headerHeight: CGFloat = OverlayMicrophoneGlyph.diameter
-  /// The bar's one row: a circle with its name under it fits the header row.
+  /// The bar's one row: the header row the circles centre on.
   static let mapRowHeight: CGFloat = OverlayHeaderDensity.rowHeight
   /// The name tucks under the circle into the name line's own leading.
-  static let nameBelowSpacing: CGFloat = -2
+  static let nameBelowSpacing: CGFloat = -1
+  /// The name's line under the circle, descenders included.
+  static let mapNameLineHeight: CGFloat = 14
+  /// A one-row item: the circle and the name line under it. Taller than the
+  /// header row on purpose: the circle centres on the tools' line and the
+  /// name hangs into the bar's lower padding (Monika, 2026-10-30: "imiona
+  /// bardziej na dnie belki niżej").
+  static let mapItemHeight: CGFloat = mapCircle + nameBelowSpacing + mapNameLineHeight
+  /// How far the map lowers its items so each circle's centre
+  /// meets the header row's centre, where the 22 pt tools and the brand dot
+  /// centre (Monika, 2026-10-30: "bardzo wyśrodkowane w jednej linii").
+  static func mapCircleTop(scale: CGFloat) -> CGFloat {
+    (mapRowHeight - mapCircle * scale) / 2
+  }
+  /// How far a one-row item reaches below the header row: the room the
+  /// header's clip must leave at the bottom.
+  static func mapOverhang(scale: CGFloat) -> CGFloat {
+    max(0, mapCircleTop(scale: scale) + mapItemHeight * scale - mapRowHeight)
+  }
   /// Text scale stops growing the bar's map where its row still holds a
   /// circle and a name; the header row keeps its height at any scale.
   static let headerScaleCeiling: CGFloat = 1.25
@@ -373,8 +397,12 @@ extension OverlayChannelPill {
   /// How far a recipient's circle lies on the previous one in the counter.
   static let counterOverlap: CGFloat = 5
   static let counterGap: CGFloat = 2
+  /// Mini's recipient digits and the stacked counter.
   static let digitCircle: CGFloat = 15
   static let digitSize: CGFloat = 10
+  /// The bar's channel circle and its digit, in both arrangements.
+  static let mapCircle: CGFloat = 19
+  static let mapDigitSize: CGFloat = 12
   static let nameSize: CGFloat = 11
   /// The recipient's ring: heavier than the resting 1 pt hairline.
   static let recipientRingWidth: CGFloat = 1.5

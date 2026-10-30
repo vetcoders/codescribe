@@ -72,6 +72,10 @@ struct OverlayChannelMapView: View {
           }
         }
       }
+      // The circles share the tools' centre line; the names hang below it
+      // toward the bar's bottom edge (Monika, 2026-10-30). The offset moves
+      // the hit areas with the drawing.
+      .offset(y: OverlayChannelPill.mapCircleTop(scale: scale))
       .frame(width: layout.width, height: OverlayChannelPill.mapRowHeight, alignment: .topLeading)
     case .twoRows:
       HStack(spacing: layout.spacing) {

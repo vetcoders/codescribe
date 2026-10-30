@@ -148,9 +148,21 @@ are not drawn as buttons beside each chip.
 The bar uses existing palette roles only: graphite background, neutral grey
 tools, muted violet selection, yellow unread, and the existing brand and
 microphone accents. Mockup colors, including the orange highlights of earlier
-concepts, are not palette values. A row is 26 pt; a second row adds 20 pt plus
-a 4 pt gap. No tall capsule wraps small elements, and text is not shrunk below
-its normal size to make content fit.
+concepts, are not palette values. A row is 26 pt in a 46 pt bar; a second row
+adds 20 pt plus a 4 pt gap. No tall capsule wraps small elements, and text is
+not shrunk below its normal size to make content fit.
+
+The map's channel circle is 19 pt with a 12 pt digit
+(`OverlayChannelPill.mapCircle`, `mapDigitSize`) in both arrangements; mini's
+recipient digits and the stacked counter keep their 15 pt circles. In one row
+the circles share the tools' centre line, the centre of the 22 pt tool circles
+and the brand dot; the names (11 pt) sit below them near the bar's bottom edge,
+in the bar's lower padding, without making the bar taller (Monika,
+2026-10-30: "kółka … nieco większe … wyśrodkowane w jednej linii z pozostałymi
+ikonkami belki a imiona … niżej"). `OverlayChannelPill.mapCircleTop` places
+the circle, `mapItemHeight` (circle, −1 pt, a 14 pt name line) sizes the
+item, and the expanded bar's header clip reaches the bar's bottom edge
+(`OverlayHeaderDensity.bottomClipInset`) so descenders stay visible.
 
 Mini and the expanded bar wear the hover preview's glass through
 `OverlayCanvasSurface(glass: .popover)`; the open window keeps the `.sheet`
