@@ -520,6 +520,133 @@ final class OverlayPerConversationComposerTests: XCTestCase {
     }
   }
 
+  private enum SuspendedSendReplyChange {
+    case replacement
+    case aba
+    case unchanged
+  }
+
+  private func assertSuspendedSendReplyGeneration(
+    _ change: SuspendedSendReplyChange, refusal: Bool,
+    file: StaticString = #filePath, line: UInt = #line
+  ) async throws {
+    let f = try Fixture()
+    defer { f.cleanup() }
+    let payload = "A's unchanged reply text"
+    let first = try reply("suspended-parent-1")
+    let second = try reply("suspended-parent-2")
+    let bReply = try reply("private-b-parent")
+    f.state.setConversationDraft(payload, for: f.a.id)
+    f.state.conversationReplies[f.a.id] = first
+    f.state.setConversationDraft("B's private text", for: f.b.id)
+    f.state.conversationReplies[f.b.id] = bReply
+    f.state.setConversationDraft("Zero's private text", for: f.all.id)
+    f.view(f.a)
+    f.state.chooseComposerTarget(f.b)
+    let recipient = try XCTUnwrap(
+      f.state.resolvedComposerTarget(viewing: f.a), file: file, line: line)
+    XCTAssertEqual(recipient.id, f.b.id, file: file, line: line)
+    XCTAssertFalse(f.state.hasSynchronizedDraft(f.a.id), file: file, line: line)
+    let draftRevision = f.state.conversationDraftRevisions[f.a.id]
+    let entered = expectation(description: "ordinary send with a frozen reply is suspended")
+    let gate = PublicationGate()
+    defer { gate.release() }
+    var owners: [OverlayConversationOwner?] = []
+    var texts: [String] = []
+    var parents: [OverlayUserReplyReference?] = []
+    f.state.publishConversationText = { owner, text, parent, peers in
+      owners.append(owner)
+      texts.append(text)
+      parents.append(parent)
+      XCTAssertTrue(peers.isEmpty, file: file, line: line)
+      await gate.wait(entered: entered)
+      if refusal { throw CocoaError(.fileWriteNoPermission) }
+    }
+    // Match the main window's real send seam, including its explicit recipient.
+    let send = Task { await f.state.sendConversationText(f.a, to: recipient) }
+    await fulfillment(of: [entered], timeout: 2)
+    XCTAssertEqual(owners.count, 1, file: file, line: line)
+    XCTAssertEqual(f.state.pendingTextMessages, [f.a.id], file: file, line: line)
+    XCTAssertTrue(f.state.textMessageErrors.isEmpty, file: file, line: line)
+
+    // Mutate the actual reply-selection property while sendConversationText awaits.
+    // No text edit can mask a missing reply-generation check on completion.
+    var expectedReply = first
+    switch change {
+    case .replacement:
+      f.state.conversationReplies[f.a.id] = second
+      expectedReply = second
+    case .aba:
+      f.state.conversationReplies[f.a.id] = second
+      f.state.conversationReplies[f.a.id] = first
+    case .unchanged:
+      break
+    }
+    XCTAssertEqual(f.state.conversationDraft(for: f.a.id), payload, file: file, line: line)
+    XCTAssertEqual(
+      f.state.conversationDraftRevisions[f.a.id], draftRevision, file: file, line: line)
+    XCTAssertEqual(
+      f.state.conversationReplies[f.a.id], expectedReply, file: file, line: line)
+    f.view(f.b)
+    XCTAssertEqual(f.state.pendingTextMessages, [f.a.id], file: file, line: line)
+    XCTAssertTrue(f.state.textMessageErrors.isEmpty, file: file, line: line)
+
+    gate.release()
+    await send.value
+    await Task.yield()
+    XCTAssertEqual(
+      owners.count, 1, "Reply edits must not automatically publish again",
+      file: file, line: line)
+    XCTAssertEqual(owners, [f.b.owner], file: file, line: line)
+    XCTAssertEqual(texts, [payload], file: file, line: line)
+    XCTAssertEqual(parents, [first], file: file, line: line)
+    var shouldClear = false
+    if case .unchanged = change { shouldClear = !refusal }
+    XCTAssertEqual(
+      f.state.conversationDraft(for: f.a.id), shouldClear ? "" : payload, file: file, line: line)
+    XCTAssertEqual(
+      f.state.conversationReplies[f.a.id], shouldClear ? nil : expectedReply,
+      file: file, line: line)
+    XCTAssertTrue(f.state.pendingTextMessages.isEmpty, file: file, line: line)
+    XCTAssertEqual(f.state.textMessageErrors[f.a.id] != nil, refusal, file: file, line: line)
+    XCTAssertNil(f.state.textMessageErrors[f.b.id], file: file, line: line)
+    XCTAssertNil(f.state.textMessageErrors[f.all.id], file: file, line: line)
+    XCTAssertEqual(f.state.selectedConversationID, f.b.id, file: file, line: line)
+    XCTAssertEqual(
+      f.state.conversationDraft(for: f.b.id), "B's private text", file: file, line: line)
+    XCTAssertEqual(f.state.conversationReplies[f.b.id], bReply, file: file, line: line)
+    XCTAssertEqual(
+      f.state.conversationDraft(for: f.all.id), "Zero's private text", file: file, line: line)
+    f.view(f.a)
+    XCTAssertEqual(f.state.textMessageErrors[f.a.id] != nil, refusal, file: file, line: line)
+    XCTAssertEqual(
+      f.state.resolvedComposerTarget(viewing: f.a)?.id, f.b.id, file: file, line: line)
+  }
+
+  func testSuspendedSendReplyChangePreservesTextOnSuccess() async throws {
+    try await assertSuspendedSendReplyGeneration(.replacement, refusal: false)
+  }
+
+  func testSuspendedSendReplyABAPreservesTextOnSuccess() async throws {
+    try await assertSuspendedSendReplyGeneration(.aba, refusal: false)
+  }
+
+  func testSuspendedSendUnchangedReplyClearsOnSuccess() async throws {
+    try await assertSuspendedSendReplyGeneration(.unchanged, refusal: false)
+  }
+
+  func testSuspendedSendReplyChangeRetainsTextAndSourceErrorOnRefusal() async throws {
+    try await assertSuspendedSendReplyGeneration(.replacement, refusal: true)
+  }
+
+  func testSuspendedSendReplyABARetainsTextAndSourceErrorOnRefusal() async throws {
+    try await assertSuspendedSendReplyGeneration(.aba, refusal: true)
+  }
+
+  func testSuspendedSendUnchangedReplyRetainsTextAndSourceErrorOnRefusal() async throws {
+    try await assertSuspendedSendReplyGeneration(.unchanged, refusal: true)
+  }
+
   func testSyncKeepsSeparatePublicationsWhenMainAIsPinnedToB() async throws {
     let f = try Fixture()
     defer { f.cleanup() }
