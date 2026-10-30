@@ -1,30 +1,27 @@
 import SwiftUI
 
-/// The collapsed overlay's channel map (bus intercom spec §5.1, §13).
+/// The bar's agent map and the vertical layout's counter (Monika's bar brief,
+/// 2026-10-30; bus intercom spec §5.1, §13).
 ///
-/// In compact it is one chip per agent between the session timer and the
-/// actions. Where the strip has no room for the names, the chips drop them
-/// (the selected conversation's chip keeps its own); where even the digits do
-/// not fit, the row collapses into one counter. In mini it is the counter
-/// alone, in the place the "cs" wordmark had.
+/// In the expanded bar the map shows every present agent in channel order:
+/// the circled digit with the name under it in one row, or beside it on the
+/// bar's second row. The bar decides the arrangement for its width
+/// (`OverlayBarGeometry`); the map draws that decision and owns no width of
+/// its own. In the vertical layout the map is the stacked counter beside the
+/// brand, in every form.
 ///
 /// A chip selects that channel's conversation through the roster's own
 /// selection path, exactly as its rail pill does (decision D1). The counter
-/// changes the overlay's form or width through its action. Neither a chip nor
-/// the counter opens a microphone or retargets a capture. Wide strips add
-/// separate microphone, playback and known panel actions beside each name.
+/// brings the Intercom group forward. Neither opens a microphone or
+/// retargets a capture; a chip's secondary click carries the agent's
+/// microphone, playback and panel actions.
 struct OverlayChannelMapView: View {
   enum Placement: Equatable {
-    /// Compact's header: named chips with controls, names, digits or counter.
-    case strip
-    /// Mini's header: the counter only; mini's width follows it.
-    case mini
+    /// The expanded bar's map at the layout the bar chose for its width.
+    case strip(OverlayChannelMapLayout)
+    /// The vertical layout's stacked counter.
+    case counter
   }
-
-  /// The map's distance from the session timer. The map carries it, so a map
-  /// that yields its place costs the strip nothing.
-  static let leadingGap: CGFloat = 8
-  static let chipSpacing: CGFloat = 4
 
   let model: OverlayChannelMapModel
   let placement: Placement
@@ -34,170 +31,88 @@ struct OverlayChannelMapView: View {
   let animates: Bool
   /// A chip's digit; the roster resolves the conversation and its owner.
   let onSelectChannel: (String) -> Void
-  /// The counter's click (spec §13.4): mini switches to compact; a compact
-  /// strip the user narrowed returns to its natural width.
+  /// The counter's click: the vertical layout's Intercom group.
   let onCounter: () -> Void
-  var controls: [String: OverlayChannelMapControls] = [:]
-  var onToggleMicrophone: ((String) -> Void)? = nil
-  var onTogglePlayback: ((String) -> Void)? = nil
-  var onFocusChannel: ((String) -> Void)? = nil
   /// The roster supplies the same menu as the rail and floating intercom.
   var agentPillMenu: ((String) -> OverlayBroadcastPolicyMenu)? = nil
-  /// The vertical layout's mini counter: stacked cards that open the
-  /// Intercom group. The header decides; the map only draws it.
-  var stacked = false
-
-  private enum Actions: Equatable {
-    case all, microphone, none
-  }
 
   var body: some View {
     switch placement {
-    case .mini:
+    case .counter:
       counterPill(scale: OverlayChannelPill.headerScale(textScale))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("overlay-channel-map")
-    case .strip:
-      strip
-    }
-  }
-
-  private var strip: some View {
-    let scale = OverlayChannelPill.headerScale(textScale)
-    let named = model.rowWidth(for: .chips, scale: scale, spacing: Self.chipSpacing)
-    let digits = model.rowWidth(for: .digits, scale: scale, spacing: Self.chipSpacing)
-    let counter = OverlayChannelPill.counterWidth(
-      figure: String(model.count), openDigitCount: model.openDigits.count, scale: scale)
-    let rich = rowWidth(actions: .all, scale: scale)
-    let microphones = rowWidth(actions: .microphone, scale: scale)
-    return OverlayChannelMapSlot(
-      namedWidth: named, digitsWidth: digits, counterWidth: counter, leadingGap: Self.leadingGap,
-      height: OverlayChannelPill.headerHeight, preferredWidths: [rich, microphones]
-    ) {
-      // The slot proposes exactly the width it claimed, so this reads the
-      // same decision the slot took; no state, no feedback loop.
-      GeometryReader { proxy in
-        if proxy.size.width + 0.5 >= rich {
-          chips(.chips, actions: .all, scale: scale)
-        } else if proxy.size.width + 0.5 >= microphones {
-          chips(.chips, actions: .microphone, scale: scale)
-        } else {
-          switch OverlayChannelMapModel.presentation(
-            availableWidth: proxy.size.width, namedWidth: named, digitsWidth: digits,
-            counterWidth: counter)
-          {
-          case .chips: chips(.chips, actions: .none, scale: scale)
-          case .digits: chips(.digits, actions: .none, scale: scale)
-          case .counter: counterPill(scale: scale)
-          case .hidden: Color.clear.accessibilityHidden(true)
-          }
-        }
-      }
-    }
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-channel-map")
-  }
-
-  private func chips(
-    _ presentation: OverlayChannelMapPresentation, actions: Actions, scale: CGFloat
-  ) -> some View {
-    HStack(spacing: Self.chipSpacing) {
-      ForEach(model.chips) { chip in
-        HStack(spacing: OverlayChannelPill.actionGap) {
-          OverlayChannelPill(
-            form: .chip,
-            display: OverlayChannelPill.Display(
-              figure: chip.digit, name: chip.showsName(in: presentation) ? chip.name : nil,
-              disconnected: chip.disconnected, microphoneOpen: chip.microphoneOpen,
-              unread: chip.unread, selected: chip.selected, enabled: chip.selectable,
-              animates: animates),
-            hint: chip.hint(modifier: modifier),
-            accessibilityText: chip.accessibilityLabel(modifier: modifier),
-            accessibilityValue: chip.disconnected ? String(localized: "Disconnected") : "",
-            identifier: "overlay-channel-chip-\(chip.digit)",
-            palette: palette, textScale: scale, showsHint: false
-          ) {
-            onSelectChannel(chip.digit)
-          }
-          if actions != .none, !chip.isBroadcast, let control = controls[chip.digit] {
-            agentActions(chip, control: control, actions: actions, scale: scale)
-          }
-        }
-        .fixedSize()
+    case .strip(let layout):
+      strip(layout, scale: OverlayChannelPill.headerScale(textScale))
         .accessibilityElement(children: .contain)
-        .modifier(
-          agentPillMenu?(chip.digit)
-            ?? OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
-      }
+        .accessibilityIdentifier("overlay-channel-map")
     }
-  }
-
-  /// Full names have priority over every optional control. The same count
-  /// and fixed action frames are used here and by the rendered row.
-  private func rowWidth(actions: Actions, scale: CGFloat) -> CGFloat {
-    let widths = model.chips.map { chip in
-      let named = OverlayChannelPill.chipWidth(
-        name: chip.isBroadcast ? nil : chip.name, scale: scale)
-      guard !chip.isBroadcast, let control = controls[chip.digit] else { return named }
-      var count = onToggleMicrophone == nil ? 0 : 1
-      if actions == .all {
-        if onTogglePlayback != nil, control.muted != nil { count += 1 }
-        if onFocusChannel != nil, control.focusSymbol != nil { count += 1 }
-      }
-      return named + CGFloat(count)
-        * (OverlayChannelPill.actionWidth + OverlayChannelPill.actionGap)
-    }
-    return OverlayChannelMapModel.rowWidth(chipWidths: widths, spacing: Self.chipSpacing)
   }
 
   @ViewBuilder
-  private func agentActions(
-    _ chip: OverlayChannelMapChip, control: OverlayChannelMapControls, actions: Actions,
-    scale: CGFloat
+  private func strip(_ layout: OverlayChannelMapLayout, scale: CGFloat) -> some View {
+    let chips = Array(model.chips.prefix(layout.slots.count).enumerated())
+    switch layout.arrangement {
+    case .oneRow:
+      let origins = layout.origins
+      ZStack(alignment: .topLeading) {
+        // Later circles lie on earlier ones once they overlap; each slot,
+        // not its circle, is the chip's hit area, so every channel stays
+        // clickable.
+        ForEach(chips, id: \.element.id) { index, chip in
+          chipPill(chip, layout: layout, index: index, scale: scale)
+            .offset(x: origins[index])
+        }
+        // The unread dots lie above every circle, so no overlap hides one.
+        ForEach(chips, id: \.element.id) { index, chip in
+          if chip.unread {
+            OverlayChannelPill.unreadDot(palette: palette, scale: scale)
+              .offset(
+                x: origins[index] + (layout.slots[index] + layout.circle) / 2
+                  - OverlayChannelPill.unreadDotDiameter * scale)
+          }
+        }
+      }
+      .frame(width: layout.width, height: OverlayChannelPill.mapRowHeight, alignment: .topLeading)
+    case .twoRows:
+      HStack(spacing: layout.spacing) {
+        ForEach(chips, id: \.element.id) { index, chip in
+          chipPill(chip, layout: layout, index: index, scale: scale)
+        }
+      }
+      .fixedSize()
+    }
+  }
+
+  private func chipPill(
+    _ chip: OverlayChannelMapChip, layout: OverlayChannelMapLayout, index: Int, scale: CGFloat
   ) -> some View {
-    if let onToggleMicrophone {
-      OverlayChannelMapActionButton(
-        symbol: OverlayAgentAudioControls.liveSpeechSymbol,
-        label: chip.name + ": "
-          + (chip.microphoneOpen
-            ? String(localized: "Stop speaking to agent") : String(localized: "Speak to agent")),
-        value: chip.microphoneOpen
-          ? String(localized: "Microphone active")
-          : String(localized: "Microphone off"),
-        identifier: "overlay-channel-map-microphone-\(chip.digit)", palette: palette, scale: scale,
-        enabled: control.microphoneEnabled, active: chip.microphoneOpen,
-        pulses: chip.microphoneOpen && animates
-      ) { onToggleMicrophone(chip.digit) }
+    let oneRow = layout.arrangement == .oneRow
+    let name =
+      chip.isBroadcast
+      ? nil
+      : OverlayChannelPill.truncatedName(
+        chip.name, width: layout.nameWidths[index], scale: scale)
+    return OverlayChannelPill(
+      form: .chip,
+      display: OverlayChannelPill.Display(
+        figure: chip.digit, name: name, nameBelow: oneRow,
+        slotWidth: oneRow ? layout.slots[index] : nil, drawsUnreadDot: !oneRow,
+        disconnected: chip.disconnected, microphoneOpen: chip.microphoneOpen,
+        unread: chip.unread, selected: chip.selected, enabled: chip.selectable,
+        animates: animates),
+      // `4 · Lena2 · Ctrl+4`: the full name tells similar or truncated names apart.
+      hint: chip.hint(modifier: modifier),
+      accessibilityText: chip.accessibilityLabel(modifier: modifier),
+      accessibilityValue: chip.disconnected ? String(localized: "Disconnected") : "",
+      identifier: "overlay-channel-chip-\(chip.digit)",
+      palette: palette, textScale: scale
+    ) {
+      onSelectChannel(chip.digit)
     }
-    if actions == .all {
-      if let onTogglePlayback, let muted = control.muted {
-        OverlayChannelMapActionButton(
-          symbol: muted
-            ? "speaker.slash.fill"
-            : control.speaking ? "speaker.wave.3.fill" : "speaker.wave.2",
-          label: chip.name + ": "
-            + (muted
-              ? String(localized: "Unmute agent replies")
-              : String(localized: "Mute agent replies")),
-          value: control.speaking && !muted
-            ? String(localized: "Speaking")
-            : muted
-              ? String(localized: "Automatic playback muted")
-              : String(localized: "Automatic playback on"),
-          identifier: "overlay-channel-map-playback-\(chip.digit)", palette: palette, scale: scale,
-          enabled: control.playbackEnabled, active: control.speaking && !muted,
-          pulses: control.speaking && !muted && animates
-        ) { onTogglePlayback(chip.digit) }
-      }
-      if let onFocusChannel, let symbol = control.focusSymbol {
-        OverlayChannelMapActionButton(
-          symbol: symbol, label: chip.name + ": " + control.focusLabel,
-          identifier: "overlay-channel-map-focus-\(chip.digit)", palette: palette, scale: scale,
-          enabled: control.focusEnabled, pending: control.focusPending,
-          succeeded: control.focusSucceeded, failed: control.focusFailed
-        ) { onFocusChannel(chip.digit) }
-      }
-    }
+    .modifier(
+      agentPillMenu?(chip.digit)
+        ?? OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
   }
 
   private func counterPill(scale: CGFloat) -> some View {
@@ -205,7 +120,7 @@ struct OverlayChannelMapView: View {
       form: .counter,
       display: OverlayChannelPill.Display(
         figure: String(model.count), microphoneOpen: model.microphoneOpen,
-        openDigits: model.openDigits, stacked: stacked, unread: model.anyUnread,
+        openDigits: model.openDigits, stacked: true, unread: model.anyUnread,
         animates: animates),
       hint: model.counterHint,
       accessibilityText: String(
@@ -217,39 +132,181 @@ struct OverlayChannelMapView: View {
   }
 }
 
-/// Claims the width of what the map shows: a named row with optional actions,
-/// the digit-only row, the counter, or nothing. A flexible frame would keep the
-/// leftover beside a counter; reporting the shown width hands it back to the
-/// waveform. A map that cannot fit even the counter claims no width, so it
-/// never pushes the actions or the fold button out of the strip.
-struct OverlayChannelMapSlot: Layout {
-  let namedWidth: CGFloat
-  let digitsWidth: CGFloat
-  let counterWidth: CGFloat
-  let leadingGap: CGFloat
-  let height: CGFloat
-  var preferredWidths: [CGFloat] = []
+/// Mini's Agents slot (Monika's bar brief, 2026-10-30). At rest the ✦
+/// opens the Agents window as the roster's header button does; hovering it
+/// lists the present agents, `N · Name` in channel order with their unread
+/// dots, and the pointer can move into the list to pick one. While Monika
+/// speaks to agents mini stays mini (her decision, 2026-10-30): the slot
+/// shows the violet circled digits of every channel the microphone feeds,
+/// overlapping when there are several, `0` for all; the hint names them.
+/// The press is the roster's Agents press, which in mini stops that capture.
+struct OverlayMiniAgentsControl: View {
+  let model: OverlayChannelMapModel
+  let modifier: OverlayChannelChordModifier
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+  let animates: Bool
+  /// The Agents surface is on screen.
+  let selected: Bool
+  /// A reply waits in some conversation.
+  let unread: Bool
+  /// The press stops the agent capture (`OverlayState.agentsButtonStopsRecording`).
+  let stops: Bool
+  let onAgents: () -> Void
+  let onSelectChannel: (String) -> Void
 
-  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-    CGSize(width: width(proposed: proposal.width), height: height)
+  /// The slot's width: the ✦ circle, or the recipients' digits when wider.
+  @MainActor
+  static func width(map: OverlayChannelMapModel, textScale: CGFloat) -> CGFloat {
+    guard map.microphoneOpen else { return OverlayMicrophoneGlyph.diameter }
+    return max(
+      OverlayMicrophoneGlyph.diameter,
+      OverlayChannelPill.counterWidth(
+        figure: String(map.count), openDigitCount: map.openDigits.count,
+        scale: OverlayChannelPill.headerScale(textScale)))
   }
 
-  func placeSubviews(
-    in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
-  ) {
-    let content = max(0, bounds.width - leadingGap)
-    for subview in subviews {
-      subview.place(
-        at: CGPoint(x: bounds.minX + leadingGap, y: bounds.minY),
-        proposal: ProposedViewSize(width: content, height: bounds.height))
+  private var actionLabel: String {
+    stops ? String(localized: "Stop recording") : String(localized: "Agents")
+  }
+
+  var body: some View {
+    if model.microphoneOpen {
+      recipients
+    } else {
+      agentsButton
     }
   }
 
-  func width(proposed: CGFloat?) -> CGFloat {
-    let available = proposed.map { max(0, $0 - leadingGap) }
-    let occupied = OverlayChannelMapModel.occupiedWidth(
-      availableWidth: available, namedWidth: namedWidth, digitsWidth: digitsWidth,
-      counterWidth: counterWidth, preferredWidths: preferredWidths)
-    return occupied > 0 ? occupied + leadingGap : 0
+  private var recipients: some View {
+    OverlayChannelPill(
+      form: .counter,
+      display: OverlayChannelPill.Display(
+        figure: String(model.count), microphoneOpen: true, openDigits: model.openDigits,
+        animates: animates),
+      hint: "",
+      accessibilityText: actionLabel,
+      accessibilityValue: model.counterAccessibilityValue,
+      identifier: "overlay-agent-glyph",
+      palette: palette, textScale: OverlayChannelPill.headerScale(textScale),
+      showsHint: false, action: onAgents
+    )
+    .frame(minWidth: OverlayMicrophoneGlyph.diameter)
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: actionLabel + ". " + model.recipientsHint, accent: nil, palette: palette))
+  }
+
+  private var agentsButton: some View {
+    let agents = model.agents
+    let list: AnyView? =
+      agents.isEmpty
+      ? nil
+      : AnyView(
+        OverlayAgentsHoverList(
+          agents: agents, modifier: modifier, palette: palette, onSelect: onSelectChannel))
+    return Button(action: onAgents) {
+      OverlayMicrophoneGlyph(
+        character: OverlayHeaderGlyph.agents,
+        tint: selected
+          ? OverlayHeaderAccent.agents.selectionTint(in: palette) : palette.mutedText.color,
+        plateOpacity: selected ? 0 : 0.12
+      )
+      .contentShape(Circle())
+      .overlay(alignment: .topTrailing) {
+        if unread {
+          Circle()
+            .fill(palette.primaryText.color)
+            .frame(width: 5, height: 5)
+            .offset(x: 2, y: -2)
+            .accessibilityLabel("Unread replies")
+            .accessibilityIdentifier("overlay-unread-replies")
+        }
+      }
+    }
+    .buttonStyle(.plain)
+    .csFocusOutline()
+    .fixedSize()
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: actionLabel, accent: .agents, palette: palette, selected: selected,
+        hintContent: list,
+        hintSize: list == nil ? nil : OverlayAgentsHoverList.size(agents: agents),
+        hintInteractive: list != nil)
+    )
+    .accessibilityLabel(actionLabel)
+    .accessibilityAddTraits(selected ? .isSelected : [])
+    .accessibilityIdentifier("overlay-agent-glyph")
+  }
+}
+
+/// The present agents under mini's ✦: `N · Name` in channel order, the
+/// yellow unread dot beside a waiting reply. A row selects that channel's
+/// conversation through the same path as a map chip.
+struct OverlayAgentsHoverList: View {
+  let agents: [OverlayChannelMapChip]
+  let modifier: OverlayChannelChordModifier
+  let palette: OverlayAppearancePalette
+  let onSelect: (String) -> Void
+
+  static let rowHeight: CGFloat = 24
+  static let horizontalPadding: CGFloat = 10
+  static let verticalPadding: CGFloat = 4
+  static let fontSize: CGFloat = 12
+
+  static func rowTitle(_ chip: OverlayChannelMapChip) -> String {
+    chip.digit + " · " + chip.name
+  }
+
+  @MainActor
+  static func size(agents: [OverlayChannelMapChip]) -> CGSize {
+    let text =
+      agents.map {
+        OverlayChannelPill.textWidth(rowTitle($0), size: fontSize)
+      }.max() ?? 0
+    let width =
+      text + 2 * horizontalPadding + OverlayChannelPill.unreadDotDiameter
+      + OverlayChannelPill.chipGap * 2
+    return CGSize(
+      width: min(260, max(140, ceil(width))),
+      height: 2 * verticalPadding + rowHeight * CGFloat(agents.count))
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ForEach(agents) { chip in
+        Button {
+          onSelect(chip.digit)
+        } label: {
+          HStack(spacing: OverlayChannelPill.chipGap) {
+            Text(verbatim: Self.rowTitle(chip))
+              .font(.system(size: Self.fontSize, weight: .medium))
+              .foregroundStyle(palette.primaryText.color)
+              .lineLimit(1)
+              .truncationMode(.tail)
+            Spacer(minLength: OverlayChannelPill.chipGap * 2)
+            if chip.unread {
+              Circle()
+                .fill(palette.processingStatus.color)
+                .frame(
+                  width: OverlayChannelPill.unreadDotDiameter,
+                  height: OverlayChannelPill.unreadDotDiameter)
+                .accessibilityHidden(true)
+            }
+          }
+          .padding(.horizontal, Self.horizontalPadding)
+          .frame(height: Self.rowHeight)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!chip.selectable)
+        .opacity(chip.selectable ? 1 : 0.45)
+        .modifier(OverlayDisconnectedRowDim(disconnected: chip.disconnected))
+        .accessibilityLabel(Text(verbatim: chip.accessibilityLabel(modifier: modifier)))
+        .accessibilityValue(chip.unread ? String(localized: "Unread replies") : "")
+        .accessibilityIdentifier("overlay-agents-list-\(chip.digit)")
+      }
+    }
+    .padding(.vertical, Self.verticalPadding)
   }
 }

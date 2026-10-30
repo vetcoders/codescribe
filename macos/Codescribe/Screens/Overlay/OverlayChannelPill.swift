@@ -14,11 +14,13 @@ struct OverlayChannelPill: View {
   enum Form: Equatable {
     /// The folded Agents list: status dot and digit.
     case rail
-    /// A channel of the compact map: the circled digit, and the agent's name
-    /// where the strip has room for names (bus intercom spec §13.1).
+    /// A channel of the expanded bar's agent map: the circled digit and the
+    /// agent's name, under the circle in one row or beside it in the second
+    /// row (Monika's bar brief, 2026-10-30).
     case chip
-    /// The collapsed map in compact and in mini: the agent count and `▾`, or
-    /// the circled digits of the channels the microphone feeds.
+    /// The vertical layout's stacked cards, and the circled digits of the
+    /// channels the microphone feeds: the stacked counter while recording
+    /// and mini's Agents slot while Monika speaks to agents.
     case counter
   }
 
@@ -27,16 +29,25 @@ struct OverlayChannelPill: View {
     let figure: String
     /// A numberless mailbox uses a glyph in the folded rail.
     var symbol: String? = nil
-    /// The agent's name on a chip that shows it; a digit-only chip, the rail
-    /// and the counter carry none.
+    /// The agent's name on a chip, already truncated to the chip's room;
+    /// channel 0, the rail and the counter carry none.
     var name: String? = nil
+    /// The chip's name sits under its circle (the bar's one row) instead of
+    /// beside it (the second row).
+    var nameBelow = false
+    /// The chip's slot in the one-row map. Narrower than the circle when the
+    /// circles overlap; the slot, not the circle, is the hit area.
+    var slotWidth: CGFloat? = nil
+    /// False where the map draws the unread dots on its own top layer, above
+    /// overlapping circles.
+    var drawsUnreadDot = true
     /// The rail's status dot.
     var dot: OverlayAgentDotKind? = nil
     /// The follower is gone: the pill dims as the roster's Disconnected row.
     var disconnected = false
     /// The microphone feeds this channel now (chip and counter forms): the
-    /// digit carries the violet open-channel dot and the pill the recording
-    /// tint (bus intercom spec §14).
+    /// channel is a recipient of the current utterance. Its circle wears the
+    /// violet ring and the violet open-channel dot (bus intercom spec §14).
     var microphoneOpen = false
     /// The counter's circled digits while the microphone is open.
     var openDigits: [String] = []
@@ -89,7 +100,7 @@ struct OverlayChannelPill: View {
             )
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-          } else if form != .rail && display.unread {
+          } else if display.unread && form != .rail && form != .chip {
             Circle()
               .fill(palette.processingStatus.color)
               .frame(width: 6 * textScale, height: 6 * textScale)
@@ -97,7 +108,8 @@ struct OverlayChannelPill: View {
               .accessibilityHidden(true)
           }
         }
-        .contentShape(Capsule(style: .continuous))
+        .contentShape(
+          form == .chip ? AnyShape(Rectangle()) : AnyShape(Capsule(style: .continuous)))
     }
     .buttonStyle(.plain)
     .csFocusOutline(cornerRadius: height / 2)
@@ -116,7 +128,11 @@ struct OverlayChannelPill: View {
   }
 
   private var height: CGFloat {
-    form == .rail ? 24 * textScale : Self.headerHeight
+    switch form {
+    case .rail: 24 * textScale
+    case .chip: display.nameBelow ? Self.mapRowHeight : OverlayBarGeometry.secondRowHeight
+    case .counter: Self.headerHeight
+    }
   }
 
   private var resolvedAccessibilityValue: String {
@@ -159,11 +175,48 @@ struct OverlayChannelPill: View {
     if recording {
       return palette.agentAccent.color.opacity(OverlayAgentAudioControls.litGlassOpacity)
     }
-    return display.selected ? palette.agentAccent.color.opacity(0.22) : CSColor.hairline(0.06)
+    return display.selected
+      ? palette.agentAccent.color.opacity(Self.selectedFillOpacity) : CSColor.hairline(0.06)
   }
 
   @ViewBuilder
   private var label: some View {
+    if form == .chip {
+      chipLabel
+    } else {
+      capsuleLabel
+    }
+  }
+
+  /// No capsule around a chip: the bar stays slim and the circle alone
+  /// carries the channel's marks.
+  @ViewBuilder
+  private var chipLabel: some View {
+    if display.nameBelow {
+      VStack(spacing: Self.nameBelowSpacing * textScale) {
+        circledDigit(display.figure)
+        if let name = display.name { nameText(name) }
+      }
+      // The circle keeps the row's top, so the map's unread layer finds it.
+      .frame(width: display.slotWidth, height: Self.mapRowHeight, alignment: .top)
+    } else {
+      HStack(spacing: Self.chipGap * textScale) {
+        circledDigit(display.figure)
+        if let name = display.name { nameText(name) }
+      }
+      .frame(height: OverlayBarGeometry.secondRowHeight)
+    }
+  }
+
+  private func nameText(_ name: String) -> some View {
+    Text(verbatim: name)
+      .font(Self.nameFont(textScale))
+      .foregroundStyle(palette.primaryText.color)
+      .lineLimit(1)
+      .fixedSize()
+  }
+
+  private var capsuleLabel: some View {
     Group {
       switch form {
       case .rail:
@@ -177,26 +230,16 @@ struct OverlayChannelPill: View {
         }
         .padding(.horizontal, 6 * textScale)
         .frame(width: Self.compactButtonWidth(textScale: textScale))
-      case .chip:
-        HStack(spacing: Self.chipGap * textScale) {
-          circledDigit(display.figure)
-          if let name = display.name {
-            Text(verbatim: name)
-              .font(Self.nameFont(textScale))
-              .lineLimit(1)
-              .truncationMode(.tail)
-              .frame(width: Self.nameWidth(name, scale: textScale), alignment: .leading)
-          }
-        }
-        .padding(.horizontal, Self.chipPadding * textScale)
-      case .counter:
+      case .chip, .counter:
         if stackedFace {
           Image(systemName: Self.stackedCardsSymbol)
             .font(.system(size: Self.nameSize * textScale, weight: .semibold))
             .foregroundStyle(palette.agentAccent.color)
             .frame(width: Self.headerHeight, height: Self.headerHeight)
         } else if display.microphoneOpen {
-          HStack(spacing: Self.counterGap * textScale) {
+          // Several recipients overlap like the bar's dense map; the later
+          // circle lies on the earlier one.
+          HStack(spacing: -Self.counterOverlap * textScale) {
             ForEach(display.openDigits, id: \.self) { digit in
               circledDigit(digit)
             }
@@ -227,20 +270,56 @@ struct OverlayChannelPill: View {
       .fixedSize()
   }
 
-  /// A chip's or the recording counter's digit in its circle, with the
-  /// violet dot while the microphone feeds the channel (spec §14: a dot, no
-  /// glyph; the Agents button carries the speaking and broadcast signs). The
-  /// dot overlaps the circle, so it adds no width.
+  /// A chip's or the recording counter's digit in its circle. Three marks
+  /// stay apart (Monika's bar brief, 2026-10-30): a recipient of the
+  /// current utterance wears the violet ring and the violet open-channel
+  /// dot, the viewed conversation the muted violet fill, and unread replies
+  /// the yellow dot. The opaque base lets overlapping circles lie on one
+  /// another cleanly; the dots overlap the circle and add no width.
   private func circledDigit(_ digit: String) -> some View {
-    figure(digit, size: Self.digitSize)
-      .frame(width: Self.digitCircle * textScale, height: Self.digitCircle * textScale)
+    let diameter = Self.digitCircle * textScale
+    return figure(digit, size: Self.digitSize)
+      .foregroundStyle(recording ? palette.agentAccent.color : palette.primaryText.color)
+      .frame(width: diameter, height: diameter)
+      .background {
+        ZStack {
+          Circle().fill(palette.desktopBackground.color)
+          if form == .chip && display.selected {
+            Circle().fill(palette.agentAccent.color.opacity(Self.selectedFillOpacity))
+          }
+        }
+        .accessibilityHidden(true)
+      }
       .overlay {
-        Circle().strokeBorder(tint.opacity(0.5), lineWidth: 1)
+        Circle()
+          .strokeBorder(
+            recording ? palette.agentAccent.color : palette.primaryText.color.opacity(0.5),
+            lineWidth: recording ? Self.recipientRingWidth : 1
+          )
           .accessibilityHidden(true)
       }
       .overlay(alignment: .bottomTrailing) {
         if recording { openChannelDot }
       }
+      .overlay(alignment: .topTrailing) {
+        if form == .chip && display.unread && display.drawsUnreadDot {
+          Self.unreadDot(palette: palette, scale: textScale)
+        }
+      }
+  }
+
+  /// The yellow unread dot on a circle's upper-right rim. A rim in the
+  /// panel colour keeps it legible over a neighbour's circle.
+  static func unreadDot(palette: OverlayAppearancePalette, scale: CGFloat) -> some View {
+    Circle()
+      .fill(palette.processingStatus.color)
+      .overlay {
+        Circle().strokeBorder(palette.desktopBackground.color, lineWidth: openDotRim)
+      }
+      .frame(width: unreadDotDiameter * scale, height: unreadDotDiameter * scale)
+      .offset(x: unreadDotOffset * scale, y: -unreadDotOffset * scale)
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
   }
 
   /// The open channel's dot: the recording violet with a rim in the panel
@@ -272,36 +351,44 @@ struct OverlayChannelPill: View {
 
 // MARK: Header metrics
 
-/// The compact map's widths come from the same values the pill draws with,
-/// so the collapse thresholds are measured, not constants (the approach of
+/// The bar's widths come from the same values the pill draws with, so its
+/// layout thresholds are measured, not constants (the approach of
 /// `OverlayAgentDrawerLayout.railPillWidth`).
 extension OverlayChannelPill {
-  /// The header's control diameter: chips stand as tall as its buttons.
+  /// The header's control diameter: the counter stands as tall as its buttons.
   static let headerHeight: CGFloat = OverlayMicrophoneGlyph.diameter
-  /// Separate mic, speaker and panel actions share the header pill height.
-  static let actionWidth: CGFloat = headerHeight
-  static let actionGap: CGFloat = 2
-  /// Text scale stops growing the strip's pills where a 22 pt pill still
-  /// holds its circled digit; the header row stays 46 pt at any scale.
+  /// The bar's one row: a circle with its name under it fits the header row.
+  static let mapRowHeight: CGFloat = OverlayHeaderDensity.rowHeight
+  /// The name tucks under the circle into the name line's own leading.
+  static let nameBelowSpacing: CGFloat = -2
+  /// Text scale stops growing the bar's map where its row still holds a
+  /// circle and a name; the header row keeps its height at any scale.
   static let headerScaleCeiling: CGFloat = 1.25
-  static let chipPadding: CGFloat = 6
+  /// A circle and the name beside it in the second row.
   static let chipGap: CGFloat = 4
   static let counterPadding: CGFloat = 5
-  /// The recording counter hugs its circled digit; mini, which is as wide as
-  /// its content, narrows with it (`DictationOverlayWindow.miniNaturalWidth`).
+  /// The recording counter hugs its circled digits; mini, which is as wide
+  /// as its content, narrows with it (`DictationOverlayWindow.miniNaturalWidth`).
   static let counterRecordingPadding: CGFloat = 2
+  /// How far a recipient's circle lies on the previous one in the counter.
+  static let counterOverlap: CGFloat = 5
   static let counterGap: CGFloat = 2
   static let digitCircle: CGFloat = 15
   static let digitSize: CGFloat = 10
   static let nameSize: CGFloat = 11
+  /// The recipient's ring: heavier than the resting 1 pt hairline.
+  static let recipientRingWidth: CGFloat = 1.5
+  /// The viewed conversation's muted violet fill.
+  static let selectedFillOpacity: Double = 0.22
   /// The open channel's dot. Its centre sits where the W2 microphone badge's
   /// did (9 pt, 3 pt past the edge), on the circle's bottom-right rim.
   static let openDotDiameter: CGFloat = 7
   static let openDotRim: CGFloat = 1
   /// How far the dot sits past the circle's bottom-right edge.
   static let openDotOffset: CGFloat = 2
-  /// A long agent name truncates instead of collapsing the whole map.
-  static let maxNameWidth: CGFloat = 96
+  /// The unread dot on the circle's upper-right rim.
+  static let unreadDotDiameter: CGFloat = 6
+  static let unreadDotOffset: CGFloat = 1
   static let caret = "\u{25BE}"
   /// Three stacked cards: the Intercom group, as in Codex's first vertical
   /// proposal (Maciej, 2026-10-23: "znaczek tych układnych").
@@ -327,22 +414,30 @@ extension OverlayChannelPill {
     return ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
   }
 
+  /// A name's full width in the map's font.
   @MainActor
   static func nameWidth(_ name: String, scale: CGFloat) -> CGFloat {
-    min(textWidth(name, size: nameSize * scale), maxNameWidth * scale)
+    textWidth(name, size: nameSize * scale)
   }
 
-  /// A chip's width: padding, the circled digit and, when the chip shows
-  /// one, the name. The open-channel dot overlaps the circle and adds none.
+  /// A name cut to the width its slot allows: the full name, else its
+  /// longest prefix with `…`, else its initial, so every slot keeps a mark
+  /// of its own. The hint carries the full name with its digit.
   @MainActor
-  static func chipWidth(name: String?, scale: CGFloat) -> CGFloat {
-    var width = 2 * chipPadding * scale + digitCircle * scale
-    if let name { width += chipGap * scale + nameWidth(name, scale: scale) }
-    return ceil(width)
+  static func truncatedName(_ name: String, width: CGFloat, scale: CGFloat) -> String {
+    guard nameWidth(name, scale: scale) > width + 0.5 else { return name }
+    var prefix = name
+    while prefix.count > 1 {
+      prefix.removeLast()
+      let candidate = prefix + "\u{2026}"
+      if nameWidth(candidate, scale: scale) <= width + 0.5 { return candidate }
+    }
+    return String(name.prefix(1))
   }
 
   /// The counter's width: `4 ▾`, the stacked cards (a header circle; the
-  /// badge overhangs it), or the circled digits of the open channels.
+  /// badge overhangs it), or the overlapping circled digits of the open
+  /// channels.
   @MainActor
   static func counterWidth(
     figure: String, openDigitCount: Int, scale: CGFloat, stacked: Bool = false
@@ -351,8 +446,8 @@ extension OverlayChannelPill {
     guard openDigitCount == 0 else {
       let digits = CGFloat(openDigitCount)
       return ceil(
-        2 * counterRecordingPadding * scale + digits * digitCircle * scale
-          + (digits - 1) * counterGap * scale)
+        2 * counterRecordingPadding * scale + digitCircle * scale
+          + (digits - 1) * (digitCircle - counterOverlap) * scale)
     }
     return ceil(
       2 * counterPadding * scale
@@ -382,61 +477,5 @@ private struct OverlayChannelPillHint: ViewModifier {
     } else {
       content
     }
-  }
-}
-
-/// A sibling of the name button, never a nested hit target. The compact
-/// capsule follows the channel pill's native shell and fixed header metrics.
-struct OverlayChannelMapActionButton: View {
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  let symbol: String
-  let label: String
-  var value = ""
-  let identifier: String
-  let palette: OverlayAppearancePalette
-  let scale: CGFloat
-  var enabled = true
-  var active = false
-  var pulses = false
-  var pending = false
-  var succeeded = false
-  var failed = false
-  let action: () -> Void
-
-  private var tint: Color {
-    if failed { return palette.errorStatus.color }
-    if succeeded { return palette.successStatus.color }
-    return active ? palette.agentAccent.color : palette.primaryText.color
-  }
-
-  var body: some View {
-    Button(action: action) {
-      Group {
-        if pending {
-          ProgressView().controlSize(.mini)
-        } else {
-          Image(systemName: symbol)
-            .font(.system(size: 11 * scale, weight: .semibold))
-            .symbolEffect(.pulse, isActive: pulses && !reduceMotion)
-        }
-      }
-      .foregroundStyle(tint)
-      .frame(width: OverlayChannelPill.actionWidth, height: OverlayChannelPill.headerHeight)
-      .background(
-        Capsule(style: .continuous)
-          .fill(
-            active
-              ? palette.agentAccent.color.opacity(OverlayAgentAudioControls.litGlassOpacity)
-              : CSColor.hairline(0.06))
-      )
-      .contentShape(Capsule(style: .continuous))
-    }
-    .buttonStyle(.plain)
-    .csFocusOutline(cornerRadius: OverlayChannelPill.headerHeight / 2)
-    .disabled(!enabled || pending)
-    .opacity(enabled ? 1 : 0.35)
-    .accessibilityLabel(Text(verbatim: label))
-    .accessibilityValue(Text(verbatim: value))
-    .accessibilityIdentifier(identifier)
   }
 }

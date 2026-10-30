@@ -797,13 +797,15 @@ final class OverlayState {
     }
   }
 
-  /// The header is an upward switch (header-click cut, 2026-10-17): mini opens
-  /// midi, and from there every click alternates midi <-> expanded. The header
-  /// never folds back to mini; the preview control keeps that exit.
+  /// A still click on the bar's empty background switches its two sizes,
+  /// mini <-> the expanded bar, in both directions (Monika, 2026-10-30). The
+  /// window opens only through its own controls (chevron, Agents,
+  /// transcription); a click on the open window's header folds it to the
+  /// expanded bar.
   func advancePresentationFromHeader() {
     switch presentationMode {
     case .mini: setPresentationMode(.midi)
-    case .midi: setPresentationMode(.expanded)
+    case .midi: setPresentationMode(.mini)
     case .expanded: setPresentationMode(.midi)
     }
   }
@@ -1302,20 +1304,22 @@ final class OverlayState {
   private(set) var channelRosterNames: [String: String] = [:]
   @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
   var channelMapEnabled: Bool { channelMapPreference.enabled }
-  /// Compact's chips: the horizontal strip alone carries them in the header.
+  /// The expanded bar's agent map: the horizontal layout alone carries it.
+  /// Classic is the same bar without the map; mini has no map in any layout.
   var channelMapInHeader: Bool {
     channelMapEnabled && channelMapPreference.layout == .horizontal
   }
-  /// Mini is one widget in both layouts and keeps its channel counter; only
-  /// the counter's face and destination differ (Maciej, 2026-10-23: mini "nie
-  /// musi i nie powinna się rozgałęziać inaczej niż jednym przyciskiem").
-  var channelMapInMini: Bool { channelMapEnabled }
-  /// The vertical layout's counter wears stacked cards and leads to the
-  /// Intercom group instead of compact.
+  /// The vertical layout's counter: stacked cards beside the brand in every
+  /// form, leading to the Intercom group.
   var channelMapCounterStacked: Bool { channelMapEnabled && !channelMapInHeader }
+  /// The expanded bar shows its waveform and clock only while audio is
+  /// captured or a dictation take is transcribing; at rest they take no room
+  /// (Monika's bar brief, 2026-10-30).
+  var channelMapBarShowsMeter: Bool { audioCaptureActive || isFinalizingDictation }
 
-  /// The view observes the same presentation preference as Creator. Refitting
-  /// changes chrome only: no channel selection, microphone or document event.
+  /// The view observes the same presentation preference as Creator, and the
+  /// expanded bar's meter coming and going. Refitting changes chrome only: no
+  /// channel selection, microphone or document event.
   func channelMapPreferenceChanged() {
     onChannelMapLayoutChanged?()
   }
@@ -1327,9 +1331,6 @@ final class OverlayState {
   /// The window owner refits mini and compact to the channel map (see
   /// `noteChannelMapLayout`).
   @ObservationIgnored var onChannelMapLayoutChanged: (() -> Void)?
-  /// The window owner returns compact to its natural width, forgetting a
-  /// width the user gave it (see `activateChannelMapCounter`).
-  @ObservationIgnored var onRestoreMidiNaturalWidth: (() -> Void)?
   /// The composition root brings the vertical layout's Intercom group forward
   /// (see `activateChannelMapCounter`).
   @ObservationIgnored var onRevealIntercom: (() -> Void)?
@@ -3475,9 +3476,9 @@ final class OverlayState {
     channelObservationTask = nil
   }
 
-  /// The compact channel map as the window owner sizes it: the projection
-  /// the strip renders, without selection, click targets or unread marks,
-  /// which do not change the width the window reserves.
+  /// The channel map as the window owner sizes the bar and mini's Agents
+  /// slot with it: the projection the header renders, without selection,
+  /// click targets or unread marks, which change no width.
   var channelMapLayoutModel: OverlayChannelMapModel {
     OverlayChannelMapModel(
       channels: visibleChannelRows, hudStates: channelHudStates, selectableDigits: [],
@@ -3485,10 +3486,9 @@ final class OverlayState {
   }
 
   /// Reports a change of the map's agents or names, or of its open digits.
-  /// Mini's counter turns from the agent count into the open digits, so
-  /// mini's width follows the chord; compact's natural width ignores open
-  /// microphones (channel 0's chip included), so the chord never resizes the
-  /// strip and its refit is a no-op.
+  /// Mini's Agents slot turns from the ✦ into the open digits, so mini's
+  /// width follows the chord; the expanded bar's map gains channel 0's chip
+  /// while it broadcasts.
   private func noteChannelMapLayout() {
     let map = channelMapLayoutModel
     let key =
@@ -3499,24 +3499,12 @@ final class OverlayState {
     onChannelMapLayoutChanged?()
   }
 
-  /// The channel counter's click (bus intercom spec §13.4). Mini switches to
-  /// compact, where the chips are clickable, as the form toggle's "Expand to
-  /// compact widget" does. Compact shows the counter when the user narrowed
-  /// it, so there the click returns the strip to its natural width and the
-  /// chips come back. In the vertical layout the chips live in the Intercom
-  /// group, so the same click brings that group forward (Maciej, 2026-10-23:
-  /// "musi zaprowadzić w inne miejsce po prostu"). None selects a
-  /// conversation or touches capture.
+  /// The channel counter's click. Only the vertical layout has a counter:
+  /// its chips live in the Intercom group, so the click brings that group
+  /// forward (Maciej, 2026-10-23: "musi zaprowadzić w inne miejsce po
+  /// prostu"). It selects no conversation and touches no capture.
   func activateChannelMapCounter() {
-    if channelMapCounterStacked {
-      onRevealIntercom?()
-      return
-    }
-    switch presentationMode {
-    case .mini: setPresentationMode(.midi)
-    case .midi: onRestoreMidiNaturalWidth?()
-    case .expanded: break
-    }
+    onRevealIntercom?()
   }
 
   func refreshAgentChannelModifier() {

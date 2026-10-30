@@ -331,8 +331,8 @@ struct OverlayCompactAgentPanelFramePreferenceKey: PreferenceKey {
   }
 }
 
-/// Header density, a pure function of the presentation mode. It drives one
-/// header tree, so the layout never re-chooses a candidate per window frame.
+/// Header density, a pure function of the presentation mode. It picks the
+/// header's form, so the layout never re-chooses a candidate per window frame.
 enum OverlayHeaderDensity: Equatable {
   case mini, midi, expanded
 
@@ -351,7 +351,7 @@ enum OverlayHeaderDensity: Equatable {
     }
   }
 
-  var brandSize: CGFloat { self == .expanded ? 15 : 13 }
+  var brandSize: CGFloat { self == .expanded ? 15 : DictationOverlayWindow.barBrandSize }
   var waveformBars: Int {
     switch self {
     case .mini, .midi: return 24
@@ -360,11 +360,10 @@ enum OverlayHeaderDensity: Equatable {
   }
   var waveformMinWidth: CGFloat {
     switch self {
-    // Mini is as wide as its content (spec §13.4): its centre closes, so the
-    // counter sits as close to the agents button as the trailing controls
-    // sit to one another.
+    // Mini has no waveform (Monika's bar brief, 2026-10-30); the expanded
+    // bar's is fixed and shows only while recording.
     case .mini: return 0
-    case .midi: return 56
+    case .midi: return DictationOverlayWindow.barWaveformWidth
     case .expanded: return 12
     }
   }
@@ -1072,12 +1071,11 @@ struct DictationOverlayView: View {
   // MARK: Header
 
   private var header: some View {
-    // One header tree for every presentation mode. The density is a pure
-    // function of `presentationMode`, so it changes in the same animated
-    // transaction as the mode: the close dot and the recording controls keep
-    // one identity and glide between positions while the AppKit frame steps
-    // never re-choose a layout candidate (no ViewThatFits, no cross-fade of
-    // two trees; Founder report 2026-10-17 01:44Z).
+    // The density is a pure function of `presentationMode`, so the form
+    // changes once, in the same transaction as the mode, and the AppKit frame
+    // steps never re-choose a layout candidate (no ViewThatFits; Founder
+    // report 2026-10-17 01:44Z). Each form is its own row (Monika's bar
+    // brief, 2026-10-30); the window's morph is the only motion.
     justifiedHeader(density: OverlayHeaderDensity(state.presentationMode))
       // The row is offered the full width first, so the clip below trims the
       // window's width and not the row's own ideal width. `minWidth: 0` pins
@@ -1128,6 +1126,11 @@ struct DictationOverlayView: View {
       .onChange(of: state.presentationMode) { _, _ in
         state.setConversationVisible(overlayVisible)
       }
+      // The expanded bar's waveform and clock take room only while recording,
+      // so the window refits the bar when they come and go.
+      .onChange(of: state.channelMapBarShowsMeter) { _, _ in
+        state.channelMapPreferenceChanged()
+      }
   }
 
   private var closeButton: some View {
@@ -1161,7 +1164,9 @@ struct DictationOverlayView: View {
     .accessibilityIdentifier("overlay-brand-close-dot")
   }
 
-  private func recordingControls(compact: Bool, showsMicrophone: Bool = true) -> some View {
+  private func recordingControls(
+    compact: Bool, showsMicrophone: Bool = true, showsPreview: Bool = true
+  ) -> some View {
     var controls = OverlayRecordingControls(
       canFinish: state.recording && !state.transcribing,
       presentationMode: state.presentationMode, compact: compact, palette: palette,
@@ -1170,122 +1175,208 @@ struct DictationOverlayView: View {
       isFinalizing: state.isFinalizingDictation,
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
+    controls.showsPreviewButton = showsPreview
     controls.onShowDictation = state.showTranscription
     controls.onPresentationSelect = state.setPresentationMode
     return controls
   }
 
+  /// One header per form (Monika's bar brief, 2026-10-30): mini, the
+  /// expanded bar and the open window's header. The form is a pure function
+  /// of the presentation mode, so a frame step never re-chooses a layout;
+  /// only the expanded bar reads its width, which decides its rows the way
+  /// the window sized it (`DictationOverlayWindow.midiBarGeometry`).
+  @ViewBuilder
   private func justifiedHeader(density: OverlayHeaderDensity) -> some View {
-    let mini = density == .mini
-    // Mini's row gaps are half the 8 pt between its trailing controls, so the
-    // gap across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
-    // Every use below is mini's: one mini in both layouts.
-    let mapEnabled = state.channelMapInMini
-    let horizontalMap = density == .midi && state.channelMapInHeader && channelMap != nil
-    // The vertical layout's stacked counter is the visible way to the Intercom
-    // group, so it keeps the brand's side in compact and expanded as in mini.
-    let leadingCounter = mini || state.channelMapCounterStacked
-    return HStack(spacing: mini ? (mapEnabled ? DictationOverlayWindow.miniRowSpacing : 6) : 10) {
-      // The shared lockup, with the close button in the brand dot's place.
-      // Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini. Its
-      // brand dot leads, and the channel counter takes the word's place: the
-      // agent count, the agents on hover, the open channel's digit with the
-      // violet open-channel dot (spec §14). This replaces Maciej's 2026-10-20 rule that mini
-      // always reads "cs"; his agents button and its stop meaning stay.
-      HStack(spacing: DictationOverlayWindow.miniBrandGap) {
-        Wordmark(size: density.brandSize, spacing: mini ? 6 : 5, showsWord: !mini || !mapEnabled) {
-          closeButton
-        }
-        .fixedSize()
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(mini ? "" : "overlay-header-leading")
-        // The brand block sits on an inert drag region, so the dot answers
-        // clicks and the word moves the window.
-        .background {
-          OverlayWindowDragRegion(
-            identifier: mini
-              ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
-        }
-        if leadingCounter, let map = channelMap {
-          refreshingChordModifier(map)
-        }
+    switch density {
+    case .mini:
+      miniBar
+    case .midi:
+      GeometryReader { proxy in
+        expandedBar(width: proxy.size.width)
       }
+    case .expanded:
+      windowHeader
+    }
+  }
 
-      // The flexible centre keeps one identity in every density; in mini it
-      // collapses to a spacer so the recording controls stay trailing.
-      chromeWaveform(barCount: density.waveformBars)
-        .frame(
-          minWidth: mini && !mapEnabled ? 4 : density.waveformMinWidth,
-          maxWidth: horizontalMap ? 120 : .infinity
-        )
-        .layoutPriority(-1)
-        .opacity(mini ? 0 : 1)
-        .allowsHitTesting(!mini)
-        .accessibilityHidden(mini)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(mini ? "" : "overlay-header-center")
-        .background {
-          GeometryReader { geometry in
-            Color.clear.preference(
-              key: OverlayHeaderControlFramesPreferenceKey.self,
-              value: OverlayHeaderControlFrames(
-                waveform: geometry.frame(in: .named("overlay-header"))
-              )
-            )
-          }
+  /// Mini, left to right: the brand dot (close), transcription, microphone,
+  /// Agents and the chevron. No waveform, clock or counter; the capsule is as
+  /// wide as its controls (`DictationOverlayWindow.miniNaturalWidth`).
+  private var miniBar: some View {
+    HStack(spacing: DictationOverlayWindow.miniControlSpacing) {
+      brandLockup(density: .mini)
+      transcriptionPreviewButton
+      recordingControls(compact: false, showsPreview: false)
+      miniAgentsSlot
+      recordingControls(compact: false, showsMicrophone: false)
+    }
+    .fixedSize()
+    .frame(height: OverlayHeaderDensity.rowHeight)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("overlay-mini-widget")
+  }
+
+  /// The expanded bar at its inner width: the brand, the waveform and clock
+  /// while recording, the agent map and the tools in one row; or the map on
+  /// a second row when full names do not fit beside the tools. The second
+  /// row adds only its own height.
+  private func expandedBar(width: CGFloat) -> some View {
+    let roster = channelStatusView
+    let model = roster.channelMapModel
+    let showsMap = state.channelMapInHeader && !model.chips.isEmpty
+    let showsMeter = state.channelMapBarShowsMeter
+    let counter =
+      state.channelMapCounterStacked && !model.chips.isEmpty
+      ? OverlayChannelPill.counterWidth(
+        figure: String(model.count), openDigitCount: model.openDigits.count,
+        scale: OverlayChannelPill.headerScale(textScale), stacked: true) : 0
+    let layout = DictationOverlayWindow.midiBarGeometry(
+      chips: showsMap ? model.chips : [], textScale: textScale, showsMeter: showsMeter,
+      leadingCounter: counter
+    ).layout(width: width + DictationOverlayWindow.miniOuterPadding)
+    let twoRows = showsMap && layout.arrangement == .twoRows
+    return VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 0) {
+        brandLockup(density: .midi)
+        if showsMeter {
+          barMeter
+            .padding(.leading, OverlayBarGeometry.groupGap)
+        }
+        if showsMap && !twoRows {
+          channelStrip(roster: roster, model: model, layout: layout)
+            .padding(.leading, OverlayBarGeometry.groupGap)
+        }
+        Spacer(minLength: OverlayBarGeometry.groupGap)
+        barTools(roster: roster)
+      }
+      .frame(height: OverlayHeaderDensity.rowHeight)
+      if twoRows {
+        Rectangle()
+          .fill(palette.border.color)
+          .frame(height: 1 / max(displayScale, 1))
+          .frame(height: OverlayBarGeometry.rowGap)
           .allowsHitTesting(false)
           .accessibilityHidden(true)
-        }
-      if !mini {
-        // The compact strip carries the channel map between the clock and the
-        // actions (bus intercom spec §5.1). The map brings its own leading
-        // gap, so where it yields its place the strip keeps today's spacing.
-        HStack(spacing: 0) {
-          sessionTimer
-            .allowsHitTesting(false)
-          if density == .midi, state.channelMapInHeader, let map = channelMap {
-            refreshingChordModifier(map)
-          }
-        }
-        // Names and their separate actions take useful width before the
-        // audio meter expands. The map itself degrades when the window is
-        // genuinely narrow; global controls retain their fixed width.
-        .layoutPriority(horizontalMap ? 1 : 0)
+        channelStrip(roster: roster, model: model, layout: layout)
+          .frame(height: OverlayBarGeometry.secondRowHeight)
       }
-      if horizontalMap {
-        Spacer(minLength: 0)
-          .layoutPriority(-2)
-      }
+    }
+    .frame(width: width, alignment: .topLeading)
+  }
 
-      HStack(spacing: 8) {
-        if !mini {
-          transcriptionPreviewButton
-          if let error = state.expansionPreferenceError {
-            OverlayMicrophoneGlyph(
-              symbol: "exclamationmark.triangle.fill", tint: palette.primaryText.color
-            )
-            .help(error)
-            .accessibilityLabel(error)
-            .accessibilityIdentifier("overlay-preference-save-error")
-          }
-          channelStatusView
-          OverlayPinButton(state: state, palette: palette)
-        } else {
-          // Maciej, 2026-10-20: mini always carries the agents button beside
-          // the ordinary microphone, whether or not an agent records. Single-agent
-          // capture uses a microphone; only All uses the left-facing megaphone
-          // (Founder, 2026-10-22). While any channel records, a press here is
-          // that capture's stop, never channel 0 or the monitor.
-          channelStatusView
-        }
-        recordingControls(compact: false)
+  /// The open window's header: brand, waveform, clock and tools.
+  private var windowHeader: some View {
+    HStack(spacing: OverlayBarGeometry.groupGap) {
+      brandLockup(density: .expanded)
+      chromeWaveformWithFrame(barCount: OverlayHeaderDensity.expanded.waveformBars)
+        .frame(minWidth: OverlayHeaderDensity.expanded.waveformMinWidth, maxWidth: .infinity)
+        .layoutPriority(-1)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("overlay-header-center")
+      sessionTimer
+        .allowsHitTesting(false)
+      barTools(roster: channelStatusView)
+    }
+    .frame(height: OverlayHeaderDensity.rowHeight)
+  }
+
+  /// The shared lockup, with the close button in the brand dot's place; mini
+  /// keeps the dot alone. The vertical layout's stacked counter follows it
+  /// in every form, the visible way to the Intercom group.
+  private func brandLockup(density: OverlayHeaderDensity) -> some View {
+    let mini = density == .mini
+    return HStack(spacing: DictationOverlayWindow.miniBrandGap) {
+      Wordmark(
+        size: density.brandSize, spacing: DictationOverlayWindow.barBrandSpacing,
+        showsWord: !mini
+      ) {
+        closeButton
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
-      .accessibilityIdentifier(mini ? "" : "overlay-header-trailing")
+      .accessibilityIdentifier(mini ? "" : "overlay-header-leading")
+      // The brand block sits on an inert drag region, so the dot answers
+      // clicks and the word moves the window.
+      .background {
+        OverlayWindowDragRegion(
+          identifier: mini
+            ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
+      }
+      if let counter = channelCounter {
+        refreshingChordModifier(counter)
+      }
     }
-    .frame(height: OverlayHeaderDensity.rowHeight)
-    .accessibilityIdentifier(mini ? "overlay-mini-widget" : "")
+  }
+
+  /// The waveform and the clock: in the expanded bar only while recording.
+  private var barMeter: some View {
+    HStack(spacing: DictationOverlayWindow.barMeterSpacing) {
+      chromeWaveformWithFrame(barCount: OverlayHeaderDensity.midi.waveformBars)
+        .frame(width: OverlayHeaderDensity.midi.waveformMinWidth)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("overlay-header-center")
+      sessionTimer
+        .allowsHitTesting(false)
+    }
+    .fixedSize()
+  }
+
+  private func chromeWaveformWithFrame(barCount: Int) -> some View {
+    chromeWaveform(barCount: barCount)
+      .background {
+        GeometryReader { geometry in
+          Color.clear.preference(
+            key: OverlayHeaderControlFramesPreferenceKey.self,
+            value: OverlayHeaderControlFrames(
+              waveform: geometry.frame(in: .named("overlay-header"))
+            )
+          )
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+      }
+  }
+
+  /// Transcription, Agents, Pin, microphone and chevron.
+  private func barTools(roster: OverlayChannelStatusView) -> some View {
+    HStack(spacing: 8) {
+      transcriptionPreviewButton
+      if let error = state.expansionPreferenceError {
+        OverlayMicrophoneGlyph(
+          symbol: "exclamationmark.triangle.fill", tint: palette.primaryText.color
+        )
+        .help(error)
+        .accessibilityLabel(error)
+        .accessibilityIdentifier("overlay-preference-save-error")
+      }
+      roster
+      OverlayPinButton(state: state, palette: palette)
+      recordingControls(compact: false)
+    }
+    .fixedSize()
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("overlay-header-trailing")
+  }
+
+  /// Mini's Agents slot. The vertical layout keeps the roster's own button,
+  /// since its stacked counter already shows the recipients' digits.
+  @ViewBuilder
+  private var miniAgentsSlot: some View {
+    let roster = channelStatusView
+    if state.channelMapCounterStacked {
+      roster
+    } else {
+      refreshingChordModifier(
+        OverlayMiniAgentsControl(
+          model: roster.channelMapModel, modifier: state.agentChannelModifier,
+          palette: palette, textScale: textScale, animates: overlayVisible,
+          selected: roster.headerSelected,
+          unread: roster.unreadCounts.values.contains { $0 > 0 },
+          stops: roster.agentMicrophoneStops,
+          onAgents: { roster.showMonitor() },
+          onSelectChannel: { roster.selectChannelConversation($0) }))
+    }
   }
 
   private var transcriptionPreviewButton: some View {
@@ -1312,75 +1403,42 @@ struct DictationOverlayView: View {
     .accessibilityIdentifier("overlay-transcription-preview")
   }
 
-  /// The collapsed header's channel map, or nil while no agent is bound and
-  /// channel 0 is closed. Mini shows its counter, compact its chips. A chip
-  /// selects its conversation through the roster, as a rail pill does; the
-  /// counter switches mini to compact, or returns a narrowed compact strip to
-  /// its natural width (spec §13.4). Wide named chips have separate audio and
-  /// panel controls. The vertical layout has no chips: its counter, as stacked
-  /// cards that open the Intercom group, stays in every form, so widening the
-  /// overlay never removes the way to the group.
-  /// Internal so tests can drive the header's same values.
-  var channelMap: OverlayChannelMapView? {
-    let counterOnly = state.presentationMode == .mini || state.channelMapCounterStacked
-    guard counterOnly ? state.channelMapInMini : state.channelMapInHeader else { return nil }
+  /// The vertical layout's stacked counter beside the brand, or nil in the
+  /// other layouts and while no agent is bound and channel 0 is closed. Its
+  /// click brings the Intercom group forward. Internal so tests can drive
+  /// the header's same values.
+  var channelCounter: OverlayChannelMapView? {
+    guard state.channelMapCounterStacked else { return nil }
     let roster = channelStatusView
     let model = roster.channelMapModel
     guard !model.chips.isEmpty else { return nil }
-    var controls: [String: OverlayChannelMapControls] = [:]
-    for channel in roster.channels {
-      let digit = channel.channel
-      let focusState = roster.panelFocusStates[digit]
-      let showsFocus = roster.showsPanelFocusButton(for: channel)
-      controls[digit] = OverlayChannelMapControls(
-        microphoneEnabled: !roster.unavailable && roster.onToggleChannel != nil
-          && !roster.pendingToggleChannels.contains(digit)
-          && OverlayChannelStatusView.toggleDigit(for: digit) != nil
-          && !roster.hasDeadFollower(channel),
-        muted: roster.mutedChannels[digit],
-        playbackEnabled: roster.onTogglePlayback != nil
-          && !roster.pendingMuteChannels.contains(digit),
-        speaking: roster.conversation(for: channel)?.replySpeaking == true,
-        focusSymbol: showsFocus
-          ? roster.panelFocusSymbol(
-            focusState,
-            target: roster.panelFocusTarget(for: channel)
-              ?? (roster.hasCodexCloudThread(channel) ? .codexThread : nil)) : nil,
-        focusLabel: showsFocus ? roster.panelFocusHelp(for: channel, state: focusState) : "",
-        focusEnabled: !roster.panelFocusUnreachable(channel),
-        focusPending: focusState?.isRequesting == true,
-        focusSucceeded: focusState?.isSucceeded == true,
-        focusFailed: focusState?.isFailed == true)
-    }
     return OverlayChannelMapView(
-      model: model, placement: counterOnly ? .mini : .strip,
-      modifier: state.agentChannelModifier, palette: palette,
-      textScale: textScale, animates: overlayVisible,
+      model: model, placement: .counter, modifier: state.agentChannelModifier,
+      palette: palette, textScale: textScale, animates: overlayVisible,
       onSelectChannel: { roster.selectChannelConversation($0) },
-      onCounter: { state.activateChannelMapCounter() },
-      controls: controls,
-      onToggleMicrophone: { digit in
-        guard let channel = roster.channels.first(where: { $0.channel == digit }) else { return }
-        roster.toggle(channel)
-      },
-      onTogglePlayback: { roster.onTogglePlayback?($0) },
-      onFocusChannel: { digit in
-        guard let channel = roster.channels.first(where: { $0.channel == digit }),
-          roster.showsPanelFocusButton(for: channel),
-          !roster.panelFocusUnreachable(channel),
-          roster.panelFocusStates[digit]?.isRequesting != true,
-          let owner = roster.archiveCandidates[digit]
-        else { return }
-        roster.onFocusAgentPanel?(owner)
-      },
-      agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) },
-      stacked: state.channelMapCounterStacked)
+      onCounter: { state.activateChannelMapCounter() })
+  }
+
+  /// The expanded bar's agent map at the layout the bar chose. A chip
+  /// selects its conversation through the roster, as a rail pill does; its
+  /// secondary click carries the agent's actions.
+  private func channelStrip(
+    roster: OverlayChannelStatusView, model: OverlayChannelMapModel,
+    layout: OverlayChannelMapLayout
+  ) -> some View {
+    refreshingChordModifier(
+      OverlayChannelMapView(
+        model: model, placement: .strip(layout), modifier: state.agentChannelModifier,
+        palette: palette, textScale: textScale, animates: overlayVisible,
+        onSelectChannel: { roster.selectChannelConversation($0) },
+        onCounter: { state.activateChannelMapCounter() },
+        agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) }))
   }
 
   /// Hints name the chord with the stored modifier, which no settings event
   /// brings to the overlay: the map re-reads it when it appears or is hovered.
-  private func refreshingChordModifier(_ map: OverlayChannelMapView) -> some View {
-    map
+  private func refreshingChordModifier<Content: View>(_ content: Content) -> some View {
+    content
       .onAppear { state.refreshAgentChannelModifier() }
       .onHover { inside in
         if inside { state.refreshAgentChannelModifier() }
