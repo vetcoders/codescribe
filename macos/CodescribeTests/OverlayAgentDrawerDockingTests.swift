@@ -1512,11 +1512,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "a visual reply control is not a delivery until the envelope carries the source id")
   }
 
-  /// The name row carries identity, descriptor and up to two preview lines;
-  /// unread is a badge on the title line. The delivery state of the last sent
-  /// message is the line under the preview, in the bubble's words, no glyph
-  /// on the name row (Maciej, 2026-10-30: "ptaszki są zbędną semantyką.
-  /// ważniejsze dla mnie były mini statusy pod podglądem wiadomości").
+  /// The name row carries identity, descriptor, the receipt glyph and up to
+  /// two preview lines; unread is a badge on the title line. The delivery
+  /// state of the last sent message is both the glyph after the name and the
+  /// line under the preview, in the bubble's words (Maciej, 2026-10-30 on
+  /// build 2981: "ja bym zostawił te ptaszki, ale one naprawdę muszą dawać
+  /// status").
   func testCompactAgentRowStatesTheDeliveryUnderThePreviewAndKeepsUnreadAsABadge() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let label = try section(
@@ -1530,10 +1531,15 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       visual.contains("OverlayAgentUnreadBadge("), "unread rides the title line as a badge")
     XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
-    XCTAssertFalse(visual.contains("OverlayRosterReceiptMark"), "no receipt glyph on the name row")
-    XCTAssertFalse(visual.contains("OverlayRosterDoubleCheckmark"), "the checkmarks are gone")
+    XCTAssertTrue(
+      visual.contains("OverlayRosterReceiptMark(receipt: receipt"),
+      "the receipt glyph is back on the name row")
     XCTAssertFalse(
-      label.contains("deliveryReceiptDisplay("), "the label no longer resolves the receipt")
+      visual.contains("OverlayRosterDoubleCheckmark"),
+      "the two-state mark is gone; one shape draws one or two checks")
+    XCTAssertTrue(visual.contains("\"overlay-agent-receipt-\\(receipt.symbol)\""))
+    XCTAssertTrue(
+      label.contains("deliveryReceiptDisplay("), "the label resolves the glyph's receipt")
     let row = try section(of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
     XCTAssertTrue(row.contains("deliveryReceiptDisplay("), "the row resolves the receipt words")
     XCTAssertTrue(row.contains("rosterRowState("), "the state line sits under the preview")

@@ -277,9 +277,86 @@ final class OverlayBusWindowTests: XCTestCase {
   }
 
   // The row states the last sent message's delivery under the preview, in the
-  // conversation bubble's own words; the name row carries no receipt glyph
-  // (Maciej, 2026-10-30: "ptaszki są zbędną semantyką. ważniejsze dla mnie
-  // były mini statusy pod podglądem wiadomości").
+  // conversation bubble's own words, and the name row carries the same
+  // receipt as a glyph, one per state (Maciej, 2026-10-30 on build 2981: "ja
+  // bym zostawił te ptaszki, ale one naprawdę muszą dawać status. Teraz jest
+  // tylko (-) i 2 ptaszki").
+
+  func testEveryReceiptStateHasItsOwnGlyphAndDeliveredIsNotRead() throws {
+    var conversation = try conversation("2")
+    func display(_ edit: (inout OverlayConversationMessage) -> Void) throws
+      -> OverlayRosterReceipt
+    {
+      var message = try outgoing(in: conversation)
+      edit(&message)
+      conversation = withMessages(conversation, [message])
+      return try XCTUnwrap(
+        roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
+    }
+    func receipt(_ state: OverlayReceiptState.State) -> OverlayMessageReceipt {
+      OverlayMessageReceipt(
+        messageID: "user:window",
+        deliveries: [
+          .init(
+            deliveryID: "delivery", name: "Tola", channel: "2", state: state, wake: nil,
+            deliveredAt: nil, at: nil)
+        ])
+    }
+    let held = try display { $0.holdSecondsRemaining = 5 }
+    let addressed = try display { _ in }
+    let queued = try display { $0.recipients[0].queued = true }
+    let accepted = try display {
+      $0.recipients[0].queued = true
+      $0.recipients[0].accepted = true
+    }
+    let delivered = try display { $0.receipt = receipt(.delivered) }
+    let read = try display { $0.receipt = receipt(.read) }
+    let acknowledged = try display { $0.recipients[0].acknowledged = true }
+    let skipped = try display { $0.receipt = receipt(.skipped) }
+    let skippedByFollower = try display { $0.recipients[0].broadcastSkipped = true }
+    let noReceipt = try display { $0.receipt = receipt(.noReceipt) }
+
+    XCTAssertEqual(held.symbol, "pause.circle")
+    XCTAssertEqual(held.text, String(localized: "Held"))
+    XCTAssertEqual(addressed.symbol, "clock")
+    XCTAssertEqual(addressed.text, String(localized: "Addressed"))
+    XCTAssertEqual(queued.symbol, "clock")
+    XCTAssertEqual(queued.text, String(localized: "Queued"))
+    XCTAssertEqual(accepted.symbol, "checkmark")
+    XCTAssertEqual(accepted.text, String(localized: "Queue accepted"))
+    XCTAssertEqual(delivered.symbol, "checkmark")
+    XCTAssertEqual(delivered.text, String(localized: "Delivered"))
+    XCTAssertFalse(delivered.isRead)
+    XCTAssertEqual(read.symbol, "double-check")
+    XCTAssertEqual(read.text, String(localized: "Read"))
+    XCTAssertTrue(read.isRead)
+    XCTAssertEqual(acknowledged.symbol, "double-check")
+    XCTAssertTrue(acknowledged.isRead)
+    XCTAssertEqual(skipped.symbol, "forward.end")
+    XCTAssertEqual(skipped.text, OverlayConversationView.skippedBroadcastText)
+    XCTAssertEqual(skippedByFollower.symbol, "forward.end")
+    XCTAssertEqual(noReceipt.symbol, "circle.dotted")
+    XCTAssertEqual(noReceipt.text, OverlayConversationView.noReceiptText)
+    // The bug Maciej saw on 2981: delivered drew the double check. Six states,
+    // six glyphs; only Read is the double shape.
+    XCTAssertNotEqual(delivered.symbol, read.symbol, "one check reached, two checks read")
+    let vocabulary = [held, queued, delivered, read, skipped, noReceipt].map(\.symbol)
+    XCTAssertEqual(Set(vocabulary).count, 6, "one glyph per state: \(vocabulary)")
+    XCTAssertEqual(
+      [held, addressed, queued, accepted, delivered, skipped, skippedByFollower, noReceipt]
+        .filter(\.isRead).count, 0, "only Read is read")
+    let label = try String(
+      contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/Screens/Overlay/OverlayAgentRosterLabel.swift"),
+      encoding: .utf8
+    ).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    XCTAssertTrue(label.contains("case \"double-check\": OverlayRosterCheckmarks(count: 2)"))
+    XCTAssertTrue(label.contains("case \"checkmark\": OverlayRosterCheckmarks(count: 1)"))
+    XCTAssertTrue(label.contains("default: Image(systemName: receipt.symbol)"))
+    XCTAssertTrue(
+      label.contains(".accessibilityIdentifier(\"overlay-agent-receipt-\\(receipt.symbol)\")"))
+  }
 
   func testQueueAcceptanceDoesNotBecomeADeliveredOrReadState() throws {
     var conversation = try conversation("2")

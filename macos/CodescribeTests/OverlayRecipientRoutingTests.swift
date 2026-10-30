@@ -335,25 +335,104 @@ final class OverlayRecipientRoutingTests: XCTestCase {
       "the chain alone still earns the marks")
   }
 
-  // MARK: The window mounts the bar only on sources
+  // MARK: Recipients live in the chevron beside Send, on sources only
 
-  func testTheRoutingBarIsMountedOnlyForDraftSyncSources() throws {
+  private func overlaySource(_ file: String) throws -> String {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent()
-    let source = try String(
-      contentsOf: root.appendingPathComponent(
-        "Codescribe/Screens/Overlay/DictationOverlayView.swift"),
+    return try String(
+      contentsOf: root.appendingPathComponent("Codescribe/Screens/Overlay/\(file)"),
+      encoding: .utf8
+    ).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+  }
+
+  /// The bar above the composer is gone (Maciej, 2026-10-30 on build 2981:
+  /// "ta druga tafla ponad komposerem to jest taka wiocha. Nie możemy tego
+  /// zrobić jako dziubek w przycisku wysyłki?"): the inbox and 0 · All pick
+  /// their set from a chevron beside Send, the "+" stays the plain attach
+  /// button, an agent's conversation gets neither.
+  func testRecipientsAreAChevronBesideSendOnSourcesAndTheBarIsGone() throws {
+    let window = try overlaySource("DictationOverlayView.swift")
+    XCTAssertFalse(window.contains("composerRouting"), "no bar above the composer")
+    XCTAssertFalse(window.contains("\"overlay-composer-routing\""))
+    XCTAssertFalse(window.contains("\"overlay-composer-recipient\""))
+    XCTAssertFalse(window.contains("Voice channels"))
+    XCTAssertFalse(window.contains("chooseComposerTarget"), "no recipient override remains")
+    XCTAssertTrue(
+      window.contains(
+        "draftSyncChoices: conversation.isDraftSyncSource ? state.draftSyncChoices(for: conversation) : []"
+      ), "only a source offers choices to the composer")
+    XCTAssertTrue(
+      window.contains(
+        "onToggleDraftSync: conversation.isDraftSyncSource ? { state.toggleDraftSync(from: conversation.id, with: $0) } : nil"
+      ))
+    XCTAssertTrue(
+      window.contains(
+        "onStopDraftSync: conversation.isDraftSyncSource ? { state.stopDraftSync(for: conversation.id) } : nil"
+      ))
+
+    let view = try overlaySource("OverlayConversationView.swift")
+    XCTAssertFalse(view.contains("composerRouting"))
+    XCTAssertTrue(view.contains("recipientsOnSend: conversation.isDraftSyncSource"))
+    // The sticky set is named in the placeholder, since the chevron does not show it.
+    XCTAssertTrue(view.contains("let names = draftSyncNames.filter { $0 != conversation.name }"))
+    XCTAssertTrue(
+      view.contains(
+        "if conversation.isHumanInbox { return names.isEmpty ? String(localized: \"Choose recipients\") : String(localized: \"To:\") + \" \" + names.joined(separator: \", \") }"
+      ))
+    XCTAssertTrue(
+      view.contains(
+        "return names.isEmpty ? String(localized: \"Send to everyone\") : String(localized: \"Only to: \\(names.joined(separator: \", \"))\")"
+      ))
+    XCTAssertTrue(view.contains("return String(localized: \"Message the Agent\")"))
+    let catalog = try String(
+      contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/Resources/Localization/Localizable.xcstrings"),
       encoding: .utf8)
-    XCTAssertTrue(source.contains("composerRouting: conversation.isDraftSyncSource"))
-    XCTAssertTrue(source.contains("\"overlay-composer-routing\""))
-    XCTAssertTrue(source.contains("\"overlay-composer-recipient\""))
-    XCTAssertFalse(source.contains("Voice channels"), "the voice-channels line left the bar")
-    XCTAssertFalse(source.contains("chooseComposerTarget"), "no recipient override remains")
-    let composer = try String(
-      contentsOf: root.appendingPathComponent(
-        "Codescribe/Screens/Overlay/OverlayConversationComposer.swift"),
-      encoding: .utf8)
+    XCTAssertTrue(catalog.contains("\"Only to: %@\""), "the new placeholder is in the catalog")
+    XCTAssertTrue(catalog.contains("\"Tylko do: %@\""), "with its Polish")
+
+    let composer = try overlaySource("OverlayConversationComposer.swift")
+    XCTAssertTrue(composer.contains("var recipientsOnSend = false"))
+    XCTAssertTrue(
+      composer.contains(
+        "private var offersDraftSyncHere: Bool { !recipientsOnSend && (onToggleDraftSync != nil || onActivateDraftSync != nil) }"
+      ), "with the chevron, the \"+\" is a plain attach button")
+    XCTAssertTrue(
+      composer.contains(
+        "private var showsRecipientMenu: Bool { recipientsOnSend && onToggleDraftSync != nil && !draftSyncChoices.isEmpty }"
+      ))
+    XCTAssertTrue(composer.contains("if showsRecipientMenu { recipientMenu(corners) }"))
+    XCTAssertTrue(composer.contains("\"overlay-conversation-recipients\""))
+    XCTAssertTrue(
+      composer.contains(
+        "if draftSyncActive, let onStopDraftSync { Divider() Button(\"Send to everyone\", action: onStopDraftSync) }"
+      ), "a chosen set can be dropped from the same menu")
     XCTAssertTrue(composer.contains("\"overlay-conversation-plus\""))
     XCTAssertTrue(composer.contains("\"overlay-conversation-attach\""))
+  }
+
+  /// The chevron is a narrower action beside Send; the trailing exclusion of
+  /// the text grows by its width plus one spacing when it shows, and by
+  /// nothing otherwise. The layout type is private to the composer, so the
+  /// arithmetic is pinned at the source.
+  func testTheRecipientChevronWidensTheTrailingCornerByItsWidthAndOneSpacing() throws {
+    let composer = try overlaySource("OverlayConversationComposer.swift")
+    XCTAssertTrue(composer.contains("let recipientShare: CGFloat = showsRecipientMenu ? 0.6 : 0"))
+    XCTAssertTrue(
+      composer.contains(
+        "recipientWidth = showsRecipientMenu ? ceil(actionWidth * recipientShare) : 0"))
+    XCTAssertTrue(
+      composer.contains(
+        "trailingWidth = trailingActions * actionWidth + recipientWidth "
+          + "+ (trailingActions - 1 + (showsRecipientMenu ? 1 : 0)) * spacing"))
+    XCTAssertTrue(
+      composer.contains(
+        "x: viewport.width - trailingWidth - clearance - textOrigin.x, y: y, width: trailingWidth + clearance"
+      ), "the trailing exclusion is the trailing width")
+    XCTAssertTrue(
+      composer.contains(".frame(width: corners.recipientWidth, height: corners.actionHeight)"),
+      "the chevron is drawn at the width the layout reserved")
   }
 }
