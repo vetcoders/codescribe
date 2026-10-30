@@ -59,11 +59,18 @@ map, and it is exactly as wide as its controls
 (`DictationOverlayWindow.miniNaturalWidth`), with no space reserved for hidden
 items.
 
-Pointing at ✦ opens an interactive list of the agents on the bus, `N · Name`
-in channel order with the yellow unread dot, in the shared `OverlayHintPanel`
-(interactive mode, so the pointer can move into it). Clicking a row selects
-that agent's conversation through the same path as a map chip. Clicking ✦
-itself opens the Agents window.
+Pointing at ✦ opens an interactive list of the agents on the bus
+(`OverlayAgentsHoverList`), in the shared `OverlayHintPanel` (interactive mode,
+so the pointer can move into it). Each row shows `N · Name` in channel order
+first, then the channel's status, small and secondary: the roster's status dot
+(`statusDotKind(for:)`), its reception marks (`OverlayReceptionMarks`: the
+channel-0 antenna and the do-not-disturb moon, each its own switch) and the
+yellow unread dot. Clicking a row selects that agent's conversation through
+the same path as a map chip; a secondary click opens the agent's menu
+(`agentPillMenu(for:)`, the same menu and guards as a map chip). Clicking ✦
+itself opens the Agents window. Monika, 2026-10-30: per-agent icons stay off
+the bar itself, their functions stay one step away in this list and in the
+agent's menu, and number and name stay the priority.
 
 Mini stays mini while Monika speaks to agents (decision 2026-10-30). The
 microphone becomes Stop, and the ✦ slot shows the violet circled digit of every
@@ -123,8 +130,11 @@ Each circle can carry three marks, and they never stand in for each other:
 | Violet ring and violet dot | the channel hears the current utterance; several channels can at once  | `channelHudStates[digit].open`, the co-audience cohort       |
 | Muted violet fill          | the conversation being viewed                                          | the selected conversation                                    |
 
-The bar adds no text such as "Speaking to Lena and As": the marks on the map
-name the audience. The violet dot pulses only while the pill animates and
+On the bar itself a circle carries only these three marks. Reception
+(channel 0, do not disturb) and the agent's status are in mini's agent list
+and in the circle's secondary-click menu, the roster's `agentPillMenu(for:)`
+(Monika, 2026-10-30). The bar adds no text such as "Speaking to Lena and As":
+the marks on the map name the audience. The violet dot pulses only while the pill animates and
 Reduce Motion is off.
 
 Clicking a circle selects its conversation (`selectChannelConversation`, the

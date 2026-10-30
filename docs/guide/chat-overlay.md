@@ -28,8 +28,12 @@ window changes that pin.
 Mini shows, from the left, the brand dot, transcription (✍︎), the
 microphone, Agents (✦) and the chevron, and is exactly as wide as those
 controls. Point at ✦ to see the agents on the bus, `N · Name` in channel
-order, with a yellow dot beside unread replies; move the pointer into the list
-and click an agent to open its conversation. Click ✦ itself to open the
+order, each followed by its status dot, its channel-0 antenna and
+do-not-disturb moon (click them to switch) and a yellow dot beside unread
+replies; move the pointer into the list and click an agent to open its
+conversation, or right-click it for the agent's menu, the same as on a circle
+in the expanded bar. The bar itself keeps only numbers, names and their marks
+(Monika's decision of 2026-10-30). Click ✦ itself to open the
 **Agents** window. While you speak to agents, mini stays mini: the microphone
 becomes Stop, and the ✦ slot shows the violet channel number of each agent
 who hears you (overlapping circles for several, `0` for everyone); point at it
@@ -291,8 +295,9 @@ The marks keep their meanings apart:
 Clicking a circle opens that agent's conversation, as its pill in the folded
 **Agents** list does. It never opens or closes the microphone or changes where
 a recording goes; use the channel chord or a microphone control to speak. A
-secondary click on a circle offers the agent's microphone, playback and panel
-actions.
+secondary click on a circle opens the agent's menu: channel 0 membership, do
+not disturb, speak, playback, show in **Agents**, the agent's terminal or
+panel, and archive.
 
 When the full names do not fit beside the tools, the bar takes a second row:
 the brand, waveform, clock and tools on top, the map below with each number

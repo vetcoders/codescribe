@@ -1365,15 +1365,16 @@ struct OverlayChannelStatusView: View {
   }
 
   private var agentsButton: some View {
-    // Mini lists the present agents under the ✦; the pointer can move into
-    // the list and pick one through the map's selection path.
-    let agents = miniAgentsButton == nil ? [] : channelMapModel.agents
+    // Mini lists the present agents under the ✦ with each channel's status;
+    // the pointer can move into the list, pick one through the map's
+    // selection path, or open the agent's menu with a secondary click.
+    let rows = miniAgentsButton == nil ? [] : agentsHoverRows
     let list: AnyView? = miniAgentsButton.flatMap { mini in
-      agents.isEmpty
+      rows.isEmpty
         ? nil
         : AnyView(
           OverlayAgentsHoverList(
-            agents: agents, modifier: mini.chordModifier, palette: palette,
+            rows: rows, modifier: mini.chordModifier, palette: palette,
             onSelect: { selectChannelConversation($0) }))
     }
     return Button(action: showMonitor) {
@@ -1397,13 +1398,26 @@ struct OverlayChannelStatusView: View {
       OverlayHeaderControlChrome(
         title: headerTitle, accent: .agents, palette: palette,
         selected: headerSelected, hintContent: list,
-        hintSize: list == nil ? nil : OverlayAgentsHoverList.size(agents: agents),
+        hintSize: list == nil ? nil : OverlayAgentsHoverList.size(rows: rows),
         hintInteractive: list != nil)
     )
     .accessibilityLabel(agentsActionLabel)
     .accessibilityAddTraits(headerSelected ? .isSelected : [])
     .accessibilityValue(agentCaptureOpen ? OverlayRecordingLight.agent.name : glyph.label)
     .accessibilityIdentifier("overlay-agent-glyph")
+  }
+
+  /// The hover list's rows: the map's agents with the roster's own status
+  /// dot, reception row and agent menu for each channel.
+  private var agentsHoverRows: [OverlayAgentsHoverList.Row] {
+    channelMapModel.agents.map { chip in
+      let channel = channels.first { $0.channel == chip.digit }
+      return OverlayAgentsHoverList.Row(
+        chip: chip, channel: channel,
+        dot: channel.map { statusDotKind(for: $0) } ?? .idle,
+        statusHelp: channel.map { statusHelp(for: $0) } ?? "",
+        menu: agentPillMenu(for: chip.digit, showsInlineError: false))
+    }
   }
 
   /// Mini while Monika speaks to agents: mini stays mini (her decision,

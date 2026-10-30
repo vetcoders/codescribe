@@ -132,11 +132,31 @@ struct OverlayChannelMapView: View {
 }
 
 /// The present agents under mini's ✦ (`OverlayChannelStatusView.miniAgentsButton`):
-/// `N · Name` in channel order, the yellow unread dot beside a waiting reply.
-/// A row selects that channel's conversation through the same path as a map
-/// chip.
+/// `N · Name` in channel order, then each channel's status, small and
+/// secondary: the roster's status dot, its reception marks (the channel-0
+/// antenna and the do-not-disturb moon, each its own switch) and the yellow
+/// unread dot. Monika, 2026-10-30: per-agent icons leave the bar itself, so
+/// the list shows the channels' statuses and a secondary click on a row
+/// opens the agent's menu, the same menu as a map chip. A row's main button
+/// selects that channel's conversation through the map's selection path; the
+/// marks are its siblings, never nested in it. Every status comes from the
+/// roster's own projections; the list computes none.
 struct OverlayAgentsHoverList: View {
-  let agents: [OverlayChannelMapChip]
+  struct Row: Identifiable {
+    let chip: OverlayChannelMapChip
+    /// The roster's row for the channel; its reception marks read it.
+    let channel: OverlayChannelDelivery?
+    /// `OverlayChannelStatusView.statusDotKind(for:)`.
+    let dot: OverlayAgentDotKind
+    /// `OverlayChannelStatusView.statusHelp(for:)`, read by VoiceOver.
+    let statusHelp: String
+    /// `OverlayChannelStatusView.agentPillMenu(for:)`: the chip's menu.
+    let menu: OverlayBroadcastPolicyMenu
+
+    var id: String { chip.id }
+  }
+
+  let rows: [Row]
   let modifier: OverlayChannelChordModifier
   let palette: OverlayAppearancePalette
   let onSelect: (String) -> Void
@@ -145,59 +165,74 @@ struct OverlayAgentsHoverList: View {
   static let horizontalPadding: CGFloat = 10
   static let verticalPadding: CGFloat = 4
   static let fontSize: CGFloat = 12
+  /// The status dot and the two reception marks (14 pt each, 3 pt apart).
+  static let statusWidth: CGFloat = 8 + 2 * 14 + 3
 
   static func rowTitle(_ chip: OverlayChannelMapChip) -> String {
     chip.digit + " · " + chip.name
   }
 
   @MainActor
-  static func size(agents: [OverlayChannelMapChip]) -> CGSize {
+  static func size(rows: [Row]) -> CGSize {
     let text =
-      agents.map {
-        OverlayChannelPill.textWidth(rowTitle($0), size: fontSize)
+      rows.map {
+        OverlayChannelPill.textWidth(rowTitle($0.chip), size: fontSize)
       }.max() ?? 0
     let width =
-      text + 2 * horizontalPadding + OverlayChannelPill.unreadDotDiameter
-      + OverlayChannelPill.chipGap * 2
+      text + 2 * horizontalPadding + statusWidth + OverlayChannelPill.unreadDotDiameter
+      + OverlayChannelPill.chipGap * 5
     return CGSize(
-      width: min(260, max(140, ceil(width))),
-      height: 2 * verticalPadding + rowHeight * CGFloat(agents.count))
+      width: min(300, max(160, ceil(width))),
+      height: 2 * verticalPadding + rowHeight * CGFloat(rows.count))
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      ForEach(agents) { chip in
-        Button {
-          onSelect(chip.digit)
-        } label: {
-          HStack(spacing: OverlayChannelPill.chipGap) {
-            Text(verbatim: Self.rowTitle(chip))
-              .font(.system(size: Self.fontSize, weight: .medium))
-              .foregroundStyle(palette.primaryText.color)
-              .lineLimit(1)
-              .truncationMode(.tail)
-            Spacer(minLength: OverlayChannelPill.chipGap * 2)
-            if chip.unread {
-              Circle()
-                .fill(palette.processingStatus.color)
-                .frame(
-                  width: OverlayChannelPill.unreadDotDiameter,
-                  height: OverlayChannelPill.unreadDotDiameter
-                )
+      ForEach(rows) { row in
+        HStack(spacing: OverlayChannelPill.chipGap) {
+          Button {
+            onSelect(row.chip.digit)
+          } label: {
+            HStack(spacing: OverlayChannelPill.chipGap * 1.5) {
+              // Number and name first: who is on which channel.
+              Text(verbatim: Self.rowTitle(row.chip))
+                .font(.system(size: Self.fontSize, weight: .medium))
+                .foregroundStyle(palette.primaryText.color)
+                .lineLimit(1)
+                .truncationMode(.tail)
+              OverlayAgentStatusDot(kind: row.dot, palette: palette)
                 .accessibilityHidden(true)
+              Spacer(minLength: OverlayChannelPill.chipGap)
             }
+            .frame(height: Self.rowHeight)
+            .contentShape(Rectangle())
           }
-          .padding(.horizontal, Self.horizontalPadding)
-          .frame(height: Self.rowHeight)
-          .contentShape(Rectangle())
+          .buttonStyle(.plain)
+          .disabled(!row.chip.selectable)
+          .opacity(row.chip.selectable ? 1 : 0.45)
+          .accessibilityLabel(Text(verbatim: row.chip.accessibilityLabel(modifier: modifier)))
+          .accessibilityValue(
+            Text(
+              verbatim: [
+                row.statusHelp, row.chip.unread ? String(localized: "Unread replies") : "",
+              ].filter { !$0.isEmpty }.joined(separator: ", ")))
+          .accessibilityIdentifier("overlay-agents-list-\(row.chip.digit)")
+          if let channel = row.channel {
+            OverlayReceptionMarks(channel: channel, palette: palette, textScale: 1)
+          }
+          Circle()
+            .fill(palette.processingStatus.color)
+            .frame(
+              width: OverlayChannelPill.unreadDotDiameter,
+              height: OverlayChannelPill.unreadDotDiameter
+            )
+            .opacity(row.chip.unread ? 1 : 0)
+            .accessibilityHidden(true)
         }
-        .buttonStyle(.plain)
-        .disabled(!chip.selectable)
-        .opacity(chip.selectable ? 1 : 0.45)
-        .modifier(OverlayDisconnectedRowDim(disconnected: chip.disconnected))
-        .accessibilityLabel(Text(verbatim: chip.accessibilityLabel(modifier: modifier)))
-        .accessibilityValue(chip.unread ? String(localized: "Unread replies") : "")
-        .accessibilityIdentifier("overlay-agents-list-\(chip.digit)")
+        .padding(.horizontal, Self.horizontalPadding)
+        .contentShape(Rectangle())
+        .modifier(OverlayDisconnectedRowDim(disconnected: row.chip.disconnected))
+        .modifier(row.menu)
       }
     }
     .padding(.vertical, Self.verticalPadding)
