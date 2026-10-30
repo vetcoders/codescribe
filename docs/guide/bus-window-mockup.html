@@ -1029,37 +1029,110 @@
   #cs-bus-merged .cs-panel-toggle {
     position: absolute;
     top: 8px;
-    right: 14px;
+    right: 21px;
     z-index: 5;
     width: 28px;
     height: 28px;
   }
   #cs-bus-merged.cs-collapsed .cs-workspace {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) 70px;
   }
-  #cs-bus-merged.cs-collapsed .cs-sidebar {
+  #cs-bus-merged.cs-collapsed .cs-sidebar-heading-copy,
+  #cs-bus-merged.cs-collapsed .cs-special-copy,
+  #cs-bus-merged.cs-collapsed .cs-special-tail,
+  #cs-bus-merged.cs-collapsed .cs-agent-name,
+  #cs-bus-merged.cs-collapsed .cs-status-marks,
+  #cs-bus-merged.cs-collapsed .cs-agent-header-controls,
+  #cs-bus-merged.cs-collapsed .cs-agent-clock,
+  #cs-bus-merged.cs-collapsed .cs-agent-meta,
+  #cs-bus-merged.cs-collapsed .cs-agent-preview,
+  #cs-bus-merged.cs-collapsed .cs-saved {
     display: none;
   }
-  #cs-bus-merged.cs-collapsed .cs-current-actions {
-    padding-right: 36px;
+  #cs-bus-merged.cs-collapsed .cs-special,
+  #cs-bus-merged.cs-collapsed .cs-roster {
+    padding: 16px;
+    gap: 16px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-special-row,
+  #cs-bus-merged.cs-collapsed .cs-agent {
+    width: 38px;
+    min-height: 24px;
+    margin-inline: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: var(--cs-card);
+    position: relative;
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent.cs-selected,
+  #cs-bus-merged.cs-collapsed .cs-special-row[aria-current="true"] {
+    background: var(--cs-selected);
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent-header {
+    height: 24px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent-open,
+  #cs-bus-merged.cs-collapsed .cs-special-row {
+    width: 38px;
+    height: 24px;
+    justify-content: center;
+    gap: 3px;
+    position: relative;
+  }
+  #cs-bus-merged.cs-collapsed .cs-channel-digit {
+    width: auto;
+    background: transparent;
+    order: 2;
+  }
+  #cs-bus-merged.cs-collapsed .cs-online-dot {
+    order: 1;
+  }
+  #cs-bus-merged.cs-collapsed .cs-count {
+    position: absolute;
+    top: -11px;
+    right: -11px;
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+  #cs-bus-merged.cs-collapsed .cs-count-many {
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    top: -12px;
+    right: -12px;
+  }
+  #cs-bus-merged.cs-panel-hidden .cs-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #cs-bus-merged.cs-panel-hidden .cs-sidebar {
+    display: none;
+  }
+  #cs-bus-merged.cs-panel-hidden .cs-current-actions {
+    padding-right: 42px;
   }
   @media (max-width: 750px) {
     #cs-bus-merged .cs-workspace {
       grid-template-columns: minmax(0, 1fr);
     }
-    #cs-bus-merged:not(.cs-collapsed) .cs-sidebar {
+    #cs-bus-merged:not(.cs-collapsed):not(.cs-panel-hidden) .cs-sidebar {
       position: absolute;
       inset: 0;
       z-index: 4;
       background: var(--cs-bg);
       border-left: 0;
     }
-    #cs-bus-merged:not(.cs-collapsed) .cs-conversation {
+    #cs-bus-merged:not(.cs-collapsed):not(.cs-panel-hidden) .cs-conversation {
       visibility: hidden;
       pointer-events: none;
     }
-    #cs-bus-merged .cs-current-actions {
-      padding-right: 36px;
+    #cs-bus-merged.cs-panel-hidden .cs-current-actions {
+      padding-right: 42px;
     }
     #cs-bus-merged .cs-message-area {
       padding: 16px 12px;
@@ -1212,7 +1285,7 @@
     const defaults = {
       view: "2",
       recipient: "2",
-      collapsed: false,
+      panelMode: "expanded",
       mic: null,
       filter: "all",
     };
@@ -1221,6 +1294,12 @@
       ...defaults,
       ...(saved && typeof saved === "object" ? saved : {}),
     };
+    if (saved && !("panelMode" in saved) && "collapsed" in saved) {
+      state.panelMode = saved.collapsed ? "compact" : "expanded";
+    }
+    if (!["expanded", "compact", "hidden"].includes(state.panelMode))
+      state.panelMode = "compact";
+    delete state.collapsed;
     if (!["2", "3", "4", "8", "all", "inbox"].includes(state.view))
       state.view = "2";
     if (!["2", "3", "4", "8", "0"].includes(state.recipient))
@@ -1245,14 +1324,14 @@
           ?.setWidgetState?.({
             modelContent: {
               proposal: "Połączony układ okna busa",
-              sidebar: state.collapsed ? "zwinięty" : "rozwinięty",
+              sidebar: state.panelMode,
               view: state.view,
               recipient: state.recipient,
             },
             privateContent: {
               view: state.view,
               recipient: state.recipient,
-              collapsed: state.collapsed,
+              panelMode: state.panelMode,
               filter: state.filter,
             },
           })
@@ -1336,9 +1415,9 @@
                 : ""
             }${
               a.unread
-                ? `<span class="cs-count cs-rail-count" aria-label="${
-                    a.unread
-                  } nieobejrzane odpowiedzi">${
+                ? `<span class="cs-count cs-rail-count ${
+                    a.unread > 99 ? "cs-count-many" : ""
+                  }" aria-label="${a.unread} nieobejrzane odpowiedzi">${
                     a.unread > 99 ? "99+" : a.unread
                   }</span>`
                 : ""
@@ -1403,6 +1482,10 @@
         item("x", "Odłącz i zachowaj rozmowę", "archive", !a.online);
       menu.hidden = false;
       icons();
+      positionMenu(anchor);
+    }
+    function positionMenu(anchor) {
+      const menu = $("[data-menu]");
       const box = $(".cs-window").getBoundingClientRect(),
         target = anchor.getBoundingClientRect();
       menu.style.left =
@@ -1419,6 +1502,25 @@
           Math.min(target.bottom - box.top, box.height - menu.offsetHeight - 8)
         ) + "px";
       menu.querySelector("button:not(:disabled)")?.focus();
+    }
+    function openPanelMenu(anchor) {
+      closeMenu();
+      menuTrigger = anchor;
+      const menu = $("[data-menu]");
+      menu.innerHTML = [
+        ["expanded", "Agenci"],
+        ["compact", "Wąski pasek"],
+        ["hidden", "Ukryj panel"],
+      ]
+        .map(
+          ([mode, label]) =>
+            `<button type="button" data-panel-mode="${mode}" aria-pressed="${
+              state.panelMode === mode
+            }">${escapeHtml(label)}</button>`
+        )
+        .join("");
+      menu.hidden = false;
+      positionMenu(anchor);
     }
     function messagesForView() {
       if (state.view === "all")
@@ -1531,7 +1633,8 @@
     }
     function render() {
       closeMenu();
-      root.classList.toggle("cs-collapsed", Boolean(state.collapsed));
+      root.classList.toggle("cs-collapsed", state.panelMode === "compact");
+      root.classList.toggle("cs-panel-hidden", state.panelMode === "hidden");
       root.style.setProperty("--cs-sidebar-width", design.sidebarWidth + "px");
       root.style.setProperty(
         "--cs-card-padding",
@@ -1577,17 +1680,26 @@
         Boolean(micAgent)
       );
       const toggle = $('[data-action="sidebar"]');
-      toggle.setAttribute("aria-expanded", String(!state.collapsed));
+      toggle.setAttribute(
+        "aria-expanded",
+        String(state.panelMode === "expanded")
+      );
       toggle.setAttribute(
         "aria-label",
-        state.collapsed ? "Rozwiń panel agentów" : "Zwiń panel agentów"
+        state.panelMode === "expanded"
+          ? "Zwiń panel agentów"
+          : "Rozwiń panel agentów"
       );
       toggle.setAttribute(
         "data-tooltip",
-        state.collapsed ? "Rozwiń panel agentów" : "Zwiń panel agentów"
+        state.panelMode === "expanded"
+          ? "Zwiń panel agentów"
+          : "Rozwiń panel agentów"
       );
       toggle.innerHTML = `<i data-lucide="${
-        state.collapsed ? "panel-right-open" : "panel-right-close"
+        state.panelMode === "expanded"
+          ? "panel-right-close"
+          : "panel-right-open"
       }" aria-hidden="true"></i>`;
       $("#cs-recipient").innerHTML =
         '<option value="0">0 · Wszyscy</option>' +
@@ -1636,9 +1748,16 @@
         closeMenu();
       const b = event.target.closest("button");
       if (!b || !root.contains(b) || b.disabled) return;
+      if (b.dataset.panelMode) {
+        state.panelMode = b.dataset.panelMode;
+        render();
+        persist();
+        return;
+      }
       if (b.dataset.view) {
         state.view = b.dataset.view;
-        if (root.clientWidth <= 750) state.collapsed = true;
+        if (root.clientWidth <= 750 && state.panelMode === "expanded")
+          state.panelMode = "compact";
         render();
         persist();
         return;
@@ -1669,7 +1788,8 @@
           } else openMenu(a, b);
           break;
         case "sidebar":
-          state.collapsed = !state.collapsed;
+          state.panelMode =
+            state.panelMode === "expanded" ? "compact" : "expanded";
           render();
           persist();
           break;
@@ -1714,8 +1834,8 @@
           );
           break;
         case "saved": {
-          if (state.collapsed) {
-            state.collapsed = false;
+          if (state.panelMode !== "expanded") {
+            state.panelMode = "expanded";
             render();
           }
           const list = $("[data-saved-list]");
@@ -1760,8 +1880,14 @@
       }
     });
     root.addEventListener("contextmenu", (event) => {
+      const panelButton = event.target.closest('[data-action="sidebar"]');
+      if (panelButton) {
+        event.preventDefault();
+        openPanelMenu(panelButton);
+        return;
+      }
       const card = event.target.closest("[data-card-agent]");
-      if (card && !state.collapsed) {
+      if (card && state.panelMode === "expanded") {
         event.preventDefault();
         openMenu(agent(card.dataset.cardAgent), card);
       }

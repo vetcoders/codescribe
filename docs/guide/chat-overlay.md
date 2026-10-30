@@ -89,13 +89,14 @@ attached with its own provider and session identity.
 
 In the horizontal window, the conversation header keeps the viewed agent and
 its microphone, speaker and **More (…)** menu above the scrolling history.
-Use the panel button at the right to show or hide **Agents**. In a wide window
-the list sits beside the conversation. In a narrow window it covers the chat;
-choosing an agent returns to the conversation. Closing the list gives all its
-width back to the chat. The window keeps the size you chose, and resizing
-preserves the draft and text recipient. The conversation has no separate
-hide/show button or folded edge, and a hidden list leaves no numbered rail.
-The compact overlay's channel chips remain available in their own form.
+Use the panel button at the right to switch **Agents** between its full list
+and narrow channel bar. The full list sits beside the chat in a wide window
+and covers it in a narrow window. Choosing a row from the covering list returns
+to the bar. Right-click the same panel button to choose the full list, channel
+bar or complete hiding; hiding gives all panel width back to the conversation.
+The window keeps its size, draft and text recipient. The conversation has no
+separate hide/show button or folded edge. Compact-overlay channel chips keep
+their own presentation.
 
 Conversation and agent-list headers share the same compact height, without an
 extra toggle row. Message action labels use another row when necessary on a
@@ -138,9 +139,13 @@ Use **More** to change channel-zero membership or **Do not disturb**, open the
 workspace, or remove the agent into saved conversations. A moon remains by the
 name while Do not disturb is on; a crossed antenna remains while the agent is
 outside channel zero. The waveform microphone, speaker and More button stay
-visible without hovering. Hiding the list gives its width back to the
-conversation; reopen **Agents** to inspect the inbox or unread counts. The
-conversation keeps its own audio and More actions.
+visible without hovering. In the narrow bar, buttons stay centered. A channel's
+dot shows its status, a small yellow number at the upper-right corner counts
+unviewed replies, and the background marks the viewed conversation. The inbox
+can be selected like any conversation. These signals are independent; unread
+counts do not turn all dots yellow. Two-digit counts stay readable inside the
+bar; above 99 the badge reads 99+ and accessibility keeps the exact count.
+The conversation keeps its own audio and More actions.
 
 Right-clicking a card opens the same secondary menu as **More**. It contains
 contact settings, the detected workspace and removal into saved conversations;

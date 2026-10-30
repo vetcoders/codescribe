@@ -112,24 +112,32 @@ rendering retain their existing form.
 ## Horizontal conversation and text destination
 
 The horizontal window treats the conversation as its primary content and has
-one Agents panel. One persisted visibility choice owns that panel. The panel
-is a resizable right column when the window can fit a 320-point conversation
-and a 240-point roster at the current text scale. Below that threshold the
-same roster covers the conversation at the current window width; revealing it
-does not enlarge the window. Selecting a row closes the covering panel and
-keeps a docked panel open. Escape or the panel toggle closes either placement.
-The main Agents mode/capture control retains its recording contract and uses
-the same panel owner for ordinary list requests.
+one Agents panel. One persisted presentation owns the expanded list, compact
+channel bar and optional complete hiding. The expanded list is a resizable
+right column when the window can fit a 320-point conversation and a 240-point
+roster at the current text scale. Below that threshold it covers the chat at
+the current width; revealing it does not enlarge the window. Selecting a row
+returns a covering list to its compact bar and keeps a docked full list open.
+The panel button switches list and compact bar; its context menu also offers
+complete hiding. The main Agents mode/capture control keeps its recording
+contract and uses the same panel owner for ordinary list requests.
 
 The conversation remains mounted beneath a covering panel so the editor,
-draft, selection and scroll state survive the placement change. A closed panel
-reserves no conversation width. Conversation and roster headers share one
-compact band, with one panel toggle at the window's trailing edge. The
-conversation has no independent fold or reveal edge and the horizontal window
-has no numbered rail. Divider resizing clamps the column while preserving a
-readable conversation. The old split/agents/rail preference is adopted once
-into the visibility Boolean; later layout reads only that Boolean and the
-current geometry.
+draft, selection and scroll state survive the placement change. A fully hidden
+panel reserves no conversation width. The compact bar uses uniform centered
+channel buttons, with symmetric clearance for a small circular unread badge
+at each upper trailing corner. The badge overlaps the corner; it does not
+receive a separate column. Two-digit values remain inside the bar, and values
+above 99 display 99+ while accessibility keeps the full count. The status dot
+comes only from channel status, the yellow number only from unread replies,
+and the button background only from the viewed conversation, including Inbox.
+Unread changes never recolor all status dots.
+
+Conversation and panel headers share one compact band with one panel control
+at the window's trailing edge. The conversation has no independent fold or
+reveal edge. Divider resizing clamps the full column without hiding the chat.
+Old split/agents/rail and Boolean visibility preferences are adopted once into
+the single presentation; later layout reads that presentation and geometry.
 
 Message actions in `.busWindow` stay inline where they fit and use additional
 rows when their intrinsic widths exceed the message cap. Read receipts, Copy,

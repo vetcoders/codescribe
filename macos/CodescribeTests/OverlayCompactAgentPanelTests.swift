@@ -115,7 +115,15 @@ final class OverlayCompactAgentPanelTests: XCTestCase {
     for scale: CGFloat in [1, 1.5, 2] {
       let (state, _) = try fixture()
       let width = OverlayAgentDrawerLayout.compactWidth(textScale: scale)
-      let view = DictationOverlayView(state: state).channelStatusView
+      let view = OverlayChannelStatusView(
+        channels: state.visibleChannelRows.filter { $0.channel != "0" },
+        unavailable: false, palette: .dark, animates: false,
+        hudStates: state.channelHudStates, conversations: state.conversations,
+        selectedConversationID: state.selectedConversationID,
+        unreadCounts: Dictionary(
+          uniqueKeysWithValues: state.conversations.map {
+            ($0.id, state.unreadReplies(in: $0))
+          }), onSelectConversation: { state.chooseConversation($0) })
       let host = NSHostingView(
         rootView: view.compactBody(
           maximumHeight: 680,
@@ -194,6 +202,7 @@ final class OverlayCompactAgentPanelTests: XCTestCase {
         XCTAssertTrue(text.contains("99"), text)
         for result in observations
         where result.topCandidates(1).first?.string.contains("42") == true {
+          XCTAssertGreaterThan(result.boundingBox.minX, 0.01, "two-digit text clears the RTL edge")
           XCTAssertLessThan(result.boundingBox.maxX, 0.99, "two-digit text clears the edge")
         }
       }
