@@ -1499,7 +1499,9 @@ struct OverlayChannelStatusView: View {
     }
     .modifier(
       OverlayRosterMessageHint(
-        conversation: conversation, palette: palette, textScale: textScale)
+        conversation: conversation, palette: palette, textScale: textScale,
+        isOpen: conversation.map { $0.id == selectedConversationID } ?? false,
+        onOpen: { if let conversation { onSelectConversation?(conversation.id) } })
     )
     .accessibilityHint(Text(verbatim: hint))
     .modifier(
@@ -1752,7 +1754,9 @@ struct OverlayChannelStatusView: View {
                     .accessibilityIdentifier("overlay-all-preview")
                     .modifier(
                       OverlayRosterMessageHint(
-                        conversation: broadcast, palette: palette, textScale: textScale))
+                        conversation: broadcast, palette: palette, textScale: textScale,
+                        isOpen: broadcast.id == selectedConversationID,
+                        onOpen: { onSelectConversation?(broadcast.id) }))
                   } else {
                     Spacer(minLength: 0)
                   }
@@ -1976,26 +1980,37 @@ struct OverlayChannelStatusView: View {
           )
           .modifier(
             OverlayRosterMessageHint(
-              conversation: conversation, palette: palette, textScale: textScale))
-          compactAgentActions(for: channel)
+              conversation: conversation, palette: palette, textScale: textScale,
+              isOpen: conversation.map { $0.id == selectedConversationID } ?? false,
+              onOpen: { viewConversation(channel) }))
         }
-        if let conversation, onSelectConversation != nil {
-          Button {
-            viewConversation(channel)
-          } label: {
-            rosterRowLabel(
-              title: conversation.name, statusChannel: channel, conversation: conversation,
-              dot: statusDotKind(for: channel), contentOnly: true)
+        // Identity owns the full first line. Audio and More spend the preview's
+        // width below it, never the agent name (Founder recording, 2026-10-30).
+        HStack(alignment: .center, spacing: 4) {
+          Group {
+            if let conversation, onSelectConversation != nil {
+              Button {
+                viewConversation(channel)
+              } label: {
+                rosterRowLabel(
+                  title: conversation.name, statusChannel: channel, conversation: conversation,
+                  dot: statusDotKind(for: channel), contentOnly: true)
+              }
+              .buttonStyle(.plain)
+              .accessibilityLabel(Text(verbatim: identityHint))
+              .modifier(
+                OverlayRosterMessageHint(
+                  conversation: conversation, palette: palette, textScale: textScale,
+                  isOpen: conversation.id == selectedConversationID,
+                  onOpen: { viewConversation(channel) }))
+            } else {
+              rosterRowLabel(
+                title: channel.agent, statusChannel: channel, conversation: conversation,
+                dot: statusDotKind(for: channel), contentOnly: true)
+            }
           }
-          .buttonStyle(.plain)
-          .accessibilityLabel(Text(verbatim: identityHint))
-          .modifier(
-            OverlayRosterMessageHint(
-              conversation: conversation, palette: palette, textScale: textScale))
-        } else {
-          rosterRowLabel(
-            title: channel.agent, statusChannel: channel, conversation: conversation,
-            dot: statusDotKind(for: channel), contentOnly: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          compactAgentActions(for: channel)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -2261,7 +2276,9 @@ struct OverlayChannelStatusView: View {
     .modifier(
       OverlayRosterMessageHint(
         conversation: broadcast, palette: palette, textScale: textScale,
-        emptyHint: String(localized: "View conversation without changing the microphone"))
+        emptyHint: String(localized: "View conversation without changing the microphone"),
+        isOpen: broadcast.id == selectedConversationID,
+        onOpen: { onSelectConversation?(broadcast.id) })
     )
     .accessibilityHint(
       Text(verbatim: String(localized: "View conversation without changing the microphone"))
@@ -2316,7 +2333,9 @@ struct OverlayChannelStatusView: View {
     .modifier(
       OverlayRosterMessageHint(
         conversation: conversation, palette: palette, textScale: textScale,
-        emptyHint: String(localized: "View conversation without changing the microphone"))
+        emptyHint: String(localized: "View conversation without changing the microphone"),
+        isOpen: conversation.id == selectedConversationID,
+        onOpen: { onSelectConversation?(conversation.id) })
     )
     .accessibilityHint(
       Text(verbatim: String(localized: "View conversation without changing the microphone"))
@@ -2749,6 +2768,8 @@ struct OverlayRosterMessageHint: ViewModifier {
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
   var emptyHint = ""
+  var isOpen = false
+  var onOpen: (() -> Void)? = nil
 
   static func fullText(in conversation: OverlayConversation) -> String? {
     guard let message = conversation.messages.last else { return nil }
@@ -2765,7 +2786,7 @@ struct OverlayRosterMessageHint: ViewModifier {
       guard let message = conversation.messages.last else { return nil }
       return AnyView(
         OverlayRosterMessagePreview(
-          name: conversation.displayTitle, message: message, palette: palette
+          name: conversation.displayTitle, message: message, palette: palette, onOpen: onOpen
         )
         .environment(\.csTextScale, textScale)
         .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light))
@@ -2773,7 +2794,7 @@ struct OverlayRosterMessageHint: ViewModifier {
     content.modifier(
       OverlayHeaderControlChrome(
         title: conversation.flatMap { Self.fullText(in: $0) } ?? emptyHint,
-        accent: nil, palette: palette, hintLeading: true,
+        accent: nil, palette: palette, hintLeading: true, showsHint: !isOpen,
         hintContent: preview,
         hintSize: preview == nil ? nil : CGSize(width: 380 * textScale, height: 280 * textScale),
         hintDelay: preview == nil ? 0 : 0.35, hintInteractive: preview != nil)
@@ -2789,6 +2810,7 @@ struct OverlayRosterMessagePreview: View {
   let name: String
   let message: OverlayConversationMessage
   let palette: OverlayAppearancePalette
+  var onOpen: (() -> Void)? = nil
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -2813,6 +2835,8 @@ struct OverlayRosterMessagePreview: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(palette.desktopBackground.color.opacity(0.9))
     .contentShape(Rectangle())
+    .onTapGesture { onOpen?() }
+    .accessibilityAction(named: Text("Open conversation")) { onOpen?() }
     .accessibilityIdentifier("overlay-roster-message-preview")
   }
 }
