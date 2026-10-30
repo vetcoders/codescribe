@@ -2358,6 +2358,7 @@ final class OverlayState {
     showsAgentMonitor = false
     windowContentSurface = selectedConversationID == nil ? .transcription : .agents
     markVisibleConversationRead()
+    noteAutoCollapseActivity()
     onChannelPresentationChanged?()
   }
 

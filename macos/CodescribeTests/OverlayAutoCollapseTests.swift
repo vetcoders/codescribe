@@ -249,6 +249,23 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .mini, "ACK is not new text or reading activity")
   }
 
+  func testClosingACoveringPanelRestoresTheVisibleReplyReadingInterval() throws {
+    let (state, clock) = makeState()
+    let text = Array(repeating: "słowo", count: 90).joined(separator: " ")
+    state.setPresentationMode(.mini)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(try replySnapshot(text: text))
+    state.showAgentMonitor()
+    state.hideAgentSidebar()
+    clock.advance(by: 10)
+    XCTAssertEqual(state.presentationMode, .expanded, "90 words need more than ten seconds")
+    state.applyConversationSnapshot(try replySnapshot(text: text, acknowledged: true))
+    clock.advance(by: 19.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini, "ACK is not new text or reading activity")
+  }
+
   func testLongSpokenReplyGetsAFullReadingIntervalAfterPlayback() throws {
     let (state, clock) = makeState()
     let text = Array(repeating: "słowo", count: 90).joined(separator: " ")
