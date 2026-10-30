@@ -2747,24 +2747,33 @@ private struct OverlayIntercomMessagePreview: View {
   let palette: OverlayAppearancePalette
 
   var body: some View {
-    ScrollView {
+    Group {
       if let message = conversation.messages.last {
         VStack(alignment: .leading, spacing: OverlayIntercomWidgetLayout.compactPreviewSpacing) {
           let route = OverlayChannelStatusView.messageRoute(of: message)
           if !route.label.isEmpty {
+            // The route belongs to the card, not the scrolling message body. A
+            // scrolled long preview otherwise cuts this line under the metadata.
             Text(verbatim: route.label)
               .font(.system(size: 10 * textScale, weight: .bold))
               .foregroundStyle(palette.mutedText.color)
+              .lineLimit(1)
+              .truncationMode(.tail)
+              .fixedSize(horizontal: false, vertical: true)
               .accessibilityIdentifier("overlay-intercom-message-route")
           }
-          OverlayConversationMessageContent(message: message, palette: palette)
+          ScrollView {
+            OverlayConversationMessageContent(message: message, palette: palette)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, OverlayIntercomWidgetLayout.compactPreviewVerticalPadding)
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .clipped()
     .accessibilityIdentifier("overlay-intercom-message-preview")
   }
 }
