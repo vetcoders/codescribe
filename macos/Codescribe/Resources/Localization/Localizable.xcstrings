@@ -13228,6 +13228,18 @@
         }
       }
     },
+    "Only to: %@" : {
+      "comment" : "0 · All composer placeholder while a recipient set narrows the broadcast; %@ = agent names",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tylko do: %@"
+          }
+        }
+      }
+    },
     "Open" : {
       "localizations" : {
         "pl" : {

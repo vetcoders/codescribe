@@ -154,7 +154,6 @@ struct OverlayConversationView: View {
   var composerConversation: OverlayConversation? = nil
   var composerAvailable = true
   var composerMicrophoneOpen: Bool? = nil
-  var composerRouting: AnyView? = nil
   var onPrepareHeldEdit: ((OverlayConversationMessage) -> UUID)? = nil
   var onReturnHeldText: ((OverlayConversationMessage, String, UUID) -> Bool)? = nil
   var conversationNavigationRequest: OverlayState.ConversationNavigationRequest? = nil
@@ -424,7 +423,6 @@ struct OverlayConversationView: View {
 
   private var composer: some View {
     VStack(spacing: 8) {
-      if let composerRouting { composerRouting }
       let target = composerConversation ?? conversation
       // The inbox has no owner and no digit; it composes to its linked agents.
       if composerAvailable
@@ -452,7 +450,8 @@ struct OverlayConversationView: View {
           draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
           onActivateDraftSync: onActivateDraftSync,
           onProseEdit: onProseEdit,
-          onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync
+          onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync,
+          recipientsOnSend: conversation.isDraftSyncSource
         )
         // A reused native coordinator must never redirect an old owner's
         // proposal or undo history into a different conversation's binding.
@@ -470,13 +469,22 @@ struct OverlayConversationView: View {
     .frame(maxWidth: .infinity)
   }
 
+  /// A source's placeholder names its set, since the set is sticky and the
+  /// send chevron alone does not show it: the inbox alone has no recipient,
+  /// 0 · All alone is everyone.
   private var composerPlaceholder: String {
-    // A source's names include itself once linked; the inbox alone has no
-    // recipient, 0 · All alone is everyone.
-    let linked = draftSyncNames.count > 1
-    if conversation.isHumanInbox && !linked { return String(localized: "Choose recipients") }
-    return (composerConversation ?? conversation).channel == "0" && !linked
-      ? String(localized: "Send to everyone") : String(localized: "Message the Agent")
+    let names = draftSyncNames.filter { $0 != conversation.name }
+    if conversation.isHumanInbox {
+      return names.isEmpty
+        ? String(localized: "Choose recipients")
+        : String(localized: "To:") + " " + names.joined(separator: ", ")
+    }
+    if (composerConversation ?? conversation).channel == "0" {
+      return names.isEmpty
+        ? String(localized: "Send to everyone")
+        : String(localized: "Only to: \(names.joined(separator: ", "))")
+    }
+    return String(localized: "Message the Agent")
   }
 
   private func composerError(_ text: String) -> some View {

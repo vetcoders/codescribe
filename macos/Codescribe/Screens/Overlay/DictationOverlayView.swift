@@ -684,11 +684,6 @@ struct DictationOverlayView: View {
                 composerConversation: resolvedTarget,
                 composerAvailable: composesText,
                 composerMicrophoneOpen: state.conversationMicrophoneOpen(conversation),
-                // The inbox and 0 · All choose their recipients; an agent's
-                // conversation is its own recipient and the roster chain links
-                // further agents (Maciej, 2026-10-30 14:12–14:24).
-                composerRouting: conversation.isDraftSyncSource
-                  ? AnyView(composerRouting(viewing: conversation)) : nil,
                 onPrepareHeldEdit: { message in
                   state.prepareHeldComposerEdit(
                     state.heldComposerTarget(message, viewing: conversation))
@@ -729,11 +724,18 @@ struct DictationOverlayView: View {
                   state.conversationReplies[conversation.id] = OverlayUserReplyReference(
                     message: message)
                 },
-                // Linking lives in the roster chain and the inbox's "To:"; the
-                // composer's "+" is a plain attach button here (Maciej,
-                // 2026-10-30 14:03). Names still tint and label the status.
+                // Linking lives in the roster chain and, for the inbox and
+                // 0 · All, in the chevron beside Send; the composer's "+" is a
+                // plain attach button here (Maciej, 2026-10-30 14:03 and the
+                // 2981 build). Names still tint and label the status.
+                draftSyncChoices: conversation.isDraftSyncSource
+                  ? state.draftSyncChoices(for: conversation) : [],
                 draftSyncNames: state.draftSyncNames(for: conversation.id),
-                onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) }
+                onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
+                onToggleDraftSync: conversation.isDraftSyncSource
+                  ? { state.toggleDraftSync(from: conversation.id, with: $0) } : nil,
+                onStopDraftSync: conversation.isDraftSyncSource
+                  ? { state.stopDraftSync(for: conversation.id) } : nil
               )
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
@@ -1413,64 +1415,6 @@ struct DictationOverlayView: View {
       state.chooseConversation(conversation.id)
     }
     return roster
-  }
-
-  /// The bar above the composer on the two conversations that have no agent
-  /// of their own. Its menu is the draft sync moved out of "+" (Maciej,
-  /// 2026-10-30 14:24): the agents whose drafts are linked to this source
-  /// receive what is typed here, the same link the roster chain toggles. The
-  /// inbox's "To:" builds the set; 0 · All's "Send only to…" narrows the
-  /// broadcast to it until the set is changed or unlinked. An agent's
-  /// conversation has no bar: the open agent is the recipient. The bar is the
-  /// composer's sibling and wears its surface.
-  private func composerRouting(viewing conversation: OverlayConversation) -> some View {
-    let choices = state.draftSyncChoices(for: conversation)
-    let linked = choices.filter(\.selected).map(\.title)
-    let broadcast = conversation.channel == "0"
-    let unlinkedLabel =
-      broadcast ? String(localized: "0 · All") : String(localized: "Choose recipients")
-    return HStack(spacing: 6) {
-      Text(broadcast ? "Send only to…" : "To:")
-      Menu {
-        ForEach(choices) { choice in
-          Toggle(
-            isOn: Binding(
-              get: { choice.selected },
-              set: { _ in state.toggleDraftSync(from: conversation.id, with: choice.id) })
-          ) {
-            Text(verbatim: choice.title)
-          }
-          .disabled(!choice.enabled)
-        }
-        if !linked.isEmpty {
-          Divider()
-          Button(broadcast ? "Send to everyone" : "Stop syncing") {
-            state.stopDraftSync(for: conversation.id)
-          }
-        }
-      } label: {
-        Text(verbatim: linked.isEmpty ? unlinkedLabel : linked.joined(separator: ", "))
-          .font(.system(size: 11 * textScale, weight: .semibold))
-          .foregroundStyle(palette.primaryText.color)
-          .lineLimit(1).truncationMode(.middle)
-      }
-      .menuStyle(.button)
-      .buttonStyle(.plain)
-      .layoutPriority(1)
-      .accessibilityIdentifier("overlay-composer-recipient")
-      Spacer(minLength: 0)
-    }
-    .font(.system(size: 11 * textScale, weight: .medium))
-    .foregroundStyle(palette.mutedText.color)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, ComposerControlMetrics.horizontalPadding)
-    .padding(.vertical, ComposerControlMetrics.verticalPadding)
-    .modifier(OverlayComposerSurface(palette: palette))
-    // Messages scroll under this bar as under the composer; the bar claims
-    // the arrow the way the composer's attachment chips do.
-    .background { OverlayMenuCursorRegion() }
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-composer-routing")
   }
 
   /// A digit may be reused; roster actions belong only to the exact live lease.
