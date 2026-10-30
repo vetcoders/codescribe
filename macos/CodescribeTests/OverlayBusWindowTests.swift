@@ -38,6 +38,67 @@ final class OverlayBusWindowTests: XCTestCase {
     state.applyConversationSnapshot(.init(deliveries: [], conversations: conversations))
   }
 
+  func testPaneHeadersKeepTheMessageViewportAtTheSameHeightAcrossLayouts() throws {
+    let target = try conversation("2", canonicalLease: true)
+    let other = try conversation("3", lease: "b", canonicalLease: true)
+    let thread = withMessages(
+      target, [previewReply(in: target, text: "The header keeps its place.")])
+    for scale: CGFloat in [1, 1.5] {
+      let state = OverlayState()
+      apply([thread, other], to: state)
+      state.selectConversation(thread.id)
+      state.chooseComposerTarget(other)
+      state.setConversationDraft("Keep this draft", for: other.id)
+      let host = NSHostingView(
+        rootView: DictationOverlayView(state: state)
+          .environment(\.csTextScale, scale)
+          .environment(\.colorScheme, .dark)
+          .transaction { $0.disablesAnimations = true })
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 1100, height: 680)
+      let panel = NSPanel(
+        contentRect: NSRect(x: -10_000, y: -10_000, width: 1100, height: 680),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      panel.isReleasedWhenClosed = false
+      panel.contentView = host
+      BackgroundTestWindow.present(panel)
+      defer {
+        panel.contentView = nil
+        panel.close()
+      }
+      func scrollViews(_ root: NSView) -> [NSScrollView] {
+        (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+      }
+      func settle() {
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+        host.layoutSubtreeIfNeeded()
+      }
+      var pinnedTop: CGFloat?
+      for layout in [OverlayAgentsLayout.split, .rail, .agents, .split] {
+        state.setAgentsLayout(layout)
+        settle()
+        if layout != .agents {
+          let scroll = try XCTUnwrap(
+            scrollViews(host).first { $0.bounds.width > 450 && $0.bounds.height > 150 })
+          let rect = scroll.contentView.convert(scroll.contentView.bounds, to: host)
+          let top = host.isFlipped ? rect.minY : host.bounds.maxY - rect.maxY
+          print("BUS_PANE_HEADER scale=\(scale) layout=\(layout.rawValue) viewportTop=\(top)")
+          if let pinnedTop {
+            XCTAssertEqual(
+              top, pinnedTop, accuracy: 1, "pane folding must not add or remove a header row")
+          } else {
+            pinnedTop = top
+          }
+        }
+        XCTAssertEqual(state.selectedConversationID, thread.id)
+        XCTAssertEqual(state.resolvedComposerTarget(viewing: thread)?.id, other.id)
+        XCTAssertEqual(state.conversationDraft(for: other.id), "Keep this draft")
+        XCTAssertFalse(state.conversationMicrophoneOpen(thread))
+      }
+    }
+  }
+
   func testScrollingHistoryKeepsCompactChromeOutsideTheMessageViewport() throws {
     let target = try conversation("2", canonicalLease: true)
     let messages = (0..<18).map { index in
@@ -1085,12 +1146,16 @@ final class OverlayBusWindowTests: XCTestCase {
     try renderWindowForReview(dark: true, rail: true, scale: 1, width: 760)
   }
 
+  func testHorizontalWindowReviewWithFoldedConversation() throws {
+    try renderWindowForReview(dark: true, rail: false, scale: 1, width: 1000, layout: .agents)
+  }
+
   func testHorizontalWindowReviewAtLargerTextScale() throws {
     try renderWindowForReview(dark: true, rail: false, scale: 1.5, width: 1060)
   }
 
   private func renderWindowForReview(
-    dark: Bool, rail: Bool, scale: CGFloat, width: CGFloat
+    dark: Bool, rail: Bool, scale: CGFloat, width: CGFloat, layout: OverlayAgentsLayout? = nil
   ) throws {
     var first = try conversation("2", canonicalLease: true)
     let second = try conversation("3", lease: "b", canonicalLease: true)
@@ -1135,6 +1200,7 @@ final class OverlayBusWindowTests: XCTestCase {
     state.chooseComposerTarget(second)
     state.setConversationDraft("A retained draft for Lena", for: second.id)
     if rail { state.foldAgentList() }
+    if let layout { state.setAgentsLayout(layout) }
     let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
     XCTAssertEqual(row.broadcastIdentity?.leaseID, first.owner?.leaseID)
     XCTAssertFalse(state.visibleChannelRows.contains { $0.channel == "10" })
