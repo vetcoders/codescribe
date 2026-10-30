@@ -3050,6 +3050,7 @@ final class OverlayState {
     pendingTextMessages.insert(conversation.id)
     let reply = conversationReplies[conversation.id]
     let draftRevision = conversationDraftRevisions[conversation.id]
+    let replyRevision = conversationReplyRevisions[conversation.id]
     textMessageErrors.removeValue(forKey: conversation.id)
     defer { pendingTextMessages.remove(conversation.id) }
     // Files pasted after the words, while the capture still waited for a
@@ -3065,8 +3066,9 @@ final class OverlayState {
     guard !outgoing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     do {
       try await publishConversationText(destination.owner, outgoing, reply, [])
-      // A newer draft belongs to the Founder, even if publication finishes late.
+      // A newer draft or reply belongs to the Founder, even if publication finishes late.
       if conversationDraftRevisions[conversation.id] == draftRevision,
+        conversationReplyRevisions[conversation.id] == replyRevision,
         conversationDraft(for: conversation.id) == draft,
         !usesComposerTargets
           || resolvedComposerTarget(viewing: conversation).map({ ComposerContext($0) })
