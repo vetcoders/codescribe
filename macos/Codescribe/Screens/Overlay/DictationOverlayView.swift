@@ -569,26 +569,18 @@ struct DictationOverlayView: View {
                 isPresented: !state.isCollapsed,
                 isCovered: canvasHidden,
                 draft: Binding(
-                  get: { resolvedTarget.map { state.conversationDraft(for: $0.id) } ?? "" },
+                  get: { state.conversationDraft(for: conversation.id) },
                   set: { value in
-                    guard let target = resolvedTarget, state.composerTargetIsAvailable(target)
-                    else { return }
-                    state.setConversationDraft(value, for: target.id)
+                    guard state.composerTargetIsAvailable(conversation) else { return }
+                    state.setConversationDraft(value, for: conversation.id)
                   }),
-                sending: resolvedTarget.map { state.pendingTextMessages.contains($0.id) } ?? false,
-                sendError: resolvedTarget.flatMap { target in
-                  state.draftSyncSendError(for: target.id)
-                    ?? (state.draftCapture.errorConversationID == target.id
-                      ? state.draftCapture.error : nil)
-                },
+                sending: state.pendingTextMessages.contains(conversation.id),
+                sendError: state.draftSyncSendError(for: conversation.id)
+                  ?? (state.draftCapture.errorConversationID == conversation.id
+                    ? state.draftCapture.error : nil),
                 onSend: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  Task {
-                    guard state.composerTargetIsAvailable(target) else { return }
-                    await state.sendConversationText(target)
-                  }
+                  guard let target = resolvedTarget else { return }
+                  Task { await state.sendConversationText(conversation, to: target) }
                 },
                 microphoneOpen: state.conversationMicrophoneOpen(conversation),
                 microphoneEnabled: state.canToggleConversationMicrophone(conversation)
@@ -609,112 +601,57 @@ struct DictationOverlayView: View {
                 navigationActions: conversationHeaderActions(conversation),
                 navigationIndicators: conversationHeaderIndicators(conversation),
                 composerConversation: resolvedTarget,
-                composerAvailable: resolvedTarget != nil,
-                composerMicrophoneOpen: resolvedTarget.map { state.conversationMicrophoneOpen($0) },
+                composerAvailable: state.composerTargetIsAvailable(conversation)
+                  && resolvedTarget != nil,
+                composerMicrophoneOpen: state.conversationMicrophoneOpen(conversation),
                 composerRouting: AnyView(composerRouting(viewing: conversation)),
                 onPrepareHeldEdit: { message in
-                  state.prepareHeldComposerEdit(heldComposerTarget(message, viewing: conversation))
+                  state.prepareHeldComposerEdit(
+                    state.heldComposerTarget(message, viewing: conversation))
                 },
                 onReturnHeldText: { message, text, revision in
                   state.returnHeldComposerText(
-                    text, to: heldComposerTarget(message, viewing: conversation), revision: revision
+                    text, to: state.heldComposerTarget(message, viewing: conversation),
+                    revision: revision
                   )
                 },
-                onNavigateComposerReply: resolvedTarget?.id == conversation.id
-                  ? nil
-                  : {
-                    guard let target = resolvedTarget, state.composerTargetIsAvailable(target),
-                      let messageID = state.conversationReplies[target.id]?.messageID
-                    else { return }
-                    state.navigateToConversationMessage(target, messageID: messageID)
-                  },
                 conversationNavigationRequest: state.conversationNavigationRequest,
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
                 onComposerTypingActivity: { state.noteComposerTypingActivity() },
-                replySelection: resolvedTarget.flatMap { state.conversationReplies[$0.id] },
-                onClearReply: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.conversationReplies.removeValue(forKey: target.id)
-                },
-                draftMicrophoneRecording: resolvedTarget.map {
-                  state.draftCapture.conversationID == $0.id
-                } ?? false,
-                draftMicrophoneBusy: resolvedTarget.map { state.draftMicrophoneBusy(in: $0) }
-                  ?? true,
+                replySelection: state.conversationReplies[conversation.id],
+                onClearReply: { state.conversationReplies.removeValue(forKey: conversation.id) },
+                draftMicrophoneRecording: state.draftCapture.conversationID == conversation.id,
+                draftMicrophoneBusy: state.draftMicrophoneBusy(in: conversation),
                 onToggleDraftMicrophone: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  Task {
-                    guard state.composerTargetIsAvailable(target) else { return }
-                    await state.toggleDraftMicrophone(in: target)
-                  }
+                  guard state.composerTargetIsAvailable(conversation) else { return }
+                  Task { await state.toggleDraftMicrophone(in: conversation) }
                 },
                 onStageCaptureAttachments: { paths in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return false
-                  }
-                  return state.stageConversationAttachments(paths, in: target)
+                  guard state.composerTargetIsAvailable(conversation) else { return false }
+                  return state.stageConversationAttachments(paths, in: conversation)
                 },
-                pendingCaptureAttachments: resolvedTarget.flatMap {
-                  state.captureAttachmentDrafts[$0.id]?.paths
-                } ?? [],
-                onRemoveCaptureAttachment: { path in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.removeCaptureAttachment(path, in: target.id)
+                pendingCaptureAttachments: state.captureAttachmentDrafts[conversation.id]?.paths
+                  ?? [],
+                onRemoveCaptureAttachment: {
+                  state.removeCaptureAttachment($0, in: conversation.id)
                 },
-                captureAttachmentError: resolvedTarget.flatMap {
-                  state.captureAttachmentErrors[$0.id]
-                },
+                captureAttachmentError: state.captureAttachmentErrors[conversation.id],
                 onRetryCaptureAttachments: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  Task {
-                    guard state.composerTargetIsAvailable(target) else { return }
-                    await state.retryCaptureAttachments(in: target.id)
-                  }
+                  Task { await state.retryCaptureAttachments(in: conversation.id) }
                 },
                 onReply: { message in
-                  state.chooseComposerTarget(conversation)
+                  state.chooseComposerTarget(conversation, viewing: conversation)
                   state.conversationReplies[conversation.id] = OverlayUserReplyReference(
                     message: message)
                 },
-                draftSyncChoices: resolvedTarget.map { state.draftSyncChoices(for: $0) } ?? [],
-                draftSyncNames: resolvedTarget.map { state.draftSyncNames(for: $0.id) } ?? [],
-                draftSyncArmed: resolvedTarget.map {
-                  state.armedDraftSyncConversationID == $0.id
-                } ?? false,
-                draftSyncEnabled: resolvedTarget.map { state.canActivateDraftSync(for: $0.id) }
-                  ?? false,
-                onActivateDraftSync: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.activateDraftSync(for: target.id)
-                },
-                onProseEdit: { edit in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.applyConversationProseEdit(edit, for: target.id)
-                },
-                onToggleDraftSync: { id in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.toggleDraftSync(from: target.id, with: id)
-                },
-                onStopDraftSync: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.stopDraftSync(for: target.id)
-                }
+                draftSyncChoices: state.draftSyncChoices(for: conversation),
+                draftSyncNames: state.draftSyncNames(for: conversation.id),
+                draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
+                draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
+                onActivateDraftSync: { state.activateDraftSync(for: conversation.id) },
+                onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
+                onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
+                onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
               )
               .onAppear { state.initializeComposerTarget(conversation) }
               .onChange(of: conversation.id) { _, _ in
@@ -1439,22 +1376,14 @@ struct DictationOverlayView: View {
     var roster = OverlayChannelStatusView.intercomRoster(
       state: state, palette: palette, animates: overlayVisible)
     roster.onWriteConversation = { conversation in
-      state.chooseComposerTarget(conversation)
+      state.chooseComposerTarget(conversation, viewing: conversation)
       state.chooseConversation(conversation.id)
     }
     return roster
   }
 
-  private func heldComposerTarget(
-    _ message: OverlayConversationMessage, viewing conversation: OverlayConversation
-  ) -> OverlayConversation {
-    message.sourceChannel == "0"
-      ? OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
-      : conversation
-  }
-
   private func composerRouting(viewing conversation: OverlayConversation) -> some View {
-    let target = state.composerTarget
+    let target = state.composerTarget(viewing: conversation)
     let selected = state.resolvedComposerTarget(viewing: conversation)
     let choices = state.availableComposerRecipients
     let openChannels = state.channelHudStates.filter { $0.value.open }.keys.sorted()
@@ -1470,7 +1399,9 @@ struct DictationOverlayView: View {
         Text("To:")
         Menu {
           ForEach(choices) { choice in
-            Button(choice.displayTitle) { state.chooseComposerTarget(choice) }
+            Button(choice.displayTitle) {
+              state.chooseComposerTarget(choice, viewing: conversation)
+            }
           }
         } label: {
           Text(verbatim: selected?.displayTitle ?? target?.title ?? "—")
@@ -1481,7 +1412,7 @@ struct DictationOverlayView: View {
           selected?.id != conversation.id || selected?.owner?.id != conversation.owner?.id
         {
           Button {
-            state.chooseComposerTarget(conversation)
+            state.chooseComposerTarget(conversation, viewing: conversation)
           } label: {
             Text("Write to \(conversation.displayTitle)")
           }

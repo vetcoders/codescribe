@@ -149,14 +149,13 @@ struct OverlayConversationView: View {
   /// Optional controls for the horizontal bus window only.
   var navigationActions: AnyView? = nil
   var navigationIndicators: AnyView? = nil
-  /// Standard window may compose for a different frozen conversation.
+  /// The recipient may differ; draft state always belongs to `conversation`.
   var composerConversation: OverlayConversation? = nil
   var composerAvailable = true
   var composerMicrophoneOpen: Bool? = nil
   var composerRouting: AnyView? = nil
   var onPrepareHeldEdit: ((OverlayConversationMessage) -> UUID)? = nil
   var onReturnHeldText: ((OverlayConversationMessage, String, UUID) -> Bool)? = nil
-  var onNavigateComposerReply: (() -> Void)? = nil
   var conversationNavigationRequest: OverlayState.ConversationNavigationRequest? = nil
   /// Intercom only tightens the container and composer insets. Messages keep
   /// the same formatted bubbles in attached, main and detached conversations.
@@ -441,13 +440,7 @@ struct OverlayConversationView: View {
           onRemoveCaptureAttachment: onRemoveCaptureAttachment,
           captureAttachmentError: captureAttachmentError,
           onRetryCaptureAttachments: onRetryCaptureAttachments,
-          onNavigateReply: {
-            if let onNavigateComposerReply {
-              onNavigateComposerReply()
-            } else {
-              navigateToReply(replySelection?.messageID)
-            }
-          },
+          onNavigateReply: { navigateToReply(replySelection?.messageID) },
           draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
           draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
           onActivateDraftSync: onActivateDraftSync,
@@ -456,7 +449,7 @@ struct OverlayConversationView: View {
         )
         // A reused native coordinator must never redirect an old owner's
         // proposal or undo history into a different conversation's binding.
-        .id([target.id, target.owner?.id ?? ""])
+        .id([conversation.id, conversation.owner?.id ?? ""])
         if let sendError { composerError(sendError) }
         if let playbackError {
           composerError(playbackError)
