@@ -49,18 +49,18 @@
       </div>
     </header>
     <div class="cs-workspace">
+      <button
+        type="button"
+        class="cs-icon cs-panel-toggle cursor-interaction"
+        data-action="sidebar"
+        aria-label="Zwiń panel agentów"
+        aria-expanded="true"
+        data-tooltip="Zwiń panel agentów"
+      >
+        <i data-lucide="panel-right-close" aria-hidden="true"></i>
+      </button>
       <main class="cs-conversation">
         <header class="cs-conversation-heading">
-          <button
-            type="button"
-            class="cs-icon cursor-interaction"
-            data-action="conversation"
-            aria-label="Zwiń rozmowę"
-            aria-expanded="true"
-            data-tooltip="Zwiń rozmowę"
-          >
-            <i data-lucide="panel-left-close" aria-hidden="true"></i>
-          </button>
           <div class="cs-heading-text">
             <div class="cs-heading-name">
               <h2 data-title>Rozmowa · Tola</h2>
@@ -175,16 +175,6 @@
             <h2>Agenci</h2>
             <span data-agent-count>4 kanały</span>
           </div>
-          <button
-            type="button"
-            class="cs-icon cursor-interaction"
-            data-action="sidebar"
-            aria-label="Zwiń panel agentów"
-            aria-expanded="true"
-            data-tooltip="Zwiń panel agentów"
-          >
-            <i data-lucide="panel-right-close" aria-hidden="true"></i>
-          </button>
         </header>
         <nav class="cs-special" aria-label="Wspólna rozmowa i skrzynka">
           <button
@@ -382,6 +372,7 @@
     cursor: default;
   }
   #cs-bus-merged .cs-workspace {
+    position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--cs-sidebar-width);
     min-height: 690px;
@@ -1035,181 +1026,46 @@
     padding: 2px;
     display: flex;
   }
-  #cs-bus-merged.cs-collapsed .cs-workspace {
-    grid-template-columns: minmax(0, 1fr) 90px;
-  }
-  #cs-bus-merged.cs-collapsed .cs-sidebar-heading {
-    justify-content: center;
-    padding: 4px 0;
-    min-height: 44px;
-  }
-  #cs-bus-merged.cs-conversation-folded .cs-workspace {
-    grid-template-columns: 52px minmax(0, 1fr);
-  }
-  #cs-bus-merged.cs-conversation-folded .cs-heading-text,
-  #cs-bus-merged.cs-conversation-folded .cs-current-actions,
-  #cs-bus-merged.cs-conversation-folded .cs-message-area,
-  #cs-bus-merged.cs-conversation-folded .cs-composer-area {
-    display: none;
-  }
-  #cs-bus-merged.cs-conversation-folded .cs-conversation-heading {
-    overflow: hidden;
-  }
-  #cs-bus-merged.cs-collapsed .cs-sidebar-heading-copy,
-  #cs-bus-merged.cs-collapsed .cs-special-copy,
-  #cs-bus-merged.cs-collapsed .cs-special-tail {
-    display: none;
-  }
-  #cs-bus-merged.cs-collapsed .cs-special {
-    padding: 0 7px 10px;
-    gap: 8px;
-  }
-  #cs-bus-merged.cs-collapsed .cs-special-row {
-    padding: 4px;
-    justify-content: center;
-    width: 34px;
-    min-height: 28px;
-    margin-inline: auto;
-    position: relative;
-    background: var(--cs-card);
-    border-color: transparent;
-    border-radius: 999px;
-  }
-  #cs-bus-merged.cs-collapsed .cs-special-row .cs-channel-digit {
-    background: transparent;
-  }
-  #cs-bus-merged.cs-collapsed .cs-special-row .cs-count {
+  #cs-bus-merged .cs-panel-toggle {
     position: absolute;
-    left: calc(100% + 2px);
-    right: auto;
-    top: -5px;
-    min-width: 18px;
-    height: 18px;
-    font-size: 10px;
-  }
-  #cs-bus-merged.cs-collapsed .cs-roster {
-    padding: 13px 7px;
-    gap: 10px;
-  }
-  #cs-bus-merged.cs-collapsed .cs-agent {
-    padding: 0;
-    width: 34px;
-    align-self: center;
-    border: 0;
-    background: var(--cs-card);
-    border-radius: 999px;
-  }
-  #cs-bus-merged.cs-collapsed .cs-agent.cs-selected {
-    border-color: var(--cs-selected-border);
-  }
-  #cs-bus-merged.cs-collapsed .cs-agent-header {
+    top: 8px;
+    right: 14px;
+    z-index: 5;
+    width: 28px;
     height: 28px;
-    justify-content: center;
   }
-  #cs-bus-merged.cs-collapsed .cs-agent-open {
-    flex: 0 0 auto;
-    width: 34px;
-    justify-content: center;
-    gap: 4px;
-    height: 100%;
-    position: relative;
+  #cs-bus-merged.cs-collapsed .cs-workspace {
+    grid-template-columns: minmax(0, 1fr);
   }
-  #cs-bus-merged.cs-collapsed .cs-agent-open .cs-channel-digit {
-    background: transparent;
-    width: auto;
-    font-size: 13px;
-    font-weight: 600;
-    order: 2;
-  }
-  #cs-bus-merged.cs-collapsed .cs-agent-open .cs-online-dot {
-    order: 1;
-  }
-  #cs-bus-merged.cs-collapsed .cs-agent-open .cs-count {
-    position: absolute;
-    top: -5px;
-    left: calc(100% + 2px);
-    right: auto;
-    min-width: 18px;
-    height: 18px;
-    font-size: 10px;
-    order: 3;
-  }
-  #cs-bus-merged.cs-collapsed .cs-agent-name,
-  #cs-bus-merged.cs-collapsed .cs-status-marks,
-  #cs-bus-merged.cs-collapsed .cs-agent-header-controls,
-  #cs-bus-merged.cs-collapsed .cs-agent-clock,
-  #cs-bus-merged.cs-collapsed .cs-agent-meta,
-  #cs-bus-merged.cs-collapsed .cs-agent-preview {
+  #cs-bus-merged.cs-collapsed .cs-sidebar {
     display: none;
   }
-  #cs-bus-merged.cs-collapsed .cs-saved {
-    padding: 0 7px 12px;
-  }
-  #cs-bus-merged.cs-collapsed .cs-saved-toggle {
-    justify-content: center;
-    padding: 12px 0 3px;
-  }
-  #cs-bus-merged.cs-collapsed .cs-saved-label,
-  #cs-bus-merged.cs-collapsed .cs-saved-count,
-  #cs-bus-merged.cs-collapsed .cs-saved-chevron,
-  #cs-bus-merged.cs-collapsed .cs-saved-list {
-    display: none !important;
+  #cs-bus-merged.cs-collapsed .cs-current-actions {
+    padding-right: 36px;
   }
   @media (max-width: 750px) {
-    #cs-bus-merged .cs-workspace {
-      grid-template-columns: minmax(0, 1fr) 270px;
-    }
-    #cs-bus-merged .cs-conversation-heading {
-      padding: 15px;
-    }
-    #cs-bus-merged .cs-message-area {
-      padding: 18px 14px;
-    }
-    #cs-bus-merged .cs-current-actions {
-      gap: 4px;
-    }
-    #cs-bus-merged .cs-message.cs-from-me {
-      margin-left: 14px;
-    }
-    #cs-bus-merged .cs-message {
-      padding: 12px;
-    }
-    #cs-bus-merged .cs-chrome {
-      gap: 10px;
-    }
-    #cs-bus-merged .cs-chrome-actions {
-      gap: 4px;
-    }
-  }
-  @media (max-width: 580px) {
     #cs-bus-merged .cs-workspace {
       grid-template-columns: minmax(0, 1fr);
     }
     #cs-bus-merged:not(.cs-collapsed) .cs-sidebar {
+      position: absolute;
+      inset: 0;
+      z-index: 4;
+      background: var(--cs-bg);
       border-left: 0;
-      border-top: 1px solid var(--cs-line);
     }
-    #cs-bus-merged .cs-sidebar-heading {
-      min-height: 55px;
+    #cs-bus-merged:not(.cs-collapsed) .cs-conversation {
+      visibility: hidden;
+      pointer-events: none;
     }
-    #cs-bus-merged .cs-roster {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+    #cs-bus-merged .cs-current-actions {
+      padding-right: 36px;
     }
-    #cs-bus-merged .cs-agent-header-controls {
-      gap: 0;
+    #cs-bus-merged .cs-message-area {
+      padding: 16px 12px;
     }
-    #cs-bus-merged .cs-agent-header-controls .cs-icon {
-      width: 21px;
-    }
-    #cs-bus-merged .cs-agent-name {
-      max-width: 65px;
-    }
-    #cs-bus-merged.cs-collapsed .cs-workspace {
-      grid-template-columns: minmax(0, 1fr) 51px;
-    }
-    #cs-bus-merged.cs-collapsed .cs-roster {
-      display: flex;
+    #cs-bus-merged .cs-message.cs-from-me {
+      margin-left: 0;
     }
     #cs-bus-merged .cs-wave {
       display: none;
@@ -1217,38 +1073,8 @@
     #cs-bus-merged .cs-chrome-time {
       margin-left: auto;
     }
-    #cs-bus-merged .cs-chrome-actions .cs-icon:nth-child(-n + 2) {
-      display: none;
-    }
-    #cs-bus-merged .cs-conversation-heading {
-      padding: 14px 12px;
-    }
-    #cs-bus-merged .cs-current-actions {
-      gap: 5px;
-    }
-    #cs-bus-merged .cs-current-actions .cs-icon {
-      width: 27px;
-      height: 27px;
-    }
-    #cs-bus-merged .cs-message-area {
-      padding: 16px 12px;
-    }
     #cs-bus-merged .cs-composer-area {
       padding: 10px;
-    }
-    #cs-bus-merged .cs-message.cs-from-me {
-      margin-left: 0;
-    }
-    #cs-bus-merged .cs-message-text {
-      font-size: 13px;
-    }
-    #cs-bus-merged .cs-routing-state {
-      font-size: 10px;
-    }
-    #cs-bus-merged .cs-notice {
-      font-size: 11px;
-      left: 8px;
-      right: 8px;
     }
   }
   @media (max-width: 390px) {
@@ -1387,7 +1213,6 @@
       view: "2",
       recipient: "2",
       collapsed: false,
-      conversationFolded: false,
       mic: null,
       filter: "all",
     };
@@ -1707,11 +1532,6 @@
     function render() {
       closeMenu();
       root.classList.toggle("cs-collapsed", Boolean(state.collapsed));
-      if (state.collapsed) state.conversationFolded = false;
-      root.classList.toggle(
-        "cs-conversation-folded",
-        Boolean(state.conversationFolded)
-      );
       root.style.setProperty("--cs-sidebar-width", design.sidebarWidth + "px");
       root.style.setProperty(
         "--cs-card-padding",
@@ -1757,19 +1577,6 @@
         Boolean(micAgent)
       );
       const toggle = $('[data-action="sidebar"]');
-      const conversationToggle = $('[data-action="conversation"]');
-      const conversationTitle = state.conversationFolded
-        ? "Rozwiń rozmowę"
-        : "Zwiń rozmowę";
-      conversationToggle.setAttribute(
-        "aria-expanded",
-        String(!state.conversationFolded)
-      );
-      conversationToggle.setAttribute("aria-label", conversationTitle);
-      conversationToggle.setAttribute("data-tooltip", conversationTitle);
-      conversationToggle.innerHTML = `<i data-lucide="${
-        state.conversationFolded ? "panel-left-open" : "panel-left-close"
-      }" aria-hidden="true"></i>`;
       toggle.setAttribute("aria-expanded", String(!state.collapsed));
       toggle.setAttribute(
         "aria-label",
@@ -1831,7 +1638,7 @@
       if (!b || !root.contains(b) || b.disabled) return;
       if (b.dataset.view) {
         state.view = b.dataset.view;
-        state.conversationFolded = false;
+        if (root.clientWidth <= 750) state.collapsed = true;
         render();
         persist();
         return;
@@ -1863,13 +1670,6 @@
           break;
         case "sidebar":
           state.collapsed = !state.collapsed;
-          if (state.collapsed) state.conversationFolded = false;
-          render();
-          persist();
-          break;
-        case "conversation":
-          state.conversationFolded = !state.conversationFolded;
-          if (state.conversationFolded) state.collapsed = false;
           render();
           persist();
           break;

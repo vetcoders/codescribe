@@ -991,7 +991,7 @@ final class OverlayState {
     automaticFoldInFlight = nil
     guard presentationMode == fold.mode, nowProvider() < fold.landsAt else { return }
     applyPresentationMode(.expanded, cause: .automatic)
-    showsAgentMonitor = fold.agentMonitor && !agentListPinned
+    showsAgentMonitor = fold.agentMonitor
   }
 
   func clearPointerHover() {
@@ -1286,7 +1286,7 @@ final class OverlayState {
       let root = OverlayChannelDeliveryReader.productionRoot()
       let cacheRoot = URL(fileURLWithPath: CodescribeConfig().churnDir(), isDirectory: true)
       restoreReadState(cacheRoot: cacheRoot)
-      restoreAgentsLayout(defaults: .standard)
+      restoreAgentSidebar(defaults: .standard)
       observeChannelDelivery(
         using: OverlayChannelDeliveryReader(
           root: root, cacheRoot: cacheRoot,
@@ -1461,90 +1461,47 @@ final class OverlayState {
 
   /// Folding hides the roster but retains which canvas will unfold.
   private(set) var windowContentSurface: OverlayContentSurface = .transcription
-  /// Whether the current frame can host the roster column. Width never
-  /// changes the user's pane choice. Reported by the layout pass.
+  /// Whether the current frame can host both readable columns. Geometry
+  /// chooses the panel's placement, never its visibility.
   private(set) var agentDrawerDocked = false
   /// Bumped when an explicit roster reveal or the name pill asks the list
   /// to focus its selected row.
   private(set) var agentDrawerFocusRevision: UInt64 = 0
-  /// The panes the list's corner buttons chose (Maciej, 2026-10-19). Stored
-  /// only once `restoreAgentsLayout(defaults:)` ran, so a test state never
-  /// writes the app's defaults.
-  private(set) var agentsLayout: OverlayAgentsLayout = .split
-  @ObservationIgnored private var agentsLayoutDefaults: UserDefaults?
-  static let agentsLayoutDefaultsKey = "Overlay.agentsLayout.v1"
-
-  /// The explicit pane choice keeps the roster beside a selected conversation.
-  /// A hide must change that choice as well as the transient reveal flag.
-  var agentListPinned: Bool {
-    OverlayAgentDrawerLayout.listPinned(
-      layout: agentsLayout, docked: agentDrawerDocked,
-      conversationSelected: selectedConversationID != nil)
-  }
+  @ObservationIgnored private var agentSidebarDefaults: UserDefaults?
+  static let agentSidebarVisibleDefaultsKey = "Overlay.agentSidebarVisible.v1"
 
   func setAgentDrawerDocked(_ docked: Bool) {
     agentDrawerDocked = docked
   }
 
-  /// The layout chosen last, read before the panel first shows. A roster
-  /// once dragged across the window was stored as an oversized width; it
-  /// becomes the agents view, and the width the default again.
-  func restoreAgentsLayout(defaults: UserDefaults) {
-    agentsLayoutDefaults = defaults
-    if let stored = defaults.string(forKey: Self.agentsLayoutDefaultsKey)
-      .flatMap(OverlayAgentsLayout.init(rawValue:))
-    {
-      agentsLayout = stored
-    } else if defaults.double(forKey: OverlayAgentDrawerLayout.widthDefaultsKey)
-      >= OverlayAgentDrawerLayout.legacyFillsWindowWidth
-    {
-      defaults.set(300.0, forKey: OverlayAgentDrawerLayout.widthDefaultsKey)
-      setAgentsLayout(.agents)
-    }
+  /// Adopt the previous pane choice once. Thereafter one Boolean owns panel
+  /// visibility; a remembered covering width never becomes a layout state.
+  func restoreAgentSidebar(defaults: UserDefaults) {
+    let stored = defaults.object(forKey: Self.agentSidebarVisibleDefaultsKey) as? Bool
+    let previousLayout = defaults.string(forKey: "Overlay.agentsLayout.v1")
+    let oversized = defaults.double(forKey: OverlayAgentDrawerLayout.widthDefaultsKey) >= 100_000
+    if oversized { defaults.set(300.0, forKey: OverlayAgentDrawerLayout.widthDefaultsKey) }
+    let visible = stored ?? (previousLayout == "split" || previousLayout == "agents" || oversized)
+    agentSidebarDefaults = defaults
+    showsAgentMonitor = visible
+    defaults.set(visible, forKey: Self.agentSidebarVisibleDefaultsKey)
+    defaults.removeObject(forKey: "Overlay.agentsLayout.v1")
   }
 
-  func setAgentsLayout(_ layout: OverlayAgentsLayout) {
-    guard layout != agentsLayout else { return }
-    agentsLayout = layout
-    agentsLayoutDefaults?.set(layout.rawValue, forKey: Self.agentsLayoutDefaultsKey)
-    if layout == .split { onAgentSidebarPresented?() }
-    onChannelPresentationChanged?()
-  }
-
-  /// The conversation edge reveals its canvas beside the list at any width.
-  func showAgentsCanvas() {
-    setAgentsLayout(.split)
-  }
-
-  /// The conversation edge folds only its own canvas.
-  func hideAgentsCanvas() {
-    setAgentsLayout(.agents)
-  }
-
-  /// The roster's own button folds it, preserving selection and drafts.
-  func foldAgentList() {
-    hideAgentSidebar()
-  }
-
-  /// The roster's rail always requests a side column, never a covering list.
-  func unfoldAgentList() {
-    setAgentsLayout(.split)
-    showAgentMonitor(expand: false)
-    focusAgentRoster()
-  }
-
-  /// A row chosen in the list, or with the middle-click chooser. In the
-  /// agents view the conversation slides out: the list is the switcher
-  /// (Maciej, 2026-10-19). A followed reply or the Agents button keeps it.
+  /// A covering list returns to the chat after selection. A docked list stays
+  /// beside it; neither choice changes the frozen text recipient or draft.
   func chooseConversation(_ id: String) {
-    if agentsLayout == .agents { setAgentsLayout(.split) }
     selectConversation(id)
   }
 
   /// The agent conversation viewed last. The transcription clears the
   /// selection; this keeps the way back for the Agents button.
   @ObservationIgnored private var lastAgentConversationID: String?
-  private(set) var showsAgentMonitor = false
+  private(set) var showsAgentMonitor = false {
+    didSet {
+      agentSidebarDefaults?.set(showsAgentMonitor, forKey: Self.agentSidebarVisibleDefaultsKey)
+    }
+  }
   /// Saved-conversation search in the agent drawer. Owned here because the
   /// drawer value is rebuilt on every overlay body pass and only its
   /// `monitorBody(...)` is installed, so view-local `@State` never persisted
@@ -2268,7 +2225,7 @@ final class OverlayState {
     windowContentSurface = id == nil ? .transcription : .agents
     if let id { lastAgentConversationID = id }
     conversationFocusRevision &+= 1
-    showsAgentMonitor = false
+    if id == nil || !agentDrawerDocked { showsAgentMonitor = false }
     pendingChannelConversation = nil
     if id != nil, let expansion {
       expandAgentSurface(cause: expansion)
@@ -2281,7 +2238,7 @@ final class OverlayState {
   /// Maciej (2026-10-16): clicking an agent's name in its reply bubble opens that agent's chat.
   func openConversation(for owner: OverlayConversationOwner) {
     guard let target = conversations.first(where: { $0.owner?.id == owner.id })?.id else { return }
-    selectConversation(target)
+    chooseConversation(target)
   }
 
   func showTranscription() {
@@ -2295,15 +2252,10 @@ final class OverlayState {
 
   private func showAgentMonitor(expansion: OverlayPresentationCause?) {
     windowContentSurface = .agents
-    if agentsLayout == .rail { setAgentsLayout(.split) }
+    showsAgentMonitor = true
     onAgentSidebarPresented?()
     pendingChannelConversation = nil
-    if agentListPinned {
-      // The explicit pane choice already presents the roster.
-      agentDrawerFocusRevision &+= 1
-    } else {
-      showsAgentMonitor = true
-    }
+    agentDrawerFocusRevision &+= 1
     if let expansion {
       expandAgentSurface(cause: expansion)
     } else {
@@ -2326,7 +2278,7 @@ final class OverlayState {
           Task { await toggleConversationMicrophone(conversation) }
         }
       } else {
-        selectConversation(recording)
+        chooseConversation(recording)
       }
       return
     }
@@ -2358,7 +2310,8 @@ final class OverlayState {
   var agentsButtonStopsRecording: Bool {
     guard let recording = recordingAgentConversationID else { return false }
     if presentationMode == .mini { return true }
-    return !isCollapsed && !showsAgentMonitor && selectedConversationID == recording
+    return !isCollapsed && (!showsAgentMonitor || agentDrawerDocked)
+      && selectedConversationID == recording
   }
 
   /// Where one press on Agents lands: the conversation with the newest unread
@@ -2391,7 +2344,6 @@ final class OverlayState {
   func hideAgentSidebar() {
     endAgentChoosing()
     showsAgentMonitor = false
-    setAgentsLayout(.rail)
     windowContentSurface = selectedConversationID == nil ? .transcription : .agents
     markVisibleConversationRead()
     onChannelPresentationChanged?()
@@ -2459,7 +2411,7 @@ final class OverlayState {
   }
 
   private var agentListOnScreen: Bool {
-    !isCollapsed && (showsAgentMonitor || agentListPinned)
+    !isCollapsed && windowContentSurface == .agents && showsAgentMonitor
   }
 
   func handleAgentGesture(_ input: CsAgentGestureInput) {
@@ -2626,7 +2578,7 @@ final class OverlayState {
     }
     selectedConversationID = matches[0].id
     conversationFocusRevision &+= 1
-    showsAgentMonitor = false
+    if !agentDrawerDocked { showsAgentMonitor = false }
     pendingChannelConversation = nil
     markVisibleConversationRead()
   }
@@ -2637,7 +2589,9 @@ final class OverlayState {
   }
 
   private func markVisibleConversationRead() {
-    guard conversationIsVisible, !isCollapsed, !showsAgentMonitor, let selectedConversation else {
+    guard conversationIsVisible, !isCollapsed,
+      !showsAgentMonitor || agentDrawerDocked, let selectedConversation
+    else {
       return
     }
     let unread = Set(selectedConversation.replyIDs).subtracting(viewedReplyIDs)

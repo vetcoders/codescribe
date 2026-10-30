@@ -1078,6 +1078,7 @@ final class OverlayResizeHitTests: XCTestCase {
       id: wideOwner.id, channel: "2", name: "lena", owner: wideOwner, messages: [])
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [wideConversation]))
     state.selectConversation(wideConversation.id)
+    state.showAgentMonitor()
     let recorder = MicrophoneFrameRecorder()
     let host = NSHostingView(
       rootView:
@@ -1098,7 +1099,7 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(
       drawer.minX, size.width - 300, accuracy: 1, "the column sits beside the conversation")
     XCTAssertEqual(drawer.maxY, size.height, accuracy: 0.5, "full height under the header")
-    XCTAssertFalse(state.showsAgentMonitor, "docked: nothing opens")
+    XCTAssertTrue(state.showsAgentMonitor, "the explicitly opened panel stays visible")
     XCTAssertTrue(state.agentDrawerDocked)
   }
 

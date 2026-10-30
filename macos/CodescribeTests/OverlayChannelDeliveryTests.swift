@@ -233,7 +233,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(state.conversationDrafts["10"], "private retained text")
   }
 
-  func testHumanInboxRailUsesMailboxGlyphAndSelectionWithoutAgentCommands() {
+  func testHumanInboxSelectionNeverInvokesAgentCommands() {
     let inbox = OverlayConversation.humanInbox()
     var selected: [String?] = []
     var microphones: [UInt8] = []
@@ -242,26 +242,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       onToggleChannel: { microphones.append($0) }, conversations: [inbox],
       selectedConversationID: inbox.id, unreadCounts: [inbox.id: 2],
       onSelectConversation: { selected.append($0) })
-    let display = roster.railPillDisplay(inbox, channel: nil)
-    XCTAssertEqual(display.figure, "")
-    XCTAssertEqual(display.symbol, "tray")
-    XCTAssertNil(display.dot, "the human has no agent presence status")
-    XCTAssertTrue(display.selected)
-    XCTAssertTrue(display.unread)
-    XCTAssertTrue(display.enabled)
     XCTAssertNil(roster.agentPillMenu(for: "10").agentActions)
     roster.selectChannelConversation("10")
     XCTAssertEqual(selected, [inbox.id])
     XCTAssertTrue(microphones.isEmpty)
-    let unavailable = OverlayChannelStatusView(
-      channels: [], unavailable: false, palette: .dark, animates: false,
-      conversations: [inbox])
-    XCTAssertFalse(unavailable.railPillDisplay(inbox, channel: nil).enabled)
-    let agent = OverlayChannelDelivery(
-      channel: "2", agent: "Ada", deliveryID: nil, stage: nil, isOpen: false)
-    let agentDisplay = roster.railPillDisplay(nil, channel: agent)
-    XCTAssertEqual(agentDisplay.figure, "2")
-    XCTAssertNil(agentDisplay.symbol, "numbered agents retain the digit and status dot")
   }
 
   func testHumanInboxIsEmptySelectableAndNeverAnAgentTarget() async throws {
@@ -2272,7 +2256,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let after = await reader.consumedMetadataBytes
     XCTAssertEqual(repeated, initial)
     XCTAssertEqual(
-      after, before, "The cache must retain bounded projections without retaining twelve MiB of payload")
+      after, before,
+      "The cache must retain bounded projections without retaining twelve MiB of payload")
   }
 
   func testLargePendingEvidencePreservesQueueChangesAndCanonicalMessageText() async throws {
@@ -2287,7 +2272,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let initial = try await reader.readSnapshot()
     XCTAssertEqual(initial.deliveries.first?.stage, .queued)
-    XCTAssertEqual(initial.conversations.first(where: { $0.owner?.leaseID == Fixture.leaseID })?.messages.map(\.text), ["Iwo"])
+    XCTAssertEqual(
+      initial.conversations.first(where: { $0.owner?.leaseID == Fixture.leaseID })?.messages.map(
+        \.text), ["Iwo"])
     let coldBytes = await reader.consumedMetadataBytes
     let coldOpens = await reader.metadataFileOpens
     for _ in 0..<3 {
@@ -2300,7 +2287,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(steadyOpens, coldOpens)
     try fixture.lease(pending: [])
     let changed = try await reader.readSnapshot()
-    XCTAssertEqual(changed.conversations.first(where: { $0.owner?.leaseID == Fixture.leaseID })?.messages.map(\.text), ["Iwo"])
+    XCTAssertEqual(
+      changed.conversations.first(where: { $0.owner?.leaseID == Fixture.leaseID })?.messages.map(
+        \.text), ["Iwo"])
     let changedOpens = await reader.metadataFileOpens
     XCTAssertGreaterThan(changedOpens, steadyOpens)
     let original = try Data(contentsOf: fixture.bus)

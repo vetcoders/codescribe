@@ -80,6 +80,79 @@ final class OverlayBusWindowTests: XCTestCase {
     }
   }
 
+  func testPanelPlacementKeepsTheNativeEditorAndGivesTheChatItsAvailableWidth() throws {
+    let target = try conversation("2", canonicalLease: true)
+    let state = OverlayState()
+    apply([target], to: state)
+    state.selectConversation(target.id)
+    state.chooseComposerTarget(target)
+    state.setConversationDraft("Retained native editor", for: target.id)
+    let suite = UUID().uuidString
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    var drawer = CGRect.zero
+    let host = NSHostingView(
+      rootView: DictationOverlayView(state: state)
+        .defaultAppStorage(defaults)
+        .environment(\.colorScheme, .dark)
+        .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { drawer = $0 }
+        .transaction { $0.disablesAnimations = true })
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 1100, height: 680)
+    let panel = NSPanel(
+      contentRect: NSRect(x: -10000, y: -10000, width: 1100, height: 680),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.contentView = host
+    BackgroundTestWindow.present(panel)
+    defer {
+      panel.contentView = nil
+      panel.close()
+    }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+      host.layoutSubtreeIfNeeded()
+    }
+    func editor(_ root: NSView) -> NSTextView? {
+      if let text = root as? NSTextView, text.string == "Retained native editor" { return text }
+      return root.subviews.lazy.compactMap { editor($0) }.first
+    }
+    func conversationScroll(_ root: NSView) -> NSScrollView? {
+      if let marker = root as? ChatLiveScrollObserver.AttachmentView {
+        return marker.enclosingScrollView
+      }
+      return root.subviews.lazy.compactMap { conversationScroll($0) }.first
+    }
+    settle()
+    let originalEditor = try XCTUnwrap(editor(host))
+    originalEditor.setSelectedRange(NSRange(location: 2, length: 4))
+    for (width, shown) in [
+      (CGFloat(1100), false), (1100, true), (380, true), (380, false), (1100, false),
+    ] {
+      panel.setContentSize(NSSize(width: width, height: 680))
+      if shown { state.showAgentMonitor() } else { state.hideAgentSidebar() }
+      settle()
+      let scroll = try XCTUnwrap(conversationScroll(host))
+      let frame = scroll.convert(scroll.bounds, to: host)
+      print("BUS_PANEL_WIDTH window=\(width) shown=\(shown) chat=\(frame) panel=\(drawer)")
+      if shown && state.agentDrawerDocked {
+        XCTAssertEqual(frame.width + drawer.width, width, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(frame.width, 320)
+      } else {
+        XCTAssertEqual(
+          frame.width, width, accuracy: 1, "no permanent edge or rail takes chat width")
+        XCTAssertEqual(drawer.width, shown ? width : 0, accuracy: 1)
+      }
+      XCTAssertEqual(panel.frame.width, width, accuracy: 1, "panel reveal never widens the host")
+      XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+      XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 4))
+      XCTAssertEqual(state.selectedConversationID, target.id)
+      XCTAssertEqual(state.resolvedComposerTarget(viewing: target)?.id, target.id)
+      XCTAssertFalse(state.conversationMicrophoneOpen(target))
+    }
+  }
+
   func testMessageBubbleContentReflowsInsideItsCapAfterNarrowing() throws {
     let target = try conversation("2", canonicalLease: true)
     var sent = try outgoing(in: target, acknowledged: true)
@@ -189,20 +262,17 @@ final class OverlayBusWindowTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
       }
       var pinnedTop: CGFloat?
-      for layout in [OverlayAgentsLayout.split, .rail, .agents, .split] {
-        state.setAgentsLayout(layout)
+      for shown in [true, false, true, false] {
+        if shown { state.showAgentMonitor() } else { state.hideAgentSidebar() }
         settle()
-        if layout != .agents {
-          let scroll = try XCTUnwrap(conversationScroll(host))
-          let rect = scroll.contentView.convert(scroll.contentView.bounds, to: host)
-          let top = host.isFlipped ? rect.minY : host.bounds.maxY - rect.maxY
-          print("BUS_PANE_HEADER scale=\(scale) layout=\(layout.rawValue) viewportTop=\(top)")
-          if let pinnedTop {
-            XCTAssertEqual(
-              top, pinnedTop, accuracy: 1, "pane folding must not add or remove a header row")
-          } else {
-            pinnedTop = top
-          }
+        let scroll = try XCTUnwrap(conversationScroll(host))
+        let rect = scroll.contentView.convert(scroll.contentView.bounds, to: host)
+        let top = host.isFlipped ? rect.minY : host.bounds.maxY - rect.maxY
+        print("BUS_PANE_HEADER scale=\(scale) panelShown=\(shown) viewportTop=\(top)")
+        if let pinnedTop {
+          XCTAssertEqual(top, pinnedTop, accuracy: 1, "panel visibility keeps one header band")
+        } else {
+          pinnedTop = top
         }
         XCTAssertEqual(state.selectedConversationID, thread.id)
         XCTAssertEqual(state.resolvedComposerTarget(viewing: thread)?.id, other.id)
@@ -361,8 +431,8 @@ final class OverlayBusWindowTests: XCTestCase {
 
     state.selectConversation(second.id, expand: false)
     state.initializeComposerTarget(second)
-    state.foldAgentList()
-    state.unfoldAgentList()
+    state.hideAgentSidebar()
+    state.showAgentMonitor()
 
     XCTAssertEqual(state.selectedConversationID, second.id)
     XCTAssertEqual(state.resolvedComposerTarget(viewing: second)?.id, first.id)
@@ -694,19 +764,22 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertFalse(view.agentPlaybackEnabled(for: row))
   }
 
-  func testRailCountAndUnreadFlagUseTheSameConversationIdentity() throws {
+  func testMapUnreadFlagUsesTheCurrentConversationIdentity() throws {
     let original = try conversation("2")
     let replacement = try conversation("2", session: "replacement", lease: "b")
-    let view = OverlayChannelStatusView(
-      channels: [row], unavailable: false, palette: .dark, animates: false,
-      conversations: [original, replacement], unreadCounts: [original.id: 12],
-      onSelectConversation: { _ in })
-    let unread = view.railPillDisplay(original, channel: row)
-    XCTAssertEqual(unread.unreadCount, 12)
-    XCTAssertTrue(unread.unread)
-    let fresh = view.railPillDisplay(replacement, channel: row)
-    XCTAssertEqual(fresh.unreadCount, 0)
-    XCTAssertFalse(fresh.unread)
+    for current in [original, replacement] {
+      let view = OverlayChannelStatusView(
+        channels: [row], unavailable: false, palette: .dark, animates: false,
+        hudStates: [
+          "2": OverlayChannelHudProjection(
+            open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+            provider: current.owner?.provider, providerSessionID: current.owner?.providerSessionID)
+        ],
+        conversations: [original, replacement], unreadCounts: [original.id: 12],
+        onSelectConversation: { _ in })
+      let chip = try XCTUnwrap(view.channelMapModel.chips.first { $0.digit == "2" })
+      XCTAssertEqual(chip.unread, current.id == original.id)
+    }
   }
 
   func testCompactCardsRenderWithinTheirHeightBudgetInBothAppearances() throws {
@@ -1028,65 +1101,6 @@ final class OverlayBusWindowTests: XCTestCase {
     }
   }
 
-  func testFoldedRailKeepsChannelDigitsSeparateFromUnreadCounts() throws {
-    let digits = ["3", "4", "5", "8"]
-    let counts = [7, 13, 11, 156]
-    let conversations = try digits.map { try conversation($0, canonicalLease: true) }
-    let channels = digits.map {
-      OverlayChannelDelivery(
-        channel: $0, agent: "Agent \($0)", deliveryID: nil, stage: .received, isOpen: false)
-    }
-    let hud = Dictionary(
-      uniqueKeysWithValues: conversations.map { target in
-        (
-          target.channel,
-          OverlayChannelHudProjection(
-            open: false, loud: false, autosealDeadline: nil, followerAlive: true,
-            provider: target.owner?.provider, providerSessionID: target.owner?.providerSessionID)
-        )
-      })
-    let unread = Dictionary(
-      uniqueKeysWithValues: zip(conversations, counts).map { ($0.0.id, $0.1) })
-    let view = OverlayChannelStatusView(
-      channels: channels, unavailable: false, palette: .dark, animates: false, hudStates: hud,
-      conversations: conversations, unreadCounts: unread, onSelectConversation: { _ in })
-    let scale: CGFloat = 2
-    let width = OverlayAgentDrawerLayout.railWidth(textScale: scale)
-    let host = NSHostingView(
-      rootView: view.railBody(maximumHeight: 700, onUnfold: {})
-        .frame(width: width, height: 700, alignment: .top)
-        .environment(\.csTextScale, scale)
-        .background(OverlayAppearancePalette.dark.desktopBackground.color))
-    host.frame = NSRect(x: 0, y: 0, width: width, height: 700)
-    host.layoutSubtreeIfNeeded()
-    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-    host.cacheDisplay(in: host.bounds, to: bitmap)
-    let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
-    request.recognitionLanguages = ["en-US"]
-    request.usesLanguageCorrection = false
-    try VNImageRequestHandler(cgImage: try XCTUnwrap(bitmap.cgImage), options: [:]).perform([
-      request
-    ])
-    let words = (request.results ?? []).flatMap { observation -> [String] in
-      guard let value = observation.topCandidates(1).first?.string else { return [] }
-      return value.split(whereSeparator: \.isWhitespace).map { word in
-        let numeric = word.filter { $0.isNumber || $0 == "+" }
-        return numeric.contains("+") ? numeric : Int(numeric).map(String.init) ?? ""
-      }
-    }
-    for expected in ["3", "7", "4", "13", "5", "11", "8", "99+"] {
-      XCTAssertTrue(
-        words.contains(expected), "separate number \(expected) missing; painted words=\(words)")
-    }
-    let image = NSImage(size: host.bounds.size)
-    image.addRepresentation(bitmap)
-    let attachment = XCTAttachment(image: image)
-    attachment.name = "Sidebar-rail-distinct-counts"
-    attachment.lifetime = .keepAlways
-    add(attachment)
-  }
-
   private func previewReply(
     in conversation: OverlayConversation, text: String
   ) -> OverlayConversationMessage {
@@ -1248,27 +1262,27 @@ final class OverlayBusWindowTests: XCTestCase {
   }
 
   func testHorizontalWindowReviewInDarkSplitLayout() throws {
-    try renderWindowForReview(dark: true, rail: false, scale: 1, width: 1000)
+    try renderWindowForReview(dark: true, panelShown: true, scale: 1, width: 1000)
   }
 
   func testHorizontalWindowReviewInLightSplitLayout() throws {
-    try renderWindowForReview(dark: false, rail: false, scale: 1, width: 1000)
+    try renderWindowForReview(dark: false, panelShown: true, scale: 1, width: 1000)
   }
 
-  func testHorizontalWindowReviewWithFoldedSidebar() throws {
-    try renderWindowForReview(dark: true, rail: true, scale: 1, width: 760)
+  func testHorizontalWindowReviewWithHiddenAgentsPanel() throws {
+    try renderWindowForReview(dark: true, panelShown: false, scale: 1, width: 760)
   }
 
-  func testHorizontalWindowReviewWithFoldedConversation() throws {
-    try renderWindowForReview(dark: true, rail: false, scale: 1, width: 1000, layout: .agents)
+  func testHorizontalWindowReviewWithCoveringAgentsPanel() throws {
+    try renderWindowForReview(dark: true, panelShown: true, scale: 1, width: 380)
   }
 
   func testHorizontalWindowReviewAtLargerTextScale() throws {
-    try renderWindowForReview(dark: true, rail: false, scale: 1.5, width: 1060)
+    try renderWindowForReview(dark: true, panelShown: true, scale: 1.5, width: 1060)
   }
 
   private func renderWindowForReview(
-    dark: Bool, rail: Bool, scale: CGFloat, width: CGFloat, layout: OverlayAgentsLayout? = nil
+    dark: Bool, panelShown: Bool, scale: CGFloat, width: CGFloat
   ) throws {
     var first = try conversation("2", canonicalLease: true)
     let second = try conversation("3", lease: "b", canonicalLease: true)
@@ -1312,8 +1326,7 @@ final class OverlayBusWindowTests: XCTestCase {
     state.selectConversation(first.id)
     state.chooseComposerTarget(second)
     state.setConversationDraft("A retained draft for Lena", for: second.id)
-    if rail { state.foldAgentList() }
-    if let layout { state.setAgentsLayout(layout) }
+    if panelShown { state.showAgentMonitor() } else { state.hideAgentSidebar() }
     let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
     XCTAssertEqual(row.broadcastIdentity?.leaseID, first.owner?.leaseID)
     XCTAssertFalse(state.visibleChannelRows.contains { $0.channel == "10" })
@@ -1346,7 +1359,7 @@ final class OverlayBusWindowTests: XCTestCase {
     image.addRepresentation(bitmap)
     let attachment = XCTAttachment(image: image)
     attachment.name =
-      "Bus-window-\(dark ? "dark" : "light")-\(rail ? "rail" : "split")-scale-\(scale)"
+      "Bus-window-\(dark ? "dark" : "light")-\(panelShown ? "agents" : "chat")-scale-\(scale)"
     attachment.lifetime = .keepAlways
     add(attachment)
     XCTAssertEqual(state.selectedConversationID, first.id)

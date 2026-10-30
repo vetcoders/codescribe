@@ -88,15 +88,19 @@ the microphone control changes whom you speak to. The named agent must be
 attached with its own provider and session identity.
 
 In the horizontal window, the conversation header keeps the viewed agent and
-its microphone, speaker and **More (…)** menu visible with either the full
-sidebar or its folded rail. Its compact header stays above the scrolling
-history, with no messages passing behind it. Conversation and agent-list
-headers share the same height. Their show/hide buttons stay on their pane
-edges in all three layouts, with a small directional arrow showing the action.
-Opening both panes no longer adds an empty row above the conversation.
-To change what you view, use the channel list or,
-in the compact form, the channel chips. Rows you can open show a faint
-highlight under the pointer.
+its microphone, speaker and **More (…)** menu above the scrolling history.
+Use the panel button at the right to show or hide **Agents**. In a wide window
+the list sits beside the conversation. In a narrow window it covers the chat;
+choosing an agent returns to the conversation. Closing the list gives all its
+width back to the chat. The window keeps the size you chose, and resizing
+preserves the draft and text recipient. The conversation has no separate
+hide/show button or folded edge, and a hidden list leaves no numbered rail.
+The compact overlay's channel chips remain available in their own form.
+
+Conversation and agent-list headers share the same compact height, without an
+extra toggle row. Message action labels use another row when necessary on a
+narrow chat so the message stays within its available width. Rows you can open
+show a faint highlight under the pointer.
 
 An agent row's **More** menu includes the detected workspace action: its
 vc-frame pane when it runs in Frame, otherwise its iTerm2 or Terminal tab. It
@@ -134,10 +138,9 @@ Use **More** to change channel-zero membership or **Do not disturb**, open the
 workspace, or remove the agent into saved conversations. A moon remains by the
 name while Do not disturb is on; a crossed antenna remains while the agent is
 outside channel zero. The waveform microphone, speaker and More button stay
-visible without hovering. Folding the list leaves a rail with channel numbers,
-the inbox and circular unread counts; the open conversation keeps its actions.
-Each unread count sits beside its channel capsule with a clear gap. Counts
-above 99 use `99+` in the folded rail while accessibility keeps the full number.
+visible without hovering. Hiding the list gives its width back to the
+conversation; reopen **Agents** to inspect the inbox or unread counts. The
+conversation keeps its own audio and More actions.
 
 Right-clicking a card opens the same secondary menu as **More**. It contains
 contact settings, the detected workspace and removal into saved conversations;

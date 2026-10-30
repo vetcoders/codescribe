@@ -357,7 +357,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         "let channel = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
     let dim = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayDisconnectedRowDim: ViewModifier {",
-      to: "struct OverlayAgentsSidebarControls {")
+      to: "struct OverlaySidebarToggleButton: View {")
     XCTAssertEqual(OverlayDisconnectedRowDim.opacity, 0.45)
     XCTAssertTrue(dim.contains(".opacity(disconnected ? Self.opacity : 1)"))
     XCTAssertTrue(dim.contains(".grayscale(disconnected ? 1 : 0)"))
@@ -428,31 +428,26 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     }
   }
 
-  func testFirstRevealHasRailBeforeAnyConversationWasOpened() {
-    for width in [CGFloat(700), 1200] {
+  func testFirstRevealHasOnePanelAndNoReservedRail() {
+    for width in [CGFloat(380), 1200] {
       let state = OverlayState.previewFormatted()
-      XCTAssertNil(state.selectedConversationID)
-      let recorder = FirstRevealRailRecorder()
+      let recorder = FirstRevealPanelRecorder()
       let host = NSHostingView(
         rootView: DictationOverlayView(state: state)
-          .onPreferenceChange(OverlayAgentRailFramePreferenceKey.self) { recorder.frame = $0 }
+          .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 }
           .frame(width: width, height: 500))
       host.sizingOptions = []
-      // This case measures first-layout preferences, not AX. Keep it away
-      // from the physical pointer, whose legitimate rail hover opens the list.
       let window = show(host, width: width, origin: NSPoint(x: -10000, y: -10000))
       defer { window.close() }
       XCTAssertFalse(state.showsAgentMonitor)
-      XCTAssertEqual(
-        recorder.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1)
-      XCTAssertEqual(recorder.frame.maxX, width, accuracy: 1)
-      state.unfoldAgentList()
+      XCTAssertEqual(recorder.frame, .zero)
+      state.showAgentMonitor()
       settle(host)
       XCTAssertTrue(state.showsAgentMonitor)
-      state.foldAgentList()
+      XCTAssertEqual(recorder.frame.width, width, accuracy: 1)
+      state.hideAgentSidebar()
       settle(host)
-      XCTAssertEqual(
-        recorder.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1)
+      XCTAssertEqual(recorder.frame, .zero)
       XCTAssertNil(state.selectedConversationID)
     }
   }
@@ -505,6 +500,6 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
 }
 
 @MainActor
-private final class FirstRevealRailRecorder {
+private final class FirstRevealPanelRecorder {
   var frame = CGRect.zero
 }

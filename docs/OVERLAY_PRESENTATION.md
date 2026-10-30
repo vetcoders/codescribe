@@ -106,26 +106,37 @@ skipped and unreceipted deliveries keep distinct marks and explanations. The
 mark sits near the identity, separately from the last-preview clock; its help
 and accessibility text name the time of its own outgoing message. A later
 incoming reply must not lend its time to that receipt. The circular unread
-reply count is a separate projection, also shown on the folded rail; compact
-map and floating Intercom badge rendering retain their existing form.
+reply count is a separate projection. Compact map and floating Intercom badge
+rendering retain their existing form.
 
 ## Horizontal conversation and text destination
 
-The horizontal window keeps the conversation header and its current-agent
-actions visible with either the full sidebar or its folded rail. The sidebar
-choice does not replace the current conversation, draft or microphone target.
-Conversation, roster and folded-edge headers share one compact band. Pane
-toggles occupy slots in that band rather than a separate row above the
-conversation. Their stable window-level hit targets stay on the pane edges
-across split, rail and agents-only layouts; directional chevrons show whether
-the action folds or reveals the pane. Shared geometry reserves their slots and
-keeps them clear of native resizing.
-Folded-rail controls sit on the full column's centerline, with equal horizontal
-gutters that keep the numbered buttons clear of the native resize band.
-Unread badges occupy a separate trailing gutter outside the capsule, with a
-visible gap from the channel digit. That gutter remains inside the scroll
-viewport so the count is neither painted over the digit nor clipped. Rail
-badges cap their visual label at `99+`; accessibility retains the exact count.
+The horizontal window treats the conversation as its primary content and has
+one Agents panel. One persisted visibility choice owns that panel. The panel
+is a resizable right column when the window can fit a 320-point conversation
+and a 240-point roster at the current text scale. Below that threshold the
+same roster covers the conversation at the current window width; revealing it
+does not enlarge the window. Selecting a row closes the covering panel and
+keeps a docked panel open. Escape or the panel toggle closes either placement.
+The main Agents mode/capture control retains its recording contract and uses
+the same panel owner for ordinary list requests.
+
+The conversation remains mounted beneath a covering panel so the editor,
+draft, selection and scroll state survive the placement change. A closed panel
+reserves no conversation width. Conversation and roster headers share one
+compact band, with one panel toggle at the window's trailing edge. The
+conversation has no independent fold or reveal edge and the horizontal window
+has no numbered rail. Divider resizing clamps the column while preserving a
+readable conversation. The old split/agents/rail preference is adopted once
+into the visibility Boolean; later layout reads only that Boolean and the
+current geometry.
+
+Message actions in `.busWindow` stay inline where they fit and use additional
+rows when their intrinsic widths exceed the message cap. Read receipts, Copy,
+Reply and playback keep their actions and labels. The content itself must fit
+its cap after narrowing; clipping an oversized child is not a width policy.
+Standalone and floating Intercom message-action layouts retain their existing
+presentation.
 The existing All, Inbox and saved-conversation views keep their current data
 and routing semantics; the earlier proposal's additional history filters are
 not part of this change.
@@ -227,9 +238,9 @@ as compact. Placement and the saved position still describe the 200 pt
 `miniPlacementSize` strip, with mini drawn at its trailing edge.
 
 Moving controls must not turn a whole row into one button or nest buttons
-inside another button. A folded rail pill already selects that conversation,
-including `0` for All, and leaves the list folded. It does not open a
-microphone and it does not retarget a capture that is already running.
+inside another button. A list row or compact channel chip selects its
+conversation, including `0` for All. Selection does not open a microphone
+and does not retarget a capture that is already running.
 
 ## Reuse the projections and commands
 
@@ -509,13 +520,10 @@ The same `OverlayChannelMapPreference` stores the layout; switching it preserves
 the selected conversation, drafts and active route. No second inventory or
 recorder is created. The default remains horizontal, and an absent opt-in stays off.
 
-The roster toggle belongs to its right column; the conversation toggle belongs
-to its left canvas. A reveal always requests a side column, independent of width.
-A narrow host grows to the split floor where the display permits it, with both
-panes retained during the morph. An ordinary saved width is clamped to leave
-conversation space. Only explicit conversation folding or an explicit divider
-drag chooses the roster-only layout; its left reveal edge remains reachable.
-Hiding the roster chooses the rail, and hovering that rail cannot undo the fold.
+The horizontal Agents panel follows the responsive placement and single
+visibility contract in “Horizontal conversation and text destination” above.
+Floating Intercom groups, detached cards and the compact channel map retain
+their separate presentation rules.
 
 Open nonzero capture uses a violet microphone; only an open channel zero uses
 the outlined broadcast megaphone. These glyphs project routing and never choose it.

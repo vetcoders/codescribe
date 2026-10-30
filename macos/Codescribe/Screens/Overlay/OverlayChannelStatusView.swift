@@ -246,25 +246,6 @@ struct OverlayDisconnectedRowDim: ViewModifier {
   }
 }
 
-/// The two pane actions. The canvas edge mounts its own control; the roster
-/// header mounts only its own fold. Both use the same state commands.
-struct OverlayAgentsSidebarControls {
-  /// The conversation, or the transcription, is on screen beside the list.
-  var canvasShown: Bool
-  var canvasIsTranscription: Bool
-  var onToggleCanvas: () -> Void
-  var onFoldList: () -> Void
-
-  var canvasTitle: String {
-    switch (canvasShown, canvasIsTranscription) {
-    case (true, true): String(localized: "Hide transcription")
-    case (true, false): String(localized: "Hide conversation")
-    case (false, true): String(localized: "Show transcription")
-    case (false, false): String(localized: "Show conversation")
-    }
-  }
-}
-
 /// A corner button of the agents list, blended into the background (Maciej,
 /// 2026-10-19: "wtopione w tło"): a muted glyph with the rows' hover wash.
 struct OverlaySidebarToggleButton: View {
@@ -1128,8 +1109,6 @@ struct OverlayChannelStatusView: View {
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?
   var onGestureHover: ((String) -> Void)?
-  /// The list header's corner buttons; nil leaves the header bare.
-  var sidebarControls: OverlayAgentsSidebarControls?
   /// The horizontal window owns stable toggle hit targets over these slots.
   var paneHeaderHeight: CGFloat? = nil
   var searchModel: OverlayConversationSearchModel?
@@ -1410,140 +1389,10 @@ struct OverlayChannelStatusView: View {
     }
   }
 
-  /// The folded list (Maciej, 2026-10-19: "zostawia pigułki"): one pill per
-  /// row of the list, channel 0 first, under the `sidebar.right` that
-  /// unfolds it. A pill switches the conversation and the list stays folded.
-  func railBody(
-    maximumHeight: CGFloat, paneHeaderHeight: CGFloat? = nil, onUnfold: @escaping () -> Void
-  ) -> some View {
-    OverlayTextScaleReader { scale in
-      var installed = self
-      installed.textScale = scale
-      return installed.scaledRailBody(
-        maximumHeight: maximumHeight, paneHeaderHeight: paneHeaderHeight, onUnfold: onUnfold)
-    }
-  }
-
-  private func scaledRailBody(
-    maximumHeight: CGFloat, paneHeaderHeight: CGFloat?, onUnfold: @escaping () -> Void
-  ) -> some View {
-    let unfold = paneHeaderHeight ?? 22 * textScale
-    let viewportHeight = max(0, maximumHeight - 8 - unfold - 8)
-    let rowCount =
-      channels.count
-      + (currentConversations.contains(where: { $0.channel == "0" }) ? 1 : 0)
-      + (currentConversations.contains(where: \.isHumanInbox) ? 1 : 0)
-    let gapCount = max(0, rowCount - 1)
-    let rowSpacing =
-      gapCount == 0
-      ? 0
-      : min(
-        6,
-        max(
-          0,
-          (viewportHeight - CGFloat(rowCount) * 24 * textScale - 5 * textScale - 4)
-            / CGFloat(gapCount)))
-    return VStack(spacing: 8) {
-      if let paneHeaderHeight {
-        Color.clear.frame(height: paneHeaderHeight)
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
-      } else {
-        OverlaySidebarToggleButton(
-          symbol: "sidebar.right", title: String(localized: "Show agents list"),
-          identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
-          action: onUnfold)
-      }
-      ScrollView(.vertical, showsIndicators: false) {
-        VStack(spacing: rowSpacing) {
-          if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
-            railPill(broadcast, channel: nil)
-          }
-          if let inbox = currentConversations.first(where: \.isHumanInbox) {
-            railPill(inbox, channel: nil)
-          }
-          ForEach(channels) { channel in
-            railPill(conversation(for: channel), channel: channel)
-          }
-        }
-        .padding(.top, 5 * textScale + 2)
-        .padding(.bottom, 2)
-        // Keep the badge gutters inside the full-width scroll viewport.
-        // The numbered buttons stay centered and clear of the resize band.
-        .padding(.horizontal, OverlayAgentDrawerLayout.railHorizontalInset(textScale: textScale))
-        .frame(maxWidth: .infinity)
-        .csAutohidingScrollers(.verticalHidden)
-      }
-      .csRailOverflowHints(color: palette.mutedText.color)
-      .frame(maxHeight: viewportHeight)
-    }
-    // The list header sits 8 points into the roster content: the unfold
-    // button lands where `sidebar.right` folded it.
-    .padding(.top, 8)
-    .frame(maxWidth: .infinity)
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-agent-rail-pills")
-  }
-
-  /// Status dot and channel number; the open conversation in the agent
-  /// accent, unread replies as the row badge's colour. The pill itself is the
-  /// shared `OverlayChannelPill`, the one drawing of a channel's digit.
-  private func railPill(
-    _ conversation: OverlayConversation?, channel: OverlayChannelDelivery?
-  ) -> some View {
-    let inbox = conversation?.isHumanInbox == true
-    let digit = channel?.channel ?? conversation?.channel ?? "0"
-    let title =
-      inbox
-      ? conversation?.name ?? String(localized: "Your Inbox")
-      : channel.map { notificationTitle(for: $0) } ?? broadcastHeader
-    let canOpen = conversation != nil && onSelectConversation != nil
-    let hint =
-      canOpen
-      ? title + ". "
-        + String(localized: "View conversation without changing the microphone")
-      : String(
-        localized: "No conversation on this channel",
-        comment: "Disabled mini-rail channel pill")
-    return OverlayChannelPill(
-      form: .rail,
-      display: railPillDisplay(conversation, channel: channel),
-      hint: hint, accessibilityText: title, identifier: "overlay-agent-rail-\(digit)",
-      palette: palette, textScale: textScale,
-      showsHint: conversation?.messages.isEmpty ?? true
-    ) {
-      if let conversation { onSelectConversation?(conversation.id) }
-    }
-    .modifier(
-      OverlayRosterMessageHint(
-        conversation: conversation, palette: palette, textScale: textScale)
-    )
-    .accessibilityHint(Text(verbatim: hint))
-    .modifier(
-      inbox
-        ? OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
-        : agentPillMenu(for: digit))
-  }
-
-  func railPillDisplay(
-    _ conversation: OverlayConversation?, channel: OverlayChannelDelivery?
-  ) -> OverlayChannelPill.Display {
-    let inbox = conversation?.isHumanInbox == true
-    let unreadCount = conversation.flatMap { unreadCounts[$0.id] } ?? 0
-    return OverlayChannelPill.Display(
-      figure: inbox ? "" : channel?.channel ?? "0", symbol: inbox ? "tray" : nil,
-      dot: inbox ? nil : channel.map { statusDotKind(for: $0) } ?? .broadcast,
-      disconnected: channel.map { hasDeadFollower($0) } ?? false,
-      unread: unreadCount > 0, unreadCount: unreadCount,
-      selected: conversation != nil && conversation?.id == selectedConversationID,
-      enabled: conversation != nil && onSelectConversation != nil)
-  }
-
   /// The collapsed overlay's channel map: another surface of this roster's
   /// projections. Bound digits come from the roster snapshot (`hudStates`),
   /// names from the same rows the list shows, unread marks from the same
-  /// counts, the selected chip from the same selection as a rail pill's, and
-  /// a chip is clickable only where a rail pill would be.
+  /// counts and selection. Only a current conversation makes a chip clickable.
   var channelMapModel: OverlayChannelMapModel {
     let current = onSelectConversation == nil ? [] : currentConversations
     return OverlayChannelMapModel(
@@ -1555,7 +1404,7 @@ struct OverlayChannelStatusView: View {
   }
 
   /// A map chip's click: the digit's current conversation, through the same
-  /// selection path and the same owner match as its rail pill. A digit with
+  /// selection path and the same owner match as the full list. A digit with
   /// no current conversation selects nothing; capture is never touched.
   func selectChannelConversation(_ digit: String) {
     guard let conversation = currentConversations.first(where: { $0.channel == digit }) else {
@@ -1722,22 +1571,11 @@ struct OverlayChannelStatusView: View {
           .foregroundStyle(palette.mutedText.color)
           .accessibilityHidden(true)
         if paneHeaderHeight != nil { Spacer(minLength: 0) }
-        if paneHeaderHeight == nil, let sidebarControls {
-          OverlaySidebarToggleButton(
-            symbol: "sidebar.right", title: String(localized: "Hide agents list"),
-            identifier: "overlay-agent-sidebar-fold", palette: palette,
-            textScale: textScale, action: sidebarControls.onFoldList)
-        }
       }
       .padding(
         .trailing,
         paneHeaderHeight == nil
-          ? 0
-          : max(
-            0,
-            (OverlayAgentDrawerLayout.railWidth(textScale: textScale)
-              + OverlayAgentDrawerLayout.paneToggleSize(textScale: textScale)) / 2
-              + 8 * textScale - 12)
+          ? 0 : OverlayAgentDrawerLayout.paneHeaderControlSpace(textScale: textScale)
       )
       .padding(.top, paneHeaderHeight == nil ? 0 : 2 * textScale)
       .frame(height: paneHeaderHeight, alignment: .top)

@@ -760,7 +760,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, astra.id)
     XCTAssertEqual(state.presentationMode, .expanded)
     XCTAssertEqual(state.windowContentSurface, .agents)
-    XCTAssertEqual(state.agentsLayout, .split)
+    XCTAssertTrue(state.showsAgentMonitor)
     XCTAssertTrue(state.channelHudStates["3"]?.open == true)
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
     XCTAssertEqual(state.captureGeneration, generation)
@@ -833,13 +833,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(archived, [owner])
   }
 
-  func testRailPillsAndMapChipsShareOnePillView() throws {
-    let status = try overlaySource("OverlayChannelStatusView.swift")
-    let rail = try section(
-      of: status, from: "private func railPill(", to: "var channelMapModel")
-    XCTAssertTrue(rail.contains("OverlayChannelPill("))
-    XCTAssertTrue(rail.contains("form: .rail"))
-    XCTAssertFalse(rail.contains("Text(verbatim: digit)"), "the rail does not draw its own digit")
+  func testMapChipsAndCountersShareOnePillView() throws {
     let mapView = try overlaySource("OverlayChannelMapView.swift")
     XCTAssertTrue(mapView.contains("form: .chip"))
     XCTAssertTrue(mapView.contains("form: .counter"))
