@@ -1476,7 +1476,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(state.channelAudioCaptureActive)
     func roster(open: Set<String>) -> [CsChannelRosterState] {
       [("4", "bruno"), ("6", "zofia")].map { channel, name in
-        .init(
+        CsChannelRosterState(
           channel: channel, audience: name, provider: "codex",
           providerSessionId: "bus-agent-\(channel)", open: open.contains(channel), loud: false,
           autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)

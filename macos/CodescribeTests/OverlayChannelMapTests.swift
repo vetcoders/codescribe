@@ -1176,7 +1176,7 @@ final class OverlayChannelMapTests: XCTestCase {
     let (state, conversations) = try crowdedState(names)
     state.setPresentationMode(.midi)
     let model = DictationOverlayView(state: state).channelStatusView.channelMapModel
-    XCTAssertEqual(model.chips.map(\.digit), (1...9).map(String.init))
+    XCTAssertEqual(model.chips.map(\.digit), (1...9).map { String($0) })
     let bar = DictationOverlayWindow.midiBarGeometry(
       chips: model.chips, textScale: 1, showsMeter: state.channelMapBarShowsMeter)
     let layout = bar.layout(width: bar.floorWidth)
