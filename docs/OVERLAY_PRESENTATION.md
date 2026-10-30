@@ -1,25 +1,209 @@
-# Overlay presentation handoff
+# Bus window contract
 
-The Founder supplied channel-bar, capsule and channel-popover designs on
-2026-10-20 and asked for a visual layer Monika can reshape without rebuilding
-capture or bus handling. Those images are visual directions, with several
-alternative arrangements; this document does not select one as the final UI.
+This is the canonical contract for the bus window: the floating overlay's bar,
+its Agents panel and conversation, and the vertical Intercom with its fiszki.
+It states what each surface shows, which code owns it and which behavior a
+redesign must keep. A change to that behavior updates this document in the
+same commit. The user guide is [`guide/chat-overlay.md`](guide/chat-overlay.md);
+the bus protocol is [`TRANSCRIPT_BUS.md`](TRANSCRIPT_BUS.md); gestures and
+shortcuts are [`HOTKEYS_CONTRACT.md`](HOTKEYS_CONTRACT.md); delivery is
+[`DELIVERY_ROUTE.md`](DELIVERY_ROUTE.md).
+
+Where each surface is specified:
+
+- Bar, mini and the expanded bar with its agent map: [Bar](#bar).
+- Agents panel, agent rows and their menus:
+  [Start with the visual owner](#start-with-the-visual-owner).
+- Conversation and text destination:
+  [Horizontal conversation and text destination](#horizontal-conversation-and-text-destination).
+- Commands and evidence every surface reuses:
+  [Reuse the projections and commands](#reuse-the-projections-and-commands) and
+  [Requirements that survive a new skin](#requirements-that-survive-a-new-skin).
+- Window sizes per canvas: [Independent canvas sizes](#independent-canvas-sizes).
+- Vertical Intercom and fiszki:
+  [Intercom layouts and independent panes](#intercom-layouts-and-independent-panes)
+  and [Durable fiszki and the group zoom](#durable-fiszki-and-the-group-zoom).
+
+Design inputs: the channel-bar, capsule and popover directions of 2026-10-20,
+the [window mockup of 2026-10-29](guide/bus-window-mockup.html) and Monika's
+bar brief of 2026-10-30. Mockups set layout and behavior; they do not add
+features, colors or values that are not stated here.
+
+## Bar
+
+The bar's first rule is to stay out of the way: it takes as little room and
+attention as it can while still telling who is on which channel. Every layout
+choice below follows from that.
+
+### Two sizes
+
+The bar has two sizes: **mini** and the **expanded bar**
+(`OverlayPresentationMode.mini` and `.midi`). `.expanded` is the window with
+the transcription or Agents canvas, not a third bar size. Narrowing or widening
+the expanded bar rearranges its content; it never creates another named size
+and never switches the size.
+
+A still click on the bar's empty background switches mini ↔ expanded bar in
+both directions (`OverlayState.advancePresentationFromHeader`).
+`FloatingOverlayPanel.isPresentationClickHit` keeps buttons, channels and
+drags out of that gesture, so dragging the background still moves the bar and
+every control keeps its own action. The brand dot closes the overlay and shows
+× on hover. The chevron, the Agents button and transcription open the window
+as before.
+
+### Mini
+
+Mini shows, from the left: the brand dot, transcription, the microphone,
+Agents (✦) and the chevron. At rest it shows no waveform, clock or channel
+map, and it is exactly as wide as its controls
+(`DictationOverlayWindow.miniNaturalWidth`), with no space reserved for hidden
+items.
+
+Pointing at ✦ opens an interactive list of the agents on the bus, `N · Name`
+in channel order with the yellow unread dot, in the shared `OverlayHintPanel`
+(interactive mode, so the pointer can move into it). Clicking a row selects
+that agent's conversation through the same path as a map chip. Clicking ✦
+itself opens the Agents window.
+
+Mini stays mini while Monika speaks to agents (decision 2026-10-30). The
+microphone becomes Stop, and the ✦ slot shows the violet circled digit of every
+channel the microphone feeds: one digit, overlapping digits for several
+channels, `0` for everyone. Its hint names the agents.
+
+### Expanded bar
+
+The expanded bar shows the brand, the agent map and the tools: transcription,
+Agents, pin, microphone and chevron. The waveform and the clock appear only
+while recording (`OverlayState.channelMapBarShowsMeter`); at rest they take no
+room.
+
+The map lists every agent on the bus, channels 1–9 in order, with the channel
+number in a circle and the name under it. There is no `+N` and no digits-only
+form: the numbers alone do not say who holds a channel. Channel 0 has no
+circle of its own unless the microphone broadcasts on it. A disconnected agent
+is dimmed as in the Agents list. The hint names the channel, the agent and the
+chord (`4 · Lena2 · Ctrl+4`), which also separates similar names.
+
+When the full names do not fit beside the tools, the bar takes a second row:
+brand, waveform, clock and tools on top, the map below with each number beside
+its name. Only that row's height is added. The choice comes from measured name
+and tool widths (`OverlayBarGeometry`), not from the number of agents.
+
+Narrowing the bar by its left or right edge changes only its width and
+densifies the map in this order:
+
+1. one row, names under circles, gaps 8 → 3 pt;
+2. two rows, names beside circles, gaps 10 → 6 pt;
+3. one row with names shortened (`OverlayChannelPill.truncatedName`, the full
+   name in the hint);
+4. one row with overlapping circles, down to a 10 pt slot.
+
+Circles may overlap; names never run together, because each slot keeps its own
+3 pt gap. Each slot is its chip's hit area, so every channel stays selectable
+at every density. Unread dots are drawn on a layer above all circles. The
+natural width is one row up to a 520 pt budget, otherwise two rows; the floor
+is the densest layout. The window owner and the header compute the same
+geometry (`DictationOverlayWindow.midiBarGeometry`,
+`FloatingOverlayPanel.setMidiBarGeometry`), and the height follows the row
+count (`midiHeight(forWidth:)`). Placement and the saved position still
+describe the 200 pt `miniPlacementSize` strip, with mini drawn at its trailing
+edge.
+
+### Marks on a channel
+
+Each circle can carry three marks, and they never stand in for each other:
+
+| Mark                       | Meaning                                                                | Source                                                       |
+| -------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Yellow dot                 | an unread reply from that agent; it clears as the conversation is read | the overlay's unread/read state, shared with the Agents list |
+| Violet ring and violet dot | the channel hears the current utterance; several channels can at once  | `channelHudStates[digit].open`, the co-audience cohort       |
+| Muted violet fill          | the conversation being viewed                                          | the selected conversation                                    |
+
+The bar adds no text such as "Speaking to Lena and As": the marks on the map
+name the audience. The violet dot pulses only while the pill animates and
+Reduce Motion is off.
+
+Clicking a circle selects its conversation (`selectChannelConversation`, the
+rail pill's path). It never opens or closes the microphone and never
+retargets a running capture. Its secondary click is the roster's
+`agentPillMenu`: microphone, playback and panel for that agent. These actions
+are not drawn as buttons beside each chip.
+
+### Look
+
+The bar uses existing palette roles only: graphite background, neutral grey
+tools, muted violet selection, yellow unread, and the existing brand and
+microphone accents. Mockup colors, including the orange highlights of earlier
+concepts, are not palette values. A row is 26 pt; a second row adds 20 pt plus
+a 4 pt gap. No tall capsule wraps small elements, and text is not shrunk below
+its normal size to make content fit.
+
+Mini and the expanded bar wear the hover preview's glass through
+`OverlayCanvasSurface(glass: .popover)`; the open window keeps the `.sheet`
+veil. `OverlayPopoverGlass` in `OverlayCanvasSurface.swift` is the one recipe
+both read: popover material, a sheet-color veil (0.28 for the preview, 0.56 for
+the bar so digits and names stay legible), a 1 pt text-color edge and the
+shadow.
+
+### Layout setting
+
+Settings → Creator → **Intercom layout** chooses the map: **Classic** (the
+default for an absent preference) is the same bar without the map,
+**Horizontal strip (experimental)** puts the agent map in the expanded bar, and
+**Floating pills** shows the vertical Intercom with its stacked counter beside
+the brand. Mini is the same in Classic and Horizontal. `OverlayChannelMapPreference`
+owns this process-only chrome choice in the app preference domain, as
+`AppearancePreference` does; it is not core configuration. Creator and every
+overlay observe that same owner. Changing it asks the existing window owner to
+refit, including during a take, and keeps the microphone, selected owner,
+transcript and explicit width.
+
+### Code owners
+
+- `OverlayChannelStatusView` owns the Agents (✦) button in every form; mini
+  turns on its hover list and recipient digits through `miniAgentsButton`.
+  The vertical layout leaves them off, since its stacked counter shows the
+  digits.
+- `OverlayChannelStatusView.channelMapModel` builds `OverlayChannelMapModel`
+  from the roster's rows, `hudStates`, conversations, selection and unread
+  counts; lease names are capitalised for display only.
+- `OverlayChannelPill` is the single owner of the numbered pill visual: rail
+  pills, map chips, the stacked counter and mini's recipient digits. It
+  receives immutable display values and one action, never `OverlayState`, a
+  conversation or a command.
+- `OverlayBarGeometry` and `DictationOverlayWindow` own the bar's measured
+  layout and window size; `FloatingOverlayPanel` applies it.
+- While the map is enabled, a channel the controller opens in mini or the
+  expanded bar keeps that form (`OverlayState.channelOpenExpandsSurface`); the
+  Agents canvas unfolds for it only with the map off or when the window is
+  already open. The vertical layout's counter calls
+  `OverlayState.activateChannelMapCounter`, which brings the Intercom group
+  forward.
+
+### Bar acceptance
+
+Before a bar change is called done, check it visually at real scale: four and
+nine agents; full and similar names (`Lena`, `Lena2`); densification while
+narrowing by hand; legibility of numbers, names and unread dots; selecting one
+channel among overlapping circles; speaking to one agent and to several; the
+agent list in mini; the bar's proportions; and the existing transcription,
+Agents, pin, microphone and window actions.
 
 ## Start with the visual owner
 
-| Change                                                                  | Existing owner                                                                          |
-| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Agent name, clock, descriptor and message preview                       | `OverlayAgentRosterLabel.swift`                                                         |
-| Row footer, action grouping, broadcast row and compact channel pills    | `OverlayChannelStatusView.swift`                                                        |
-| Numbered channel pill: rail pills, map chips, counter, recipient marks  | `OverlayChannelPill.swift`                                                              |
-| Bar agent map, its layout ladder, mini Agents slot, stacked counter     | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
-| Header, waveform placement, embedded list/rail and hover region         | `DictationOverlayView.swift`                                                            |
-| List width, docking threshold and rail/pill dimensions                  | `OverlayAgentDrawerLayout.swift`                                                        |
-| Panel presentation, selection and recipient projection                  | `OverlayState.swift`                                                                    |
-| Read evidence, conversation messages and delivery metadata              | `OverlayChannelDelivery.swift`, `OverlayChannelDeliveryReader.swift`                    |
-| Native mini/midi/expanded window size, position and morph               | `DictationOverlayWindow.swift`                                                          |
-| Overlay colors                                                          | `OverlayAppearancePalette.swift`, projecting `CSPalette` in `DesignSystem/Tokens.swift` |
-| Shared microphone/speaker symbols, glass and hit areas                  | `OverlayAgentAudioControls` in `OverlayChannelStatusView.swift`                         |
+| Change                                                                 | Existing owner                                                                          |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Agent name, clock, descriptor and message preview                      | `OverlayAgentRosterLabel.swift`                                                         |
+| Row footer, action grouping, broadcast row and compact channel pills   | `OverlayChannelStatusView.swift`                                                        |
+| Numbered channel pill: rail pills, map chips, counter, recipient marks | `OverlayChannelPill.swift`                                                              |
+| Bar agent map, its layout ladder, mini Agents slot, stacked counter    | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
+| Header, waveform placement, embedded list/rail and hover region        | `DictationOverlayView.swift`                                                            |
+| List width, docking threshold and rail/pill dimensions                 | `OverlayAgentDrawerLayout.swift`                                                        |
+| Panel presentation, selection and recipient projection                 | `OverlayState.swift`                                                                    |
+| Read evidence, conversation messages and delivery metadata             | `OverlayChannelDelivery.swift`, `OverlayChannelDeliveryReader.swift`                    |
+| Native mini/midi/expanded window size, position and morph              | `DictationOverlayWindow.swift`                                                          |
+| Overlay colors                                                         | `OverlayAppearancePalette.swift`, projecting `CSPalette` in `DesignSystem/Tokens.swift` |
+| Shared microphone/speaker symbols, glass and hit areas                 | `OverlayAgentAudioControls` in `OverlayChannelStatusView.swift`                         |
 
 Swift source paths above are relative to
 `macos/Codescribe/Screens/Overlay/`, except `DesignSystem/Tokens.swift`.
@@ -268,73 +452,6 @@ the audience are text.
 User-message bubbles retain a quiet warm outline using `terracottaDeep` at
 `CSAlpha.selectionStroke` strength. Incoming bubbles use the neutral panel edge.
 
-The bar has two sizes (Monika's bar brief, 2026-10-30): mini and the
-expanded bar (`OverlayPresentationMode.midi`); `.expanded` is the window. A
-still click on the bar's background calls
-`OverlayState.advancePresentationFromHeader`, which switches mini ↔ expanded
-bar both ways (`FloatingOverlayPanel.isPresentationClickHit` keeps drags and
-buttons out). Mini is the brand dot (close), transcription, microphone, the
-Agents slot and the chevron, sized by `DictationOverlayWindow.miniNaturalWidth`.
-The ✦ button has one owner, `OverlayChannelStatusView.body`, in every form;
-mini enables its two extra capabilities through `miniAgentsButton`: at rest
-an interactive hover list (`OverlayAgentsHoverList` in the shared
-`OverlayHintPanel`'s interactive mode), and while agent channels are open the
-recipients' overlapping circled digits in place of the microphone. Every face
-keeps the Agents press and the `overlay-agent-glyph` identifier. The vertical
-layout leaves the capabilities off in mini, since its stacked counter shows
-the digits.
-
-The bar (mini and the expanded bar) wears the hover preview's glass through
-`OverlayCanvasSurface(glass: .popover)`; the open window keeps the `.sheet`
-veil. `OverlayPopoverGlass` in `OverlayCanvasSurface.swift` is the one recipe
-both read: popover material, a sheet-colour veil (0.28 for the preview, 0.56
-for the bar so digits and names stay legible), a 1 pt text-colour edge and
-the shadow.
-
-The bar's agent map is another surface of the same projections.
-`OverlayChannelStatusView.channelMapModel` builds `OverlayChannelMapModel`
-from the roster's rows, `hudStates`, current conversations, the selection and
-unread counts. It lists the bound agents 1–9, with lease names capitalised for
-display only; channel 0 joins it only while the microphone broadcasts on it. A
-chip calls `selectChannelConversation`, the rail pill's selection path; its
-secondary click is the roster's `agentPillMenu` (microphone, playback, panel).
-The vertical layout's counter calls `OverlayState.activateChannelMapCounter`,
-which brings the Intercom group forward. While the map is enabled, a channel
-the controller opens in mini or the expanded bar keeps that form
-(`OverlayState.channelOpenExpandsSurface`): the selection follows the open
-channel and the map or mini's slot shows its digit, and the Agents canvas
-unfolds for it only with the map off or when the overlay is already expanded.
-
-`OverlayChannelPill` is the single owner of the numbered pill visual: the rail
-pill, the map's chips, the stacked counter and mini's recipient digits render
-the digit through it, from immutable display values and one action. A chip
-has no capsule; its circle carries three distinct marks: every channel the
-microphone feeds (`channelHudStates[digit].open`, the co-audience cohort) wears
-a violet ring and the violet open-channel dot, which pulses only while the
-pill animates and Reduce Motion is off; the viewed conversation wears a muted
-violet fill; an unread reply wears the yellow dot. It receives no
-`OverlayState`, conversation or command.
-
-`OverlayBarGeometry` decides the map's arrangement from measured widths:
-everything but the map in one row (`DictationOverlayWindow.midiBarGeometry`:
-padding, the 13 pt lockup, the 56 pt waveform and the clock only while
-`OverlayState.channelMapBarShowsMeter`, the tools) and each full name. The
-ladder, as the bar narrows: one row, names under circles, gaps 8 → 3 pt; two
-rows, the map on a 20 pt second row with names beside circles, gaps 10 → 6 pt;
-one row with names truncated (`OverlayChannelPill.truncatedName`, never below
-the circle's width); one row with overlapping circles down to a 10 pt slot.
-Each slot is the chip's hit area and keeps a 3 pt gap, so names never run
-together; the one-row map draws unread dots on a top layer above every
-circle. The natural width is one row up to the 520 pt budget, else two rows;
-the floor is the densest layout. The window owner and the header compute the
-same geometry: `FloatingOverlayPanel.setMidiBarGeometry` receives it whenever
-`OverlayState.onChannelMapLayoutChanged` reports new agents, names or open
-digits, or the header reports the meter coming or going, and sets the width
-and the height (`midiHeight(forWidth:)`) at the upper-right pin. A manual
-edge resize changes only the width; the height follows the row count.
-Placement and the saved position still describe the 200 pt
-`miniPlacementSize` strip, with mini drawn at its trailing edge.
-
 Moving controls must not turn a whole row into one button or nest buttons
 inside another button. A list row or bar map chip selects its
 conversation, including `0` for All. Selection does not open a microphone
@@ -494,19 +611,6 @@ supplied large-text screenshots. Geometry checks should cover row widths
 button bounds and the five-line budget. Preserve action and accessibility
 coverage when moving a view to another file; source-shape assertions may need
 to follow the new owner.
-
-### Channel map opt-in
-
-Settings → Creator → **Intercom layout** controls the map: **Classic** (the
-default for an absent preference) is the same bar without the map,
-**Horizontal strip (experimental)** puts the agent map in the expanded bar, and
-**Floating pills** shows the vertical Intercom with its stacked counter beside
-the brand. `OverlayChannelMapPreference` owns this process-only chrome choice
-in the app preference domain, as `AppearancePreference` does; it is not core
-configuration. Creator and every overlay observe that same owner. The view's
-change handler asks its existing window owner to refit, including while a
-take is open. Mini is the same in Classic and Horizontal. The microphone,
-selected owner, transcript and explicit resize choice are retained.
 
 ### Intercom layouts and independent panes
 

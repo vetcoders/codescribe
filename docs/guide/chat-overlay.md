@@ -8,6 +8,9 @@ Codescribe has two distinct conversation surfaces:
   sidebar, provider, tools and composer. It is not the channel roster in the
   overlay.
 
+The behavior and code owners behind this guide are specified in the
+[bus window contract](../OVERLAY_PRESENTATION.md).
+
 The floating overlay does not have Drawer / Agent / Settings tabs. Its channel
 menu switches between **My dictation**, **0 · All**, individual agents and saved
 conversations. Open the native Settings window from the menu bar.

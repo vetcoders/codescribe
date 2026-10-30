@@ -32,6 +32,8 @@ Avoid introducing `shim`, `compat`, `legacy`, `adapter-for-old`,
 - `docs/TRANSCRIPT_BUS.md` — bus events, privacy and paths.
 - `docs/HOTKEYS_CONTRACT.md` — gestures, ownership and modes.
 - `docs/DELIVERY_ROUTE.md` — destination selection.
+- `docs/OVERLAY_PRESENTATION.md` — the bus window: bar, Agents panel,
+  conversation and Intercom.
 - `docs/ENV_REGISTRY.toml` — every environment variable the app reads.
 - `docs/LOCALIZATION.md` — String Catalogs and UI copy rules.
 
