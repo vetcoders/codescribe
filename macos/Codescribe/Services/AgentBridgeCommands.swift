@@ -813,8 +813,7 @@ extension RealAgentBridgeInstaller {
       ["--send-text"] + (try busOwnerArguments(owner: owner, root: root))
       + ["--hold-seconds", String(holdSeconds)]
     if let userReplyTo {
-      let encoded = try JSONEncoder().encode(userReplyTo)
-      arguments += ["--user-reply-to", String(decoding: encoded, as: UTF8.self)]
+      arguments += ["--user-reply-to", try busJSONArgument(userReplyTo)]
     }
     if owner != nil, !alsoSentTo.isEmpty {
       let peers = alsoSentTo.map {
@@ -823,10 +822,22 @@ extension RealAgentBridgeInstaller {
           "provider_session_id": $0.providerSessionID, "lease_id": $0.leaseID,
         ]
       }
-      let encoded = try JSONSerialization.data(withJSONObject: peers, options: [.sortedKeys])
-      arguments += ["--also-sent-to", String(decoding: encoded, as: UTF8.self)]
+      arguments += ["--also-sent-to", try busJSONArgument(peers)]
     }
     return arguments
+  }
+
+  /// Foundation's macOS process argument conversion decomposes literal Unicode.
+  /// Keep JSON ASCII on argv so its decoded values retain their exact scalars
+  /// and bounded reply text does not grow past the publisher's code-point cap.
+  private static func busJSONArgument<Value: Encodable>(_ value: Value) throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let json = String(decoding: try encoder.encode(value), as: UTF8.self)
+    return json.unicodeScalars.map { scalar in
+      if scalar.value < 128 { return String(scalar) }
+      return String(scalar).utf16.map { String(format: "\\u%04x", $0) }.joined()
+    }.joined()
   }
 
   static func deliveryControlArguments(
