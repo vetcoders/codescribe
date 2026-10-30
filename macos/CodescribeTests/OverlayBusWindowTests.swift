@@ -38,6 +38,113 @@ final class OverlayBusWindowTests: XCTestCase {
     state.applyConversationSnapshot(.init(deliveries: [], conversations: conversations))
   }
 
+  func testAgentsPanelUsesOneVisibilityChoiceAndSelectionRespectsItsPlacement() throws {
+    let first = try conversation("2", canonicalLease: true)
+    let second = try conversation("3", lease: "b", canonicalLease: true)
+    let state = OverlayState()
+    apply([first, second], to: state)
+    state.selectConversation(first.id)
+    state.chooseComposerTarget(second)
+    state.setConversationDraft("Keep the selected recipient and draft", for: second.id)
+    state.setAgentDrawerDocked(true)
+    state.showAgentMonitor()
+    XCTAssertTrue(state.showsAgentMonitor)
+    state.chooseConversation(second.id)
+    XCTAssertTrue(state.showsAgentMonitor, "a docked list stays open after selecting a row")
+    for docked in [false, true, false] {
+      state.setAgentDrawerDocked(docked)
+      XCTAssertTrue(state.showsAgentMonitor, "width chooses placement, never visibility")
+    }
+    state.chooseConversation(first.id)
+    XCTAssertFalse(state.showsAgentMonitor, "selecting from a covering list returns to the chat")
+    state.toggleAgentSidebar()
+    XCTAssertTrue(state.showsAgentMonitor)
+    state.toggleAgentSidebar()
+    XCTAssertFalse(state.showsAgentMonitor, "the same command also closes the panel")
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, second.id)
+    XCTAssertEqual(
+      state.conversationDraft(for: second.id), "Keep the selected recipient and draft")
+    XCTAssertFalse(state.conversationMicrophoneOpen(first))
+    XCTAssertFalse(state.conversationMicrophoneOpen(second))
+  }
+
+  func testAgentsPanelDocksOnlyWhenBothColumnsHaveReadableWidths() {
+    for scale: CGFloat in [1, 1.5, 2] {
+      let threshold = OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: scale)
+      XCTAssertFalse(
+        OverlayAgentDrawerLayout.isDocked(windowWidth: threshold - 1, textScale: scale))
+      XCTAssertTrue(
+        OverlayAgentDrawerLayout.isDocked(windowWidth: threshold, textScale: scale))
+      XCTAssertTrue(
+        OverlayAgentDrawerLayout.isDocked(windowWidth: threshold + 100, textScale: scale))
+    }
+  }
+
+  func testMessageBubbleContentReflowsInsideItsCapAfterNarrowing() throws {
+    let target = try conversation("2", canonicalLease: true)
+    var sent = try outgoing(in: target, acknowledged: true)
+    sent.receipt = OverlayMessageReceipt(
+      messageID: sent.id,
+      deliveries: (1...3).map {
+        .init(
+          deliveryID: "delivery-\($0)", name: "Recipient \($0)", channel: String($0),
+          state: .read, wake: nil, deliveredAt: nil, at: nil)
+      })
+    let reply = previewReply(in: target, text: "A reply also stays inside the conversation.")
+    for scale: CGFloat in [1, 1.5] {
+      for message in [sent, reply] {
+        var bubbleProbe: NSView?
+        var view = OverlayConversationView(
+          conversation: target, palette: .dark, topInset: 0, bottomInset: 0,
+          pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+          draft: .constant(""), sending: false, sendError: nil, onSend: {})
+        view.onReply = { _ in }
+        view.presentation = .busWindow
+        let content = view
+        let host = NSHostingView(
+          rootView: GeometryReader { geometry in
+            content.messageBubble(message)
+              .background(BusChromeFrameProbe { bubbleProbe = $0 })
+              .frame(
+                maxWidth: OverlayConversationView.bubbleCap(
+                  contentWidth: geometry.size.width, textScale: scale), alignment: .trailing
+              )
+              .frame(maxWidth: .infinity, alignment: .trailing)
+          }
+          .environment(\.csTextScale, scale)
+          .environment(\.colorScheme, .dark))
+        host.sizingOptions = []
+        host.frame = NSRect(x: 0, y: 0, width: 700, height: 560)
+        let panel = NSPanel(
+          contentRect: NSRect(x: -10_000, y: -10_000, width: 700, height: 560),
+          styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        panel.contentView = host
+        BackgroundTestWindow.present(panel)
+        defer {
+          panel.contentView = nil
+          panel.close()
+        }
+        for width: CGFloat in [700, 230, 320, 700] {
+          panel.setContentSize(NSSize(width: width, height: 560))
+          host.frame.size.width = width
+          host.layoutSubtreeIfNeeded()
+          RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+          host.layoutSubtreeIfNeeded()
+          let probe = try XCTUnwrap(bubbleProbe)
+          let rect = probe.convert(probe.bounds, to: host)
+          let cap = OverlayConversationView.bubbleCap(contentWidth: width, textScale: scale)
+          print(
+            "BUS_BUBBLE_REFLOW kind=\(message.kind) scale=\(scale) width=\(width) cap=\(cap) bubble=\(rect)"
+          )
+          XCTAssertLessThanOrEqual(rect.width, cap + 1, "the content must honor its cap")
+          XCTAssertGreaterThanOrEqual(rect.minX, -1, "outgoing content must stay inside the chat")
+          XCTAssertLessThanOrEqual(rect.maxX, width + 1)
+        }
+      }
+    }
+  }
+
   func testPaneHeadersKeepTheMessageViewportAtTheSameHeightAcrossLayouts() throws {
     let target = try conversation("2", canonicalLease: true)
     let other = try conversation("3", lease: "b", canonicalLease: true)
