@@ -252,6 +252,37 @@ final class SettingsLiveProjectionTests: XCTestCase {
 
   // MARK: - Fixtures
 
+  func testOptionalCatalogDiscoveryPublishesUsableChoicesAndSettlesWithoutRecorderEdge() async {
+    var catalog = CsWhisperModelCatalog.sample
+    catalog.discoveryPending = true
+    var reads = 0
+    let settings = SettingsViewModel(
+      engine: MockSettingsEngine(whisperCatalogLoader: {
+        reads += 1
+        return catalog
+      }),
+      permissionProbe: MockPermissionProbe(),
+      whisperDownloadStore: WhisperDownloadStore(
+        statusProvider: { .sampleUnavailable }, download: { _ in .sampleUnavailable }),
+      configurationInvalidation: ConfigurationInvalidation(),
+      servingStatusProvider: { nil })
+    settings.whisperResidencyPollInterval = (.milliseconds(5), .milliseconds(5))
+    settings.beginWhisperResidencyObservation()
+    defer { settings.endWhisperResidencyObservation() }
+    await waitUntil { reads > 1 }
+    XCTAssertTrue(settings.whisperModelCatalog?.options.contains { $0.usable } == true)
+    XCTAssertTrue(
+      settings.whisperResidencySettled, "resident weights and discovery are separate facts")
+    XCTAssertFalse(
+      settings.whisperResidencyPending, "optional discovery does not change resident truth")
+    catalog.discoveryPending = false
+    await waitUntil { settings.whisperModelCatalog?.discoveryPending == false }
+    XCTAssertFalse(settings.whisperResidencyPending)
+    let settledReads = reads
+    try? await Task.sleep(for: .milliseconds(30))
+    XCTAssertEqual(reads, settledReads)
+  }
+
   private func makeSettingsModel(
     file: SyntheticSettingsFile,
     scope: ConfigurationInvalidation?,

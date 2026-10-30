@@ -987,6 +987,7 @@ extension CsWhisperModelCatalog {
         active: false
       ),
     ],
+    discoveryPending: false,
     configured: "whisper-large-v3-turbo",
     resolvedPath: "~/.codescribe/models/whisper-large-v3-turbo",
     loaded: "~/.codescribe/models/whisper-large-v3-turbo",

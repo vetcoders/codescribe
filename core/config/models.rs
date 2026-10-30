@@ -6,9 +6,12 @@
 
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::hf_cache;
 
@@ -626,6 +629,106 @@ pub struct WhisperModelOption {
     pub active: bool,
 }
 
+/// The available rows and whether optional cache discovery is still in flight.
+pub struct WhisperCatalogInventory {
+    pub options: Vec<WhisperModelOption>,
+    pub discovery_pending: bool,
+}
+
+#[derive(Default)]
+struct WhisperCacheScan {
+    options: Vec<WhisperModelOption>,
+    in_flight: bool,
+    completed: Option<Instant>,
+}
+
+/// One bounded worker per cache root. A filesystem call cannot be cancelled
+/// safely; a stalled root therefore retains its worker, never accumulating
+/// another one on every refresh or preventing healthy roots from publishing.
+#[derive(Default)]
+struct WhisperModelCatalogDiscovery {
+    scans: Mutex<HashMap<PathBuf, WhisperCacheScan>>,
+    changed: Condvar,
+}
+
+impl WhisperModelCatalogDiscovery {
+    fn snapshot<F>(
+        self: &Arc<Self>,
+        bases: &[PathBuf],
+        budget: Duration,
+        read: F,
+    ) -> (Vec<WhisperModelOption>, bool)
+    where
+        F: Fn(&Path) -> Vec<WhisperModelOption> + Send + Sync + 'static,
+    {
+        let read = Arc::new(read);
+        let deadline = Instant::now() + budget;
+        let mut scans = self.scans.lock().unwrap_or_else(|error| error.into_inner());
+        for base in bases {
+            let scan = scans.entry(base.clone()).or_default();
+            if scan.in_flight
+                || scan
+                    .completed
+                    .is_some_and(|when| when.elapsed() < Duration::from_secs(2))
+            {
+                continue;
+            }
+            scan.in_flight = true;
+            let owner = Arc::clone(self);
+            let base = base.clone();
+            let worker_base = base.clone();
+            let read = Arc::clone(&read);
+            if let Err(error) = std::thread::Builder::new()
+                .name("whisper-cache-catalog".into())
+                .spawn(move || {
+                    let options = read(&worker_base);
+                    let mut scans = owner
+                        .scans
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    let scan = scans.entry(worker_base).or_default();
+                    scan.options = options;
+                    scan.completed = Some(Instant::now());
+                    scan.in_flight = false;
+                    owner.changed.notify_all();
+                })
+            {
+                let scan = scans
+                    .get_mut(&base)
+                    .expect("scan registered before spawning");
+                scan.in_flight = false;
+                scan.completed = Some(Instant::now());
+                tracing::warn!(%error, "Cannot start optional Whisper cache discovery");
+            }
+        }
+        while bases.iter().any(|base| scans[base].in_flight) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (next, _) = self
+                .changed
+                .wait_timeout(scans, remaining)
+                .unwrap_or_else(|error| error.into_inner());
+            scans = next;
+        }
+        let pending = bases.iter().any(|base| scans[base].in_flight);
+        let mut options = Vec::new();
+        for base in bases {
+            for option in &scans[base].options {
+                // Preserve cache-root precedence for the same HF repository.
+                if !options
+                    .iter()
+                    .any(|known: &WhisperModelOption| known.id == option.id)
+                {
+                    options.push(option.clone());
+                }
+            }
+        }
+        (options, pending)
+    }
+}
+
 /// Whether a directory that failed validation still belongs to the Whisper
 /// family (a broken or refused Whisper bundle), as opposed to another model
 /// family (embedder, Moshi, Silero) that must stay out of the Whisper picker.
@@ -741,15 +844,13 @@ fn push_whisper_option(
 
 /// The canonical catalog of local Whisper model options.
 ///
-/// Sources, in order: every Whisper-family child of the resolved models
-/// directory (complete *and* refused/broken, so quantized or half-downloaded
-/// bundles stay visible with their reason), the newest weight-bearing snapshot
-/// of each whisper repo in the known Hugging Face caches, the configured
-/// reference when it points outside the models directory, and the explicit
-/// `CODESCRIBE_MODEL_PATH` override. Rows are deduplicated by resolved path
-/// identity. No disk-wide scan, no tensor loading: validation is the loader's
-/// own structural check.
-pub fn whisper_model_options(configured: Option<&str>) -> Vec<WhisperModelOption> {
+/// Local Whisper-family children, the configured reference and explicit model
+/// override are checked first. Optional Hugging Face cache roots are read and
+/// validated independently, with a bounded wait and an explicit pending flag.
+/// Complete and refused/broken bundles retain the loader's own validation
+/// result. Rows are deduplicated by resolved path identity; this performs no
+/// disk-wide scan or tensor loading.
+pub fn whisper_model_options(configured: Option<&str>) -> WhisperCatalogInventory {
     let active = resolve_runtime_whisper_model_path(configured)
         .ok()
         .map(canonicalize_or_self);
@@ -784,19 +885,7 @@ pub fn whisper_model_options(configured: Option<&str>) -> Vec<WhisperModelOption
         }
     }
 
-    // 2. Newest weight-bearing snapshot per whisper repo in the known caches.
-    for (repo, snapshot) in crate::hf_cache::whisper_cache_snapshots() {
-        push_whisper_option(
-            repo,
-            snapshot,
-            "hf_cache",
-            active.as_ref(),
-            &mut options,
-            &mut seen,
-        );
-    }
-
-    // 3. The configured reference when it resolves outside the rows above.
+    // The configured reference and override must not wait for optional caches.
     if let Some(reference) = configured
         && let Ok(manager) = ModelManager::new()
     {
@@ -828,13 +917,43 @@ pub fn whisper_model_options(configured: Option<&str>) -> Vec<WhisperModelOption
         }
     }
 
+    // Optional cache listing and validation both happen outside this read.
+    // A disconnected mount must not hide usable local models or make selecting
+    // one wait on that mount. The catalog reports incomplete discovery and the
+    // visible Settings observer refreshes until the remaining roots settle.
+    static DISCOVERY: OnceLock<Arc<WhisperModelCatalogDiscovery>> = OnceLock::new();
+    let discovery = DISCOVERY.get_or_init(|| Arc::new(WhisperModelCatalogDiscovery::default()));
+    let (cached, discovery_pending) = discovery.snapshot(
+        &hf_cache::cache_bases(),
+        Duration::from_millis(100),
+        |base| {
+            let mut options = Vec::new();
+            let mut seen = Vec::new();
+            for (repo, snapshot) in hf_cache::whisper_cache_snapshots(base) {
+                push_whisper_option(repo, snapshot, "hf_cache", None, &mut options, &mut seen);
+            }
+            options
+        },
+    );
+    for mut option in cached {
+        let path = PathBuf::from(&option.path);
+        if !seen.contains(&path) {
+            option.active = active.as_ref() == Some(&path);
+            seen.push(path);
+            options.push(option);
+        }
+    }
+
     options.sort_by(|a, b| {
         b.active
             .cmp(&a.active)
             .then_with(|| b.usable.cmp(&a.usable))
             .then_with(|| a.label.cmp(&b.label))
     });
-    options
+    WhisperCatalogInventory {
+        options,
+        discovery_pending,
+    }
 }
 
 /// The transfer was stopped on request, so it is not a failure to report.
@@ -1275,6 +1394,7 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     #[test]
@@ -2085,6 +2205,7 @@ mod tests {
     #[serial]
     fn resolve_runtime_whisper_model_path_uses_hf_repo_id_from_cache() {
         let temp_dir = TempDir::new().unwrap();
+        let _hf_isolation = isolate_from_real_hf_cache(temp_dir.path());
         let hf_cache = temp_dir.path().join("hf-cache");
         let snapshot = hf_cache
             .join("models--vetcoders--custom-whisper")
@@ -2274,5 +2395,74 @@ mod tests {
         // embedded flag must match cfg(embed_model) payload; we only assert type wiring.
         let _ = status.available;
         let _ = status.embedded;
+    }
+    #[test]
+    fn whisper_catalog_blocked_cache_keeps_healthy_rows_and_one_worker() {
+        let discovery = Arc::new(WhisperModelCatalogDiscovery::default());
+        let bases = vec![PathBuf::from("blocked"), PathBuf::from("healthy")];
+        let (release, gate) = std::sync::mpsc::channel();
+        let gate = Arc::new(Mutex::new(gate));
+        let blocked_reads = Arc::new(AtomicUsize::new(0));
+        let read = {
+            let gate = Arc::clone(&gate);
+            let blocked_reads = Arc::clone(&blocked_reads);
+            move |base: &Path| {
+                if base == Path::new("blocked") {
+                    blocked_reads.fetch_add(1, Ordering::SeqCst);
+                    let _ = gate.lock().unwrap().recv();
+                }
+                vec![WhisperModelOption {
+                    id: base.display().to_string(),
+                    label: base.display().to_string(),
+                    path: base.display().to_string(),
+                    source: "hf_cache".into(),
+                    usable: true,
+                    reason: None,
+                    active: false,
+                }]
+            }
+        };
+        let start = Instant::now();
+        let (rows, pending) = discovery.snapshot(&bases, Duration::from_millis(100), read.clone());
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(pending);
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["healthy"]
+        );
+        for _ in 0..20 {
+            let (_, pending) = discovery.snapshot(&bases, Duration::ZERO, read.clone());
+            assert!(pending);
+        }
+        assert_eq!(blocked_reads.load(Ordering::SeqCst), 1);
+        release.send(()).unwrap();
+        let (rows, pending) = discovery.snapshot(&bases, Duration::from_secs(1), read);
+        assert!(!pending);
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["blocked", "healthy"]
+        );
+    }
+
+    #[test]
+    fn whisper_catalog_cache_snapshot_keeps_root_precedence() {
+        let discovery = Arc::new(WhisperModelCatalogDiscovery::default());
+        let bases = vec![PathBuf::from("first"), PathBuf::from("second")];
+        let (rows, pending) = discovery.snapshot(&bases, Duration::from_secs(1), |base| {
+            vec![WhisperModelOption {
+                id: "same/repository".into(),
+                label: "Same model".into(),
+                path: base.display().to_string(),
+                source: "hf_cache".into(),
+                usable: false,
+                reason: Some("invalid bundle".into()),
+                active: false,
+            }]
+        });
+        assert!(!pending);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "first");
+        assert!(!rows[0].usable);
+        assert_eq!(rows[0].reason.as_deref(), Some("invalid bundle"));
     }
 }
