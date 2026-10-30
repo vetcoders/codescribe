@@ -22,6 +22,8 @@ struct OverlayAgentRosterLabel: View {
   var headerOnly = false
   var contentOnly = false
   var receipt: OverlayRosterReceipt? = nil
+  /// After the receipt: the caller's sync chain and panel button.
+  var trailingMarks: AnyView? = nil
 
   var body: some View {
     HStack(alignment: .top, spacing: 6) {
@@ -52,6 +54,9 @@ struct OverlayAgentRosterLabel: View {
             }
             if let receipt {
               OverlayRosterReceiptMark(receipt: receipt, palette: palette, textScale: textScale)
+            }
+            if let trailingMarks {
+              trailingMarks
             }
             Spacer(minLength: 4)
             if unreadCount > 0, let conversationID {
@@ -114,6 +119,22 @@ struct OverlayAgentUnreadBadge: View {
       .background(palette.processingStatus.color.opacity(0.12), in: Circle())
       .fixedSize()
       .accessibilityLabel("\(count) unread replies")
+  }
+}
+
+/// The draft-sync chain in its canonical form: the glyph the fiszki render.
+/// Lit in the agent accent while this conversation's draft is linked.
+struct OverlayRosterSyncMark: View {
+  let linked: Bool
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+
+  var body: some View {
+    Image(systemName: "link")
+      .font(.system(size: 10 * textScale, weight: .semibold))
+      .foregroundStyle(linked ? palette.agentAccent.color : palette.mutedText.color)
+      .frame(width: 16 * textScale, height: 16 * textScale)
+      .contentShape(Rectangle())
   }
 }
 

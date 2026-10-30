@@ -1491,7 +1491,7 @@ struct DictationOverlayView: View {
   /// its pair paints flat on the card, not as glass circles on glass.
   private func conversationHeaderActions(_ conversation: OverlayConversation) -> AnyView? {
     conversationHeaderChannel(conversation).map {
-      AnyView(channelStatusView.compactAgentActions(for: $0, chrome: false))
+      AnyView(channelStatusView.compactAgentActions(for: $0, chrome: false, panel: true))
     }
   }
 

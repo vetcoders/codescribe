@@ -495,6 +495,15 @@ private struct OverlayFlatControlButtonStyle: ButtonStyle {
   }
 }
 
+/// The header's third control: one press to the agent's panel (Frame pane,
+/// terminal tab or Codex thread), drawn in the shape of the audio pair.
+struct OverlayAgentPanelControl {
+  let symbol: String
+  let hint: String
+  let enabled: Bool
+  let action: () -> Void
+}
+
 /// Identical controls in the roster and conversation; neither owns capture or playback.
 struct OverlayAgentAudioControls: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -526,6 +535,8 @@ struct OverlayAgentAudioControls: View {
   /// "może być na jednym miejscu z mikrofonem"): the microphone, which
   /// yields to the speaker while the agent talks so it can be muted.
   var shared = false
+  /// The conversation header's third control; a shared slot has no room for it.
+  var panel: OverlayAgentPanelControl? = nil
 
   private var speakingNow: Bool { speaking && muted == false }
 
@@ -709,6 +720,27 @@ struct OverlayAgentAudioControls: View {
         .accessibilityValue(Text(verbatim: playbackValue))
         .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
         .accessibilityIdentifier("overlay-agent-speaker")
+      }
+
+      if let panel, !shared {
+        Button(action: panel.action) {
+          Image(systemName: panel.symbol)
+            .font(.system(size: glyphSize, weight: .semibold))
+            .padding(.leading, flatPairInset)
+            .frame(
+              width: glyphBox, height: glyphBox,
+              alignment: chrome ? .center : .leading)
+        }
+        .modifier(
+          OverlayAudioControlInk(
+            palette: palette, lit: nil,
+            idleInk: palette.appearance == .dark ? palette.primaryText.color : nil)
+        )
+        .tint(Self.litGlass(nil))
+        .disabled(!panel.enabled)
+        .overlayFastHint(panel.hint, palette: palette)
+        .accessibilityLabel(Text(verbatim: panel.hint))
+        .accessibilityIdentifier("overlay-agent-panel-focus")
       }
     }
     .modifier(
@@ -915,10 +947,8 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
         Divider()
       }
       policyActions(for: member)
-      if secondaryActionsOnly, let focus = agentActions?.focus {
-        Divider()
-        agentCommand(focus)
-      }
+      // The jump to the agent's panel is a button beside the pair (header)
+      // and beside the receipt (rows), no longer a menu entry.
       if let archive = agentActions?.archive {
         Divider()
         agentCommand(archive, role: .destructive)
@@ -1109,8 +1139,14 @@ struct OverlayChannelStatusView: View {
   let selectedConversationID: String?
   let unreadCounts: [String: Int]
   let onSelectConversation: ((String?) -> Void)?
-  /// Explicit writing may choose a text destination independently of viewing.
+  /// Explicit writing opens that conversation; it is its own recipient.
   var onWriteConversation: ((OverlayConversation) -> Void)? = nil
+  /// Conversations whose draft is linked to another's: their roster chain is
+  /// lit. A press toggles the row's link with the open conversation, the
+  /// inbox included (Maciej, 2026-10-30 14:12: the chain is the sync toggle,
+  /// as on the fiszki).
+  var syncedConversationIDs: Set<String> = []
+  var onToggleDraftSync: ((String) -> Void)? = nil
   let onShowMonitor: (() -> Void)?
   /// Explicitly show this agent in the list. Unlike the header toggle, this
   /// callback never closes a panel or stops a recording.
@@ -1246,6 +1282,17 @@ struct OverlayChannelStatusView: View {
       })
     view.pendingArchives = state.pendingAgentArchives
     view.archivedOwners = state.archivedAgentOwners
+    view.syncedConversationIDs = Set(state.conversationDraftGroups.flatMap(\.members))
+    view.onToggleDraftSync = { id in
+      // The open conversation anchors the set; on its own row the chain
+      // unlinks it. Without an open conversation there is nothing to link to.
+      guard let source = state.selectedConversation else { return }
+      if source.id == id {
+        state.stopDraftSync(for: id)
+      } else {
+        state.toggleDraftSync(from: source.id, with: id)
+      }
+    }
     view.onArchiveAgent = { owner in Task { await state.archiveAgent(owner) } }
     view.archiveError = state.agentArchiveError
     view.panelFocusStates = state.agentPanelFocusStates
@@ -2075,15 +2122,74 @@ struct OverlayChannelStatusView: View {
           AnyView(compactReceptionIndicators(for: $0))
         }, palette: palette,
       textScale: textScale, headerOnly: headerOnly, contentOnly: contentOnly,
-      receipt: statusChannel.flatMap { deliveryReceiptDisplay(for: $0, conversation: conversation) }
+      receipt: statusChannel.flatMap {
+        deliveryReceiptDisplay(for: $0, conversation: conversation)
+      },
+      trailingMarks: rowMarks(for: statusChannel, conversation: conversation)
+    )
+  }
+
+  /// Beside the read receipt: the sync chain, a toggle as on the fiszki, and
+  /// the one-press jump to the agent's panel, both out of the "…" menu
+  /// (Maciej, 2026-10-30 14:08 and 14:12). Nothing on the All row.
+  func rowMarks(for channel: OverlayChannelDelivery?, conversation: OverlayConversation?)
+    -> AnyView?
+  {
+    guard let channel, channel.channel != "0" else { return nil }
+    let showsChain = conversation != nil && onToggleDraftSync != nil
+    let showsFocus = showsPanelFocusButton(for: channel)
+    guard showsChain || showsFocus else { return nil }
+    let linked = conversation.map { syncedConversationIDs.contains($0.id) } ?? false
+    let focusState = panelFocusStates[channel.channel]
+    let focusHelp = panelFocusHelp(for: channel, state: focusState)
+    let unreachable = panelFocusUnreachable(channel)
+    return AnyView(
+      HStack(spacing: 4) {
+        if showsChain, let conversation {
+          Button {
+            onToggleDraftSync?(conversation.id)
+          } label: {
+            OverlayRosterSyncMark(linked: linked, palette: palette, textScale: textScale)
+          }
+          .buttonStyle(.plain)
+          .overlayFastHint(
+            linked ? String(localized: "Stop syncing") : String(localized: "Sync draft"),
+            palette: palette
+          )
+          .accessibilityLabel(Text(linked ? "Stop syncing" : "Sync draft"))
+          .accessibilityIdentifier("overlay-agent-sync-\(channel.channel)")
+        }
+        if showsFocus {
+          Button {
+            focusAgentPanel(channel)
+          } label: {
+            Image(
+              systemName: panelFocusSymbol(focusState, target: panelFocusTarget(for: channel))
+            )
+            .font(.system(size: 11 * textScale, weight: .medium))
+            .frame(width: 16 * textScale, height: 16 * textScale)
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(palette.mutedText.color.opacity(unreachable ? 0.5 : 1))
+          .disabled(unreachable || focusState?.isRequesting == true)
+          .overlayFastHint(focusHelp, palette: palette)
+          .accessibilityLabel(Text(verbatim: focusHelp))
+          .accessibilityIdentifier("overlay-agent-focus-\(channel.channel)")
+        }
+      }
+      .background { OverlayMenuCursorRegion() }
     )
   }
 
   /// `chrome: false` for a pair that sits on a glass card (the conversation
   /// header); roster rows on the plain canvas keep their glass circles.
-  func compactAgentActions(for channel: OverlayChannelDelivery, chrome: Bool = true)
-    -> some View
-  {
+  /// `panel: true` adds the header's third control, the jump to the agent's
+  /// panel in the same shape as the pair (Maciej, 2026-10-30 14:08); roster
+  /// rows carry that button beside the receipt instead.
+  func compactAgentActions(
+    for channel: OverlayChannelDelivery, chrome: Bool = true, panel: Bool = false
+  ) -> some View {
     HStack(spacing: 6) {
       OverlayAgentAudioControls(
         open: isOpen(channel), muted: mutedChannels[channel.channel],
@@ -2092,7 +2198,7 @@ struct OverlayChannelStatusView: View {
         palette: palette, onMicrophone: { toggle(channel) },
         onPlayback: { onTogglePlayback?(channel.channel) },
         speaking: conversation(for: channel)?.replySpeaking == true,
-        chrome: chrome
+        chrome: chrome, panel: panel ? panelControl(for: channel) : nil
       )
       .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
       EmptyView().modifier(
@@ -2100,6 +2206,18 @@ struct OverlayChannelStatusView: View {
     }
     .fixedSize()
     .accessibilityIdentifier("overlay-agent-row-controls-\(channel.channel)")
+  }
+
+  /// The header's one-press jump to the agent's panel, with the row's real
+  /// reachability and its spinner, success and failure glyphs.
+  func panelControl(for channel: OverlayChannelDelivery) -> OverlayAgentPanelControl? {
+    guard showsPanelFocusButton(for: channel) else { return nil }
+    let focusState = panelFocusStates[channel.channel]
+    return OverlayAgentPanelControl(
+      symbol: panelFocusSymbol(focusState, target: panelFocusTarget(for: channel)),
+      hint: panelFocusHelp(for: channel, state: focusState),
+      enabled: !panelFocusUnreachable(channel) && focusState?.isRequesting != true,
+      action: { focusAgentPanel(channel) })
   }
 
   func compactReceptionIndicators(for channel: OverlayChannelDelivery) -> some View {
