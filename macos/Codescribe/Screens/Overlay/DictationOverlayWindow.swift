@@ -1357,7 +1357,8 @@ enum DictationOverlayWindow {
       // the circles stay on the tools' line.
       oneRowOverhang: ceil(
         max(
-          0, OverlayChannelPill.mapOverhang(scale: scale) - OverlayHeaderDensity.verticalPadding)))
+          0, OverlayChannelPill.mapOverhang(scale: scale) - OverlayHeaderDensity.verticalPadding)),
+      textScale: scale)
   }
 
   static func minimumSize(for mode: OverlayPresentationMode) -> NSSize {

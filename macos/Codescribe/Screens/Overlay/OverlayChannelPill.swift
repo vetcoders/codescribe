@@ -131,7 +131,8 @@ struct OverlayChannelPill: View {
     switch form {
     case .rail: 24 * textScale
     case .chip:
-      display.nameBelow ? Self.mapItemHeight * textScale : OverlayBarGeometry.secondRowHeight
+      display.nameBelow
+      ? Self.mapItemHeight * textScale : OverlayBarGeometry.secondRowHeight(scale: textScale)
     case .counter: Self.headerHeight
     }
   }
@@ -208,7 +209,7 @@ struct OverlayChannelPill: View {
         circledDigit(display.figure)
         if let name = display.name { nameText(name) }
       }
-      .frame(height: OverlayBarGeometry.secondRowHeight)
+      .frame(height: OverlayBarGeometry.secondRowHeight(scale: textScale))
     }
   }
 

@@ -149,7 +149,9 @@ The bar uses existing palette roles only: graphite background, neutral grey
 tools, muted violet selection, yellow unread, and the existing brand and
 microphone accents. Mockup colors, including the orange highlights of earlier
 concepts, are not palette values. A row is 26 pt in a 46 pt bar; a second row
-adds 20 pt plus a 4 pt gap. No tall capsule wraps small elements, and text is
+adds 20 pt plus a 4 pt gap at text scale 1 and grows with larger text, so its
+circle and name always fit (`OverlayBarGeometry.secondRowHeight(scale:)`, read
+by the window, the header and the chips). No tall capsule wraps small elements, and text is
 not shrunk below its normal size to make content fit.
 
 The map's channel circle is 19 pt with a 12 pt digit

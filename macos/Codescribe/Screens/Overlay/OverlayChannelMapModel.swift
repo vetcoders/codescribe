@@ -289,6 +289,9 @@ struct OverlayBarGeometry: Equatable, Sendable {
   /// (Monika's brief: text is never shrunk, height grows only by what is
   /// needed). `DictationOverlayWindow.midiBarGeometry` measures it.
   var oneRowOverhang: CGFloat = 0
+  /// The header text scale the map is drawn at; the second row grows with
+  /// it so its circle and name always fit (`secondRowHeight(scale:)`).
+  var textScale: CGFloat = 1
 
   static let groupGap: CGFloat = 10
   static let oneRowNaturalGap: CGFloat = 8
@@ -297,9 +300,16 @@ struct OverlayBarGeometry: Equatable, Sendable {
   static let twoRowNaturalGap: CGFloat = 10
   static let twoRowMinimumGap: CGFloat = 6
   static let defaultOneRowBudget: CGFloat = 520
-  /// The second row's height and its distance from the first.
+  /// The second row's height at text scale 1 and its distance from the first.
   static let secondRowHeight: CGFloat = 20
   static let rowGap: CGFloat = 4
+
+  /// The second row at a header text scale: it grows with the circle and the
+  /// name beside it, so both always fit; 20 pt at scale 1. The window, the
+  /// header and the chips read this one function.
+  static func secondRowHeight(scale: CGFloat) -> CGFloat {
+    ceil(secondRowHeight * max(1, scale))
+  }
 
   private var count: Int { nameWidths.count }
 
@@ -374,7 +384,7 @@ struct OverlayBarGeometry: Equatable, Sendable {
   func extraHeight(width: CGFloat) -> CGFloat {
     guard count > 0 else { return 0 }
     return layout(width: width).arrangement == .twoRows
-      ? Self.rowGap + Self.secondRowHeight : oneRowOverhang
+      ? Self.rowGap + Self.secondRowHeight(scale: textScale) : oneRowOverhang
   }
 
   /// The map at a bar width. Half a point absorbs fractional rounding.

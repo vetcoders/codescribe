@@ -1280,7 +1280,9 @@ struct DictationOverlayView: View {
           .allowsHitTesting(false)
           .accessibilityHidden(true)
         channelStrip(roster: roster, model: model, layout: layout)
-          .frame(height: OverlayBarGeometry.secondRowHeight)
+          .frame(
+            height: OverlayBarGeometry.secondRowHeight(
+              scale: OverlayChannelPill.headerScale(textScale)))
       }
     }
     .frame(width: width, alignment: .topLeading)
