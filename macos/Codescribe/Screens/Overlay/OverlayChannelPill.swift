@@ -82,14 +82,14 @@ struct OverlayChannelPill: View {
             )
             .offset(
               x: (layoutDirection == .rightToLeft ? -1 : 1)
-                * (OverlayAgentUnreadBadge.railDiameter(
-                  count: display.unreadCount, textScale: textScale)
-                  + OverlayAgentUnreadBadge.railGap * textScale),
-              y: -5 * textScale
+                * OverlayAgentUnreadBadge.railDiameter(
+                  count: display.unreadCount, textScale: textScale) / 2,
+              y: -OverlayAgentUnreadBadge.railDiameter(
+                count: display.unreadCount, textScale: textScale) / 2
             )
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-          } else if display.unread {
+          } else if form != .rail && display.unread {
             Circle()
               .fill(palette.processingStatus.color)
               .frame(width: 6 * textScale, height: 6 * textScale)
@@ -109,6 +109,10 @@ struct OverlayChannelPill: View {
     .accessibilityValue(Text(verbatim: resolvedAccessibilityValue))
     .accessibilityAddTraits(display.selected ? .isSelected : [])
     .accessibilityIdentifier(identifier)
+  }
+
+  static func compactButtonWidth(textScale: CGFloat) -> CGFloat {
+    38 * textScale
   }
 
   private var height: CGFloat {
@@ -172,6 +176,7 @@ struct OverlayChannelPill: View {
           }
         }
         .padding(.horizontal, 6 * textScale)
+        .frame(width: Self.compactButtonWidth(textScale: textScale))
       case .chip:
         HStack(spacing: Self.chipGap * textScale) {
           circledDigit(display.figure)
