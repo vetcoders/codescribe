@@ -79,9 +79,9 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     for mode: OverlayPresentationMode in [.mini, .midi, .expanded] {
       state.setPresentationMode(mode)
       let counter = try XCTUnwrap(
-        DictationOverlayView(state: state).channelMap,
+        DictationOverlayView(state: state).channelCounter,
         "Floating panels keep their reveal entrance at every overlay width")
-      XCTAssertTrue(counter.stacked)
+      XCTAssertEqual(counter.placement, .counter)
       counter.onCounter()
       XCTAssertEqual(state.presentationMode, mode, "Reveal must not switch overlay density")
     }
@@ -92,10 +92,14 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     XCTAssertEqual(state.conversationDrafts["layout-draft"], "unfinished message")
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
     state.channelMapPreference.selectLayout(.horizontal)
-    XCTAssertTrue(state.channelMapInHeader)
-    XCTAssertEqual(DictationOverlayView(state: state).channelMap?.stacked, false)
+    XCTAssertTrue(state.channelMapInHeader, "the expanded bar carries the map")
+    XCTAssertFalse(state.channelMapCounterStacked)
     state.setPresentationMode(.midi)
-    XCTAssertNotNil(DictationOverlayView(state: state).channelMap)
+    XCTAssertNil(
+      DictationOverlayView(state: state).channelCounter, "the horizontal bar has no counter")
+    XCTAssertEqual(
+      DictationOverlayView(state: state).channelStatusView.channelMapModel.chips.map(\.digit),
+      ["3"])
   }
 
   func testOptOutHidesOnlyMapAndKeepsConversationAndCapture() throws {
@@ -107,32 +111,35 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
         open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
         unreadSinceUnixMs: nil)
     ])
-    let view = DictationOverlayView(state: state)
-    XCTAssertNotNil(view.channelMap)
+    XCTAssertTrue(state.channelMapInHeader)
     let generation = state.captureGeneration
     let selected = state.selectedConversationID
     let hud = state.channelHudStates
     state.channelMapPreference.select(false)
-    XCTAssertNil(view.channelMap)
+    XCTAssertFalse(state.channelMapInHeader, "classic: the same bar without the map")
+    XCTAssertFalse(state.channelMapCounterStacked)
+    XCTAssertNil(DictationOverlayView(state: state).channelCounter)
     XCTAssertEqual(state.captureGeneration, generation)
     XCTAssertEqual(state.selectedConversationID, selected)
     XCTAssertEqual(state.channelHudStates, hud)
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  func testDisabledPanelUsesEarlierMiniAndCompactWidths() throws {
+  /// Mini hugs its content in every layout (Monika, 2026-10-30): no 200 or
+  /// 164 pt widths survive for the classic overlay, and the capsule never
+  /// gets narrower than its controls.
+  func testMiniHugsItsMeasuredWidthInEveryLayout() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let panel = FloatingOverlayPanel(
       contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
     defer { panel.invalidatePresence() }
-    panel.setChannelMapPresentation(enabled: false, capturing: false, naturalWidth: 160)
-    XCTAssertEqual(panel.miniSize.width, 200)
-    panel.setChannelMapPresentation(enabled: false, capturing: true, naturalWidth: 160)
-    XCTAssertEqual(panel.miniSize.width, 164)
-    panel.setChannelMapPresentation(enabled: true, capturing: true, naturalWidth: 160)
-    XCTAssertEqual(panel.miniSize.width, 160)
-    panel.setMidiNaturalWidth(DictationOverlayWindow.midiSize.width)
-    XCTAssertEqual(panel.midiPresentationWidth, 410)
+    let floor = DictationOverlayWindow.miniFloorWidth
+    XCTAssertEqual(panel.miniSize.width, floor)
+    XCTAssertEqual(panel.miniSize.height, DictationOverlayWindow.collapsedHeight)
+    panel.setMiniNaturalWidth(floor + 7)
+    XCTAssertEqual(panel.miniSize.width, floor + 7)
+    panel.setMiniNaturalWidth(floor - 40)
+    XCTAssertEqual(panel.miniSize.width, floor, "never narrower than the controls")
   }
 }
 
