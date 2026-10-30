@@ -455,7 +455,9 @@ struct OverlayConversationView: View {
           onActivateDraftSync: onActivateDraftSync,
           onProseEdit: onProseEdit,
           onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync,
-          recipientsOnSend: conversation.isDraftSyncSource
+          recipientsOnSend: conversation.isDraftSyncSource,
+          clearRecipientsTitle: conversation.isHumanInbox
+            ? String(localized: "Stop syncing") : String(localized: "Send to everyone")
         )
         // A reused native coordinator must never redirect an old owner's
         // proposal or undo history into a different conversation's binding.

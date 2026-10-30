@@ -59,6 +59,9 @@ struct OverlayConversationComposer: View {
   /// możemy tego zrobić jako dziubek w przycisku wysyłki?"). The "+" then
   /// stays a plain attach button.
   var recipientsOnSend = false
+  /// What clearing the set means here: 0 · All goes back to everyone, the
+  /// inbox back to nobody.
+  var clearRecipientsTitle = String(localized: "Send to everyone")
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @State private var pasteError: String?
@@ -325,7 +328,7 @@ struct OverlayConversationComposer: View {
       }
       if draftSyncActive, let onStopDraftSync {
         Divider()
-        Button("Send to everyone", action: onStopDraftSync)
+        Button(action: onStopDraftSync) { Text(verbatim: clearRecipientsTitle) }
       }
     } label: {
       Image(systemName: "chevron.down")
