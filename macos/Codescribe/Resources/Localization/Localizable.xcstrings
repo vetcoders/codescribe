@@ -12094,7 +12094,7 @@
       }
     },
     "No conversation on this channel" : {
-      "comment" : "Disabled mini-rail channel pill",
+      "comment" : "Disabled compact channel button",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
