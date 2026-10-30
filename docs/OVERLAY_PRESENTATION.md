@@ -564,6 +564,16 @@ does not need changes to these owners.
   the channel that stays), with ids and channels only, never the text. A
   message to the Founder whose owner is not unique is skipped and traced
   the same way (`ambiguous_owner` or `no_owner`).
+- The panel's chrome and resize edges own the cursor: they show the arrow or
+  the resize cursor before native dispatch, so a text view underneath cannot
+  set an I-beam there. Native text views, editable fields and links keep their
+  own cursor (`FloatingOverlayPanel.pointerDecision` in
+  `DictationOverlayWindow.swift`).
+- Bus conversations, the Agent window and the prompt preview render messages
+  through one `MarkdownText` renderer; a new skin restyles it instead of adding
+  a second Markdown path.
+- Settings configures agents; the live roster belongs to the bus and the
+  overlay projections. Settings keeps no second roster of connected agents.
 - Scale text through the existing text-scale projection, preserve Reduce
   Motion/Reduce Transparency, tooltips, keyboard focus and accessibility IDs.
   Change a symbol's font separately from the button's hit area.
@@ -588,7 +598,9 @@ only: it may be a full-screen bus. Transcription starts at 470 × 280 until size
 independently, then restores its own last size. Manual resizing of agents does
 not disable transcript growth. A new ordinary capture selects transcription
 before it unfolds; an agent take retains its channel surface. A composer take
-keeps both the surface and the form (`applyTakeStartPresentation`).
+keeps both the surface and the form (`applyTakeStartPresentation`). An ordinary
+take opens the window when expand-by-default is on and otherwise the expanded
+bar (`OverlayState.applyPreferredExpansion(forTake:)`).
 
 The fold button has the same top/trailing inset and header row height in every
 form. Native morphs, canvas switches and transcript growth preserve that screen

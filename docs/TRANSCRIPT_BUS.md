@@ -2377,6 +2377,20 @@ bound, including a failed binding write or deliberate reattachment. Otherwise
 the conversation remains in saved conversations; an empty history also retains
 an archive entry. Reusing the channel exposes the new owner independently.
 
+The app archives through the controller only: Swift calls
+`archive_agent_channel` over UniFFI and starts no process of its own. The
+controller holds `RecordingController`'s serial lock, the lock that also
+guards opening a channel and autoseal, and refuses to archive a channel that
+is open (`app/controller/agent_channel.rs`).
+
+## Agent model metadata
+
+The model shown for an agent comes only from that exact provider session's
+native transcript: Codex's `session_meta` with `turn_context.model`, or
+Claude's verified `sessionId` with its assistant model. Metadata naming another
+session is rejected, and unrelated messages or global configuration never
+supply a model (`scripts/bus-demux.py`).
+
 ## Agent panel focus in Frame or a terminal tab
 
 Each agent row resolves one destination for its focus button
