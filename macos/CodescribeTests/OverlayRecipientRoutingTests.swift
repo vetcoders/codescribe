@@ -407,8 +407,15 @@ final class OverlayRecipientRoutingTests: XCTestCase {
     XCTAssertTrue(composer.contains("\"overlay-conversation-recipients\""))
     XCTAssertTrue(
       composer.contains(
-        "if draftSyncActive, let onStopDraftSync { Divider() Button(\"Send to everyone\", action: onStopDraftSync) }"
-      ), "a chosen set can be dropped from the same menu")
+        "if draftSyncActive, let onStopDraftSync { Divider() "
+          + "Button(action: onStopDraftSync) { Text(verbatim: clearRecipientsTitle) } }"),
+      "a chosen set can be dropped from the same menu")
+    // Clearing means different things: 0 · All goes back to everyone, the
+    // inbox back to nobody, so the view names the item.
+    XCTAssertTrue(
+      view.contains(
+        "clearRecipientsTitle: conversation.isHumanInbox ? String(localized: \"Stop syncing\") "
+          + ": String(localized: \"Send to everyone\")"))
     XCTAssertTrue(composer.contains("\"overlay-conversation-plus\""))
     XCTAssertTrue(composer.contains("\"overlay-conversation-attach\""))
   }
