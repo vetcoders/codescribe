@@ -428,6 +428,9 @@
     background: transparent;
     border: 1px solid var(--cs-muted);
   }
+  #cs-bus-merged .cs-listening-dot {
+    background: var(--cs-accent);
+  }
   #cs-bus-merged .cs-current-actions {
     display: flex;
     gap: 5px;
@@ -1402,7 +1405,11 @@
             }><span class="cs-channel-digit">${
               a.id
             }</span><span class="cs-online-dot ${
-              a.online ? "" : "cs-offline-dot"
+              a.online
+                ? state.mic === a.id
+                  ? "cs-listening-dot"
+                  : ""
+                : "cs-offline-dot"
             }"></span><span class="cs-agent-name">${escapeHtml(
               a.name
             )}</span>${statusMarks(a)}${
@@ -1657,7 +1664,11 @@
           : state.view === "all"
           ? "Kanał 0 · wspólna rozmowa"
           : `Kanał ${a.id} <span>·</span> <span class="cs-online-dot ${
-              a.online ? "" : "cs-offline-dot"
+              a.online
+                ? state.mic === a.id
+                  ? "cs-listening-dot"
+                  : ""
+                : "cs-offline-dot"
             }"></span> ${a.online ? "połączona" : "rozłączony"}`;
       $("[data-current-actions]").innerHTML = actionSet(a);
       $("[data-heading-status]").innerHTML = statusMarks(a);
