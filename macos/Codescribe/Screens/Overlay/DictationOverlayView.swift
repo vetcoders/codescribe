@@ -1361,24 +1361,16 @@ struct DictationOverlayView: View {
     .accessibilityIdentifier("overlay-header-trailing")
   }
 
-  /// Mini's Agents slot. The vertical layout keeps the roster's own button,
+  /// Mini's Agents slot: the roster's own Agents button with mini's hover
+  /// list and recipient digits. The vertical layout keeps the plain button,
   /// since its stacked counter already shows the recipients' digits.
-  @ViewBuilder
   private var miniAgentsSlot: some View {
-    let roster = channelStatusView
-    if state.channelMapCounterStacked {
-      roster
-    } else {
-      refreshingChordModifier(
-        OverlayMiniAgentsControl(
-          model: roster.channelMapModel, modifier: state.agentChannelModifier,
-          palette: palette, textScale: textScale, animates: overlayVisible,
-          selected: roster.headerSelected,
-          unread: roster.unreadCounts.values.contains { $0 > 0 },
-          stops: roster.agentMicrophoneStops,
-          onAgents: { roster.showMonitor() },
-          onSelectChannel: { roster.selectChannelConversation($0) }))
+    var roster = channelStatusView
+    if !state.channelMapCounterStacked {
+      roster.miniAgentsButton = OverlayChannelStatusView.MiniAgentsButton(
+        chordModifier: state.agentChannelModifier, textScale: textScale)
     }
+    return refreshingChordModifier(roster)
   }
 
   private var transcriptionPreviewButton: some View {

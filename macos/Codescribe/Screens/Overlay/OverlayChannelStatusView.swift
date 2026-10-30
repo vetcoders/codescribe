@@ -1092,6 +1092,18 @@ struct OverlayChannelStatusView: View {
   /// callback never closes a panel or stops a recording.
   var onShowAgentInMonitor: ((String) -> Void)? = nil
   var headerSelected = false
+  /// Mini's capabilities of the Agents button, enabled by the caller
+  /// (Monika's bar brief, 2026-10-30): hovering the ✦ lists the present
+  /// agents, and while agent channels are open the button shows the
+  /// recipients' circled digits instead of the microphone. Nil keeps the
+  /// plain button of the expanded bar and the window.
+  var miniAgentsButton: MiniAgentsButton? = nil
+
+  struct MiniAgentsButton: Equatable {
+    /// The chord modifier the list's labels name.
+    let chordModifier: OverlayChannelChordModifier
+    let textScale: CGFloat
+  }
   /// The recording agent is on screen: a press stops its capture.
   var agentMicrophoneStops = false
   var mutedChannels: [String: Bool] = [:]
@@ -1324,8 +1336,47 @@ struct OverlayChannelStatusView: View {
     }
   }
 
+  /// The Agents button: the ✦ (or the open microphone) everywhere, and in
+  /// mini, when the caller enables it, the recipients' digits while agent
+  /// channels are open. Every face keeps one action and one identifier.
+  @ViewBuilder
   var body: some View {
-    Button(action: showMonitor) {
+    if let mini = miniAgentsButton, agentCaptureOpen, channelMapModel.microphoneOpen {
+      recipientDigits(channelMapModel, mini: mini)
+    } else {
+      agentsButton
+    }
+  }
+
+  /// Mini's Agents slot width: the ✦ circle, or the recipients' digits when
+  /// they are wider (`DictationOverlayWindow.miniNaturalWidth`).
+  @MainActor
+  static func miniAgentsButtonWidth(map: OverlayChannelMapModel, textScale: CGFloat) -> CGFloat {
+    guard map.microphoneOpen else { return OverlayMicrophoneGlyph.diameter }
+    return max(
+      OverlayMicrophoneGlyph.diameter,
+      OverlayChannelPill.counterWidth(
+        figure: String(map.count), openDigitCount: map.openDigits.count,
+        scale: OverlayChannelPill.headerScale(textScale)))
+  }
+
+  private var agentsActionLabel: String {
+    agentMicrophoneStops ? String(localized: "Stop recording") : String(localized: "Agents")
+  }
+
+  private var agentsButton: some View {
+    // Mini lists the present agents under the ✦; the pointer can move into
+    // the list and pick one through the map's selection path.
+    let agents = miniAgentsButton == nil ? [] : channelMapModel.agents
+    let list: AnyView? = miniAgentsButton.flatMap { mini in
+      agents.isEmpty
+        ? nil
+        : AnyView(
+          OverlayAgentsHoverList(
+            agents: agents, modifier: mini.chordModifier, palette: palette,
+            onSelect: { selectChannelConversation($0) }))
+    }
+    return Button(action: showMonitor) {
       headerGlyph
         .contentShape(Circle())
         .overlay(alignment: .topTrailing) {
@@ -1345,14 +1396,40 @@ struct OverlayChannelStatusView: View {
     .modifier(
       OverlayHeaderControlChrome(
         title: headerTitle, accent: .agents, palette: palette,
-        selected: headerSelected)
+        selected: headerSelected, hintContent: list,
+        hintSize: list == nil ? nil : OverlayAgentsHoverList.size(agents: agents),
+        hintInteractive: list != nil)
     )
-    .accessibilityLabel(
-      agentMicrophoneStops ? String(localized: "Stop recording") : String(localized: "Agents")
-    )
+    .accessibilityLabel(agentsActionLabel)
     .accessibilityAddTraits(headerSelected ? .isSelected : [])
     .accessibilityValue(agentCaptureOpen ? OverlayRecordingLight.agent.name : glyph.label)
     .accessibilityIdentifier("overlay-agent-glyph")
+  }
+
+  /// Mini while Monika speaks to agents: mini stays mini (her decision,
+  /// 2026-10-30) and the slot shows the violet circled digits of every
+  /// channel the microphone feeds, overlapping when there are several, `0`
+  /// for all; the hint names them. The press is the same Agents press, which
+  /// in mini stops that capture (`OverlayState.agentsButtonStopsRecording`).
+  private func recipientDigits(_ map: OverlayChannelMapModel, mini: MiniAgentsButton)
+    -> some View
+  {
+    OverlayChannelPill(
+      form: .counter,
+      display: OverlayChannelPill.Display(
+        figure: String(map.count), microphoneOpen: true, openDigits: map.openDigits,
+        animates: animates),
+      hint: "",
+      accessibilityText: agentsActionLabel,
+      accessibilityValue: map.counterAccessibilityValue,
+      identifier: "overlay-agent-glyph",
+      palette: palette, textScale: OverlayChannelPill.headerScale(mini.textScale),
+      showsHint: false, action: showMonitor
+    )
+    .frame(minWidth: OverlayMicrophoneGlyph.diameter)
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: agentsActionLabel + ". " + map.recipientsHint, accent: nil, palette: palette))
   }
 
   var monitorBody: some View {

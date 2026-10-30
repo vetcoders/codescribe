@@ -1284,7 +1284,7 @@ enum DictationOverlayWindow {
     guard stacked else {
       return ceil(
         miniFloorWidth - OverlayMicrophoneGlyph.diameter
-          + OverlayMiniAgentsControl.width(map: map, textScale: textScale))
+          + OverlayChannelStatusView.miniAgentsButtonWidth(map: map, textScale: textScale))
     }
     guard !map.chips.isEmpty else { return miniFloorWidth }
     let counter = OverlayChannelPill.counterWidth(

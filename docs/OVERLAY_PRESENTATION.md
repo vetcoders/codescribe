@@ -68,7 +68,8 @@ action hints. Empty entries retain their existing navigation hint.
 Roster previews use a maximum 330-by-240-point viewport at text scale 1.
 Short messages fit their natural height; long messages use the bounded native
 scroll view. The preview uses native popover glass with a light sheet-color
-veil, a thin appearance-aware edge and a window shadow. These separate it from
+veil, a thin appearance-aware edge and a window shadow (`OverlayPopoverGlass`,
+shared with the bar). These separate it from
 conversation bubbles beneath it while retaining compact insets. Message body
 text keeps its existing readable size. Ordinary hints and fixed rich previews
 on the floating Intercom retain their tooltip material and existing presentation.
@@ -274,11 +275,21 @@ still click on the bar's background calls
 bar both ways (`FloatingOverlayPanel.isPresentationClickHit` keeps drags and
 buttons out). Mini is the brand dot (close), transcription, microphone, the
 Agents slot and the chevron, sized by `DictationOverlayWindow.miniNaturalWidth`.
-The slot is `OverlayMiniAgentsControl`: at rest the ✦ with its interactive
-hover list (`OverlayAgentsHoverList` in the shared `OverlayHintPanel`'s
-interactive mode), while agent channels are open the recipients' overlapping
-circled digits; its press is the roster's Agents press. The vertical layout
-keeps the roster's own ✦ in mini, since its stacked counter shows the digits.
+The ✦ button has one owner, `OverlayChannelStatusView.body`, in every form;
+mini enables its two extra capabilities through `miniAgentsButton`: at rest
+an interactive hover list (`OverlayAgentsHoverList` in the shared
+`OverlayHintPanel`'s interactive mode), and while agent channels are open the
+recipients' overlapping circled digits in place of the microphone. Every face
+keeps the Agents press and the `overlay-agent-glyph` identifier. The vertical
+layout leaves the capabilities off in mini, since its stacked counter shows
+the digits.
+
+The bar (mini and the expanded bar) wears the hover preview's glass through
+`OverlayCanvasSurface(glass: .popover)`; the open window keeps the `.sheet`
+veil. `OverlayPopoverGlass` in `OverlayCanvasSurface.swift` is the one recipe
+both read: popover material, a sheet-colour veil (0.28 for the preview, 0.56
+for the bar so digits and names stay legible), a 1 pt text-colour edge and
+the shadow.
 
 The bar's agent map is another surface of the same projections.
 `OverlayChannelStatusView.channelMapModel` builds `OverlayChannelMapModel`
