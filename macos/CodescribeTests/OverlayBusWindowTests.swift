@@ -153,6 +153,22 @@ final class OverlayBusWindowTests: XCTestCase {
     }
   }
 
+  func testDockingACoveringPanelMarksTheNowVisibleReplyRead() throws {
+    let target = try conversation("2", canonicalLease: true)
+    let state = OverlayState()
+    apply([target], to: state)
+    state.selectConversation(target.id)
+    state.setAgentDrawerDocked(false)
+    state.showAgentMonitor()
+    state.setConversationVisible(true)
+    let updated = withMessages(target, [previewReply(in: target, text: "A newly visible reply")])
+    apply([updated], to: state)
+    XCTAssertEqual(state.unreadReplies(in: updated), 1, "the covering panel still hides the reply")
+    state.setAgentDrawerDocked(true)
+    XCTAssertTrue(state.showsAgentMonitor, "resizing keeps the panel open")
+    XCTAssertEqual(state.unreadReplies(in: updated), 0, "docking exposes and reads the chat")
+  }
+
   func testMessageBubbleContentReflowsInsideItsCapAfterNarrowing() throws {
     let target = try conversation("2", canonicalLease: true)
     var sent = try outgoing(in: target, acknowledged: true)

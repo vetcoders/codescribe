@@ -940,7 +940,7 @@ final class OverlayState {
   /// The base is the floor: reading time never shortens it. Never has no
   /// interval. No receipt or document is marked read by this estimate.
   private var selectedReplyReadingSeconds: TimeInterval? {
-    guard autoFoldSeconds > 0, !showsAgentMonitor,
+    guard autoFoldSeconds > 0, !agentPanelCoversConversation,
       let message = selectedConversation?.messages.last, message.kind == .reply
     else { return nil }
     return max(
@@ -951,7 +951,7 @@ final class OverlayState {
   /// Synthesis/waiting and playback are presentation activity until their
   /// canonical ticket becomes terminal. Mirrors and polls add no timer.
   private var selectedReplyPlaybackActive: Bool {
-    guard !showsAgentMonitor, let selectedConversation else { return false }
+    guard !agentPanelCoversConversation, let selectedConversation else { return false }
     return selectedConversation.messages.contains { message in
       message.kind == .reply
         && message.playback.map { ["waiting", "playing"].contains($0.state) } == true
@@ -1471,7 +1471,17 @@ final class OverlayState {
   static let agentSidebarVisibleDefaultsKey = "Overlay.agentSidebarVisible.v1"
 
   func setAgentDrawerDocked(_ docked: Bool) {
+    guard docked != agentDrawerDocked else { return }
+    let wasCovered = agentPanelCoversConversation
     agentDrawerDocked = docked
+    if wasCovered != agentPanelCoversConversation {
+      markVisibleConversationRead()
+      noteAutoCollapseActivity()
+    }
+  }
+
+  private var agentPanelCoversConversation: Bool {
+    showsAgentMonitor && !agentDrawerDocked
   }
 
   /// Adopt the previous pane choice once. Thereafter one Boolean owns panel
@@ -1499,7 +1509,9 @@ final class OverlayState {
   @ObservationIgnored private var lastAgentConversationID: String?
   private(set) var showsAgentMonitor = false {
     didSet {
-      agentSidebarDefaults?.set(showsAgentMonitor, forKey: Self.agentSidebarVisibleDefaultsKey)
+      if oldValue != showsAgentMonitor {
+        agentSidebarDefaults?.set(showsAgentMonitor, forKey: Self.agentSidebarVisibleDefaultsKey)
+      }
     }
   }
   /// Saved-conversation search in the agent drawer. Owned here because the
@@ -2310,7 +2322,7 @@ final class OverlayState {
   var agentsButtonStopsRecording: Bool {
     guard let recording = recordingAgentConversationID else { return false }
     if presentationMode == .mini { return true }
-    return !isCollapsed && (!showsAgentMonitor || agentDrawerDocked)
+    return !isCollapsed && (!agentPanelCoversConversation)
       && selectedConversationID == recording
   }
 
@@ -2590,7 +2602,7 @@ final class OverlayState {
 
   private func markVisibleConversationRead() {
     guard conversationIsVisible, !isCollapsed,
-      !showsAgentMonitor || agentDrawerDocked, let selectedConversation
+      !agentPanelCoversConversation, let selectedConversation
     else {
       return
     }

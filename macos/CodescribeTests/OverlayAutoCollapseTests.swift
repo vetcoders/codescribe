@@ -176,6 +176,47 @@ final class OverlayAutoCollapseTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .mini)
   }
 
+  func testDockedAgentPanelKeepsTheVisibleReplyPlaybackHold() throws {
+    let (state, clock) = makeState()
+    state.setPresentationMode(.mini)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(try replySnapshot())
+    state.setAgentDrawerDocked(true)
+    state.showAgentMonitor()
+    let predecessor = try XCTUnwrap(clock.wakes.last)
+    clock.advance(by: 8)
+    state.applyConversationSnapshot(try replySnapshot(playback: "playing"))
+    XCTAssertTrue(predecessor.cancelled)
+    predecessor.run()
+    clock.advance(by: 90)
+    XCTAssertEqual(state.presentationMode, .expanded, "audio still owns visibility")
+    XCTAssertNil(state.autoCollapseDeadline)
+    XCTAssertEqual(clock.outstanding, 0)
+
+    state.applyConversationSnapshot(try replySnapshot(playback: "spoken"))
+    clock.advance(by: 9.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  func testDockingAnOpenAgentPanelRestoresTheVisibleReplyReadingInterval() throws {
+    let (state, clock) = makeState()
+    let text = Array(repeating: "słowo", count: 90).joined(separator: " ")
+    state.setPresentationMode(.mini)
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: []))
+    state.applyConversationSnapshot(try replySnapshot(text: text))
+    state.showAgentMonitor()
+    state.setAgentDrawerDocked(true)
+    clock.advance(by: 10)
+    XCTAssertEqual(state.presentationMode, .expanded, "90 words need more than ten seconds")
+    state.applyConversationSnapshot(try replySnapshot(text: text, acknowledged: true))
+    clock.advance(by: 19.5)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 0.5)
+    XCTAssertEqual(state.presentationMode, .mini, "ACK is not new text or reading activity")
+  }
+
   func testReplyWaitingAndPlayingKeepOneHoldWithoutPollDeadlines() throws {
     let (state, clock) = makeState()
     state.setPresentationMode(.midi)
