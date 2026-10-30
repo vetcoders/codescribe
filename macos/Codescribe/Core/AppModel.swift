@@ -330,6 +330,9 @@ final class OverlayController: ObservableObject {
   func startIntercomPresentation() {
     guard !intercomPresentationStarted else { return }
     intercomPresentationStarted = true
+    // The explicit entry exists even while the main Agents canvas keeps the
+    // floating windows unmaterialized. Visibility must not own the command.
+    state.onRevealIntercom = { [weak self] in self?.showIntercom() }
     observeIntercomPresentation()
   }
 
@@ -377,8 +380,6 @@ final class OverlayController: ObservableObject {
         state: state, textScale: intercomTextScale,
         revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) },
         desktopStore: intercomDesktopStore)
-      // Mini's stacked counter leads here in the vertical layout.
-      state.onRevealIntercom = { [weak self] in self?.showIntercom() }
     }
     // The middle-click chooser lives where the agents do: on the Intercom
     // while it stands, on the big overlay's list otherwise.
@@ -396,6 +397,7 @@ final class OverlayController: ObservableObject {
   /// Explicit entry into floating panels leaves the default widget behind.
   /// Dismissal hides a projection; it never stops capture or closes a draft.
   private func showIntercom() {
+    guard intercomPresentationStarted else { return }
     readOverlayPreference()
     dismiss()
     intercomWidget?.revealGroup()
