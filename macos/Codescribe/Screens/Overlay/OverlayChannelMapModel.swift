@@ -295,8 +295,10 @@ struct OverlayBarGeometry: Equatable, Sendable {
 
   static let groupGap: CGFloat = 10
   static let oneRowNaturalGap: CGFloat = 8
-  /// Names stay this far apart at every density.
-  static let oneRowMinimumGap: CGFloat = 3
+  /// Names stay this far apart at every density: at 3 pt shortened names
+  /// under neighbouring circles read as one string ("names may not merge",
+  /// Monika's bar brief, 2026-10-30), so one row keeps the two-row minimum.
+  static let oneRowMinimumGap: CGFloat = 6
   static let twoRowNaturalGap: CGFloat = 10
   static let twoRowMinimumGap: CGFloat = 6
   static let defaultOneRowBudget: CGFloat = 520

@@ -856,7 +856,7 @@ final class OverlayChannelMapTests: XCTestCase {
   }
 
   /// Four names that are never shortened fit one row within the budget:
-  /// narrowing first closes the gaps from 8 to 3 pt, then moves the map to a
+  /// narrowing first closes the gaps from 8 to 6 pt, then moves the map to a
   /// second row, where the full names stay down to the floor.
   func testFourShortNamesCloseTheirGapsBeforeTakingTwoRows() {
     let name = 2 * OverlayChannelPill.mapCircle

@@ -99,7 +99,7 @@ and tool widths (`OverlayBarGeometry`), not from the number of agents.
 Narrowing the bar by its left or right edge changes only its width and
 densifies the map in this order:
 
-1. one row, names under circles, gaps 8 → 3 pt;
+1. one row, names under circles, gaps 8 → 6 pt;
 2. two rows, names beside circles, gaps 10 → 6 pt;
 3. names shortened (`OverlayChannelPill.truncatedName`, the full name in the
    hint), in one row or two, whichever reaches the narrower floor. A shortened
