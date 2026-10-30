@@ -38,6 +38,21 @@ enum ProviderCredentialIO {
   }
 }
 
+/// Model discovery walks local and external model caches. A blocked filesystem
+/// read must never occupy MainActor or the credential executor.
+enum WhisperModelCatalogIO {
+  private static let queue = DispatchQueue(
+    label: "codescribe.whisper-model-catalog", qos: .utility)
+
+  static func perform(
+    _ operation: @escaping @Sendable () -> CsWhisperModelCatalog
+  ) async -> CsWhisperModelCatalog {
+    await withCheckedContinuation { continuation in
+      queue.async { continuation.resume(returning: operation()) }
+    }
+  }
+}
+
 /// Subset of the codescribe config surface the Settings screen consumes.
 @MainActor
 protocol SettingsEngine {
@@ -62,7 +77,7 @@ protocol SettingsEngine {
   func resetAudioInputDevice() throws
 
   // Local Whisper model catalog + picker selection (Settings → Dictation).
-  func loadWhisperModelCatalog() -> CsWhisperModelCatalog
+  func loadWhisperModelCatalog() async -> CsWhisperModelCatalog
   func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch
 
   // Acoustic admission: the controller's own precondition for any take
@@ -242,8 +257,8 @@ final class RealSettingsEngine: SettingsEngine {
   func resetAudioInputDevice() throws {
     try config.resetAudioInputDevice()
   }
-  func loadWhisperModelCatalog() -> CsWhisperModelCatalog {
-    whisperModelCatalog()
+  func loadWhisperModelCatalog() async -> CsWhisperModelCatalog {
+    await WhisperModelCatalogIO.perform { whisperModelCatalog() }
   }
   nonisolated func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
     try await setLocalWhisperModel(reference: reference)
@@ -460,6 +475,7 @@ struct MockSettingsEngine: SettingsEngine {
   var selectLocalWhisperModelObserver: ((String) async throws -> CsWhisperModelSwitch)?
   /// Live catalog reads for residency transitions; nil serves `whisperCatalog`.
   var whisperCatalogLoader: (() -> CsWhisperModelCatalog)?
+  var whisperCatalogAsyncLoader: (() async -> CsWhisperModelCatalog)?
   var voiceLabEditObserver: ((String, String) throws -> CsVoiceLabSaveResult)?
   var ruleCandidates: [CsRuleCandidate] = []
   var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
@@ -508,8 +524,9 @@ struct MockSettingsEngine: SettingsEngine {
   func resetAudioInputDevice() throws {
     try resetAudioInputDeviceObserver?()
   }
-  func loadWhisperModelCatalog() -> CsWhisperModelCatalog {
-    whisperCatalogLoader?() ?? whisperCatalog
+  func loadWhisperModelCatalog() async -> CsWhisperModelCatalog {
+    if let whisperCatalogAsyncLoader { return await whisperCatalogAsyncLoader() }
+    return whisperCatalogLoader?() ?? whisperCatalog
   }
   func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
     if let selectLocalWhisperModelObserver {

@@ -1388,6 +1388,8 @@ final class SettingsViewModel: ObservableObject {
   /// Canonical option catalog + saved preference + resident-engine truth.
   /// Nil until the first live refresh; previews stay on the engine's sample.
   @Published private(set) var whisperModelCatalog: CsWhisperModelCatalog?
+  private var whisperModelCatalogRefresh: Task<Void, Never>?
+  private var whisperModelCatalogRefreshRequested = false
   /// Honest outcome of the last selection ("applies from the next take" …).
   @Published private(set) var whisperModelNotice: String?
   /// Real validation/load error of the last failed selection; the picker never
@@ -1569,6 +1571,7 @@ final class SettingsViewModel: ObservableObject {
       refreshWhisperModelCatalog()
     case .recordingLifecycle:
       whisperLoadExpected = true
+      guard whisperResidencyObserved else { return }
       refreshWhisperModelCatalog()
     }
     observeWhisperResidencyIfNeeded()
@@ -1754,8 +1757,26 @@ final class SettingsViewModel: ObservableObject {
   /// resident-engine truth). Refreshed together with the install status so the
   /// picker, the footprint rows and the install row never disagree.
   func refreshWhisperModelCatalog() {
-    guard let engine else { return }
-    whisperModelCatalog = engine.loadWhisperModelCatalog()
+    guard engine != nil else { return }
+    whisperModelCatalogRefreshRequested = true
+    guard whisperModelCatalogRefresh == nil else { return }
+    whisperModelCatalogRefresh = Task { @MainActor [weak self] in
+      while let engine = self?.engine {
+        self?.whisperModelCatalogRefreshRequested = false
+        let catalog = await engine.loadWhisperModelCatalog()
+        guard let self, !Task.isCancelled else { return }
+        // A new invalidation supersedes the in-flight snapshot. Collapse all
+        // such edges into one new read, never a queue of filesystem workers.
+        guard !self.whisperModelCatalogRefreshRequested else { continue }
+        self.whisperModelCatalog = catalog
+        self.whisperModelCatalogRefresh = nil
+        if self.whisperResidencySettled { self.whisperLoadExpected = false }
+        if self.whisperResidencyObservation == nil || self.whisperResidencySettled {
+          self.observeWhisperResidencyIfNeeded()
+        }
+        return
+      }
+    }
   }
 
   /// "Check model": install state, option catalog and resident-engine truth
