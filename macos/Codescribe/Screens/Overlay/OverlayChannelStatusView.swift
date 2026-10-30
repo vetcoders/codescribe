@@ -400,7 +400,8 @@ struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
       }
       .background {
         if let targetID, let onHover {
-          OverlayMenuCursorRegion { inside in
+          // The chooser's input target must be current before a click or chord.
+          OverlayMenuCursorRegion(coalescesHover: false) { inside in
             if inside { onHover(targetID) }
           }
         }
@@ -1174,6 +1175,7 @@ struct OverlayChannelStatusView: View {
   /// conversation presentation; the execution and broadcast policy stay shared.
   static func intercomRoster(
     state: OverlayState, palette: OverlayAppearancePalette, animates: Bool,
+    includesGestureFocus: Bool = true,
     onRevealConversation: (() -> Void)? = nil,
     onOpenConversation: ((String) -> Void)? = nil
   ) -> OverlayChannelStatusView {
@@ -1247,7 +1249,9 @@ struct OverlayChannelStatusView: View {
     view.panelFocusAvailable = state.agentPanelFocusAvailable
     // The view resolves the destination per row; `vc-frame` gates only Frame.
     view.onFocusAgentPanel = { state.focusAgentPanel($0) }
-    view.gestureFocusID = state.agentGestureFocusID
+    // Header/map projections do not render chooser focus. Only the roster's
+    // observation scope needs this hover-driven dependency.
+    if includesGestureFocus { view.gestureFocusID = state.agentGestureFocusID }
     view.onGestureHover = { state.hoverAgentGestureTarget($0) }
     view.onShowAgentInMonitor = { [view] digit in
       if let channel = view.channels.first(where: { $0.channel == digit }),

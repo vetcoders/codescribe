@@ -44,7 +44,9 @@ struct OverlayCursorState {
   mutating func update(
     zone: OverlayPointerZone, cursor: ObjectIdentifier?, region: ObjectIdentifier? = nil
   ) -> Bool {
-    let changed = self.zone != zone || self.cursor != cursor || self.region != region
+    // Adjacent mounted controls share the panel's cursor authority. Changing
+    // only the region does not change its image or require registering it again.
+    let changed = self.zone != zone || self.cursor != cursor
     let releasesResize: Bool
     if case .resize = self.zone, self.cursor != nil, cursor == nil,
       zone == .interior || zone == .menu
@@ -108,6 +110,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     var maxCursorSeconds = 0.0
   }
   private var pointerMetrics = PointerMetrics()
+  private static let pointerDiagnosticQueue = DispatchQueue(
+    label: "io.vetcoders.codescribe.pointer-diagnostics", qos: .utility)
   /// Selectable SwiftUI text that opens the keyboard gate without owning clicks.
   let selectableTextRegions = NSHashTable<NSView>.weakObjects()
   /// Grow-only expanded height for a candidate width. Nil keeps the remembered
@@ -887,15 +891,19 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       // windows schedule no work, and native cursor tracking remains unchanged.
       if now - pointerMetrics.since >= 2 {
         let m = pointerMetrics
-        sink.append(
-          category: "overlay-pointer",
+        let date = Date()
+        let message =
           "window=\(windowNumber) surface=\(contentSurface.rawValue) mode=\(presentationMode) "
-            + "seconds=\(now - m.since) decisions=\(m.decisions) writes=\(m.writes) "
-            + "zoneChanges=\(m.zoneChanges) cursorChanges=\(m.cursorChanges) regionChanges=\(m.regionChanges) "
-            + "boundaryResets=\(m.boundaryResets) mountingResets=\(m.mountingResets) orderOutResets=\(m.orderOutResets) "
-            + "decisionMs=\(m.decisionSeconds * 1000) cursorMs=\(m.cursorSeconds * 1000) maxCursorMs=\(m.maxCursorSeconds * 1000)"
-        )
+          + "seconds=\(now - m.since) decisions=\(m.decisions) writes=\(m.writes) "
+          + "zoneChanges=\(m.zoneChanges) cursorChanges=\(m.cursorChanges) regionChanges=\(m.regionChanges) "
+          + "boundaryResets=\(m.boundaryResets) mountingResets=\(m.mountingResets) orderOutResets=\(m.orderOutResets) "
+          + "decisionMs=\(m.decisionSeconds * 1000) cursorMs=\(m.cursorSeconds * 1000) maxCursorMs=\(m.maxCursorSeconds * 1000)"
         pointerMetrics = PointerMetrics()
+        // Timestamp the observation now; formatting, the log lock and file I/O
+        // must not delay the next mouse event. All panels share one FIFO queue.
+        Self.pointerDiagnosticQueue.async {
+          sink.append(category: "overlay-pointer", message, at: date)
+        }
       }
     }
     return shouldSet
