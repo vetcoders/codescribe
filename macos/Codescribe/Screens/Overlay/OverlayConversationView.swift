@@ -110,6 +110,7 @@ struct OverlayConversationMessageContent: View {
 struct OverlayConversationView: View {
   @Environment(\.displayScale) private var displayScale
   @Environment(\.csTextScale) private var textScale
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   let conversation: OverlayConversation
   let palette: OverlayAppearancePalette
   let topInset: CGFloat
@@ -267,6 +268,9 @@ struct OverlayConversationView: View {
         ])
 
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
+        // The title has its own viewport space. A content margin alone lets
+        // scrolled receipt/text glyphs paint under its audio controls.
+        .padding(.top, topInset + visibleNavigationHeight)
         .transaction { transaction in
           // Keep retained message geometry stable during the panel's transition.
           transaction.animation = nil
@@ -559,6 +563,17 @@ struct OverlayConversationView: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .background {
+        if reduceTransparency {
+          RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+            .fill(palette.desktopBackground.color)
+        }
+      }
+      .modifier(
+        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
+      )
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-conversation-navigation")
     }
@@ -757,24 +772,14 @@ struct OverlayConversationView: View {
       presentation == .intercom && showsComposer
         ? (visibleComposerHeight > 0 ? visibleComposerHeight : bottomInset + 54) : bottomInset)
     if #available(macOS 26.0, *) {
-      // The header's glass alone is not a shade: bubbles stayed readable right
-      // behind the mark (Founder, 2026-10-18). Apple pairs a glass bar with the
-      // scroll edge effect, so the pinned header becomes a safe-area bar — an
-      // empty one, since the window's own header paints it — and the system's
-      // soft effect fades whatever runs under it. The bar replaces the top
-      // content margin; both named the same height.
+      // Navigation reserves actual space outside the scrolling viewport.
+      // No empty safe-area bar or translucent fade competes with that bound.
       list
-        .safeAreaBar(edge: .top, spacing: 0) {
-          Color.clear
-            .frame(height: topInset + visibleNavigationHeight)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
-        .scrollEdgeEffectStyle(.soft, for: .top)
+        .scrollEdgeEffectHidden(true, for: .top)
         // The composer's glass sits on the floor with nothing pinned behind it.
         .scrollEdgeEffectHidden(true, for: .bottom)
     } else {
-      list.contentMargins(.top, topInset + visibleNavigationHeight)
+      list
     }
   }
 

@@ -825,8 +825,10 @@ final class OverlayState {
   /// midi, through the one presentation write, which also forgets a pending
   /// automatic return. Mini and midi stay as they are.
   func yieldToAppWindow() {
-    guard presentationMode == .expanded else { return }
-    applyPresentationMode(.midi, cause: .user)
+    // Focus entering another app window is an automatic fold, not the human
+    // choosing Compact. Never must also exclude this non-timer path.
+    guard autoFoldSeconds > 0, presentationMode == .expanded else { return }
+    applyPresentationMode(.midi, cause: .automatic)
   }
 
   /// The one presentation write. Any expansion to `.expanded` remembers the

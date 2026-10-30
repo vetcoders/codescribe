@@ -136,6 +136,17 @@ struct IntercomContentMetrics: Equatable {
       slots: min(3, max(0, Int((free / slot).rounded(.down)))), marks: false)
   }
 
+  /// A tall, narrow fiszka spends preview space on audio rather than hiding
+  /// its owner's name. Header-only rows keep their existing shared audio slot.
+  func audioFooterHeight(width: CGFloat, cardHeight: CGFloat) -> CGFloat {
+    let scale = nameFontSize / 11
+    let row = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+    guard tier(width: width, cardHeight: cardHeight) != .icon, width < actionsWidth,
+      cardHeight >= 2 * row + OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
+    else { return 0 }
+    return row
+  }
+
   /// Align execution context with the name, after the grip, digit and status.
   func nameLeadingInset(width: CGFloat, digit: String) -> CGFloat {
     let scale = nameFontSize / 11
@@ -186,6 +197,7 @@ struct IntercomContentMetrics: Equatable {
     let available =
       cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       - OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
+      - audioFooterHeight(width: width, cardHeight: cardHeight)
     let minimum =
       lineHeight + metadataLine
       + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
