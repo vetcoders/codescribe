@@ -925,7 +925,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       canvas.contains(
         "let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
     XCTAssertTrue(
-      canvas.contains("let railShown = agentsSurface && !state.isCollapsed && !listOnScreen"))
+      canvas.contains(
+        "let listOnScreen = agentsSurface && !state.isCollapsed && state.showsAgentMonitor"))
     XCTAssertTrue(
       canvas.range(
         of: #"footerMessageRow\s*\.frame\(height: 18\)"#,
@@ -970,9 +971,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let canvas = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
     let columnCall = canvas.range(of: "transcriptActionsColumn(")
-    let rail = canvas.range(of: "if railShown {")
+    let panel = canvas.range(of: "if columnShown {")
     XCTAssertNotNil(columnCall)
-    XCTAssertNotNil(rail)
+    XCTAssertNotNil(panel)
     XCTAssertFalse(canvas.contains("OverlayActionsSurface"))
     XCTAssertFalse(canvas.contains("HStack(spacing: 2)"))
     XCTAssertTrue(canvas.contains("transcriptActionsWidth"))

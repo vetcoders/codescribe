@@ -262,14 +262,16 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
         range: canvasStart.upperBound..<overlay.endIndex))
     let canvas = String(overlay[canvasStart.lowerBound..<canvasEnd.lowerBound])
     XCTAssertTrue(
-      canvas.contains("let listOnScreen =\n          agentsSurface"))
+      canvas.contains(
+        "let listOnScreen = agentsSurface && !state.isCollapsed && state.showsAgentMonitor"))
     XCTAssertTrue(
-      canvas.contains("let railShown = agentsSurface && !state.isCollapsed && !listOnScreen"))
+      canvas.contains("let panelOverlayShown = listOnScreen && !columnShown"))
     XCTAssertTrue(
       canvas.contains(
         "let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
     XCTAssertTrue(canvas.contains("if transcriptActionsShown {"))
-    XCTAssertTrue(canvas.contains("if railShown {"))
+    XCTAssertTrue(canvas.contains("if columnShown {"))
+    XCTAssertTrue(canvas.contains("if panelOverlayShown {"))
     XCTAssertFalse(canvas.contains("overlay-agent-rail"))
     XCTAssertEqual(canvas.components(separatedBy: "transcriptActionsColumn(").count - 1, 1)
   }

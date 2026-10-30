@@ -1021,6 +1021,9 @@ final class OverlayResizeHitTests: XCTestCase {
 
   @MainActor
   func testRosterSurfaceCoversNarrowCanvasAndDocksOnWideCanvas() throws {
+    let suite = UUID().uuidString
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
     // Narrow windows: the roster is the docked column's list over the whole
     // canvas, in place of the conversation (2026-10-19).
     for size in [
@@ -1044,6 +1047,7 @@ final class OverlayResizeHitTests: XCTestCase {
       let host = NSHostingView(
         rootView:
           MicrophoneFrameCapture(state: state, recorder: recorder)
+          .defaultAppStorage(defaults)
           .frame(width: size.width, height: size.height))
       host.sizingOptions = []
       let panel = NSPanel(
@@ -1056,8 +1060,14 @@ final class OverlayResizeHitTests: XCTestCase {
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
       host.layoutSubtreeIfNeeded()
       let drawer = recorder.drawer
-      XCTAssertEqual(drawer.minX, 0, accuracy: 0.5, "the list starts at the left edge")
-      XCTAssertEqual(drawer.width, size.width, accuracy: 1, "and covers the canvas width")
+      if OverlayAgentDrawerLayout.isDocked(windowWidth: size.width, textScale: 1) {
+        XCTAssertEqual(drawer.minX, size.width - 300, accuracy: 1)
+        XCTAssertEqual(
+          drawer.width, 300, accuracy: 1, "a readable wide window uses the side column")
+      } else {
+        XCTAssertEqual(drawer.minX, 0, accuracy: 0.5, "a narrow list starts at the left edge")
+        XCTAssertEqual(drawer.width, size.width, accuracy: 1, "and covers the canvas width")
+      }
       XCTAssertEqual(drawer.maxY, size.height, accuracy: 0.5, "and its height")
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(state.activeText, text)
@@ -1065,7 +1075,7 @@ final class OverlayResizeHitTests: XCTestCase {
     }
 
     // Wide window beside a conversation: the docked column owns the right
-    // 300 points without any open flag; the conversation keeps the remaining
+    // 300 points while its visibility choice is open; the conversation keeps the remaining
     // width. (The transcription alone keeps its full width: OverlayChromeV3Tests.)
     let size = CGSize(width: 1200, height: 500)
     let state = OverlayState.previewFormatted()
@@ -1083,6 +1093,7 @@ final class OverlayResizeHitTests: XCTestCase {
     let host = NSHostingView(
       rootView:
         MicrophoneFrameCapture(state: state, recorder: recorder)
+        .defaultAppStorage(defaults)
         .frame(width: size.width, height: size.height))
     host.sizingOptions = []
     let panel = NSPanel(
