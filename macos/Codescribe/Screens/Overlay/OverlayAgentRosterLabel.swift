@@ -21,10 +21,12 @@ struct OverlayAgentRosterLabel: View {
   let textScale: CGFloat
   var headerOnly = false
   var contentOnly = false
-  /// After the name: the caller's sync chain and panel button. The name row
-  /// carries no receipt glyph; delivery state is the line under the preview
-  /// (Maciej, 2026-10-30: "ptaszki są zbędną semantyką. ważniejsze dla mnie
-  /// były mini statusy pod podglądem wiadomości").
+  /// The last sent message's receipt as a glyph after the name. It must tell
+  /// the whole receipt story, not two states (Maciej, 2026-10-30 on build
+  /// 2981: "ja bym zostawił te ptaszki, ale one naprawdę muszą dawać status.
+  /// Teraz jest tylko (-) i 2 ptaszki").
+  var receipt: OverlayRosterReceipt? = nil
+  /// After the receipt: the caller's sync chain and panel button.
   var trailingMarks: AnyView? = nil
 
   var body: some View {
@@ -53,6 +55,9 @@ struct OverlayAgentRosterLabel: View {
               .accessibilityIdentifier("overlay-agent-title-\(channel ?? "0")")
             if let titleAccessory {
               titleAccessory
+            }
+            if let receipt {
+              OverlayRosterReceiptMark(receipt: receipt, palette: palette, textScale: textScale)
             }
             if let trailingMarks {
               trailingMarks
@@ -138,9 +143,60 @@ struct OverlayRosterSyncMark: View {
 }
 
 /// Compact projection of a frozen recipient's delivery evidence: the words
-/// the conversation bubble uses for the same receipt, for the row's state line.
+/// the conversation bubble uses for the same receipt, and the glyph that
+/// stands for them in the name row. One glyph per state, so the row reads
+/// the whole vocabulary: `pause.circle` held, `clock` queued or addressed
+/// with no receipt yet, `checkmark` accepted or delivered, `double-check`
+/// read, `forward.end` skipped off channel 0, `circle.dotted` no receipt.
 struct OverlayRosterReceipt {
+  let symbol: String
   let text: String
   let helpText: String
   var isRead = false
+}
+
+private struct OverlayRosterReceiptMark: View {
+  let receipt: OverlayRosterReceipt
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+
+  var body: some View {
+    Group {
+      switch receipt.symbol {
+      case "double-check":
+        OverlayRosterCheckmarks(count: 2)
+          .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+          .frame(width: 16 * textScale, height: 10 * textScale)
+      case "checkmark":
+        OverlayRosterCheckmarks(count: 1)
+          .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+          .frame(width: 16 * textScale, height: 10 * textScale)
+      default:
+        Image(systemName: receipt.symbol)
+          .font(.system(size: 11 * textScale, weight: .medium))
+      }
+    }
+    .foregroundStyle(receipt.isRead ? palette.bodyText.color : palette.mutedText.color)
+    .help(Text(verbatim: receipt.helpText))
+    .accessibilityLabel(Text(verbatim: receipt.helpText))
+    .accessibilityIdentifier("overlay-agent-receipt-\(receipt.symbol)")
+  }
+}
+
+/// One check for a copy that reached the agent's side, two for one it read;
+/// the second check sits a third of the width behind the first.
+private struct OverlayRosterCheckmarks: Shape {
+  let count: Int
+
+  func path(in rect: CGRect) -> Path {
+    var check = Path()
+    check.move(to: CGPoint(x: rect.minX + rect.width * 0.05, y: rect.minY + rect.height * 0.53))
+    check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.28, y: rect.minY + rect.height * 0.82))
+    check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.68, y: rect.minY + rect.height * 0.18))
+    var path = check
+    if count > 1 {
+      path.addPath(check, transform: CGAffineTransform(translationX: rect.width * 0.27, y: 0))
+    }
+    return path
+  }
 }

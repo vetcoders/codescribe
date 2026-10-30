@@ -2129,11 +2129,14 @@ struct OverlayChannelStatusView: View {
           AnyView(compactReceptionIndicators(for: $0))
         }, palette: palette,
       textScale: textScale, headerOnly: headerOnly, contentOnly: contentOnly,
+      receipt: statusChannel.flatMap {
+        deliveryReceiptDisplay(for: $0, conversation: conversation)
+      },
       trailingMarks: rowMarks(for: statusChannel, conversation: conversation)
     )
   }
 
-  /// After the name: the sync chain, a toggle as on the fiszki, and the
+  /// After the receipt: the sync chain, a toggle as on the fiszki, and the
   /// one-press jump to the agent's panel, both out of the "…" menu
   /// (Maciej, 2026-10-30 14:08 and 14:12). Nothing on the All row.
   func rowMarks(for channel: OverlayChannelDelivery?, conversation: OverlayConversation?)
@@ -2256,7 +2259,9 @@ struct OverlayChannelStatusView: View {
           })
         else { continue }
         guard message.withdrawn != true else { return nil }
-        func display(_ text: String, isRead: Bool = false) -> OverlayRosterReceipt {
+        func display(_ symbol: String, _ text: String, isRead: Bool = false)
+          -> OverlayRosterReceipt
+        {
           let detail: String
           if let date = MessageTimestamp.date(fromISO8601: message.emittedAt) {
             let timestamp = date.formatted(date: .abbreviated, time: .shortened)
@@ -2264,26 +2269,31 @@ struct OverlayChannelStatusView: View {
           } else {
             detail = String(localized: "Last sent message: \(text)")
           }
-          return OverlayRosterReceipt(text: text, helpText: detail, isRead: isRead)
+          return OverlayRosterReceipt(symbol: symbol, text: text, helpText: detail, isRead: isRead)
         }
         if message.holdSecondsRemaining != nil {
-          return display(String(localized: "Held"))
+          return display("pause.circle", String(localized: "Held"))
         }
         if recipient.acknowledged {
-          return display(String(localized: "Read"), isRead: true)
+          return display("double-check", String(localized: "Read"), isRead: true)
         }
         if let deliveryID = recipient.deliveryID,
           let state = message.receipt?.deliveries.first(where: { $0.deliveryID == deliveryID })?
             .state
         {
           switch state {
-          case .read: return display(String(localized: "Read"), isRead: true)
-          case .delivered: return display(String(localized: "Delivered"))
-          case .skipped: return display(OverlayConversationView.skippedBroadcastText)
-          case .noReceipt: return display(OverlayConversationView.noReceiptText)
+          case .read: return display("double-check", String(localized: "Read"), isRead: true)
+          case .delivered: return display("checkmark", String(localized: "Delivered"))
+          case .skipped: return display("forward.end", OverlayConversationView.skippedBroadcastText)
+          case .noReceipt: return display("circle.dotted", OverlayConversationView.noReceiptText)
           }
         }
-        return display(OverlayConversationView.receiptStatusText(for: recipient))
+        // The bubble's words for the frozen recipient, one glyph each: an
+        // accepted copy is one check, a queued or merely addressed one waits.
+        let text = OverlayConversationView.receiptStatusText(for: recipient)
+        if recipient.broadcastSkipped == true { return display("forward.end", text) }
+        if recipient.accepted { return display("checkmark", text) }
+        return display("clock", text)
       }
     }
     return nil
