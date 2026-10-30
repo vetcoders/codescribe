@@ -69,10 +69,11 @@ microphone can still be stopped after its reader disconnects, and playback can
 still be muted. A client-focus request keeps its progress and result on the
 more control and in the menu; removing the footer must not erase that feedback.
 
-`cardAgentMenu` selects only these secondary actions from the existing command
-owner. Card menus do not repeat Write/Forward, microphone, playback or Show in
-Agents; the full menu remains available on other pill surfaces. The same
-subset is used by the conversation header's More control.
+`cardAgentMenu` selects only these secondary actions for the compact More
+control. The roster label's right-click uses the full `agentPillMenu`, restoring
+Write/Forward, microphone, playback and Show in Agents with the existing command
+guards (Founder correction, 2026-10-30). The conversation header's More control
+keeps the compact subset.
 
 Opening the workspace dispatches the existing `focusAgentPanel` command to
 the detected Frame pane, terminal or Codex thread. `showAgentInMonitor` is a
@@ -89,8 +90,9 @@ is outside channel zero. These are passive projections of the existing
 dim without adding a Disconnected text line and remain available for history.
 
 The compact receipt mark describes the newest completed user delivery to the
-exact frozen recipient. A single check means a delivered receipt; the compact
-double-check shape means a read receipt or the canonical agent acknowledgment.
+exact frozen recipient. Delivered and read use the same compact double-check
+shape: muted ink means delivered; full body ink means read or the canonical agent
+acknowledgment.
 Queue admission and provider acceptance are not delivered/read evidence. Held,
 skipped and unreceipted deliveries keep distinct marks and explanations. The
 mark sits near the identity, separately from the last-preview clock; its help
@@ -98,6 +100,9 @@ and accessibility text name the time of its own outgoing message. A later
 incoming reply must not lend its time to that receipt. The circular unread
 reply count is a separate projection, also shown on the folded rail; compact
 map and floating Intercom badge rendering retain their existing form.
+The roster's positive unread count keeps its fixed badge instead of disappearing
+when space is tight. It has layout priority over the name and clock. The read
+mark consists of two identical translated checks; it is not two different states.
 
 ## Horizontal conversation and text destination
 

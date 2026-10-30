@@ -1601,9 +1601,8 @@ struct OverlayChannelStatusView: View {
       focusState: showsButton ? panelFocusStates[digit] : nil)
   }
 
-  /// Cards keep microphone/playback inline and explicit writing in the composer.
-  /// Their More button and right-click share this smaller menu. Other pill
-  /// surfaces retain the full action set and the same guarded commands.
+  /// More keeps a compact secondary menu beside the inline audio controls.
+  /// The roster label's context menu retains the full guarded action set.
   func cardAgentMenu(for digit: String, showsButton: Bool = false) -> OverlayBroadcastPolicyMenu {
     agentPillMenu(
       for: digit, showsInlineError: false, showsButton: showsButton, secondaryActionsOnly: true)
@@ -2019,7 +2018,7 @@ struct OverlayChannelStatusView: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     )
-    .modifier(cardAgentMenu(for: channel.channel))
+    .modifier(agentPillMenu(for: channel.channel, showsInlineError: false))
     .padding(.vertical, 3)
     .padding(.horizontal, 5)
     .modifier(
@@ -2123,7 +2122,7 @@ struct OverlayChannelStatusView: View {
           })
         else { continue }
         guard message.withdrawn != true else { return nil }
-        func display(_ symbol: String, _ text: String) -> OverlayRosterReceipt {
+        func display(_ symbol: String, _ text: String, isRead: Bool = false) -> OverlayRosterReceipt {
           let detail: String
           if let date = MessageTimestamp.date(fromISO8601: message.emittedAt) {
             let timestamp = date.formatted(date: .abbreviated, time: .shortened)
@@ -2131,20 +2130,20 @@ struct OverlayChannelStatusView: View {
           } else {
             detail = String(localized: "Last sent message: \(text)")
           }
-          return OverlayRosterReceipt(symbol: symbol, text: text, helpText: detail)
+          return OverlayRosterReceipt(symbol: symbol, text: text, helpText: detail, isRead: isRead)
         }
         if message.holdSecondsRemaining != nil {
           return display("pause.circle", String(localized: "Held"))
         }
         if recipient.acknowledged {
-          return display("double-check", String(localized: "Read"))
+          return display("double-check", String(localized: "Read"), isRead: true)
         }
         if let deliveryID = recipient.deliveryID,
           let state = message.receipt?.deliveries.first(where: { $0.deliveryID == deliveryID })?
             .state
         {
           switch state {
-          case .read: return display("double-check", String(localized: "Read"))
+          case .read: return display("double-check", String(localized: "Read"), isRead: true)
           case .delivered: return display("checkmark", String(localized: "Delivered"))
           case .skipped: return display("forward.end", OverlayConversationView.skippedBroadcastText)
           case .noReceipt: return display("circle.dotted", OverlayConversationView.noReceiptText)

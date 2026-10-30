@@ -55,18 +55,15 @@ struct OverlayAgentRosterLabel: View {
             }
             Spacer(minLength: 4)
             if unreadCount > 0, let conversationID {
-              ViewThatFits(in: .horizontal) {
-                OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)
-                Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
-              }
-              .layoutPriority(2)
-              .accessibilityIdentifier("overlay-agent-unread-replies-\(conversationID)")
+              OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)
+                .layoutPriority(2)
+                .accessibilityIdentifier("overlay-agent-unread-replies-\(conversationID)")
             }
             if let timestamp {
               MessageTimestampLabel(date: timestamp, compact: true)
                 .font(.system(size: 11 * textScale))
                 .foregroundStyle(palette.mutedText.color)
-                .fixedSize(horizontal: true, vertical: false)
+                .lineLimit(1)
                 .accessibilityIdentifier(
                   "overlay-agent-timestamp-\(conversationID ?? channel ?? "0")")
             }
@@ -125,6 +122,7 @@ struct OverlayRosterReceipt {
   let symbol: String
   let text: String
   let helpText: String
+  var isRead = false
 }
 
 private struct OverlayRosterReceiptMark: View {
@@ -134,16 +132,16 @@ private struct OverlayRosterReceiptMark: View {
 
   var body: some View {
     Group {
-      if receipt.symbol == "double-check" {
+      if receipt.symbol == "double-check" || receipt.symbol == "checkmark" {
         OverlayRosterDoubleCheckmark()
           .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-          .frame(width: 14 * textScale, height: 10 * textScale)
+          .frame(width: 16 * textScale, height: 10 * textScale)
       } else {
         Image(systemName: receipt.symbol)
           .font(.system(size: 11 * textScale, weight: .medium))
       }
     }
-    .foregroundStyle(palette.mutedText.color)
+    .foregroundStyle(receipt.isRead ? palette.bodyText.color : palette.mutedText.color)
     .help(Text(verbatim: receipt.helpText))
     .accessibilityLabel(Text(verbatim: receipt.helpText))
   }
@@ -151,12 +149,12 @@ private struct OverlayRosterReceiptMark: View {
 
 private struct OverlayRosterDoubleCheckmark: Shape {
   func path(in rect: CGRect) -> Path {
-    var path = Path()
-    path.move(to: CGPoint(x: rect.width * 0.03, y: rect.height * 0.53))
-    path.addLine(to: CGPoint(x: rect.width * 0.28, y: rect.height * 0.82))
-    path.addLine(to: CGPoint(x: rect.width * 0.72, y: rect.height * 0.18))
-    path.move(to: CGPoint(x: rect.width * 0.40, y: rect.height * 0.82))
-    path.addLine(to: CGPoint(x: rect.width * 0.97, y: rect.height * 0.18))
+    var check = Path()
+    check.move(to: CGPoint(x: rect.minX + rect.width * 0.05, y: rect.minY + rect.height * 0.53))
+    check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.28, y: rect.minY + rect.height * 0.82))
+    check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.68, y: rect.minY + rect.height * 0.18))
+    var path = check
+    path.addPath(check, transform: CGAffineTransform(translationX: rect.width * 0.27, y: 0))
     return path
   }
 }
