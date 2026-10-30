@@ -128,7 +128,8 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   ) throws {
     let palette: OverlayAppearancePalette = dark ? .dark : .light
     let host = NSHostingView(
-      rootView: content
+      rootView:
+        content
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .background(palette.desktopBackground.color)
         .environment(\.colorScheme, dark ? .dark : .light))

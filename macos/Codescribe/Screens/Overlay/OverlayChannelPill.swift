@@ -132,7 +132,7 @@ struct OverlayChannelPill: View {
     case .rail: 24 * textScale
     case .chip:
       display.nameBelow
-      ? Self.mapItemHeight * textScale : OverlayBarGeometry.secondRowHeight(scale: textScale)
+        ? Self.mapItemHeight * textScale : OverlayBarGeometry.secondRowHeight(scale: textScale)
     case .counter: Self.headerHeight
     }
   }
