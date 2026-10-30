@@ -262,7 +262,8 @@ final class OverlayHintPanel {
               RoundedRectangle(cornerRadius: CSRadius.chip)
                 .fill(
                   OverlayPopoverGlass.veil(
-                    palette, opacity: OverlayPopoverGlass.previewVeilOpacity))
+                    palette, opacity: OverlayPopoverGlass.previewVeilOpacity)
+                )
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
@@ -271,7 +272,8 @@ final class OverlayHintPanel {
             if interactive {
               RoundedRectangle(cornerRadius: CSRadius.chip)
                 .strokeBorder(
-                  OverlayPopoverGlass.edge(palette), lineWidth: OverlayPopoverGlass.edgeWidth)
+                  OverlayPopoverGlass.edge(palette), lineWidth: OverlayPopoverGlass.edgeWidth
+                )
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }

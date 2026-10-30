@@ -183,7 +183,8 @@ struct OverlayAgentsHoverList: View {
                 .fill(palette.processingStatus.color)
                 .frame(
                   width: OverlayChannelPill.unreadDotDiameter,
-                  height: OverlayChannelPill.unreadDotDiameter)
+                  height: OverlayChannelPill.unreadDotDiameter
+                )
                 .accessibilityHidden(true)
             }
           }

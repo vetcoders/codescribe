@@ -316,7 +316,8 @@ final class OverlayChannelMapTests: XCTestCase {
   private func render(_ content: some View, size: CGSize) throws -> Raster {
     let palette = OverlayAppearancePalette.dark
     let host = NSHostingView(
-      rootView: content
+      rootView:
+        content
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .background(palette.desktopBackground.color)
         .preferredColorScheme(.dark))
