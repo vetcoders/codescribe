@@ -660,7 +660,8 @@ struct OverlayAgentAudioControls: View {
         }
         .modifier(
           OverlayAudioControlInk(
-            palette: palette, lit: open ? recordingAccent : nil, idleInk: palette.primaryText.color)
+            palette: palette, lit: open ? recordingAccent : nil,
+            idleInk: palette.appearance == .dark ? palette.primaryText.color : nil)
         )
         .tint(Self.litGlass(open ? recordingAccent : nil))
         .disabled(!microphoneEnabled)
@@ -694,7 +695,7 @@ struct OverlayAgentAudioControls: View {
         .modifier(
           OverlayAudioControlInk(
             palette: palette, lit: speakingNow ? palette.agentAccent.color : nil,
-            idleInk: palette.primaryText.color)
+            idleInk: palette.appearance == .dark ? palette.primaryText.color : nil)
         )
         .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
         .disabled(!playbackEnabled || muted == nil)

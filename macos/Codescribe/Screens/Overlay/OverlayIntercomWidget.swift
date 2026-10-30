@@ -1926,6 +1926,18 @@ private struct OverlayIntercomCard: View {
   var body: some View {
     let palette = OverlayAppearancePalette.resolve(colorScheme)
     let expanded = controller.presentation.expanded.contains(identity)
+    let current =
+      intercomConversation(state: state, digit: identity.digit).map { identity.matches($0) } == true
+    let roster = OverlayChannelStatusView.intercomRoster(
+      state: state, palette: palette, animates: !reduceMotion,
+      onRevealConversation: onRevealConversation,
+      onOpenConversation: { id in
+        if id == identity.conversationID { controller.expand(identity) }
+      })
+    let channelRow = current ? intercomChannelRow(state: state, digit: identity.digit) : nil
+    let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
+    let audioBelowName = !expanded && controller.contentMetrics.audioFooterHeight(
+      width: controller.groupWidth, cardHeight: controller.groupCardHeight) > 0
     let content = controller.contentMetrics.cardContent(
       width: controller.groupWidth, cardHeight: controller.groupCardHeight)
     let preview = controller.contentMetrics.compactPreviewLayout(
@@ -1935,12 +1947,14 @@ private struct OverlayIntercomCard: View {
       ? OverlayIntercomWidgetLayout.conversationCornerRadius
       : OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
     VStack(spacing: 0) {
-      cardHeader(palette: palette, expanded: expanded)
+      cardHeader(
+        palette: palette, expanded: expanded, roster: roster, inactive: inactive,
+        audioBelowName: audioBelowName)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       if expanded || content != .header, let conversation {
         // One physical metadata line uses the card width, not the narrow name
-        // button between status marks and audio controls. Its contrast does
-        // not inherit a disconnected or detached row's dimming.
+        // button between status marks and audio controls. The complete card
+        // shares the exact owner's activity state, including this metadata.
         OverlayIntercomConversationContext(
           descriptor: state.conversationAgentDescriptor(conversation)
             ?? conversation.owner?.provider,
@@ -1994,8 +2008,19 @@ private struct OverlayIntercomCard: View {
         }
         .accessibilityIdentifier("overlay-intercom-preview-open-\(identity.digit)")
       }
+      if audioBelowName {
+        audioSlot(
+          current ? conversation : nil, palette: palette,
+          speaking: current && conversation?.replySpeaking == true,
+          open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false))
+          .frame(maxWidth: .infinity, alignment: .trailing)
+          .padding(.horizontal, 6)
+          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+          .accessibilityIdentifier("overlay-intercom-audio-footer-\(identity.digit)")
+      }
     }
     .foregroundStyle(palette.primaryText.color)
+    .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     // Header-only icons retain their compact row; text uses its measured space.
     .frame(
@@ -2060,20 +2085,16 @@ private struct OverlayIntercomCard: View {
   }
 
   @ViewBuilder
-  private func cardHeader(palette: OverlayAppearancePalette, expanded: Bool) -> some View {
+  private func cardHeader(
+    palette: OverlayAppearancePalette, expanded: Bool, roster: OverlayChannelStatusView,
+    inactive: Bool, audioBelowName: Bool
+  ) -> some View {
     let conversation = conversation
     let current =
       intercomConversation(state: state, digit: identity.digit).map { identity.matches($0) } == true
     let speaking = current && conversation?.replySpeaking == true
     let open = current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
-    let roster = OverlayChannelStatusView.intercomRoster(
-      state: state, palette: palette, animates: !reduceMotion,
-      onRevealConversation: onRevealConversation,
-      onOpenConversation: { id in
-        if id == identity.conversationID { controller.expand(identity) }
-      })
     let channelRow = current ? intercomChannelRow(state: state, digit: identity.digit) : nil
-    let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
     let tier = controller.groupTier
     let row = expanded ? IntercomRowControls.all : controller.rowControls
     let contentTier = controller.contentMetrics.cardContent(
@@ -2190,7 +2211,6 @@ private struct OverlayIntercomCard: View {
         .opacity(detached ? 0.72 : 1)
         .modifier(nameHint)
         .simultaneousGesture(moveGesture)
-        .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
         .modifier(OverlayDetachedRosterValue(detached: detached))
         .accessibilityLabel(
           Text(verbatim: identity.isHumanInbox ? name : identity.digit + " · " + name)
@@ -2282,7 +2302,7 @@ private struct OverlayIntercomCard: View {
         // Focus precedes the shared audio pair: live input on the left,
         // reply playback on the right. Narrow rows retain one shared slot.
         Group {
-          if row.slots >= 1 {
+          if !audioBelowName, row.slots >= 1 {
             audioSlot(
               current ? conversation : nil, palette: palette, speaking: speaking, open: open,
               shared: row.slots == 1)
@@ -2313,7 +2333,6 @@ private struct OverlayIntercomCard: View {
           .accessibilityIdentifier("overlay-intercom-collapse-\(identity.digit)")
         }
       }
-      .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
       .modifier(
         current && !identity.isHumanInbox
           ? roster.agentPillMenu(for: identity.digit, showsInlineError: false)
@@ -2827,12 +2846,25 @@ private struct OverlayIntercomInstanceCard: View {
     let palette = OverlayAppearancePalette.resolve(colorScheme)
     let conversation = state.conversations.first { instance.matches($0) }
     let mini = instance.minimized
+    let current =
+      intercomConversation(state: state, digit: instance.digit).map { instance.matches($0) } == true
+    let roster = OverlayChannelStatusView.intercomRoster(
+      state: state, palette: palette, animates: !reduceMotion,
+      onRevealConversation: onRevealConversation,
+      onOpenConversation: { id in
+        if id == instance.conversationID { controller.focusInstance(instanceID) }
+      })
+    let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
+    let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
+    let audioBelowName = !mini && instanceAudioFooterHeight(instance) > 0
     let corner =
       mini
       ? OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
       : OverlayIntercomWidgetLayout.conversationCornerRadius
     return VStack(spacing: 0) {
-      headerRow(instance, conversation: conversation, palette: palette)
+      headerRow(
+        instance, conversation: conversation, palette: palette, roster: roster,
+        audioBelowName: audioBelowName)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       // The detached fiszka keeps the same metadata line as its group card;
       // the agent's provider, model and repository must not vanish with the
@@ -2860,8 +2892,20 @@ private struct OverlayIntercomInstanceCard: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       }
+      if audioBelowName {
+        OverlayIntercomAudioControls(
+          state: state, conversation: current ? conversation : nil, digit: instance.digit,
+          palette: palette,
+          open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false),
+          speaking: current && conversation?.replySpeaking == true, shared: false)
+          .frame(maxWidth: .infinity, alignment: .trailing)
+          .padding(.horizontal, 6)
+          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+          .accessibilityIdentifier("overlay-intercom-instance-audio-footer-\(instance.digit)")
+      }
     }
     .foregroundStyle(palette.primaryText.color)
+    .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(
       OverlayCanvasBackdrop(
@@ -2889,7 +2933,7 @@ private struct OverlayIntercomInstanceCard: View {
 
   private func headerRow(
     _ instance: OverlayIntercomInstance, conversation: OverlayConversation?,
-    palette: OverlayAppearancePalette
+    palette: OverlayAppearancePalette, roster: OverlayChannelStatusView, audioBelowName: Bool
   ) -> some View {
     let current =
       intercomConversation(state: state, digit: instance.digit).map { instance.matches($0) }
@@ -2898,17 +2942,10 @@ private struct OverlayIntercomInstanceCard: View {
     let open = current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
     let mini = instance.minimized
     let layout = instanceLayout(instance)
-    let roster = OverlayChannelStatusView.intercomRoster(
-      state: state, palette: palette, animates: !reduceMotion,
-      onRevealConversation: onRevealConversation,
-      onOpenConversation: { id in
-        if id == instance.conversationID { controller.focusInstance(instanceID) }
-      })
     // A digit whose owner changed belongs to the replacement agent: its marks
     // and focus would act on that agent under this fiszka's name (Copilot on
     // #183). Only the exact owner's row is this window's to control.
     let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
-    let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
     // A wide mini fiszka carries the metadata inside the name line; there is
     // no context strip to hold it (Maciej, 2026-10-28).
     let instanceDescriptor: String? = {
@@ -2994,7 +3031,7 @@ private struct OverlayIntercomInstanceCard: View {
           state: state, conversationID: conversation.id, palette: palette)
       }
       if layout.tier != .icon {
-        if layout.controls.slots >= 1 {
+        if !audioBelowName, layout.controls.slots >= 1 {
           OverlayIntercomAudioControls(
             state: state, conversation: current ? conversation : nil, digit: instance.digit,
             palette: palette,
@@ -3054,7 +3091,6 @@ private struct OverlayIntercomInstanceCard: View {
       .allowsHitTesting(!mini || hovering)
       .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
     }
-    .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
     .padding(.leading, 12)
     .padding(.trailing, 4)
     // Any free spot on the header moves the fiszka, not one grip on one side
@@ -3113,6 +3149,13 @@ private struct OverlayIntercomInstanceCard: View {
     let width = CGFloat(instance.width) - windowSlots
     let height = instance.minimized ? metrics.iconSide : CGFloat(instance.height)
     return (metrics.tier(width: width, cardHeight: height), metrics.rowControls(width: width))
+  }
+
+  private func instanceAudioFooterHeight(_ instance: OverlayIntercomInstance) -> CGFloat {
+    let metrics = IntercomContentMetrics(
+      names: [instance.name], digits: [instance.displayDigit], scale: scale)
+    return metrics.audioFooterHeight(
+      width: CGFloat(instance.width) - 48 * max(1, scale), cardHeight: CGFloat(instance.height))
   }
 
 }
