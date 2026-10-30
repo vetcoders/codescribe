@@ -266,9 +266,12 @@ struct OverlayConversationView: View {
         ])
 
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
-        // The title has its own viewport space. A content margin alone lets
-        // scrolled receipt/text glyphs paint under its audio controls.
-        .padding(.top, topInset + visibleNavigationHeight)
+        // Only the window's own inset is viewport space. The header card is
+        // glass floating over the scrolling text, as the composer is: the
+        // rows take its height as a content margin and scroll under it
+        // (Maciej, 2026-10-30 on build 2981: "nie zrobiliście z tego tafli
+        // ponad tekstem tylko położyliście na desce pod spodem").
+        .padding(.top, topInset)
         .transaction { transaction in
           // Keep retained message geometry stable during the panel's transition.
           transaction.animation = nil
@@ -779,7 +782,11 @@ struct OverlayConversationView: View {
     .contentMargins(
       .bottom,
       presentation == .intercom && showsComposer
-        ? (visibleComposerHeight > 0 ? visibleComposerHeight : bottomInset + 54) : bottomInset)
+        ? (visibleComposerHeight > 0 ? visibleComposerHeight : bottomInset + 54) : bottomInset
+    )
+    // The header card's height: the newest rows rest under it and scroll
+    // through its glass, the way they do under the composer.
+    .contentMargins(.top, visibleNavigationHeight)
     if #available(macOS 26.0, *) {
       // Navigation reserves actual space outside the scrolling viewport.
       // No empty safe-area bar or translucent fade competes with that bound.
