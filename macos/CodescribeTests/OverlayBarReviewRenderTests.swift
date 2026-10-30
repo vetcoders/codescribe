@@ -198,8 +198,14 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   }
 
   /// The ✦ list's content alone; on screen it sits in the hint panel's glass.
+  /// Each row carries the roster's own status dot, reception switches and
+  /// menu; channel 1 is open so one row shows the listening dot, and the
+  /// crafted chips put an unread reply on channel 4.
   func testRenderMiniAgentsHoverList() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
+    let (state, conversations) = try barState(fourAgents, mode: .mini)
+    apply(conversations, open: ["1"], to: state)
+    let roster = DictationOverlayView(state: state).channelStatusView
     let map = OverlayChannelMapModel(
       channels: fourAgents.map {
         OverlayChannelDelivery(
@@ -210,15 +216,22 @@ final class OverlayBarReviewRenderTests: XCTestCase {
           (
             $0.0,
             OverlayChannelHudProjection(
-              open: false, loud: false, autosealDeadline: nil, followerAlive: true)
+              open: $0.0 == "1", loud: false, autosealDeadline: nil, followerAlive: true)
           )
         }),
       selectableDigits: Set(fourAgents.map(\.0)), unreadDigits: ["4"])
     XCTAssertEqual(map.agents.map(\.unread), [false, false, true, false])
+    let rows = try map.agents.map { chip in
+      let channel = try XCTUnwrap(roster.channels.first { $0.channel == chip.digit })
+      return OverlayAgentsHoverList.Row(
+        chip: chip, channel: channel, dot: roster.statusDotKind(for: channel),
+        statusHelp: roster.statusHelp(for: channel),
+        menu: roster.agentPillMenu(for: chip.digit, showsInlineError: false))
+    }
+    XCTAssertEqual(rows.first?.dot, .listening, "the open channel's row reads as listening")
     try renderAlone(
-      OverlayAgentsHoverList(
-        agents: map.agents, modifier: .control, palette: .dark, onSelect: { _ in }),
-      size: OverlayAgentsHoverList.size(agents: map.agents), name: "bar-mini-agents-hover-list")
+      OverlayAgentsHoverList(rows: rows, modifier: .control, palette: .dark, onSelect: { _ in }),
+      size: OverlayAgentsHoverList.size(rows: rows), name: "bar-mini-agents-hover-list")
   }
 
   // MARK: Expanded bar
@@ -255,49 +268,45 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     XCTAssertEqual(layout.arrangement, .twoRows, "nine full names take a second row")
   }
 
-  /// The ladder as the bar narrows: the narrowest two-row width, a width
-  /// halfway through the cut names, the first with overlapping circles, and
-  /// the floor. Each attachment carries its width in points.
+  /// The ladder as the bar narrows: the narrowest two-row width with full
+  /// names, a width halfway through the shortened names, and the floor,
+  /// where every name is at its shortest. Circles never overlap. Each
+  /// attachment carries its width in points.
   func testRenderExpandedBarWithNineAgentsNarrowingToItsFloor() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let (state, _) = try barState(nineAgents, mode: .midi)
     let geometry = barGeometry(state)
     let full = geometry.nameWidths
-    var lastTwoRows: CGFloat?
-    var firstTruncated: CGFloat?
-    var firstOverlap: CGFloat?
+    func shortened(_ layout: OverlayChannelMapLayout) -> Bool {
+      zip(layout.nameWidths, full).contains { $0 + 0.5 < $1 }
+    }
+    var lastFullTwoRows: CGFloat?
+    var firstShortened: CGFloat?
     var width = floor(geometry.naturalWidth)
     while width >= geometry.floorWidth {
       let layout = geometry.layout(width: width)
-      if layout.arrangement == .twoRows {
-        lastTwoRows = width
-      } else if layout.overlaps {
-        if firstOverlap == nil { firstOverlap = width }
-      } else if zip(layout.nameWidths, full).contains(where: { $0 + 0.5 < $1 }),
-        firstTruncated == nil
-      {
-        firstTruncated = width
+      if shortened(layout) {
+        if firstShortened == nil { firstShortened = width }
+      } else if layout.arrangement == .twoRows {
+        lastFullTwoRows = width
       }
       width -= 1
     }
-    let steps: [(CGFloat?, String)] = [
-      (lastTwoRows, "two rows"),
-      (
-        firstTruncated.flatMap { truncated in firstOverlap.map { floor((truncated + $0) / 2) } },
-        "truncated names"
-      ),
-      (firstOverlap, "overlapping circles"), (geometry.floorWidth, "floor"),
-    ]
-    for (step, rung) in steps {
-      let target = try XCTUnwrap(step, "the ladder reaches \(rung)")
-      let shown = max(target, geometry.floorWidth)
-      let layout = try renderExpanded(
-        state, width: shown, name: "bar-expanded-9-agents-narrowing-\(Int(shown))")
-      switch rung {
-      case "two rows": XCTAssertEqual(layout.arrangement, .twoRows)
-      case "overlapping circles", "floor": XCTAssertTrue(layout.overlaps, rung)
-      default: XCTAssertEqual(layout.arrangement, .oneRow, rung)
-      }
+    let twoRows = try XCTUnwrap(lastFullTwoRows, "nine full names take two rows")
+    let firstCut = try XCTUnwrap(firstShortened, "the ladder shortens names")
+    let halfway = floor((firstCut + geometry.floorWidth) / 2)
+    let fullNames = try renderExpanded(
+      state, width: twoRows, name: "bar-expanded-9-agents-narrowing-\(Int(twoRows))")
+    XCTAssertEqual(fullNames.arrangement, .twoRows)
+    XCTAssertFalse(shortened(fullNames))
+    let cut = try renderExpanded(
+      state, width: halfway, name: "bar-expanded-9-agents-narrowing-\(Int(halfway))")
+    XCTAssertTrue(shortened(cut))
+    let floorWidth = geometry.floorWidth
+    let densest = try renderExpanded(
+      state, width: floorWidth, name: "bar-expanded-9-agents-narrowing-\(Int(floorWidth))")
+    for (shown, shortest) in zip(densest.nameWidths, geometry.minimumNameWidths) {
+      XCTAssertEqual(shown, shortest, accuracy: 0.5, "at the floor every name is at its shortest")
     }
   }
 
@@ -305,8 +314,9 @@ final class OverlayBarReviewRenderTests: XCTestCase {
 
   /// Unread replies, recipients and the viewed conversation need replies and
   /// a selection the panel fixtures do not have, so the strip is rendered
-  /// from a crafted model: 2 unread, 3 recipient, 4 viewed (top rows) or 5
-  /// with all three (bottom rows), each at one-row and overlapping density.
+  /// from a crafted model: 2 unread, 3 recipient, 4 viewed (rows one and
+  /// three) or 5 with all three (rows two and four), with full names and at
+  /// the floor with names at their shortest.
   func testRenderMapMarks() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let agents = [("1", "As"), ("2", "Lena"), ("3", "Lena2"), ("4", "Nina"), ("5", "Konstantyna")]
@@ -329,15 +339,17 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         selectedDigit: selected, selectableDigits: Set(agents.map(\.0)),
         unreadDigits: ["2", "5"])
     }
-    let names = map(selected: "4").chips.map { OverlayChannelPill.nameWidth($0.name, scale: 1) }
+    let chips = map(selected: "4").chips
     let geometry = OverlayBarGeometry(
-      baseWidth: 0, horizontalPadding: 0, nameWidths: names,
-      circle: OverlayChannelPill.digitCircle, inlineGap: OverlayChannelPill.chipGap)
+      baseWidth: 0, horizontalPadding: 0,
+      nameWidths: chips.map { OverlayChannelPill.nameWidth($0.name, scale: 1) },
+      minimumNameWidths: chips.map { OverlayChannelPill.shortestNameWidth($0.name, scale: 1) },
+      circle: OverlayChannelPill.mapCircle, inlineGap: OverlayChannelPill.chipGap)
     let open = geometry.layout(width: geometry.naturalWidth)
     let dense = geometry.layout(width: geometry.floorWidth)
     XCTAssertEqual(open.arrangement, .oneRow)
-    XCTAssertFalse(open.overlaps)
-    XCTAssertTrue(dense.overlaps)
+    XCTAssertEqual(dense.arrangement, .oneRow)
+    XCTAssertEqual(dense.nameWidths, geometry.minimumNameWidths)
     let marked = map(selected: "5").chips.first { $0.digit == "5" }
     XCTAssertEqual(marked?.unread, true)
     XCTAssertEqual(marked?.microphoneOpen, true)
@@ -359,7 +371,10 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     try renderAlone(
       rows,
       size: CGSize(
-        width: open.width + 24, height: 4 * (OverlayChannelPill.mapRowHeight + 16) + 12),
+        width: open.width + 24,
+        height:
+          4 * (OverlayChannelPill.mapRowHeight + OverlayChannelPill.mapOverhang(scale: 1) + 16)
+          + 12),
       name: "bar-map-marks")
   }
 }

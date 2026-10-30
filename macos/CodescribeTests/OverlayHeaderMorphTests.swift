@@ -293,8 +293,8 @@ final class OverlayHeaderMorphTests: XCTestCase {
   /// out in that form's own density. No clock involved.
   func testHeaderControlsFitEverySettledWindowWidth() {
     let modes: [(OverlayPresentationMode, CGFloat)] = [
-      // Mini hugs its controls; widths from its floor up to the 200 pt
-      // placement strip must hold them.
+      // Mini hugs its controls; widths from its floor up to the placement
+      // strip (mini at rest) must hold them.
       (.mini, DictationOverlayWindow.miniPlacementSize.width),
       (.midi, DictationOverlayWindow.midiSize.width),
       (.expanded, DictationOverlayWindow.defaultSize.width),

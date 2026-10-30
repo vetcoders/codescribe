@@ -444,6 +444,45 @@ final class OverlayResizeHitTests: XCTestCase {
       accuracy: 0.5)
   }
 
+  /// The placement strip is mini at rest (`miniPlacementSize.width ==
+  /// miniFloorWidth`), so a left anchor puts resting mini at its margin:
+  /// mini is drawn at the strip's trailing edge, and at rest the two are
+  /// the same rectangle. The saved position reads the same origin back.
+  @MainActor
+  func testLeftAnchorPutsRestingMiniAtItsMargin() throws {
+    XCTAssertEqual(
+      DictationOverlayWindow.miniPlacementSize.width, DictationOverlayWindow.miniFloorWidth)
+    XCTAssertEqual(
+      DictationOverlayWindow.miniPlacementSize.height, DictationOverlayWindow.collapsedHeight)
+    let state = OverlayState.previewFormatted()
+    optIntoChannelMap(state)
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Resize.miniLeftAnchor"))
+        as? FloatingOverlayPanel)
+    defer { panel.invalidatePresence() }
+    state.setPresentationMode(.mini)
+    panel.settleFrameTransition()
+    XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5)
+    let visible = try XCTUnwrap((panel.screen ?? NSScreen.main)?.visibleFrame)
+    let strip = DictationOverlayWindow.miniPlacementSize
+    for anchor in [OverlayAnchor.topLeft, .bottomLeft] {
+      let origin = OverlayPlacement.origin(for: anchor, size: strip, in: visible)
+      XCTAssertEqual(origin.x, (visible.minX + OverlayPlacement.margin).rounded(.down))
+      // Mini is drawn at the strip's trailing edge, as placement applies it.
+      let drawn = panel.miniSize
+      panel.setFrame(
+        NSRect(
+          x: origin.x + strip.width - drawn.width, y: origin.y, width: drawn.width,
+          height: drawn.height), display: false)
+      XCTAssertEqual(
+        panel.frame.minX, visible.minX + OverlayPlacement.margin, accuracy: 1,
+        "\(anchor): resting mini sits at the margin")
+      XCTAssertEqual(panel.originForPersistence.x, origin.x, accuracy: 0.5)
+      XCTAssertEqual(panel.originForPersistence.y, origin.y, accuracy: 0.5)
+    }
+  }
+
   /// Brief §3/§7: the waveform and the clock take room only while audio is
   /// captured. Opening a channel in the expanded bar adds them and refits
   /// the bar at its pin; closing it takes them away again.
@@ -559,9 +598,10 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   /// Brief §1: dragging the bar's edge changes its width only. The map
-  /// rearranges for every width (two rows to one row to overlapping
-  /// circles), the height follows the row count below the fixed top edge,
-  /// and the presentation mode never changes, during the drag or on release.
+  /// rearranges for every width (two rows, then shortened names, down to the
+  /// floor where every name is at its shortest), the height follows the row
+  /// count below the fixed top edge, and the presentation mode never
+  /// changes, during the drag or on release.
   @MainActor
   func testEdgeResizeChangesOnlyTheBarWidthNeverItsMode() throws {
     let panel = FloatingOverlayPanel(
@@ -598,7 +638,10 @@ final class OverlayResizeHitTests: XCTestCase {
         travel += 10
       }
       XCTAssertEqual(panel.frame.width, nine.floorWidth, accuracy: 0.5, "\(edge): the floor")
-      XCTAssertTrue(nine.layout(width: panel.frame.width).overlaps)
+      let floor = nine.layout(width: panel.frame.width)
+      for (shown, shortest) in zip(floor.nameWidths, nine.minimumNameWidths) {
+        XCTAssertEqual(shown, shortest, accuracy: 0.5, "\(edge): every name at its shortest")
+      }
       panel.endUserResize()
       XCTAssertTrue(selected.isEmpty, "\(edge): the bar's edge never selects a form")
       XCTAssertTrue(panel.midiShrunkByUser)
@@ -606,8 +649,7 @@ final class OverlayResizeHitTests: XCTestCase {
       // Widen back to the natural width for the other edge.
       panel.setFrame(start, display: false)
     }
-    XCTAssertTrue(arrangements.contains(.twoRows))
-    XCTAssertTrue(arrangements.contains(.oneRow))
+    XCTAssertEqual(arrangements.first, .twoRows, "nine agents start on two rows")
   }
 
   @MainActor

@@ -7,8 +7,9 @@ import XCTest
 /// Falsifiers for the bar's agent map (Monika's bar brief, 2026-10-30; bus
 /// intercom spec §5.1, §5.5, §13, decision D1): one chip per bound agent,
 /// channel 0 only while it broadcasts, the layout ladder `OverlayBarGeometry`
-/// decides from measured widths (one row, two rows, truncated names,
-/// overlapping circles), names that stay apart and a hint with the full name,
+/// decides from measured widths (one row, two rows, shortened names that keep
+/// three characters, circles that never overlap), names that stay apart and a
+/// hint with the full name,
 /// mini's Agents slot with its hover list and recipient digits, the three
 /// marks of a circle kept apart, capitalised names, hints that follow the
 /// Agent channel modifier, and one pill view shared with the Agents rail.
@@ -163,62 +164,91 @@ final class OverlayChannelMapTests: XCTestCase {
   // MARK: Geometry fixtures
 
   /// The expanded bar without a map, measured by the product: padding, the
-  /// lockup and the tools. Ladder fixtures add synthetic names to it.
+  /// lockup and the tools. Ladder fixtures add names to it.
   private var barBase: CGFloat {
     DictationOverlayWindow.midiBarGeometry(chips: [], textScale: 1, showsMeter: false).baseWidth
   }
 
-  private func geometry(names: [CGFloat], budget: CGFloat? = nil) -> OverlayBarGeometry {
+  /// A geometry with synthetic name widths. Without `minimums` every name is
+  /// one that is never shortened (four characters or fewer).
+  private func geometry(
+    names: [CGFloat], minimums: [CGFloat]? = nil, budget: CGFloat? = nil
+  ) -> OverlayBarGeometry {
     var geometry = OverlayBarGeometry(
       baseWidth: barBase, horizontalPadding: DictationOverlayWindow.miniOuterPadding,
-      nameWidths: names, circle: OverlayChannelPill.digitCircle,
-      inlineGap: OverlayChannelPill.chipGap)
+      nameWidths: names, minimumNameWidths: minimums ?? names,
+      circle: OverlayChannelPill.mapCircle, inlineGap: OverlayChannelPill.chipGap)
     if let budget { geometry.oneRowBudget = budget }
     return geometry
   }
 
-  /// A name width at which `count` agents still need the whole ladder: the
-  /// two-row map is wider than the densest one-row map, so narrowing past
-  /// two rows truncates and then overlaps. Derived from the product's own
-  /// constants, never from a pixel value.
-  private func ladderNameWidth(count: Int) -> CGFloat {
-    let n = CGFloat(count)
-    let densest =
-      barBase + OverlayBarGeometry.groupGap + n * OverlayBarGeometry.densestSlot
-      + (n - 1) * OverlayBarGeometry.oneRowMinimumGap
-    let perName =
-      (densest - DictationOverlayWindow.miniOuterPadding
-        - n * (OverlayChannelPill.digitCircle + OverlayChannelPill.chipGap)
-        - (n - 1) * OverlayBarGeometry.twoRowMinimumGap) / n
-    return ceil(perName) + 8
+  /// The bar's geometry for real agent names, measured as the window owner
+  /// measures them.
+  private func geometry(agents names: [String]) -> OverlayBarGeometry {
+    let map = model(
+      channels: names.enumerated().map { delivery(String($0.offset + 1), $0.element) },
+      hudStates: Dictionary(
+        uniqueKeysWithValues: names.indices.map {
+          (String($0 + 1), hud(session: "s\($0 + 1)"))
+        }))
+    return DictationOverlayWindow.midiBarGeometry(
+      chips: map.chips, textScale: 1, showsMeter: false)
   }
+
+  /// Nine agents with names of mixed length, Lena and Lena2 among them.
+  private let nineMixedNames = [
+    "As", "Konstantyna", "Lena", "Lena2", "Bo", "Nina", "Maksymilian", "Igor", "Hania",
+  ]
+
+  /// Four agents whose full names pass the one-row budget.
+  private let fourLongNames = ["Konstantyna", "Maksymilian", "Bartłomiej", "Wiesława"]
 
   private enum Rung: Equatable {
     /// One row, every name in full.
     case oneRow
-    /// The map on its own second row, names beside circles.
+    /// The map on its own second row, every name in full beside its circle.
     case twoRows
-    /// One row, at least one name cut, no circle overlapping.
-    case truncated
-    /// One row, circles overlapping.
-    case overlapped
+    /// At least one name shortened, in one row or two.
+    case shortened
   }
 
   private func rung(_ layout: OverlayChannelMapLayout, full: [CGFloat]) -> Rung {
-    if layout.arrangement == .twoRows { return .twoRows }
-    if layout.overlaps { return .overlapped }
-    return zip(layout.nameWidths, full).contains { $0 + 0.5 < $1 } ? .truncated : .oneRow
+    if zip(layout.nameWidths, full).contains(where: { $0 + 0.5 < $1 }) { return .shortened }
+    return layout.arrangement == .twoRows ? .twoRows : .oneRow
+  }
+
+  /// The densest readable bar, computed here from the documented rule and
+  /// not from the product's private helpers: every name at its shortest, in
+  /// one row at the minimum gap or on the second row at its minimum gap,
+  /// whichever is narrower, and never wider than the natural bar.
+  private func densestReadableWidth(_ geometry: OverlayBarGeometry) -> CGFloat {
+    let count = CGFloat(geometry.minimumNameWidths.count)
+    guard count > 0 else { return geometry.baseWidth }
+    let oneRow =
+      geometry.baseWidth + OverlayBarGeometry.groupGap
+      + geometry.minimumNameWidths.reduce(0) { $0 + max(geometry.circle, $1) }
+      + (count - 1) * OverlayBarGeometry.oneRowMinimumGap
+    let twoRows = max(
+      geometry.baseWidth,
+      geometry.horizontalPadding
+        + geometry.minimumNameWidths.reduce(0) {
+          $0 + geometry.circle + ($1 > 0 ? geometry.inlineGap + $1 : 0)
+        } + (count - 1) * OverlayBarGeometry.twoRowMinimumGap)
+    return min(geometry.naturalWidth, oneRow, twoRows)
   }
 
   /// Walks the bar from `start` (past its natural width by default) down to
-  /// its floor, one point at a time, checking the invariants that hold at every width, and returns
-  /// the rungs in the order the narrowing bar meets them.
+  /// its floor, one point at a time, checking the invariants that hold at
+  /// every width, and returns the rungs in the order the narrowing bar meets
+  /// them. With `names`, every shown name is also checked as the chip draws
+  /// it (`truncatedName`).
   private func walkLadder(
-    _ geometry: OverlayBarGeometry, from start: CGFloat? = nil,
+    _ geometry: OverlayBarGeometry, from start: CGFloat? = nil, names: [String]? = nil,
     file: StaticString = #filePath, line: UInt = #line
   ) -> [Rung] {
     var rungs: [Rung] = []
     let full = geometry.nameWidths
+    let shortest = geometry.minimumNameWidths
     var width = start ?? ceil(geometry.naturalWidth) + 40
     while width >= geometry.floorWidth - 0.01 {
       let layout = geometry.layout(width: width)
@@ -228,11 +258,24 @@ final class OverlayChannelMapTests: XCTestCase {
         layout.slots.count, full.count, "\(width) pt: a slot per agent", file: file, line: line)
       XCTAssertEqual(
         geometry.extraHeight(width: width),
-        current == .twoRows ? OverlayBarGeometry.rowGap + OverlayBarGeometry.secondRowHeight : 0,
+        layout.arrangement == .twoRows
+          ? OverlayBarGeometry.rowGap + OverlayBarGeometry.secondRowHeight : 0,
         "\(width) pt: only the second row adds height", file: file, line: line)
-      for (shown, name) in zip(layout.nameWidths, full) {
+      for index in full.indices {
         XCTAssertLessThanOrEqual(
-          shown, name + 0.01, "\(width) pt: a name never grows", file: file, line: line)
+          layout.nameWidths[index], full[index] + 0.01, "\(width) pt: a name never grows",
+          file: file, line: line)
+        XCTAssertGreaterThanOrEqual(
+          layout.nameWidths[index], shortest[index] - 0.5,
+          "\(width) pt: a name never gets shorter than its minimum", file: file, line: line)
+        if let names, index < names.count, !names[index].isEmpty {
+          let shown = OverlayChannelPill.truncatedName(
+            names[index], width: layout.nameWidths[index], scale: 1)
+          let kept = shown.hasSuffix("\u{2026}") ? shown.dropLast().count : shown.count
+          XCTAssertGreaterThanOrEqual(
+            kept, min(names[index].count, OverlayChannelPill.shortenedNameMinimumCharacters),
+            "\(width) pt: \(names[index]) shows as \(shown)", file: file, line: line)
+        }
       }
       switch layout.arrangement {
       case .oneRow:
@@ -245,8 +288,8 @@ final class OverlayChannelMapTests: XCTestCase {
         let origins = layout.origins
         for index in layout.slots.indices {
           XCTAssertGreaterThanOrEqual(
-            layout.slots[index], OverlayBarGeometry.densestSlot - 0.01,
-            "\(width) pt: every channel keeps a hit area", file: file, line: line)
+            layout.slots[index], layout.circle - 0.01,
+            "\(width) pt: a slot is never narrower than its circle", file: file, line: line)
           XCTAssertLessThanOrEqual(
             layout.nameWidths[index], layout.slots[index] + 0.5,
             "\(width) pt: a name stays inside its own slot", file: file, line: line)
@@ -254,14 +297,8 @@ final class OverlayChannelMapTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(
               origins[index] - (origins[index - 1] + layout.slots[index - 1]),
               OverlayBarGeometry.oneRowMinimumGap - 0.01,
-              "\(width) pt: neighbouring slots never touch", file: file, line: line)
-          }
-        }
-        if current == .truncated {
-          for (shown, name) in zip(layout.nameWidths, full) {
-            XCTAssertGreaterThanOrEqual(
-              shown, min(name, layout.circle) - 0.5,
-              "\(width) pt: a cut name keeps at least the circle's width", file: file, line: line)
+              "\(width) pt: circles never overlap and slots never touch", file: file,
+              line: line)
           }
         }
       case .twoRows:
@@ -271,7 +308,6 @@ final class OverlayChannelMapTests: XCTestCase {
         XCTAssertLessThanOrEqual(geometry.baseWidth, width + 0.5, file: file, line: line)
         XCTAssertGreaterThanOrEqual(
           layout.spacing, OverlayBarGeometry.twoRowMinimumGap - 0.01, file: file, line: line)
-        XCTAssertEqual(layout.nameWidths, full, "two rows keep full names", file: file, line: line)
       }
       width -= 1
     }
@@ -594,8 +630,9 @@ final class OverlayChannelMapTests: XCTestCase {
   }
 
   /// Pointing at mini's ✦ lists the present agents, `N · Name` in channel
-  /// order with the yellow dot beside an unread reply; channel 0 is not an
-  /// agent and has no row, even while it broadcasts.
+  /// order; channel 0 is not an agent and has no row, even while it
+  /// broadcasts. The list grows with the team and every row fits its title
+  /// beside its status marks.
   func testAgentsHoverListNamesEveryAgentWithItsDigitAndUnreadDot() {
     let map = model(
       channels: [delivery("5", "kuba"), delivery("2", "lena"), delivery("4", "lena2")],
@@ -604,26 +641,100 @@ final class OverlayChannelMapTests: XCTestCase {
         "5": hud(session: "s5"),
       ], selectable: ["2", "4", "5"], unread: ["4"])
     XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "4", "5"])
-    let rows = map.agents
+    let agents = map.agents
     XCTAssertEqual(
-      rows.map { OverlayAgentsHoverList.rowTitle($0) }, ["2 · Lena", "4 · Lena2", "5 · Kuba"])
-    XCTAssertEqual(rows.map(\.unread), [false, true, false])
-    XCTAssertEqual(rows.map(\.selectable), [true, true, true])
-    let size = OverlayAgentsHoverList.size(agents: rows)
+      agents.map { OverlayAgentsHoverList.rowTitle($0) }, ["2 · Lena", "4 · Lena2", "5 · Kuba"])
+    XCTAssertEqual(agents.map(\.unread), [false, true, false])
+    XCTAssertEqual(agents.map(\.selectable), [true, true, true])
+    func rows(_ chips: [OverlayChannelMapChip]) -> [OverlayAgentsHoverList.Row] {
+      chips.map {
+        OverlayAgentsHoverList.Row(
+          chip: $0, channel: nil, dot: .idle, statusHelp: "",
+          menu: OverlayBroadcastPolicyMenu(members: [], palette: .dark, enabled: false))
+      }
+    }
+    let size = OverlayAgentsHoverList.size(rows: rows(agents))
     XCTAssertEqual(
       size.height,
       2 * OverlayAgentsHoverList.verticalPadding + 3 * OverlayAgentsHoverList.rowHeight)
     let widest =
-      rows.map {
+      agents.map {
         OverlayChannelPill.textWidth(
           OverlayAgentsHoverList.rowTitle($0), size: OverlayAgentsHoverList.fontSize)
       }.max() ?? 0
     XCTAssertGreaterThanOrEqual(
-      size.width, widest + 2 * OverlayAgentsHoverList.horizontalPadding,
-      "every row fits its title")
+      size.width,
+      widest + 2 * OverlayAgentsHoverList.horizontalPadding + OverlayAgentsHoverList.statusWidth,
+      "every row fits its title and its status")
     XCTAssertGreaterThan(
-      OverlayAgentsHoverList.size(agents: fullRoster().agents).height, size.height,
+      OverlayAgentsHoverList.size(rows: rows(fullRoster().agents)).height, size.height,
       "the list grows with the team")
+  }
+
+  /// Monika, 2026-10-30: the bar keeps no per-agent icons, but the ✦ list
+  /// shows each channel's status and a row's secondary click changes it. A
+  /// row is number and name first, then the roster's own status dot and
+  /// reception switches, then the unread dot; its menu is the chip's menu.
+  func testAgentsHoverListRowsCarryTheRostersStatusAndTheChipsMenu() throws {
+    let (state, broadcast, lena, astra) = try armedState()
+    state.setPresentationMode(.mini)
+    state.applyChannelRoster(chordRoster([broadcast, lena, astra], open: ["2"]))
+    XCTAssertEqual(state.presentationMode, .mini)
+    let roster = DictationOverlayView(state: state).channelStatusView
+    let lenaChannel = try XCTUnwrap(roster.channels.first { $0.channel == "2" })
+    let astraChannel = try XCTUnwrap(roster.channels.first { $0.channel == "3" })
+    XCTAssertEqual(
+      roster.statusDotKind(for: lenaChannel), .listening, "the channel the microphone feeds")
+    XCTAssertNotEqual(roster.statusDotKind(for: astraChannel), .listening)
+    XCTAssertFalse(roster.statusHelp(for: astraChannel).isEmpty)
+
+    // The chip's menu, as the expanded bar's strip asks for it, has the
+    // agent's own guarded actions.
+    for digit in ["2", "3"] {
+      let menu = roster.agentPillMenu(for: digit, showsInlineError: false)
+      XCTAssertEqual(menu.members.map(\.channel), [digit])
+      XCTAssertFalse(menu.showsInlineError)
+      let actions = try XCTUnwrap(menu.agentActions, "channel \(digit) has the agent's menu")
+      XCTAssertEqual(actions.write.identifier, "overlay-agent-menu-write-\(digit)")
+      let again = try XCTUnwrap(
+        roster.agentPillMenu(for: digit, showsInlineError: false).agentActions)
+      XCTAssertEqual(
+        [
+          actions.write, actions.microphone, actions.playback, actions.showInAgents,
+          actions.focus, actions.archive,
+        ].map { $0?.identifier },
+        [
+          again.write, again.microphone, again.playback, again.showInAgents, again.focus,
+          again.archive,
+        ].map { $0?.identifier })
+    }
+
+    // The rows read those same projections and that same menu call; the
+    // list computes no status of its own.
+    let status = try overlaySource("OverlayChannelStatusView.swift")
+    let rows = try section(
+      of: status, from: "private var agentsHoverRows: [OverlayAgentsHoverList.Row]",
+      to: "/// Mini while Monika speaks to agents")
+    XCTAssertTrue(rows.contains("channelMapModel.agents.map"))
+    XCTAssertTrue(rows.contains("dot: channel.map { statusDotKind(for: $0) } ?? .idle"))
+    XCTAssertTrue(rows.contains("statusHelp: channel.map { statusHelp(for: $0) } ?? \"\""))
+    XCTAssertTrue(rows.contains("menu: agentPillMenu(for: chip.digit, showsInlineError: false)"))
+    let header = try overlaySource("DictationOverlayView.swift")
+    XCTAssertTrue(
+      header.contains("agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) }"),
+      "the chip's menu is the same call")
+    let mapView = try overlaySource("OverlayChannelMapView.swift")
+    let list = try section(
+      of: mapView, from: "struct OverlayAgentsHoverList: View", to: "\n}\n")
+    let order = [
+      "Text(verbatim: Self.rowTitle(row.chip))", "OverlayAgentStatusDot(kind: row.dot",
+      "OverlayReceptionMarks(channel: channel", ".opacity(row.chip.unread ? 1 : 0)",
+    ]
+    let positions = try order.map { try XCTUnwrap(list.range(of: $0)?.lowerBound, $0) }
+    XCTAssertEqual(positions, positions.sorted(), "number and name first, then the status")
+    XCTAssertTrue(list.contains(".modifier(row.menu)"), "a row's secondary click is the menu")
+    XCTAssertTrue(status.contains("identifier: \"overlay-broadcast-policy-\\(channel.channel)\""))
+    XCTAssertTrue(status.contains("identifier: \"overlay-quiet-policy-\\(channel.channel)\""))
   }
 
   // MARK: - Bar geometry (brief §3–§5)
@@ -635,7 +746,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(
       bar.nameWidths,
       map.chips.map { $0.isBroadcast ? 0 : OverlayChannelPill.nameWidth($0.name, scale: 1) })
-    XCTAssertEqual(bar.circle, OverlayChannelPill.digitCircle)
+    XCTAssertEqual(bar.circle, OverlayChannelPill.mapCircle)
     XCTAssertEqual(bar.inlineGap, OverlayChannelPill.chipGap)
     XCTAssertEqual(bar.horizontalPadding, DictationOverlayWindow.miniOuterPadding)
     XCTAssertEqual(bar.baseWidth, barBase, "the map's names are not part of the base")
@@ -664,7 +775,7 @@ final class OverlayChannelMapTests: XCTestCase {
     let larger = DictationOverlayWindow.midiBarGeometry(
       chips: map.chips, textScale: 1.2, showsMeter: false)
     XCTAssertGreaterThan(larger.nameWidths[1], bar.nameWidths[1])
-    XCTAssertEqual(larger.circle, OverlayChannelPill.digitCircle * 1.2, accuracy: 0.001)
+    XCTAssertEqual(larger.circle, OverlayChannelPill.mapCircle * 1.2, accuracy: 0.001)
     XCTAssertEqual(
       DictationOverlayWindow.midiBarGeometry(chips: map.chips, textScale: 3, showsMeter: false),
       DictationOverlayWindow.midiBarGeometry(
@@ -685,54 +796,70 @@ final class OverlayChannelMapTests: XCTestCase {
   /// The rungs from a bar wide enough for one row with every full name down
   /// to the floor.
   private func ladder(
-    _ geometry: OverlayBarGeometry, file: StaticString = #filePath, line: UInt = #line
+    _ geometry: OverlayBarGeometry, names: [String]? = nil, file: StaticString = #filePath,
+    line: UInt = #line
   ) -> [Rung] {
-    walkLadder(geometry, from: ceil(walkStart(geometry)), file: file, line: line)
+    walkLadder(geometry, from: ceil(walkStart(geometry)), names: names, file: file, line: line)
   }
 
-  /// Nine agents narrowing from a bar wide enough for one row down to the
-  /// floor: one row, two rows (nine full names pass the one-row budget), one
-  /// row with cut names, then overlapping circles down to the densest slot.
-  func testNineAgentsWalkTheWholeLadderToOverlappingCircles() {
-    let names = Array(repeating: ladderNameWidth(count: 9), count: 9)
-    let bar = geometry(names: names)
-    XCTAssertEqual(ladder(bar), [.oneRow, .twoRows, .truncated, .overlapped])
+  /// Nine agents with names of mixed length, narrowing from a bar wide
+  /// enough for one row down to the floor: one row, two rows (nine full
+  /// names pass the one-row budget), then shortened names. Circles never
+  /// overlap, no slot is narrower than its circle, no name is shorter than
+  /// its minimum, and at the floor every name is at its shortest.
+  func testNineAgentsWalkTheLadderToShortenedNames() {
+    let bar = geometry(agents: nineMixedNames)
+    XCTAssertEqual(ladder(bar, names: nineMixedNames), [.oneRow, .twoRows, .shortened])
     XCTAssertEqual(
       bar.layout(width: bar.naturalWidth).arrangement, .twoRows,
       "a row past the budget makes the natural bar two rows")
-    let densest =
-      bar.baseWidth + OverlayBarGeometry.groupGap + 9 * OverlayBarGeometry.densestSlot
-      + 8 * OverlayBarGeometry.oneRowMinimumGap
-    XCTAssertEqual(bar.floorWidth, densest, accuracy: 0.5, "the floor is the densest layout")
     let floor = bar.layout(width: bar.floorWidth)
-    XCTAssertTrue(floor.overlaps)
-    XCTAssertEqual(floor.slots, Array(repeating: OverlayBarGeometry.densestSlot, count: 9))
-    XCTAssertEqual(floor.spacing, OverlayBarGeometry.oneRowMinimumGap)
-
-    // The real roster measures the same ladder.
-    let roster = DictationOverlayWindow.midiBarGeometry(
-      chips: fullRoster().chips, textScale: 1, showsMeter: false)
-    let rungs = ladder(roster)
-    XCTAssertEqual(rungs.first, .oneRow)
-    XCTAssertEqual(rungs.last, .overlapped, "nine named agents reach overlapping circles")
-    XCTAssertTrue(rungs.contains(.twoRows))
+    for (shown, shortest) in zip(floor.nameWidths, bar.minimumNameWidths) {
+      XCTAssertEqual(shown, shortest, accuracy: 0.5, "at the floor every name is at its shortest")
+    }
+    XCTAssertEqual(
+      bar.floorWidth, densestReadableWidth(bar), accuracy: 0.5,
+      "the floor is the densest readable layout")
   }
 
-  /// Four agents whose two-row map is wider than the densest one-row map
-  /// walk the same ladder: the count does not choose the rungs.
+  /// Four agents with long names walk the same ladder, in the same order,
+  /// with the same invariants: the count does not choose the rungs.
   func testFourAgentsWithLongNamesWalkTheWholeLadder() {
-    let bar = geometry(names: Array(repeating: ladderNameWidth(count: 4), count: 4))
-    XCTAssertEqual(ladder(bar), [.oneRow, .twoRows, .truncated, .overlapped])
+    let bar = geometry(agents: fourLongNames)
+    let rungs = ladder(bar, names: fourLongNames)
+    XCTAssertEqual(rungs.first, .oneRow)
+    XCTAssertEqual(rungs.last, .shortened, "long names shorten before the floor")
+    XCTAssertTrue(
+      [[.oneRow, .shortened], [.oneRow, .twoRows, .shortened]].contains(rungs), "\(rungs)")
+    XCTAssertEqual(bar.floorWidth, densestReadableWidth(bar), accuracy: 0.5)
     let floor = bar.layout(width: bar.floorWidth)
-    XCTAssertTrue(floor.overlaps)
-    XCTAssertEqual(floor.slots, Array(repeating: OverlayBarGeometry.densestSlot, count: 4))
+    for (shown, shortest) in zip(floor.nameWidths, bar.minimumNameWidths) {
+      XCTAssertEqual(shown, shortest, accuracy: 0.5)
+    }
   }
 
-  /// Four short names fit one row within the budget: narrowing first closes
-  /// the gaps from 8 to 3 pt, then moves the map to a second row, where the
-  /// full names stay down to the bar's base width.
+  /// The floor is the narrower of one row and two rows with every name at its
+  /// shortest, never wider than the natural bar, and the bar never offers a
+  /// layout below it.
+  func testFloorIsTheDensestReadableLayout() {
+    for names in [nineMixedNames, fourLongNames, ["As", "Bo", "Lena"], ["Konstantyna"]] {
+      let bar = geometry(agents: names)
+      XCTAssertEqual(
+        bar.minimumNameWidths,
+        names.map { OverlayChannelPill.shortestNameWidth($0, scale: 1) }, "\(names)")
+      XCTAssertEqual(bar.floorWidth, densestReadableWidth(bar), accuracy: 0.5, "\(names)")
+      XCTAssertLessThanOrEqual(bar.floorWidth, bar.naturalWidth + 0.01)
+      XCTAssertGreaterThanOrEqual(bar.floorWidth, bar.baseWidth - 0.01)
+    }
+    let bare = geometry(agents: [])
+    XCTAssertEqual(bare.floorWidth, bare.baseWidth)
+  }
+
+  /// Four names that are never shortened fit one row within the budget:
+  /// narrowing first closes the gaps from 8 to 3 pt, then moves the map to a
+  /// second row, where the full names stay down to the floor.
   func testFourShortNamesCloseTheirGapsBeforeTakingTwoRows() {
-    let name = 2 * OverlayChannelPill.digitCircle
+    let name = 2 * OverlayChannelPill.mapCircle
     let bar = geometry(names: Array(repeating: name, count: 4))
     let natural =
       bar.baseWidth + OverlayBarGeometry.groupGap + 4 * name
@@ -753,7 +880,7 @@ final class OverlayChannelMapTests: XCTestCase {
   /// Brief §5: whether the map takes a second row follows the measured names
   /// and the width, not the number of agents.
   func testRowsAreDecidedByWidthsNotByTheNumberOfAgents() {
-    let circle = OverlayChannelPill.digitCircle
+    let circle = OverlayChannelPill.mapCircle
     let tiny = Array(repeating: circle - 2, count: 9)
     let nineInOneRow =
       barBase + OverlayBarGeometry.groupGap + 9 * circle
@@ -789,10 +916,49 @@ final class OverlayChannelMapTests: XCTestCase {
     let bar = geometry(names: [tiny, long])
     let layout = bar.layout(width: bar.naturalWidth)
     XCTAssertEqual(layout.arrangement, .oneRow)
-    XCTAssertEqual(layout.slots, [max(OverlayChannelPill.digitCircle, tiny), long])
+    XCTAssertEqual(layout.slots, [max(OverlayChannelPill.mapCircle, tiny), long])
     XCTAssertEqual(
       layout.width, layout.slots.reduce(0, +) + OverlayBarGeometry.oneRowNaturalGap)
     XCTAssertEqual(layout.origins, [0, layout.slots[0] + OverlayBarGeometry.oneRowNaturalGap])
+  }
+
+  /// Monika, 2026-10-30 ("ten widok odpada całkowicie"): a shortened name
+  /// keeps at least three characters and `…`, and a name of four characters
+  /// or fewer is never shortened, whatever room it gets.
+  func testShortenedNamesKeepAtLeastThreeCharacters() {
+    let minimum = OverlayChannelPill.shortenedNameMinimumCharacters
+    XCTAssertEqual(minimum, 3)
+    let cyprian = OverlayChannelPill.shortestNameWidth("Cyprian", scale: 1)
+    XCTAssertEqual(cyprian, OverlayChannelPill.nameWidth("Cyp\u{2026}", scale: 1))
+    XCTAssertEqual(
+      OverlayChannelPill.truncatedName("Cyprian", width: cyprian, scale: 1), "Cyp\u{2026}")
+    XCTAssertEqual(
+      OverlayChannelPill.truncatedName("Cyprian", width: 1, scale: 1), "Cyp\u{2026}",
+      "never fewer than three characters, even with no room")
+    for short in ["Lena", "Nina", "As", "Bo", "Igor"] {
+      XCTAssertEqual(
+        OverlayChannelPill.shortestNameWidth(short, scale: 1),
+        OverlayChannelPill.nameWidth(short, scale: 1), "\(short) is never shortened")
+      XCTAssertEqual(OverlayChannelPill.truncatedName(short, width: 1, scale: 1), short)
+    }
+    for name in ["Cyprian", "Lena2", "Konstantyna", "Maksymilian"] {
+      var width = OverlayChannelPill.nameWidth(name, scale: 1) + 1
+      while width > 0 {
+        let shown = OverlayChannelPill.truncatedName(name, width: width, scale: 1)
+        if shown != name {
+          XCTAssertTrue(shown.hasSuffix("\u{2026}"), "\(name) at \(width) pt: \(shown)")
+          let kept = String(shown.dropLast())
+          XCTAssertTrue(name.hasPrefix(kept), "\(name) at \(width) pt: \(shown)")
+          XCTAssertGreaterThanOrEqual(kept.count, minimum, "\(name) at \(width) pt: \(shown)")
+          if width >= OverlayChannelPill.shortestNameWidth(name, scale: 1) {
+            XCTAssertLessThanOrEqual(
+              OverlayChannelPill.nameWidth(shown, scale: 1), width + 0.5,
+              "\(name) at \(width) pt: the cut fits its room")
+          }
+        }
+        width -= 1
+      }
+    }
   }
 
   /// Brief §4: similar names are told apart by the channel number, and the
@@ -800,20 +966,17 @@ final class OverlayChannelMapTests: XCTestCase {
   func testTruncatedNamesStayApartAndTheHintCarriesTheFullName() throws {
     let lena = OverlayChannelPill.nameWidth("Lena", scale: 1)
     XCTAssertEqual(OverlayChannelPill.truncatedName("Lena", width: lena, scale: 1), "Lena")
-    let cut = OverlayChannelPill.truncatedName("Lena2", width: lena, scale: 1)
-    XCTAssertNotEqual(cut, "Lena", "a cut name never reads as another agent's full name")
-    XCTAssertNotEqual(cut, "Lena2")
-    XCTAssertTrue(cut.hasPrefix("L"))
+    XCTAssertEqual(
+      OverlayChannelPill.truncatedName("Lena", width: 1, scale: 1), "Lena",
+      "four characters are never shortened")
+    let shortestLena2 = OverlayChannelPill.shortestNameWidth("Lena2", scale: 1)
     var width = OverlayChannelPill.nameWidth("Lena2", scale: 1)
-    while width > 0 {
+    while width >= shortestLena2 - 0.5 {
       let shown = OverlayChannelPill.truncatedName("Lena2", width: width, scale: 1)
-      XCTAssertFalse(shown.isEmpty, "\(width) pt: every slot keeps a mark of its own")
-      if shown.hasSuffix("\u{2026}") {
-        XCTAssertTrue("Lena2".hasPrefix(String(shown.dropLast())), shown)
-        XCTAssertLessThanOrEqual(OverlayChannelPill.nameWidth(shown, scale: 1), width + 0.5)
-      } else if shown != "Lena2" {
-        XCTAssertEqual(shown, "L", "\(width) pt: below any prefix the initial stays")
-      }
+      XCTAssertNotEqual(shown, "Lena", "\(width) pt: Lena2 never reads as Lena")
+      XCTAssertTrue(
+        shown == "Lena2" || shown == "Lena\u{2026}" || shown == "Len\u{2026}",
+        "\(width) pt: \(shown)")
       width -= 1
     }
 
@@ -838,8 +1001,8 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(OverlayChannelPill.headerScale(0.8), 0.8)
     XCTAssertEqual(OverlayChannelPill.headerScale(2), OverlayChannelPill.headerScaleCeiling)
     XCTAssertLessThanOrEqual(
-      OverlayChannelPill.digitCircle * OverlayChannelPill.headerScaleCeiling,
-      OverlayChannelPill.headerHeight)
+      OverlayChannelPill.mapCircle * OverlayChannelPill.headerScaleCeiling,
+      OverlayChannelPill.mapRowHeight, "the largest map circle still fits the bar's row")
     XCTAssertEqual(OverlayChannelPill.headerHeight, OverlayMicrophoneGlyph.diameter)
   }
 
@@ -943,7 +1106,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(
       button.contains("hintInteractive: list != nil"), "the pointer can move into the list")
     XCTAssertTrue(
-      button.contains("let agents = miniAgentsButton == nil ? [] : channelMapModel.agents"),
+      button.contains("let rows = miniAgentsButton == nil ? [] : agentsHoverRows"),
       "only mini's ✦ lists the agents")
     let header = try overlaySource("DictationOverlayView.swift")
     let strip = try section(
@@ -1151,8 +1314,8 @@ final class OverlayChannelMapTests: XCTestCase {
       let chip = try XCTUnwrap(elements.first, "chip \(digit)")
       XCTAssertEqual(chip.role, "AXButton")
       XCTAssertLessThanOrEqual(
-        chip.height, Double(OverlayChannelPill.mapRowHeight) + 0.5,
-        "a circle and its name fit the bar's one row")
+        chip.height, Double(OverlayChannelPill.mapItemHeight) + 0.5,
+        "a chip is its circle and the name line under it")
       XCTAssertGreaterThanOrEqual(
         chip.width, Double(OverlayChannelPill.nameWidth(name, scale: 1)) - 0.5,
         "a wide bar gives every name its full width")
@@ -1169,28 +1332,90 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertFalse(panel.isKeyWindow)
   }
 
-  /// Brief §4: circles may overlap, and every channel stays selectable. At
-  /// the bar's floor nine circles overlap; each chip's hit area is its own
-  /// slot, the slots stay apart, and pressing each selects its own channel.
-  func testOverlappingCirclesKeepEveryChannelsOwnHitArea() throws {
-    let names = ["Miksa", "Nora", "Igor", "Hania", "Kuba", "Konfig", "Klara", "Leon", "Zofia"]
-    let (state, conversations) = try crowdedState(names)
+  /// Monika, 2026-10-30 ("bardzo wyśrodkowane w jednej linii"): in the
+  /// one-row expanded bar every channel circle centres on the line the tools
+  /// centre on, and the names hang below it into the bar's lower padding.
+  func testOneRowCirclesCentreOnTheToolsLine() throws {
+    // The constants: the circle's offset puts its centre on the header row's
+    // centre, where the 22 pt tools centre.
+    let scale: CGFloat = 1
+    XCTAssertEqual(
+      OverlayChannelPill.mapCircleTop(scale: scale) + OverlayChannelPill.mapCircle * scale / 2,
+      OverlayChannelPill.mapRowHeight / 2, accuracy: 0.01)
+    XCTAssertEqual(OverlayChannelPill.mapRowHeight, OverlayHeaderDensity.rowHeight)
+
+    // The real header: chip circles and tool buttons share one centre line.
+    let (state, _, _, _) = try armedState()
+    state.setPresentationMode(.midi)
+    let panel = try hostOverlay(state, width: 900, height: DictationOverlayWindow.collapsedHeight)
+    defer { panel.orderOut(nil) }
+    let bar = DictationOverlayWindow.midiBarGeometry(
+      chips: state.channelMapLayoutModel.chips, textScale: 1,
+      showsMeter: state.channelMapBarShowsMeter)
+    XCTAssertEqual(bar.layout(width: 900).arrangement, .oneRow)
+    var toolCentres: [Double] = []
+    for identifier in ["overlay-agent-glyph", "overlay-pin"] {
+      let elements = try NativeAccessibilityProbe.waitForElements(identifier).elements
+      let tool = try XCTUnwrap(elements.first, identifier)
+      toolCentres.append(tool.y + tool.height / 2)
+    }
+    let line = try XCTUnwrap(toolCentres.first)
+    for centre in toolCentres {
+      XCTAssertEqual(centre, line, accuracy: 0.5, "the tools share one line")
+    }
+    for digit in ["2", "3"] {
+      let elements = try NativeAccessibilityProbe.waitForElements(
+        "overlay-channel-chip-\(digit)"
+      ).elements
+      let chip = try XCTUnwrap(elements.first, "chip \(digit)")
+      // The chip's frame starts at its circle's top; the name line is below.
+      let circleCentre = chip.y + Double(OverlayChannelPill.mapCircle) / 2
+      XCTAssertEqual(
+        circleCentre, line, accuracy: 0.5, "chip \(digit): its circle centres on the tools' line")
+    }
+  }
+
+  /// The names under the one-row circles hang into the expanded bar's lower
+  /// padding; the header's clip leaves that room, so no name is cut.
+  func testOneRowNamesHangWithinTheBarsLowerPadding() {
+    let overhang = OverlayChannelPill.mapOverhang(scale: 1)
+    XCTAssertGreaterThan(overhang, 0, "the names sit lower than the tools' row")
+    XCTAssertLessThanOrEqual(overhang, OverlayHeaderDensity.midi.bottomClipInset)
+    XCTAssertEqual(OverlayHeaderDensity.midi.bottomClipInset, OverlayHeaderDensity.verticalPadding)
+    XCTAssertEqual(OverlayHeaderDensity.mini.bottomClipInset, OverlayHeaderDensity.clipInset)
+    XCTAssertEqual(
+      OverlayChannelPill.mapItemHeight,
+      OverlayChannelPill.mapCircle + OverlayChannelPill.nameBelowSpacing
+        + OverlayChannelPill.mapNameLineHeight)
+  }
+
+  /// Brief §4: every channel stays selectable at every density. At the
+  /// bar's floor every name is at its shortest; no circle overlaps another,
+  /// each chip's hit area is its own and at least as wide as its circle, the
+  /// hit areas stay apart, and pressing each selects its own channel.
+  func testEveryChannelKeepsItsOwnHitAreaAtTheFloor() throws {
+    let (state, conversations) = try crowdedState(nineMixedNames)
     state.setPresentationMode(.midi)
     let model = DictationOverlayView(state: state).channelStatusView.channelMapModel
     XCTAssertEqual(model.chips.map(\.digit), (1...9).map { String($0) })
     let bar = DictationOverlayWindow.midiBarGeometry(
       chips: model.chips, textScale: 1, showsMeter: state.channelMapBarShowsMeter)
     let layout = bar.layout(width: bar.floorWidth)
-    XCTAssertTrue(layout.overlaps, "nine named agents at the floor overlap their circles")
-    let origins = layout.origins
-    for index in layout.slots.indices.dropFirst() {
-      XCTAssertGreaterThanOrEqual(
-        origins[index] - origins[index - 1] - layout.slots[index - 1],
-        OverlayBarGeometry.oneRowMinimumGap - 0.01, "slot \(index): hit areas stay apart")
+    for (shown, shortest) in zip(layout.nameWidths, bar.minimumNameWidths) {
+      XCTAssertEqual(shown, shortest, accuracy: 0.5, "the floor shows every name at its shortest")
+    }
+    if layout.arrangement == .oneRow {
+      let origins = layout.origins
+      for index in layout.slots.indices.dropFirst() {
+        XCTAssertGreaterThanOrEqual(
+          origins[index] - origins[index - 1] - layout.slots[index - 1],
+          OverlayBarGeometry.oneRowMinimumGap - 0.01, "slot \(index): hit areas stay apart")
+      }
     }
 
     let panel = try hostOverlay(
-      state, width: bar.floorWidth, height: DictationOverlayWindow.collapsedHeight)
+      state, width: bar.floorWidth,
+      height: DictationOverlayWindow.collapsedHeight + bar.extraHeight(width: bar.floorWidth))
     defer { panel.orderOut(nil) }
     var frames: [NSRect] = []
     for digit in model.chips.map(\.digit) {
@@ -1198,9 +1423,9 @@ final class OverlayChannelMapTests: XCTestCase {
         "overlay-channel-chip-\(digit)"
       ).elements
       let chip = try XCTUnwrap(elements.first, "chip \(digit)")
-      XCTAssertLessThanOrEqual(
-        chip.width, Double(OverlayBarGeometry.densestSlot) + 0.5,
-        "chip \(digit): the slot, not the overlapping circle, is the hit area")
+      XCTAssertGreaterThanOrEqual(
+        chip.width, Double(OverlayChannelPill.mapCircle) - 0.5,
+        "chip \(digit): its hit area is never narrower than its circle")
       frames.append(chip.frame)
     }
     for (left, right) in zip(frames, frames.dropFirst()) {
@@ -1263,12 +1488,12 @@ final class OverlayChannelMapTests: XCTestCase {
             selected: selected),
           hint: "", accessibilityText: "", identifier: "mark-probe", palette: .dark,
           textScale: 1, showsHint: false, action: {}),
-        size: CGSize(width: slot, height: OverlayChannelPill.mapRowHeight))
+        size: CGSize(width: slot, height: OverlayChannelPill.mapItemHeight))
     }
     let plain = try chip(open: false, selected: false)
     let recipient = try chip(open: true, selected: false)
     let viewed = try chip(open: false, selected: true)
-    let radius = OverlayChannelPill.digitCircle / 2
+    let radius = OverlayChannelPill.mapCircle / 2
     let center = CGPoint(x: slot / 2, y: radius)
     // On the ring, clear of the open dot (bottom right) and unread dot (top
     // right); inside the circle, clear of the digit.
@@ -1298,13 +1523,14 @@ final class OverlayChannelMapTests: XCTestCase {
     }
   }
 
-  /// Brief §6: overlapping circles never hide an unread dot. The one-row map
-  /// draws the dots on a layer above every circle, so a dot reads as much of
-  /// itself over a neighbour's circle as it does in the open row.
-  func testUnreadDotsStayDrawnOverOverlappingCircles() throws {
+  /// Brief §6: shortening names never hides an unread dot. The one-row map
+  /// draws the dots on a layer above every circle and name, so a dot reads
+  /// as much of itself at the floor as it does in the open row.
+  func testUnreadDotsStayVisibleWhenNamesShorten() throws {
     var states: [String: OverlayChannelHudProjection] = [:]
     var channels: [OverlayChannelDelivery] = []
-    for (index, name) in ["Miksa", "Nora", "Igor", "Hania", "Kuba"].enumerated() {
+    let names = ["Miksa", "Konstantyna", "Igor", "Maksymilian", "Kuba"]
+    for (index, name) in names.enumerated() {
       let digit = String(index + 1)
       states[digit] = hud(session: "s\(digit)")
       channels.append(delivery(digit, name))
@@ -1312,15 +1538,18 @@ final class OverlayChannelMapTests: XCTestCase {
     func map(unread: Set<String>) -> OverlayChannelMapModel {
       model(channels: channels, hudStates: states, selectable: Set(states.keys), unread: unread)
     }
+    let chips = map(unread: []).chips
     let bar = OverlayBarGeometry(
       baseWidth: 0, horizontalPadding: 0,
-      nameWidths: map(unread: []).chips.map { OverlayChannelPill.nameWidth($0.name, scale: 1) },
-      circle: OverlayChannelPill.digitCircle, inlineGap: OverlayChannelPill.chipGap)
+      nameWidths: chips.map { OverlayChannelPill.nameWidth($0.name, scale: 1) },
+      minimumNameWidths: chips.map { OverlayChannelPill.shortestNameWidth($0.name, scale: 1) },
+      circle: OverlayChannelPill.mapCircle, inlineGap: OverlayChannelPill.chipGap)
     let open = bar.layout(width: bar.naturalWidth)
     let dense = bar.layout(width: bar.floorWidth)
     XCTAssertEqual(open.arrangement, .oneRow)
-    XCTAssertFalse(open.overlaps)
-    XCTAssertTrue(dense.overlaps)
+    XCTAssertEqual(dense.arrangement, .oneRow)
+    XCTAssertTrue(
+      zip(dense.nameWidths, bar.nameWidths).contains { $0 + 0.5 < $1 }, "names shorten")
     let yellow = OverlayAppearancePalette.dark.processingStatus.nsColor
     func dots(_ layout: OverlayChannelMapLayout, unread: Set<String>) throws -> Int {
       try render(
@@ -1328,15 +1557,17 @@ final class OverlayChannelMapTests: XCTestCase {
           model: map(unread: unread), placement: .strip(layout), modifier: .control,
           palette: .dark, textScale: 1, animates: false, onSelectChannel: { _ in },
           onCounter: {}),
-        size: CGSize(width: layout.width + 8, height: OverlayChannelPill.mapRowHeight)
+        size: CGSize(
+          width: layout.width + 8,
+          height: OverlayChannelPill.mapRowHeight + OverlayChannelPill.mapOverhang(scale: 1))
       ).count(near: yellow, within: 0.15)
     }
     XCTAssertEqual(try dots(dense, unread: []), 0, "no unread reply, no yellow")
-    let spread = try dots(open, unread: ["2", "3"])
-    let stacked = try dots(dense, unread: ["2", "3"])
+    let spread = try dots(open, unread: ["2", "4"])
+    let shortened = try dots(dense, unread: ["2", "4"])
     XCTAssertGreaterThan(spread, 0)
     XCTAssertGreaterThanOrEqual(
-      Double(stacked), Double(spread) * 0.8, "a neighbour's circle hides none of a dot")
+      Double(shortened), Double(spread) * 0.8, "a shortened name hides none of a dot")
     let view = try overlaySource("OverlayChannelMapView.swift")
     XCTAssertTrue(view.contains("drawsUnreadDot: !oneRow"))
   }
