@@ -1249,13 +1249,15 @@ enum DictationOverlayWindow {
   }
   static let collapsedHeight: CGFloat = 46
   /// The resting mini strip that placement, persistence and resize gestures
-  /// reason in: screen anchors and the saved origin describe a 200 × 46 strip,
-  /// a resize gesture never requests less, and release-to-fold selects mini
-  /// below the midpoint between it and compact's floor (305 pt). Mini itself
-  /// is drawn at `miniNaturalWidth`, at this strip's trailing edge (the shared
-  /// upper-right pin), so positions saved before content-sized mini land
-  /// where they did.
-  static let miniPlacementSize = NSSize(width: 200, height: collapsedHeight)
+  /// reason in: screen anchors and the saved origin describe the resting mini
+  /// strip, a resize gesture never requests less, and release-to-fold selects
+  /// mini below the midpoint between it and the bar's resting width. The strip
+  /// is mini at rest (`miniFloorWidth`), so an anchor or a saved point is where
+  /// mini actually sits; mini widened by recipients' digits grows from this
+  /// strip's trailing edge (the shared upper-right pin). A wider strip than
+  /// mini placed left anchors off their margin and moved a parked mini by the
+  /// difference on every return from the expanded bar.
+  static let miniPlacementSize = NSSize(width: miniFloorWidth, height: collapsedHeight)
   /// The mini row's measured parts at text scale 1 (Monika's bar brief,
   /// 2026-10-30). The header pads 16 pt per side (`16 - clipInset` +
   /// `clipInset`); the 9 pt close dot leads; then transcription, microphone,
