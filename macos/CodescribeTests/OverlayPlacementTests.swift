@@ -255,7 +255,7 @@ final class OverlayPlacementTests: XCTestCase {
       let parked = panel.frame.origin
       state.setPresentationMode(.midi)
       panel.settleFrameTransition()
-      XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width)
+      XCTAssertEqual(panel.frame.width, panel.midiPresentationWidth)
       if drag != .zero {
         for event in try dragEvents(in: panel, delta: drag) { panel.sendEvent(event) }
       }

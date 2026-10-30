@@ -407,7 +407,10 @@ final class OverlayPresentationTraceTests: XCTestCase {
     let request = try XCTUnwrap(kinds.firstIndex(of: .modeRequested))
     let began = try XCTUnwrap(kinds.firstIndex(of: .frameTransitionBegan))
     XCTAssertLessThan(request, began, "the state asks before the window moves")
-    XCTAssertEqual(panel.frame.size, DictationOverlayWindow.minimumSize(for: other))
+    // The expanded bar hugs its measured content; mini keeps its floor.
+    XCTAssertEqual(
+      panel.frame.size,
+      other == .midi ? panel.midiPresentationSize : DictationOverlayWindow.minimumSize(for: other))
 
     // A repeated request is ledgered as such and moves nothing.
     let again = trace.recorded

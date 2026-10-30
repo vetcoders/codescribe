@@ -853,7 +853,9 @@ final class OverlayIntentRailTests: XCTestCase {
       collapsedRecorder.frames,
       inside: 470,
       context: "midi listening header",
-      compactMeter: false
+      // The expanded bar's meter has a fixed 56 pt width while recording
+      // (`DictationOverlayWindow.barWaveformWidth`, Monika's bar brief).
+      compactMeter: true
     )
 
     let bitmap = try XCTUnwrap(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
