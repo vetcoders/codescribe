@@ -49,8 +49,12 @@ final class OverlayBusWindowTests: XCTestCase {
       state.selectConversation(thread.id)
       state.chooseComposerTarget(other)
       state.setConversationDraft("Keep this draft", for: other.id)
+      let suite = "Bus-pane-headers-\(UUID().uuidString)"
+      let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+      defer { defaults.removePersistentDomain(forName: suite) }
       let host = NSHostingView(
         rootView: DictationOverlayView(state: state)
+          .defaultAppStorage(defaults)
           .environment(\.csTextScale, scale)
           .environment(\.colorScheme, .dark)
           .transaction { $0.disablesAnimations = true })
@@ -66,8 +70,11 @@ final class OverlayBusWindowTests: XCTestCase {
         panel.contentView = nil
         panel.close()
       }
-      func scrollViews(_ root: NSView) -> [NSScrollView] {
-        (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+      func conversationScroll(_ root: NSView) -> NSScrollView? {
+        if let marker = root as? ChatLiveScrollObserver.AttachmentView {
+          return marker.enclosingScrollView
+        }
+        return root.subviews.lazy.compactMap { conversationScroll($0) }.first
       }
       func settle() {
         host.layoutSubtreeIfNeeded()
@@ -79,8 +86,7 @@ final class OverlayBusWindowTests: XCTestCase {
         state.setAgentsLayout(layout)
         settle()
         if layout != .agents {
-          let scroll = try XCTUnwrap(
-            scrollViews(host).first { $0.bounds.width > 450 && $0.bounds.height > 150 })
+          let scroll = try XCTUnwrap(conversationScroll(host))
           let rect = scroll.contentView.convert(scroll.contentView.bounds, to: host)
           let top = host.isFlipped ? rect.minY : host.bounds.maxY - rect.maxY
           print("BUS_PANE_HEADER scale=\(scale) layout=\(layout.rawValue) viewportTop=\(top)")
