@@ -224,7 +224,9 @@ final class OverlayCompactAgentPanelTests: XCTestCase {
     try renderWindowReview(width: 900, scale: 1.5, selectsInbox: true, dark: false)
   }
 
-  private func renderWindowReview(width: CGFloat, scale: CGFloat, selectsInbox: Bool) throws {
+  private func renderWindowReview(
+    width: CGFloat, scale: CGFloat, selectsInbox: Bool, dark: Bool = true
+  ) throws {
     let (state, agents) = try fixture()
     if !selectsInbox { state.chooseConversation(agents[1].id) }
     let host = NSHostingView(
