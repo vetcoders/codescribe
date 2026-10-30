@@ -1389,6 +1389,107 @@ struct OverlayChannelStatusView: View {
     }
   }
 
+  /// The compact presentation of the same Agents panel. Selection and
+  /// channel status are independent of its unread badges.
+  func compactBody(maximumHeight: CGFloat, paneHeaderHeight: CGFloat) -> some View {
+    OverlayTextScaleReader { scale in
+      var installed = self
+      installed.textScale = scale
+      return installed.scaledCompactBody(
+        maximumHeight: maximumHeight, paneHeaderHeight: paneHeaderHeight)
+    }
+  }
+
+  private func scaledCompactBody(
+    maximumHeight: CGFloat, paneHeaderHeight: CGFloat
+  ) -> some View {
+    let viewportHeight = max(0, maximumHeight - 8 - paneHeaderHeight - 8)
+    let badgeClearance = (OverlayAgentUnreadBadge.maximumRailDiameter / 2 + 4) * textScale
+    return VStack(spacing: 8) {
+      Color.clear.frame(height: paneHeaderHeight)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+      ScrollView(.vertical, showsIndicators: false) {
+        VStack(spacing: badgeClearance) {
+          if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
+            compactPill(broadcast, channel: nil)
+          }
+          if let inbox = currentConversations.first(where: \.isHumanInbox) {
+            compactPill(inbox, channel: nil)
+          }
+          ForEach(channels) { channel in
+            compactPill(conversation(for: channel), channel: channel)
+          }
+        }
+        .padding(.top, badgeClearance)
+        .padding(.bottom, 4 * textScale)
+        .padding(.horizontal, OverlayAgentDrawerLayout.compactHorizontalInset(textScale: textScale))
+        .frame(maxWidth: .infinity)
+        .csAutohidingScrollers(.verticalHidden)
+      }
+      .csRailOverflowHints(color: palette.mutedText.color)
+      .frame(maxHeight: viewportHeight)
+    }
+    .padding(.top, 8)
+    .frame(maxWidth: .infinity)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("overlay-agent-compact-buttons")
+  }
+
+  /// Status dot and channel number; the open conversation in the agent
+  /// accent, unread replies as the row badge's colour. The pill itself is the
+  /// shared `OverlayChannelPill`, the one drawing of a channel's digit.
+  private func compactPill(
+    _ conversation: OverlayConversation?, channel: OverlayChannelDelivery?
+  ) -> some View {
+    let inbox = conversation?.isHumanInbox == true
+    let digit = channel?.channel ?? conversation?.channel ?? "0"
+    let title =
+      inbox
+      ? conversation?.name ?? String(localized: "Your Inbox")
+      : channel.map { notificationTitle(for: $0) } ?? broadcastHeader
+    let canOpen = conversation != nil && onSelectConversation != nil
+    let hint =
+      canOpen
+      ? title + ". "
+        + String(localized: "View conversation without changing the microphone")
+      : String(
+        localized: "No conversation on this channel",
+        comment: "Disabled compact channel button")
+    return OverlayChannelPill(
+      form: .rail,
+      display: compactPillDisplay(conversation, channel: channel),
+      hint: hint, accessibilityText: title, identifier: "overlay-agent-compact-\(digit)",
+      palette: palette, textScale: textScale,
+      showsHint: conversation?.messages.isEmpty ?? true
+    ) {
+      if let conversation { onSelectConversation?(conversation.id) }
+    }
+    .modifier(
+      OverlayRosterMessageHint(
+        conversation: conversation, palette: palette, textScale: textScale)
+    )
+    .accessibilityHint(Text(verbatim: hint))
+    .modifier(
+      inbox
+        ? OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
+        : agentPillMenu(for: digit))
+  }
+
+  func compactPillDisplay(
+    _ conversation: OverlayConversation?, channel: OverlayChannelDelivery?
+  ) -> OverlayChannelPill.Display {
+    let inbox = conversation?.isHumanInbox == true
+    let unreadCount = conversation.flatMap { unreadCounts[$0.id] } ?? 0
+    return OverlayChannelPill.Display(
+      figure: inbox ? "" : channel?.channel ?? "0", symbol: inbox ? "tray" : nil,
+      dot: inbox ? nil : channel.map { statusDotKind(for: $0) } ?? .broadcast,
+      disconnected: channel.map { hasDeadFollower($0) } ?? false,
+      unread: unreadCount > 0, unreadCount: unreadCount,
+      selected: conversation != nil && conversation?.id == selectedConversationID,
+      enabled: conversation != nil && onSelectConversation != nil)
+  }
+
   /// The collapsed overlay's channel map: another surface of this roster's
   /// projections. Bound digits come from the roster snapshot (`hudStates`),
   /// names from the same rows the list shows, unread marks from the same

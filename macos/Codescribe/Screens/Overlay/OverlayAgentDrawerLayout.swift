@@ -1,5 +1,10 @@
 import SwiftUI
 
+/// One Agents panel with three presentations. The conversation is never folded.
+enum OverlayAgentPanelPresentation: String, CaseIterable {
+  case expanded, compact, hidden
+}
+
 /// Geometry for one Agents panel: docked beside a readable conversation or
 /// covering it on a narrow window. Visibility is owned by OverlayState.
 enum OverlayAgentDrawerLayout {
@@ -31,11 +36,25 @@ enum OverlayAgentDrawerLayout {
   static let paneControlLeadingInset: CGFloat = 20
 
   static func paneHeaderControlSpace(textScale: CGFloat) -> CGFloat {
-    paneToggleSize(textScale: textScale) + 8 * textScale
+    max(
+      0,
+      paneControlSlotWidth(textScale: textScale) / 2
+        + paneToggleSize(textScale: textScale) / 2 + 8 * textScale - paneControlLeadingInset)
   }
 
   static func paneControlSlotWidth(textScale: CGFloat) -> CGFloat {
-    paneToggleSize(textScale: textScale) + 2 * paneControlLeadingInset
+    compactWidth(textScale: textScale)
+  }
+
+  /// Symmetric edge clearance keeps the buttons centered and their corner
+  /// badges inside the viewport, without a dedicated count column.
+  static func compactHorizontalInset(textScale: CGFloat) -> CGFloat {
+    max(OverlayResizeHit.band, (OverlayAgentUnreadBadge.maximumRailDiameter / 2 + 4) * textScale)
+  }
+
+  static func compactWidth(textScale: CGFloat) -> CGFloat {
+    OverlayChannelPill.compactButtonWidth(textScale: textScale)
+      + 2 * compactHorizontalInset(textScale: textScale)
   }
 
   /// Divider resizing changes the column width only. It cannot hide the chat.

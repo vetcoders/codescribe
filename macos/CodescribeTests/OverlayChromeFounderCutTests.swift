@@ -1110,10 +1110,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(chrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
     XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
     XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
-    // The single panel retires the numbered rail and its two decorative
-    // layers. Remaining layout readers and adornments never own a click.
-    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 6)
-    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 2)
+    // The compact presentation adds only an inert divider and frame reader.
+    // Layout readers and adornments never own a click.
+    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 8)
+    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 3)
     // The docked agents column's hairline became its resize handle (15d5640d5):
     // that handle owns the chrome's only drag, and nothing else adds one.
     XCTAssertEqual(chrome.components(separatedBy: "DragGesture").count - 1, 1)

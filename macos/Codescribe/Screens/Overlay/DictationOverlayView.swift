@@ -322,6 +322,15 @@ struct OverlayConversationFramePreferenceKey: PreferenceKey {
   }
 }
 
+/// The compact Agents panel's laid-out frame in the canvas coordinate space.
+struct OverlayCompactAgentPanelFramePreferenceKey: PreferenceKey {
+  static let defaultValue = CGRect.zero
+  static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+    let frame = nextValue()
+    if !frame.isEmpty { value = frame }
+  }
+}
+
 /// Header density, a pure function of the presentation mode. It drives one
 /// header tree, so the layout never re-chooses a candidate per window frame.
 enum OverlayHeaderDensity: Equatable {
@@ -480,6 +489,10 @@ struct DictationOverlayView: View {
         let transcriptionSurface = state.windowContentSurface == .transcription
         let listOnScreen = agentsSurface && !state.isCollapsed && state.showsAgentMonitor
         let columnShown = listOnScreen && docked && state.selectedConversation != nil
+        let compactShown =
+          agentsSurface && !state.isCollapsed
+          && state.agentPanelPresentation == .compact
+        let compactWidth = OverlayAgentDrawerLayout.compactWidth(textScale: textScale)
         let panelOverlayShown = listOnScreen && !columnShown
         let transcriptActionsShown = transcriptionSurface && !state.isCollapsed
         let transcriptActionsWidth =
@@ -490,7 +503,9 @@ struct DictationOverlayView: View {
           preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
           windowWidth: geometry.size.width)
         let canvasWidth = max(
-          0, geometry.size.width - (columnShown ? drawerWidth : 0) - transcriptActionsWidth)
+          0,
+          geometry.size.width - (columnShown ? drawerWidth : 0)
+            - (compactShown ? compactWidth : 0) - transcriptActionsWidth)
         let canvasHidden = canvasWidth < 1 || (agentsSurface && state.selectedConversation == nil)
         HStack(alignment: .top, spacing: 0) {
           ZStack {
@@ -558,7 +573,7 @@ struct DictationOverlayView: View {
                 focusAgentPanelHint: conversation.owner.flatMap { state.agentPanelFocusHelp($0) },
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
                 navigationActions: conversationHeaderActions(
-                  conversation, reservesPanelControl: !columnShown),
+                  conversation, reservesPanelControl: state.agentPanelPresentation == .hidden),
                 navigationIndicators: conversationHeaderIndicators(conversation),
                 composerConversation: resolvedTarget,
                 composerAvailable: resolvedTarget != nil,
@@ -706,6 +721,10 @@ struct DictationOverlayView: View {
             .transition(.move(edge: .trailing).combined(with: .opacity))
             .onExitCommand { state.hideAgentSidebar() }
           }
+          if compactShown {
+            compactAgentPanel(maximumHeight: geometry.size.height, width: compactWidth)
+              .transition(.move(edge: .trailing).combined(with: .opacity))
+          }
           if transcriptActionsShown {
             transcriptActionsColumn(
               maximumHeight: geometry.size.height, width: transcriptActionsWidth, rail: intentRail
@@ -719,6 +738,9 @@ struct DictationOverlayView: View {
         // A visibility choice animates the panel without a second pane state.
         .animation(
           reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: columnShown
+        )
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: compactShown
         )
         .animation(
           reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter),
@@ -955,6 +977,48 @@ struct DictationOverlayView: View {
       arrow: listShown ? "chevron.right" : "chevron.left"
     ) {
       if listShown { state.hideAgentSidebar() } else { state.showAgentMonitor() }
+    }
+    .contextMenu {
+      Picker(
+        "Agents",
+        selection: Binding(
+          get: { state.agentPanelPresentation },
+          set: { state.setAgentPanelPresentation($0) })
+      ) {
+        Text("Agents").tag(OverlayAgentPanelPresentation.expanded)
+        Text("Channel bar").tag(OverlayAgentPanelPresentation.compact)
+        Text("Hide agents list").tag(OverlayAgentPanelPresentation.hidden)
+      }
+    }
+  }
+
+  /// The bar is the compact presentation of the Agents panel, never a
+  /// separate conversation fold. Badge clearance is symmetric about its center.
+  private func compactAgentPanel(maximumHeight: CGFloat, width: CGFloat) -> some View {
+    channelStatusView.compactBody(
+      maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
+      paneHeaderHeight: OverlayAgentDrawerLayout.paneHeaderHeight(textScale: textScale)
+    )
+    .padding(.top, headerHeight + 8)
+    .padding(.bottom, 16)
+    .frame(width: width, height: max(0, maximumHeight), alignment: .top)
+    .clipped()
+    .background { OverlayMenuCursorRegion() }
+    .overlay(alignment: .leading) {
+      Rectangle().fill(palette.border.color)
+        .frame(width: 1 / max(displayScale, 1))
+        .padding(.top, headerHeight)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+    .accessibilityIdentifier("overlay-agent-compact-panel")
+    .background {
+      GeometryReader { bar in
+        Color.clear.preference(
+          key: OverlayCompactAgentPanelFramePreferenceKey.self,
+          value: bar.frame(in: .named("overlay-canvas")))
+      }
+      .allowsHitTesting(false)
     }
   }
 

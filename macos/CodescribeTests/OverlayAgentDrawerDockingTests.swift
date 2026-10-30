@@ -523,10 +523,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     state.restoreAgentSidebar(defaults: defaults)
     XCTAssertTrue(state.showsAgentMonitor)
     XCTAssertEqual(defaults.double(forKey: OverlayAgentDrawerLayout.widthDefaultsKey), 300)
-    defaults.set(false, forKey: OverlayState.agentSidebarVisibleDefaultsKey)
+    defaults.set(
+      OverlayAgentPanelPresentation.hidden.rawValue,
+      forKey: OverlayState.agentPanelPresentationDefaultsKey)
     defaults.set("agents", forKey: "Overlay.agentsLayout.v1")
     state.restoreAgentSidebar(defaults: defaults)
-    XCTAssertFalse(state.showsAgentMonitor, "the adopted preference owns all later launches")
+    XCTAssertFalse(state.showsAgentMonitor, "the panel presentation owns all later launches")
   }
 
   /// The overlay over a suite of its own defaults, reporting the column's and
@@ -1139,7 +1141,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   func testOnePanelUsesTheExistingRosterForDockedAndCoveringPlacement() throws {
     let overlay = try overlaySource("DictationOverlayView.swift")
     XCTAssertFalse(overlay.contains("conversationEdgeControls"))
-    XCTAssertFalse(overlay.contains("overlay-agent-rail"))
+    XCTAssertTrue(overlay.contains("overlay-agent-compact-panel"))
     XCTAssertFalse(overlay.contains("hideAgentsCanvas"))
     XCTAssertTrue(overlay.contains("overlay-agent-sidebar-toggle"))
     XCTAssertTrue(overlay.contains("resizable: true"))

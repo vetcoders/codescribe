@@ -1468,7 +1468,7 @@ final class OverlayState {
   /// to focus its selected row.
   private(set) var agentDrawerFocusRevision: UInt64 = 0
   @ObservationIgnored private var agentSidebarDefaults: UserDefaults?
-  static let agentSidebarVisibleDefaultsKey = "Overlay.agentSidebarVisible.v1"
+  static let agentPanelPresentationDefaultsKey = "Overlay.agentPanelPresentation.v1"
 
   func setAgentDrawerDocked(_ docked: Bool) {
     guard docked != agentDrawerDocked else { return }
@@ -1484,18 +1484,36 @@ final class OverlayState {
     showsAgentMonitor && !agentDrawerDocked
   }
 
-  /// Adopt the previous pane choice once. Thereafter one Boolean owns panel
-  /// visibility; a remembered covering width never becomes a layout state.
+  /// Adopt previous visibility/pane choices once. Thereafter one presentation
+  /// owns the full list, compact bar and optional complete hiding.
   func restoreAgentSidebar(defaults: UserDefaults) {
-    let stored = defaults.object(forKey: Self.agentSidebarVisibleDefaultsKey) as? Bool
     let previousLayout = defaults.string(forKey: "Overlay.agentsLayout.v1")
+    let previousVisible = defaults.object(forKey: "Overlay.agentSidebarVisible.v1") as? Bool
     let oversized = defaults.double(forKey: OverlayAgentDrawerLayout.widthDefaultsKey) >= 100_000
     if oversized { defaults.set(300.0, forKey: OverlayAgentDrawerLayout.widthDefaultsKey) }
-    let visible = stored ?? (previousLayout == "split" || previousLayout == "agents" || oversized)
+    let presentation: OverlayAgentPanelPresentation
+    if let stored = defaults.string(forKey: Self.agentPanelPresentationDefaultsKey) {
+      presentation = OverlayAgentPanelPresentation(rawValue: stored) ?? .compact
+    } else if let previousVisible {
+      presentation = previousVisible ? .expanded : .compact
+    } else {
+      presentation =
+        previousLayout == "split" || previousLayout == "agents" || oversized
+        ? .expanded : .compact
+    }
     agentSidebarDefaults = defaults
-    showsAgentMonitor = visible
-    defaults.set(visible, forKey: Self.agentSidebarVisibleDefaultsKey)
+    agentPanelPresentation = presentation
+    defaults.set(presentation.rawValue, forKey: Self.agentPanelPresentationDefaultsKey)
     defaults.removeObject(forKey: "Overlay.agentsLayout.v1")
+    defaults.removeObject(forKey: "Overlay.agentSidebarVisible.v1")
+  }
+
+  func setAgentPanelPresentation(_ presentation: OverlayAgentPanelPresentation) {
+    if presentation == .expanded {
+      showAgentMonitor()
+    } else {
+      closeAgentSidebar(as: presentation)
+    }
   }
 
   /// A covering list returns to the chat after selection. A docked list stays
@@ -1507,10 +1525,23 @@ final class OverlayState {
   /// The agent conversation viewed last. The transcription clears the
   /// selection; this keeps the way back for the Agents button.
   @ObservationIgnored private var lastAgentConversationID: String?
-  private(set) var showsAgentMonitor = false {
+  private(set) var agentPanelPresentation: OverlayAgentPanelPresentation = .compact {
     didSet {
-      if oldValue != showsAgentMonitor {
-        agentSidebarDefaults?.set(showsAgentMonitor, forKey: Self.agentSidebarVisibleDefaultsKey)
+      if oldValue != agentPanelPresentation {
+        agentSidebarDefaults?.set(
+          agentPanelPresentation.rawValue, forKey: Self.agentPanelPresentationDefaultsKey)
+      }
+    }
+  }
+
+  /// Projection of the one panel presentation, not a second visibility flag.
+  private(set) var showsAgentMonitor: Bool {
+    get { agentPanelPresentation == .expanded }
+    set {
+      if newValue {
+        agentPanelPresentation = .expanded
+      } else if agentPanelPresentation == .expanded {
+        agentPanelPresentation = .compact
       }
     }
   }
@@ -2354,8 +2385,16 @@ final class OverlayState {
   }
 
   func hideAgentSidebar() {
+    closeAgentSidebar(as: .compact)
+  }
+
+  func hideAgentSidebarCompletely() {
+    closeAgentSidebar(as: .hidden)
+  }
+
+  private func closeAgentSidebar(as presentation: OverlayAgentPanelPresentation) {
     endAgentChoosing()
-    showsAgentMonitor = false
+    agentPanelPresentation = presentation
     windowContentSurface = selectedConversationID == nil ? .transcription : .agents
     markVisibleConversationRead()
     noteAutoCollapseActivity()

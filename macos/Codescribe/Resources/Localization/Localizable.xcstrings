@@ -4704,6 +4704,17 @@
         }
       }
     },
+    "Channel bar" : {
+      "comment" : "Compact presentation of the Agents panel.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wąski pasek"
+          }
+        }
+      }
+    },
     "Channel close without voice" : {
       "localizations" : {
         "pl" : {
@@ -12078,6 +12089,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nie ma jeszcze wiadomości w tej rozmowie"
+          }
+        }
+      }
+    },
+    "No conversation on this channel" : {
+      "comment" : "Disabled mini-rail channel pill",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na tym kanale nie ma rozmowy"
           }
         }
       }

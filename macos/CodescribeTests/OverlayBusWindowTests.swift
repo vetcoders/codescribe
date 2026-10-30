@@ -133,7 +133,7 @@ final class OverlayBusWindowTests: XCTestCase {
       (CGFloat(1100), false), (1100, true), (380, true), (380, false), (1100, false),
     ] {
       panel.setContentSize(NSSize(width: width, height: 680))
-      if shown { state.showAgentMonitor() } else { state.hideAgentSidebar() }
+      if shown { state.showAgentMonitor() } else { state.hideAgentSidebarCompletely() }
       settle()
       let scroll = try XCTUnwrap(conversationScroll(host))
       let frame = scroll.convert(scroll.bounds, to: host)
@@ -1358,7 +1358,7 @@ final class OverlayBusWindowTests: XCTestCase {
     state.selectConversation(first.id)
     state.chooseComposerTarget(second)
     state.setConversationDraft("A retained draft for Lena", for: second.id)
-    if panelShown { state.showAgentMonitor() } else { state.hideAgentSidebar() }
+    if panelShown { state.showAgentMonitor() } else { state.hideAgentSidebarCompletely() }
     let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
     XCTAssertEqual(row.broadcastIdentity?.leaseID, first.owner?.leaseID)
     XCTAssertFalse(state.visibleChannelRows.contains { $0.channel == "10" })
