@@ -229,8 +229,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  /// The first point across the region's width whose window hit-test resolves
-  /// to that drag region (controls above the band win their own clicks).
+  /// The first point across the region whose window hit-test resolves to that
+  /// drag region (controls above the band win their own clicks). Rows above,
+  /// through and below the middle are sampled: mini hugs its controls, so its
+  /// empty background is the band above and below them, not the middle line.
   private func dragRegionViews(in root: NSView) -> [NSView] {
     var found: [NSView] = []
     func walk(_ view: NSView) {
@@ -248,9 +250,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       guard view.accessibilityIdentifier() == identifier, !view.isHiddenOrHasHiddenAncestor
       else { continue }
       let frame = root.convert(view.bounds, from: view)
-      for step in stride(from: 0.1, through: 0.9, by: 0.1) {
-        let point = NSPoint(x: frame.minX + frame.width * step, y: frame.midY)
-        if root.hitTest(point) === view, panel.isWindowDragHit(at: point) { return point }
+      for row in [0.5, 0.2, 0.8] {
+        for step in stride(from: 0.1, through: 0.9, by: 0.1) {
+          let point = NSPoint(
+            x: frame.minX + frame.width * step, y: frame.minY + frame.height * row)
+          if root.hitTest(point) === view, panel.isWindowDragHit(at: point) { return point }
+        }
       }
     }
     return nil
