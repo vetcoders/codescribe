@@ -1771,7 +1771,7 @@ final class SettingsViewModel: ObservableObject {
         self.whisperModelCatalog = catalog
         self.whisperModelCatalogRefresh = nil
         if self.whisperResidencySettled { self.whisperLoadExpected = false }
-        if self.whisperResidencyObservation == nil || self.whisperResidencySettled {
+        if self.whisperResidencyObservation == nil || !self.whisperCatalogRefreshPending {
           self.observeWhisperResidencyIfNeeded()
         }
         return
@@ -1886,13 +1886,19 @@ final class SettingsViewModel: ObservableObject {
     return whisperModelCatalog?.loaded != nil || whisperLoadExpected
   }
 
+  /// The existing visible-window observer settles both independent facts:
+  /// optional catalog locations and the selected model's resident weights.
+  private var whisperCatalogRefreshPending: Bool {
+    whisperModelCatalog?.discoveryPending == true || whisperResidencyPending
+  }
+
   private func observeWhisperResidencyIfNeeded() {
     guard whisperResidencyObserved, engine != nil else { return }
     whisperResidencyGeneration &+= 1
     whisperResidencyObservation?.cancel()
     whisperResidencyObservation = nil
     if whisperResidencySettled { whisperLoadExpected = false }
-    guard whisperResidencyPending else { return }
+    guard whisperCatalogRefreshPending else { return }
     let generation = whisperResidencyGeneration
     let cadence = whisperResidencyPollInterval
     whisperResidencyObservation = Task { @MainActor [weak self] in
@@ -1904,7 +1910,7 @@ final class SettingsViewModel: ObservableObject {
         }
         self.refreshWhisperModelCatalog()
         if self.whisperResidencySettled { self.whisperLoadExpected = false }
-        guard self.whisperResidencyPending else {
+        guard self.whisperCatalogRefreshPending else {
           self.whisperResidencyObservation = nil
           return
         }

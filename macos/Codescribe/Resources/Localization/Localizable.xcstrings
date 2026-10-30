@@ -4955,6 +4955,17 @@
         }
       }
     },
+    "Checking other model locations…" : {
+      "comment" : "Whisper tab: available models can be selected while optional locations are being read",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie pozostałych lokalizacji modeli…"
+          }
+        }
+      }
+    },
     "Checking the model catalog…" : {
       "comment" : "Whisper tab: catalog not loaded yet",
       "localizations" : {

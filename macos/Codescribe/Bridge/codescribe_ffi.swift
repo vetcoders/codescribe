@@ -16654,6 +16654,10 @@ public func FfiConverterTypeCsVoiceLabSaveResult_lower(_ value: CsVoiceLabSaveRe
 public struct CsWhisperModelCatalog: Equatable, Hashable {
     public var options: [CsWhisperModelOption]
     /**
+     * Optional cache roots still being read; available rows remain selectable.
+     */
+    public var discoveryPending: Bool
+    /**
      * Effective configured reference (env → settings.json → env file → default).
      */
     public var configured: String
@@ -16676,6 +16680,9 @@ public struct CsWhisperModelCatalog: Equatable, Hashable {
     // declare one manually.
     public init(options: [CsWhisperModelOption],
         /**
+         * Optional cache roots still being read; available rows remain selectable.
+         */discoveryPending: Bool,
+        /**
          * Effective configured reference (env → settings.json → env file → default).
          */configured: String,
         /**
@@ -16690,6 +16697,7 @@ public struct CsWhisperModelCatalog: Equatable, Hashable {
          * above the picker shadows the saved selection; nil otherwise.
          */overrideKind: String?) {
         self.options = options
+        self.discoveryPending = discoveryPending
         self.configured = configured
         self.resolvedPath = resolvedPath
         self.loaded = loaded
@@ -16711,6 +16719,7 @@ public struct FfiConverterTypeCsWhisperModelCatalog: FfiConverterRustBuffer {
         return
             try CsWhisperModelCatalog(
                 options: FfiConverterSequenceTypeCsWhisperModelOption.read(from: &buf),
+                discoveryPending: FfiConverterBool.read(from: &buf),
                 configured: FfiConverterString.read(from: &buf),
                 resolvedPath: FfiConverterOptionString.read(from: &buf),
                 loaded: FfiConverterOptionString.read(from: &buf),
@@ -16720,6 +16729,7 @@ public struct FfiConverterTypeCsWhisperModelCatalog: FfiConverterRustBuffer {
 
     public static func write(_ value: CsWhisperModelCatalog, into buf: inout [UInt8]) {
         FfiConverterSequenceTypeCsWhisperModelOption.write(value.options, into: &buf)
+        FfiConverterBool.write(value.discoveryPending, into: &buf)
         FfiConverterString.write(value.configured, into: &buf)
         FfiConverterOptionString.write(value.resolvedPath, into: &buf)
         FfiConverterOptionString.write(value.loaded, into: &buf)
