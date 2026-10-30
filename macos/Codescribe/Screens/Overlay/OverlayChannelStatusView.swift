@@ -183,7 +183,7 @@ struct OverlayMicrophoneGlyph: View {
   /// Flips a symbol horizontally; only the agent megaphone, which faces left
   /// toward the wordmark (Maciej, 2026-10-20).
   var mirrored = false
-  static let diameter: CGFloat = 22
+  nonisolated static let diameter: CGFloat = 22
 
   private enum Mark {
     case symbol(String)
