@@ -550,7 +550,8 @@ struct OverlayConversationView: View {
             microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
             palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
             broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
-            diameter: navigationPillHeight
+            // The header is a glass card: flat glyphs on it, as on the composer.
+            chrome: false, diameter: navigationPillHeight
           )
           .fixedSize()
         }

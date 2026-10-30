@@ -1433,6 +1433,13 @@ struct DictationOverlayView: View {
       }
       return digit
     }
+    // The destination bar is the composer's sibling and wears its surface:
+    // the same glass, corner and Reduce Transparency sheet, the same insets.
+    // Before, the label and a bordered pull-down floated over the scrolling
+    // conversation with message text running through them (Maciej,
+    // 2026-10-30 13:25: "identycznie jak kompozer"). The chooser stays the
+    // system menu; its label drops the bordered pull-down box, as the
+    // composer's own plus menu does.
     return VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 6) {
         Text("To:")
@@ -1444,8 +1451,13 @@ struct DictationOverlayView: View {
           }
         } label: {
           Text(verbatim: selected?.displayTitle ?? target?.title ?? "—")
+            .font(.system(size: 11 * textScale, weight: .semibold))
+            .foregroundStyle(palette.primaryText.color)
             .lineLimit(1).truncationMode(.middle)
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
         .accessibilityIdentifier("overlay-composer-recipient")
         if conversation.owner != nil || conversation.channel == "0",
           selected?.id != conversation.id || selected?.owner?.id != conversation.owner?.id
@@ -1476,6 +1488,15 @@ struct DictationOverlayView: View {
     }
     .font(.system(size: 11 * textScale, weight: .medium))
     .foregroundStyle(palette.mutedText.color)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, ComposerControlMetrics.horizontalPadding)
+    .padding(.vertical, ComposerControlMetrics.verticalPadding)
+    .modifier(OverlayComposerSurface(palette: palette))
+    // Messages scroll under this bar as under the composer; the bar claims
+    // the arrow the way the composer's attachment chips do.
+    .background { OverlayMenuCursorRegion() }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("overlay-composer-routing")
   }
 
   /// A digit may be reused; roster actions belong only to the exact live lease.
@@ -1492,9 +1513,11 @@ struct DictationOverlayView: View {
     }
   }
 
+  /// The header card is itself a glass surface, like the composer under it:
+  /// its pair paints flat on the card, not as glass circles on glass.
   private func conversationHeaderActions(_ conversation: OverlayConversation) -> AnyView? {
     conversationHeaderChannel(conversation).map {
-      AnyView(channelStatusView.compactAgentActions(for: $0))
+      AnyView(channelStatusView.compactAgentActions(for: $0, chrome: false))
     }
   }
 

@@ -514,8 +514,10 @@ struct OverlayAgentAudioControls: View {
   /// All keeps a matched pair, one third more prominent than agent controls;
   /// a surface with one control height (the Intercom bar) opts out.
   var broadcastEmphasis = true
-  /// Glass circles in the roster and the conversation header; the Intercom
-  /// fiszka is itself the surface and paints the pair flat on it.
+  /// Glass circles on the plain canvas (roster rows). A surface that is
+  /// itself glass paints the pair flat on it, as the composer paints its own
+  /// controls: the Intercom fiszka, the conversation header card and the
+  /// pinned All card (Maciej, 2026-10-30: the composer is the reference).
   var chrome = true
   /// The conversation header supplies its measured base height; All scales
   /// both controls together from that base.
@@ -1770,7 +1772,10 @@ struct OverlayChannelStatusView: View {
                     playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
                     palette: palette, onMicrophone: { onToggleChannel?(0) },
                     onPlayback: { onTogglePlayback?("0") }, broadcast: true,
-                    speaking: broadcast.replySpeaking
+                    speaking: broadcast.replySpeaking,
+                    // The pinned card is a glass surface like the composer:
+                    // flat glyphs on it, not glass circles on glass.
+                    chrome: false
                   )
                   .fixedSize()
                   .accessibilityIdentifier("overlay-channel-toggle-0")
@@ -1806,7 +1811,9 @@ struct OverlayChannelStatusView: View {
           }
         }
         .padding(CSSpace.xxs)
-        .modifier(OverlayControlGlass(cornerRadius: CSRadius.card))
+        // The composer's surface, with its Reduce Transparency sheet
+        // (Maciej, 2026-10-30: "To samo musi dostać ten obszar na sidebarze").
+        .modifier(OverlayComposerSurface(palette: palette))
       }
     } content: { rowFocus in
       VStack(alignment: .leading, spacing: 6) {
@@ -2072,7 +2079,11 @@ struct OverlayChannelStatusView: View {
     )
   }
 
-  func compactAgentActions(for channel: OverlayChannelDelivery) -> some View {
+  /// `chrome: false` for a pair that sits on a glass card (the conversation
+  /// header); roster rows on the plain canvas keep their glass circles.
+  func compactAgentActions(for channel: OverlayChannelDelivery, chrome: Bool = true)
+    -> some View
+  {
     HStack(spacing: 6) {
       OverlayAgentAudioControls(
         open: isOpen(channel), muted: mutedChannels[channel.channel],
@@ -2080,7 +2091,8 @@ struct OverlayChannelStatusView: View {
         playbackEnabled: agentPlaybackEnabled(for: channel),
         palette: palette, onMicrophone: { toggle(channel) },
         onPlayback: { onTogglePlayback?(channel.channel) },
-        speaking: conversation(for: channel)?.replySpeaking == true
+        speaking: conversation(for: channel)?.replySpeaking == true,
+        chrome: chrome
       )
       .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
       EmptyView().modifier(
@@ -2122,7 +2134,9 @@ struct OverlayChannelStatusView: View {
           })
         else { continue }
         guard message.withdrawn != true else { return nil }
-        func display(_ symbol: String, _ text: String, isRead: Bool = false) -> OverlayRosterReceipt {
+        func display(_ symbol: String, _ text: String, isRead: Bool = false)
+          -> OverlayRosterReceipt
+        {
           let detail: String
           if let date = MessageTimestamp.date(fromISO8601: message.emittedAt) {
             let timestamp = date.formatted(date: .abbreviated, time: .shortened)
