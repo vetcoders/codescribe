@@ -34,8 +34,8 @@ enum OverlayHeaderAccent {
 /// in the control's accent and the action pill's hint. In mini and compact
 /// form the header is the whole 46 pt window, so a hint cannot sit inside the
 /// panel the way the pill's sits above the canvas; it floats just below the
-/// control in a click-through child window. A nil accent keeps only the hint
-/// (the close dot has its own hover). A selected control
+/// control in a click-through child window. A nil accent keeps only the hint;
+/// the close dot draws its own hover from `onHover`. A selected control
 /// sits on a pastel wash of its mode's colour; the pointer deepens the wash
 /// and draws the ring in that colour, so a chosen control still answers hover.
 struct OverlayHeaderControlChrome: ViewModifier {
@@ -55,6 +55,9 @@ struct OverlayHeaderControlChrome: ViewModifier {
   var hintSize: CGSize? = nil
   var hintDelay: TimeInterval = 0
   var hintInteractive = false
+  /// The control's own hover look reads this one region, so a control never
+  /// stacks a second pointer region over the same bounds.
+  var onHover: ((Bool) -> Void)? = nil
   @State private var hovered = false
   @State private var anchor = OverlayHintAnchor()
   @State private var pendingHint: Task<Void, Never>?
@@ -99,6 +102,7 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .background {
         OverlayMenuCursorRegion { inside in
           hovered = inside
+          onHover?(inside)
           syncHint(inside: inside)
         }
       }

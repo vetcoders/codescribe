@@ -128,7 +128,11 @@ struct OverlayRecordingControls: View {
     }
     .fixedSize()
     .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-recording-controls")
+    // Mini splits the pair around the Agents slot; each half keeps its own
+    // identifier so the bar never reports two `overlay-recording-controls`.
+    .accessibilityIdentifier(
+      showsRecordingButton ? "overlay-recording-controls" : "overlay-preview-controls"
+    )
     .contextMenu {
       Button("My dictation", systemImage: "waveform") { onShowDictation?() }
     }
@@ -1151,16 +1155,14 @@ struct DictationOverlayView: View {
         .contentShape(Circle().inset(by: -7.5))
     }
     .buttonStyle(.plain)
-    .background {
-      OverlayMenuCursorRegion { closeDotHovered = $0 }
-    }
     .animation(
       reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered
     )
     .focusable(false)
     .modifier(
       OverlayHeaderControlChrome(
-        title: OverlayIntent.close.helpText, accent: nil, palette: palette)
+        title: OverlayIntent.close.helpText, accent: nil, palette: palette,
+        onHover: { closeDotHovered = $0 })
     )
     .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
     .accessibilityIdentifier("overlay-brand-close-dot")
