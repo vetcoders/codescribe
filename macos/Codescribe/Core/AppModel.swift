@@ -349,6 +349,8 @@ final class OverlayController: ObservableObject {
     withObservationTracking {
       _ = preference.enabled
       _ = preference.layout
+      _ = state.presentationMode
+      _ = state.windowContentSurface
     } onChange: { [weak self] in
       Task { @MainActor [weak self] in self?.observeIntercomPresentation() }
     }
@@ -358,14 +360,25 @@ final class OverlayController: ObservableObject {
   private func syncIntercomPresentation(overlayEnabled: Bool) {
     guard intercomPresentationStarted else { return }
     let preference = state.channelMapPreference
-    let wantsWidget = preference.enabled && preference.layout == .vertical && overlayEnabled
+    // One presentation owner: the full Agents canvas and its floating views
+    // are alternatives, not two concurrent projections on the desktop.
+    let showsAgentsCanvas =
+      panelPresented && state.presentationMode == .expanded && state.windowContentSurface == .agents
+    let wantsWidget =
+      preference.enabled && preference.layout == .vertical && overlayEnabled && !showsAgentsCanvas
+    if wantsWidget, panelPresented, state.windowContentSurface == .agents {
+      // A compact Agents widget is replaced by the floating presentation.
+      // orderOut clears panelPresented before re-entering this same owner.
+      orderOut()
+      return
+    }
     if wantsWidget, intercomWidget == nil {
       intercomWidget = OverlayIntercomWidgetController(
         state: state, textScale: intercomTextScale,
         revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) },
         desktopStore: intercomDesktopStore)
       // Mini's stacked counter leads here in the vertical layout.
-      state.onRevealIntercom = { [weak self] in self?.intercomWidget?.revealGroup() }
+      state.onRevealIntercom = { [weak self] in self?.showIntercom() }
     }
     // The middle-click chooser lives where the agents do: on the Intercom
     // while it stands, on the big overlay's list otherwise.
@@ -378,6 +391,14 @@ final class OverlayController: ObservableObject {
       } : nil
     intercomWidget?.setVisible(wantsWidget, relativeTo: panel)
     state.channelMapPreferenceChanged()
+  }
+
+  /// Explicit entry into floating panels leaves the default widget behind.
+  /// Dismissal hides a projection; it never stops capture or closes a draft.
+  private func showIntercom() {
+    readOverlayPreference()
+    dismiss()
+    intercomWidget?.revealGroup()
   }
 
   /// Window-side interactions the state cannot see: a hidden panel, an edge
@@ -395,7 +416,13 @@ final class OverlayController: ObservableObject {
   /// An explicit Tray entry uses the same cached panel and leaves capture,
   /// transcript selection, drafts and recording preferences with their owners.
   func showWidget() {
-    readOverlayPreference()
+    let enabled = readOverlayPreference()
+    if enabled, intercomPresentationStarted, state.channelMapPreference.enabled,
+      state.channelMapPreference.layout == .vertical
+    {
+      showIntercom()
+      return
+    }
     if panel?.isVisible != true { state.setPresentationMode(.mini) }
     show()
   }
@@ -545,6 +572,9 @@ final class OverlayController: ObservableObject {
     panel.alphaValue = 1
     if !preserveVisiblePosition || !panel.isVisible { applyPlacement() }
     panelPresented = true
+    // Hide floating windows before ordering the main Agents canvas front.
+    syncIntercomPresentation(overlayEnabled: state.transcriptOverlayEnabled)
+    guard panelPresented else { return }
     orderPanelFront(panel)
     resizeForProjectedContent()
     state.noteAutoCollapseActivity()
@@ -793,6 +823,7 @@ final class OverlayController: ObservableObject {
       (panel as? FloatingOverlayPanel)?.invalidatePresence()
     }
     if let panel { orderPanelOut(panel) }
+    syncIntercomPresentation(overlayEnabled: state.transcriptOverlayEnabled)
   }
 
   /// The dictated transcript was handed to the agent (voice turn opened in the
@@ -857,6 +888,7 @@ final class OverlayController: ObservableObject {
         // chords, or the next ⌘⇧3/4/5 brings the hidden overlay back.
         (fadedPanel as? FloatingOverlayPanel)?.invalidatePresence()
         self.orderPanelOut(fadedPanel)
+        self.syncIntercomPresentation(overlayEnabled: self.state.transcriptOverlayEnabled)
       }
     )
   }

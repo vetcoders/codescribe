@@ -324,6 +324,18 @@ does not need changes to these owners.
 
 ## Independent canvas sizes
 
+The Founder's 2026-10-30 recording makes the full Agents canvas and floating
+Intercom mutually exclusive. `OverlayController.syncIntercomPresentation`
+decides native visibility from the existing preference, canvas and presentation
+mode. Opening the full Agents canvas hides grouped and detached windows without
+closing their durable instances. Entering Intercom hides the default Agents
+widget; a separate transcription canvas retains its capture presentation.
+Drafts, recipients and microphone state do not change with this visibility.
+
+Automatic collapse set to Never also excludes folding when another application
+window becomes key. An explicit Compact/Mini choice remains available. Window
+presence and layering keep their existing owner; Never is not a new pin policy.
+
 The transcription and agents canvases use the same native panel, with a last
 expanded size for each `OverlayContentSurface`. `OverlayState.windowContentSurface`
 retains the intended canvas while mini/midi hide its body. Selection and capture
