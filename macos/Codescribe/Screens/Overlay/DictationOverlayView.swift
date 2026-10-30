@@ -627,7 +627,12 @@ struct DictationOverlayView: View {
                   Task { await state.toggleDraftMicrophone(in: conversation) }
                 },
                 onStageCaptureAttachments: { paths in
-                  guard state.composerTargetIsAvailable(conversation) else { return false }
+                  // A main-window text override cannot reroute the live take.
+                  guard state.composerTargetIsAvailable(conversation),
+                    state.resolvedComposerTarget(viewing: conversation).map({
+                      OverlayState.ComposerContext($0)
+                    }) == OverlayState.ComposerContext(conversation)
+                  else { return false }
                   return state.stageConversationAttachments(paths, in: conversation)
                 },
                 pendingCaptureAttachments: state.captureAttachmentDrafts[conversation.id]?.paths

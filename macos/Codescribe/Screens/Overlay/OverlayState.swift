@@ -1374,7 +1374,7 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
-  /// The viewed draft owns its recipient override, including across surfaces.
+  /// Each viewed main-window draft owns its recipient override.
   struct ComposerContext: Hashable {
     let id: String
     let channel: String
@@ -3025,13 +3025,14 @@ final class OverlayState {
   func sendConversationText(
     _ conversation: OverlayConversation, to recipient: OverlayConversation? = nil
   ) async {
-    // Revalidate the draft owner and frozen recipient at the routing boundary.
-    guard composerTargetIsAvailable(conversation),
-      let recipient = recipient ?? resolvedComposerTarget(viewing: conversation),
-      composerTargetIsAvailable(recipient)
+    // Cards send to themselves. The main window passes its explicit recipient.
+    let usesComposerTargets = recipient != nil
+    let destination = recipient ?? conversation
+    guard composerTargetIsAvailable(conversation), composerTargetIsAvailable(destination)
     else { return }
     if hasSynchronizedDraft(conversation.id) {
-      await sendSynchronizedDraft(from: conversation, to: recipient)
+      await sendSynchronizedDraft(
+        from: conversation, to: destination, usesComposerTargets: usesComposerTargets)
       return
     }
     let draft = conversationDraft(for: conversation.id)
@@ -3061,12 +3062,13 @@ final class OverlayState {
       : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
     guard !outgoing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     do {
-      try await publishConversationText(recipient.owner, outgoing, reply, [])
+      try await publishConversationText(destination.owner, outgoing, reply, [])
       // A newer draft belongs to the Founder, even if publication finishes late.
       if conversationDraftRevisions[conversation.id] == draftRevision,
         conversationDraft(for: conversation.id) == draft,
-        resolvedComposerTarget(viewing: conversation).map({ ComposerContext($0) })
-          == ComposerContext(recipient)
+        !usesComposerTargets
+          || resolvedComposerTarget(viewing: conversation).map({ ComposerContext($0) })
+            == ComposerContext(destination)
       {
         setConversationDraft("", for: conversation.id)
         if conversationReplies[conversation.id] == reply {
@@ -3079,13 +3081,11 @@ final class OverlayState {
   }
 
   private func draftPublication(
-    for conversation: OverlayConversation, recipient: OverlayConversation? = nil
+    for conversation: OverlayConversation, recipient: OverlayConversation
   )
     -> OverlayComposerDraftPublication?
   {
-    guard let owner = conversation.owner,
-      let recipient = recipient ?? resolvedComposerTarget(viewing: conversation)
-    else { return nil }
+    guard let owner = conversation.owner else { return nil }
     return OverlayComposerDraftPublication(
       id: conversation.id, owner: owner, recipient: ComposerTarget(recipient),
       payload: conversationDraft(for: conversation.id),
@@ -3094,9 +3094,13 @@ final class OverlayState {
       replyRevision: conversationReplyRevisions[conversation.id])
   }
 
-  private func draftPublicationIsCurrent(_ publication: OverlayComposerDraftPublication) -> Bool {
+  private func draftPublicationIsCurrent(
+    _ publication: OverlayComposerDraftPublication, usesComposerTargets: Bool
+  ) -> Bool {
     guard let conversation = draftSyncConversations.first(where: { $0.id == publication.id }),
-      let current = draftPublication(for: conversation)
+      let recipient = usesComposerTargets
+        ? resolvedComposerTarget(viewing: conversation) : conversation,
+      let current = draftPublication(for: conversation, recipient: recipient)
     else { return false }
     return current == publication
   }
@@ -3115,7 +3119,8 @@ final class OverlayState {
   /// Freeze each exact owner's own payload and reply. A late receipt may clear
   /// only that same edit generation; a changed draft, including ABA, survives.
   private func sendSynchronizedDraft(
-    from conversation: OverlayConversation, to recipient: OverlayConversation
+    from conversation: OverlayConversation, to recipient: OverlayConversation,
+    usesComposerTargets: Bool
   ) async {
     reconcileDraftSyncOwners()
     guard let index = draftGroupIndex(for: conversation.id) else { return }
@@ -3129,8 +3134,13 @@ final class OverlayState {
     guard Set(recipients.map(\.id)) == group.members,
       recipients.allSatisfy({ group.participants[$0.id]?.owns($0) == true })
     else { return }
-    let publications = recipients.compactMap {
-      draftPublication(for: $0, recipient: $0.id == conversation.id ? recipient : nil)
+    let publications = recipients.compactMap { source -> OverlayComposerDraftPublication? in
+      let destination =
+        source.id == conversation.id
+        ? recipient
+        : (usesComposerTargets ? resolvedComposerTarget(viewing: source) : source)
+      guard let destination else { return nil }
+      return draftPublication(for: source, recipient: destination)
     }
     // An unavailable pinned recipient must not silently drop one linked draft.
     guard publications.count == recipients.count else { return }
@@ -3142,7 +3152,6 @@ final class OverlayState {
     pendingTextMessages.formUnion(group.members)
     defer { pendingTextMessages.subtract(group.members) }
     for recipient in pending { textMessageErrors.removeValue(forKey: recipient.id) }
-    var delivered = frozen.filter { conversationDraftReceipts[$0.id] == $0 }
     for recipient in pending {
       // Send authorized the frozen payload. Subsequent editing does not recall
       // it; only retirement/rebinding can cancel this exact recipient. A group
@@ -3152,29 +3161,18 @@ final class OverlayState {
       else { continue }
       let id = recipient.id
       do {
-        // Linked drafts may deliberately pin the same recipient. One identical
-        // publication earns a receipt for each unchanged source draft.
-        if !delivered.contains(where: {
-          $0.recipient.id == recipient.recipient.id
-            && $0.recipient.channel == recipient.recipient.channel
-            && $0.recipient.ownerID == recipient.recipient.ownerID
-            && OverlayComposerProseEdit.identical($0.payload, recipient.payload)
-            && $0.reply == recipient.reply
-        }) {
-          let alsoSentTo = Set(
-            frozen.filter {
-              $0.id != id && OverlayComposerProseEdit.identical($0.payload, recipient.payload)
-                && draftPublicationOwnerIsCurrent($0)
-            }.compactMap { resolveComposerRecipient($0.recipient)?.owner }
-          )
-          .filter { $0.id != destination.owner?.id }.sorted { $0.id < $1.id }
-          try await publishConversationText(
-            destination.owner, recipient.payload, recipient.reply, alsoSentTo)
-          delivered.append(recipient)
-        }
+        let alsoSentTo = Set(
+          frozen.filter {
+            $0.id != id && OverlayComposerProseEdit.identical($0.payload, recipient.payload)
+              && draftPublicationOwnerIsCurrent($0)
+          }.compactMap { resolveComposerRecipient($0.recipient)?.owner }
+        )
+        .filter { $0.id != destination.owner?.id }.sorted { $0.id < $1.id }
+        try await publishConversationText(
+          destination.owner, recipient.payload, recipient.reply, alsoSentTo)
         // Membership can retire while the publication is in flight. Its
         // receipt still belongs to an unchanged, still-current exact owner.
-        if draftPublicationIsCurrent(recipient) {
+        if draftPublicationIsCurrent(recipient, usesComposerTargets: usesComposerTargets) {
           conversationDraftReceipts[id] = recipient
         }
       } catch {
@@ -3186,7 +3184,7 @@ final class OverlayState {
     var cleared = false
     for recipient in frozen {
       guard conversationDraftReceipts[recipient.id] == recipient,
-        draftPublicationIsCurrent(recipient)
+        draftPublicationIsCurrent(recipient, usesComposerTargets: usesComposerTargets)
       else { continue }
       conversationDrafts[recipient.id] = ""
       conversationReplies.removeValue(forKey: recipient.id)
@@ -3226,12 +3224,6 @@ final class OverlayState {
   /// paths. Ordinary draft dictation keeps its attachments for manual Send.
   func stageConversationAttachments(_ paths: [String], in conversation: OverlayConversation) -> Bool
   {
-    // A text-recipient override does not reroute the controller's live take.
-    // Keep these files in this conversation's manual draft for that recipient.
-    guard
-      resolvedComposerTarget(viewing: conversation).map({ ComposerContext($0) })
-        == ComposerContext(conversation)
-    else { return false }
     // Sync is an explicit manual draft destination, including pasted files.
     guard !hasSynchronizedDraft(conversation.id) else { return false }
     guard !draftCapture.hasRequest else { return false }

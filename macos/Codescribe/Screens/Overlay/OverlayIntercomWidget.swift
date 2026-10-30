@@ -2527,7 +2527,6 @@ private struct OverlayIntercomConversationBody: View {
   }
 
   var body: some View {
-    let recipient = state.resolvedComposerTarget(viewing: conversation)
     OverlayConversationView(
       conversation: conversation, palette: palette, topInset: 0,
       bottomInset: presentation == .intercom ? 8 : 12,
@@ -2545,20 +2544,10 @@ private struct OverlayIntercomConversationBody: View {
         ?? (state.draftCapture.errorConversationID == conversation.id
           ? state.draftCapture.error : nil),
       onSend: {
-        guard current, let recipient else { return }
-        Task { await state.sendConversationText(conversation, to: recipient) }
+        guard current else { return }
+        Task { await state.sendConversationText(conversation) }
       },
       hidesNavigation: true,
-      composerConversation: recipient,
-      composerAvailable: recipient != nil,
-      composerRouting: AnyView(composerRouting),
-      onPrepareHeldEdit: { message in
-        state.prepareHeldComposerEdit(state.heldComposerTarget(message, viewing: conversation))
-      },
-      onReturnHeldText: { message, text, revision in
-        state.returnHeldComposerText(
-          text, to: state.heldComposerTarget(message, viewing: conversation), revision: revision)
-      },
       presentation: presentation,
       showsComposer: showsComposer && current,
       allowsLiveActions: current,
@@ -2587,7 +2576,6 @@ private struct OverlayIntercomConversationBody: View {
         Task { await state.retryCaptureAttachments(in: conversation.id) }
       },
       onReply: {
-        state.chooseComposerTarget(conversation, viewing: conversation)
         state.conversationReplies[conversation.id] = OverlayUserReplyReference(message: $0)
       },
       draftSyncChoices: current ? state.draftSyncChoices(for: conversation) : [],
@@ -2611,34 +2599,6 @@ private struct OverlayIntercomConversationBody: View {
         state.stopDraftSync(for: conversation.id)
       }
     )
-  }
-
-  private var composerRouting: some View {
-    let recipient = state.resolvedComposerTarget(viewing: conversation)
-    return HStack(spacing: 4) {
-      Text("To:")
-      Menu {
-        ForEach(state.availableComposerRecipients) { choice in
-          Button(choice.displayTitle) {
-            state.chooseComposerTarget(choice, viewing: conversation)
-          }
-        }
-      } label: {
-        Text(
-          verbatim: recipient?.displayTitle
-            ?? state.composerTarget(viewing: conversation)?.title ?? "—"
-        )
-        .lineLimit(1).truncationMode(.middle)
-      }
-      .accessibilityIdentifier("overlay-composer-recipient")
-      if recipient == nil {
-        Text("Recipient unavailable")
-          .accessibilityIdentifier("overlay-composer-recipient-unavailable")
-      }
-      Spacer(minLength: 0)
-    }
-    .font(.caption)
-    .foregroundStyle(palette.mutedText.color)
   }
 }
 
