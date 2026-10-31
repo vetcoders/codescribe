@@ -22075,6 +22075,8 @@ public func lexiconCustomEntries()throws  -> [CsLexiconEntry]  {
 /**
  * Validate a newly entered signed key. The successful explicit validation is
  * Active and its timestamp is persisted by `LicenseService` with the key.
+ * Live Swift consumer: `Services/LicenseService.swift` calls `licenseActivate`.
+ * UniFFI exports have no Rust caller edge; that does not make this dead code.
  */
 public func licenseActivate(key: String, nowUnixSeconds: Int64)throws  -> CsLicenseStatus  {
     return try  FfiConverterTypeCsLicenseStatus_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -22180,6 +22182,8 @@ public func qualityRuleCandidates(minOccurrences: UInt64)throws  -> [CsRuleCandi
 /**
  * Teach live dictionary from quality store (corrections.jsonl + proposed.jsonl).
  * Product: Dictionary panel "Teach" so rules leave the udawany 0-learned state.
+ * Live Swift consumer: `Screens/Settings/SettingsEngine.swift` calls
+ * `qualityTeachDictionaryFromStore`; retain this cross-language entry point.
  */
 public func qualityTeachDictionaryFromStore()throws  -> CsDictionaryTeachResult  {
     return try  FfiConverterTypeCsDictionaryTeachResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -22372,6 +22376,9 @@ public func stopSpeaking()  {try! rustCall() {
 }
 /**
  * Snapshot the canonical local-Whisper catalog for Settings → Dictation.
+ * Live Swift consumer: `Screens/Settings/SettingsEngine.swift` calls
+ * `whisperModelCatalog` through `WhisperModelCatalogIO` off the main actor.
+ * No Rust caller edge is expected for this UniFFI product entry point.
  */
 public func whisperModelCatalog() -> CsWhisperModelCatalog  {
     return try!  FfiConverterTypeCsWhisperModelCatalog_lift(try! rustCall() {
@@ -22443,7 +22450,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_lexicon_custom_entries() != 24996) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_license_activate() != 8539) {
+    if (uniffi_codescribe_ffi_checksum_func_license_activate() != 35835) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_license_status() != 13036) {
@@ -22470,7 +22477,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_quality_rule_candidates() != 65230) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_quality_teach_dictionary_from_store() != 46244) {
+    if (uniffi_codescribe_ffi_checksum_func_quality_teach_dictionary_from_store() != 34311) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_teach_span() != 20307) {
@@ -22521,7 +22528,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_stop_speaking() != 21833) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_whisper_model_catalog() != 28456) {
+    if (uniffi_codescribe_ffi_checksum_func_whisper_model_catalog() != 47265) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_whisper_model_status() != 33505) {
