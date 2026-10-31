@@ -502,6 +502,7 @@ struct OverlayConversationComposer: View {
       }
       .overlay(alignment: .bottomLeading) {
         composerPlusMenu(corners)
+          .background { OverlayMenuCursorRegion() }
       }
       .overlay(alignment: .bottomTrailing) {
         HStack(spacing: corners.spacing) {
@@ -553,6 +554,7 @@ struct OverlayConversationComposer: View {
             recipientMenu(corners)
           }
         }
+        .background { OverlayMenuCursorRegion() }
       }
     }
     .frame(height: editorViewportHeight)
@@ -1109,6 +1111,57 @@ private struct ConversationMessageField: NSViewRepresentable {
       needsLayout = true
     }
 
+    func hitsCornerControls(_ clipPoint: NSPoint) -> Bool {
+      guard let corners, contentView.bounds.contains(clipPoint) else { return false }
+      return corners.exclusions(viewport: contentView.bounds, textOrigin: .zero).contains {
+        $0.contains(clipPoint)
+      }
+    }
+
+    func hitsCornerControls(windowPoint: NSPoint) -> Bool {
+      hitsCornerControls(contentView.convert(windowPoint, from: nil))
+    }
+
+    func cursorRegions(in target: NSView) -> (editable: [NSRect], controls: [NSRect]) {
+      let viewport = contentView.bounds
+      guard viewport.width > 0, viewport.height > 0 else { return ([], []) }
+      guard let corners else {
+        return ([target.convert(viewport, from: contentView)], [])
+      }
+      let controls = corners.exclusions(viewport: viewport, textOrigin: .zero)
+      let controlRowY = max(viewport.minY, viewport.maxY - corners.actionHeight)
+      var editable: [NSRect] = []
+      let upper = NSRect(
+        x: viewport.minX, y: viewport.minY,
+        width: viewport.width, height: max(0, controlRowY - viewport.minY))
+      if !upper.isEmpty {
+        editable.append(upper)
+      }
+      if !rowReleasedForDraft, controls.count == 2 {
+        let left = controls[0]
+        let right = controls[1]
+        let middle = NSRect(
+          x: left.maxX, y: controlRowY,
+          width: max(0, right.minX - left.maxX),
+          height: max(0, viewport.maxY - controlRowY))
+        if !middle.isEmpty {
+          editable.append(middle)
+        }
+      }
+      return (
+        editable: editable.map { target.convert($0, from: contentView) },
+        controls: controls.map { target.convert($0, from: contentView) }
+      )
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+      let localPoint = superview != nil ? convert(point, from: superview) : point
+      if hitsCornerControls(contentView.convert(localPoint, from: self)) {
+        return nil
+      }
+      return super.hitTest(point)
+    }
+
     override func reflectScrolledClipView(_ clipView: NSClipView) {
       super.reflectScrolledClipView(clipView)
       guard clipView === contentView else { return }
@@ -1280,6 +1333,7 @@ private struct ConversationMessageField: NSViewRepresentable {
         editor.minSize = NSSize(width: 0, height: viewport.height)
         if editor.frame.size != documentSize { editor.setFrameSize(documentSize) }
         needsContentMeasurement = false
+        window?.invalidateCursorRects(for: editor)
         onHeightChange(candidate)
       }
       updateCornerClip()
@@ -1541,6 +1595,61 @@ private struct ConversationMessageField: NSViewRepresentable {
         (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
       }
       notifyFocusChange()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+      if let scroll = enclosingScrollView as? MessageScrollView {
+        let localPoint = superview != nil ? convert(point, from: superview) : point
+        if scroll.hitsCornerControls(scroll.contentView.convert(localPoint, from: self)) {
+          return nil
+        }
+      }
+      return super.hitTest(point)
+    }
+
+    override func resetCursorRects() {
+      discardCursorRects()
+      guard let scroll = enclosingScrollView as? MessageScrollView else {
+        super.resetCursorRects()
+        return
+      }
+      let regions = scroll.cursorRegions(in: self)
+      for rect in regions.editable where !rect.isEmpty {
+        addCursorRect(rect, cursor: .iBeam)
+      }
+      for rect in regions.controls where !rect.isEmpty {
+        addCursorRect(rect, cursor: .arrow)
+      }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+      if (enclosingScrollView as? MessageScrollView)?.hitsCornerControls(
+        windowPoint: event.locationInWindow) == true
+      {
+        NSCursor.arrow.set()
+        return
+      }
+      super.cursorUpdate(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+      if (enclosingScrollView as? MessageScrollView)?.hitsCornerControls(
+        windowPoint: event.locationInWindow) == true
+      {
+        NSCursor.arrow.set()
+        return
+      }
+      super.mouseMoved(with: event)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+      if (enclosingScrollView as? MessageScrollView)?.hitsCornerControls(
+        windowPoint: event.locationInWindow) == true
+      {
+        NSCursor.arrow.set()
+        return
+      }
+      super.mouseEntered(with: event)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
