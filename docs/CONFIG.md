@@ -70,8 +70,8 @@ and public-key setup with `INSTALL_SETTINGS=0`; configuration merging belongs
 to the app. Without a pack, no cloud endpoint is invented.
 
 Runtime repair still supports `asr_mode` in an explicitly supplied per-user
-pack. Existing user settings, legacy imports and that per-user pack are not
-rewritten by the bundle policy.
+pack. Existing user settings, one-time `.env` imports and that per-user pack
+are not rewritten by the bundle policy.
 
 A second repair pass over repaired settings performs no write and creates no
 backup. The process retains its first-launch receipt so opening Settings later
