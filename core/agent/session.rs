@@ -10,7 +10,7 @@
 //! never start the handler), and every tool summary surfaced to the UI passes
 //! through redaction so secrets in tool output are not rendered.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -205,9 +205,12 @@ impl AgentSession {
                     AgentEvent::ResponseDone { clean: true, .. } if !clean_terminal => {
                         clean_terminal = true
                     }
+                    // A hosted search is the server's own work, not a local
+                    // tool call; the probe stays tool-free.
                     AgentEvent::TextDelta(_)
                     | AgentEvent::TextDone(_)
                     | AgentEvent::ReasoningDelta(_)
+                    | AgentEvent::ServerToolProgress { .. }
                         if !clean_terminal => {}
                     AgentEvent::Error(error) => {
                         anyhow::bail!("Max startup provider failed: {error}")
@@ -432,6 +435,9 @@ impl AgentSession {
 
             let mut pending_calls: HashMap<String, PendingToolCall> = HashMap::new();
             let mut tool_call_order: Vec<String> = Vec::new();
+            // Hosted tool calls already shown as running / already closed.
+            let mut server_tools_open: HashSet<String> = HashSet::new();
+            let mut server_tools_closed: HashSet<String> = HashSet::new();
 
             while let Some(event) = event_rx.recv().await {
                 match event {
@@ -489,6 +495,44 @@ impl AgentSession {
                         // item; Start can carry a still-empty placeholder.
                         entry.name = name;
                         entry.arguments = Some(arguments);
+                    }
+                    AgentEvent::ServerToolProgress {
+                        id,
+                        name,
+                        done,
+                        query,
+                    } => {
+                        if server_tools_closed.contains(&id) {
+                            continue;
+                        }
+                        if server_tools_open.insert(id.clone()) {
+                            send_ui_event(
+                                &self.ui_tx,
+                                AgentUiEvent::ToolExecuting {
+                                    name: name.clone(),
+                                    id: id.clone(),
+                                },
+                            )
+                            .await;
+                        }
+                        if done {
+                            server_tools_open.remove(&id);
+                            server_tools_closed.insert(id.clone());
+                            let summary = query.map_or_else(
+                                || "search completed".to_string(),
+                                |query| format!("searched: {query}"),
+                            );
+                            send_ui_event(
+                                &self.ui_tx,
+                                AgentUiEvent::ToolResult {
+                                    name,
+                                    id,
+                                    summary,
+                                    is_error: false,
+                                },
+                            )
+                            .await;
+                        }
                     }
                     AgentEvent::ResponseDone { response_id, clean } => {
                         // Only adopt the provider thread id on a clean terminal.
@@ -623,6 +667,11 @@ impl AgentSession {
                 timestamp: Some(Utc::now()),
             });
 
+            // The provider stream for this round has already ended: its
+            // transport task closed `event_rx` before this point. Approval
+            // waits and tool execution below therefore run on no LLM stream
+            // clock; the next round opens a fresh stream whose first-event
+            // and idle budgets start at its own request send.
             for (call_id, raw_tool_name, raw_arguments) in ready_calls {
                 let dispatch_started = Instant::now();
                 let (tool_name, approved_by_user, audit_decision, tool_outputs) = if raw_tool_name
@@ -1997,6 +2046,76 @@ mod tests {
         send_future
             .await
             .expect("agent session should complete after yielding first delta");
+    }
+
+    /// A hosted web_search is shown once as running and once as finished, and
+    /// never enters history or the local tool loop.
+    #[tokio::test]
+    async fn send_projects_server_web_search_as_display_only_tool_row() {
+        let progress = |done: bool, query: Option<&str>| AgentEvent::ServerToolProgress {
+            id: "ws_1".to_string(),
+            name: "web_search".to_string(),
+            done,
+            query: query.map(ToString::to_string),
+        };
+        let provider = ScriptedProvider::new(vec![vec![
+            progress(false, None),
+            progress(false, None),
+            progress(true, Some("pogoda Kielce")),
+            progress(true, Some("pogoda Kielce")),
+            AgentEvent::TextDone("Słonecznie".to_string()),
+            AgentEvent::ResponseDone {
+                response_id: Some("resp_ws".to_string()),
+                clean: true,
+            },
+        ]]);
+        let (ui_tx, mut ui_rx) = mpsc::channel(32);
+        let mut session =
+            AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx)
+                .with_max_iterations(2);
+
+        session
+            .send("pogoda?".to_string(), Vec::new(), &StreamOptions::default())
+            .await
+            .expect("a hosted search turn completes in one round");
+
+        let mut ui_events = Vec::new();
+        while let Ok(event) = ui_rx.try_recv() {
+            ui_events.push(event);
+        }
+        let tool_rows: Vec<_> = ui_events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AgentUiEvent::ToolExecuting { .. } | AgentUiEvent::ToolResult { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            tool_rows,
+            vec![
+                &AgentUiEvent::ToolExecuting {
+                    name: "web_search".to_string(),
+                    id: "ws_1".to_string(),
+                },
+                &AgentUiEvent::ToolResult {
+                    name: "web_search".to_string(),
+                    id: "ws_1".to_string(),
+                    summary: "searched: pogoda Kielce".to_string(),
+                    is_error: false,
+                },
+            ]
+        );
+        assert!(ui_events.contains(&AgentUiEvent::Done));
+        assert!(session.messages().iter().all(|message| {
+            message.content.iter().all(|block| {
+                !matches!(
+                    block,
+                    ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+                )
+            })
+        }));
     }
 
     /// Missing tool becomes an error tool_result; turn recovers without fatal UI error.

@@ -405,7 +405,8 @@ async fn collect_readiness(
                 text = done;
                 text_done = true;
             }
-            AgentEvent::ReasoningDelta(_) => {}
+            // A hosted search runs on the server; it is not local tool use.
+            AgentEvent::ReasoningDelta(_) | AgentEvent::ServerToolProgress { .. } => {}
             AgentEvent::ResponseDone { clean, .. } => {
                 ensure!(clean, "readiness response did not complete cleanly");
                 terminal = true;

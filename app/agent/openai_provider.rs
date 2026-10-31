@@ -64,8 +64,10 @@ pub struct OpenAiProvider {
     previous_response_id: Arc<Mutex<Option<String>>>,
     /// Deadline for the first byte of a response.
     initial_response_timeout: Duration,
-    /// Deadline between chunks of an already-started stream.
+    /// Deadline between chunks once the first content event arrived.
     inter_chunk_timeout: Duration,
+    /// Budget from the request send to the first content event.
+    first_event_timeout: Duration,
     /// Lane resolved to provider-account auth (no API key, official endpoint,
     /// stored tokens). Each request fetches a FRESH access token via
     /// `account_auth` so the auto-refresh path keeps long sessions alive.
@@ -162,6 +164,7 @@ impl OpenAiProvider {
         let use_previous_response_id = true;
         let initial_response_timeout = request_timing.attempt_timeout();
         let inter_chunk_timeout = request_timing.inter_chunk_timeout();
+        let first_event_timeout = request_timing.first_event_timeout();
 
         let client = Client::builder()
             .timeout(Duration::from_secs(3600))
@@ -178,6 +181,7 @@ impl OpenAiProvider {
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout,
             inter_chunk_timeout,
+            first_event_timeout,
             use_account_auth: false,
             provider: ProviderKind::OpenAiResponses,
             reasoning_effort: None,
@@ -239,7 +243,7 @@ impl AgentProvider for OpenAiProvider {
         };
 
         info!(
-            "Agent provider request (model={}, messages={}, tools={}, previous_response_id={}, route={}, timeout={}s, inter_chunk_timeout={}s)",
+            "Agent provider request (model={}, messages={}, tools={}, previous_response_id={}, route={}, timeout={}s, first_event_timeout={}s, inter_chunk_timeout={}s)",
             model,
             messages.len(),
             tools.len(),
@@ -250,6 +254,7 @@ impl AgentProvider for OpenAiProvider {
                 (AuthRoute::ApiKey, _) => "api-key",
             },
             self.initial_response_timeout.as_secs(),
+            self.first_event_timeout.as_secs(),
             self.inter_chunk_timeout.as_secs()
         );
 
@@ -336,6 +341,7 @@ impl AgentProvider for OpenAiProvider {
             self.initial_response_timeout,
             self.inter_chunk_timeout,
         )
+        .with_first_event_timeout(self.first_event_timeout)
         .with_auth_header_mode(auth_header_mode)
         .with_extra_headers(extra_headers);
 
@@ -1066,6 +1072,7 @@ mod tests {
         AgentAssetStore, AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions,
         ToolDefinition,
     };
+    use codescribe_core::llm::responses_streaming_manager::scripted_sse::{self, Step};
     use reqwest::Client;
     use serde_json::{Value, json};
     use tokio::sync::{Mutex, mpsc};
@@ -1082,6 +1089,7 @@ mod tests {
             previous_response_id: stored_chain,
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            first_event_timeout: Duration::from_secs(1),
             use_account_auth: false,
             provider: ProviderKind::OpenAiResponses,
             reasoning_effort: None,
@@ -1647,6 +1655,7 @@ mod tests {
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
+            first_event_timeout: Duration::from_secs(2),
             use_account_auth: false,
             provider: ProviderKind::OpenAiResponses,
             reasoning_effort: None,
@@ -1732,6 +1741,7 @@ mod tests {
             previous_response_id: Arc::new(Mutex::new(Some("resp_old_chain".to_string()))),
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
+            first_event_timeout: Duration::from_secs(2),
             use_account_auth: true,
             provider: ProviderKind::OpenAiResponses,
             reasoning_effort: None,
@@ -1834,6 +1844,7 @@ mod tests {
             previous_response_id: Arc::new(Mutex::new(Some("resp_old_chain".to_string()))),
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
+            first_event_timeout: Duration::from_secs(2),
             use_account_auth: true,
             provider: ProviderKind::OpenAiResponses,
             reasoning_effort: None,
@@ -1974,6 +1985,7 @@ mod tests {
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            first_event_timeout: Duration::from_secs(1),
             use_account_auth: false,
             provider: ProviderKind::OpenAiResponses,
             reasoning_effort: None,
@@ -2349,6 +2361,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
+            first_event_timeout: Duration::from_secs(2),
             use_account_auth: false,
             provider: ProviderKind::OpenAiResponses,
             reasoning_effort: None,
@@ -2429,5 +2442,203 @@ mod tests {
             Some("resp_next_clean"),
             "clean terminal must advance the chain"
         );
+    }
+
+    /// F1 payload: a 4-byte emoji and Polish 2-byte letters in one delta.
+    const SPLIT_TEXT: &str = "🚀 Żółć";
+
+    /// Cut `frame` inside `🚀` (`F0 9F | 9A 80`) and inside `Ż` (`C5 | BB`)
+    /// and script the three pieces as separate TCP segments.
+    fn split_utf8_steps(frame: &str) -> Vec<Step> {
+        let bytes = frame.as_bytes();
+        let emoji = bytes
+            .windows(4)
+            .position(|window| window == "🚀".as_bytes())
+            .expect("frame holds the emoji")
+            + 2;
+        let letter = bytes
+            .windows(2)
+            .position(|window| window == "Ż".as_bytes())
+            .expect("frame holds Ż")
+            + 1;
+        vec![
+            Step::Bytes(bytes[..emoji].to_vec()),
+            Step::Pause(Duration::from_millis(30)),
+            Step::Bytes(bytes[emoji..letter].to_vec()),
+            Step::Pause(Duration::from_millis(30)),
+            Step::Bytes(bytes[letter..].to_vec()),
+        ]
+    }
+
+    /// Drain a provider stream until the channel closes (bounded at 5 s).
+    async fn drain_events(mut rx: mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+            events.push(event);
+        }
+        events
+    }
+
+    /// Concatenated `TextDelta` payloads.
+    fn delta_text(events: &[AgentEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::TextDelta(delta) => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn has_clean_done(events: &[AgentEvent]) -> bool {
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ResponseDone { clean: true, .. }))
+    }
+
+    /// Responses provider against a scripted loopback server.
+    fn scripted_provider(
+        endpoint: String,
+        idle: Duration,
+        first_event: Duration,
+    ) -> OpenAiProvider {
+        OpenAiProvider {
+            client: Client::new(),
+            endpoint,
+            api_key: "test-key".to_string(),
+            api_key_account: None,
+            default_model: "gpt-test".to_string(),
+            use_previous_response_id: false,
+            previous_response_id: Arc::new(Mutex::new(None)),
+            initial_response_timeout: Duration::from_secs(2),
+            inter_chunk_timeout: idle,
+            first_event_timeout: first_event,
+            use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
+            reasoning_effort: None,
+        }
+    }
+
+    /// Clean Responses terminal after `text`.
+    fn responses_tail(text: &str) -> Step {
+        scripted_sse::text(&format!(
+            "data: {{\"type\":\"response.output_text.done\",\"text\":\"{text}\"}}\n\n\
+             data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"resp_cut3\",\"status\":\"completed\"}}}}\n\n\
+             data: [DONE]\n\n"
+        ))
+    }
+
+    async fn run_scripted(provider: &OpenAiProvider) -> Vec<AgentEvent> {
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("ping".to_string())],
+        )];
+        let rx = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .expect("stream should start");
+        drain_events(rx).await
+    }
+
+    /// F1: a delta cut inside `🚀` and `Ż` across TCP segments arrives intact.
+    #[tokio::test]
+    async fn openai_provider_joins_utf8_split_across_tcp_segments() {
+        let mut steps = split_utf8_steps(&format!(
+            "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{SPLIT_TEXT}\"}}\n\n"
+        ));
+        steps.push(responses_tail(SPLIT_TEXT));
+        let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+        let provider = scripted_provider(endpoint, Duration::from_secs(2), Duration::from_secs(2));
+        let events = run_scripted(&provider).await;
+
+        assert_eq!(delta_text(&events), SPLIT_TEXT);
+        assert!(events.contains(&AgentEvent::TextDone(SPLIT_TEXT.to_string())));
+        assert!(!format!("{events:?}").contains('\u{FFFD}'));
+        assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    /// F2: `response.created`, then `: keepalive` every 60 ms for 360 ms, with
+    /// a 100 ms idle and 600 ms first-event budget, ends `clean: true`.
+    #[tokio::test]
+    async fn openai_provider_keepalive_prefill_completes_cleanly() {
+        let mut steps = vec![scripted_sse::text(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_cut3\"}}\n\n",
+        )];
+        for beat in 0..6 {
+            steps.push(Step::Pause(Duration::from_millis(60)));
+            steps.push(scripted_sse::text(&format!(": keepalive {beat}\n\n")));
+        }
+        steps.push(scripted_sse::text(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\n",
+        ));
+        steps.push(responses_tail("pong"));
+        let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+        let provider = scripted_provider(
+            endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(600),
+        );
+        let events = run_scripted(&provider).await;
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Error(_))),
+            "{events:?}"
+        );
+        assert_eq!(delta_text(&events), "pong");
+        assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    /// F3: a hosted web_search series before the first delta keeps the turn
+    /// alive, is reported as progress and still ends in `TextDone`.
+    #[tokio::test]
+    async fn openai_provider_reports_web_search_before_text() {
+        let pause = || Step::Pause(Duration::from_millis(80));
+        let steps = vec![
+            scripted_sse::text(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_ws\"}}\n\n",
+            ),
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\"}}\n\n",
+            ),
+            pause(),
+            scripted_sse::text(
+                "data: {\"type\":\"response.web_search_call.searching\",\"item_id\":\"ws_1\"}\n\n",
+            ),
+            pause(),
+            scripted_sse::text(
+                "data: {\"type\":\"response.web_search_call.completed\",\"item_id\":\"ws_1\"}\n\n",
+            ),
+            pause(),
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"action\":{\"query\":\"pogoda Kielce\"}}}\n\n",
+            ),
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Słonecznie\"}\n\n",
+            ),
+            responses_tail("Słonecznie"),
+        ];
+        let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+        let provider = scripted_provider(
+            endpoint,
+            Duration::from_millis(150),
+            Duration::from_millis(150),
+        );
+        let events = run_scripted(&provider).await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ServerToolProgress { id, name, done: false, .. }
+                if id == "ws_1" && name == "web_search"
+        )));
+        assert!(events.contains(&AgentEvent::ServerToolProgress {
+            id: "ws_1".to_string(),
+            name: "web_search".to_string(),
+            done: true,
+            query: Some("pogoda Kielce".to_string()),
+        }));
+        assert!(events.contains(&AgentEvent::TextDone("Słonecznie".to_string())));
+        assert!(has_clean_done(&events), "{events:?}");
     }
 }

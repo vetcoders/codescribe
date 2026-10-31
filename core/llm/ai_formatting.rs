@@ -140,6 +140,7 @@ struct StreamRequestContext {
     callbacks: StreamCallbacks,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
+    first_event_timeout: Duration,
 }
 
 /// reqwest overall request timeout for the shared AI HTTP client.
@@ -1599,6 +1600,7 @@ async fn format_text_with_status_channels_for_policy(
             },
             initial_response_timeout: request_timing.attempt_timeout(),
             inter_chunk_timeout: request_timing.inter_chunk_timeout(),
+            first_event_timeout: request_timing.first_event_timeout(),
         };
         let mut retryable_error = true;
         // On-device lane (opt-in knob, W6): one host attempt first. Any
@@ -2371,6 +2373,7 @@ async fn call_llm_endpoint_streaming(
         callbacks,
         initial_response_timeout,
         inter_chunk_timeout,
+        first_event_timeout,
     } = stream_context;
     let manager = ResponsesStreamingManager::new(
         get_client(),
@@ -2380,6 +2383,7 @@ async fn call_llm_endpoint_streaming(
         initial_response_timeout,
         inter_chunk_timeout,
     )
+    .with_first_event_timeout(first_event_timeout)
     .with_auth_header_mode(auth_header_mode)
     .with_extra_headers(extra_headers.clone());
     let streamed = match manager.stream(&request).await {
@@ -2407,6 +2411,7 @@ async fn call_llm_endpoint_streaming(
                 initial_response_timeout,
                 inter_chunk_timeout,
             )
+            .with_first_event_timeout(first_event_timeout)
             .with_auth_header_mode(auth_header_mode)
             .with_extra_headers(extra_headers);
             retry_manager.stream(&unchained).await?
@@ -3177,6 +3182,7 @@ mod tests {
                 },
                 initial_response_timeout: Duration::from_secs(2),
                 inter_chunk_timeout: Duration::from_secs(2),
+                first_event_timeout: Duration::from_secs(2),
             },
             None,
         )
@@ -3485,6 +3491,7 @@ mod tests {
                 },
                 initial_response_timeout: Duration::from_secs(5),
                 inter_chunk_timeout: Duration::from_secs(5),
+                first_event_timeout: Duration::from_secs(5),
             },
             None,
         )
@@ -3519,6 +3526,7 @@ mod tests {
             },
             initial_response_timeout: Duration::from_secs(5),
             inter_chunk_timeout: Duration::from_secs(5),
+            first_event_timeout: Duration::from_secs(5),
         }
     }
 
