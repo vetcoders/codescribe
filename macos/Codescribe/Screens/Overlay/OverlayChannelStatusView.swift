@@ -469,12 +469,7 @@ private struct OverlayAudioControlInk: ViewModifier {
         return Color(
           nsColor: color.blended(withFraction: 0.3, of: palette.primaryText.nsColor) ?? color)
       }
-      ?? (idleInk == nil
-        ? palette.primaryText.color
-        : Color(
-          nsColor: palette.primaryText.nsColor.blended(
-            withFraction: 0.25, of: palette.appearance == .dark ? .white : .black)
-            ?? palette.primaryText.nsColor))
+      ?? palette.primaryText.color
     content.conversationActionHover(
       restingColor: isEnabled || idleInk == nil
         ? (lit ?? idleInk ?? palette.mutedText.color.opacity(unlitOpacity))
@@ -590,6 +585,10 @@ struct OverlayAgentAudioControls: View {
 
   /// Recording shares the appearance-aware active-speaker accent.
   private var recordingAccent: Color { palette.agentAccent.color }
+  static let idleControlOpacity = 0.72
+  private var idleControlInk: Color {
+    palette.primaryText.color.opacity(Self.idleControlOpacity)
+  }
 
   /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
   /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie
@@ -675,7 +674,7 @@ struct OverlayAgentAudioControls: View {
         .modifier(
           OverlayAudioControlInk(
             palette: palette, lit: open ? recordingAccent : nil,
-            idleInk: palette.appearance == .dark ? palette.primaryText.color : nil)
+            idleInk: idleControlInk)
         )
         .tint(Self.litGlass(open ? recordingAccent : nil))
         .disabled(!microphoneEnabled)
@@ -709,7 +708,7 @@ struct OverlayAgentAudioControls: View {
         .modifier(
           OverlayAudioControlInk(
             palette: palette, lit: speakingNow ? palette.agentAccent.color : nil,
-            idleInk: palette.appearance == .dark ? palette.primaryText.color : nil)
+            idleInk: idleControlInk)
         )
         .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
         .disabled(!playbackEnabled || muted == nil)
@@ -734,7 +733,7 @@ struct OverlayAgentAudioControls: View {
         .modifier(
           OverlayAudioControlInk(
             palette: palette, lit: nil,
-            idleInk: palette.appearance == .dark ? palette.primaryText.color : nil)
+            idleInk: idleControlInk)
         )
         .tint(Self.litGlass(nil))
         .disabled(!panel.enabled)
