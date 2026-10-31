@@ -141,3 +141,29 @@ fn healthy_calls_do_not_spend_a_lifetime_backpressure_budget() {
     assert_eq!(session.frames_written, 20 * samples.len() as u64);
     session.finish().expect("healthy multi-call cleanup");
 }
+
+#[test]
+#[serial_test::serial]
+fn bridge_diagnostics_cannot_block_an_otherwise_healthy_pcm_stream() {
+    let root = tempfile::tempdir().expect("test root");
+    let bridge = fake_bridge(
+        root.path(),
+        "sys.stderr.buffer.write(b'diagnostic\\n' * 16384)\n\
+         sys.stderr.buffer.flush()\n\
+         data = sys.stdin.buffer.read(1048576)\n\
+         assert data == b'\\x00\\x00\\x80\\x3e' * 262144\n\
+         print(json.dumps(dict(event='partial', text='complete')), flush=True)",
+    );
+    let _bridge = EnvGuard::set("CODESCRIBE_APPLE_STT_BRIDGE", bridge);
+    let mut session = ready_session();
+    let samples = vec![0.25_f32; 262_144];
+    session
+        .write_pcm(&samples)
+        .expect("diagnostic output must not block healthy PCM consumption");
+    assert!(matches!(
+        session.events_rx.recv_timeout(Duration::from_secs(2)),
+        Ok(LiveStreamEvent::Partial { text, .. }) if text == "complete"
+    ));
+    assert_eq!(session.frames_written, samples.len() as u64);
+    session.finish().expect("diagnostic stream cleanup");
+}
