@@ -188,10 +188,21 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
 
   static let editablePrompts: [Self] = [.correction, .smart]
 
-  /// Next level in the tray's cycling control: Off → Correction → Smart → Max → Off.
+  /// Levels a take may be formatted at without being asked. Max is the
+  /// Agent's consultation: it runs only when the user picks it in the overlay
+  /// Format menu, so automatic selectors and the tray never offer it.
+  /// `allCases` keeps Max for manual requests and version history.
+  static let automaticCases: [Self] = [.off, .correction, .smart]
+
+  /// The automatic level a stored choice runs at. A stored Max (or legacy
+  /// `creative`) runs Smart at the automatic boundary in the core, so every
+  /// automatic selector shows Smart for it instead of a level that never runs.
+  var automaticLevel: Self { self == .max ? .smart : self }
+
+  /// Next level in the tray's cycling control: Off → Correction → Smart → Off.
   var next: Self {
-    let all = Self.allCases
-    let index = all.firstIndex(of: self) ?? all.startIndex
+    let all = Self.automaticCases
+    let index = all.firstIndex(of: automaticLevel) ?? all.startIndex
     return all[(index + 1) % all.count]
   }
 }
@@ -2605,32 +2616,36 @@ final class SettingsViewModel: ObservableObject {
     )
   }
 
-  /// The formatting lane is required only for Smart/Corrections without Apple
-  /// on-device. Max runs on the Agent lane (its readiness is the Agent's), and
-  /// Apple needs no cloud credential.
+  /// The formatting lane is required only for automatic Smart/Corrections
+  /// without Apple on-device. A stored Max runs Smart automatically, so it
+  /// needs the lane too. Max itself runs on the Agent lane (its readiness is
+  /// the Agent's), and Apple needs no cloud credential.
   var cloudFormattingRequired: Bool {
     guard !settings.formatOnDevice else { return false }
-    switch FormattingPolicyOption(storedValue: settings.formattingLevel) {
+    switch automaticFormattingLevel {
     case .correction, .smart: return true
     case .off, .max, nil: return false
     }
   }
 
-  /// Max is selected but the Agent lane cannot serve it. Max never borrows the
-  /// formatting lane or Apple, so this is shown instead of a working Max.
+  /// The level automatic formatting runs at, as every automatic selector shows
+  /// it. Nil only for a stored value the app does not know.
+  var automaticFormattingLevel: FormattingPolicyOption? {
+    FormattingPolicyOption(storedValue: settings.formattingLevel)?.automaticLevel
+  }
+
+  /// The Agent lane cannot serve Max. Max stays in the overlay Format menu
+  /// whatever automatic level is selected and never borrows the formatting
+  /// lane or Apple, so this is shown instead of a working Max.
   var maxAgentUnavailable: Bool {
-    maxConsultationEnabled && providerAccessResolved && providerAccessError == nil
+    providerAccessResolved && providerAccessError == nil
       && !llmLane(.assistive).runtime.available
   }
 
   func laneUsageDescription(_ lane: LLMLane) -> String {
     if lane == .assistive { return llmLane(lane).availabilityDescription }
-    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .off {
+    if automaticFormattingLevel == .off {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
-    }
-    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .max {
-      return String(
-        localized: "Max uses the Agent model. This lane is not required for readiness.")
     }
     if settings.formatOnDevice {
       // The engine row above already says Apple runs first; this line only
@@ -2707,15 +2722,11 @@ final class SettingsViewModel: ObservableObject {
   }
 
   var formattingDescription: String {
-    FormattingPolicyOption(storedValue: settings.formattingLevel)?.visibleName
+    automaticFormattingLevel?.visibleName
       ?? String(localized: "invalid policy", comment: "Formatting status: stored level is unknown")
   }
 
   // MARK: - Creator mutations (write through the core router)
-
-  var maxConsultationEnabled: Bool {
-    FormattingPolicyOption(storedValue: settings.formattingLevel) == .max
-  }
 
   func refreshMaxToolApprovals() async {
     guard let engine else { return }
@@ -2841,7 +2852,7 @@ final class SettingsViewModel: ObservableObject {
   }
 
   func beginNewMaxConsultation() async {
-    guard maxConsultationEnabled, !newMaxConsultationPending else { return }
+    guard !newMaxConsultationPending else { return }
     guard let engine else {
       maxConsultationNotice = String(localized: "Consultation reset is unavailable.")
       return
@@ -2872,12 +2883,22 @@ final class SettingsViewModel: ObservableObject {
     persist("AGENT_AUTO_SEND", on ? "1" : "0")
   }
 
+  /// Persist the automatic formatting level. Max is never automatic: it is
+  /// requested per take from the overlay Format menu, so it is refused here
+  /// and the stored level stays as it was.
   func setFormattingLevel(_ level: String) {
     guard let policy = FormattingPolicyOption(storedValue: level) else {
       lastError = String(
         localized: "Unknown formatting policy: \(level)",
         comment: "The placeholder is a stored policy identifier"
       )
+      return
+    }
+    guard FormattingPolicyOption.automaticCases.contains(policy) else {
+      lastError = String(
+        localized: "settings.formatting.level.maxManualOnly",
+        defaultValue: "Max is not an automatic level. Choose Max from the overlay Format menu.",
+        comment: "Refused write: Max runs only when picked for one take in the overlay")
       return
     }
     settings.formattingLevel = policy.rawValue
@@ -3830,6 +3851,17 @@ final class SettingsViewModel: ObservableObject {
     } catch {
       lastError = error.userFacingMessage
     }
+  }
+
+  /// Formatter Keywords seam: the Keywords editor
+  /// (`SettingsViewModel+FormatterKeywords.swift`) writes its list through the
+  /// settings bridge, then calls this on the main actor so the model re-reads
+  /// the canonical snapshot and peers hear about the write, exactly as after
+  /// `persist`. It never writes and keeps no Keywords state of its own.
+  func reloadSettingsAfterWrite() {
+    guard let engine else { return }
+    applyLoadedSettings(engine.loadSettings())
+    configurationInvalidation?.settingsWritten(by: self)
   }
 
   /// `persist` for rows that present the rejection inline instead of as `lastError`.

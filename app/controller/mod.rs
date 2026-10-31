@@ -154,6 +154,21 @@ fn formatter_revision_level(
     ))
 }
 
+/// Seal one capture take's formatting at admission. A take formats only with
+/// the automatic policy (Off, Correction or Smart): Max is the Agent and runs
+/// only for an explicit overlay or history Format action, so no capture can
+/// schedule a Max readiness or execution request, live or at Stop. The
+/// controller generation and the persisted selection stay untouched; only this
+/// take's snapshot is derived, from the same captured inputs.
+fn automatic_take_settings(settings: Arc<RuntimeSettingsSnapshot>) -> Arc<RuntimeSettingsSnapshot> {
+    let automatic = settings.automatic_formatting_policy();
+    if settings.formatting_policy() == automatic {
+        settings
+    } else {
+        Arc::new(settings.with_formatting_level(automatic))
+    }
+}
+
 /// What the production formatter did with a reopened archive transcript.
 /// Mirrors the reducer's formatter refusals without a reducer revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2270,6 +2285,10 @@ impl RecordingController {
     /// the Agent's actionable reason; it never falls back to the formatting
     /// lane or Apple. A retained consultation stays selected and resumes once
     /// the Agent is configured again.
+    ///
+    /// Only an explicit request reaches Max: an overlay/history Format action
+    /// or an Agent-window turn derives a one-operation Max snapshot. A capture
+    /// take carries the sealed automatic policy, so this returns `None` there.
     async fn selected_max_consultation(
         &self,
         settings: &RuntimeSettingsSnapshot,
@@ -6128,27 +6147,9 @@ impl RecordingController {
             return Ok(());
         }
         self.refresh_pending_runtime_settings_locked().await?;
-        let runtime_settings = self.runtime_settings_arc().await;
+        // The take seals the automatic policy: a capture never runs Max.
+        let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
         let config = runtime_settings.values().clone();
-
-        let live_formatting_agent = if !assistive
-            && !*self.force_raw_mode.read().await
-            && runtime_settings.formatting_policy() != FormattingPolicy::Off
-        {
-            match self
-                .selected_max_consultation(runtime_settings.as_ref())
-                .await
-            {
-                Ok(consultation) => consultation
-                    .map(|agent| agent as Arc<dyn codescribe_core::ai_formatting::FormattingAgent>),
-                Err(error) => {
-                    warn!(%error, "Max live executor unavailable; capture remains transcription-only");
-                    None
-                }
-            }
-        } else {
-            None
-        };
 
         // Hold mode never runs the assistive loop
         self.assistive_loop_active.store(false, Ordering::SeqCst);
@@ -6415,7 +6416,6 @@ impl RecordingController {
             // so the very first deltas route to the correct overlay.
             set_assistive_session(is_assistive);
             rec.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
-            rec.set_live_formatting_agent(live_formatting_agent);
             hold_session.delivery_tagger.begin(
                 if is_assistive {
                     "assistive"
@@ -6577,7 +6577,8 @@ impl RecordingController {
         // A new take inherits no destination from the previous one.
         *self.delivery_disposition.write().await = TranscriptDelivery::Unattempted;
         self.refresh_pending_runtime_settings_locked().await?;
-        let runtime_settings = self.runtime_settings_arc().await;
+        // The take seals the automatic policy: a capture never runs Max.
+        let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
         let config = runtime_settings.values();
         let _start_guard = AtomicFlagGuard::new(Arc::clone(&self.start_transition_in_flight));
 
@@ -6721,26 +6722,6 @@ impl RecordingController {
             config.whisper_language.as_str(),
         );
         *self.composer_delivery_payload.write().await = None;
-        let live_formatting_agent = if !is_assistive
-            && capture_turn.schedules_live_formatting()
-            && !*self.force_raw_mode.read().await
-            && runtime_settings.formatting_policy() != FormattingPolicy::Off
-        {
-            match self
-                .selected_max_consultation(runtime_settings.as_ref())
-                .await
-            {
-                Ok(consultation) => consultation
-                    .map(|agent| agent as Arc<dyn codescribe_core::ai_formatting::FormattingAgent>),
-                Err(error) => {
-                    warn!(%error, "Max live executor unavailable; capture remains transcription-only");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        recorder.set_live_formatting_agent(live_formatting_agent);
         let transcript_bus = TranscriptBus::open(TranscriptSession {
             session_id: new_session_id.clone(),
             mode: if is_assistive {
@@ -6906,7 +6887,9 @@ impl RecordingController {
         let assistive = *self.assistive_mode.read().await;
         let force_ai = *self.force_ai_mode.read().await;
 
-        let runtime_settings = self.runtime_settings_arc().await;
+        // The same automatic seal as the take's start: Stop formatting and
+        // projection selection never run Max for a capture.
+        let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
 
         // Self-deadlock guard (Rust 2024): the read guard temporary from an
         // if-let chain scrutinee outlives the chain body. Inlining the read
@@ -7697,7 +7680,8 @@ impl RecordingController {
         closed: Option<watch::Sender<bool>>,
     ) -> Result<ProcessRecordingOutcome> {
         let (assistive, hold_mode, force_raw, force_ai) = mode;
-        let runtime_settings = self.runtime_settings_arc().await;
+        // The same automatic seal as the take's start: Stop never runs Max.
+        let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
         if cfg!(test) {
             info!(
                 "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",

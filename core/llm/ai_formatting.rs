@@ -1553,6 +1553,16 @@ async fn format_text_with_status_channels_for_policy(
             cleaned.len()
         );
         let mut system_prompt = sealed_prompt.composed_content().to_string();
+        // Correction/Smart only: Keywords ride the system prompt, so every
+        // route carries them — on-device, Anthropic `system`, the Responses
+        // `instructions` of a first or account-replay turn, and the leading
+        // `developer` item of a previous_response_id turn. Assistive, Max
+        // (Agent lane) and thread titles never pass through here with them.
+        if !assistive {
+            formatter_execution
+                .vocabulary()
+                .append_to(&mut system_prompt);
+        }
         if assistive {
             if attempt == 0 {
                 info!(
@@ -1566,6 +1576,14 @@ async fn format_text_with_status_channels_for_policy(
                 );
             }
         } else if attempt == 0 {
+            let vocabulary = formatter_execution.vocabulary();
+            info!(
+                policy = policy.as_str(),
+                keywords = vocabulary.terms().len(),
+                keywords_sha256 = vocabulary.context_sha256().unwrap_or("none"),
+                settings_sha256 = runtime_settings.digest().as_str(),
+                "Formatter Keywords context for this request"
+            );
             if runtime_settings.values().format_on_device {
                 info!(
                     policy = policy.as_str(),

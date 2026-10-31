@@ -220,7 +220,13 @@ pub struct CsSettings {
     pub llm_assistive_model: Option<String>,
     /// Agent reasoning level: `default` (the model's own) or a chosen level.
     pub llm_assistive_reasoning: String,
+    /// Automatic formatting policy: off, correction or smart. A stored legacy
+    /// `max`/`creative` reads as smart here; Max is invoked through Format.
     pub formatting_level: Option<String>,
+    /// Formatter Keywords: preferred vocabulary given as context to
+    /// Correction, Smart and Max. Normalized terms from the same seal; empty
+    /// means no extra context. Written only through `set_formatter_keywords`.
+    pub formatter_keywords: Vec<String>,
     pub whisper_model: Option<String>,
     /// Read-only diagnostic env override captured by the runtime snapshot.
     /// ASR mode owns the default; Settings never writes this value.
@@ -371,7 +377,8 @@ impl CsSettings {
                 .to_string(),
             llm_assistive_provider: setting_string(settings.llm_assistive_provider.clone())
                 .or_else(|| Some(assistive.provider().as_string())),
-            formatting_level: Some(runtime.formatting_policy().as_str().to_string()),
+            formatting_level: Some(runtime.automatic_formatting_policy().as_str().to_string()),
+            formatter_keywords: runtime.formatter_keywords().to_vec(),
             whisper_model: setting_string(settings.whisper_model.clone()),
             layered_transcription: runtime.layered_transcription_override().map(str::to_owned),
             agent_workspace_roots,
@@ -858,7 +865,8 @@ pub struct CsTrayToggles {
     /// Read-only projection `paste_mode != off` for binary on/off surfaces.
     /// Never persisted; `paste_mode` is the one stored choice.
     pub auto_paste_enabled: bool,
-    /// Normalized automatic formatting policy: off, correction, smart, or max.
+    /// Normalized automatic formatting policy: off, correction or smart.
+    /// A stored legacy `max`/`creative` reads as smart.
     pub formatting_level: String,
     /// UI-initiated recording starts in the assistive lane when enabled.
     pub start_assistive: bool,
@@ -1033,11 +1041,23 @@ impl CodescribeConfig {
     }
 
     /// Persist a normalized Auto Format policy and return prompt-free
-    /// post-write truth. Unknown policy IDs fail without changing disk state.
+    /// post-write truth. Only off, correction and smart are automatic; Max and
+    /// unknown policy IDs fail without changing disk state.
     pub fn set_auto_format_level(&self, level: String) -> Result<CsTrayToggles, CsError> {
         let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
             msg: error.to_string(),
         })?;
+        // Max is the overlay assistant, invoked for one operation through
+        // Format. It is never stored as the automatic policy; the explicit
+        // formatter APIs keep selecting it per request.
+        if policy == FormattingPolicy::Max {
+            return Err(CsError::Config {
+                msg: format!(
+                    "{level:?} is not an automatic formatting level; Max runs only when \
+                     invoked through Format. Expected off, correction, or smart"
+                ),
+            });
+        }
         let mut settings = UserSettings::load();
         settings.formatting_level = Some(policy.as_str().to_string());
         settings.save().map_err(|error| CsError::Config {
@@ -1046,6 +1066,36 @@ impl CodescribeConfig {
         reload_hotkey_runtime();
         crate::hotkeys::refresh_live_controller_config();
         Ok(self.tray_toggles())
+    }
+
+    /// Saved formatter Keywords, normalized, from one runtime snapshot. A
+    /// failed read serves the last good snapshot instead of an empty list.
+    pub fn get_formatter_keywords(&self) -> Vec<String> {
+        load_runtime_snapshot_for_lane()
+            .formatter_keywords()
+            .to_vec()
+    }
+
+    /// Replace the formatter Keywords and return the normalized stored list.
+    /// Only `formatter_keywords` changes; the automatic level and every other
+    /// setting keep their stored values. The settings owner refuses an
+    /// oversized list whole; nothing is truncated and the error is returned.
+    /// An empty list removes the Keywords.
+    pub fn set_formatter_keywords(&self, keywords: Vec<String>) -> Result<Vec<String>, CsError> {
+        let mut settings = UserSettings::load();
+        settings.formatter_keywords = (!keywords.is_empty()).then_some(keywords);
+        settings.save().map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        // The returned list is what the next formatting request receives:
+        // the snapshot sealed from the document just written.
+        let runtime =
+            Config::load_runtime_snapshot_without_keychain().map_err(|error| CsError::Config {
+                msg: error.to_string(),
+            })?;
+        reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(runtime.formatter_keywords().to_vec())
     }
 
     /// Lightweight tray-only settings read uses files, env and cached credentials.
@@ -1060,7 +1110,7 @@ impl CodescribeConfig {
             transcription_overlay_enabled: config.transcription_overlay_enabled,
             paste_mode: config.paste_mode.into(),
             auto_paste_enabled: config.paste_mode != PasteMode::Off,
-            formatting_level: runtime.formatting_policy().as_str().to_string(),
+            formatting_level: runtime.automatic_formatting_policy().as_str().to_string(),
             start_assistive: config.tray_start_assistive,
             // Notes Mode is "on" only when BOTH flags are set (dictation → note
             // AND no paste). Reading just quick_notes_enabled could show the toggle

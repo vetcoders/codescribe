@@ -1044,10 +1044,10 @@ const fn formatter_lane_is_armed(policy: FormattingPolicy, lane_available: bool)
 /// `schedule_formatter_for_sealed_label` cannot reserve a permit and no
 /// sealed label is handed to a formatter. The turn is formatted once at
 /// terminal processing by the controller instead.
-/// Max also refuses this occurrence lane: it is the Agent, and consultation
-/// admission reads sealed groups so tools never run on isolated words. Its
-/// retained Agent capability belongs to the grouped consultation path, not
-/// this sender.
+/// A capture take never carries Max: admission seals the automatic policy
+/// (Off, Correction or Smart), and Max runs only for an explicit Format action
+/// on the retained document. Max still refuses this occurrence lane, because it
+/// is the Agent and its tools never run on isolated words.
 fn live_formatter_lane_is_armed(
     capture_turn: CaptureTurnIntent,
     policy: FormattingPolicy,
@@ -1360,6 +1360,9 @@ pub(crate) async fn apple_stream_transcription_session(
             message: "Live Max requires exactly one configured presentation destination.".into(),
         });
     }
+    // Grouped consultation arms only for a Max take snapshot. Capture admission
+    // seals the automatic policy, so a product capture never satisfies this;
+    // the host supplies no executor to a capture either.
     let live_formatting_agent = live_formatting_agent.filter(|_| {
         seal_ledger_enabled
             && capture_turn.schedules_live_formatting()

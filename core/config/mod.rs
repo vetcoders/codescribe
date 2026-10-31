@@ -36,6 +36,9 @@ pub use defaults::{
 /// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
 /// source of the runtime settings throne).
 pub mod energy_calibration;
+/// Formatter Keywords: one normalization owner and the sealed vocabulary
+/// context shared by every formatting kind.
+pub mod formatter_keywords;
 /// Process/install interlock preventing runtime and bundle replacement overlap.
 mod install_interlock;
 /// macOS Keychain storage for API keys (not plaintext `.env`).
@@ -88,6 +91,10 @@ pub use energy_calibration::{
     ENERGY_CALIBRATION_FILE_NAME, ENERGY_CALIBRATION_SCHEMA, EnergyCalibrationArtifact,
     EnergyCalibrationProfile, EnergyCalibrationRefusal, EnergyCalibrationStatus,
     GuidedCalibrationRefused, SealedEnergyCalibration, energy_calibration_path,
+};
+pub use formatter_keywords::{
+    FormatterKeywordsContext, FormatterKeywordsError, MAX_FORMATTER_KEYWORD_CHARS,
+    MAX_FORMATTER_KEYWORDS, MAX_FORMATTING_VOCABULARY_CONTEXT_BYTES, normalize_formatter_keywords,
 };
 pub use install_interlock::{
     AGENT_TURN_LEASE_FILE_NAME, AgentTurnLease, AppRuntimeInstallLease,

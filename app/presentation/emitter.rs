@@ -35,6 +35,12 @@ use tracing::{debug, info};
 
 use super::transcript_bus::{TranscriptBus, TranscriptBusEvidenceEvent};
 
+/// Live whole-document view of accepted formatter fragments. A child module of
+/// the emitter so it reads the reducer's private state instead of copying it;
+/// the file sits beside the emitter, hence the explicit path.
+#[path = "formatter_live.rs"]
+mod formatter_live;
+
 /// Read-only capture paint observer: full overlay text and acoustic warning state.
 pub type CursorObserver = Arc<dyn Fn(&CompactProjection) + Send + Sync>;
 /// Read-only, ephemeral Apple recognition paint; never a document mutation.
@@ -1529,7 +1535,10 @@ impl TranscriptReducer {
         preview_sample_point(word.sample_start, word.sample_end) < extent_end
     }
 
-    fn read_paint(&self) -> PaintedCanvas {
+    /// The canvas fragments in paint order: committed tokens, live unanchored
+    /// evidence and the provisional Apple tail. `read_paint` and the live
+    /// formatted view both read this one list.
+    fn read_paint_fragments(&self) -> Vec<(u64, String, VisibleWordSource, bool)> {
         let mut fragments = self.visible_paint_fragments();
         let ledger_word_keys = self
             .unanchored_evidence
@@ -1602,6 +1611,11 @@ impl TranscriptReducer {
             ),
             _ => (0, *start),
         });
+        fragments
+    }
+
+    fn read_paint(&self) -> PaintedCanvas {
+        let fragments = self.read_paint_fragments();
         let mut paint = PaintedCanvas::default();
         for (_, text, source, is_evidence) in fragments {
             for member in source.committed_members() {
@@ -3344,24 +3358,7 @@ impl TranscriptReducer {
             if entry.label.trim().is_empty() || entry.manual_edit_receipt.is_some() {
                 return false;
             }
-            let projection = self.derived_projections.iter().rev().find(|projection| {
-                projection.requested_mode == policy.as_str()
-                    && projection
-                        .source_observation
-                        .as_ref()
-                        .is_some_and(|source| {
-                            source.occurrence == entry.occurrence
-                                && projection.source_raw_text == entry.label
-                                && entry.manual_edit_receipt.is_none()
-                                && entry.observation_receipt.starts_with(&format!(
-                                    "{}:{}:{}:",
-                                    source.producer.as_str(),
-                                    source.request,
-                                    source.generation
-                                ))
-                        })
-            });
-            match projection {
+            match self.latest_source_projection(entry, policy) {
                 Some(projection) if projection.status == "applied" => {}
                 Some(_) => return false,
                 None => missing_any = true,
@@ -3942,6 +3939,8 @@ pub struct PresentationEmitter {
     overlap_refusals: std::sync::Mutex<BTreeMap<String, u64>>,
     formatter_pending: std::sync::atomic::AtomicBool,
     derived_projection_notify: tokio::sync::Notify,
+    /// Last whole formatted view published while the take is still capturing.
+    live_view: formatter_live::LiveViewMemo,
     sentence_pause_sec: f32,
     tick_clock: Arc<dyn Fn() -> std::time::Duration + Send + Sync>,
     #[cfg(test)]
@@ -4259,6 +4258,7 @@ impl PresentationEmitter {
             stop_snapshot_pending: std::sync::atomic::AtomicBool::new(false),
             formatter_pending: std::sync::atomic::AtomicBool::new(false),
             derived_projection_notify: tokio::sync::Notify::new(),
+            live_view: formatter_live::LiveViewMemo::default(),
             sentence_pause_sec: 0.7,
             tick_clock: {
                 let origin = std::time::Instant::now();
@@ -5291,24 +5291,7 @@ impl PresentationEmitter {
             complete = true;
         } else {
             for entry in reducer.document_by_occurrence.values() {
-                let projection = reducer.derived_projections.iter().rev().find(|projection| {
-                    projection.requested_mode == policy.as_str()
-                        && projection
-                            .source_observation
-                            .as_ref()
-                            .is_some_and(|source| {
-                                source.occurrence == entry.occurrence
-                                    && projection.source_raw_text == entry.label
-                                    && entry.manual_edit_receipt.is_none()
-                                    && entry.observation_receipt.starts_with(&format!(
-                                        "{}:{}:{}:",
-                                        source.producer.as_str(),
-                                        source.request,
-                                        source.generation
-                                    ))
-                            })
-                });
-                match projection {
+                match reducer.latest_source_projection(entry, policy) {
                     Some(projection) if projection.status == "applied" => {
                         append_exact_fragment(&mut text, &projection.rendered_text)
                     }
@@ -5481,6 +5464,9 @@ impl EventSink for PresentationEmitter {
 
     /// Route an `EngineEvent` into reducer state and ordered delta delivery.
     fn on_event(&self, event: &EngineEvent) {
+        // Declared first, so it drops last: every ledger and reducer guard of
+        // the arms below is already released when the live view republishes.
+        let _live_view = formatter_live::LiveViewRefresh::after(self, event);
         let tick_budget = self.schedule_light_plus();
         // Apple-live opt-out: that lane's events never touch paint, mirror, or
         // document. A late callback after the lane's own retirement dies here.
@@ -5769,6 +5755,9 @@ impl EventSink for PresentationEmitter {
                 if evidence_closed {
                     self.repaint_cursor();
                 }
+                // The accepted fragment reaches the overlay as part of the whole
+                // live view: `LiveViewRefresh` publishes it when this event ends,
+                // after the ledger guard below is released.
                 // Raw shaping does not depend on formatting; this tick is an
                 // idempotent re-check of the unchanged acoustic label.
                 self.mint_incremental_light_plus(

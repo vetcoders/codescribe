@@ -41,6 +41,9 @@ use crate::pipeline::acoustic_ledger::EnergyCalibration;
 use super::energy_calibration::{
     EnergyCalibrationRefusal, EnergyCalibrationStatus, SealedEnergyCalibration,
 };
+use super::formatter_keywords::{
+    FormatterKeywordsContext, FormatterKeywordsError, normalize_formatter_keywords,
+};
 
 /// Serialize settings read/migrate/write transactions. A V1 load writes a
 /// backup and a V3 replacement, so it is a writer even though the public API is
@@ -282,6 +285,12 @@ pub struct UserSettings {
     pub sound_volume: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatting_level: Option<String>,
+    /// Formatter Keywords: preferred vocabulary for every formatting kind.
+    /// `None`/empty adds no context. Writers go through
+    /// [`UserSettings::set_formatter_keywords`]; the canonical form is owned by
+    /// `config::formatter_keywords`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formatter_keywords: Option<Vec<String>>,
     /// Assistive lane model; `None` ⇒ the provider's default (vendor) or
     /// "no model selected" (custom).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1071,6 +1080,9 @@ impl fmt::Debug for RuntimeSealedPrompt {
 pub struct RuntimeFormatterExecution {
     formatting_prompt: Option<RuntimeSealedPrompt>,
     assistive_prompt: RuntimeSealedPrompt,
+    /// Formatter Keywords sealed beside the prompts. Kept separate from the
+    /// sealed prompt bytes so custom prompts and tuning stay byte-identical.
+    vocabulary: FormatterKeywordsContext,
     max_retries: u32,
     retry_delay: Duration,
 }
@@ -1079,15 +1091,23 @@ impl RuntimeFormatterExecution {
     pub(super) fn seal(
         formatting_prompt: Option<RuntimeSealedPrompt>,
         assistive_prompt: RuntimeSealedPrompt,
+        vocabulary: FormatterKeywordsContext,
         max_retries: u32,
         retry_delay: Duration,
     ) -> Self {
         Self {
             formatting_prompt,
             assistive_prompt,
+            vocabulary,
             max_retries,
             retry_delay,
         }
+    }
+
+    /// Formatter Keywords of this generation, shared by Correction, Smart and
+    /// the explicit Max request.
+    pub const fn vocabulary(&self) -> &FormatterKeywordsContext {
+        &self.vocabulary
     }
 
     pub fn formatting_prompt(&self) -> Option<&RuntimeSealedPrompt> {
@@ -1113,8 +1133,9 @@ impl RuntimeFormatterExecution {
             .map(RuntimeSealedPrompt::digest_material)
             .unwrap_or_else(|| "off".to_string());
         format!(
-            "formatting_prompt={formatting}\nassistive_prompt={}\nmax_retries={}\nretry_delay_ms={}",
+            "formatting_prompt={formatting}\nassistive_prompt={}\n{}\nmax_retries={}\nretry_delay_ms={}",
             self.assistive_prompt.digest_material(),
+            self.vocabulary.digest_material(),
             self.max_retries,
             self.retry_delay.as_millis(),
         )
@@ -1452,6 +1473,29 @@ impl RuntimeSettingsSnapshot {
         self.formatting_policy
     }
 
+    /// Policy for automatic formatting (capture, grouped live and Stop, and the
+    /// automatic selectors): Off, Correction or Smart only. A stored Max (or
+    /// its legacy `creative` alias) resolves to Smart here, because Max is the
+    /// manually invoked Agent. Nothing is written back to disk; explicit
+    /// requests keep the full policy via [`Self::with_formatting_level`].
+    pub const fn automatic_formatting_policy(&self) -> FormattingPolicy {
+        match self.formatting_policy {
+            FormattingPolicy::Max => FormattingPolicy::Smart,
+            policy => policy,
+        }
+    }
+
+    /// Normalized Formatter Keywords frozen in this generation.
+    pub fn formatter_keywords(&self) -> &[String] {
+        self.ai_execution.formatter().vocabulary().terms()
+    }
+
+    /// Frozen vocabulary suffix for formatting requests (application-owned
+    /// instruction plus JSON-encoded terms); `None` when there are none.
+    pub fn formatting_vocabulary_context(&self) -> Option<&str> {
+        self.ai_execution.formatter().vocabulary().prompt_suffix()
+    }
+
     /// Resolve a one-request formatting level entirely from captured inputs.
     /// The source snapshot and its persisted Settings remain untouched.
     pub fn with_formatting_level(&self, level: FormattingPolicy) -> Self {
@@ -1779,6 +1823,9 @@ struct FormattingV2 {
     transcript_tag_template: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     level: Option<String>,
+    /// Formatter Keywords (`speech.formatting.keywords`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keywords: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2213,6 +2260,10 @@ impl UserSettings {
                         .as_deref()
                         .and_then(|value| FormattingPolicy::parse(value).ok())
                         .map(|policy| policy.as_str().to_string()),
+                    keywords: self
+                        .formatter_keywords
+                        .clone()
+                        .filter(|terms| !terms.is_empty()),
                     llm_provider: self.llm_formatting_provider.clone(),
                     llm_model: self.llm_formatting_model.clone(),
                     llm_reasoning: self.llm_formatting_reasoning.clone(),
@@ -2386,6 +2437,7 @@ impl UserSettings {
                 .and_then(|f| f.level.as_deref())
                 .and_then(|value| FormattingPolicy::parse(value).ok())
                 .map(|policy| policy.as_str().to_string()),
+            formatter_keywords: cloned!(v2.speech, formatting, keywords),
             llm_formatting_provider: cloned!(v2.speech, formatting, llm_provider),
             llm_custom_providers: v2
                 .providers
@@ -3091,6 +3143,24 @@ impl UserSettings {
         })
     }
 
+    /// Replace Formatter Keywords with their canonical form and return it.
+    ///
+    /// The whole edit is refused when any limit is exceeded; the previous
+    /// list stays untouched and nothing is truncated. An empty result clears
+    /// the field. Persisting is the caller's `save`, which re-validates.
+    pub fn set_formatter_keywords<I, S>(
+        &mut self,
+        entries: I,
+    ) -> Result<Vec<String>, FormatterKeywordsError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let terms = normalize_formatter_keywords(entries)?;
+        self.formatter_keywords = (!terms.is_empty()).then(|| terms.clone());
+        Ok(terms)
+    }
+
     /// Persists current settings to disk as pretty-printed JSON.
     pub fn save(&self) -> anyhow::Result<()> {
         let _data_io = super::storage_reset::begin_app_data_io()?;
@@ -3237,6 +3307,10 @@ impl UserSettings {
         let path = Self::settings_path();
         if let Some(level) = self.formatting_level.as_deref() {
             FormattingPolicy::parse(level)?;
+        }
+        if let Some(terms) = self.formatter_keywords.as_deref() {
+            // Refuse the whole write; an oversized list is never truncated.
+            super::formatter_keywords::normalize_formatter_keywords(terms)?;
         }
         let v2 = self.to_v2();
         Self::validate_v2(&v2)?;

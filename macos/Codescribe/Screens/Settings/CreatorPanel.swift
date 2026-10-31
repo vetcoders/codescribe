@@ -128,13 +128,19 @@ struct CreatorPanel: View {
       .settingsGroupedInset(padding: 0)
       .padding(.top, SettingsScale.headerGap)
 
+      // Automatic formatting picks Off, Correction or Smart for every take.
+      // Max is the Agent's consultation, asked for one take at a time from the
+      // overlay Format menu, so it is not a choice here; its consultation and
+      // permissions stay below whatever level is selected.
+      SettingsSectionLabel(String(localized: "Formatting"))
+        .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 8) {
         SettingsControlRow(
           title: String(localized: "Formatting level"),
-          subtitle: FormattingPolicyOption(storedValue: model.settings.formattingLevel)?.summary
+          subtitle: model.automaticFormattingLevel?.summary
         ) {
           Picker("", selection: formattingLevelBinding) {
-            ForEach(FormattingPolicyOption.allCases) { policy in
+            ForEach(FormattingPolicyOption.automaticCases) { policy in
               Text(policy.visibleName).tag(policy.rawValue)
             }
           }
@@ -146,7 +152,7 @@ struct CreatorPanel: View {
           Text(
             String(
               localized: "Max uses the Agent model. Set up the Agent endpoint to use Max.",
-              comment: "Shown when the Max level is selected but the Agent lane is unavailable"
+              comment: "Shown when the Agent lane is unavailable, so the Max format cannot run"
             )
           )
           .font(.caption)
@@ -154,12 +160,12 @@ struct CreatorPanel: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("settings-max-agent-unavailable")
         }
-        if model.maxConsultationEnabled || !model.maxToolApprovals.isEmpty {
-          MaxConsultationCard(model: model)
-            .id(SettingsAnchor.maxConsultation)
-        }
+        // One contextual vocabulary for Correction, Smart and Max.
+        FormatterKeywordsSection(model: model)
+        MaxConsultationCard(model: model)
+          .id(SettingsAnchor.maxConsultation)
       }
-      .padding(.top, SettingsScale.sectionGap)
+      .padding(.top, SettingsScale.headerGap)
 
       agentBridgeSection
         .padding(.top, SettingsScale.sectionGap)
@@ -492,8 +498,7 @@ struct CreatorPanel: View {
   private var formattingLevelBinding: Binding<String> {
     Binding(
       get: {
-        FormattingPolicyOption(storedValue: model.settings.formattingLevel)?.rawValue
-          ?? FormattingPolicyOption.correction.rawValue
+        model.automaticFormattingLevel?.rawValue ?? FormattingPolicyOption.correction.rawValue
       },
       set: { model.setFormattingLevel($0) })
   }
@@ -507,31 +512,29 @@ private struct MaxConsultationCard: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
-      if model.maxConsultationEnabled {
-        HStack(spacing: 12) {
-          VStack(alignment: .leading, spacing: 2) {
-            Text("Max consultation")
-              .font(SettingsScale.settingName)
-              .foregroundStyle(.primary)
-            Text("Continue the consultation or start a new one. History stays.")
-              .font(SettingsScale.helper)
-              .foregroundStyle(CSColor.secondaryInk)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          Button(model.newMaxConsultationPending ? "Starting…" : "New consultation") {
-            Task { await model.beginNewMaxConsultation() }
-          }
-          .disabled(model.newMaxConsultationPending)
-          .accessibilityIdentifier("settings-new-max-consultation")
-        }
-        if let notice = model.maxConsultationNotice {
-          Text(notice)
+      HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Max consultation")
+            .font(SettingsScale.settingName)
+            .foregroundStyle(.primary)
+          Text("Continue the consultation or start a new one. History stays.")
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .foregroundStyle(CSColor.secondaryInk)
         }
-        Divider()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Button(model.newMaxConsultationPending ? "Starting…" : "New consultation") {
+          Task { await model.beginNewMaxConsultation() }
+        }
+        .disabled(model.newMaxConsultationPending)
+        .accessibilityIdentifier("settings-new-max-consultation")
       }
+      if let notice = model.maxConsultationNotice {
+        Text(notice)
+          .font(SettingsScale.helper)
+          .foregroundStyle(Color.primary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      Divider()
       MaxApprovalCards(model: model, embedded: true)
     }
     .settingsGroupedInset()

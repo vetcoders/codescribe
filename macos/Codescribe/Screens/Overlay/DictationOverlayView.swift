@@ -1685,6 +1685,17 @@ struct DictationOverlayView: View {
       .modifier(OverlayScrollEdgeEffects())
       .frame(minHeight: transcriptMinHeight)
       .accessibilityIdentifier("overlay-transcript-area")
+      // Accepted formatting painted during the take, not a finished format.
+      .accessibilityValue(
+        state.showsLiveFormattedPresentation
+          ? Text(
+            String(
+              localized: "overlay.transcript.liveFormatted",
+              defaultValue: "Formatted while you speak",
+              comment: "Transcript area while recording: it shows accepted formatting so far"
+            ))
+          : Text(verbatim: "")
+      )
       // The empty branch is absence of a hint, not copy, so it stays verbatim.
       .accessibilityHint(
         state.archivedTranscript != nil

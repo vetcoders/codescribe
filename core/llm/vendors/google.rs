@@ -285,16 +285,16 @@ fn normalize_schema_node(
         }
     }
 
-    if let Some(format_val) = source.remove("format") {
-        if let Some(fmt) = format_val.as_str() {
-            if matches!(
-                fmt,
-                "enum" | "date-time" | "int32" | "int64" | "float" | "double"
-            ) {
-                source.insert("format".into(), Value::String(fmt.to_string()));
-            } else {
-                constraint_notes.push(format!("format: {fmt}"));
-            }
+    if let Some(format_val) = source.remove("format")
+        && let Some(fmt) = format_val.as_str()
+    {
+        if matches!(
+            fmt,
+            "enum" | "date-time" | "int32" | "int64" | "float" | "double"
+        ) {
+            source.insert("format".into(), Value::String(fmt.to_string()));
+        } else {
+            constraint_notes.push(format!("format: {fmt}"));
         }
     }
 

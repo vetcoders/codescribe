@@ -22,6 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
 use super::energy_calibration::{SealedEnergyCalibration, energy_calibration_path};
+use super::formatter_keywords::FormatterKeywordsContext;
 use super::settings::{
     AGENT_SEND_HOLD_ENV, DEFAULT_AGENT_SEND_HOLD_SEC, DEFAULT_AGENT_WORKSPACE_ROOT,
     DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, RuntimeAiExecution, RuntimeAiRequestTiming,
@@ -651,6 +652,13 @@ impl Config {
         input: &CapturedRuntimeInputs,
     ) -> RuntimeAiExecution {
         let (formatting_prompt, assistive_prompt) = input.prompts.seal(formatting_policy);
+        // Keywords are sealed once per generation from persisted intent; a list
+        // past the limits contributes no context instead of a truncated one.
+        let vocabulary =
+            FormatterKeywordsContext::seal(input.user_settings.formatter_keywords.as_deref());
+        if let Some(refusal) = vocabulary.refusal() {
+            warn!(%refusal, "Formatter Keywords refused for this settings generation");
+        }
         let max_retries =
             Self::runtime_env_or_default(input, AI_MAX_RETRIES_ENV, DEFAULT_AI_MAX_RETRIES);
         let retry_delay_ms =
@@ -675,6 +683,7 @@ impl Config {
             RuntimeFormatterExecution::seal(
                 formatting_prompt,
                 assistive_prompt,
+                vocabulary,
                 max_retries,
                 Duration::from_millis(retry_delay_ms),
             ),
