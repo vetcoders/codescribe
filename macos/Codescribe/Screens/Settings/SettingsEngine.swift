@@ -58,6 +58,7 @@ enum WhisperModelCatalogIO {
 protocol SettingsEngine {
   // Snapshot / location
   func loadSettings() -> CsSettings
+  func loadSettingsAsync() async -> CsSettings
   func configDir() -> String
   func shouldShowOnboarding() -> Bool
   func onboardingMode() -> String?
@@ -247,9 +248,10 @@ final class RealSettingsEngine: SettingsEngine {
   }
 
   func loadSettings() -> CsSettings { config.loadSettings() }
-  nonisolated func loadSettingsAsync() async -> CsSettings {
-    await Task.detached(priority: .userInitiated) {
-      CodescribeConfig().loadSettings()
+  func loadSettingsAsync() async -> CsSettings {
+    let config = self.config
+    return await Task.detached(priority: .userInitiated) {
+      config.loadSettings()
     }.value
   }
   func configDir() -> String { config.configDir() }
@@ -487,6 +489,7 @@ struct MockSettingsEngine: SettingsEngine {
   var resetAgentDataObserver: (() throws -> Void)?
   var clearMcpConfigurationObserver: (() throws -> Void)?
   var settingsLoader: (() -> CsSettings)?
+  var settingsAsyncLoader: (() async -> CsSettings)?
   /// Custom rows + lane bindings persist across calls (reference-typed, like settings.json).
   var providerStore: MockProviderStore = MockProviderStore()
   var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
@@ -511,6 +514,10 @@ struct MockSettingsEngine: SettingsEngine {
   var updateConfigObserver: ((String, String) throws -> Void)?
 
   func loadSettings() -> CsSettings { settingsLoader?() ?? settings }
+  func loadSettingsAsync() async -> CsSettings {
+    if let settingsAsyncLoader { return await settingsAsyncLoader() }
+    return loadSettings()
+  }
   func pendingMaxToolApprovals() async throws -> [PendingToolApproval] {
     try await pendingMaxApprovalsObserver?() ?? []
   }

@@ -5,6 +5,29 @@ import XCTest
 
 @MainActor
 final class FormatterKeywordsTests: XCTestCase {
+  func testSettingsEngineExistentialUsesAsyncSnapshotOverride() async {
+    var syncLoads = 0
+    var asyncLoads = 0
+    let engine: any SettingsEngine = MockSettingsEngine(
+      settingsLoader: {
+        syncLoads += 1
+        return .sample
+      },
+      settingsAsyncLoader: {
+        asyncLoads += 1
+        var settings = CsSettings.sample
+        settings.formatterKeywords = ["Codescribe"]
+        return settings
+      }
+    )
+
+    let snapshot = await engine.loadSettingsAsync()
+
+    XCTAssertEqual(snapshot.formatterKeywords, ["Codescribe"])
+    XCTAssertEqual(asyncLoads, 1)
+    XCTAssertEqual(syncLoads, 0, "the existential must not select the MainActor synchronous default")
+  }
+
   func testSaveFormatterKeywordsReplacesProjectionWithNormalizedSnapshotAndNotifiesScope()
     async throws
   {
