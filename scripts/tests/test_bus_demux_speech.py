@@ -2195,9 +2195,9 @@ class TtsLanguageTests(unittest.TestCase):
     def test_a_recording_made_with_auto_is_not_served_after_the_change(self):
         self.environment()
         text = "W nocy było cicho."
-        legacy = {"provider": "xai", "voice": "eve", "speed": 1.25, "language": "auto", "text": text}
-        DEMUX._cached_speech(None, legacy, lambda: (b"\x01\x00", None, None))
-        self.assertIn(f"{DEMUX.speech_cache_key(legacy)}.wav", self.cached())
+        previous = {"provider": "xai", "voice": "eve", "speed": 1.25, "language": "auto", "text": text}
+        DEMUX._cached_speech(None, previous, lambda: (b"\x01\x00", None, None))
+        self.assertIn(f"{DEMUX.speech_cache_key(previous)}.wav", self.cached())
         self.assertEqual(DEMUX._speak_xai(text, "eve", 1.25), (True, None, None))
         self.assertEqual(self.opener.open.call_count, 1, "the auto recording is a different key")
         self.assertEqual(self.sent_language(), "pl")

@@ -53,10 +53,10 @@ fn xai_cache_key_carries_the_language_and_retires_auto_recordings() {
     assert_ne!(polish.cache_key(text), english.cache_key(text));
     // The key every recording made with `language: auto` was stored under:
     // the same identity without a language. No request now resolves to it.
-    let legacy = json!({"vendor":format!("{:?}",XAI),"model":polish.model,"voice":polish.voice,"speed":polish.speed,"text":text,"sample_rate":SAMPLE_RATE});
-    let legacy = hex::encode(Sha256::digest(legacy.to_string().as_bytes()));
-    assert_ne!(polish.cache_key(text), legacy);
-    assert_ne!(english.cache_key(text), legacy);
+    let previous = json!({"vendor":format!("{:?}",XAI),"model":polish.model,"voice":polish.voice,"speed":polish.speed,"text":text,"sample_rate":SAMPLE_RATE});
+    let previous = hex::encode(Sha256::digest(previous.to_string().as_bytes()));
+    assert_ne!(polish.cache_key(text), previous);
+    assert_ne!(english.cache_key(text), previous);
     // OpenAI audio is not language-keyed: its existing recordings stay valid.
     let openai = options(OPENAI);
     let unchanged = json!({"vendor":format!("{:?}",OPENAI),"model":openai.model,"voice":openai.voice,"speed":openai.speed,"text":text,"sample_rate":SAMPLE_RATE});
