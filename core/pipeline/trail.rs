@@ -2100,6 +2100,7 @@ mod tests {
             "word-adjudication/v8",
             "word-adjudication/v9",
             "word-adjudication/v10",
+            "word-adjudication/v36-forward-publication",
         ] {
             for row in &mut rows {
                 if let TrailEvent::SlotStart { operation } = &mut row.event {

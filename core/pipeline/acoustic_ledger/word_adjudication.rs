@@ -62,7 +62,9 @@ use serde::{Deserialize, Serialize};
 /// v36: one capture-grid publication per physical word; later Whisper context
 /// cannot relabel or retime it. Measured provisional Apple words require a
 /// unique full-range acoustic mapping; coarse utterance labels carry speech debt.
-pub const WORD_POLICY: &str = "word-adjudication/v36-forward-publication";
+/// v37: source-bound interior publication pins use the full decoder context
+/// when a shorter speech component crosses its window's later fence.
+pub const WORD_POLICY: &str = "word-adjudication/v37-owned-context-fences";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -996,6 +998,100 @@ impl AcousticLedger {
         }
     }
 
+    /// Locate one original source pin in its authenticated publication frame.
+    /// This proves source ownership, not spelling or acoustic completeness.
+    fn authenticated_publication_word<'a>(
+        &'a self,
+        observation: &ObservationIdentity,
+        pin: &SourceWord,
+    ) -> Option<(&'a WordPublicationEvidence, usize)> {
+        let input = self.word_evidence_input(observation)?;
+        let publication = input.publication.as_ref()?;
+        let request = input.producer_request.as_ref()?;
+        let midpoint = pin.sample_start + pin.sample_end.saturating_sub(pin.sample_start) / 2;
+        if input.finality != "final"
+            || input.timing != "exact_sample_range"
+            || request.range.session != observation.occurrence.session
+            || request.range.capture_epoch != observation.occurrence.capture_epoch
+            || request.range.sample_start > publication.sample_start
+            || publication.sample_end > request.range.sample_end
+            || midpoint < publication.sample_start
+            || midpoint >= publication.sample_end
+            || pin.decode != Some((request.range.sample_start, request.range.sample_end))
+            || pin.original_text.is_none()
+        {
+            return None;
+        }
+        let mut originals = publication
+            .decoded_words
+            .iter()
+            .enumerate()
+            .filter(|(_, raw)| {
+                raw.sample_start == pin.sample_start
+                    && raw.sample_end == pin.sample_end
+                    && raw.decode == pin.decode
+                    && raw.original_text == pin.original_text
+            });
+        let (index, _) = originals.next()?;
+        originals.next().is_none().then_some((publication, index))
+    }
+
+    fn has_owned_interior_context(
+        &self,
+        observation: &ObservationIdentity,
+        pin_index: usize,
+        pin: &WordPin,
+    ) -> bool {
+        let Some(input) = self.word_evidence_input(observation) else {
+            return false;
+        };
+        let Some(source) = input.words.get(pin_index).filter(|source| {
+            !pin.surface_rewritten
+                && !source.surface_rewritten
+                && source.original_text.as_deref() == Some(source.surface.as_str())
+                && source.sample_start == pin.sample_start
+                && source.sample_end == pin.sample_end
+                && source.surface == pin.text
+                && source.decode == pin.decode_sample_start.zip(pin.decode_sample_end)
+        }) else {
+            return false;
+        };
+        let Some((publication, index)) = self.authenticated_publication_word(observation, source)
+        else {
+            return false;
+        };
+        let Some(request) = input
+            .producer_request
+            .as_ref()
+            .map(|request| &request.range)
+        else {
+            return false;
+        };
+        let Some(rate) = self.capture_rate_hz else {
+            return false;
+        };
+        let raw = &publication.decoded_words[index];
+        !publication.terminal_tail
+            && crate::pipeline::streaming::layer1_window::CaptureWindowPlan::interior_publication_band(
+                request, rate,
+            ) == Some((publication.sample_start, publication.sample_end))
+            && !raw.surface_rewritten
+            && raw.surface == source.surface
+            && raw.original_text.as_deref() == Some(raw.surface.as_str())
+            && index > 0
+            && index + 1 < publication.decoded_words.len()
+            && publication.decoded_words.iter().all(|word| {
+                word.decode == Some((request.sample_start, request.sample_end))
+                    && request.sample_start <= word.sample_start
+                    && word.sample_start < word.sample_end
+                    && word.sample_end <= request.sample_end
+            })
+            && publication
+                .decoded_words
+                .windows(2)
+                .all(|pair| pair[0].sample_end <= pair[1].sample_start)
+    }
+
     /// Preserve the complete producer hypothesis while withholding only words
     /// whose measured speech crosses a decode fence. This policy is identical
     /// for ordinary live and terminal windows; it schedules no extra decode.
@@ -1111,7 +1207,8 @@ impl AcousticLedger {
                     // only one offered.
                     let continuous_beyond_window = continuous_beyond(**extent, start, end);
                     let owns_open_edge = native_cut
-                        || (!continuous_beyond_window
+                        || (!self.has_owned_interior_context(observation, pin_index, pin)
+                            && !continuous_beyond_window
                             && range.sample_start >= start
                             && range.sample_end >= end)
                         || (pin_index == 0
@@ -2221,36 +2318,9 @@ impl AcousticLedger {
                         .count()
                         == 1
             })
-            && self.word_evidence_input(observation).is_some_and(|input| {
-                let Some(publication) = input.publication.as_ref() else {
-                    return false;
-                };
-                let Some(request) = input.producer_request.as_ref() else {
-                    return false;
-                };
-                input.finality == "final"
-                    && input.timing == "exact_sample_range"
-                    && request.range.session == observation.occurrence.session
-                    && request.range.capture_epoch == observation.occurrence.capture_epoch
-                    && request.range.sample_start <= publication.sample_start
-                    && publication.sample_end <= request.range.sample_end
-                    && candidate.pins.iter().all(|pin| {
-                        let midpoint =
-                            pin.sample_start + pin.sample_end.saturating_sub(pin.sample_start) / 2;
-                        let mut originals = publication.decoded_words.iter().filter(|raw| {
-                            raw.sample_start == pin.sample_start
-                                && raw.sample_end == pin.sample_end
-                                && raw.decode == pin.decode
-                                && raw.original_text == pin.original_text
-                        });
-                        publication.sample_start <= midpoint
-                            && midpoint < publication.sample_end
-                            && pin.decode
-                                == Some((request.range.sample_start, request.range.sample_end))
-                            && pin.original_text.is_some()
-                            && originals.next().is_some()
-                            && originals.next().is_none()
-                    })
+            && candidate.pins.iter().all(|pin| {
+                self.authenticated_publication_word(observation, pin)
+                    .is_some()
             });
         let geometry_preserves_complete_source = candidate.acoustic_boundaries_complete
             || !sources.iter().any(|source| self.complete_word_slot(source));
