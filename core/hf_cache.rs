@@ -399,16 +399,17 @@ where
     find_snapshot_in_bases_matching(cache_bases(), repo, required_all, required_any, &predicate)
 }
 
-/// The same finder with a typed refusal when no healthy root supplies a model.
-/// A broken earlier root never hides a valid later one.
+/// The same finder with full-validation errors retained when no healthy root
+/// supplies a model. A broken earlier root never hides a valid later one.
+/// `anyhow` preserves the original CachePathStatus and validator error types.
 pub(crate) fn find_snapshot_with_any_matching_checked<F>(
     repo: &str,
     required_all: &[&str],
     required_any: &[&str],
     predicate: F,
-) -> Result<Option<PathBuf>, CachePathStatus>
+) -> anyhow::Result<Option<PathBuf>>
 where
-    F: Fn(&Path) -> bool,
+    F: Fn(&Path) -> anyhow::Result<bool>,
 {
     find_snapshot_in_bases_matching_checked(
         cache_bases(),
@@ -430,9 +431,34 @@ where
     I: IntoIterator<Item = PathBuf>,
     F: Fn(&Path) -> bool,
 {
-    find_snapshot_in_bases_matching_checked(bases, repo, required_all, required_any, predicate)
-        .ok()
-        .flatten()
+    find_snapshot_in_bases_matching_checked(
+        bases,
+        repo,
+        required_all,
+        required_any,
+        &|path| Ok(predicate(path)),
+    )
+    .ok()
+    .flatten()
+}
+
+/// A concrete refusal must not be hidden by a missing artifact in another
+/// incomplete snapshot/root. Among equally specific failures retain the first,
+/// preserving selection order without replacing the original error by text.
+fn retain_snapshot_failure(failure: &mut Option<anyhow::Error>, error: anyhow::Error) {
+    let is_missing = |error: &anyhow::Error| {
+        matches!(
+            error.downcast_ref::<CachePathStatus>(),
+            Some(CachePathStatus::Missing { .. })
+        )
+    };
+    if failure.is_none()
+        || failure
+            .as_ref()
+            .is_some_and(|previous| is_missing(previous) && !is_missing(&error))
+    {
+        *failure = Some(error);
+    }
 }
 
 fn find_snapshot_in_bases_matching_checked<I, F>(
@@ -441,21 +467,17 @@ fn find_snapshot_in_bases_matching_checked<I, F>(
     required_all: &[&str],
     required_any: &[&str],
     predicate: &F,
-) -> Result<Option<PathBuf>, CachePathStatus>
+) -> anyhow::Result<Option<PathBuf>>
 where
     I: IntoIterator<Item = PathBuf>,
-    F: Fn(&Path) -> bool,
+    F: Fn(&Path) -> anyhow::Result<bool>,
 {
     let mut failure = None;
     for base in bases {
         match find_snapshot_in_base_matching(&base, repo, required_all, required_any, predicate) {
             Ok(Some(snapshot)) => return Ok(Some(snapshot)),
             Ok(None) => {}
-            Err(status) => {
-                if failure.is_none() {
-                    failure = Some(status);
-                }
-            }
+            Err(error) => retain_snapshot_failure(&mut failure, error),
         }
     }
     match failure {
@@ -522,9 +544,9 @@ fn find_snapshot_in_base_matching<F>(
     required_all: &[&str],
     required_any: &[&str],
     predicate: &F,
-) -> Result<Option<PathBuf>, CachePathStatus>
+) -> anyhow::Result<Option<PathBuf>>
 where
-    F: Fn(&Path) -> bool,
+    F: Fn(&Path) -> anyhow::Result<bool>,
 {
     let trusted = match trusted_roots(base) {
         Ok(trusted) => trusted,
@@ -535,7 +557,7 @@ where
             {
                 Ok(None)
             } else {
-                Err(status)
+                Err(status.into())
             };
         }
     };
@@ -576,10 +598,10 @@ where
             match classify_snapshot_file(&trusted, &matched) {
                 CachePathStatus::Ready { .. } => matched,
                 CachePathStatus::Missing { .. } => return Ok(None),
-                status => return Err(status),
+                status => return Err(status.into()),
             }
         }
-        status => return Err(status),
+        status => return Err(status.into()),
     };
 
     let entries =
@@ -607,7 +629,7 @@ where
                 }
             }
             status => {
-                failure.get_or_insert(status);
+                retain_snapshot_failure(&mut failure, status.into());
                 continue;
             }
         }
@@ -617,7 +639,7 @@ where
                 Ok(true) => {}
                 Ok(false) => complete = false,
                 Err(status) => {
-                    failure.get_or_insert(status);
+                    retain_snapshot_failure(&mut failure, status.into());
                     complete = false;
                 }
             }
@@ -630,14 +652,14 @@ where
                     Ok(true) => any_ready = true,
                     Ok(false) => {}
                     Err(status) => {
-                        any_failure.get_or_insert(status);
+                        retain_snapshot_failure(&mut any_failure, status.into());
                     }
                 }
             }
             if !any_ready {
                 complete = false;
-                if failure.is_none() {
-                    failure = any_failure;
+                if let Some(error) = any_failure {
+                    retain_snapshot_failure(&mut failure, error);
                 }
             }
         }
@@ -656,14 +678,16 @@ where
             .cmp(left_time)
             .then_with(|| left_path.cmp(right_path))
     });
-    let found = candidates
-        .into_iter()
-        .map(|(_, path)| path)
-        .find(|path| predicate(path));
-    match (found, failure) {
-        (Some(path), _) => Ok(Some(path)),
-        (None, Some(status)) => Err(status),
-        (None, None) => Ok(None),
+    for (_, path) in candidates {
+        match predicate(&path) {
+            Ok(true) => return Ok(Some(path)),
+            Ok(false) => {}
+            Err(error) => retain_snapshot_failure(&mut failure, error),
+        }
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(None),
     }
 }
 
