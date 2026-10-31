@@ -873,6 +873,95 @@ mod formatter_deadline_tests {
     }
 }
 
+#[cfg(test)]
+mod retained_formatter_lifecycle_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct PendingSink {
+        pending: AtomicBool,
+        events: AtomicUsize,
+    }
+
+    impl EventSink for PendingSink {
+        fn on_event(&self, _event: &EngineEvent) {
+            self.events.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn on_formatter_pending(&self, pending: bool) {
+            self.pending.store(pending, Ordering::SeqCst);
+        }
+    }
+
+    fn retain_job(
+        job: BoxFuture<'static, FormatterCompletion>,
+    ) -> (
+        Arc<PendingSink>,
+        tokio::task::JoinHandle<()>,
+        tempfile::TempDir,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let inputs = crate::config::CapturedRuntimeInputs::defaults_at(directory.path().into(), 1);
+        let settings = Arc::new(crate::config::Config::runtime_snapshot_from_captured(
+            inputs,
+        ));
+        let (sender, requests) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        drop(sender);
+        let mut jobs = FuturesOrdered::new();
+        jobs.push_back(job);
+        let sink = Arc::new(PendingSink::default());
+        let owner = RetainedFormatterJobs {
+            requests,
+            jobs,
+            runtime_settings: settings,
+            language: None,
+            chain: TakeFormatterChain::new(),
+            event_sink: sink.clone(),
+            stream_log_path: None,
+        }
+        .retain()
+        .unwrap();
+        assert!(sink.pending.load(Ordering::SeqCst));
+        (sink, owner, directory)
+    }
+
+    #[tokio::test]
+    async fn retained_formatter_panic_releases_pending_selection_signal() {
+        let (sink, owner, _directory) = retain_job(Box::pin(async {
+            panic!("injected formatter panic");
+        }));
+        let error = owner
+            .await
+            .expect_err("the injected provider future must panic");
+        assert!(error.is_panic());
+        assert!(
+            !sink.pending.load(Ordering::SeqCst),
+            "a crashed formatter must not leave Stop waiting on dead work"
+        );
+        assert_eq!(
+            sink.events.load(Ordering::SeqCst),
+            0,
+            "failure cannot manufacture transcript or acoustic events"
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_formatter_cancellation_releases_pending_selection_signal() {
+        let (sink, owner, _directory) = retain_job(Box::pin(std::future::pending()));
+        owner.abort();
+        let error = owner
+            .await
+            .expect_err("the retained owner was explicitly cancelled");
+        assert!(error.is_cancelled());
+        assert!(
+            !sink.pending.load(Ordering::SeqCst),
+            "cancellation must not leave Stop waiting on dead work"
+        );
+        assert_eq!(sink.events.load(Ordering::SeqCst), 0);
+    }
+}
+
 /// Async Layer 1 lane for the Apple progressive path.
 ///
 /// Owns the in-flight Whisper gap-fill job and the replacement count that

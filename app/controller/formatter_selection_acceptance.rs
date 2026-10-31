@@ -2,13 +2,17 @@
 //! These fixtures admit synthetic measured occurrences; they do not open a mic
 //! or substitute for installed capture/provider acceptance.
 use super::*;
+use codescribe_core::audio::capture_receipt::{
+    AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+};
 use codescribe_core::config::CapturedRuntimeInputs;
 use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use codescribe_core::pipeline::acoustic_ledger::{
-    AcousticEvidence, EnergyCalibration, ObservationIdentity, ObservationProducer,
-    OccurrenceIdentity,
+    AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity, ObservationProducer,
+    OccurrenceIdentity, SealRefusal,
 };
 use codescribe_core::pipeline::contracts::{EventSink, LayerSummary};
+use codescribe_core::stt::tail_provider::TailSampleRange;
 
 const TAKE: &str = "formatter-selection-acceptance";
 const LABEL: &str = "niepoprawne zdanie";
@@ -33,6 +37,8 @@ struct Fixture {
     controller: RecordingController,
     recorder: StreamingRecorder,
     emitter: Arc<PresentationEmitter>,
+    bus: Arc<TranscriptBus>,
+    ledger: Arc<std::sync::Mutex<AcousticLedger>>,
     sources: Vec<ObservationIdentity>,
     labels: Vec<String>,
     raw: String,
@@ -83,7 +89,7 @@ impl Fixture {
             Arc::new(Mutex::new(String::new())),
             None,
             None,
-            Some(bus),
+            Some(Arc::clone(&bus)),
             Some(Arc::clone(&ledger)),
             None,
         ));
@@ -143,6 +149,8 @@ impl Fixture {
             controller,
             recorder,
             emitter,
+            bus,
+            ledger,
             sources,
             labels: labels.iter().map(|label| (*label).into()).collect(),
             raw: canvas.text,
@@ -197,6 +205,128 @@ impl Fixture {
                 )
                 .with_source(source, self.labels[index].clone(), policy),
             });
+    }
+
+    /// Exercise the authenticated refusal handler and injected transport sink.
+    /// This does not execute the toggle/hold caller closures: a chooser placed
+    /// only in those callers needs a caller-level harness, not a FAIL here.
+    /// The synthesis chooses the sink seam so both stop callers share it.
+    async fn deliver_refused_once(&self, state: State, expected: &str) {
+        self.controller.set_state(state).await;
+        *self.controller.session_id.write().await = Some(format!("{TAKE}:stopping"));
+        *self.controller.active_transcript_bus.write().await = Some(Arc::clone(&self.bus));
+        let (coverage, finality) = {
+            let mut ledger = self.ledger.lock().unwrap();
+            // The extra second has measured speech but no admitted occurrence.
+            // Already committed occurrences remain sealed; the take cannot seal.
+            let end = (self.sources.len() as u64 + 1) * 16_000;
+            let evidence = AcousticSpeechEvidence::measured(
+                CaptureEvidenceIdentity::new(TAKE, 1),
+                "capture_energy",
+                AcousticAvailability::Observed {
+                    observed_samples: end,
+                },
+                vec![TailSampleRange {
+                    session: TAKE.into(),
+                    capture_epoch: 1,
+                    sample_start: 0,
+                    sample_end: end,
+                }],
+            );
+            let coverage = ledger.assess_seal_coverage(TAKE, 1, &evidence, 8_000);
+            assert!(!coverage.status.is_complete());
+            assert!(ledger.record_seal_coverage(coverage.clone()));
+            assert_eq!(
+                ledger.seal_terminal(TAKE, 1),
+                Err(SealRefusal::CoverageIncomplete)
+            );
+            let finality = ledger.terminal_finality(TAKE, 1).into_refusal().unwrap();
+            (coverage, finality)
+        };
+        self.emitter.on_event(&EngineEvent::SealCoverage {
+            receipt: coverage,
+            comparison: None,
+        });
+        assert!(self.emitter.wait_paint_published().await);
+        assert!(self.bus.matches_refused_document(&finality, &self.raw));
+        let audio_path = self._directory.path().join("refused.wav");
+        let audio = b"synthetic retained audio witness";
+        std::fs::write(&audio_path, audio).unwrap();
+        let refusal = TerminalSealRefused {
+            finality: finality.clone(),
+            audio_path: Some(audio_path.clone()),
+            committed_text: self.raw.clone(),
+        };
+        let settings = self.controller.runtime_settings_arc().await;
+        let config = Config {
+            paste_mode: PasteMode::Comfort,
+            quick_notes_enabled: false,
+            transcript_tagging_enabled: false,
+            ..settings.values().clone()
+        };
+        let payloads = std::sync::Mutex::new(Vec::new());
+        let payloads = &payloads;
+        let config = &config;
+        let outcome = self
+            .controller
+            .process_terminal_stop_error(anyhow::Error::new(refusal), |text| async move {
+                self.controller
+                    .deliver_stop_transcript_with_sink(
+                        Some(TAKE),
+                        &text,
+                        (false, false, CaptureTurnIntent::HandsFree, true),
+                        config,
+                        |_, payload, _| {
+                            payloads.lock().unwrap().push(payload);
+                            std::future::ready(Ok(OverlayPasteResult {
+                                delivery: OverlayPasteDelivery::PasteRequested,
+                                target_app_name: None,
+                                frontmost_app_name: None,
+                                deferred_insert_shortcut: None,
+                                deferred_insert_failure: None,
+                            }))
+                        },
+                    )
+                    .await
+            })
+            .await
+            .unwrap();
+        // Delivery must not turn a refusal into an acoustic fact or lose Raw.
+        assert_eq!(outcome.refusal.as_ref().unwrap().finality, finality);
+        assert_eq!(
+            self.ledger
+                .lock()
+                .unwrap()
+                .terminal_finality(TAKE, 1)
+                .into_refusal()
+                .unwrap(),
+            finality,
+        );
+        assert_eq!(
+            self.emitter.visible_canvas_snapshot().unwrap().text,
+            self.raw
+        );
+        assert_eq!(std::fs::read(&audio_path).unwrap(), audio);
+        assert_eq!(payloads.lock().unwrap().as_slice(), &[expected.to_string()]);
+        assert!(
+            self.controller
+                .process_terminal_stop_error(
+                    anyhow::Error::new(outcome.refusal.unwrap()),
+                    |text| async move {
+                        self.controller
+                            .deliver_stop_transcript_with_sink(
+                                Some(TAKE),
+                                &text,
+                                (false, false, CaptureTurnIntent::HandsFree, true),
+                                config,
+                                |_, _, _| async { panic!("refusal delivered twice") },
+                            )
+                            .await
+                    },
+                )
+                .await
+                .is_err()
+        );
     }
 
     async fn deliver_once(&self, selected: &str) -> Option<serde_json::Value> {
@@ -296,7 +426,7 @@ async fn formatter_selection_absent_provider_delivers_full_raw_without_waiting()
 }
 
 #[tokio::test(start_paused = true)]
-async fn formatter_selection_failure_after_four_fragments_delivers_full_raw_once() {
+async fn formatter_selection_sealed_partial_failure_preserves_existing_raw_handoff() {
     for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
         for (failure, refused_reply, pending) in [
             ("provider_error", true, true),
@@ -317,38 +447,49 @@ async fn formatter_selection_failure_after_four_fragments_delivers_full_raw_once
                 fixture.complete_fragment(4, "", policy, LabelProposalDisposition::Refuse);
             }
             fixture.emitter.on_formatter_pending(pending);
-            let started = tokio::time::Instant::now();
+            let deadline =
+                codescribe_core::pipeline::streaming::retained_formatter_deadline(&settings);
+            let owner = pending.then(|| {
+                let emitter = Arc::clone(&fixture.emitter);
+                tokio::spawn(async move {
+                    tokio::time::sleep(deadline).await;
+                    emitter.on_formatter_pending(false);
+                })
+            });
             let selected = fixture
                 .controller
                 .select_paste_projection(Some(TAKE), &settings, fixture.raw.clone())
                 .await;
+            // Frozen P10 F6 preserves sealed delivery. A partial sealed set
+            // keeps the existing whole-take Raw floor; refused takes below
+            // exercise the separate per-occurrence formatting requirement.
             assert_eq!(
                 selected, fixture.raw,
-                "{policy:?}/{failure}: partial AI replaced Raw"
+                "{policy:?}/{failure}: refused selection changed sealed delivery"
             );
             if failure == "timeout" {
-                assert_eq!(
-                    tokio::time::Instant::now() - started,
-                    settings.ai_execution().request_timing().attempt_timeout(),
-                    "the unavailable provider cannot hold delivery beyond its budget"
+                assert!(
+                    !owner.as_ref().unwrap().is_finished(),
+                    "the ordinary sealed selector still ends before the retained owner"
                 );
-            } else {
-                assert_eq!(tokio::time::Instant::now(), started);
+            }
+            if let Some(owner) = owner {
+                owner.await.unwrap();
             }
             let receipt = fixture.deliver_once(&selected).await.unwrap();
-            assert_eq!(receipt["selected_mode"], "correction");
+            assert_eq!(receipt["payload_utf8"], selected);
             let frozen = fixture
                 .emitter
                 .delivery_projection(policy, &fixture.raw)
                 .unwrap();
-            assert_eq!(frozen.status, "unavailable");
+            assert_eq!(frozen.rendered_text, selected);
             assert_eq!(frozen.source_raw_text, fixture.raw);
             assert_eq!(
                 fixture.emitter.visible_canvas_snapshot().unwrap().text,
                 fixture.raw,
                 "formatter results must not overwrite the independent Raw document"
             );
-            // The provider comes back after Raw was handed off. Completing
+            // The provider comes back after handoff. Completing
             // the suffix must not change that take's chosen version or paste.
             for (index, formatted) in FORMATTED_FRAGMENTS.iter().enumerate().skip(4) {
                 fixture.complete_fragment(
@@ -373,6 +514,116 @@ async fn formatter_selection_failure_after_four_fragments_delivers_full_raw_once
                 "late completion changed the frozen receipt"
             );
         }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn formatter_refusal_keeps_three_formatted_occurrences_in_order() {
+    for state in [State::RecToggle, State::RecHold] {
+        for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
+            let fixture = Fixture::with_labels(policy, false, &FRAGMENTS[..3]).await;
+            for (index, text) in FORMATTED_FRAGMENTS[..3].iter().enumerate() {
+                fixture.complete_fragment(index, text, policy, LabelProposalDisposition::Propose);
+            }
+            fixture
+                .deliver_refused_once(state, &FORMATTED_FRAGMENTS[..3].join(" "))
+                .await;
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn formatter_refusal_uses_raw_only_for_the_failed_middle_occurrence() {
+    for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
+        let fixture = Fixture::with_labels(policy, false, &FRAGMENTS[..3]).await;
+        fixture.complete_fragment(
+            0,
+            FORMATTED_FRAGMENTS[0],
+            policy,
+            LabelProposalDisposition::Propose,
+        );
+        fixture.complete_fragment(1, "", policy, LabelProposalDisposition::Refuse);
+        fixture.complete_fragment(
+            2,
+            FORMATTED_FRAGMENTS[2],
+            policy,
+            LabelProposalDisposition::Propose,
+        );
+        let expected = [FORMATTED_FRAGMENTS[0], FRAGMENTS[1], FORMATTED_FRAGMENTS[2]].join(" ");
+        fixture
+            .deliver_refused_once(State::RecToggle, &expected)
+            .await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn formatter_refusal_explicit_raw_wins_over_completed_results() {
+    for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
+        let fixture = Fixture::with_labels(policy, false, &FRAGMENTS[..3]).await;
+        for (index, text) in FORMATTED_FRAGMENTS[..3].iter().enumerate() {
+            fixture.complete_fragment(index, text, policy, LabelProposalDisposition::Propose);
+        }
+        fixture.emitter.set_literal_delivery(true);
+        fixture
+            .deliver_refused_once(State::RecHold, &fixture.raw)
+            .await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn formatter_refusal_absent_provider_keeps_raw_audio_and_refusal_without_wait() {
+    for policy in [
+        FormattingPolicy::Off,
+        FormattingPolicy::Correction,
+        FormattingPolicy::Smart,
+    ] {
+        let fixture = Fixture::with_labels(policy, false, &FRAGMENTS[..3]).await;
+        let started = tokio::time::Instant::now();
+        fixture
+            .deliver_refused_once(State::RecToggle, &fixture.raw)
+            .await;
+        assert_eq!(tokio::time::Instant::now(), started);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn formatter_refusal_preserves_shaped_occurrence_fallback_and_context_markers() {
+    for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
+        let fixture = Fixture::with_labels(policy, false, &FRAGMENTS[..2]).await;
+        assert!(
+            fixture.raw.starts_with("Pierwszy fragment nagrania "),
+            "committed Raw presentation of the first occurrence is Light+ shaped"
+        );
+        fixture.complete_fragment(0, "", policy, LabelProposalDisposition::Refuse);
+        fixture.complete_fragment(
+            1,
+            FORMATTED_FRAGMENTS[1],
+            policy,
+            LabelProposalDisposition::Propose,
+        );
+        let expected_shaped_fallback =
+            format!("Pierwszy fragment nagrania {}", FORMATTED_FRAGMENTS[1]);
+        fixture
+            .deliver_refused_once(State::RecToggle, &expected_shaped_fallback)
+            .await;
+
+        let mut marked = Fixture::with_labels(policy, false, &FRAGMENTS[..2]).await;
+        for (index, text) in FORMATTED_FRAGMENTS[..2].iter().enumerate() {
+            marked.complete_fragment(index, text, policy, LabelProposalDisposition::Propose);
+        }
+        marked.emitter.on_event(&EngineEvent::ContextMarker {
+            position: 8,
+            label: "{selection_1}".into(),
+        });
+        assert!(marked.emitter.wait_paint_published().await);
+        marked.raw = marked.emitter.visible_canvas_snapshot().unwrap().text;
+        assert!(marked.raw.contains("{selection_1}"));
+        marked
+            .deliver_refused_once(
+                State::RecHold,
+                "Pierwszy fragment nagrania drugi fragment nagrania",
+            )
+            .await;
     }
 }
 
@@ -452,11 +703,20 @@ async fn formatter_selection_timeout_keeps_one_frozen_fallback() {
     let settings = fixture.controller.runtime_settings_arc().await;
     assert_eq!(settings.formatting_policy(), FormattingPolicy::Smart);
     fixture.emitter.on_formatter_pending(true);
+    // The test supplies the owner's completion signal. Production owns the
+    // deadline in RetainedFormatterJobs, already tested in the core suite.
+    let deadline = codescribe_core::pipeline::streaming::retained_formatter_deadline(&settings);
+    let emitter = Arc::clone(&fixture.emitter);
+    let owner = tokio::spawn(async move {
+        tokio::time::sleep(deadline).await;
+        emitter.on_formatter_pending(false);
+    });
     let selected = fixture
         .controller
         .select_paste_projection(Some(TAKE), &settings, fixture.raw.clone())
         .await;
     assert_eq!(selected, fixture.raw);
+    owner.await.unwrap();
     Fixture::propose(&fixture.emitter, fixture.sources[0].clone(), "Too late.");
     fixture.emitter.on_formatter_pending(false);
     let repeated = fixture
@@ -464,6 +724,38 @@ async fn formatter_selection_timeout_keeps_one_frozen_fallback() {
         .select_paste_projection(Some(TAKE), &settings, fixture.raw.clone())
         .await;
     assert_eq!(repeated, selected);
+}
+
+#[tokio::test(start_paused = true)]
+async fn formatter_refusal_waits_for_retained_owner_after_one_attempt() {
+    for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
+        let fixture = Fixture::with_policy(policy, false).await;
+        let settings = fixture.controller.runtime_settings_arc().await;
+        let attempt = settings.ai_execution().request_timing().attempt_timeout();
+        let deadline = codescribe_core::pipeline::streaming::retained_formatter_deadline(&settings);
+        let completion_at = attempt + (deadline - attempt) / 2;
+        assert!(completion_at > attempt && completion_at < deadline);
+        fixture.emitter.on_formatter_pending(true);
+        let emitter = Arc::clone(&fixture.emitter);
+        let source = fixture.sources[0].clone();
+        let owner = tokio::spawn(async move {
+            tokio::time::sleep(completion_at).await;
+            Fixture::propose_for_policy(&emitter, source, "Poprawione zdanie.", policy);
+            emitter.on_formatter_pending(false);
+        });
+        // Use a real typed coverage refusal rather than imposing the refusal
+        // budget on the ordinary sealed selector. No result exists yet when
+        // selection starts, so a policy memo populated only by the eventual
+        // proposal cannot be used to skip an already-pending owner.
+        fixture
+            .deliver_refused_once(State::RecToggle, "Poprawione zdanie.")
+            .await;
+        owner.await.unwrap();
+        assert_eq!(
+            fixture.emitter.visible_canvas_snapshot().unwrap().text,
+            fixture.raw
+        );
+    }
 }
 
 #[tokio::test]
