@@ -126,7 +126,9 @@ recipe = recipe[: recipe.index("\n\n")]
 assert "CODESCRIBE_INSTALL_LANE=1" in recipe
 assert re.search(r"codesign --verify --deep --strict /Applications/", recipe)
 dmg = (root / "scripts/build-dmg.sh").read_text(encoding="utf-8")
-assert dmg.index("BUILD_ENV+=(CODESCRIBE_INSTALL_LANE=1)") < dmg.index("make app PROFILE=release")
+lane = re.search(r"(?m)^BUILD_ENV\+=\([^\n)]*\bCODESCRIBE_INSTALL_LANE=1(?=[ \t)])", dmg)
+assert lane, "DMG build environment must enable the install lane"
+assert lane.start() < dmg.index('"${BUILD_ENV[@]}" make app PROFILE=release')
 PY
 
 echo "single-instance-stamp: ok"

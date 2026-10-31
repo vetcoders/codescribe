@@ -4903,7 +4903,17 @@
         }
       }
     },
-
+    "Checking other model locations…" : {
+      "comment" : "Whisper tab: available models can be selected while optional locations are being read",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie pozostałych lokalizacji modeli…"
+          }
+        }
+      }
+    },
     "Checking provider access…" : {
       "comment" : "Setup Agent readiness while the provider snapshot is loading\nSetup provider row status while credentials are loading",
       "localizations" : {
@@ -4952,17 +4962,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdzanie połączenia…"
-          }
-        }
-      }
-    },
-    "Checking other model locations…" : {
-      "comment" : "Whisper tab: available models can be selected while optional locations are being read",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sprawdzanie pozostałych lokalizacji modeli…"
           }
         }
       }
