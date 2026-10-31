@@ -1058,13 +1058,19 @@ impl RuntimeFormatterExecution {
 pub struct RuntimeAiRequestTiming {
     attempt_timeout: Duration,
     inter_chunk_timeout: Duration,
+    first_event_timeout: Duration,
 }
 
 impl RuntimeAiRequestTiming {
-    pub(super) const fn seal(attempt_timeout: Duration, inter_chunk_timeout: Duration) -> Self {
+    pub(super) const fn seal(
+        attempt_timeout: Duration,
+        inter_chunk_timeout: Duration,
+        first_event_timeout: Duration,
+    ) -> Self {
         Self {
             attempt_timeout,
             inter_chunk_timeout,
+            first_event_timeout,
         }
     }
 
@@ -1076,11 +1082,18 @@ impl RuntimeAiRequestTiming {
         self.inter_chunk_timeout
     }
 
+    /// Budget from the request send to the first SSE content event (prefill,
+    /// queueing, hosted tool runs). `inter_chunk_timeout` applies after it.
+    pub const fn first_event_timeout(&self) -> Duration {
+        self.first_event_timeout
+    }
+
     fn digest_material(&self) -> String {
         format!(
-            "attempt_timeout_ms={}\ninter_chunk_timeout_ms={}",
+            "attempt_timeout_ms={}\ninter_chunk_timeout_ms={}\nfirst_event_timeout_ms={}",
             self.attempt_timeout.as_millis(),
             self.inter_chunk_timeout.as_millis(),
+            self.first_event_timeout.as_millis(),
         )
     }
 }

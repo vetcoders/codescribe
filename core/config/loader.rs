@@ -78,10 +78,13 @@ const AI_MAX_RETRIES_ENV: &str = "CODESCRIBE_AI_MAX_RETRIES";
 const AI_RETRY_DELAY_MS_ENV: &str = "CODESCRIBE_AI_RETRY_DELAY_MS";
 const AI_ATTEMPT_TIMEOUT_MS_ENV: &str = "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS";
 const AI_INTER_CHUNK_TIMEOUT_MS_ENV: &str = "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS";
+const AI_FIRST_EVENT_TIMEOUT_MS_ENV: &str = "CODESCRIBE_AI_FIRST_EVENT_TIMEOUT_MS";
 const DEFAULT_AI_MAX_RETRIES: u32 = 3;
 const DEFAULT_AI_RETRY_DELAY_MS: u64 = 2_000;
 const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_AI_FIRST_EVENT_TIMEOUT_MS: u64 =
+    crate::llm::responses_streaming_manager::DEFAULT_FIRST_EVENT_TIMEOUT.as_millis() as u64;
 
 fn config_persistence_guard() -> std::sync::MutexGuard<'static, ()> {
     CONFIG_PERSISTENCE_LOCK
@@ -339,6 +342,7 @@ impl Config {
             AI_RETRY_DELAY_MS_ENV,
             AI_ATTEMPT_TIMEOUT_MS_ENV,
             AI_INTER_CHUNK_TIMEOUT_MS_ENV,
+            AI_FIRST_EVENT_TIMEOUT_MS_ENV,
             LlmMode::Formatting.provider_env_key(),
             LlmMode::Formatting.model_env_key(),
             LlmMode::Assistive.provider_env_key(),
@@ -646,6 +650,11 @@ impl Config {
             AI_INTER_CHUNK_TIMEOUT_MS_ENV,
             DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS,
         );
+        let first_event_timeout_ms = Self::runtime_env_or_default(
+            input,
+            AI_FIRST_EVENT_TIMEOUT_MS_ENV,
+            DEFAULT_AI_FIRST_EVENT_TIMEOUT_MS,
+        );
 
         RuntimeAiExecution::seal(
             RuntimeFormatterExecution::seal(
@@ -657,6 +666,7 @@ impl Config {
             RuntimeAiRequestTiming::seal(
                 Duration::from_millis(attempt_timeout_ms),
                 Duration::from_millis(inter_chunk_timeout_ms),
+                Duration::from_millis(first_event_timeout_ms),
             ),
         )
     }

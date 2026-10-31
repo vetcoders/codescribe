@@ -1071,7 +1071,14 @@ default = "30000"
 type = "u64"
 reload = "hot"
 category = "llm"
-description = "Shared formatter and Agent max idle time between SSE chunks (ms); loader seals valid overlays into the next selected runtime snapshot"
+description = "Shared formatter and Agent max idle time between SSE chunks after the first content event (ms); any chunk, including an SSE keepalive comment, restarts it; loader seals valid overlays into the next selected runtime snapshot"
+
+[vars.CODESCRIBE_AI_FIRST_EVENT_TIMEOUT_MS]
+default = "90000"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Shared formatter and Agent budget from the SSE request send to the first content event (prefill, queueing, hosted web_search); response.created and keepalive comments do not end it; loader seals valid overlays into the next selected runtime snapshot"
 
 [vars.CODESCRIBE_AGENT_BRIDGE_HOME]
 default = ""
