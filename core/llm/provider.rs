@@ -442,13 +442,16 @@ impl CustomProvider {
         // URL parsing repairs missing authority separators and ignores some
         // control characters. Refuse those spellings before a path can become
         // the host of a different endpoint.
-        let authority_ok = endpoint.split_once("://").is_some_and(|(_, rest)| {
-            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-            !authority.is_empty()
-                && !authority
-                    .chars()
-                    .any(|ch| ch == '\\' || ch.is_ascii_control())
-        });
+        let authority_ok = endpoint
+            .strip_prefix(scheme)
+            .and_then(|rest| rest.strip_prefix("://"))
+            .is_some_and(|rest| {
+                let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+                !authority.is_empty()
+                    && !authority
+                        .chars()
+                        .any(|ch| ch == '\\' || ch.is_ascii_control())
+            });
         let host_ok = reqwest::Url::parse(endpoint).is_ok_and(|url| url.host_str().is_some());
         if !scheme_ok || !authority_ok || !host_ok {
             return Err(ProviderError::InvalidEndpoint(if scheme_ok {
