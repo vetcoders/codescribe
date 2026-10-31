@@ -330,38 +330,6 @@ fn normalize_schema_node(
         source.insert("enum".into(), Value::Array(strings));
     }
 
-    if let Some(const_val) = source.remove("const") {
-        match const_val {
-            Value::Null => {
-                if source.contains_key("enum")
-                    && source.get("nullable").and_then(Value::as_bool) != Some(true)
-                {
-                    return Err("Google tool schema const null conflicts with non-null enum".into());
-                }
-                source.insert("nullable".into(), json!(true));
-            }
-            Value::String(s) => {
-                if !schema_type_allows_string(source.get("type")) {
-                    return Err("Google tool schema const requires string type".into());
-                }
-                if let Some(Value::Array(existing_enum)) = source.get("enum")
-                    && !existing_enum
-                        .iter()
-                        .any(|entry| entry.as_str() == Some(s.as_str()))
-                {
-                    return Err("Google tool schema const conflicts with enum".into());
-                }
-                source
-                    .entry("type".to_string())
-                    .or_insert_with(|| Value::String("string".to_string()));
-                source.insert("enum".into(), Value::Array(vec![Value::String(s)]));
-            }
-            _ => {
-                return Err("Google tool schema const supports only string or null values".into());
-            }
-        }
-    }
-
     for key in [
         "$schema",
         "$id",
@@ -456,7 +424,7 @@ fn normalize_schema_node(
         let mut non_null = Vec::new();
         let mut saw_null = false;
         for variant in variants {
-            if is_null_schema_branch(&variant) {
+            if is_null_schema_branch(&variant)? {
                 saw_null = true;
             } else {
                 non_null.push(normalize_schema_node(&variant, root, refs, depth + 1)?);
@@ -474,6 +442,26 @@ fn normalize_schema_node(
         } else if !non_null.is_empty() {
             source.insert("anyOf".into(), Value::Array(non_null));
         }
+    }
+    // A const narrows all other constraints. Apply it after nullable unions
+    // have been lowered so they cannot reintroduce null beside a fixed string.
+    if let Some(const_val) = source.remove("const") {
+        let Value::String(value) = const_val else {
+            return Err("Google tool schema cannot represent this standalone const".into());
+        };
+        if !schema_type_allows_string(source.get("type")) {
+            return Err("Google tool schema const requires string type".into());
+        }
+        if let Some(Value::Array(values)) = source.get("enum")
+            && !values
+                .iter()
+                .any(|entry| entry.as_str() == Some(value.as_str()))
+        {
+            return Err("Google tool schema const conflicts with enum".into());
+        }
+        source.insert("type".into(), json!("string"));
+        source.insert("enum".into(), json!([value]));
+        source.remove("nullable");
     }
     if !constraint_notes.is_empty() {
         let suffix = format!("({})", constraint_notes.join("; "));
@@ -506,21 +494,96 @@ fn schema_type_allows_string(kind: Option<&Value>) -> bool {
     }
 }
 
-fn is_null_schema_branch(branch: &Value) -> bool {
+fn is_null_schema_branch(branch: &Value) -> Result<bool, String> {
     let Some(obj) = branch.as_object() else {
-        return false;
+        return Ok(false);
     };
-    obj.get("type").and_then(Value::as_str) == Some("null")
-        || matches!(obj.get("const"), Some(Value::Null))
-        || obj
-            .get("enum")
-            .and_then(Value::as_array)
+    let only_null_type = |value: &Value| {
+        value == "null"
+            || value
+                .as_array()
+                .is_some_and(|types| !types.is_empty() && types.iter().all(|kind| kind == "null"))
+    };
+    let only_null_enum = |value: &Value| {
+        value
+            .as_array()
             .is_some_and(|values| !values.is_empty() && values.iter().all(Value::is_null))
+    };
+    let marked_null = obj.get("type").is_some_and(only_null_type)
+        || matches!(obj.get("const"), Some(Value::Null))
+        || obj.get("enum").is_some_and(only_null_enum);
+    if !marked_null {
+        return Ok(false);
+    }
+    for (key, value) in obj {
+        let representable = match key.as_str() {
+            "type" => only_null_type(value),
+            "const" => value.is_null(),
+            "enum" => only_null_enum(value),
+            "$schema" | "$id" | "$comment" | "title" | "description" | "default" | "examples"
+            | "deprecated" | "readOnly" | "writeOnly" => true,
+            _ => false,
+        };
+        if !representable {
+            return Err(format!(
+                "Google null schema branch has conflicting or unsupported constraint: {key}"
+            ));
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_schema_string_const_never_retains_null_from_other_constraints() {
+        for schema in [
+            json!({"enum":["x",null],"const":"x"}),
+            json!({"type":["string","null"],"const":"x"}),
+            json!({"anyOf":[{"type":"string"},{"type":"null"}],"const":"x"}),
+        ] {
+            assert_eq!(
+                normalize_schema_for_gemini(&schema).unwrap(),
+                json!({"type":"string","enum":["x"]}),
+                "a const must not admit another value: {schema}"
+            );
+        }
+    }
+
+    #[test]
+    fn google_schema_null_branches_never_hide_assertions() {
+        for branch in [
+            json!({"enum":[null],"allOf":[{"const":1}]}),
+            json!({"enum":[null],"type":"string"}),
+            json!({"type":"null","const":"x"}),
+            json!({"const":null,"enum":["x"]}),
+        ] {
+            let schema = json!({"anyOf":[{"type":"string"},branch]});
+            assert!(normalize_schema_for_gemini(&schema).is_err(), "{schema}");
+        }
+        assert_eq!(
+            normalize_schema_for_gemini(&json!({
+                "anyOf":[{"type":"string","enum":["x"]},{"enum":[null],"description":"optional"}]
+            }))
+            .unwrap(),
+            json!({"type":"string","enum":["x"],"nullable":true})
+        );
+    }
+
+    #[test]
+    fn google_schema_unrepresentable_constants_and_enums_are_refused() {
+        for schema in [
+            json!({"type":"integer","enum":[1,2],"const":1}),
+            json!({"enum":["x",1]}),
+            json!({"enum":[]}),
+            json!({"type":"string","enum":["x",null],"const":null}),
+            json!({"const":null}),
+        ] {
+            assert!(normalize_schema_for_gemini(&schema).is_err(), "{schema}");
+        }
+    }
 
     #[test]
     fn google_schema_normalizes_nullable_refs_and_preserves_property_names() {
