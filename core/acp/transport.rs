@@ -503,6 +503,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn acp_parent_exit_settles_actor_even_when_inbound_queue_is_full() {
+        let command = shell(
+            "i=0; while [ $i -lt 200 ]; do printf '{\"jsonrpc\":\"2.0\",\"method\":\"fixture\",\"params\":{}}\\n'; i=$((i+1)); done; sleep 60 & exit 7",
+        );
+        let transport = AcpTransport::spawn(&command).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !transport.actor.as_ref().unwrap().is_finished() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a full inbound queue cannot retain a dead child's actor");
+    }
+
+    #[tokio::test]
     async fn acp_malformed_banner_is_redacted_and_process_is_reaped() {
         let mut transport = AcpTransport::spawn(&shell(
             "printf 'TOKEN=private-value garbage\\n'; exec /bin/sleep 30",

@@ -431,13 +431,9 @@ where
     I: IntoIterator<Item = PathBuf>,
     F: Fn(&Path) -> bool,
 {
-    find_snapshot_in_bases_matching_checked(
-        bases,
-        repo,
-        required_all,
-        required_any,
-        &|path| Ok(predicate(path)),
-    )
+    find_snapshot_in_bases_matching_checked(bases, repo, required_all, required_any, &|path| {
+        Ok(predicate(path))
+    })
     .ok()
     .flatten()
 }
@@ -834,10 +830,16 @@ mod tests {
             "org/repo",
             &["model.bin"],
             &[],
-            &|_| true,
+            &|_| Ok(true),
         );
         assert!(
-            matches!(found, Err(CachePathStatus::OutsideCacheRoot { .. })),
+            matches!(
+                found
+                    .as_ref()
+                    .err()
+                    .and_then(|error| error.downcast_ref::<CachePathStatus>()),
+                Some(CachePathStatus::OutsideCacheRoot { .. })
+            ),
             "{found:?}"
         );
         let later = temp.path().join("later");
@@ -849,7 +851,7 @@ mod tests {
                 "org/repo",
                 &["model.bin"],
                 &[],
-                &|_| true
+                &|_| Ok(true)
             )
             .unwrap(),
             Some(valid)
@@ -867,7 +869,7 @@ mod tests {
                 "org/repo",
                 &["model.bin"],
                 &[],
-                &|_| true
+                &|_| Ok(true)
             )
             .unwrap(),
             None

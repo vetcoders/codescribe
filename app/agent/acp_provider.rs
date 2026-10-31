@@ -560,7 +560,7 @@ mod tests {
     use std::path::Path;
 
     const AGENT: &str = r#"
-import json, os, sys, time
+import json, os, subprocess, sys, time
 mode, log = sys.argv[1:]
 def record(text):
     with open(log, 'a') as f: f.write(text + '\n')
@@ -591,6 +591,11 @@ for line in sys.stdin:
         if mode == 'attachments':
             assert any(p.get('type') == 'image' and p['data'] == 'AQID' for p in params['prompt'])
         if mode == 'cancel': continue
+        if mode == 'exit-desc':
+            child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+            record('descendant:' + str(child.pid))
+            print('TOKEN=do-not-leak parent failed', file=sys.stderr, flush=True)
+            os._exit(7)
         if mode == 'denied-read':
             send(dict(id='read-1', method='fs/read_text_file', params=dict(sessionId='session-fixture', path=os.path.join(params.get('cwd', os.getcwd()), '.env'))))
             response=json.loads(sys.stdin.readline())
@@ -601,6 +606,7 @@ for line in sys.stdin:
         if mode == 'eof': sys.exit(7)
         if mode == 'error': send(dict(id=frame['id'], error=dict(code=-32000,message='TOKEN=do-not-leak failed')))
         else: send(dict(id=frame['id'], result=dict(stopReason=mode if mode in ('cancelled', 'max_tokens', 'max_turn_requests', 'refusal') else 'end_turn')))
+        if mode == 'clean-exit': os._exit(0)
     elif method == 'session/cancel':
         record('cancel-seen')
         break
@@ -808,6 +814,72 @@ for line in sys.stdin:
             std::fs::read_to_string(root.path().join("receipt"))
                 .unwrap()
                 .contains("session/load")
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_parent_exit_is_observed_even_when_descendant_holds_stdout() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = AcpProvider::new(fixture(root.path(), "exit-desc")).unwrap();
+        let events = tokio::time::timeout(
+            Duration::from_secs(3),
+            collect(
+                provider
+                    .stream(&messages(), &[], &StreamOptions::default())
+                    .await
+                    .unwrap(),
+            ),
+        )
+        .await
+        .expect("dead parent must not depend on inherited stdout EOF");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ResponseDone { clean: false, .. })),
+            "{events:?}"
+        );
+        assert!(!format!("{events:?}").contains("do-not-leak"));
+        assert_eq!(provider.response_chain_id().await, None);
+        let receipt = std::fs::read_to_string(root.path().join("receipt")).unwrap();
+        let descendant: i32 = receipt
+            .lines()
+            .find_map(|line| line.strip_prefix("descendant:"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                // SAFETY: signal zero probes only this fixture child's liveness.
+                if unsafe { libc::kill(descendant, 0) } == -1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("owned descendant must be reaped after group teardown");
+    }
+
+    #[tokio::test]
+    async fn acp_clean_final_frame_survives_immediate_parent_exit() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = AcpProvider::new(fixture(root.path(), "clean-exit")).unwrap();
+        let events = collect(
+            provider
+                .stream(&messages(), &[], &StreamOptions::default())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            events.contains(&AgentEvent::TextDone("answer".into())),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ResponseDone { clean: true, .. })),
+            "{events:?}"
         );
     }
 

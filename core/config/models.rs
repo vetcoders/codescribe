@@ -1513,6 +1513,73 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn runtime_and_catalog_keep_full_snapshot_refusal_then_accept_valid_older() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("hub");
+        let snapshots = base
+            .join("models--fixture--whisper-diagnostic")
+            .join("snapshots");
+        let broken = snapshots.join("newest");
+        create_complete_whisper_model(&broken);
+        std::os::unix::fs::symlink(
+            "/Volumes/NonExistentExternalDrive/optional.json",
+            broken.join("tokenizer_config.json"),
+        )
+        .unwrap();
+        let _hf = EnvGuard::set("CODESCRIBE_HF_CACHE", &base);
+        let _hf_other = EnvGuard::set("HF_HUB_CACHE", &base);
+        let _hf_old = EnvGuard::set("HUGGINGFACE_HUB_CACHE", &base);
+        let _hf_home = EnvGuard::set("HF_HOME", temp.path());
+        let _models = EnvGuard::set("CODESCRIBE_MODELS_DIR", temp.path().join("models"));
+        let _path = EnvGuard::remove("CODESCRIBE_MODEL_PATH");
+        let _local = EnvGuard::remove("LOCAL_MODEL");
+        let error =
+            resolve_runtime_whisper_model_path(Some("fixture/whisper-diagnostic")).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<hf_cache::CachePathStatus>(),
+                Some(hf_cache::CachePathStatus::UnmountedExternalVolume { .. })
+            ),
+            "{error:#}"
+        );
+        let started = Instant::now();
+        loop {
+            let catalog = whisper_model_options(Some("fixture/whisper-diagnostic"));
+            if !catalog.discovery_pending {
+                assert!(
+                    catalog.options.iter().any(|row| !row.usable
+                        && row
+                            .reason
+                            .as_ref()
+                            .is_some_and(|reason| reason.contains("NonExistentExternalDrive"))),
+                    "{:?}",
+                    catalog.options
+                );
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "fixture discovery never settled"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let older = snapshots.join("older");
+        create_complete_whisper_model(&older);
+        std::fs::File::open(&older)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(10)),
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_runtime_whisper_model_path(Some("fixture/whisper-diagnostic")).unwrap(),
+            older.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
     fn explicit_missing_model_reference_keeps_its_path_and_refusal_row() {
         let temp = TempDir::new().unwrap();
         let missing = temp.path().join("missing-model");
