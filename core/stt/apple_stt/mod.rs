@@ -112,7 +112,7 @@ pub(super) fn child_has_exited_without_reap(
             libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
         );
         if rc == 0 {
-            Ok(info.si_pid != 0)
+            Ok(info.si_pid() != 0)
         } else {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::Interrupted {
