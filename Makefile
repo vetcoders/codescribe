@@ -12,7 +12,7 @@
         demo demo-raw demo-assistive check verify semgrep fix clean help corpus-census test-corpus-parity \
         dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
         dmg dmg-signed release-standard release-nightly release-full release-dmgs release-stable install-app-release notarize verify-dmg download-model download-e5 download-embedder ensure-models \
-        hooks site-dev
+        hooks site-dev clean-worktree-targets structural-gate
 
 SHELL := /bin/bash
 # Founder 2026-10-07: worktree sources share the main checkout's Cargo cache.
@@ -1185,6 +1185,7 @@ verify:
 	bash scripts/tests/download-model-test.sh; \
 	echo "=== Verify (optional build model discovery) ==="; \
 	python3 scripts/tests/test_build_optional_model_discovery.py; \
+	python3 -m unittest scripts/tests/test_verify_zero_target.py; \
 	python3 scripts/tests/test_appcast_version.py; \
 	echo "=== Verify (bus demux: routing, lease, coalesce, attach) ==="; \
 	bash scripts/tests/bus-demux-test.sh; \
@@ -1328,6 +1329,15 @@ clean:
 	@cargo clean
 	@rm -rf .loctree
 	@echo "Cleaned"
+
+# Inventory isolated targets. Cleanup requires the existing terminal-run,
+# policy and lease admission; names or absent compiler PIDs do not authorize it.
+clean-worktree-targets:
+	@scripts/verify-zero-target.sh --dry-run
+
+structural-gate:
+	@loct health
+	@scripts/verify-zero-target.sh --check
 
 # ============================================================================
 # Help

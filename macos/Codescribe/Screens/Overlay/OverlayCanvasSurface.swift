@@ -158,3 +158,26 @@ struct OverlayControlGlass: ViewModifier {
     }
   }
 }
+
+/// The composer's surface for the bars that sit beside it: the same glass and
+/// corner, and the same opaque sheet when Reduce Transparency is on. Maciej,
+/// 2026-10-30: the composer is the reference and is not modified; the text
+/// destination bar and the pinned All card adopt its surface, not the reverse.
+/// A modifier, not a call site: `OverlayChannelStatusView` is never installed
+/// as a view, so an environment read on it would see the default.
+struct OverlayComposerSurface: ViewModifier {
+  let palette: OverlayAppearancePalette
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+  func body(content: Content) -> some View {
+    content
+      .background {
+        if reduceTransparency {
+          RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+            .fill(palette.desktopBackground.color)
+        }
+      }
+      .modifier(
+        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency))
+  }
+}

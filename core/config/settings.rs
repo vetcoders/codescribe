@@ -41,6 +41,9 @@ use crate::pipeline::acoustic_ledger::EnergyCalibration;
 use super::energy_calibration::{
     EnergyCalibrationRefusal, EnergyCalibrationStatus, SealedEnergyCalibration,
 };
+use super::formatter_keywords::{
+    FormatterKeywordsContext, FormatterKeywordsError, normalize_formatter_keywords,
+};
 
 /// Serialize settings read/migrate/write transactions. A V1 load writes a
 /// backup and a V3 replacement, so it is a writer even though the public API is
@@ -117,6 +120,25 @@ impl FormattingPolicy {
 /// default was an accidental import from another operator's layout, not a
 /// chosen contract (removed 2026-08-09).
 pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/.codescribe";
+
+/// Explicit local Agent selection in `speech.assistive.acp`. Arguments are
+/// already separated; no shell, model-prefix parser or environment override
+/// can silently select an executable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AcpLaunchSettings {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub cwd: String,
+}
+
+/// Validated local launch facts sealed by the same pass as the Agent lane.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RuntimeAcpConfiguration {
+    pub command: crate::acp::AcpCommand,
+    pub workspace_roots: Vec<PathBuf>,
+}
 
 /// Power-user override of `interaction.agent_send_hold_sec`.
 pub const AGENT_SEND_HOLD_ENV: &str = "CODESCRIBE_AGENT_SEND_HOLD_SEC";
@@ -263,6 +285,12 @@ pub struct UserSettings {
     pub sound_volume: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatting_level: Option<String>,
+    /// Formatter Keywords: preferred vocabulary for every formatting kind.
+    /// `None`/empty adds no context. Writers go through
+    /// [`UserSettings::set_formatter_keywords`]; the canonical form is owned by
+    /// `config::formatter_keywords`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formatter_keywords: Option<Vec<String>>,
     /// Assistive lane model; `None` ⇒ the provider's default (vendor) or
     /// "no model selected" (custom).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -273,6 +301,9 @@ pub struct UserSettings {
     /// Assistive lane provider reference (`ProviderRef` spelling); `None` ⇒ OpenAI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_provider: Option<String>,
+    /// Explicit opt-in local ACP backend; absent preserves the HTTP lane.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_acp: Option<AcpLaunchSettings>,
     /// Formatting lane provider reference (`ProviderRef` spelling); `None` ⇒ OpenAI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_formatting_provider: Option<String>,
@@ -731,6 +762,7 @@ pub struct RuntimeLlmLane {
     /// The level requests on this lane ask for. Formatting always carries one
     /// (default `none`); the Agent lane carries one only when the user chose it.
     reasoning: Option<crate::llm::provider::ReasoningEffort>,
+    acp: Option<RuntimeAcpConfiguration>,
 }
 
 impl RuntimeLlmLane {
@@ -751,7 +783,35 @@ impl RuntimeLlmLane {
             unavailable_reason,
             configuration_fault,
             reasoning: None,
+            acp: None,
         }
+    }
+
+    pub(super) fn with_acp(
+        mut self,
+        configuration: Result<RuntimeAcpConfiguration, String>,
+    ) -> Self {
+        match configuration {
+            Ok(configuration) => {
+                self.model = configuration.command.program.clone();
+                self.acp = Some(configuration);
+                self.configuration_fault = None;
+                self.unavailable_reason = None;
+                self.available = true;
+            }
+            Err(reason) => {
+                self.configuration_fault = Some(reason.clone());
+                self.unavailable_reason = Some(reason);
+                self.available = false;
+            }
+        }
+        self
+    }
+
+    /// The selected local backend, if this generation explicitly opted in.
+    /// HTTP provider identity is retained only as the user's inactive choice.
+    pub fn acp_configuration(&self) -> Option<&RuntimeAcpConfiguration> {
+        self.acp.as_ref()
     }
 
     pub(super) fn with_reasoning(mut self, effort: crate::llm::provider::ReasoningEffort) -> Self {
@@ -775,7 +835,11 @@ impl RuntimeLlmLane {
 
     /// Picker label of the provider (vendor display name or custom row name).
     pub fn provider_display_name(&self) -> &str {
-        &self.provider.display_name
+        if self.acp.is_some() {
+            "ACP"
+        } else {
+            &self.provider.display_name
+        }
     }
 
     /// The vendor, when the provider is one; `None` for a Custom provider.
@@ -812,9 +876,21 @@ impl RuntimeLlmLane {
     /// Whether a request can be sent under the credential truth that exists
     /// now, rather than only under the truth observed when this lane was sealed.
     pub fn request_available(&self) -> bool {
-        self.credential.account_auth()
+        if self.acp.is_none() && self.provider.wire == WireFamily::GoogleGenerateContent {
+            let account = self.credential.account_auth();
+            if crate::llm::vendors::google::is_cloud_code_assist(&self.provider.endpoint) {
+                return account;
+            }
+            return account
+                || crate::llm::account_auth::google::google_api_key_available(
+                    self.credential.key_account(),
+                );
+        }
+        self.acp.is_some()
+            || self.credential.account_auth()
             || self.credential.request_api_key().is_some()
-            || !self.provider.key_required
+            || (!self.provider.key_required
+                && self.provider.wire != WireFamily::GoogleGenerateContent)
     }
 
     pub fn unavailable_reason(&self) -> Option<&str> {
@@ -845,7 +921,7 @@ impl RuntimeLlmLane {
 
     pub(super) fn digest_material(&self) -> String {
         format!(
-            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{:?}",
             self.lane.as_str(),
             self.provider.reference,
             self.provider.wire,
@@ -855,6 +931,7 @@ impl RuntimeLlmLane {
             self.credential.api_key.is_some(),
             self.credential.account_auth,
             self.available,
+            self.acp,
         )
     }
 }
@@ -1003,6 +1080,9 @@ impl fmt::Debug for RuntimeSealedPrompt {
 pub struct RuntimeFormatterExecution {
     formatting_prompt: Option<RuntimeSealedPrompt>,
     assistive_prompt: RuntimeSealedPrompt,
+    /// Formatter Keywords sealed beside the prompts. Kept separate from the
+    /// sealed prompt bytes so custom prompts and tuning stay byte-identical.
+    vocabulary: FormatterKeywordsContext,
     max_retries: u32,
     retry_delay: Duration,
 }
@@ -1011,15 +1091,23 @@ impl RuntimeFormatterExecution {
     pub(super) fn seal(
         formatting_prompt: Option<RuntimeSealedPrompt>,
         assistive_prompt: RuntimeSealedPrompt,
+        vocabulary: FormatterKeywordsContext,
         max_retries: u32,
         retry_delay: Duration,
     ) -> Self {
         Self {
             formatting_prompt,
             assistive_prompt,
+            vocabulary,
             max_retries,
             retry_delay,
         }
+    }
+
+    /// Formatter Keywords of this generation, shared by Correction, Smart and
+    /// the explicit Max request.
+    pub const fn vocabulary(&self) -> &FormatterKeywordsContext {
+        &self.vocabulary
     }
 
     pub fn formatting_prompt(&self) -> Option<&RuntimeSealedPrompt> {
@@ -1045,8 +1133,9 @@ impl RuntimeFormatterExecution {
             .map(RuntimeSealedPrompt::digest_material)
             .unwrap_or_else(|| "off".to_string());
         format!(
-            "formatting_prompt={formatting}\nassistive_prompt={}\nmax_retries={}\nretry_delay_ms={}",
+            "formatting_prompt={formatting}\nassistive_prompt={}\n{}\nmax_retries={}\nretry_delay_ms={}",
             self.assistive_prompt.digest_material(),
+            self.vocabulary.digest_material(),
             self.max_retries,
             self.retry_delay.as_millis(),
         )
@@ -1058,13 +1147,19 @@ impl RuntimeFormatterExecution {
 pub struct RuntimeAiRequestTiming {
     attempt_timeout: Duration,
     inter_chunk_timeout: Duration,
+    first_event_timeout: Duration,
 }
 
 impl RuntimeAiRequestTiming {
-    pub(super) const fn seal(attempt_timeout: Duration, inter_chunk_timeout: Duration) -> Self {
+    pub(super) const fn seal(
+        attempt_timeout: Duration,
+        inter_chunk_timeout: Duration,
+        first_event_timeout: Duration,
+    ) -> Self {
         Self {
             attempt_timeout,
             inter_chunk_timeout,
+            first_event_timeout,
         }
     }
 
@@ -1076,11 +1171,18 @@ impl RuntimeAiRequestTiming {
         self.inter_chunk_timeout
     }
 
+    /// Budget from the request send to the first SSE content event (prefill,
+    /// queueing, hosted tool runs). `inter_chunk_timeout` applies after it.
+    pub const fn first_event_timeout(&self) -> Duration {
+        self.first_event_timeout
+    }
+
     fn digest_material(&self) -> String {
         format!(
-            "attempt_timeout_ms={}\ninter_chunk_timeout_ms={}",
+            "attempt_timeout_ms={}\ninter_chunk_timeout_ms={}\nfirst_event_timeout_ms={}",
             self.attempt_timeout.as_millis(),
             self.inter_chunk_timeout.as_millis(),
+            self.first_event_timeout.as_millis(),
         )
     }
 }
@@ -1369,6 +1471,29 @@ impl RuntimeSettingsSnapshot {
     /// Effective per-take formatter policy from the immutable settings throne.
     pub const fn formatting_policy(&self) -> FormattingPolicy {
         self.formatting_policy
+    }
+
+    /// Policy for automatic formatting (capture, grouped live and Stop, and the
+    /// automatic selectors): Off, Correction or Smart only. A stored Max (or
+    /// its legacy `creative` alias) resolves to Smart here, because Max is the
+    /// manually invoked Agent. Nothing is written back to disk; explicit
+    /// requests keep the full policy via [`Self::with_formatting_level`].
+    pub const fn automatic_formatting_policy(&self) -> FormattingPolicy {
+        match self.formatting_policy {
+            FormattingPolicy::Max => FormattingPolicy::Smart,
+            policy => policy,
+        }
+    }
+
+    /// Normalized Formatter Keywords frozen in this generation.
+    pub fn formatter_keywords(&self) -> &[String] {
+        self.ai_execution.formatter().vocabulary().terms()
+    }
+
+    /// Frozen vocabulary suffix for formatting requests (application-owned
+    /// instruction plus JSON-encoded terms); `None` when there are none.
+    pub fn formatting_vocabulary_context(&self) -> Option<&str> {
+        self.ai_execution.formatter().vocabulary().prompt_suffix()
     }
 
     /// Resolve a one-request formatting level entirely from captured inputs.
@@ -1698,6 +1823,9 @@ struct FormattingV2 {
     transcript_tag_template: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     level: Option<String>,
+    /// Formatter Keywords (`speech.formatting.keywords`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keywords: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1718,6 +1846,8 @@ struct AssistiveV2 {
     llm_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acp: Option<AcpLaunchSettings>,
 }
 
 /// Pacing of text as it lands in the target app: buffering delay, typing
@@ -2130,6 +2260,10 @@ impl UserSettings {
                         .as_deref()
                         .and_then(|value| FormattingPolicy::parse(value).ok())
                         .map(|policy| policy.as_str().to_string()),
+                    keywords: self
+                        .formatter_keywords
+                        .clone()
+                        .filter(|terms| !terms.is_empty()),
                     llm_provider: self.llm_formatting_provider.clone(),
                     llm_model: self.llm_formatting_model.clone(),
                     llm_reasoning: self.llm_formatting_reasoning.clone(),
@@ -2138,6 +2272,7 @@ impl UserSettings {
                     provider: self.llm_assistive_provider.clone(),
                     llm_model: self.llm_assistive_model.clone(),
                     llm_reasoning: self.llm_assistive_reasoning.clone(),
+                    acp: self.agent_acp.clone(),
                 }),
                 emission: Some(EmissionV2 {
                     buffer_delay_ms: self.buffer_delay_ms,
@@ -2302,6 +2437,7 @@ impl UserSettings {
                 .and_then(|f| f.level.as_deref())
                 .and_then(|value| FormattingPolicy::parse(value).ok())
                 .map(|policy| policy.as_str().to_string()),
+            formatter_keywords: cloned!(v2.speech, formatting, keywords),
             llm_formatting_provider: cloned!(v2.speech, formatting, llm_provider),
             llm_custom_providers: v2
                 .providers
@@ -2319,6 +2455,7 @@ impl UserSettings {
                 .map(|p| p.pending_env_key_imports.clone())
                 .unwrap_or_default(),
             llm_assistive_model: cloned!(v2.speech, assistive, llm_model),
+            agent_acp: cloned!(v2.speech, assistive, acp),
             llm_assistive_reasoning: cloned!(v2.speech, assistive, llm_reasoning),
             llm_assistive_provider: cloned!(v2.speech, assistive, provider),
             chat_zoom: copy!(v2.ui, chat_zoom),
@@ -3006,6 +3143,24 @@ impl UserSettings {
         })
     }
 
+    /// Replace Formatter Keywords with their canonical form and return it.
+    ///
+    /// The whole edit is refused when any limit is exceeded; the previous
+    /// list stays untouched and nothing is truncated. An empty result clears
+    /// the field. Persisting is the caller's `save`, which re-validates.
+    pub fn set_formatter_keywords<I, S>(
+        &mut self,
+        entries: I,
+    ) -> Result<Vec<String>, FormatterKeywordsError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let terms = normalize_formatter_keywords(entries)?;
+        self.formatter_keywords = (!terms.is_empty()).then(|| terms.clone());
+        Ok(terms)
+    }
+
     /// Persists current settings to disk as pretty-printed JSON.
     pub fn save(&self) -> anyhow::Result<()> {
         let _data_io = super::storage_reset::begin_app_data_io()?;
@@ -3084,7 +3239,7 @@ impl UserSettings {
             changed |= remove_json_keys_at(
                 &mut value,
                 &["speech", "assistive"],
-                &["llm_endpoint", "llm_model", "provider"],
+                &["llm_endpoint", "llm_model", "provider", "acp"],
             )?;
             changed |= remove_json_keys_at(
                 &mut value,
@@ -3120,6 +3275,7 @@ impl UserSettings {
                     "llm_assistive_endpoint",
                     "llm_assistive_model",
                     "llm_assistive_provider",
+                    "agent_acp",
                     "openai_oauth_client_id",
                     "anthropic_oauth_client_id",
                     "xai_oauth_client_id",
@@ -3151,6 +3307,10 @@ impl UserSettings {
         let path = Self::settings_path();
         if let Some(level) = self.formatting_level.as_deref() {
             FormattingPolicy::parse(level)?;
+        }
+        if let Some(terms) = self.formatter_keywords.as_deref() {
+            // Refuse the whole write; an oversized list is never truncated.
+            super::formatter_keywords::normalize_formatter_keywords(terms)?;
         }
         let v2 = self.to_v2();
         Self::validate_v2(&v2)?;

@@ -467,7 +467,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(keyRowSource.contains("Text(account)"))
     XCTAssertTrue(keyRowSource.contains("isSet ? \"Change\" : \"Add\""))
     XCTAssertTrue(
-      keyRowSource.contains("isSet ? \"Set\" : (optional ? \"Optional\" : \"Not set\")"))
+      keyRowSource.contains("CSStatusBadge(text: String(localized: \"Saved\"), mark: .saved)"))
+    XCTAssertTrue(keyRowSource.contains("Text(optional ? \"Optional\" : \"Not set\")"))
     let chip = try XCTUnwrap(keyRowSource.range(of: "editing.toggle()"))
     let field = try XCTUnwrap(keyRowSource.range(of: "if editing {"))
     XCTAssertLessThan(chip.lowerBound, field.lowerBound)
@@ -482,8 +483,10 @@ final class SettingsChromeContractTests: XCTestCase {
         "} else {\n        SettingsChipButton(\n          enabled: provider.accountLoginEnabled"))
     XCTAssertFalse(accountSource.contains("Advanced · OAuth client id…"))
 
-    // Red only for a real failure: an absent key and Sign out stay neutral.
-    XCTAssertTrue(keyRowSource.contains("isSet ? CSColor.olive : CSColor.secondaryInk"))
+    // Stored credentials are presence, not a successful service request.
+    // Only the explicit probe supplies the status tone; Sign out stays neutral.
+    XCTAssertTrue(keyRowSource.contains("private var accent: Color { CSColor.secondaryInk }"))
+    XCTAssertTrue(keyRowSource.contains("probeResult?.status.tone ?? .neutral"))
     XCTAssertFalse(rows.contains("\"Sign out\", tint: CSColor.terracotta"))
     XCTAssertFalse(panel.contains("\"Sign out\", tint: CSColor.terracotta"))
     XCTAssertTrue(panel.contains("optional: !provider.keyRequired || accountServesRequests"))
@@ -507,8 +510,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Keychain account",
       "Settings keys",
       "OAuth client id…",
-      "Set", "Not set", "Optional", "Change", "Add",
-      "%@ account", "Connected", "Connected as %@", "Not connected", "Sign out", "Sign in with %@",
+      "Saved", "Not set", "Optional", "Change", "Add",
+      "%@ account", "Saved account: %@", "Not connected", "Sign out", "Sign in with %@",
       "This address needs http:// or https://.",
       "This address needs ws:// or wss://.",
     ] {
@@ -519,7 +522,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(polish["Cloud transcription"], "Transkrypcje w chmurze")
     XCTAssertEqual(polish["File transcription"], "Transkrypcja plików")
     XCTAssertEqual(polish["Live transcription"], "Transkrypcja na żywo")
-    XCTAssertEqual(polish["Connected as %@"], "Połączono jako %@")
+    XCTAssertEqual(polish["Saved account: %@"], "Zapisane konto: %@")
+    XCTAssertNil(polish["Connected as %@"])
     // Views review 1–10 (Founder, 2026-10-20): one sentence that names both
     // upload paths; "You choose the mode under Dictation." is gone.
     XCTAssertEqual(
@@ -603,16 +607,22 @@ final class SettingsChromeContractTests: XCTestCase {
     let formatWait = try XCTUnwrap(lanes.range(of: "\"agent-channel-format-wait\""))
     let hold = try XCTUnwrap(lanes.range(of: "\"agent-send-hold-seconds\""))
     let chain = try XCTUnwrap(lanes.range(of: "\"agent-channel-chain\""))
-    let agentHeader = try XCTUnwrap(lanes.range(of: "String(localized: \"Built-in Agent\""))
+    let agentHeader = try XCTUnwrap(lanes.range(of: "localized: \"Built-in Agent\""))
+    let agentCard = try XCTUnwrap(lanes.range(of: "builtInAgentCard"))
+    let voiceCard = try XCTUnwrap(lanes.range(of: "voiceConversationCard"))
     let autoSend = try XCTUnwrap(lanes.range(of: "String(localized: \"Send automatically\")"))
     let delay = try XCTUnwrap(lanes.range(of: "\"agent-auto-send-delay\""))
     let takeEnd = try XCTUnwrap(lanes.range(of: "\"agent-take-voiceless-end\""))
-    let ordered = [
-      agentHeader, autoSend, delay, takeEnd, voiceHeader, policy, pause, voiceless, finish,
-      formatWait, hold, chain,
-    ]
-    for (earlier, later) in zip(ordered, ordered.dropFirst()) {
-      XCTAssertLessThan(earlier.lowerBound, later.lowerBound)
+    // Render order belongs to the card uses in body, independently of where
+    // their computed properties are declared. Keep field order inside each card.
+    for ordered in [
+      [agentHeader, agentCard, voiceHeader, voiceCard],
+      [autoSend, delay, takeEnd],
+      [policy, pause, voiceless, finish, formatWait, hold, chain],
+    ] {
+      for (earlier, later) in zip(ordered, ordered.dropFirst()) {
+        XCTAssertLessThan(earlier.lowerBound, later.lowerBound)
+      }
     }
     XCTAssertTrue(
       lanes.contains(".disabled(finish != .formatter)"), "the wait serves Formatting only")
@@ -622,7 +632,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(audio.contains("\"dictation-toggle-silence\""))
     XCTAssertTrue(audio.contains("value: $model.toggleSilenceSlider"))
     let details = try XCTUnwrap(lanes.range(of: "Active configuration details"))
-    XCTAssertLessThan(chain.lowerBound, details.lowerBound)
+    XCTAssertLessThan(voiceCard.lowerBound, details.lowerBound)
     XCTAssertTrue(lanes.contains("ForEach(channelRuntimeRows, id: \\.key)"))
     XCTAssertFalse(lanes.contains("Resolved runtime truth"))
 
@@ -643,7 +653,7 @@ final class SettingsChromeContractTests: XCTestCase {
         "Korekta i Smart. Max używa modelu Agenta.",
       "The model list needs an API key. You can enter a model ID by hand.":
         "Lista modeli wymaga klucza API. Model możesz wpisać ręcznie.",
-      "Connected account": "Połączone konto",
+      "Saved": "Zapisano",
       "Stored API key": "Zapisany klucz API",
       "Could not fetch %@ models. The API key was rejected. Check it under Providers.":
         "Nie udało się pobrać modeli %@. Klucz API został odrzucony. Sprawdź go w sekcji Dostawcy.",
@@ -665,8 +675,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "sent and hung up": "wysłane i rozłączone",
       "Silence limit in hands-free dictation": "Limit ciszy w dyktowaniu bez trzymania",
       "Hold before sending to Codescribe Bus": "Czas na korektę przed wysłaniem (Codescribe Bus)",
-      "The API key was rejected, so there is no model list. The account still works.":
-        "Klucz API został odrzucony, więc nie ma listy modeli. Konto nadal działa.",
+      "The API key was rejected, so there is no model list. The account remains saved.":
+        "Klucz API został odrzucony, więc lista modeli jest niedostępna. Konto pozostaje zapisane.",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
@@ -1126,10 +1136,14 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(
       section.contains("String(localized: \"mcp.server.enabled\", defaultValue: \"Enabled\")"))
     XCTAssertTrue(view.contains("HostingWindowReader(onWindow: adoptHostWindow)"))
-    for label in ["Server name", "Launch command", "Command arguments", "Server URL"] {
+    for label in ["Server name", "Launch command", "Server URL"] {
       XCTAssertTrue(section.contains("\"\(label)\", placeholder: \""), label)
     }
-    XCTAssertEqual(section.components(separatedBy: "labeledField(").count, 6)
+    XCTAssertEqual(section.components(separatedBy: "labeledField(").count, 5)
+    // Arguments are separate argv entries, each with its own editable field.
+    XCTAssertTrue(section.contains("fieldLabel(\"Command arguments\")"))
+    XCTAssertTrue(section.contains("ForEach($arguments) { $argument in"))
+    XCTAssertTrue(section.contains("TextField(\"Argument\", text: $argument.value)"))
     XCTAssertTrue(section.contains("fieldLabel(\"Access token (optional)\")"))
     XCTAssertTrue(
       section.contains("guard addError == nil else {"),
@@ -1202,7 +1216,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Local process": "Proces lokalny",
       "HTTP connection": "Połączenie HTTP",
       "Server name": "Nazwa serwera",
-      "Launch command": "Polecenie uruchomieniowe",
+      "Launch command": "Polecenie",
       "Command arguments": "Argumenty polecenia",
       "Server URL": "Adres URL serwera",
       "Access token (optional)": "Token dostępu (opcjonalnie)",
@@ -1731,8 +1745,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(tokens.contains("static var sheetDarkHex:"))
     XCTAssertEqual(SheetShade.todayDark.hex, 0x16161C)
     XCTAssertEqual(SheetShade.todayLight.hex, 0xF6F3EE)
-    XCTAssertEqual(SheetShade.darkChoices.map(\.rawValue), ["16161C", "1B1B1D", "201F1E"])
-    XCTAssertEqual(SheetShade.lightChoices.map(\.rawValue), ["F6F3EE", "DED9D3", "D9D3CD"])
+    XCTAssertEqual(SheetShade.darkChoices.map(\.rawValue), ["16161C", "1B1B1D", "201F1E", "070707"])
+    XCTAssertEqual(SheetShade.lightChoices.map(\.rawValue), ["F6F3EE", "DED9D3", "D9D3CD", "F0F0F0"])
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Appearance": "Wygląd",
@@ -1743,12 +1757,11 @@ final class SettingsChromeContractTests: XCTestCase {
       // "Today" already lived in the catalog (thread rail) as "Dzisiaj"; one key, one word.
       "Today": "Dzisiaj", "Soft graphite": "Miękki grafit", "Warm carbon": "Ciepły węgiel",
       "Limestone": "Wapień", "Travertine": "Trawertyn",
-      "Codescribe will restart with the new shade. Your recording must finish first.":
-        "Codescribe uruchomi się ponownie z nowym odcieniem. Nagranie musi się najpierw zakończyć.",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
     }
+    XCTAssertNil(polish["Codescribe will restart with the new shade. Your recording must finish first."])
   }
 
   /// One switch, one track width (Founder, 2026-10-20): every switch in

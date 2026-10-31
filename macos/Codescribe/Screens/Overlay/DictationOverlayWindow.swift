@@ -44,7 +44,9 @@ struct OverlayCursorState {
   mutating func update(
     zone: OverlayPointerZone, cursor: ObjectIdentifier?, region: ObjectIdentifier? = nil
   ) -> Bool {
-    let changed = self.zone != zone || self.cursor != cursor || self.region != region
+    // Adjacent mounted controls share the panel's cursor authority. Changing
+    // only the region does not change its image or require registering it again.
+    let changed = self.zone != zone || self.cursor != cursor
     let releasesResize: Bool
     if case .resize = self.zone, self.cursor != nil, cursor == nil,
       zone == .interior || zone == .menu
@@ -108,6 +110,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     var maxCursorSeconds = 0.0
   }
   private var pointerMetrics = PointerMetrics()
+  private static let pointerDiagnosticQueue = DispatchQueue(
+    label: "io.vetcoders.codescribe.pointer-diagnostics", qos: .utility)
   /// Selectable SwiftUI text that opens the keyboard gate without owning clicks.
   let selectableTextRegions = NSHashTable<NSView>.weakObjects()
   /// Grow-only expanded height for a candidate width. Nil keeps the remembered
@@ -139,7 +143,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var channelCapturing = false
   var miniSize: NSSize {
     NSSize(
-      width: channelMapEnabled ? miniNaturalWidth : (channelCapturing ? 164 : 200),
+      width: channelMapEnabled ? miniNaturalWidth : DictationOverlayWindow.miniBrandWidth,
       height: DictationOverlayWindow.collapsedHeight)
   }
 
@@ -887,15 +891,19 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       // windows schedule no work, and native cursor tracking remains unchanged.
       if now - pointerMetrics.since >= 2 {
         let m = pointerMetrics
-        sink.append(
-          category: "overlay-pointer",
+        let date = Date()
+        let message =
           "window=\(windowNumber) surface=\(contentSurface.rawValue) mode=\(presentationMode) "
-            + "seconds=\(now - m.since) decisions=\(m.decisions) writes=\(m.writes) "
-            + "zoneChanges=\(m.zoneChanges) cursorChanges=\(m.cursorChanges) regionChanges=\(m.regionChanges) "
-            + "boundaryResets=\(m.boundaryResets) mountingResets=\(m.mountingResets) orderOutResets=\(m.orderOutResets) "
-            + "decisionMs=\(m.decisionSeconds * 1000) cursorMs=\(m.cursorSeconds * 1000) maxCursorMs=\(m.maxCursorSeconds * 1000)"
-        )
+          + "seconds=\(now - m.since) decisions=\(m.decisions) writes=\(m.writes) "
+          + "zoneChanges=\(m.zoneChanges) cursorChanges=\(m.cursorChanges) regionChanges=\(m.regionChanges) "
+          + "boundaryResets=\(m.boundaryResets) mountingResets=\(m.mountingResets) orderOutResets=\(m.orderOutResets) "
+          + "decisionMs=\(m.decisionSeconds * 1000) cursorMs=\(m.cursorSeconds * 1000) maxCursorMs=\(m.maxCursorSeconds * 1000)"
         pointerMetrics = PointerMetrics()
+        // Timestamp the observation now; formatting, the log lock and file I/O
+        // must not delay the next mouse event. All panels share one FIFO queue.
+        Self.pointerDiagnosticQueue.async {
+          sink.append(category: "overlay-pointer", message, at: date)
+        }
       }
     }
     return shouldSet
@@ -1269,12 +1277,37 @@ enum DictationOverlayWindow {
   static let miniBrandDot: CGFloat = 9
   static let miniRowSpacing: CGFloat = 4
   static let miniBrandGap: CGFloat = 6
+  /// The vertical counter uses the same eight-point rhythm as trailing controls.
+  static let miniStackedBrandGap: CGFloat = 8
   static let miniTrailingControls: CGFloat = 81
   /// Mini with no counter: padding, the close dot, the two row gaps around the
   /// empty centre and the trailing controls = 130. The capsule never gets
   /// narrower than its controls.
   static let miniFloorWidth =
     miniOuterPadding + miniBrandDot + 2 * miniRowSpacing + miniTrailingControls
+
+  /// Mini with the brand word, while the channel map stays out of mini: the
+  /// padding, the close dot, the word after its gap, the 6 pt row gaps either
+  /// side of the 4 pt closed centre and the trailing controls. Measured the
+  /// way the counter form is. The former fixed 200 pt (164 while capturing)
+  /// was narrower than this row, so the header's clip cut the fold control
+  /// at the capsule's edge (Maciej, 2026-10-30 14:24: "w pigułce mini jest
+  /// bug rozmieszczenia"). The capsule never gets narrower than its controls.
+  static let miniWordRowSpacing: CGFloat = 6
+  static let miniWordClosedCentre: CGFloat = 4
+  static let miniWordSize: CGFloat = 13
+  static let miniWordTracking: CGFloat = -0.3
+  @MainActor
+  static let miniBrandWidth: CGFloat = {
+    let font = NSFont.systemFont(ofSize: miniWordSize, weight: .bold)
+    let word =
+      ceil(
+        ("codescribe" as NSString).size(withAttributes: [.font: font, .kern: miniWordTracking])
+          .width) + 1
+    return ceil(
+      miniOuterPadding + miniBrandDot + miniBrandGap + word + 2 * miniWordRowSpacing
+        + miniWordClosedCentre + miniTrailingControls)
+  }()
 
   /// Mini's natural width (spec §13.4): its floor plus, while the map holds a
   /// channel, the brand gap and the channel counter as it is drawn, the agent
@@ -1289,7 +1322,7 @@ enum DictationOverlayWindow {
     let counter = OverlayChannelPill.counterWidth(
       figure: String(map.count), openDigitCount: map.openDigits.count,
       scale: OverlayChannelPill.headerScale(textScale), stacked: stacked)
-    return ceil(miniFloorWidth + miniBrandGap + counter)
+    return ceil(miniFloorWidth + (stacked ? miniStackedBrandGap : miniBrandGap) + counter)
   }
 
   /// Compact's floor, and its whole width while no channel is mapped.

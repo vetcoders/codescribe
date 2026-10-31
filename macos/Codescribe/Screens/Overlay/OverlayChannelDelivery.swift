@@ -37,8 +37,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private var retiredPlaybackTickets: [String: [String]] = [:]
     private var messageSequence: UInt64 = 0
     private(set) var revision: UInt64 = 0
-    /// Older cached projections discarded peer destinations and must be reread.
-    private(set) var destinationVersion: Int? = 1
+    /// Older projections omitted shared-journal attachments and broadcast sessions.
+    private(set) var destinationVersion: Int? = 2
     /// A pre-hold checkpoint must replay its source rows to recover hold metadata.
     private var holdProjectionVersion: Int = 1
     /// Synthesized Decodable requires this key. Older checkpoints fail decode
@@ -113,12 +113,14 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       }
       if schema == "codescribe.channel-session.v1", row["kind"] as? String == "channel_session",
         let channel = row["channel"] as? String,
-        let provider = row["provider"] as? String,
-        let providerSession = row["provider_session_id"] as? String,
         let sessionID = row["session_id"] as? String,
         let openedAt = row["opened_at"] as? String,
         let state = row["state"] as? String
       {
+        // Broadcast sessions have a frozen recipient list, not one provider.
+        let provider = row["provider"] as? String ?? ""
+        let providerSession = row["provider_session_id"] as? String ?? ""
+        guard channel == "0" || (!provider.isEmpty && !providerSession.isEmpty) else { return }
         if state == "segment_sealed" {
           endedSessions.insert(sessionID)
           return
@@ -132,6 +134,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           && !admitsOpening(channel: channel, session: sessionID, openedAt: openedAt)
         {
           return
+        }
+        if state == "open", let entries = row["recipients"] as? [[String: Any]] {
+          let owners = entries.compactMap(OverlayConversationOwner.init(row:))
+          if !owners.isEmpty && owners.count == entries.count {
+            captureRecipients[sessionID] = owners
+          }
         }
         if state == "sealed" { endedSessions.insert(sessionID) }
         sessions[channel] = Session(
@@ -426,7 +434,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     }
 
     var referencedCaptureAttachmentCommitBuses: Set<String> {
-      Set((captureAttachmentStages ?? [:]).values.map(\.commitBus))
+      Set(
+        (captureAttachmentStages ?? [:]).values.compactMap {
+          $0.recipientBusPaths.contains($0.commitBus) ? $0.commitBus : nil
+        })
     }
 
     /// The capture's opening and frozen audience exist before its first words.
@@ -448,7 +459,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
     func conversations(
       busPath: String, now: Date = Date(),
-      verifiedCaptureAttachmentCommits: [String: String] = [:]
+      verifiedCaptureAttachmentCommits: [String: String] = [:],
+      sharedCaptureAttachmentBusPath: String? = nil
     ) -> [OverlayConversation] {
       var verifiedCommits = (captureAttachmentCommits ?? [:]).reduce(into: [String: String]()) {
         result, entry in
@@ -466,7 +478,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           result.busPath = busPath
           result.sourceRevision = messageRevisions[message.id]
           Self.mergeCommittedCaptureAttachments(
-            into: &result, commits: verifiedCommits, stages: captureAttachmentStages ?? [:])
+            into: &result, commits: verifiedCommits, stages: captureAttachmentStages ?? [:],
+            sharedBusPath: sharedCaptureAttachmentBusPath)
           return result.projectingDelivery(at: now)
         }
       let broadcastQuestions = ordered.filter {
@@ -1190,8 +1203,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       let owners = rawRecipients.compactMap(OverlayConversationOwner.init(row:))
       let recipientBusPaths = rawRecipients.compactMap { $0["bus"] as? String }
       guard !owners.isEmpty, owners.count == rawRecipients.count,
-        recipientBusPaths.count == rawRecipients.count,
-        recipientBusPaths.contains(commitBus)
+        recipientBusPaths.count == rawRecipients.count
       else { return }
       let occurrenceID =
         "utterance:"
@@ -1238,7 +1250,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private static func mergeCommittedCaptureAttachments(
       into message: inout OverlayConversationMessage,
       commits: [String: String],
-      stages: [String: OverlayCaptureAttachmentReceipt]
+      stages: [String: OverlayCaptureAttachmentReceipt],
+      sharedBusPath: String?
     ) {
       guard message.kind == .user, let session = message.captureSessionID else { return }
       let segments = message.captureAttachmentSegments ?? []
@@ -1248,7 +1261,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       for (stageID, commitBus) in commits.sorted(by: { $0.key < $1.key }) {
         guard let stage = stages[stageID], stage.stageID == stageID,
           stage.commitBus == commitBus, stage.captureSessionID == session,
-          stage.recipientBusPaths.contains(commitBus),
+          stage.recipientBusPaths.contains(commitBus) || commitBus == sharedBusPath,
           stage.audience == message.captureAudience,
           !recipients.isEmpty, Set(stage.recipientIDs) == recipients
         else { continue }
@@ -1529,6 +1542,13 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let index = UInt32(suffix), index >= 1
       else { return session }
       return prefix
+    }
+
+    static func sameCaptureSession(_ lhs: String, _ rhs: String) -> Bool {
+      if lhs == rhs { return true }
+      let leftParent = channelSessionID(of: lhs)
+      let rightParent = channelSessionID(of: rhs)
+      return leftParent == rightParent && (lhs == leftParent || rhs == rightParent)
     }
 
     private static func captureSampleRateHz(_ row: [String: Any]) -> Double? {
@@ -1977,6 +1997,10 @@ struct OverlayConversation: Equatable, Identifiable, Sendable {
   /// The human mailbox has no agent lease, microphone or numeric shortcut.
   /// Its internal route remains channel 10; only the presentation is named.
   var isHumanInbox: Bool { id == "10" && channel == "10" && owner == nil }
+  /// The ownerless conversations whose composer writes to a chosen set of
+  /// agents through draft sync: the human inbox builds the set ("To:"),
+  /// 0 · All narrows one message to it ("Send only to…").
+  var isDraftSyncSource: Bool { owner == nil && (isHumanInbox || (id == "0" && channel == "0")) }
   var displayTitle: String {
     isHumanInbox || channel.isEmpty ? name : "\(channel) · \(name)"
   }

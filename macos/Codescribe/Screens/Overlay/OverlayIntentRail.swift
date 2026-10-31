@@ -130,6 +130,8 @@ struct OverlayIntentRail: View {
   let phase: String
   let intents: [OverlayIntent]
   let palette: OverlayAppearancePalette
+  /// The automatic level, shown beside the one-take choices. Picking a level
+  /// here formats this take only and never changes it.
   var formatLevel: FormattingPolicyOption = .correction
   var cloudRetranscribeConfigured = false
   /// Specific reason the shown take cannot be transcribed again (an archived
@@ -421,21 +423,40 @@ struct OverlayIntentRail: View {
       Image(systemName: intent.systemImage).frame(width: 24, height: 24)
     } detail: { close in
       if intent == .format {
-        HStack(spacing: 10) {
-          ForEach([FormattingPolicyOption.correction, .smart, .max], id: \.rawValue) {
-            level in
-            Button(level.visibleName) {
-              close()
-              formatOnce(level)
+        VStack(alignment: .leading, spacing: 8) {
+          HStack(spacing: 10) {
+            ForEach(Self.formatOnceLevels, id: \.rawValue) { level in
+              Button(level.visibleName) {
+                close()
+                formatOnce(level)
+              }
+              .conversationActionHover(
+                restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
+              .accessibilityIdentifier("overlay-format-level-\(level.rawValue)")
             }
-            .conversationActionHover(
-              restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
-            .accessibilityIdentifier("overlay-format-level-\(level.rawValue)")
           }
+          .buttonStyle(.plain)
+          .controlSize(.small)
+          .font(CSFont.ui(11, .medium))
+          // Max is the Agent with its history and tools, asked for this take
+          // only; the automatic level below stays as it is.
+          Text(
+            String(
+              localized: "overlay.format.maxHint",
+              defaultValue: "Max asks the Agent for this take, with its history and tools.",
+              comment: "Format menu: what the Max choice does")
+          )
+          .fixedSize(horizontal: false, vertical: true)
+          Text(
+            String(
+              localized: "overlay.format.automaticLevel",
+              defaultValue: "Automatic formatting stays \(formatLevel.automaticLevel.visibleName).",
+              comment: "Format menu: one-take formats keep this automatic level (placeholder)"
+            )
+          )
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("overlay-format-automatic-level")
         }
-        .buttonStyle(.plain)
-        .controlSize(.small)
-        .font(CSFont.ui(11, .medium))
       } else if intent == .retranscribe {
         VStack(alignment: .leading, spacing: 8) {
           Text(String(localized: "Transcribe this take again"))
@@ -626,6 +647,10 @@ struct OverlayIntentRail: View {
     onInteraction()
     onRetranscribe(pass)
   }
+
+  /// One-take format choices. Max stays here whatever automatic level is
+  /// selected; Off is not a format.
+  static let formatOnceLevels: [FormattingPolicyOption] = [.correction, .smart, .max]
 
   func formatOnce(_ level: FormattingPolicyOption) {
     onInteraction()

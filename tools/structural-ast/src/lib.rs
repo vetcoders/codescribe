@@ -379,8 +379,14 @@ pub fn analyze(request: Request) -> Evidence {
         ("finish", "core/audio/streaming_recorder.rs"),
         ("copy_stop_error", "core/audio/streaming_recorder.rs"),
         ("finalize_take_archive", "core/audio/streaming_recorder.rs"),
-        ("terminal_finality", "core/pipeline/acoustic_ledger.rs"),
-        ("has_no_capture_facts", "core/pipeline/acoustic_ledger.rs"),
+        (
+            "terminal_finality",
+            "core/pipeline/acoustic_ledger/fence.rs",
+        ),
+        (
+            "has_no_capture_facts",
+            "core/pipeline/acoustic_ledger/fence.rs",
+        ),
         (
             "matches_refused_document",
             "app/presentation/transcript_bus.rs",

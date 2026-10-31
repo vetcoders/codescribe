@@ -1105,15 +1105,23 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.gripSize.width"))
     XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.gripSize.height"))
     XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.gripBottomInset)"))
-    XCTAssertTrue(chrome.contains("sideIndicatorOpacity(pointerInside: pointerInsideOverlay)"))
-    XCTAssertTrue(chrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
-    XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
-    XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
+    let pointerChrome = try section(
+      of: source, from: "private struct OverlayPointerHoverChrome",
+      to: "private struct OverlayCloseButton")
+    XCTAssertTrue(
+      pointerChrome.contains("sideIndicatorOpacity(pointerInside: pointerInsideOverlay)"))
+    XCTAssertTrue(
+      pointerChrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
+    XCTAssertTrue(pointerChrome.contains("transaction.disablesAnimations = true"))
+    XCTAssertTrue(pointerChrome.contains("pointerInsideOverlay = inside"))
+    XCTAssertTrue(source.contains("OverlayPointerHoverChrome("))
+    XCTAssertFalse(chrome.contains("pointerInsideOverlay"))
+    let passiveChrome = chrome + pointerChrome
     // The conversation's frame reader (sidebar fold, 2026-10-26) is the ninth:
     // like the drawer's and the rail's readers it takes no click and, being
     // Color.clear, hides nothing from accessibility.
-    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 9)
-    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 4)
+    XCTAssertEqual(passiveChrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 9)
+    XCTAssertEqual(passiveChrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 4)
     // The folded list's rail (2026-10-19) brought two of them: its leading
     // hairline and its frame reader, neither of which takes a click.
     let rail = try section(
@@ -1137,10 +1145,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     try withPanel(state: .previewListening()) { panel, root in
       let elements = accessibilityTree(root)
       XCTAssertFalse(elements.isEmpty, "The rendered accessibility hierarchy must be observable")
-      let header = try headerSource(overlaySource())
+      let source = try overlaySource()
+      let header = try headerSource(source)
       let close = try section(
-        of: header, from: "private var closeButton: some View",
-        to: "private func recordingControls")
+        of: source, from: "private struct OverlayCloseButton",
+        to: "struct DictationOverlayView")
       XCTAssertTrue(close.contains("ModeDot("))
       XCTAssertTrue(close.contains("color: CSColor.terracotta"))
       XCTAssertTrue(close.contains("if closeDotHovered {"))
@@ -1165,22 +1174,27 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
     let source = try overlaySource()
     let header = try headerSource(source)
-    let close = try section(
+    let call = try section(
       of: header, from: "private var closeButton: some View",
       to: "private func recordingControls")
+    let close = try section(
+      of: source, from: "private struct OverlayCloseButton",
+      to: "struct DictationOverlayView")
+    XCTAssertTrue(call.contains("OverlayCloseButton(palette: palette)"))
+    XCTAssertTrue(close.contains("Button(action: onClose)"))
     XCTAssertTrue(
-      close.contains("state.relayIntent(.close)"),
+      call.contains("state.relayIntent(.close)"),
       "The brand dot must relay the close intent")
     XCTAssertTrue(
-      header.contains(".accessibilityIdentifier(\"overlay-brand-close-dot\")"),
+      close.contains(".accessibilityIdentifier(\"overlay-brand-close-dot\")"),
       "The brand dot must stay discoverable as the close control")
     XCTAssertTrue(
-      header.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
+      close.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
     XCTAssertTrue(
       close.contains("color: CSColor.terracotta"),
       "The close control keeps the brand color regardless of engine state")
     XCTAssertEqual(header.components(separatedBy: "state.relayIntent(.close)").count - 1, 1)
-    XCTAssertEqual(header.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
+    XCTAssertEqual(source.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
     // The dot keeps its pre-b83e95538 place: the hit target grows through the
     // content shape, never through a frame that shifts the dot or the wordmark.
     XCTAssertTrue(close.contains("size: 9"))

@@ -1510,6 +1510,12 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func getAssistivePrompt()  -> String
 
     /**
+     * Saved formatter Keywords, normalized, from one runtime snapshot. A
+     * failed read serves the last good snapshot instead of an empty list.
+     */
+    func getFormatterKeywords()  -> [String]
+
+    /**
      * Current BASE formatting prompt (the editable `formatting.txt`, WITHOUT
      * the appended `*_tuning.txt`). Falls back to the built-in default when the
      * file does not exist yet.
@@ -1674,7 +1680,8 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
 
     /**
      * Persist a normalized Auto Format policy and return prompt-free
-     * post-write truth. Unknown policy IDs fail without changing disk state.
+     * post-write truth. Only off, correction and smart are automatic; Max and
+     * unknown policy IDs fail without changing disk state.
      */
     func setAutoFormatLevel(level: String) throws  -> CsTrayToggles
 
@@ -1684,6 +1691,15 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      * mode is `off`, so an armed `comfort` choice survives a redundant on.
      */
     func setAutoPasteEnabled(enabled: Bool) throws  -> CsTrayToggles
+
+    /**
+     * Replace the formatter Keywords and return the normalized stored list.
+     * Only `formatter_keywords` changes; the automatic level and every other
+     * setting keep their stored values. The settings owner refuses an
+     * oversized list whole; nothing is truncated and the error is returned.
+     * An empty list removes the Keywords.
+     */
+    func setFormatterKeywords(keywords: [String]) throws  -> [String]
 
     /**
      * Save the BASE formatting prompt through the core's atomic writer.
@@ -2076,6 +2092,18 @@ open func getAssistivePrompt() -> String  {
 }
 
     /**
+     * Saved formatter Keywords, normalized, from one runtime snapshot. A
+     * failed read serves the last good snapshot instead of an empty list.
+     */
+open func getFormatterKeywords() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_get_formatter_keywords(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * Current BASE formatting prompt (the editable `formatting.txt`, WITHOUT
      * the appended `*_tuning.txt`). Falls back to the built-in default when the
      * file does not exist yet.
@@ -2393,7 +2421,8 @@ open func setAssistivePrompt(content: String)throws   {try rustCallWithError(Ffi
 
     /**
      * Persist a normalized Auto Format policy and return prompt-free
-     * post-write truth. Unknown policy IDs fail without changing disk state.
+     * post-write truth. Only off, correction and smart are automatic; Max and
+     * unknown policy IDs fail without changing disk state.
      */
 open func setAutoFormatLevel(level: String)throws  -> CsTrayToggles  {
     return try  FfiConverterTypeCsTrayToggles_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -2414,6 +2443,22 @@ open func setAutoPasteEnabled(enabled: Bool)throws  -> CsTrayToggles  {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_set_auto_paste_enabled(
             self.uniffiCloneHandle(),
         FfiConverterBool.lower(enabled),$0
+    )
+})
+}
+
+    /**
+     * Replace the formatter Keywords and return the normalized stored list.
+     * Only `formatter_keywords` changes; the automatic level and every other
+     * setting keep their stored values. The settings owner refuses an
+     * oversized list whole; nothing is truncated and the error is returned.
+     * An empty list removes the Keywords.
+     */
+open func setFormatterKeywords(keywords: [String])throws  -> [String]  {
+    return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_set_formatter_keywords(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceString.lower(keywords),$0
     )
 })
 }
@@ -14409,7 +14454,17 @@ public struct CsSettings: Equatable, Hashable {
      * Agent reasoning level: `default` (the model's own) or a chosen level.
      */
     public var llmAssistiveReasoning: String
+    /**
+     * Automatic formatting policy: off, correction or smart. A stored legacy
+     * `max`/`creative` reads as smart here; Max is invoked through Format.
+     */
     public var formattingLevel: String?
+    /**
+     * Formatter Keywords: preferred vocabulary given as context to
+     * Correction, Smart and Max. Normalized terms from the same seal; empty
+     * means no extra context. Written only through `set_formatter_keywords`.
+     */
+    public var formatterKeywords: [String]
     public var whisperModel: String?
     /**
      * Read-only diagnostic env override captured by the runtime snapshot.
@@ -14569,7 +14624,16 @@ public struct CsSettings: Equatable, Hashable {
          */llmFormattingReasoning: String, llmAssistiveProvider: String?, llmAssistiveModel: String?,
         /**
          * Agent reasoning level: `default` (the model's own) or a chosen level.
-         */llmAssistiveReasoning: String, formattingLevel: String?, whisperModel: String?,
+         */llmAssistiveReasoning: String,
+        /**
+         * Automatic formatting policy: off, correction or smart. A stored legacy
+         * `max`/`creative` reads as smart here; Max is invoked through Format.
+         */formattingLevel: String?,
+        /**
+         * Formatter Keywords: preferred vocabulary given as context to
+         * Correction, Smart and Max. Normalized terms from the same seal; empty
+         * means no extra context. Written only through `set_formatter_keywords`.
+         */formatterKeywords: [String], whisperModel: String?,
         /**
          * Read-only diagnostic env override captured by the runtime snapshot.
          * ASR mode owns the default; Settings never writes this value.
@@ -14676,6 +14740,7 @@ public struct CsSettings: Equatable, Hashable {
         self.llmAssistiveModel = llmAssistiveModel
         self.llmAssistiveReasoning = llmAssistiveReasoning
         self.formattingLevel = formattingLevel
+        self.formatterKeywords = formatterKeywords
         self.whisperModel = whisperModel
         self.layeredTranscription = layeredTranscription
         self.agentWorkspaceRoots = agentWorkspaceRoots
@@ -14780,6 +14845,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 llmAssistiveModel: FfiConverterOptionString.read(from: &buf),
                 llmAssistiveReasoning: FfiConverterString.read(from: &buf),
                 formattingLevel: FfiConverterOptionString.read(from: &buf),
+                formatterKeywords: FfiConverterSequenceString.read(from: &buf),
                 whisperModel: FfiConverterOptionString.read(from: &buf),
                 layeredTranscription: FfiConverterOptionString.read(from: &buf),
                 agentWorkspaceRoots: FfiConverterSequenceString.read(from: &buf),
@@ -14872,6 +14938,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.llmAssistiveModel, into: &buf)
         FfiConverterString.write(value.llmAssistiveReasoning, into: &buf)
         FfiConverterOptionString.write(value.formattingLevel, into: &buf)
+        FfiConverterSequenceString.write(value.formatterKeywords, into: &buf)
         FfiConverterOptionString.write(value.whisperModel, into: &buf)
         FfiConverterOptionString.write(value.layeredTranscription, into: &buf)
         FfiConverterSequenceString.write(value.agentWorkspaceRoots, into: &buf)
@@ -16197,7 +16264,8 @@ public struct CsTrayToggles: Equatable, Hashable {
      */
     public var autoPasteEnabled: Bool
     /**
-     * Normalized automatic formatting policy: off, correction, smart, or max.
+     * Normalized automatic formatting policy: off, correction or smart.
+     * A stored legacy `max`/`creative` reads as smart.
      */
     public var formattingLevel: String
     /**
@@ -16230,7 +16298,8 @@ public struct CsTrayToggles: Equatable, Hashable {
          * Never persisted; `paste_mode` is the one stored choice.
          */autoPasteEnabled: Bool,
         /**
-         * Normalized automatic formatting policy: off, correction, smart, or max.
+         * Normalized automatic formatting policy: off, correction or smart.
+         * A stored legacy `max`/`creative` reads as smart.
          */formattingLevel: String,
         /**
          * UI-initiated recording starts in the assistive lane when enabled.
@@ -16654,6 +16723,10 @@ public func FfiConverterTypeCsVoiceLabSaveResult_lower(_ value: CsVoiceLabSaveRe
 public struct CsWhisperModelCatalog: Equatable, Hashable {
     public var options: [CsWhisperModelOption]
     /**
+     * Optional cache roots still being read; available rows remain selectable.
+     */
+    public var discoveryPending: Bool
+    /**
      * Effective configured reference (env → settings.json → env file → default).
      */
     public var configured: String
@@ -16676,6 +16749,9 @@ public struct CsWhisperModelCatalog: Equatable, Hashable {
     // declare one manually.
     public init(options: [CsWhisperModelOption],
         /**
+         * Optional cache roots still being read; available rows remain selectable.
+         */discoveryPending: Bool,
+        /**
          * Effective configured reference (env → settings.json → env file → default).
          */configured: String,
         /**
@@ -16690,6 +16766,7 @@ public struct CsWhisperModelCatalog: Equatable, Hashable {
          * above the picker shadows the saved selection; nil otherwise.
          */overrideKind: String?) {
         self.options = options
+        self.discoveryPending = discoveryPending
         self.configured = configured
         self.resolvedPath = resolvedPath
         self.loaded = loaded
@@ -16711,6 +16788,7 @@ public struct FfiConverterTypeCsWhisperModelCatalog: FfiConverterRustBuffer {
         return
             try CsWhisperModelCatalog(
                 options: FfiConverterSequenceTypeCsWhisperModelOption.read(from: &buf),
+                discoveryPending: FfiConverterBool.read(from: &buf),
                 configured: FfiConverterString.read(from: &buf),
                 resolvedPath: FfiConverterOptionString.read(from: &buf),
                 loaded: FfiConverterOptionString.read(from: &buf),
@@ -16720,6 +16798,7 @@ public struct FfiConverterTypeCsWhisperModelCatalog: FfiConverterRustBuffer {
 
     public static func write(_ value: CsWhisperModelCatalog, into buf: inout [UInt8]) {
         FfiConverterSequenceTypeCsWhisperModelOption.write(value.options, into: &buf)
+        FfiConverterBool.write(value.discoveryPending, into: &buf)
         FfiConverterString.write(value.configured, into: &buf)
         FfiConverterOptionString.write(value.resolvedPath, into: &buf)
         FfiConverterOptionString.write(value.loaded, into: &buf)
@@ -22065,6 +22144,8 @@ public func lexiconCustomEntries()throws  -> [CsLexiconEntry]  {
 /**
  * Validate a newly entered signed key. The successful explicit validation is
  * Active and its timestamp is persisted by `LicenseService` with the key.
+ * Live Swift consumer: `Services/LicenseService.swift` calls `licenseActivate`.
+ * UniFFI exports have no Rust caller edge; that does not make this dead code.
  */
 public func licenseActivate(key: String, nowUnixSeconds: Int64)throws  -> CsLicenseStatus  {
     return try  FfiConverterTypeCsLicenseStatus_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -22170,6 +22251,8 @@ public func qualityRuleCandidates(minOccurrences: UInt64)throws  -> [CsRuleCandi
 /**
  * Teach live dictionary from quality store (corrections.jsonl + proposed.jsonl).
  * Product: Dictionary panel "Teach" so rules leave the udawany 0-learned state.
+ * Live Swift consumer: `Screens/Settings/SettingsEngine.swift` calls
+ * `qualityTeachDictionaryFromStore`; retain this cross-language entry point.
  */
 public func qualityTeachDictionaryFromStore()throws  -> CsDictionaryTeachResult  {
     return try  FfiConverterTypeCsDictionaryTeachResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -22362,6 +22445,9 @@ public func stopSpeaking()  {try! rustCall() {
 }
 /**
  * Snapshot the canonical local-Whisper catalog for Settings → Dictation.
+ * Live Swift consumer: `Screens/Settings/SettingsEngine.swift` calls
+ * `whisperModelCatalog` through `WhisperModelCatalogIO` off the main actor.
+ * No Rust caller edge is expected for this UniFFI product entry point.
  */
 public func whisperModelCatalog() -> CsWhisperModelCatalog  {
     return try!  FfiConverterTypeCsWhisperModelCatalog_lift(try! rustCall() {
@@ -22433,7 +22519,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_lexicon_custom_entries() != 24996) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_license_activate() != 8539) {
+    if (uniffi_codescribe_ffi_checksum_func_license_activate() != 35835) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_license_status() != 13036) {
@@ -22460,7 +22546,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_quality_rule_candidates() != 65230) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_quality_teach_dictionary_from_store() != 46244) {
+    if (uniffi_codescribe_ffi_checksum_func_quality_teach_dictionary_from_store() != 34311) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_teach_span() != 20307) {
@@ -22511,7 +22597,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_stop_speaking() != 21833) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_whisper_model_catalog() != 28456) {
+    if (uniffi_codescribe_ffi_checksum_func_whisper_model_catalog() != 47265) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_whisper_model_status() != 33505) {
@@ -22619,6 +22705,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_get_assistive_prompt() != 46234) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_get_formatter_keywords() != 59150) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_get_formatting_prompt() != 56109) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -22697,10 +22786,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_assistive_prompt() != 16734) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_format_level() != 8217) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_format_level() != 8771) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_paste_enabled() != 24266) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_formatter_keywords() != 4195) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_formatting_prompt() != 21880) {

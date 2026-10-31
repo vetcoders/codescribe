@@ -81,6 +81,14 @@ pub fn export_portable(settings: &UserSettings) -> Result<PortableProfile> {
     let mut remapped = Vec::new();
     strip_secrets(&mut value);
     strip_generated_grants(&mut value);
+    // A portable profile cannot opt another machine into executing a local
+    // program. ACP selection is provisioned explicitly on the destination.
+    if let Some(assistive) = value
+        .pointer_mut("/speech/assistive")
+        .and_then(Value::as_object_mut)
+    {
+        assistive.remove("acp");
+    }
     remap_absolute_paths(&mut value, "", &mut remapped);
 
     let secret_refs = known_secret_refs();
@@ -220,6 +228,17 @@ pub fn import_portable_apply(profile_json: &str, settings_path: &Path) -> Result
 /// Reject profiles of the wrong kind or schema, then fail closed if the export
 /// appears to still carry plaintext secret material.
 fn validate_profile(profile: &PortableProfile) -> Result<()> {
+    if profile
+        .settings
+        .pointer("/speech/assistive/acp")
+        .is_some_and(|value| !value.is_null())
+        || profile
+            .settings
+            .get("agent_acp")
+            .is_some_and(|value| !value.is_null())
+    {
+        bail!("ACP executable selection is local-only; configure it explicitly on this machine");
+    }
     if profile.kind != "codescribe.portable_settings" {
         bail!("unsupported portable profile kind: {}", profile.kind);
     }

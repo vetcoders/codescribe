@@ -119,6 +119,14 @@ struct OverlayTranscriptVersion: Equatable, Identifiable {
   }
 }
 
+/// Provenance a quality receipt records for the bytes on the canvas: the
+/// acoustic text they descend from and the formatting level that produced
+/// them (Off for acoustic bytes). Built only from accepted Rust facts.
+struct OverlayQualityProvenance: Equatable {
+  let rawText: String
+  let formattingLevel: FormattingPolicyOption
+}
+
 /// The versions control, Undo and Redo for the transcript on the canvas. Pure:
 /// built from Rust's linear history (steps + cursor) and the overlay's
 /// pending/dirty facts. Picker, Undo and Redo share one cursor.
@@ -186,6 +194,30 @@ struct OverlayTranscriptVersionsPresentation: Equatable {
       localized: "overlay.versions.redo.action",
       defaultValue: "Redo \(OverlayTranscriptVersion.actionName(for: options[next].source))",
       comment: "Redo tooltip; the placeholder names the operation brought back")
+  }
+
+  /// What a quality receipt may say about the selected version, read from
+  /// the accepted history alone. A hand edit keeps the level of the version it
+  /// edited (a new operation after Undo drops the redo branch, so that is the
+  /// step before it). Raw is the acoustic version the selection descends
+  /// from. Nil when the history does not name the level: the receipt is then
+  /// not written rather than labelled with a guess.
+  var qualityProvenance: OverlayQualityProvenance? {
+    guard let current = options.firstIndex(where: \.isCurrent) else { return nil }
+    var base = current
+    while base > 0, options[base].source == .edited { base -= 1 }
+    let level: FormattingPolicyOption
+    switch options[base].source {
+    case .raw, .retranscribed: level = .off
+    case .formatted(let formatted?): level = formatted
+    case .formatted(nil), .lightPlus, .original, .edited, .other: return nil
+    }
+    guard
+      let acoustic = options[...base].last(where: {
+        $0.source == .raw || $0.source == .retranscribed
+      })
+    else { return nil }
+    return OverlayQualityProvenance(rawText: acoustic.text, formattingLevel: level)
   }
 
   static var pendingReason: String {

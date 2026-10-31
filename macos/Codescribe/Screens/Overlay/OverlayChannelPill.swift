@@ -71,9 +71,20 @@ struct OverlayChannelPill: View {
   var body: some View {
     Button(action: action) {
       label
+        .overlay(alignment: .bottomTrailing) {
+          if stackedFace {
+            stackedBadge.padding(3)
+          }
+        }
         .overlay(alignment: .topTrailing) {
           if stackedFace {
-            stackedBadge
+            if display.unread {
+              Circle()
+                .fill(palette.processingStatus.color)
+                .frame(width: 4, height: 4)
+                .padding(3)
+                .accessibilityHidden(true)
+            }
           } else if form == .rail && display.unreadCount > 0 {
             OverlayAgentUnreadBadge(
               count: display.unreadCount, palette: palette, textScale: textScale
@@ -94,9 +105,12 @@ struct OverlayChannelPill: View {
     .disabled(!display.enabled)
     .opacity(display.enabled ? 1 : 0.35)
     .modifier(OverlayDisconnectedRowDim(disconnected: display.disconnected))
-    .modifier(OverlayChannelPillHint(form: form, hint: hint, palette: palette, enabled: showsHint))
+    .modifier(
+      OverlayChannelPillHint(
+        form: form, hint: hint, palette: palette, enabled: showsHint, stacked: stackedFace)
+    )
     .accessibilityLabel(Text(verbatim: accessibilityText))
-    .accessibilityValue(Text(verbatim: accessibilityValue))
+    .accessibilityValue(Text(verbatim: spokenValue))
     .accessibilityAddTraits(display.selected ? .isSelected : [])
     .accessibilityIdentifier(identifier)
   }
@@ -107,24 +121,26 @@ struct OverlayChannelPill: View {
 
   private var recording: Bool { display.microphoneOpen && form != .rail }
 
+  private var spokenValue: String {
+    guard form == .counter, display.stacked, display.unread else { return accessibilityValue }
+    return [accessibilityValue, String(localized: "Unread replies")]
+      .filter { !$0.isEmpty }.joined(separator: ". ")
+  }
+
   /// Recording keeps the circled digits in both layouts; at rest the stacked
   /// counter shows its cards.
   private var stackedFace: Bool { form == .counter && display.stacked && !recording }
 
-  /// The agent count over the cards' corner, in the unread yellow while a
-  /// reply waits, so the badge also carries the dot it replaces.
+  /// The count remains neutral; the separate dot means unread replies. The
+  /// map contains at most nine agents, so the count fits inside the circle.
   private var stackedBadge: some View {
     Text(verbatim: display.figure)
-      .font(.system(size: Self.badgeSize * textScale, weight: .bold))
+      .font(.system(size: Self.badgeSize, weight: .semibold))
       .monospacedDigit()
-      .foregroundStyle(display.unread ? palette.desktopBackground.color : palette.primaryText.color)
-      .padding(.horizontal, 3 * textScale)
-      .frame(minWidth: Self.badgeDiameter * textScale, minHeight: Self.badgeDiameter * textScale)
-      .background(
-        Capsule(style: .continuous)
-          .fill(display.unread ? palette.processingStatus.color : palette.border.color)
-      )
-      .offset(x: 4 * textScale, y: -4 * textScale)
+      .foregroundStyle(palette.primaryText.color)
+      .frame(width: Self.badgeDiameter, height: Self.badgeDiameter)
+      .background(palette.desktopBackground.color, in: Circle())
+      .overlay { Circle().strokeBorder(palette.primaryText.color.opacity(0.25), lineWidth: 0.5) }
       .accessibilityHidden(true)
   }
 
@@ -169,10 +185,9 @@ struct OverlayChannelPill: View {
         .padding(.horizontal, Self.chipPadding * textScale)
       case .counter:
         if stackedFace {
-          Image(systemName: Self.stackedCardsSymbol)
-            .font(.system(size: Self.nameSize * textScale, weight: .semibold))
-            .foregroundStyle(palette.agentAccent.color)
-            .frame(width: Self.headerHeight, height: Self.headerHeight)
+          OverlayMicrophoneGlyph(
+            symbol: Self.stackedCardsSymbol, tint: palette.primaryText.color,
+            markOffset: CGSize(width: -2.5, height: -2.5))
         } else if display.microphoneOpen {
           HStack(spacing: Self.counterGap * textScale) {
             ForEach(display.openDigits, id: \.self) { digit in
@@ -193,7 +208,7 @@ struct OverlayChannelPill: View {
     }
     .foregroundStyle(tint)
     .frame(height: height)
-    .background(Capsule(style: .continuous).fill(fill))
+    .background(Capsule(style: .continuous).fill(stackedFace ? .clear : fill))
   }
 
   /// The digit: drawn here once, whatever the form.
@@ -281,11 +296,10 @@ extension OverlayChannelPill {
   /// A long agent name truncates instead of collapsing the whole map.
   static let maxNameWidth: CGFloat = 96
   static let caret = "\u{25BE}"
-  /// Three stacked cards: the Intercom group, as in Codex's first vertical
-  /// proposal (Maciej, 2026-10-23: "znaczek tych układnych").
-  static let stackedCardsSymbol = "rectangle.grid.1x3"
-  static let badgeSize: CGFloat = 8
-  static let badgeDiameter: CGFloat = 11
+  /// Overlapping rectangles read as a deck, unlike a three-line list.
+  static let stackedCardsSymbol = "rectangle.stack"
+  static let badgeSize: CGFloat = 6
+  static let badgeDiameter: CGFloat = 9
 
   static func headerScale(_ textScale: CGFloat) -> CGFloat {
     min(textScale, headerScaleCeiling)
@@ -320,7 +334,7 @@ extension OverlayChannelPill {
   }
 
   /// The counter's width: `4 ▾`, the stacked cards (a header circle; the
-  /// badge overhangs it), or the circled digits of the open channels.
+  /// badge stays inside it), or the circled digits of the open channels.
   @MainActor
   static func counterWidth(
     figure: String, openDigitCount: Int, scale: CGFloat, stacked: Bool = false
@@ -347,6 +361,7 @@ private struct OverlayChannelPillHint: ViewModifier {
   let hint: String
   let palette: OverlayAppearancePalette
   let enabled: Bool
+  let stacked: Bool
 
   @ViewBuilder
   func body(content: Content) -> some View {
@@ -355,7 +370,8 @@ private struct OverlayChannelPillHint: ViewModifier {
       case .rail:
         content.overlayFastHint(hint, palette: palette, leading: true)
       case .chip, .counter:
-        content.modifier(OverlayHeaderControlChrome(title: hint, accent: nil, palette: palette))
+        content.modifier(
+          OverlayHeaderControlChrome(title: hint, accent: stacked ? .state : nil, palette: palette))
       }
     } else {
       content

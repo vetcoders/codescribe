@@ -297,7 +297,7 @@ sys.exit(0)
 
     # 15 profile/layout cases + 38 boundary modes + 1 unsupported profile.
     swift_scenarios = 54
-    # Reuse every scenario, then independently inspect its recorded order.
+    # Reuse all scenarios, then independently inspect their recorded order.
     swift_evidence = evidence / 'swift-path'
     result = subprocess.run(['/bin/bash', str(source / 'scripts/tests/test-swift-target-root-test.sh'),
                              str(source), str(swift_evidence)], text=True, capture_output=True)
@@ -313,9 +313,9 @@ sys.exit(0)
         names = [c['tool'] for c in receipt['calls'] if 'selected' not in c]
         if receipt['exit'] == 0:
             ordered = [n for n in names if n not in ('security', 'git')]
-            helper = 'custom-helper' if path.stem == 'debug-spaces-override-helper' else 'codescribe-stt-bridge'
+            helper = 'custom-helper' if path.stem.endswith('-override-helper') else 'codescribe-stt-bridge'
             expected_order = [helper, 'cargo', 'xcodegen']
-            if path.stem == 'debug-spaces-gui-opt-in':
+            if path.stem.endswith('-gui-opt-in'):
                 # These are fixture tool/receipt witnesses, not real GUI acceptance.
                 selected = [c for c in receipt['calls'] if 'selected' in c]
                 assert len(selected) == 1, (path, selected)

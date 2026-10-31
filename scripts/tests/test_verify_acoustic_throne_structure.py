@@ -3005,13 +3005,13 @@ class CurrentChainMutantTests(unittest.TestCase):
              "within_capture"),
             # The ledger goes back to assessing bare ranges without availability.
             ("ranges_only_assessment_restored",
-             "assess_seal_coverage", "core/pipeline/acoustic_ledger.rs",
+             "assess_seal_coverage", "core/pipeline/acoustic_ledger/replay.rs",
              "speech: &AcousticSpeechEvidence,",
              "speech_ranges: &[TailSampleRange],",
              "assess_seal_coverage"),
             # Absence of measurement stops refusing the terminal seal.
             ("unavailable_stops_refusing_the_seal",
-             "seal_terminal", "core/pipeline/acoustic_ledger.rs",
+             "seal_terminal", "core/pipeline/acoustic_ledger/fence.rs",
              "|| coverage.status.unavailable_reason().is_some()",
              "",
              "seal_terminal"),
@@ -3161,7 +3161,7 @@ class CurrentChainMutantTests(unittest.TestCase):
     def test_pinned_admission_bypasses_are_rejected(self):
         """Each pin bypass must fail at its own capture-to-ledger hop."""
         self.assertEqual(self.positive_failures, [])
-        ledger = "core/pipeline/acoustic_ledger.rs"
+        ledger = "core/pipeline/acoustic_ledger/reducer.rs"
         apple = "core/pipeline/streaming/apple_live_session.rs"
         cases = [
             ("pins_admitted_without_composition_check", "admit_pinned_label", ledger,

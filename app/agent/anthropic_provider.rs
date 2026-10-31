@@ -42,6 +42,7 @@ use codescribe_core::agent::{
 };
 use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane, keychain};
 use codescribe_core::llm::provider::{ProviderKind, ReasoningEffort, capability_policy};
+use codescribe_core::llm::responses_streaming_manager::{StreamWatchdog, append_utf8_chunk};
 
 /// Value of the mandatory `anthropic-version` header.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -80,8 +81,10 @@ pub struct AnthropicProvider {
     default_max_tokens: u32,
     /// Deadline for response headers.
     initial_response_timeout: Duration,
-    /// Deadline between chunks of an already-started stream.
+    /// Deadline between chunks once the first content event arrived.
     inter_chunk_timeout: Duration,
+    /// Budget from the request send to the first content event.
+    first_event_timeout: Duration,
     /// Reasoning level the user chose for the Agent; `None` keeps the model's.
     reasoning_effort: Option<ReasoningEffort>,
 }
@@ -115,6 +118,7 @@ impl AnthropicProvider {
     ) -> Result<Self> {
         let initial_response_timeout = request_timing.attempt_timeout();
         let inter_chunk_timeout = request_timing.inter_chunk_timeout();
+        let first_event_timeout = request_timing.first_event_timeout();
 
         let client = Client::builder()
             .timeout(STREAM_REQUEST_TIMEOUT)
@@ -122,9 +126,10 @@ impl AnthropicProvider {
             .context("Failed to create Anthropic agent HTTP client")?;
 
         info!(
-            "Anthropic agent provider configured (model={}, initial_timeout={}s, inter_chunk_timeout={}s)",
+            "Anthropic agent provider configured (model={}, initial_timeout={}s, first_event_timeout={}s, inter_chunk_timeout={}s)",
             default_model,
             initial_response_timeout.as_secs(),
+            first_event_timeout.as_secs(),
             inter_chunk_timeout.as_secs()
         );
 
@@ -138,6 +143,7 @@ impl AnthropicProvider {
             default_max_tokens: DEFAULT_MAX_TOKENS,
             initial_response_timeout,
             inter_chunk_timeout,
+            first_event_timeout,
             reasoning_effort: None,
         })
     }
@@ -211,8 +217,9 @@ impl AgentProvider for AnthropicProvider {
             endpoint,
             api_key,
             anthropic_version: self.anthropic_version.clone(),
-            initial_response_timeout: self.initial_response_timeout,
+            error_body_timeout: self.initial_response_timeout,
             inter_chunk_timeout: self.inter_chunk_timeout,
+            first_event_timeout: self.first_event_timeout,
         };
 
         tokio::spawn(async move {
@@ -542,28 +549,29 @@ fn role_str(role: Role) -> &'static str {
 
 // ── SSE streaming ────────────────────────────────────────────────────────────
 
-// allow(too_many_arguments): task entry point for one Anthropic SSE stream; all
-// values are owned moves into the spawned task.
 /// Everything one spawned Anthropic SSE turn owns about its transport.
 ///
 /// Bundled because the task entry point took eight positional arguments; the
-/// six transport values always travel together and are moved into the task as
-/// a unit, so a struct is the honest shape.
+/// transport values always travel together and are moved into the task as a
+/// unit, so a struct is the honest shape.
 struct AnthropicStreamTransport {
     client: Client,
     endpoint: String,
     api_key: String,
     anthropic_version: String,
-    initial_response_timeout: Duration,
+    error_body_timeout: Duration,
     inter_chunk_timeout: Duration,
+    first_event_timeout: Duration,
 }
 
 /// Drive one Messages SSE stream, emitting [`AgentEvent`]s onto `tx`.
 ///
 /// Reads the byte stream line by line, keying off each `data:` payload's own
-/// `type` and ignoring `event:` lines and SSE comments. Three separate clocks
-/// bound it: the initial-response timeout, the inter-chunk timeout, and
-/// [`STREAM_DEADLINE`] as a global backstop.
+/// `type` and ignoring `event:` lines and SSE comments. Three clocks bound
+/// it: the attempt budget for non-SSE error bodies, the two-phase
+/// [`StreamWatchdog`] (first-event budget for headers/prefill, then the inter-chunk
+/// idle timeout that any chunk — `ping` events and `:` comments included —
+/// restarts), and [`STREAM_DEADLINE`] as a global backstop.
 ///
 /// On EOF without a terminal the stream ended early, so a dirty
 /// [`AgentEvent::ResponseDone`] is emitted — the session must learn that the
@@ -582,8 +590,9 @@ async fn run_anthropic_stream(
         endpoint,
         api_key,
         anthropic_version,
-        initial_response_timeout,
+        error_body_timeout,
         inter_chunk_timeout,
+        first_event_timeout,
     } = transport;
     let endpoint_url =
         validate_anthropic_endpoint(&endpoint).context("Invalid Anthropic endpoint URL")?;
@@ -597,19 +606,28 @@ async fn run_anthropic_stream(
         .timeout(STREAM_REQUEST_TIMEOUT)
         .json(&request_body);
 
-    let response =
-        match tokio::time::timeout(initial_response_timeout, request_builder.send()).await {
+    let mut watchdog = StreamWatchdog::start(first_event_timeout, inter_chunk_timeout);
+    let header_wait = watchdog.next_wait();
+    let response = tokio::select! {
+        biased;
+        _ = tx.closed() => return Ok(()),
+        result = tokio::time::timeout(header_wait, request_builder.send()) => match result {
             Ok(Ok(resp)) => resp,
             Ok(Err(error)) => return Err(error).context("Anthropic SSE request failed"),
-            Err(_) => anyhow::bail!(
-                "Anthropic SSE initial response timeout after {:?}",
-                initial_response_timeout
-            ),
-        };
+            Err(_) => anyhow::bail!("Anthropic SSE initial response timeout after {:?}", header_wait),
+        },
+    };
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = tokio::select! {
+            biased;
+            _ = tx.closed() => return Ok(()),
+            result = tokio::time::timeout(error_body_timeout, response.text()) => {
+                result.with_context(|| format!("Anthropic HTTP {status} error body timeout"))?
+                    .unwrap_or_default()
+            },
+        };
         let detail = parse_http_error_body(&body).unwrap_or(body);
         anyhow::bail!("Anthropic HTTP {} - {}", status, detail);
     }
@@ -617,6 +635,7 @@ async fn run_anthropic_stream(
     let mut state = StreamState::default();
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut utf8_carry = Vec::new();
     let stream_deadline = tokio::time::Instant::now() + STREAM_DEADLINE;
 
     'outer: loop {
@@ -627,21 +646,30 @@ async fn run_anthropic_stream(
             );
         }
 
-        let next_chunk = match tokio::time::timeout(inter_chunk_timeout, stream.next()).await {
-            Ok(chunk) => chunk,
-            Err(_) => {
-                anyhow::bail!(
+        let next_chunk = tokio::select! {
+            biased;
+            _ = tx.closed() => return Ok(()),
+            result = tokio::time::timeout(watchdog.next_wait(), stream.next()) => match result {
+                Ok(chunk) => chunk,
+                Err(_) if !watchdog.is_generating() => anyhow::bail!(
+                    "Anthropic SSE initial response timeout: no content event within {:?} of the request",
+                    watchdog.first_event_timeout()
+                ),
+                Err(_) => anyhow::bail!(
                     "Anthropic SSE inter-chunk timeout after {:?}",
-                    inter_chunk_timeout
-                );
-            }
+                    watchdog.idle_timeout()
+                ),
+            },
         };
 
         let Some(chunk_result) = next_chunk else {
+            if !utf8_carry.is_empty() {
+                anyhow::bail!("Anthropic SSE stream ended with incomplete UTF-8");
+            }
             break;
         };
         let chunk = chunk_result.context("Anthropic SSE stream read error")?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        append_utf8_chunk(&mut buffer, &mut utf8_carry, &chunk);
 
         while let Some(newline_pos) = buffer.find('\n') {
             let line = buffer[..newline_pos].trim().to_string();
@@ -673,6 +701,9 @@ async fn run_anthropic_stream(
                 }
             };
 
+            if starts_generation(&event) {
+                watchdog.generation_started();
+            }
             if handle_chunk(&event, &mut state, &tx).await? {
                 break 'outer;
             }
@@ -973,6 +1004,22 @@ fn validate_anthropic_endpoint(endpoint: &str) -> Result<reqwest::Url> {
     Ok(url)
 }
 
+/// Empty text/thinking blocks and lifecycle events do not end prefill.
+fn starts_generation(event: &AnthropicChunk) -> bool {
+    match event.chunk_type.as_str() {
+        "content_block_start" => event
+            .content_block
+            .as_ref()
+            .is_some_and(|block| block.block_type == "tool_use"),
+        "content_block_delta" => event.delta.as_ref().is_some_and(|delta| {
+            [&delta.text, &delta.thinking, &delta.partial_json]
+                .into_iter()
+                .any(|text| text.as_ref().is_some_and(|text| !text.is_empty()))
+        }),
+        _ => false,
+    }
+}
+
 // ── SSE wire types ───────────────────────────────────────────────────────────
 
 /// One decoded SSE `data:` payload.
@@ -1064,6 +1111,7 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
+    use codescribe_core::llm::responses_streaming_manager::scripted_sse::{self, Step};
     use codescribe_core::test_isolation::ScopedEnv;
 
     /// Test helper: one-block text message with the given role.
@@ -1511,6 +1559,7 @@ mod tests {
             default_max_tokens: 1024,
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
+            first_event_timeout: Duration::from_secs(2),
             reasoning_effort: None,
         }
     }
@@ -1687,5 +1736,338 @@ mod tests {
             other => panic!("expected Error, got {other:?}"),
         }
         mock.assert_async().await;
+    }
+
+    /// F1 payload: a 4-byte emoji and Polish 2-byte letters in one delta.
+    const SPLIT_TEXT: &str = "🚀 Żółć";
+
+    /// Cut `frame` inside `🚀` (`F0 9F | 9A 80`) and inside `Ż` (`C5 | BB`)
+    /// and script the three pieces as separate TCP segments.
+    fn split_utf8_steps(frame: &str) -> Vec<Step> {
+        let bytes = frame.as_bytes();
+        let emoji = bytes
+            .windows(4)
+            .position(|window| window == "🚀".as_bytes())
+            .expect("frame holds the emoji")
+            + 2;
+        let letter = bytes
+            .windows(2)
+            .position(|window| window == "Ż".as_bytes())
+            .expect("frame holds Ż")
+            + 1;
+        vec![
+            Step::Bytes(bytes[..emoji].to_vec()),
+            Step::Pause(Duration::from_millis(30)),
+            Step::Bytes(bytes[emoji..letter].to_vec()),
+            Step::Pause(Duration::from_millis(30)),
+            Step::Bytes(bytes[letter..].to_vec()),
+        ]
+    }
+
+    /// Drain a provider stream until the channel closes (bounded at 5 s).
+    async fn drain_events(mut rx: mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+            events.push(event);
+        }
+        events
+    }
+
+    /// Concatenated `TextDelta` payloads.
+    fn delta_text(events: &[AgentEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::TextDelta(delta) => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn has_clean_done(events: &[AgentEvent]) -> bool {
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ResponseDone { clean: true, .. }))
+    }
+
+    /// Anthropic provider against a scripted loopback server.
+    fn scripted_provider(
+        endpoint: &str,
+        idle: Duration,
+        first_event: Duration,
+    ) -> AnthropicProvider {
+        let mut provider = provider_for(endpoint);
+        provider.inter_chunk_timeout = idle;
+        provider.first_event_timeout = first_event;
+        provider
+    }
+
+    /// Opening frames: `message_start` and an empty text block.
+    fn anthropic_head() -> Step {
+        scripted_sse::text(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_cut3\"}}\n\n",
+        )
+    }
+
+    /// Text block close plus a clean `end_turn` terminal.
+    fn anthropic_tail() -> Step {
+        scripted_sse::text(
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+             data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n\
+             data: {\"type\":\"message_stop\"}\n\n",
+        )
+    }
+
+    fn text_block_frames(text: &str) -> String {
+        format!(
+            "data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\n"
+        )
+    }
+
+    async fn run_scripted(provider: &AnthropicProvider) -> Vec<AgentEvent> {
+        let messages = vec![text_message(Role::User, "ping")];
+        let rx = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .expect("stream should start");
+        drain_events(rx).await
+    }
+
+    #[tokio::test]
+    async fn anthropic_headers_honor_first_event_budget() {
+        let endpoint = scripted_sse::serve_with_header_delay(
+            "/v1/messages",
+            Duration::from_millis(50),
+            vec![
+                anthropic_head(),
+                scripted_sse::text(&text_block_frames("ok")),
+                anthropic_tail(),
+            ],
+        )
+        .await;
+        let mut provider = scripted_provider(
+            &endpoint,
+            Duration::from_millis(20),
+            Duration::from_millis(200),
+        );
+        provider.initial_response_timeout = Duration::from_millis(10);
+        let events = run_scripted(&provider).await;
+        assert_eq!(delta_text(&events), "ok");
+        assert!(has_clean_done(&events));
+    }
+
+    #[tokio::test]
+    async fn anthropic_cancellation_contract_releases_each_pending_http_phase() {
+        for status in [None, Some(200), Some(503)] {
+            let prefix = if status == Some(200) {
+                text_block_frames("ready")
+            } else {
+                String::new()
+            };
+            let (endpoint, seen, closed) =
+                scripted_sse::held_response("/v1/messages", status, prefix).await;
+            let mut provider =
+                scripted_provider(&endpoint, Duration::from_secs(5), Duration::from_secs(5));
+            provider.initial_response_timeout = Duration::from_secs(5);
+            let mut rx = provider
+                .stream(
+                    &[text_message(Role::User, "ping")],
+                    &[],
+                    &StreamOptions::default(),
+                )
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(1), seen)
+                .await
+                .unwrap()
+                .unwrap();
+            if status == Some(200) {
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                        .await
+                        .unwrap(),
+                    Some(AgentEvent::TextDelta("ready".into()))
+                );
+            } else if status.is_some() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            drop(rx);
+            let result = tokio::time::timeout(Duration::from_secs(1), closed)
+                .await
+                .expect("cancelled Anthropic turn kept its HTTP request")
+                .unwrap();
+            assert!(
+                matches!(result, Ok(0))
+                    || result.is_err_and(|error| matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                    )),
+                "phase {status:?} did not disconnect"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn anthropic_cancellation_contract_bounds_non_sse_error_body() {
+        let (endpoint, _seen, _closed) =
+            scripted_sse::held_response("/v1/messages", Some(503), String::new()).await;
+        let mut provider =
+            scripted_provider(&endpoint, Duration::from_secs(5), Duration::from_secs(5));
+        provider.initial_response_timeout = Duration::from_millis(20);
+        let events = tokio::time::timeout(Duration::from_millis(500), run_scripted(&provider))
+            .await
+            .expect("error body must use the attempt budget");
+        assert!(events.iter().any(|event| matches!(event, AgentEvent::Error(message) if message.contains("503") && message.contains("body"))), "{events:?}");
+    }
+
+    /// F1: a `text_delta` cut inside `🚀` and `Ż` across TCP segments arrives intact.
+    #[tokio::test]
+    async fn anthropic_provider_joins_utf8_split_across_tcp_segments() {
+        let mut steps = vec![anthropic_head()];
+        steps.extend(split_utf8_steps(&text_block_frames(SPLIT_TEXT)));
+        steps.push(anthropic_tail());
+        let endpoint = scripted_sse::serve("/v1/messages", steps).await;
+        let provider = scripted_provider(&endpoint, Duration::from_secs(2), Duration::from_secs(2));
+        let events = run_scripted(&provider).await;
+
+        assert_eq!(delta_text(&events), SPLIT_TEXT);
+        assert!(events.contains(&AgentEvent::TextDone(SPLIT_TEXT.to_string())));
+        assert!(!format!("{events:?}").contains('\u{FFFD}'));
+        assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    /// F2: `message_start`, then `: keepalive` comments and `ping` events every
+    /// 60 ms for 360 ms, with a 100 ms idle and 600 ms first-event budget,
+    /// ends `clean: true`.
+    #[tokio::test]
+    async fn anthropic_provider_keepalive_prefill_completes_cleanly() {
+        let mut steps = vec![anthropic_head()];
+        for beat in 0..6 {
+            steps.push(Step::Pause(Duration::from_millis(60)));
+            steps.push(scripted_sse::text(if beat % 2 == 0 {
+                ": keepalive\n\n"
+            } else {
+                "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+            }));
+        }
+        steps.push(scripted_sse::text(&text_block_frames("pong")));
+        steps.push(anthropic_tail());
+        let endpoint = scripted_sse::serve("/v1/messages", steps).await;
+        let provider = scripted_provider(
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(600),
+        );
+        let events = run_scripted(&provider).await;
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Error(_))),
+            "{events:?}"
+        );
+        assert_eq!(delta_text(&events), "pong");
+        assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_empty_blocks_preserve_prefill_budget() {
+        let steps = vec![
+            anthropic_head(),
+            scripted_sse::text(
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\"}}\n\n",
+            ),
+            Step::Pause(Duration::from_millis(300)),
+            scripted_sse::text(
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"late\"}}\n\n",
+            ),
+            anthropic_tail(),
+        ];
+        let endpoint = scripted_sse::serve("/v1/messages", steps).await;
+        let provider = scripted_provider(
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        );
+        let events = run_scripted(&provider).await;
+        assert_eq!(delta_text(&events), "late");
+        assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_comments_do_not_extend_first_event_deadline() {
+        let mut steps = vec![anthropic_head()];
+        for _ in 0..6 {
+            steps.push(Step::Pause(Duration::from_millis(60)));
+            steps.push(scripted_sse::text(": keepalive\n\n"));
+        }
+        let endpoint = scripted_sse::serve("/v1/messages", steps).await;
+        let provider = scripted_provider(
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+        );
+        let events = run_scripted(&provider).await;
+        assert!(
+            events.iter().any(
+                |event| matches!(event, AgentEvent::Error(message) if message.contains("no content event"))
+            ),
+            "{events:?}"
+        );
+        assert!(!has_clean_done(&events), "{events:?}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_comments_refresh_idle_after_generation_starts() {
+        let mut steps = vec![
+            anthropic_head(),
+            scripted_sse::text(&text_block_frames("alive")),
+        ];
+        for _ in 0..6 {
+            steps.push(Step::Pause(Duration::from_millis(60)));
+            steps.push(scripted_sse::text(": connection still alive\n\n"));
+        }
+        steps.push(anthropic_tail());
+        let endpoint = scripted_sse::serve("/v1/messages", steps).await;
+        let provider = scripted_provider(
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(600),
+        );
+        let events = run_scripted(&provider).await;
+        assert_eq!(delta_text(&events), "alive");
+        assert!(has_clean_done(&events), "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Error(_))),
+            "{events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_idle_stall_is_rejected_after_content() {
+        let steps = vec![
+            anthropic_head(),
+            scripted_sse::text(&text_block_frames("partial")),
+            Step::Pause(Duration::from_millis(250)),
+            anthropic_tail(),
+        ];
+        let endpoint = scripted_sse::serve("/v1/messages", steps).await;
+        let provider = scripted_provider(
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(600),
+        );
+        let events = run_scripted(&provider).await;
+        assert_eq!(delta_text(&events), "partial");
+        assert!(
+            events.iter().any(
+                |event| matches!(event, AgentEvent::Error(message) if message.contains("inter-chunk timeout"))
+            ),
+            "{events:?}"
+        );
+        assert!(!has_clean_done(&events), "{events:?}");
     }
 }

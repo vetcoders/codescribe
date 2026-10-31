@@ -220,7 +220,13 @@ pub struct CsSettings {
     pub llm_assistive_model: Option<String>,
     /// Agent reasoning level: `default` (the model's own) or a chosen level.
     pub llm_assistive_reasoning: String,
+    /// Automatic formatting policy: off, correction or smart. A stored legacy
+    /// `max`/`creative` reads as smart here; Max is invoked through Format.
     pub formatting_level: Option<String>,
+    /// Formatter Keywords: preferred vocabulary given as context to
+    /// Correction, Smart and Max. Normalized terms from the same seal; empty
+    /// means no extra context. Written only through `set_formatter_keywords`.
+    pub formatter_keywords: Vec<String>,
     pub whisper_model: Option<String>,
     /// Read-only diagnostic env override captured by the runtime snapshot.
     /// ASR mode owns the default; Settings never writes this value.
@@ -371,7 +377,8 @@ impl CsSettings {
                 .to_string(),
             llm_assistive_provider: setting_string(settings.llm_assistive_provider.clone())
                 .or_else(|| Some(assistive.provider().as_string())),
-            formatting_level: Some(runtime.formatting_policy().as_str().to_string()),
+            formatting_level: Some(runtime.automatic_formatting_policy().as_str().to_string()),
+            formatter_keywords: runtime.formatter_keywords().to_vec(),
             whisper_model: setting_string(settings.whisper_model.clone()),
             layered_transcription: runtime.layered_transcription_override().map(str::to_owned),
             agent_workspace_roots,
@@ -858,7 +865,8 @@ pub struct CsTrayToggles {
     /// Read-only projection `paste_mode != off` for binary on/off surfaces.
     /// Never persisted; `paste_mode` is the one stored choice.
     pub auto_paste_enabled: bool,
-    /// Normalized automatic formatting policy: off, correction, smart, or max.
+    /// Normalized automatic formatting policy: off, correction or smart.
+    /// A stored legacy `max`/`creative` reads as smart.
     pub formatting_level: String,
     /// UI-initiated recording starts in the assistive lane when enabled.
     pub start_assistive: bool,
@@ -1033,11 +1041,23 @@ impl CodescribeConfig {
     }
 
     /// Persist a normalized Auto Format policy and return prompt-free
-    /// post-write truth. Unknown policy IDs fail without changing disk state.
+    /// post-write truth. Only off, correction and smart are automatic; Max and
+    /// unknown policy IDs fail without changing disk state.
     pub fn set_auto_format_level(&self, level: String) -> Result<CsTrayToggles, CsError> {
         let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
             msg: error.to_string(),
         })?;
+        // Max is the overlay assistant, invoked for one operation through
+        // Format. It is never stored as the automatic policy; the explicit
+        // formatter APIs keep selecting it per request.
+        if policy == FormattingPolicy::Max {
+            return Err(CsError::Config {
+                msg: format!(
+                    "{level:?} is not an automatic formatting level; Max runs only when \
+                     invoked through Format. Expected off, correction, or smart"
+                ),
+            });
+        }
         let mut settings = UserSettings::load();
         settings.formatting_level = Some(policy.as_str().to_string());
         settings.save().map_err(|error| CsError::Config {
@@ -1046,6 +1066,36 @@ impl CodescribeConfig {
         reload_hotkey_runtime();
         crate::hotkeys::refresh_live_controller_config();
         Ok(self.tray_toggles())
+    }
+
+    /// Saved formatter Keywords, normalized, from one runtime snapshot. A
+    /// failed read serves the last good snapshot instead of an empty list.
+    pub fn get_formatter_keywords(&self) -> Vec<String> {
+        load_runtime_snapshot_for_lane()
+            .formatter_keywords()
+            .to_vec()
+    }
+
+    /// Replace the formatter Keywords and return the normalized stored list.
+    /// Only `formatter_keywords` changes; the automatic level and every other
+    /// setting keep their stored values. The settings owner refuses an
+    /// oversized list whole; nothing is truncated and the error is returned.
+    /// An empty list removes the Keywords.
+    pub fn set_formatter_keywords(&self, keywords: Vec<String>) -> Result<Vec<String>, CsError> {
+        let mut settings = UserSettings::load();
+        settings.formatter_keywords = (!keywords.is_empty()).then_some(keywords);
+        settings.save().map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        // The returned list is what the next formatting request receives:
+        // the snapshot sealed from the document just written.
+        let runtime =
+            Config::load_runtime_snapshot_without_keychain().map_err(|error| CsError::Config {
+                msg: error.to_string(),
+            })?;
+        reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(runtime.formatter_keywords().to_vec())
     }
 
     /// Lightweight tray-only settings read uses files, env and cached credentials.
@@ -1060,7 +1110,7 @@ impl CodescribeConfig {
             transcription_overlay_enabled: config.transcription_overlay_enabled,
             paste_mode: config.paste_mode.into(),
             auto_paste_enabled: config.paste_mode != PasteMode::Off,
-            formatting_level: runtime.formatting_policy().as_str().to_string(),
+            formatting_level: runtime.automatic_formatting_policy().as_str().to_string(),
             start_assistive: config.tray_start_assistive,
             // Notes Mode is "on" only when BOTH flags are set (dictation → note
             // AND no paste). Reading just quick_notes_enabled could show the toggle
@@ -1230,9 +1280,13 @@ impl CodescribeConfig {
         let mut providers = Vec::new();
         let mut account_errors = std::collections::HashMap::new();
         for provider in registry.all() {
-            let account_unavailable = provider
-                .oauth_vendor
-                .is_some_and(|vendor| account_auth::account_status_snapshot(vendor).is_err());
+            let account_unavailable = if provider.wire == WireFamily::GoogleGenerateContent {
+                account_auth::google_credential_status().is_err()
+            } else {
+                provider
+                    .oauth_vendor
+                    .is_some_and(|vendor| account_auth::account_status_snapshot(vendor).is_err())
+            };
             let option = provider_option(provider);
             if account_unavailable {
                 // Never expose token JSON or its decoder details in public UI metadata.
@@ -2795,6 +2849,21 @@ fn resolve_catalog_provider(
 }
 
 fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
+    let google = provider.wire == WireFamily::GoogleGenerateContent;
+    let google_status = google.then(account_auth::google_credential_status);
+    let google_account_available = google_status
+        .as_ref()
+        .is_some_and(|status| status.as_ref().is_ok_and(|status| status.available));
+    let google_message = google_status.as_ref().map(|status| match status {
+        Ok(status) => status.message.clone(),
+        Err(_) => "Google account credentials are unavailable or unsupported. Use an API key or authorized-user ADC; service-account and external-account credentials are not supported.".into(),
+    }).map(|message| {
+        if codescribe_core::llm::vendors::google::is_cloud_code_assist(&provider.endpoint) {
+            format!("Cloud Code Assist uses account credentials; API keys cannot authenticate this endpoint. {message}")
+        } else {
+            message
+        }
+    });
     let status = provider
         .oauth_vendor
         .map(account_auth::cached_account_status);
@@ -2809,15 +2878,29 @@ fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
         display_name: provider.display_name,
         wire: provider.wire.as_str().to_string(),
         endpoint: provider.endpoint,
-        api_key_set: keychain::key_present(&provider.key_account),
+        api_key_set: keychain::key_present(&provider.key_account)
+            || (google && account_auth::google_api_key().is_some()),
         api_key_account: provider.key_account,
-        key_required: provider.key_required,
-        account_signed_in: status.as_ref().is_some_and(|status| status.signed_in),
+        key_required: provider.key_required && !google_account_available,
+        account_signed_in: if google {
+            // Saved storage is not a token-acceptance receipt. ADC remains
+            // externally managed and is not shown as a removable account.
+            google_status
+                .as_ref()
+                .and_then(|status| status.as_ref().ok())
+                .map_or_else(
+                    || keychain::key_present(account_auth::GOOGLE_ACCOUNT_TOKENS_ACCOUNT),
+                    |status| status.stored_account,
+                )
+        } else {
+            status.as_ref().is_some_and(|status| status.signed_in)
+        },
         account_login_enabled: status
             .as_ref()
             .is_some_and(|status| status.client_id_configured),
         account_identity: status.as_ref().and_then(|status| status.identity.clone()),
-        account_status_message: status.map(|status| status.message).unwrap_or_default(),
+        account_status_message: google_message
+            .unwrap_or_else(|| status.map(|status| status.message).unwrap_or_default()),
         oauth_client_id: provider
             .oauth_vendor
             .and_then(|vendor| account_auth::client_id_for_provider(vendor).ok()),
@@ -3895,7 +3978,14 @@ mod settings_snapshot_tests {
         let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
         let config = CodescribeConfig::new();
         assert_eq!(config.service_key_accounts(), ["GITHUB_TOKEN"]);
-        assert_eq!(config.available_providers().len(), 4);
+        let providers = config.available_providers();
+        assert_eq!(providers.len(), 5);
+        let google = providers
+            .iter()
+            .find(|provider| provider.id == "google-gemini")
+            .expect("Google is discoverable through the native provider catalog");
+        assert_eq!(google.wire, "google-generate-content");
+        assert_eq!(google.api_key_account, "LLM_GOOGLE_API_KEY");
         assert!(
             config
                 .available_providers()

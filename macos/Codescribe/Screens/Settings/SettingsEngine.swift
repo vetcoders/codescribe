@@ -38,11 +38,27 @@ enum ProviderCredentialIO {
   }
 }
 
+/// Model discovery walks local and external model caches. A blocked filesystem
+/// read must never occupy MainActor or the credential executor.
+enum WhisperModelCatalogIO {
+  private static let queue = DispatchQueue(
+    label: "codescribe.whisper-model-catalog", qos: .utility)
+
+  static func perform(
+    _ operation: @escaping @Sendable () -> CsWhisperModelCatalog
+  ) async -> CsWhisperModelCatalog {
+    await withCheckedContinuation { continuation in
+      queue.async { continuation.resume(returning: operation()) }
+    }
+  }
+}
+
 /// Subset of the codescribe config surface the Settings screen consumes.
 @MainActor
 protocol SettingsEngine {
   // Snapshot / location
   func loadSettings() -> CsSettings
+  func loadSettingsAsync() async -> CsSettings
   func configDir() -> String
   func shouldShowOnboarding() -> Bool
   func onboardingMode() -> String?
@@ -62,7 +78,7 @@ protocol SettingsEngine {
   func resetAudioInputDevice() throws
 
   // Local Whisper model catalog + picker selection (Settings → Dictation).
-  func loadWhisperModelCatalog() -> CsWhisperModelCatalog
+  func loadWhisperModelCatalog() async -> CsWhisperModelCatalog
   func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch
 
   // Acoustic admission: the controller's own precondition for any take
@@ -138,6 +154,8 @@ protocol SettingsEngine {
   func restoreFormattingPromptToDefault() throws
   func restoreFormattingPromptToDefault(level: String) throws
   func restoreAssistivePromptToDefault() throws
+  func setFormatterKeywords(keywords: [String]) throws -> [String]
+  func setFormatterKeywordsAsync(keywords: [String]) async throws -> [String]
 
   // Recoverable reset: preview live impact, move local data to Trash, and
   // optionally remove Keychain keys. MCP-only clear is a separate concern.
@@ -187,6 +205,11 @@ extension SettingsEngine {
   ) async throws -> CsAccountLoginResult {
     try awaitAccountLogin(providerId: providerId, timeoutSeconds: timeoutSeconds)
   }
+  func loadSettingsAsync() async -> CsSettings { loadSettings() }
+  func setFormatterKeywords(keywords: [String]) throws -> [String] { keywords }
+  func setFormatterKeywordsAsync(keywords: [String]) async throws -> [String] {
+    try setFormatterKeywords(keywords: keywords)
+  }
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -225,6 +248,12 @@ final class RealSettingsEngine: SettingsEngine {
   }
 
   func loadSettings() -> CsSettings { config.loadSettings() }
+  func loadSettingsAsync() async -> CsSettings {
+    let config = self.config
+    return await Task.detached(priority: .userInitiated) {
+      config.loadSettings()
+    }.value
+  }
   func configDir() -> String { config.configDir() }
   func shouldShowOnboarding() -> Bool { config.shouldShowOnboarding() }
   func onboardingMode() -> String? { config.onboardingMode() }
@@ -242,8 +271,8 @@ final class RealSettingsEngine: SettingsEngine {
   func resetAudioInputDevice() throws {
     try config.resetAudioInputDevice()
   }
-  func loadWhisperModelCatalog() -> CsWhisperModelCatalog {
-    whisperModelCatalog()
+  func loadWhisperModelCatalog() async -> CsWhisperModelCatalog {
+    await WhisperModelCatalogIO.perform { whisperModelCatalog() }
   }
   nonisolated func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
     try await setLocalWhisperModel(reference: reference)
@@ -402,6 +431,14 @@ final class RealSettingsEngine: SettingsEngine {
   func restoreAssistivePromptToDefault() throws {
     try config.restoreAssistivePromptToDefault()
   }
+  func setFormatterKeywords(keywords: [String]) throws -> [String] {
+    try config.setFormatterKeywords(keywords: keywords)
+  }
+  nonisolated func setFormatterKeywordsAsync(keywords: [String]) async throws -> [String] {
+    try await Task.detached(priority: .userInitiated) {
+      try CodescribeConfig().setFormatterKeywords(keywords: keywords)
+    }.value
+  }
 
   func resetPreview() -> CsResetPreview { config.resetPreview() }
   func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
@@ -447,10 +484,12 @@ struct MockSettingsEngine: SettingsEngine {
   var promptStore: MockPromptStore = MockPromptStore()
   var promptSaveObserver: ((String, String) throws -> Void)?
   var promptRestoreObserver: ((String) throws -> Void)?
+  var setFormatterKeywordsObserver: (([String]) throws -> [String])?
   var resetAppDataObserver: ((Bool, Bool) throws -> Void)?
   var resetAgentDataObserver: (() throws -> Void)?
   var clearMcpConfigurationObserver: (() throws -> Void)?
   var settingsLoader: (() -> CsSettings)?
+  var settingsAsyncLoader: (() async -> CsSettings)?
   /// Custom rows + lane bindings persist across calls (reference-typed, like settings.json).
   var providerStore: MockProviderStore = MockProviderStore()
   var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
@@ -460,6 +499,7 @@ struct MockSettingsEngine: SettingsEngine {
   var selectLocalWhisperModelObserver: ((String) async throws -> CsWhisperModelSwitch)?
   /// Live catalog reads for residency transitions; nil serves `whisperCatalog`.
   var whisperCatalogLoader: (() -> CsWhisperModelCatalog)?
+  var whisperCatalogAsyncLoader: (() async -> CsWhisperModelCatalog)?
   var voiceLabEditObserver: ((String, String) throws -> CsVoiceLabSaveResult)?
   var ruleCandidates: [CsRuleCandidate] = []
   var ruleCandidatesLoader: (() throws -> [CsRuleCandidate])?
@@ -474,6 +514,10 @@ struct MockSettingsEngine: SettingsEngine {
   var updateConfigObserver: ((String, String) throws -> Void)?
 
   func loadSettings() -> CsSettings { settingsLoader?() ?? settings }
+  func loadSettingsAsync() async -> CsSettings {
+    if let settingsAsyncLoader { return await settingsAsyncLoader() }
+    return loadSettings()
+  }
   func pendingMaxToolApprovals() async throws -> [PendingToolApproval] {
     try await pendingMaxApprovalsObserver?() ?? []
   }
@@ -508,8 +552,9 @@ struct MockSettingsEngine: SettingsEngine {
   func resetAudioInputDevice() throws {
     try resetAudioInputDeviceObserver?()
   }
-  func loadWhisperModelCatalog() -> CsWhisperModelCatalog {
-    whisperCatalogLoader?() ?? whisperCatalog
+  func loadWhisperModelCatalog() async -> CsWhisperModelCatalog {
+    if let whisperCatalogAsyncLoader { return await whisperCatalogAsyncLoader() }
+    return whisperCatalogLoader?() ?? whisperCatalog
   }
   func selectLocalWhisperModel(reference: String) async throws -> CsWhisperModelSwitch {
     if let selectLocalWhisperModelObserver {
@@ -716,6 +761,12 @@ struct MockSettingsEngine: SettingsEngine {
     try promptRestoreObserver?("assistive")
     promptStore.restored["assistive"] = .builtIn(
       assistiveSnapshot, content: CsSettings.sampleAssistivePrompt)
+  }
+  func setFormatterKeywords(keywords: [String]) throws -> [String] {
+    if let setFormatterKeywordsObserver {
+      return try setFormatterKeywordsObserver(keywords)
+    }
+    return keywords
   }
   func resetPreview() -> CsResetPreview { resetPreviewValue }
   func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
@@ -970,6 +1021,7 @@ extension CsWhisperModelCatalog {
         active: false
       ),
     ],
+    discoveryPending: false,
     configured: "whisper-large-v3-turbo",
     resolvedPath: "~/.codescribe/models/whisper-large-v3-turbo",
     loaded: "~/.codescribe/models/whisper-large-v3-turbo",
@@ -1081,6 +1133,7 @@ extension CsSettings {
     llmAssistiveModel: "gpt-4o",
     llmAssistiveReasoning: "default",
     formattingLevel: "correction",
+    formatterKeywords: [],
     whisperModel: "whisper-large-v3-turbo",
     layeredTranscription: nil,
     agentWorkspaceRoots: ["~/.codescribe"],

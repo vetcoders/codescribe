@@ -149,10 +149,11 @@ class MailboxTests(unittest.TestCase):
         self.bus.write_text(json.dumps(foreign) + "\n", encoding="utf-8")
         args = {"provider": PROVIDER, "provider_session_id": CONVERSATION,
                 "lease_id": self.lease.lease_id}
-        self.assertFalse(DEMUX.source_closes_retained_documents(self.bus, {TAKE: {}}, **args))
+        bus = Path(self.lease.bus)
+        self.assertFalse(DEMUX.source_closes_retained_documents(bus, {TAKE: {}}, **args))
         with self.bus.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(own) + "\n")
-        self.assertTrue(DEMUX.source_closes_retained_documents(self.bus, {TAKE: {}}, **args))
+        self.assertTrue(DEMUX.source_closes_retained_documents(bus, {TAKE: {}}, **args))
 
     def test_an_unacknowledged_message_keeps_every_envelope_in_order(self):
         queued = [self.queue("draft", NAMED, document_index=1), self.queue("revised", NAMED, document_index=1),

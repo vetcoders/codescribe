@@ -4903,6 +4903,17 @@
         }
       }
     },
+    "Checking other model locations…" : {
+      "comment" : "Whisper tab: available models can be selected while optional locations are being read",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie pozostałych lokalizacji modeli…"
+          }
+        }
+      }
+    },
     "Checking provider access…" : {
       "comment" : "Setup Agent readiness while the provider snapshot is loading\nSetup provider row status while credentials are loading",
       "localizations" : {
@@ -5034,6 +5045,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz poziom rozumowania Agenta"
+          }
+        }
+      }
+    },
+    "Choose recipients" : {
+      "comment" : "Inbox composer placeholder and recipient chooser label while no agent is linked",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz odbiorców"
           }
         }
       }
@@ -9049,6 +9072,10 @@
           }
         }
       }
+    },
+    "Gemini (GenerateContent)" : {
+      "comment" : "Provider and wire protocol names.",
+      "shouldTranslate" : false
     },
     "Get license key" : {
       "localizations" : {
@@ -13216,6 +13243,18 @@
         }
       }
     },
+    "Only to: %@" : {
+      "comment" : "0 · All composer placeholder while a recipient set narrows the broadcast; %@ = agent names",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tylko do: %@"
+          }
+        }
+      }
+    },
     "Open" : {
       "localizations" : {
         "pl" : {
@@ -15598,6 +15637,16 @@
         }
       }
     },
+    "Remove stored account" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń zapisane konto"
+          }
+        }
+      }
+    },
     "Remove the license key?" : {
       "comment" : "License card: title of the confirmation before removing the key",
       "localizations" : {
@@ -17027,6 +17076,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyślij teraz"
+          }
+        }
+      }
+    },
+    "Send only to…" : {
+      "comment" : "Label of the one-shot recipient chooser above the 0 · All composer",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyślij tylko do…"
           }
         }
       }

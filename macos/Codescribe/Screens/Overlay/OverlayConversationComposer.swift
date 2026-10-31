@@ -53,6 +53,15 @@ struct OverlayConversationComposer: View {
   var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
   var onToggleDraftSync: ((String) -> Void)? = nil
   var onStopDraftSync: (() -> Void)? = nil
+  /// The inbox and 0 · All choose their recipients here, as a small chevron
+  /// beside Send that opens the draft-sync toggles (Maciej, 2026-10-30 on
+  /// build 2981: "ta druga tafla ponad komposerem to jest taka wiocha. Nie
+  /// możemy tego zrobić jako dziubek w przycisku wysyłki?"). The "+" then
+  /// stays a plain attach button.
+  var recipientsOnSend = false
+  /// What clearing the set means here: 0 · All goes back to everyone, the
+  /// inbox back to nobody.
+  var clearRecipientsTitle = String(localized: "Send to everyone")
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @State private var pasteError: String?
@@ -63,14 +72,26 @@ struct OverlayConversationComposer: View {
 
   /// The height budget caps the editor viewport, never the draft's line count.
   private var isCompact: Bool { maximumEditorHeight != nil }
-  private var showsDraftSync: Bool { !draftSyncChoices.isEmpty || draftSyncActive }
+  /// The main window links drafts in the roster chain and the inbox's "To:";
+  /// its "+" is a plain attach button (Maciej, 2026-10-30 14:03: "+ ma być
+  /// czystym Załącz plik…"). A fiszka still offers the choices here.
+  private var offersDraftSyncHere: Bool {
+    !recipientsOnSend && (onToggleDraftSync != nil || onActivateDraftSync != nil)
+  }
+  private var showsDraftSync: Bool {
+    offersDraftSyncHere && (!draftSyncChoices.isEmpty || draftSyncActive)
+  }
+  private var showsRecipientMenu: Bool {
+    recipientsOnSend && onToggleDraftSync != nil && !draftSyncChoices.isEmpty
+  }
   private func cornerLayout(width: CGFloat = .greatestFiniteMagnitude)
     -> ConversationComposerCornerLayout
   {
     ConversationComposerCornerLayout(
       width: width, fontSize: ComposerControlMetrics.textSize * textScale,
       compact: isCompact, showsSync: showsDraftSync,
-      showsMicrophone: onToggleDraftMicrophone != nil)
+      showsMicrophone: onToggleDraftMicrophone != nil,
+      showsRecipientMenu: showsRecipientMenu)
   }
   private var controlGlyphSize: CGFloat {
     isCompact ? ComposerControlMetrics.intercomGlyphSize : ComposerControlMetrics.glyphSize
@@ -290,9 +311,77 @@ struct OverlayConversationComposer: View {
       : draftMicrophoneRecording ? "mic.fill" : "mic"
   }
 
-  /// One "+" opens the composer actions; the former paperclip and link
-  /// buttons live inside it.
+  /// The send button's chevron: the recipient set of a source conversation
+  /// (the inbox builds it, 0 · All narrows the broadcast to it), the same
+  /// draft-sync toggles the roster chain flips. Lit while a set is chosen.
+  private func recipientMenu(_ corners: ConversationComposerCornerLayout) -> some View {
+    Menu {
+      ForEach(draftSyncChoices) { choice in
+        Toggle(
+          isOn: Binding(
+            get: { choice.selected },
+            set: { _ in onToggleDraftSync?(choice.id) })
+        ) {
+          Text(verbatim: choice.title)
+        }
+        .disabled(!choice.enabled)
+      }
+      if draftSyncActive, let onStopDraftSync {
+        Divider()
+        Button(action: onStopDraftSync) { Text(verbatim: clearRecipientsTitle) }
+      }
+    } label: {
+      Image(systemName: "chevron.down")
+        .font(.system(size: min(controlGlyphSize, corners.glyphSize) * 0.7, weight: .bold))
+        .frame(width: corners.recipientWidth, height: corners.actionHeight)
+        .contentShape(Rectangle())
+    }
+    .menuStyle(.button)
+    .buttonStyle(.plain)
+    .menuIndicator(.hidden)
+    .frame(width: corners.recipientWidth, height: corners.actionHeight)
+    .conversationActionHover(
+      restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+      hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+    )
+    .disabled(sending)
+    .overlayFastHint(String(localized: "Choose recipients"), palette: palette)
+    .accessibilityLabel(Text("Choose recipients"))
+    .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+    .accessibilityIdentifier("overlay-conversation-recipients")
+  }
+
+  private func plusGlyph(_ corners: ConversationComposerCornerLayout) -> some View {
+    Image(systemName: "plus")
+      .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
+      .frame(width: corners.actionWidth, height: corners.actionHeight)
+      .contentShape(Rectangle())
+  }
+
+  /// One "+". Where this composer still offers draft linking it opens the
+  /// actions menu; otherwise it is the attach button itself and opens the
+  /// file panel directly, no submenu.
+  @ViewBuilder
   private func composerPlusMenu(_ corners: ConversationComposerCornerLayout) -> some View {
+    if showsDraftSync {
+      composerPlusActionsMenu(corners)
+    } else {
+      Button(action: pickAttachments) { plusGlyph(corners) }
+        .buttonStyle(.plain)
+        .frame(width: corners.actionWidth, height: corners.actionHeight)
+        .conversationActionHover(
+          restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+          hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+        )
+        .disabled(sending)
+        .overlayFastHint(String(localized: "Attach files…"), palette: palette)
+        .accessibilityLabel(Text("Attach files…"))
+        .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+        .accessibilityIdentifier("overlay-conversation-plus")
+    }
+  }
+
+  private func composerPlusActionsMenu(_ corners: ConversationComposerCornerLayout) -> some View {
     Menu {
       Button("Attach files…", systemImage: "paperclip", action: pickAttachments)
         .disabled(sending)
@@ -322,10 +411,7 @@ struct OverlayConversationComposer: View {
         }
       }
     } label: {
-      Image(systemName: "plus")
-        .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
-        .frame(width: corners.actionWidth, height: corners.actionHeight)
-        .contentShape(Rectangle())
+      plusGlyph(corners)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
@@ -463,6 +549,9 @@ struct OverlayConversationComposer: View {
               draftSyncNames.count > 1
                 ? String(localized: "Send to all linked agents") : String(localized: "Send"),
               palette: palette)
+          if showsRecipientMenu {
+            recipientMenu(corners)
+          }
         }
       }
     }
@@ -481,8 +570,13 @@ private struct ConversationComposerCornerLayout: Equatable {
   let verticalPadding: CGFloat
   let leadingWidth: CGFloat
   let trailingWidth: CGFloat
+  /// The send button's recipient chevron: narrower than an action, a "dziubek".
+  let recipientWidth: CGFloat
 
-  init(width: CGFloat, fontSize: CGFloat, compact: Bool, showsSync: Bool, showsMicrophone: Bool) {
+  init(
+    width: CGFloat, fontSize: CGFloat, compact: Bool, showsSync: Bool, showsMicrophone: Bool,
+    showsRecipientMenu: Bool = false
+  ) {
     lineHeight = ComposerTextLayout.lineHeight(fontSize: fontSize)
     actionHeight = min(ComposerControlMetrics.hitTargetSize, 2 * lineHeight)
     let padding =
@@ -494,7 +588,9 @@ private struct ConversationComposerCornerLayout: Equatable {
     // widens the leading corner.
     let leadingCount: CGFloat = 1
     _ = showsSync
-    let trailingCount: CGFloat = showsMicrophone ? 2 : 1
+    // The recipient chevron takes just over half an action beside Send.
+    let recipientShare: CGFloat = showsRecipientMenu ? 0.6 : 0
+    let trailingCount: CGFloat = (showsMicrophone ? 2 : 1) + recipientShare
     let count = leadingCount + trailingCount
     clearance = min(4, max(0, width / 24))
     spacing = min(
@@ -505,7 +601,11 @@ private struct ConversationComposerCornerLayout: Equatable {
       ComposerControlMetrics.hitTargetSize,
       max(1, (width - proseWidth - 2 * clearance - (count - 2) * spacing) / count))
     leadingWidth = leadingCount * actionWidth + (leadingCount - 1) * spacing
-    trailingWidth = trailingCount * actionWidth + (trailingCount - 1) * spacing
+    recipientWidth = showsRecipientMenu ? ceil(actionWidth * recipientShare) : 0
+    let trailingActions: CGFloat = showsMicrophone ? 2 : 1
+    trailingWidth =
+      trailingActions * actionWidth + recipientWidth
+      + (trailingActions - 1 + (showsRecipientMenu ? 1 : 0)) * spacing
   }
 
   var glyphSize: CGFloat { min(actionWidth, actionHeight) * 0.65 }

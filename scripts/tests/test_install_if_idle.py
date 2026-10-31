@@ -41,6 +41,8 @@ class InstallPrebuiltTests(unittest.TestCase):
         definitions = body.split("\ntry:\n    from_app =", 1)[0]
         self.namespace = {}
         with patch.object(sys, "argv", [str(SCRIPT), str(REPO)]):
+            # Execute only this checkout's installer definitions, never external input.
+            # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- trusted repository fixture; subprocess calls are mocked before execution.
             exec(compile(definitions, str(SCRIPT), "exec"), self.namespace)
         self.namespace["DEST"] = self.destination
         self.namespace["cargo_version"] = lambda: "0.15.2"
@@ -114,7 +116,9 @@ class InstallPrebuiltTests(unittest.TestCase):
                 self.assertEqual(argv[-2:], [f"{self.source}/", f"{self.destination}/"])
                 shutil.copytree(self.source, self.destination, dirs_exist_ok=True)
         elif argv[0] in ("lsof", "ps"):
-            stdout = "fixture holder"
+            raise AssertionError("lock admission must not wait on process inventory")
+        elif argv[0] == "make":
+            self.assertEqual(argv[1:], ["-C", str(REPO), "install-app"])
         else:
             raise AssertionError("unexpected product execution: " + repr(argv))
         result = subprocess.CompletedProcess(argv, code, stdout, stderr)
@@ -158,6 +162,16 @@ class InstallPrebuiltTests(unittest.TestCase):
         self.assertEqual(terminal.exception.code, 2)
         self.assert_not_copied()
         self.assertFalse(any(c[0] == "osascript" for c in self.commands))
+
+    def test_local_install_with_held_runtime_lock_never_queries_process_inventory(self):
+        self.hold(self.interlock)
+        self.namespace["assert_bus_idle"]()
+        self.namespace["assert_turn_idle"](self.lease)
+        with contextlib.redirect_stdout(self.output), self.assertRaises(SystemExit) as terminal:
+            self.namespace["install_local"](self.lease)
+        self.assertEqual(terminal.exception.code, 0)
+        self.assertTrue(any(c[0] == "make" for c in self.commands))
+        self.assertFalse(any(c[0] in ("lsof", "ps") for c in self.commands))
 
     def test_busy_agent_turn_refuses_before_quit_and_copy(self):
         self.pids = ["4242"]

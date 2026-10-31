@@ -190,7 +190,7 @@ def section(text, version):
     return match.start(), end
 
 
-def previous_boundary(root, changelog, target, explicit):
+def previous_boundary(root, changelog, target, explicit, end):
     if explicit:
         return git(root, "rev-parse", explicit + "^{commit}")
     inventory = root / f"docs/releases/{target}-commits.json"
@@ -205,17 +205,32 @@ def previous_boundary(root, changelog, target, explicit):
         return git(root, "rev-parse", start + "^{commit}")
     choices = []
     tagged_versions = set()
-    for tag in git(root, "tag", "--merged", "HEAD").splitlines():
+    for tag in git(root, "tag", "--merged", end).splitlines():
         value = tag.removeprefix("v")
         if re.fullmatch(r"\d+\.\d+\.\d+", value) and version_tuple(value) < version_tuple(target):
             tagged_versions.add(value)
             choices.append((version_tuple(value), git(root, "rev-parse", tag + "^{commit}")))
+    excluded = False
     for value, sha in re.findall(r'<!-- release-boundary: ([\d.]+) ([0-9a-f]{40}) -->', changelog):
         if value not in tagged_versions and version_tuple(value) < version_tuple(target):
+            ancestry = subprocess.run(
+                ["git", "-C", str(root), "merge-base", "--is-ancestor", sha, end],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if ancestry.returncode == 1:
+                print(f"Ignoring automatic changelog boundary {value} {sha}: "
+                      f"not an ancestor of {end}", file=sys.stderr)
+                excluded = True
+                continue
+            if ancestry.returncode:
+                raise ValueError(f"Cannot verify changelog boundary {value} {sha}")
             choices.append((version_tuple(value), sha))
     if not choices:
         raise ValueError("No earlier release boundary; supply --from <commit-or-tag>")
-    return max(choices)[1]
+    selected = max(choices)
+    if excluded:
+        print(f"Selected reachable source boundary {'.'.join(map(str, selected[0]))} "
+              f"{selected[1]} for {target}", file=sys.stderr)
+    return selected[1]
 
 
 def generated_notes(commits):
@@ -313,7 +328,7 @@ def run(args):
             target = args.version
         version_tuple(target)
         end = git(root, "rev-parse", args.until + "^{commit}")
-        start = previous_boundary(root, changelog, target, args.since)
+        start = previous_boundary(root, changelog, target, args.since, end)
         if subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", start, end],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
             raise ValueError("Release start is not an ancestor of release end")

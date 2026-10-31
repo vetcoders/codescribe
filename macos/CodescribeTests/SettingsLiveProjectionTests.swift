@@ -17,11 +17,11 @@ final class SettingsLiveProjectionTests: XCTestCase {
     XCTAssertEqual(settings.pasteMode, .safe)
 
     tray.setPasteMode(.comfort)
-    tray.setAutoFormatLevel(.max)
+    tray.setAutoFormatLevel(.smart)
 
     XCTAssertEqual(settings.pasteMode, .comfort, "open Settings must show the tray's paste mode")
     XCTAssertEqual(
-      FormattingPolicyOption(storedValue: settings.settings.formattingLevel), .max,
+      FormattingPolicyOption(storedValue: settings.settings.formattingLevel), .smart,
       "open Settings must show the tray's formatting level")
     XCTAssertEqual(file.writes.map { $0.key }, ["PASTE_MODE", "FORMATTING_LEVEL"])
     XCTAssertEqual(
@@ -73,7 +73,9 @@ final class SettingsLiveProjectionTests: XCTestCase {
     let resident = SyntheticWhisperRuntime(loaded: nil)
     let scope = ConfigurationInvalidation()
     let settings = makeSettingsModel(file: file, scope: scope, whisper: resident)
-    settings.refreshWhisperModelCatalog()
+    settings.beginWhisperResidencyObservation()
+    defer { settings.endWhisperResidencyObservation() }
+    await waitUntil { settings.whisperModelCatalog != nil }
     XCTAssertNil(settings.whisperModelCatalog?.loaded)
 
     settings.selectWhisperModel(SyntheticWhisperRuntime.resolved)
@@ -85,6 +87,7 @@ final class SettingsLiveProjectionTests: XCTestCase {
     resident.loaded = SyntheticWhisperRuntime.resolved
     scope.recordingLifecycleChanged()
 
+    await waitUntil { settings.whisperModelCatalog?.loaded == SyntheticWhisperRuntime.resolved }
     XCTAssertEqual(settings.whisperModelCatalog?.loaded, SyntheticWhisperRuntime.resolved)
     XCTAssertTrue(settings.whisperResidencySettled)
     XCTAssertEqual(
@@ -101,9 +104,12 @@ final class SettingsLiveProjectionTests: XCTestCase {
     let settings = makeSettingsModel(file: file, scope: scope, whisper: resident)
     settings.whisperResidencyPollInterval = (.milliseconds(5), .milliseconds(5))
     settings.refreshWhisperModelCatalog()
+    await waitUntil { settings.whisperModelCatalog != nil }
 
     // Idle and unloaded with no recorder edge is stable truth: no reads.
+    let beforeOpen = resident.reads
     settings.beginWhisperResidencyObservation()
+    await waitUntil { resident.reads > beforeOpen }
     XCTAssertFalse(settings.whisperResidencyPending)
     let idleReads = resident.reads
     try? await Task.sleep(for: .milliseconds(50))
@@ -157,6 +163,7 @@ final class SettingsLiveProjectionTests: XCTestCase {
       recordingControls: { (state: state, tray: tray) })
     settings.whisperResidencyPollInterval = (.milliseconds(5), .milliseconds(5))
     settings.beginWhisperResidencyObservation()
+    await waitUntil { settings.whisperModelCatalog != nil }
     settings.endWhisperResidencyObservation()
 
     // The window missed this take's edge while closed.
@@ -172,7 +179,109 @@ final class SettingsLiveProjectionTests: XCTestCase {
     XCTAssertEqual(settings.whisperModelCatalog?.loaded, SyntheticWhisperRuntime.resolved)
   }
 
+  func testWhisperCatalogFilesystemExecutorLeavesMainActorResponsive() async {
+    let entered = expectation(description: "catalog filesystem read started")
+    let release = DispatchSemaphore(value: 0)
+    defer { release.signal() }
+    let read = Task { @MainActor in
+      await WhisperModelCatalogIO.perform {
+        var catalog = CsWhisperModelCatalog.sample
+        catalog.configured = Thread.isMainThread ? "main-thread" : "background"
+        entered.fulfill()
+        _ = release.wait(timeout: .now() + 2)
+        return catalog
+      }
+    }
+    await fulfillment(of: [entered], timeout: 1)
+    var heartbeat = false
+    Task { @MainActor in heartbeat = true }
+    await waitUntil(timeout: .milliseconds(250)) { heartbeat }
+    release.signal()
+    let catalog = await read.value
+    XCTAssertEqual(catalog.configured, "background")
+  }
+
+  func testBlockedCatalogCoalescesRecorderEdgesAndDiscardsSupersededSnapshot() async {
+    let scope = ConfigurationInvalidation()
+    let reader = HeldWhisperCatalog()
+    let settings = SettingsViewModel(
+      engine: MockSettingsEngine(whisperCatalogAsyncLoader: { await reader.read() }),
+      permissionProbe: MockPermissionProbe(),
+      whisperDownloadStore: WhisperDownloadStore(
+        statusProvider: { .sampleUnavailable }, download: { _ in .sampleUnavailable }),
+      configurationInvalidation: scope,
+      servingStatusProvider: { nil })
+    settings.beginWhisperResidencyObservation()
+    defer { settings.endWhisperResidencyObservation() }
+    await waitUntil { reader.reads == 1 }
+
+    var heartbeat = false
+    Task { @MainActor in heartbeat = true }
+    for _ in 0..<20 { scope.recordingLifecycleChanged() }
+    await waitUntil { heartbeat }
+    XCTAssertEqual(reader.reads, 1, "blocked reads must not create more filesystem workers")
+    reader.configured = "new selection"
+    reader.release()
+    await waitUntil { reader.reads == 2 }
+    XCTAssertNil(settings.whisperModelCatalog, "an invalidated snapshot must not publish")
+    reader.release()
+    await waitUntil { settings.whisperModelCatalog?.configured == "new selection" }
+    XCTAssertEqual(reader.reads, 2, "twenty edges collapse into one follow-up read")
+  }
+
+  func testClosedSettingsDoNotScanModelDirectoriesOnRecorderEdges() async {
+    let scope = ConfigurationInvalidation()
+    var reads = 0
+    let settings = SettingsViewModel(
+      engine: MockSettingsEngine(whisperCatalogLoader: {
+        reads += 1
+        return .sample
+      }),
+      permissionProbe: MockPermissionProbe(),
+      whisperDownloadStore: WhisperDownloadStore(
+        statusProvider: { .sampleUnavailable }, download: { _ in .sampleUnavailable }),
+      configurationInvalidation: scope,
+      servingStatusProvider: { nil })
+    for _ in 0..<20 { scope.recordingLifecycleChanged() }
+    for _ in 0..<5 { await Task.yield() }
+    XCTAssertEqual(reads, 0)
+    settings.recheckWhisperModel()
+    await waitUntil { settings.whisperModelCatalog != nil }
+    XCTAssertEqual(reads, 1, "an explicit model check still refreshes the catalog")
+  }
+
   // MARK: - Fixtures
+
+  func testOptionalCatalogDiscoveryPublishesUsableChoicesAndSettlesWithoutRecorderEdge() async {
+    var catalog = CsWhisperModelCatalog.sample
+    catalog.discoveryPending = true
+    var reads = 0
+    let settings = SettingsViewModel(
+      engine: MockSettingsEngine(whisperCatalogLoader: {
+        reads += 1
+        return catalog
+      }),
+      permissionProbe: MockPermissionProbe(),
+      whisperDownloadStore: WhisperDownloadStore(
+        statusProvider: { .sampleUnavailable }, download: { _ in .sampleUnavailable }),
+      configurationInvalidation: ConfigurationInvalidation(),
+      servingStatusProvider: { nil })
+    settings.whisperResidencyPollInterval = (.milliseconds(5), .milliseconds(5))
+    settings.beginWhisperResidencyObservation()
+    defer { settings.endWhisperResidencyObservation() }
+    await waitUntil { reads > 1 }
+    XCTAssertTrue(settings.whisperModelCatalog?.options.contains { $0.usable } == true)
+    XCTAssertTrue(
+      settings.whisperResidencySettled, "resident weights and discovery are separate facts")
+    XCTAssertFalse(
+      settings.whisperResidencyPending, "optional discovery does not change resident truth")
+    catalog.discoveryPending = false
+    await waitUntil { settings.whisperModelCatalog?.discoveryPending == false }
+    XCTAssertFalse(settings.whisperResidencyPending)
+    let settledReads = reads
+    try? await Task.sleep(for: .milliseconds(30))
+    XCTAssertEqual(reads, settledReads)
+  }
 
   private func makeSettingsModel(
     file: SyntheticSettingsFile,
@@ -209,6 +318,28 @@ final class SettingsLiveProjectionTests: XCTestCase {
     }
     let reached = condition()
     XCTAssertTrue(reached, "condition not reached within \(timeout)")
+  }
+}
+
+@MainActor
+private final class HeldWhisperCatalog {
+  var configured = "old selection"
+  private(set) var reads = 0
+  private var pending:
+    [(CsWhisperModelCatalog, CheckedContinuation<CsWhisperModelCatalog, Never>)] = []
+
+  func read() async -> CsWhisperModelCatalog {
+    reads += 1
+    var snapshot = CsWhisperModelCatalog.sample
+    snapshot.configured = configured
+    snapshot.loaded = snapshot.resolvedPath
+    return await withCheckedContinuation { pending.append((snapshot, $0)) }
+  }
+
+  func release() {
+    guard !pending.isEmpty else { return }
+    let (snapshot, continuation) = pending.removeFirst()
+    continuation.resume(returning: snapshot)
   }
 }
 

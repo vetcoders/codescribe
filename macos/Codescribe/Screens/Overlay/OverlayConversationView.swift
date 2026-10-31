@@ -110,6 +110,7 @@ struct OverlayConversationMessageContent: View {
 struct OverlayConversationView: View {
   @Environment(\.displayScale) private var displayScale
   @Environment(\.csTextScale) private var textScale
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   let conversation: OverlayConversation
   let palette: OverlayAppearancePalette
   let topInset: CGFloat
@@ -149,14 +150,12 @@ struct OverlayConversationView: View {
   /// Optional controls for the horizontal bus window only.
   var navigationActions: AnyView? = nil
   var navigationIndicators: AnyView? = nil
-  /// Standard window may compose for a different frozen conversation.
+  /// The recipient may differ; draft state always belongs to `conversation`.
   var composerConversation: OverlayConversation? = nil
   var composerAvailable = true
   var composerMicrophoneOpen: Bool? = nil
-  var composerRouting: AnyView? = nil
   var onPrepareHeldEdit: ((OverlayConversationMessage) -> UUID)? = nil
   var onReturnHeldText: ((OverlayConversationMessage, String, UUID) -> Bool)? = nil
-  var onNavigateComposerReply: (() -> Void)? = nil
   var conversationNavigationRequest: OverlayState.ConversationNavigationRequest? = nil
   /// Intercom only tightens the container and composer insets. Messages keep
   /// the same formatted bubbles in attached, main and detached conversations.
@@ -267,6 +266,13 @@ struct OverlayConversationView: View {
         ])
 
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
+        // Nothing above the rows is viewport space: the window's inset and
+        // the header card are glass floating over the scrolling text, as the
+        // composer is. The rows take both as a content margin and scroll
+        // under them (Maciej, 2026-10-30 on build 2981: "nie zrobiliście z
+        // tego tafli ponad tekstem tylko położyliście na desce pod spodem";
+        // the acceptance tests' "messages must scroll beneath the fixed
+        // header and composer, without a clipped middle strip").
         .transaction { transaction in
           // Keep retained message geometry stable during the panel's transition.
           transaction.animation = nil
@@ -421,9 +427,11 @@ struct OverlayConversationView: View {
 
   private var composer: some View {
     VStack(spacing: 8) {
-      if let composerRouting { composerRouting }
       let target = composerConversation ?? conversation
-      if composerAvailable && (target.owner != nil || target.channel == "0") {
+      // The inbox has no owner and no digit; it composes to its linked agents.
+      if composerAvailable
+        && (target.owner != nil || target.channel == "0" || conversation.isDraftSyncSource)
+      {
         OverlayConversationComposer(
           palette: palette, draft: $draft, maximumEditorHeight: composerEditorHeightLimit,
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
@@ -441,22 +449,19 @@ struct OverlayConversationView: View {
           onRemoveCaptureAttachment: onRemoveCaptureAttachment,
           captureAttachmentError: captureAttachmentError,
           onRetryCaptureAttachments: onRetryCaptureAttachments,
-          onNavigateReply: {
-            if let onNavigateComposerReply {
-              onNavigateComposerReply()
-            } else {
-              navigateToReply(replySelection?.messageID)
-            }
-          },
+          onNavigateReply: { navigateToReply(replySelection?.messageID) },
           draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
           draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
           onActivateDraftSync: onActivateDraftSync,
           onProseEdit: onProseEdit,
-          onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync
+          onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync,
+          recipientsOnSend: conversation.isDraftSyncSource,
+          clearRecipientsTitle: conversation.isHumanInbox
+            ? String(localized: "Stop syncing") : String(localized: "Send to everyone")
         )
         // A reused native coordinator must never redirect an old owner's
         // proposal or undo history into a different conversation's binding.
-        .id([target.id, target.owner?.id ?? ""])
+        .id([conversation.id, conversation.owner?.id ?? ""])
         if let sendError { composerError(sendError) }
         if let playbackError {
           composerError(playbackError)
@@ -470,9 +475,22 @@ struct OverlayConversationView: View {
     .frame(maxWidth: .infinity)
   }
 
+  /// A source's placeholder names its set, since the set is sticky and the
+  /// send chevron alone does not show it: the inbox alone has no recipient,
+  /// 0 · All alone is everyone.
   private var composerPlaceholder: String {
-    (composerConversation ?? conversation).channel == "0"
-      ? String(localized: "Send to everyone") : String(localized: "Message the Agent")
+    let names = draftSyncNames.filter { $0 != conversation.name }
+    if conversation.isHumanInbox {
+      return names.isEmpty
+        ? String(localized: "Choose recipients")
+        : String(localized: "To:") + " " + names.joined(separator: ", ")
+    }
+    if (composerConversation ?? conversation).channel == "0" {
+      return names.isEmpty
+        ? String(localized: "Send to everyone")
+        : String(localized: "Only to: \(names.joined(separator: ", "))")
+    }
+    return String(localized: "Message the Agent")
   }
 
   private func composerError(_ text: String) -> some View {
@@ -553,12 +571,24 @@ struct OverlayConversationView: View {
             microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
             palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
             broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
-            diameter: navigationPillHeight
+            // The header is a glass card: flat glyphs on it, as on the composer.
+            chrome: false, diameter: navigationPillHeight
           )
           .fixedSize()
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .background {
+        if reduceTransparency {
+          RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+            .fill(palette.desktopBackground.color)
+        }
+      }
+      .modifier(
+        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
+      )
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-conversation-navigation")
     }
@@ -755,26 +785,20 @@ struct OverlayConversationView: View {
     .contentMargins(
       .bottom,
       presentation == .intercom && showsComposer
-        ? (visibleComposerHeight > 0 ? visibleComposerHeight : bottomInset + 54) : bottomInset)
+        ? (visibleComposerHeight > 0 ? visibleComposerHeight : bottomInset + 54) : bottomInset
+    )
+    // The window inset and the header card's height: the newest rows rest
+    // under them and scroll through the glass, the way they do under the composer.
+    .contentMargins(.top, topInset + visibleNavigationHeight)
     if #available(macOS 26.0, *) {
-      // The header's glass alone is not a shade: bubbles stayed readable right
-      // behind the mark (Founder, 2026-10-18). Apple pairs a glass bar with the
-      // scroll edge effect, so the pinned header becomes a safe-area bar — an
-      // empty one, since the window's own header paints it — and the system's
-      // soft effect fades whatever runs under it. The bar replaces the top
-      // content margin; both named the same height.
+      // Navigation reserves actual space outside the scrolling viewport.
+      // No empty safe-area bar or translucent fade competes with that bound.
       list
-        .safeAreaBar(edge: .top, spacing: 0) {
-          Color.clear
-            .frame(height: topInset + visibleNavigationHeight)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
-        .scrollEdgeEffectStyle(.soft, for: .top)
+        .scrollEdgeEffectHidden(true, for: .top)
         // The composer's glass sits on the floor with nothing pinned behind it.
         .scrollEdgeEffectHidden(true, for: .bottom)
     } else {
-      list.contentMargins(.top, topInset + visibleNavigationHeight)
+      list
     }
   }
 
