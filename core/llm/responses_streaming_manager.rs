@@ -320,7 +320,12 @@ impl<'a> ResponsesStreamingManager<'a> {
         .json(request);
         let mut watchdog =
             StreamWatchdog::start(self.first_event_timeout, self.inter_chunk_timeout);
-        let header_wait = self.initial_response_timeout.min(watchdog.next_wait());
+        // Phase 1 of StreamWatchdog covers the whole prefill window from
+        // `request.send()` (including HTTP response headers and initial
+        // lifecycle/keepalive SSE frames) until the first content event.
+        // Do not clamp `header_wait` to the 30 s `initial_response_timeout`,
+        // which would abort responses whose headers arrive at 30–90 s.
+        let header_wait = watchdog.next_wait();
         let response = match tokio::time::timeout(header_wait, request_builder.send()).await {
             Ok(Ok(resp)) => resp,
             Ok(Err(e)) => return Err(e).context("SSE request failed"),
@@ -664,13 +669,10 @@ impl<'a> ResponsesStreamingManager<'a> {
             .timeout(STREAM_REQUEST_TIMEOUT);
         let mut watchdog =
             StreamWatchdog::start(self.first_event_timeout, self.inter_chunk_timeout);
-        let response = tokio::time::timeout(
-            self.initial_response_timeout.min(watchdog.next_wait()),
-            request.send(),
-        )
-        .await
-        .context("SSE resume initial response timeout")?
-        .context("SSE resume request failed")?;
+        let response = tokio::time::timeout(watchdog.next_wait(), request.send())
+            .await
+            .context("SSE resume initial response timeout")?
+            .context("SSE resume request failed")?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -850,7 +852,7 @@ async fn run_agent_stream(
         api_key,
         auth_header_mode,
         extra_headers,
-        initial_response_timeout,
+        initial_response_timeout: _,
         inter_chunk_timeout,
         first_event_timeout,
     } = transport;
@@ -871,7 +873,7 @@ async fn run_agent_stream(
     .json(&request_payload);
 
     let mut watchdog = StreamWatchdog::start(first_event_timeout, inter_chunk_timeout);
-    let header_wait = initial_response_timeout.min(watchdog.next_wait());
+    let header_wait = watchdog.next_wait();
     let response = match tokio::time::timeout(header_wait, request_builder.send()).await {
         Ok(Ok(resp)) => resp,
         Ok(Err(error)) => return Err(error).context("Agent SSE request failed"),

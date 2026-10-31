@@ -666,7 +666,7 @@ impl GoogleProvider {
         let response = tokio::select! {
             biased;
             _ = tx.closed() => return Ok(()),
-            result = tokio::time::timeout(self.initial_timeout.min(watchdog.next_wait()), request.send()) => {
+            result = tokio::time::timeout(watchdog.next_wait(), request.send()) => {
                 result.map_err(|_| anyhow!("Google response headers timed out"))?
                     .map_err(|error| anyhow!("Google transport failed: {}", redact_google_secrets(&error.without_url().to_string())))?
             }
