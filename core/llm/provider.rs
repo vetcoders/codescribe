@@ -1119,7 +1119,11 @@ mod tests {
         assert_eq!(xai.vendor(), Some(ProviderKind::XaiResponses));
         assert_eq!(ProviderRef::parse("custom:"), None);
         assert_eq!(ProviderRef::parse("custom:not a slug"), None);
-        assert_eq!(ProviderRef::parse("gemini"), None);
+        let google = ProviderRef::Vendor(ProviderKind::GoogleGemini);
+        assert_eq!(ProviderRef::parse("gemini"), Some(google.clone()));
+        assert_eq!(google.as_str(), Cow::Borrowed("google-gemini"));
+        assert_eq!(ProviderRef::parse(&google.as_string()), Some(google));
+        assert_eq!(ProviderRef::parse("unknown-provider"), None);
     }
 
     /// A custom row slugs its name, normalizes its endpoint, and refuses
@@ -1191,7 +1195,7 @@ mod tests {
         let row = libraxis;
         let registry = ProviderRegistry::new(vec![row.clone()]);
         let all = registry.all();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 6);
         assert_eq!(
             all.iter()
                 .map(|p| p.reference.as_string())
@@ -1201,6 +1205,7 @@ mod tests {
                 "openai-responses",
                 "xai-responses",
                 "anthropic-messages",
+                "google-gemini",
                 "custom:api-libraxis-com",
             ]
         );
