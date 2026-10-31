@@ -15,6 +15,10 @@ data  CsAccountLoginResult.providerId
 data  CsAccountLoginResult.status
 prose CsAccountLoginResult.message
 data  CsAccountLoginResult.authUrl
+data  CsMcpSignInResult.server
+data  CsMcpSignInResult.status
+data  CsMcpSignInResult.detail
+data  CsMcpSignInResult.authUrl
 data  CsAdmissionReadiness.code
 prose CsAdmissionReadiness.message
 data  CsAdmissionReadiness.deviceName
@@ -241,6 +245,9 @@ prose CsRuntimeLlmLane.unavailableReason
 data  CsSettings.holdArmModifier
 data  CsSettings.deferredInsertShortcut
 data  CsSettings.channelModifier
+data  CsSettings.agentChannelSessionPolicy
+data  CsSettings.agentChannelSendPauseSource
+data  CsSettings.agentChannelSegmentFinish
 data CsSettings.widgetShortcut
 data CsSettings.widgetShortcutLabel
 data  CsSettings.transcriptSendMode

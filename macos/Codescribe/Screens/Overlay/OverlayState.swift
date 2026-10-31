@@ -1220,8 +1220,12 @@ final class OverlayState {
   private var isPointerHovering = false
   private let nowProvider: () -> TimeInterval
   private let autoSendEnabled: () -> Bool
+  /// `interaction.agent_auto_send_delay_sec`: how long an armed Agent take
+  /// waits before it sends.
+  private let autoSendDelay: () -> TimeInterval
   private let micAccessProvider: () -> Bool
-  /// Terminal countdown for non-Agent outcomes and opted-in Agent delivery.
+  /// Terminal countdown for non-Agent outcomes. An armed Agent take waits
+  /// `autoSendDelay` instead, which defaults to the same 5 s.
   static let autoHideDelaySeconds: TimeInterval = 5
   /// Unpinning a resting overlay lets it go, never at the click itself: the
   /// panel the pin held stays this long, so a mistaken click can be undone.
@@ -1246,6 +1250,9 @@ final class OverlayState {
   init(
     nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend },
+    autoSendDelay: @escaping () -> TimeInterval = {
+      TimeInterval(CodescribeConfig().loadSettings().agentAutoSendDelaySec)
+    },
     micAccessProvider: @escaping () -> Bool = { micPermissionGranted() || requestMicPermission() },
     autoCollapseScheduler: @escaping OverlayAutoCollapse.Scheduler = OverlayAutoCollapse
       .liveScheduler
@@ -1255,6 +1262,7 @@ final class OverlayState {
     listener = DictationListener(continuation: channel.continuation)
     self.nowProvider = nowProvider
     self.autoSendEnabled = autoSendEnabled
+    self.autoSendDelay = autoSendDelay
     self.micAccessProvider = micAccessProvider
     autoCollapse = OverlayAutoCollapse(now: nowProvider, schedule: autoCollapseScheduler)
     eventTask = Task { @MainActor [weak self, eventStream] in
@@ -1366,6 +1374,91 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
+  /// A composer destination is pinned to its owner, never to a reusable digit.
+  struct ComposerTarget: Equatable {
+    let id: String
+    let channel: String
+    let ownerID: String?
+    let title: String
+
+    init(_ conversation: OverlayConversation) {
+      id = conversation.id
+      channel = conversation.channel
+      ownerID = conversation.owner?.id
+      title = conversation.displayTitle
+    }
+  }
+  private(set) var composerTarget: ComposerTarget?
+  private(set) var composerTargetRevision = UUID()
+
+  /// The same current owners that text publication accepts, plus broadcast.
+  var availableComposerRecipients: [OverlayConversation] {
+    let broadcast = conversations.filter { $0.id == "0" && $0.channel == "0" && $0.owner == nil }
+    return broadcast + draftSyncConversations
+  }
+
+  struct ConversationNavigationRequest: Equatable {
+    let conversationID: String
+    let messageID: String
+    let revision: UUID
+  }
+  private(set) var conversationNavigationRequest: ConversationNavigationRequest?
+
+  func navigateToConversationMessage(_ conversation: OverlayConversation, messageID: String) {
+    guard
+      conversations.contains(where: {
+        $0.id == conversation.id && $0.channel == conversation.channel
+          && $0.owner?.id == conversation.owner?.id
+      })
+    else { return }
+    selectConversation(conversation.id)
+    conversationNavigationRequest = ConversationNavigationRequest(
+      conversationID: conversation.id, messageID: messageID, revision: UUID())
+  }
+
+  func chooseComposerTarget(_ conversation: OverlayConversation) {
+    guard conversation.owner != nil || conversation.channel == "0" else { return }
+    composerTarget = ComposerTarget(conversation)
+    composerTargetRevision = UUID()
+  }
+
+  /// Select at the click, before withdrawal can suspend.
+  func prepareHeldComposerEdit(_ target: OverlayConversation) -> UUID {
+    chooseComposerTarget(target)
+    return composerTargetRevision
+  }
+
+  /// Append to the frozen draft even if its owner retired. A later explicit
+  /// selection wins, including when the user switched away and back again.
+  func returnHeldComposerText(_ text: String, to target: OverlayConversation, revision: UUID)
+    -> Bool
+  {
+    let old = conversationDraft(for: target.id)
+    setConversationDraft(old.isEmpty ? text : old + "\n\n" + text, for: target.id)
+    return composerTargetRevision == revision && composerTargetIsAvailable(target)
+      && composerTarget?.id == target.id && composerTarget?.ownerID == target.owner?.id
+      && composerTarget?.channel == target.channel
+  }
+
+  func initializeComposerTarget(_ conversation: OverlayConversation) {
+    if composerTarget == nil { chooseComposerTarget(conversation) }
+  }
+
+  func composerTargetIsAvailable(_ target: OverlayConversation) -> Bool {
+    availableComposerRecipients.contains {
+      $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.owner?.id
+    }
+  }
+
+  func resolvedComposerTarget(viewing conversation: OverlayConversation) -> OverlayConversation? {
+    guard let target = composerTarget else {
+      return composerTargetIsAvailable(conversation) ? conversation : nil
+    }
+    return availableComposerRecipients.first {
+      $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.ownerID
+    }
+  }
+
   /// Folding hides the roster but retains which canvas will unfold.
   private(set) var windowContentSurface: OverlayContentSurface = .transcription
   /// Whether the current frame can host the roster column. Width never
@@ -2875,8 +2968,8 @@ final class OverlayState {
     @MainActor ([String], OverlayCaptureAttachmentTarget) async throws -> Void = { paths, target in
       try await RealAgentBridgeInstaller.stageCaptureAttachments(paths: paths, target: target)
     }
-  @ObservationIgnored private var pendingDraftProjections: [String: CsTranscriptProjectionEvent] =
-    [:]
+  @ObservationIgnored private(set) var pendingDraftProjections:
+    [String: CsTranscriptProjectionEvent] = [:]
   @ObservationIgnored private var otherComposerOwnsCapture: (() -> Bool)?
   private(set) var pendingTextMessages: Set<String> = []
   private(set) var textMessageErrors: [String: String] = [:]
@@ -2895,18 +2988,25 @@ final class OverlayState {
     // A retired Sync member may already have lost its group. Revalidate at
     // the routing boundary so that a stale callback cannot send it singly.
     if conversation.channel != "0" {
-      guard draftSyncConversations.contains(where: {
-        $0.id == conversation.id && $0.owner?.id == conversation.owner?.id
-          && $0.channel == conversation.channel && $0.owner?.channel == conversation.owner?.channel
-      }) else { return }
+      guard
+        draftSyncConversations.contains(where: {
+          $0.id == conversation.id && $0.owner?.id == conversation.owner?.id
+            && $0.channel == conversation.channel
+            && $0.owner?.channel == conversation.owner?.channel
+        })
+      else { return }
     }
     if hasSynchronizedDraft(conversation.id) {
       await sendSynchronizedDraft(from: conversation)
       return
     }
     let draft = conversationDraft(for: conversation.id)
+    let hasWaitingCaptureAttachments =
+      captureAttachmentDrafts[conversation.id]?.target == nil
+      && !(captureAttachmentDrafts[conversation.id]?.paths.isEmpty ?? true)
+      && !pendingCaptureAttachmentSends.contains(conversation.id)
     guard conversation.owner != nil || conversation.channel == "0",
-      !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasWaitingCaptureAttachments,
       !pendingTextMessages.contains(conversation.id)
     else { return }
     pendingTextMessages.insert(conversation.id)
@@ -2923,6 +3023,7 @@ final class OverlayState {
       adopted.isEmpty
       ? draft
       : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
+    guard !outgoing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     do {
       try await publishConversationText(conversation.owner, outgoing, reply, [])
       // A newer draft belongs to the Founder, even if publication finishes late.
@@ -2955,7 +3056,9 @@ final class OverlayState {
     return current == publication
   }
 
-  private func draftPublicationOwnerIsCurrent(_ publication: OverlayComposerDraftPublication) -> Bool {
+  private func draftPublicationOwnerIsCurrent(_ publication: OverlayComposerDraftPublication)
+    -> Bool
+  {
     draftSyncConversations.contains {
       $0.id == publication.id && $0.owner?.id == publication.owner.id
         && $0.channel == publication.owner.channel && $0.owner?.channel == publication.owner.channel
@@ -3033,9 +3136,13 @@ final class OverlayState {
       pendingDraftProjections.removeAll()
       for projection in waiting { admitComposerDelivery(projection, affectsCurrentCapture: false) }
     }
+    // The take's audience is frozen at its request: only conversations linked
+    // while the words are spoken may receive them (Roman's pre-join leak).
+    let audience = draftGroupIndex(for: conversation.id).map { conversationDraftGroups[$0].members }
     await draftCapture.toggle(
       conversationID: conversation.id,
-      busy: audioCaptureActive || otherComposerOwnsCapture?() == true)
+      busy: audioCaptureActive || otherComposerOwnsCapture?() == true,
+      audience: audience ?? [conversation.id])
   }
 
   func draftMicrophoneBusy(in conversation: OverlayConversation) -> Bool {
@@ -3094,14 +3201,19 @@ final class OverlayState {
     for (id, original) in captureAttachmentDrafts where original.target == nil {
       guard let conversation = projected.first(where: { $0.id == id }),
         let session = captureSessionForPaste(in: conversation, at: original.pastedAt),
-        original.captureSessionID == nil || original.captureSessionID == session.id,
+        original.captureSessionID == nil
+          || OverlayChannelDelivery.Bus.channelSessionID(of: original.captureSessionID ?? "")
+            == OverlayChannelDelivery.Bus.channelSessionID(of: session.id),
         let target = conversation.messages.reversed().compactMap(\.activeCaptureAttachmentTarget)
           .first(where: {
-            $0.captureSessionID == session.id && $0.recipientIDs.sorted() == session.recipientIDs
+            ($0.captureSessionID == session.id
+              || OverlayChannelDelivery.Bus.channelSessionID(of: $0.captureSessionID)
+                == OverlayChannelDelivery.Bus.channelSessionID(of: session.id))
+              && $0.recipientIDs.sorted() == session.recipientIDs
           })
       else { continue }
       var resolved = original
-      resolved.captureSessionID = session.id
+      resolved.captureSessionID = target.captureSessionID
       resolved.target = target
       captureAttachmentDrafts[id] = resolved
       captureAttachmentErrors.removeValue(forKey: id)
@@ -3134,17 +3246,24 @@ final class OverlayState {
           $0.captureSessionID == target.captureSessionID && $0.captureState == .finished
         })
       else { continue }
-      let draft = ConversationDraft.split(conversationDraft(for: id))
-      let added = staged.paths.filter { !draft.attachments.contains($0) }
-      setConversationDraft(
-        ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id
-      )
-      captureAttachmentDrafts.removeValue(forKey: id)
-      captureAttachmentErrors.removeValue(forKey: id)
-      textMessageErrors[id] = String(
-        localized:
-          "The recording ended. Files are in this conversation's draft; send them when ready.")
+      returnCaptureAttachmentsToDraft(in: id)
     }
+  }
+
+  /// Hand one staging's files back to the conversation's manual draft. Send
+  /// stays an explicit choice; the info line tells the Founder where they went.
+  private func returnCaptureAttachmentsToDraft(in id: String) {
+    guard let staged = captureAttachmentDrafts[id] else { return }
+    let draft = ConversationDraft.split(conversationDraft(for: id))
+    let added = staged.paths.filter { !draft.attachments.contains($0) }
+    setConversationDraft(
+      ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id
+    )
+    captureAttachmentDrafts.removeValue(forKey: id)
+    captureAttachmentErrors.removeValue(forKey: id)
+    textMessageErrors[id] = String(
+      localized:
+        "The recording ended. Files are in this conversation's draft; send them when ready.")
   }
 
   func sendCaptureAttachments(in conversationID: String) async {
@@ -3174,7 +3293,17 @@ final class OverlayState {
         captureAttachmentDrafts[conversationID] = current.paths.isEmpty ? nil : current
       }
     } catch {
-      captureAttachmentErrors[conversationID] = error.userFacingMessage
+      // The helper revalidates under the bus append lock, so its refusal is
+      // the authority that this frozen target is gone. A take that never
+      // seals keeps projecting `.receiving`, so waiting for a `.finished`
+      // row would strand the files behind a retry that cannot succeed
+      // (Maciej, 2026-10-28: "to dołączanie nadal nie działa").
+      let refusal = (error as NSError).userInfo[NSDebugDescriptionErrorKey] as? String
+      if refusal?.contains("capture attachment refused") == true {
+        returnCaptureAttachmentsToDraft(in: conversationID)
+      } else {
+        captureAttachmentErrors[conversationID] = error.userFacingMessage
+      }
     }
   }
 
@@ -4950,12 +5079,13 @@ final class OverlayState {
       return
     }
     cancelAutoHide()
+    let terminalDelay = agentSessionArmed ? autoSendDelay() : OverlayState.autoHideDelaySeconds
     let delay =
       pinReleaseArmed
       ? OverlayState.pinReleaseDelaySeconds
       : presentationMode == .expanded
-        ? max(OverlayState.autoHideDelaySeconds, selectedReplyReadingSeconds ?? 0)
-        : OverlayState.autoHideDelaySeconds
+        ? max(terminalDelay, selectedReplyReadingSeconds ?? 0)
+        : terminalDelay
     autoHideDeadline = nowProvider() + delay
     scheduleAutoHideWake(after: delay, generation: captureGeneration)
   }
@@ -5810,11 +5940,25 @@ final class OverlayState {
     if let destination = draftCapture.destination(for: projection.sessionId) {
       let parts = ConversationDraft.split(conversationDraft(for: destination))
       let appended = parts.text.isEmpty ? text : "\n" + text
+      let linked = draftGroupIndex(for: destination).map { conversationDraftGroups[$0].members }
+      let audience = draftCapture.audience(for: projection.sessionId)
+      guard linked.map({ $0.isSubset(of: audience) }) ?? true else {
+        // Someone joined after these words were spoken. They stay private to
+        // the destination; the changed prose starts a fresh shared epoch.
+        setConversationDraft(
+          ConversationDraft.compose(text: parts.text + appended, attachments: parts.attachments),
+          for: destination)
+        admittedComposerSessions.insert(projection.sessionId)
+        retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
+        return
+      }
       applyConversationProseEdit(
         OverlayComposerProseEdit(
           before: parts.text, after: parts.text + appended,
-          replacements: [OverlayComposerTextReplacement(
-            range: NSRange(location: parts.text.utf16.count, length: 0), replacement: appended)]),
+          replacements: [
+            OverlayComposerTextReplacement(
+              range: NSRange(location: parts.text.utf16.count, length: 0), replacement: appended)
+          ]),
         for: destination)
       admittedComposerSessions.insert(projection.sessionId)
       retainedComposerDocuments.removeAll { $0.id == projection.sessionId }

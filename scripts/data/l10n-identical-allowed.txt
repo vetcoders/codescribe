@@ -19,6 +19,7 @@
 %@ Hz
 %@ s
 %lld s
+%lld min
 %lld ms
 %@ · %@ MB
 %@ · %@ / %@ MB
@@ -29,6 +30,7 @@ Codescribe Bus
 AICX MCP
 Loctree MCP
 
+
 # Wire values, endpoints and identifiers shown verbatim.
 HTTP(S): %@
 Messages (/v1/messages)
@@ -37,7 +39,6 @@ https://…/mcp
 status
 
 # A sample raw Polish transcript used as a placeholder; the source is already Polish.
-tak jeśli nie stosuje się zaleceń dokumentacji…
 
 # Loanwords Polish spells the same way.
 Argument

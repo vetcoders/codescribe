@@ -1,8 +1,11 @@
 import SwiftUI
 
+/// `pending` is a verdict or a take still in flight (checking, starting,
+/// finishing): a process state, never a warning, so it carries no glyph.
 enum AudioInputDisplayTone: Equatable {
   case healthy
   case neutral
+  case pending
   case fallback
   case unavailable
 }
@@ -239,7 +242,7 @@ func audioReadinessSteps(
   } else {
     calibration = AudioReadinessStep(
       id: .calibration,
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Checking calibration…"),
       detail: String(localized: "Reading the controller's measured profile.")
     )
@@ -301,7 +304,7 @@ func audioReadinessSteps(
   } else {
     sealLane = AudioReadinessStep(
       id: .sealLane,
-      tone: .fallback,
+      tone: .pending,
       title: sealLaneTitle,
       detail: String(localized: "Reading the current setting…")
     )
@@ -311,7 +314,7 @@ func audioReadinessSteps(
   if processing {
     recording = AudioReadinessStep(
       id: .recording,
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Finishing recording…"),
       detail: String(
         localized: "The shared recorder is processing this take. Wait before starting another.")
@@ -319,7 +322,7 @@ func audioReadinessSteps(
   } else if preparing {
     recording = AudioReadinessStep(
       id: .recording,
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Starting recording…"),
       detail: String(localized: "The shared recorder is preparing this take.")
     )
@@ -334,7 +337,7 @@ func audioReadinessSteps(
   } else if isRecording == nil {
     recording = AudioReadinessStep(
       id: .recording,
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Checking recording activity…"),
       detail: String(localized: "Waiting for the shared recorder's lifecycle.")
     )
@@ -359,7 +362,7 @@ func audioReadinessSteps(
   } else {
     recording = AudioReadinessStep(
       id: .recording,
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Checking recording readiness…"),
       detail: String(localized: "Waiting for the controller's admission verdict.")
     )
@@ -381,8 +384,9 @@ func audioReadinessSteps(
 /// Collapses the four prerequisites into the one line the panel shows. A
 /// healthy or in-flight state is a bare headline; a blocked one becomes the
 /// blocking prerequisite, its explanation and the single action that clears it.
-/// A `.fallback` prerequisite is only promoted when recording really cannot
-/// start — a system-fallback microphone is a notice on the microphone card.
+/// A `.fallback` or `.pending` prerequisite is only promoted when recording
+/// really cannot start — a system-fallback microphone is a notice on the
+/// microphone card.
 func audioReadinessSummary(
   input: CsAudioInputSnapshot,
   microphonePermission: PermissionState,
@@ -402,7 +406,7 @@ func audioReadinessSummary(
   )
   guard let recordingStep = steps.first(where: { $0.id == .recording }) else {
     return AudioReadinessSummary(
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Checking recording readiness…"),
       detail: nil,
       remedy: .none
@@ -419,7 +423,7 @@ func audioReadinessSummary(
   let blocker =
     prerequisites.first { $0.tone == .unavailable }
     ?? (admission == nil && recordingStep.tone != .healthy
-      ? prerequisites.first { $0.tone == .fallback } : nil)
+      ? prerequisites.first { $0.tone == .fallback || $0.tone == .pending } : nil)
 
   if let blocker {
     return AudioReadinessSummary(
@@ -490,7 +494,7 @@ func audioCalibrationFact(
   }
   guard let admission else {
     return AudioReadinessFact(
-      id: .calibration, label: label, value: audioReadinessCheckingValue(), tone: .fallback)
+      id: .calibration, label: label, value: audioReadinessCheckingValue(), tone: .pending)
   }
   if admission.calibrationVersion != nil, admission.calibrationStatus == "sealed" {
     return AudioReadinessFact(
@@ -531,7 +535,7 @@ func audioSealLaneFact(_ admission: CsAdmissionReadiness?) -> AudioReadinessFact
   let label = String(localized: "Committing fragments")
   guard let admission else {
     return AudioReadinessFact(
-      id: .sealLane, label: label, value: audioReadinessCheckingValue(), tone: .fallback)
+      id: .sealLane, label: label, value: audioReadinessCheckingValue(), tone: .pending)
   }
   if !admission.ready, admission.code == "admission_seal_vad_unavailable" {
     return AudioReadinessFact(
@@ -549,14 +553,14 @@ func audioSealLaneFact(_ admission: CsAdmissionReadiness?) -> AudioReadinessFact
       label: label,
       value: String(
         localized: "audio.readiness.sealLane.on", defaultValue: "On",
-        comment: "Value of the committing fragments row; keep it as short as the UI allows"),
+        comment: "Value of the committing fragments row; use the full word, never an abbreviation"),
       tone: .healthy)
     : AudioReadinessFact(
       id: .sealLane,
       label: label,
       value: String(
         localized: "audio.readiness.sealLane.off", defaultValue: "Off",
-        comment: "Value of the committing fragments row; keep it as short as the UI allows"),
+        comment: "Value of the committing fragments row; use the full word, never an abbreviation"),
       tone: !admission.ready && admission.code == "admission_seal_lane_disarmed"
         ? .unavailable : .neutral)
 }
@@ -647,7 +651,7 @@ func sealLaneControlState(_ readiness: CsAdmissionReadiness?) -> SealLaneControl
 func admissionDisplayState(_ readiness: CsAdmissionReadiness?) -> AudioInputDisplayState {
   guard let readiness else {
     return AudioInputDisplayState(
-      tone: .fallback,
+      tone: .pending,
       title: String(localized: "Checking acoustic admission…"),
       detail: String(localized: "Reading the controller's calibration and seal-lane verdict.")
     )
@@ -762,8 +766,10 @@ struct AudioPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
+      // Headed by the sidebar name; the line under it says what the pane is
+      // for, microphone and recording, in one sentence.
       SettingsPageHeader(
-        String(localized: "Microphone and recording"),
+        SettingsSection.audio.title,
         blurb: String(localized: "Choose a microphone and adjust recording.")
       )
 
@@ -795,6 +801,25 @@ struct AudioPanel: View {
         .padding(.top, SettingsScale.sectionGap)
       retentionSection
         .padding(.top, SettingsScale.headerGap)
+
+      // Hands-free dictation only: agent channels have their own send pause
+      // (Agent › AI models › Voice conversation with an agent).
+      SettingsSectionLabel(String(localized: "Hands-free dictation"))
+        .padding(.top, SettingsScale.sectionGap)
+      SettingsSecondsSlider(
+        title: String(localized: "Silence limit in hands-free dictation"),
+        detail: String(
+          localized:
+            "Silence after you stop speaking that closes an utterance while a hands-free recording keeps running. Applies from the next recording."
+        ),
+        seconds: model.settings.toggleSilenceSec,
+        value: $model.toggleSilenceSlider,
+        range: 0.5...30,
+        step: 0.5
+      )
+      .settingsGroupedInset()
+      .padding(.top, SettingsScale.headerGap)
+      .accessibilityIdentifier("dictation-toggle-silence")
 
       SettingsSectionLabel(String(localized: "Recording start sound"))
         .padding(.top, SettingsScale.sectionGap)
@@ -963,9 +988,7 @@ struct AudioPanel: View {
         Text(calibration.label)
           .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
-        Text(calibration.value)
-          .font(SettingsScale.controlLabel)
-          .foregroundStyle(statusColor(calibration.tone))
+        statusValue(calibration)
         Spacer(minLength: 0)
         calibrationControl(recordingState: recordingState, tray: tray)
       }
@@ -977,9 +1000,7 @@ struct AudioPanel: View {
           .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
         Spacer(minLength: 0)
-        Text(sealLane.value)
-          .font(SettingsScale.controlLabel)
-          .foregroundStyle(statusColor(sealLane.tone))
+        statusValue(sealLane)
       }
       .padding(.vertical, SettingsScale.controlInsetV)
       .accessibilityElement(children: .ignore)
@@ -999,19 +1020,25 @@ struct AudioPanel: View {
     recordingState: OverlayState?, tray: TrayViewModel?, stopRequested: Binding<Bool>
   ) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 10) {
-      CSIconView(
-        icon: summary.tone == .healthy ? .checkCircleFill : .warning,
-        size: 13,
-        weight: .semibold,
-        color: statusColor(summary.tone)
-      )
-      .accessibilityHidden(true)
+      if summary.tone == .fallback || summary.tone == .unavailable {
+        CSIconView(
+          icon: .warning,
+          size: 13,
+          weight: .semibold,
+          color: statusColor(summary.tone)
+        )
+        .accessibilityHidden(true)
+      }
 
       VStack(alignment: .leading, spacing: 2) {
-        Text(summary.title)
-          .font(SettingsScale.settingName)
-          .foregroundStyle(Color.primary)
-          .fixedSize(horizontal: false, vertical: true)
+        if summary.tone == .healthy {
+          CSStatusBadge(text: summary.title, mark: .verified)
+        } else {
+          Text(summary.title)
+            .font(SettingsScale.settingName)
+            .foregroundStyle(Color.primary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
         if let detail = summary.detail {
           Text(detail)
             .font(SettingsScale.helper)
@@ -1045,7 +1072,7 @@ struct AudioPanel: View {
       } label: {
         Text(microphonePermissionActionTitle)
           .font(SettingsScale.controlLabel)
-          .foregroundStyle(CSColor.chromeAccent)
+          .foregroundStyle(Color.primary)
       }
       .accessibilityHint("Grants Codescribe access to the microphone selected above")
     case .calibrate:
@@ -1094,7 +1121,7 @@ struct AudioPanel: View {
             comment: "Button on the readiness status line: stop the running take")
         )
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(enabled ? CSColor.chromeAccent : CSColor.secondaryInk)
+        .foregroundStyle(enabled ? Color.primary : CSColor.secondaryInk)
       }
       .accessibilityLabel("Stop recording")
       .accessibilityHint("Stops the active take in the shared recorder")
@@ -1110,7 +1137,7 @@ struct AudioPanel: View {
             comment: "Button on the readiness status line: start a take")
         )
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(enabled ? CSColor.chromeAccent : CSColor.secondaryInk)
+        .foregroundStyle(enabled ? Color.primary : CSColor.secondaryInk)
       }
       .accessibilityLabel("Start recording")
       .accessibilityHint("Starts a real dictation session in the shared recorder")
@@ -1127,11 +1154,8 @@ struct AudioPanel: View {
         TimelineView(.periodic(from: .now, by: 0.2)) { context in
           let elapsed = context.date.timeIntervalSince(startedAt)
           VStack(alignment: .trailing, spacing: 3) {
-            ProgressView(
-              value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed)
-            )
-            .progressViewStyle(.linear)
-            .frame(width: 92)
+            CSProgressBar(value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed))
+              .frame(width: 92)
             Text(
               "\(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: elapsed)) s left"
             )
@@ -1345,9 +1369,22 @@ struct AudioPanel: View {
   private func statusColor(_ tone: AudioInputDisplayTone) -> Color {
     switch tone {
     case .healthy: return CSColor.oliveLight
-    case .neutral: return CSColor.secondaryInk
+    case .neutral, .pending: return CSColor.secondaryInk
     case .fallback: return CSColor.amberLight
     case .unavailable: return CSColor.dangerLight
+    }
+  }
+
+  /// A fact's value: a healthy one ("Ready") is the olive capsule with a check
+  /// (Founder, 2026-10-26); every other tone keeps its coloured word.
+  @ViewBuilder
+  private func statusValue(_ fact: AudioReadinessFact) -> some View {
+    if fact.tone == .healthy {
+      CSStatusBadge(text: fact.value, mark: .verified)
+    } else {
+      Text(fact.value)
+        .font(SettingsScale.controlLabel)
+        .foregroundStyle(statusColor(fact.tone))
     }
   }
 

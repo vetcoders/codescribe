@@ -82,6 +82,11 @@ impl WireFamily {
     /// trim, strip a known protocol suffix (or a bare `/v1`), append the
     /// canonical one. Pure string work — no settings, env, or Keychain.
     pub fn normalize_endpoint(self, raw: &str) -> String {
+        // URL parsing can reinterpret a missing authority as a host from the
+        // path. Preserve invalid input so provider validation can reject it.
+        if endpoint_host(raw.trim()).is_empty() {
+            return raw.trim().to_string();
+        }
         let known = [
             "/v1/responses",
             "/v1/messages",

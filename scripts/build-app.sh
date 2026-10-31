@@ -58,7 +58,7 @@ skill_source = repo / "skills" / "codescribe"
 helper_source = repo / "scripts" / "bus-demux.py"
 entrypoints = [helper_source, *(repo / "scripts" / name for name in (
     "cs-bus", "cs-say", "cs-junie", "bus-mcp.py", "bus-mcp-agent.py",
-    "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py"))]
+    "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py", "bus-mcp-sessions.py"))]
 if not (skill_source / "SKILL.md").is_file() or not all(path.is_file() for path in entrypoints):
     raise SystemExit("agent bridge source is incomplete")
 if (
@@ -100,6 +100,16 @@ for source in entrypoints:
     target = stage / "bin" / source.name
     shutil.copy2(source, target)
     target.chmod(0o755)
+# The OpenAI package carries its Python server dependencies. Its entry verifies
+# both copies and runs the managed owner, so UI and MCP share follower identity.
+server = stage / "plugins" / "codescribe" / "server"
+server.mkdir()
+server_files = []
+for source in entrypoints:
+    target = server / source.name
+    shutil.copy2(source, target)
+    server_files.append({"path": source.name, "sha256": hashlib.sha256(target.read_bytes()).hexdigest()})
+(server / "manifest.json").write_text(json.dumps({"api_version": 1, "files": server_files}, sort_keys=True) + "\n")
 if publisher is not None:
     shutil.copy2(publisher, stage / "bin" / "codescribe")
     (stage / "bin" / "codescribe").chmod(0o755)

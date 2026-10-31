@@ -76,7 +76,7 @@ extension OpenWindowAction {
 /// the AppDelegate-owned action and carries no recording/model payload.
 final class AgentAppActionListener: CsAppActionListener, Sendable {
   private enum Action: Sendable {
-    case showAgent, toggleWidget, maxApprovalsChanged
+    case showAgent, toggleWidget, maxApprovalsChanged, composerDictationRedirected
     case agentGesture(CsAgentGestureInput)
   }
   private let continuation: AsyncStream<Action>.Continuation
@@ -98,6 +98,8 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
         case .toggleWidget: toggleWidget()
         case .maxApprovalsChanged: await maxApprovalsChanged()
         case .agentGesture(let input): agentGesture(input)
+        case .composerDictationRedirected:
+          ComposerCaretOwnership.shared.redirectToComposerMicrophone()
         }
       }
     }
@@ -117,6 +119,10 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
 
   func onAgentGesture(input: CsAgentGestureInput) {
     continuation.yield(.agentGesture(input))
+  }
+
+  func onComposerDictationRedirected() {
+    continuation.yield(.composerDictationRedirected)
   }
 
   func invalidate() {

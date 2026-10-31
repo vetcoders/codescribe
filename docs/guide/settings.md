@@ -5,8 +5,27 @@ the Dictation section has separate tabs for its concerns. The button at the
 left of the toolbar, or `Control+Command+S`, hides and shows the sidebar, and
 the window remembers the choice. The window bar carries only the wordmark and
 version: the selected sidebar row and the pane's own heading name the pane.
+Every page is headed by the name you clicked: a page with tabs by the active
+tab's name, every other page by its sidebar name, in the same words. Where a
+page needs saying what it is for, that is the sentence under the heading.
 The sections below
 describe the current controls and their runtime contracts.
+
+Amber is reserved for warnings that need action. Cloud privacy assurances,
+the safe choice not to grant cloud consent, enhanced capability labels,
+diagnostic environment overrides and tags on unused cached models use neutral
+ink. A failed model selection, missing or invalid selected-model files, and
+disk read or removal errors remain warnings. A verdict or a take still in
+flight (“Checking…”, “Starting recording…”, “Finishing recording…”) is a
+process state: neutral ink, no warning sign.
+
+**Start recording**, **Stop recording**, microphone-access actions,
+and Voice Lab disclosure toggles,
+**Install skill…** / **Update skill…**, and Agent chat's **Enter license** use
+neutral primary text that follows the light or dark appearance independently
+of the macOS accent. Disabled controls keep their dimmed text. The prompt
+editor's **Unsaved changes** note also uses neutral text; selection and review
+badges retain their separate status styling.
 
 Configuration still lives in three layers:
 
@@ -25,30 +44,51 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 
 ## Creator
 
-Right under the heading, **Open Setup Wizard…** reopens the first-run wizard
-from its first screen, with no explanation beside the button. Each step opens
-on your current value and writes it when you press Continue; the shortcuts step
-writes a preset (Hold, Toggle or Hybrid) to the three mode bindings only when
-you pick one, so custom shortcuts stay as they are if you continue past it.
-This is the wizard's only entry after first run — the tray menu no longer
-carries it. The wizard's steps and their layout are described in
+The page holds the general settings. In English its sidebar name and title
+are **Creator**; in Polish the page is **Ogólne** (General). Under the title,
+_Language, appearance, permissions and formatting._ says what it holds. On the
+title's own line, at the right, **Open Setup Wizard…** (PL **Otwórz kreator…**)
+is a small neutral button with the wizard glyph before its label; it reopens
+the first-run wizard from its first screen, with no explanation beside the
+button. The wizard window is titled **Getting started** (PL **Kreator**). Each
+step opens on your current value and writes it when you press Continue; the
+shortcuts step writes a preset (Hold, Toggle or Hybrid) to the three mode
+bindings only when you pick one, so custom shortcuts stay as they are if you
+continue past it. This is the wizard's only entry after first run — the tray
+menu no longer carries it. The wizard's steps and their layout are described in
 [Installation › First Launch](installation.md#first-launch).
 
-The first desk groups what a new install needs, separated by spacing rather
-than section headers (only Permissions, the coding-agent card and Quick start
-keep a header): the two language rows, appearance, the only permission
-checklist in Settings — with a **System Settings…** link in
-its header (the Privacy & Security pane, so a granted scope can be reviewed
-or revoked; a missing scope still carries its own request or deep link on the
-row) — voice and formatting, one **Max consultation** card that also holds
-the pending approval requests, the coding-agent skill rows with **Refresh
-status** on the section header, and the quick-start cards.
+The page reads top to bottom: **Quick start** (Test mic, Open widget, Tune
+shortcuts — three cards whose glyphs share one fixed box, so their titles sit
+on one line), then **Language** (interface and transcription language),
+**Appearance** (appearance, the two panel-shade menus, which name the shade
+without a hex code, and the intercom layout), **Permissions** — the only
+permission checklist in Settings, with a **System Settings…** link in its
+header (the Privacy & Security pane, so a granted scope can be reviewed or
+revoked) — voice and formatting, one **Max consultation** card that also holds
+the pending approval requests, and the coding-agent skill rows with **Refresh
+status** on the section header.
+
+While all five scopes are granted, the checklist folds into one line,
+**All permissions granted (5)** (PL _Wszystkie uprawnienia przyznane (5)_), in
+the olive capsule with the thin check; its chevron opens the five rows for
+review. As soon as one scope is missing, the full list comes back on its own,
+and the missing row carries its warning sign and its own request or deep link.
 
 **Formatting level** (Off, Correction, Smart, Max) is the only formatting
 switch: Off sends nothing to a formatting model and keeps the raw transcript;
 Correction is the default. There is no separate AI formatting toggle any more —
 a toggle that was switched off in an older version becomes level Off on the
 first launch.
+
+The row explains the selected level: Off keeps the transcript without AI
+formatting, Correction fixes spelling and punctuation while keeping the wording,
+Smart edits for clarity while preserving meaning, and Max uses the Agent model
+and prompt for the dictated request. The explanation changes with the selection.
+
+**Intercom layout** keeps the floating option short: **Floating pills**
+(PL **Lewitujące pigułki**). The row's description identifies both the horizontal
+strip and floating vertical agent pills as experimental.
 
 **Max permissions** says under its heading whether anything is waiting for you —
 _No requests waiting_ or _Requests waiting_ — so an empty section cannot be
@@ -135,7 +175,9 @@ This tab owns the transcript pipeline itself:
 - **Transcript display pace** (Dictation → Preview)
   - presets: `Smooth`, `Snappy`, `Relaxed`, `No preview`, `Custom`
   - `Detailed settings` — collapsed by default, opened by `Custom`:
-    - `Update delay` → `CODESCRIBE_BUFFER_DELAY_MS`
+    - `Update delay` → `CODESCRIBE_BUFFER_DELAY_MS`; the label shows seconds
+      with the locale's decimal separator (for example, `1.5 s` in English or
+      `1,5 s` in Polish); the stored value remains milliseconds
     - `Character pace` → `CODESCRIBE_TYPING_CPS`
     - `Max words per update` → `CODESCRIBE_EMIT_WORDS_MAX`
     - `Interim result interval` → `CODESCRIBE_BUFFERED_INTERIM_SEC`
@@ -163,7 +205,9 @@ This tab owns the transcript pipeline itself:
 
 ## Dictation tabs
 
-The Dictation pane is one tab per concern:
+The Dictation pane is one tab per concern. Every Dictation page is headed by its
+tab name — Engine, Whisper, Preview, Privacy; Preview names its setting,
+**Transcript display pace**, in the line under the title.
 
 1. **Engine** — **Recognition mode** is the first row and the only recognition
    choice (Apple only, Local power, Cloud). The two on-device modes carry a one-line
@@ -239,7 +283,8 @@ on demand:
 
 - **Data processing** — the selected recognition mode and the stored cloud
   consent as two separate rows. A granted record is not evidence that audio
-  is leaving now. The cloud itself is configured in Providers: the one
+  is leaving now. **Not granted** is a normal safe choice and carries no
+  warning mark. The cloud itself is configured in Providers: the one
   **Set up the cloud in Providers** action under this card opens
   **Providers** and scrolls to its **Cloud transcription** section.
 - **What can leave this computer?** — two scannable rows. **Audio**: in Cloud
@@ -260,9 +305,10 @@ the effect; only confirming it writes `CODESCRIBE_CLOUD_CONSENT=granted`
 together with the mode. Leaving Cloud for Local power or Apple only writes
 `denied`, so selecting Cloud again always asks again.
 
-## Shortcuts & control
+## Hotkeys
 
-Open **Settings → Hotkeys**. The page is headed **Shortcuts & control**.
+Open **Settings → Hotkeys**. The page is headed **Hotkeys**, the same name as
+in the sidebar.
 
 The tab holds two different save contracts: the three mode gestures are a
 draft and need **Save shortcuts**; every other control on the page writes as
@@ -273,14 +319,18 @@ soon as you change it.
 the Agent). None of the three promises a paste: where the
 transcript goes is **Paste after dictation** below, and `PASTE_MODE=off` means
 nowhere. The gesture pill shows the chord (`2× ⌃ (Ctrl)`); VoiceOver reads the
-spelled-out form. Formatting and Agent have no gesture: Option types
-characters, and the right Option double-tap used to start the Agent on its
-own. Their rows show where they start instead of a picker (Formatting: the
-menu bar's **Start transcription**; Agent: **Start in Agent mode**, then
-**Start transcription in Agent mode**). A settings file that still names an
-Option gesture is switched to Disabled at launch, with a backup and a notice in
-the User panel. The first-run setup wizard's hotkey step only explains this
-and never changes these gestures.
+spelled-out form. Formatting and Agent start with no gesture (Disabled); you
+can opt into **2× ⌃ (Ctrl)**, **2× Left ⌥** or **2× Right ⌥** for either one.
+One gesture starts one mode, and holds start only Dictation. Both also start
+from the menu bar's **Start transcription** (with **Start in Agent mode** on
+for the Agent) and from the overlay, as the section footer says. While a mode
+is on an Option double-tap, an **Option double-tap** section shows the
+double-tap interval (100–450 ms), the longest tap (120–300 ms) and how long
+taps are ignored after typing (0–1000 ms, so Option-typed Polish letters never
+pair); each applies on the next tap. Its **Gesture test** row shows what your
+last double-tap came to (Recognized, Too slow, Too long, Typing detected,
+Mouse, Synthetic) and starts nothing while the test runs. The first-run setup
+wizard's hotkey step never changes these gestures.
 
 **Save shortcuts** / **Restore defaults** sit directly under
 the three rows. The screen reports a blocking conflict that refuses the save,
@@ -337,10 +387,15 @@ command and password-field safeguards are unchanged.
 
 **Recording indicator** carries its title above the card, like **Fn and Agent
 channels**, **Extra shortcuts** and **Paste after dictation**. Inside, the size
-of the indicator next to the cursor comes first (Off / 4px / 8px / 12px; the
-Agent indicator stays proportionally larger), and the three dot states —
-Recording, Agent, Processing — read as captions below the size they are sized
-by.
+of the indicator next to the cursor comes first, with its picker on its own
+line under the name (Off / Small / Medium / Large; the
+Agent indicator stays proportionally larger), and every state the dot shows
+reads as a caption below the size it is sized by, each beside a dot in the
+colour the pointer indicator really draws: Recording (red), Words still
+arriving (amber), Processing (orange), Agent (purple), Agent between phrases
+(white with a purple rim) and Shortcut refused (slate). The list and the
+colours come from the app's one indicator palette
+(`docs/HOTKEYS_CONTRACT.md`).
 
 `HOLD_START_DELAY_MS` and `DOUBLE_TAP_INTERVAL_MS` govern the same gestures but
 have no control on this tab; they are settings keys
@@ -349,12 +404,19 @@ have no control on this tab; they are settings keys
 ## Providers and Agent
 
 Open **Settings → Providers** to connect accounts and add API keys. Each
-provider card shows its key as one line — **API key · Set** with **Change**
+provider card shows its key as one line — **API key · Saved** with **Change**
 (or **Add**) opening the editor — and, for vendors with a sign-in flow, one
-account line with a single action: **Sign out** while connected (the line
-names the account, e.g. **Connected as name@example.com**), **Sign in with …**
-otherwise. **Sign out** is a neutral chip like the other row actions, not a
-red one. A key that is present reads **Set** in green; a key that is absent is
+account line with a single action: **Sign out** while connected, **Sign in
+with …** otherwise. The saved account identity appears below its vendor
+label, while the state word beside it is **Saved**, the same as for a stored
+key. **Sign out** is a neutral chip like the other row actions, not a
+red one. A stored credential has an empty-circle **Saved** badge, which
+does not claim that the provider has been tested. After **Test**, a key the
+provider accepted reads **Key OK** with a thin check; a refused key or an
+exhausted usage limit carries the red warning sign; a probe the
+provider turned down for another reason, or a network error, is a plain word,
+because it says nothing about the key; a provider without a probe shows the
+empty-circle **Saved — no test for this key**. A key that is absent is
 neutral grey, and reads **Optional** when nothing is waiting for it — a
 key-optional host, or a Responses vendor (OpenAI, xAI) whose connected account
 serves requests. A connected Messages account does not serve requests, so that
@@ -392,8 +454,12 @@ prompt; the Formatting lane never serves it. The Formatting card also has a
 this Mac (experimental)**, in which case Apple runs first without any cloud
 credential and the lane below is used only when Apple fails; the lane's access
 line then reads **Used when Apple fails.** followed by its real state. The
-`CODESCRIBE_FORMAT_ON_DEVICE` value in `.env` overrides this row. Each card shows the provider, the model
-field and one line about the lane's access: **Account saved**, **Stored API
+engine row's explanation follows the selected engine: cloud describes the
+provider's Correction/Smart role; Apple describes the on-device-first route.
+With Off or Max selected, the lane's access line instead explains that the
+Formatting lane is not required for readiness; Max uses the Agent model.
+The `CODESCRIBE_FORMAT_ON_DEVICE` value in `.env` overrides this row. Each card shows the provider, the model
+field and one line about the lane's access: **Saved**, **Stored API
 key** or **No key required**. These describe what is stored, not whether it
 works: a stored key can still be rejected, and a saved account does not open
 model discovery. The model field holds your override; when it is empty, the
@@ -406,16 +472,43 @@ Prompts** edits their prompts. The model-list line (where the list came from,
 with **Refresh** and **Error details**) sits above the model field, because that
 is the line that tells you to type an identifier when there is no list.
 
-**Codescribe Bus** groups the two timers that act on channel messages:
-**Pause before sending to Codescribe Bus** (the silence that ends a spoken
-message, and the silence limit for hands-free dictation, applied from the next
-channel or recording) and **Hold before sending to Codescribe Bus** (0–30 s;
-the window in which you can revise or withdraw the message, 0 sends at once).
+**Voice conversation with an agent** sets how a Codescribe Bus channel
+(Fn+digit) behaves while you speak to an agent:
 
-**Auto-send to the built-in Agent** is a separate, labelled switch and has
-nothing to do with the bus: in Agent mode the untouched transcript is sent to
-the Agent in the overlay 5 seconds after the take ends unless you start editing
-it.
+- **After the message**: **Keep listening** (default) sends each message on a
+  pause and keeps the conversation open until you press the channel chord
+  again; **End the session** sends the message and hangs up, so the next
+  message is the next press.
+- **Pause before sending** (1–15 s, 0.5 s steps, default 5 s): the silence
+  after you stop speaking that sends the message. The countdown in the overlay
+  is this same pause. When `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` is set, the row
+  reads **(env override)** and the environment value applies.
+- **Close without voice after** (**Never**, 15 s–10 min): a session that hears
+  no voice ends on its own. Agent replies playing into the channel do not
+  count. Choosing a policy sets its own default (Never for Keep listening,
+  30 s for End the session).
+- **Finish each message**: **Off** (sent as transcribed), **Punctuation
+  (Light+)** (default; closing punctuation only) or **Formatting** (one
+  formatting pass at your formatting level). **Wait for formatting** (1–10 s,
+  only with Formatting) bounds that pass: past it, the message is sent with
+  punctuation only, without holding the microphone or the next message.
+- **Hold before sending to Codescribe Bus** (0–30 s): the window in which you
+  can revise or withdraw the message; 0 sends at once.
+
+A caption under the card spells out the chain with your values, for example
+"Pause 5 s → hold 10 s → sent; the conversation lasts until you hang up".
+
+**Built-in Agent** has nothing to do with the bus. **Send automatically** sends
+the untouched transcript to the Agent in the overlay **After how many seconds**
+(1–30 s, default 5) unless you start editing it. **End the Agent recording
+without voice after** (10–120 s, default 30) stops a hands-free Agent recording
+that hears no voice; it sends nothing.
+
+**Active configuration details** also lists the channel settings the next
+session uses, with the source of the send pause (settings or env override).
+
+The silence limit for hands-free dictation lives under **Microphone and
+recording › Hands-free dictation**.
 
 ### Agent → Prompts
 
@@ -428,8 +521,8 @@ dictated request and for Max consultations; voice chat carries its own persona.
 Codescribe may append further instructions at runtime, so the editor shows the
 base text, not the full prompt a provider receives.
 
-A quiet capsule on the header line names the prompt in use (a state, not a
-button; it shares Edit's type, height and baseline): **Custom** when your
+A small, muted text label on the header line names the prompt in use, without
+a background or border beside the Edit/Save button: **Custom** when your
 file is read, **Built-in** when no custom file exists or the file is empty. An
 unreadable file also reads **Built-in**, with a red sentence under the header
 saying so; screen readers get the full sentence (**Source: Custom prompt**,
@@ -457,7 +550,9 @@ recoverable. A failed save is reported with the same current-source check.
 
 ### Agent → Workspace
 
-**Folders available to the Agent** lists the roots Codescribe uses to validate
+The tab is headed **Workspace**, its name in the tab bar, with "Processes and
+MCP servers have their own permissions." under the title. Its folder list,
+**Allowed folders**, holds the roots Codescribe uses to validate
 the paths of its own file and Git tools, terminal working directories and
 path-shaped command arguments; `read_file` may also read Codescribe's own
 storage folder. It also validates paths handed to MCP tools it knows how to
@@ -488,8 +583,9 @@ a previous successful snapshot is labeled as the last checked state. Settings
 also offers **Refresh** (one shared refresh chip is used across every Settings
 section); while the read runs, the spinner and
 **Checking provider access…** sit in a fixed slot beside the button, and once
-it lands the slot keeps **Checked at HH:MM:SS** so even an instant refresh
-leaves a visible receipt. Returning focus refreshes only the owning Settings
+it lands the slot keeps **Checked at HH:MM** in the system's clock format,
+without seconds and with AM/PM where the region uses it, so even an instant
+refresh leaves a visible receipt. Returning focus refreshes only the owning Settings
 or Setup window, and repeated requests share the pending read.
 Permission changes refresh permissions and hotkeys separately.
 
@@ -552,9 +648,11 @@ Account sign-in alone does not supply that key. With account-only model
 access, `/model` shows the currently resolved model and explains the missing
 catalog access. Keep that model, or enter a supported model ID in **Agent →
 AI models**. Adding an API key is optional for supported account requests.
-Without a key, the Agent and Formatting cards read **The model list needs an API
-key. You can enter a model ID by hand.** — the same line with or without a
-connected account, because it is about the list, not about requests. A rejected
+Without a key, with or without a saved account, the Agent and Formatting cards
+read **The model list needs an API key. You can enter a model ID by hand.** A
+saved account never opens the list, so the model is entered by hand there too.
+The line describes catalog access without promising that account-authenticated
+requests will work or that the list will load on its own. A rejected
 key next to a signed-in account reads **The API key was rejected, so there is no
 model list. The account remains saved.**
 
@@ -576,7 +674,7 @@ Palette labels and grant actions follow the macOS interface language through
 the app's String Catalog. Model IDs, provider IDs and tool grant keys remain
 unchanged.
 
-Open **Settings → Agent → Diagnostics** (headline "Agent environment configuration", no introduction)
+Open **Settings → Agent → Diagnostics** (headed **Diagnostics**, with "Agent environment configuration" as the one line under the title)
 for the agent status screen: one summary card with the verdict, the key facts
 and whatever needs attention, then Integrations, Tools and servers, Detected
 installations, and a collapsed "Technical details" group. A single Refresh
@@ -592,7 +690,7 @@ attach listeners.
 
 ### Agent → Tools
 
-Tools is the permissions screen: when the Agent may use a tool without
+Tools, headed **Tools** like its tab, is the permissions screen: when the Agent may use a tool without
 asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
 
 The tab has two bands: **Defaults** under its own title, then the per-tool
@@ -625,7 +723,16 @@ repeated caption.
   instead of ending in an ellipsis, with the rule that produced the current
   level opposite it: "Individual rule" when the tool carries one of its own,
   otherwise "Server rule" or "Category default", which is how a tool says it
-  follows the rule above it. The word "inheritance" appears nowhere. Then one
+  follows the rule above it, or "Built-in rule" when the tool's own rule turned
+  its category's Allow into Ask. The word "inheritance" appears nowhere.
+- **Read the clipboard asks by default** — `native:read_clipboard` is a
+  read-only tool, but a password or a token often sits on the clipboard, so a
+  built-in rule makes it Ask where the Read data default says Allow. Its card
+  reads "Built-in rule: the clipboard may hold passwords". Choosing Allow (or
+  Deny) on the card is an individual rule and wins; "Remove rule" returns it to
+  Ask. A stricter Read data default (Deny) still applies. Nothing is migrated:
+  a `settings.json` that already holds a rule for `native:read_clipboard`
+  keeps it, and Settings writes a tool rule only when you pick a level. Then one
   quiet line for source, server and localized risk class
   ("MCP · aicx-http · Read data"), the raw identity in the quietest mono rung —
   selectable, so it can be copied into a config or a bug report — and, on a
@@ -714,15 +821,14 @@ capability operations `CapabilityOp::all()` declares, each resolved to one tier.
 ### Agent → MCP
 
 The MCP tab is the editing surface for `~/.codescribe/mcp.json`; Diagnostics
-only reports it. The headline **MCP servers** stands without an introduction
+only reports it. The page is headed **MCP**, its tab name, and stands without an introduction
 and the list reads as servers, not as a config dump.
 
-- **Server card** — the name, the configured state as a flag button (Enabled /
+- **Server card** — the name, the configured state as a native switch (Enabled /
   Disabled flips `enabled` in `mcp.json`; it never connects or disconnects
-  anything), the last handshake, and the Test / Remove actions. All three
-  actions are the one Settings chip, so they share a shape, a label rung and a
-  focus ring with every other flat action in the window; the configured state
-  still reads in colour, on its power glyph and label. Remove only
+  anything), the last handshake, and the Test / Edit / Remove actions. The
+  switch uses the system style and exposes the server name to VoiceOver;
+  the actions keep the shared Settings chip shape and focus ring. Remove only
   asks: an alert names the server and what goes with it (its entry in
   `mcp.json` and its Keychain token); Cancel, Escape or closing the alert
   leaves the configuration as it was, and only "Remove server" removes. "Details"
@@ -811,7 +917,8 @@ Prompt files live in `~/.codescribe/prompts/`.
 
 ## Audio & Input
 
-Open **Settings → Audio** — headlined **Microphone and recording**. The pane owns
+Open **Settings → Audio** — headed **Audio**, the same name as in the sidebar,
+with "Choose a microphone and adjust recording." under the title. The pane owns
 the microphone, recording readiness, how long recorded audio is kept, and the
 start signal. Nothing else: the transcription overlay is set under
 [Dictation → Preview](#dictation-tabs), and the Dock icon from the menu bar
@@ -964,7 +1071,7 @@ Common overrides:
 
 ## Dictionary
 
-**Settings → Dictionary** shows what was corrected, what the app actually
+**Settings → Dictionary**, headed **Dictionary**, shows what was corrected, what the app actually
 learned, and where the active rules come from.
 
 - **Counters** — three separate values on one line: corrections (every take
@@ -981,8 +1088,10 @@ learned, and where the active rules come from.
   **Open in Lab** appears only where the Lab section is available (a developer
   build); elsewhere Lab is hidden and the card does not offer it.
   A take the ledger left open (any terminal status other than sealed or
-  observed silence) says so, with the share of its speech that committed
-  words cover. The ledger's refusal list is not shown as a word count: it
+  observed silence) says **This take did not finish.** in neutral ink. Where
+  Lab is available it adds **See Lab for details.** Coverage percentages stay
+  in Lab rather than in this sentence. The ledger's refusal list is not shown
+  as a word count: it
   repeats a range for every replayed decode and also records Whisper's
   successful replacements, so it can exceed the take's words several times
   over. The list is read from
@@ -1057,8 +1166,9 @@ replaced the separate About and License tabs. Everyday facts stay visible;
 technical values and the resets open on demand. From top to bottom:
 
 - **License** — one card: the product name and purchase kind with one status,
-  the saved key with **Manage key**, or the activation field when there is no
-  key. Described under [License access](#license-access) below.
+  then **Change key** and **Remove key** with a saved key, or the activation
+  field and **Get license key** without one. Described under
+  [License access](#license-access) below.
 - **Version** — one line, _Codescribe 0.16.0_ with _Build 526_ under it.
   **Check for Updates…** beside it starts Sparkle's manual check (the same
   updater the app runs in the background); it is disabled while a check is
@@ -1126,39 +1236,67 @@ _Created by Vetcoders (c)2026_
 
 ## License access
 
-Open **Settings → User** to activate, restore or remove a CSK1 license; the
-**License** section opens the page, under one sentence: _A license unlocks
-Agent mode._ Everything else sits in one card.
+Open **Settings → User** to activate, restore, change or remove a CSK1 license;
+the **License** section opens the page, under one sentence: _A license unlocks
+Agent mode._ Everything else sits in one card with one layout. There is no
+separate key-management panel: what the card offers depends on the license
+state, and every message appears in the card where its operation happened.
 
 - **Head** — the product name on the left: **Codescribe Agent** while the
   license allows Agent mode, with the purchase kind under it (_One-time
   purchase_ for the lifetime offer; other offers get no invented name), or
   **Basic mode** with _No active license_ under it. A key that verifies but
-  does not include Agent mode says so in that line instead. On the right one
-  status: a green dot and **Active** while the license works (also on offline
-  grace), **Inactive** with no key or once a time limit has elapsed,
-  **Checking license…** while storage is read, **Unknown** when it cannot be
-  read. No raw SKU is shown anywhere and there is no updates-window row.
-- **Key row** — only with a saved key. While a verified key runs on offline
-  grace its title is the countdown, _Works offline for N more days_: the days
-  left of the 30-day window since the last successful validation (for now,
-  the activation itself). It is not license expiry, not an updates window and
-  not a trial; when it reaches zero the status reads **Inactive** until the key
-  is activated again. Under it, or alone when the license is plainly active,
-  the note _Key stored in the macOS Keychain_. On the right, **Manage key**
-  with a chevron expands key management inside the same card.
-- **Key management** — a _Key management_ head with **Change key**, which opens
-  the editor: _New license key_, the key field and **Activate** (disabled while
-  the field is empty or an operation runs) and **Cancel**, which closes the
-  editor and keeps the saved key. Under it **Get license key** (opens the
-  self-service page) on the left and **Remove key**, in red, set apart on the
-  right.
-- **Without a key** — the activation editor is open at once inside the card
-  (_License key_, the field and **Activate**), followed by **Get license key**
-  alone; there is no Manage key and no Remove key.
+  does not include Agent mode keeps the status **Active** and says _This
+  license does not include Agent mode_ in that line instead. On the right one
+  status: a green dot and **Active** on an olive capsule while the license
+  works (also on offline grace), plain **Inactive** with no key or once a time
+  limit has elapsed, **Checking license…** while storage is read, **Unknown**
+  when it cannot be read. No raw SKU is shown anywhere and there is no
+  updates-window row.
+- **Saved key** (active, active offline, inactive, or active without Agent
+  mode) — under the head, while a verified key runs on offline grace, the
+  countdown _Works offline for N more days_: the days left of the 30-day window
+  since the last successful validation (for now, the activation itself). It is
+  not license expiry, not an updates window and not a trial; when it reaches
+  zero the status reads **Inactive** until the key is activated again. Then the
+  note _Key stored in the macOS Keychain_. Below a line, **Change key** on the
+  left and **Remove key**, in red, on the right. There is no **Get license
+  key** with a saved key.
+- **Change key** — the field opens in the same card in place of the two
+  buttons: _New license key_, the field, **Activate** (disabled while the field
+  is empty or an operation runs) and **Cancel**, which closes the field and
+  keeps the saved key. The new key is verified before anything is written, so
+  a key that does not verify, or a save that fails, leaves the saved license in
+  place; the message under the field says so (_Your current key is still
+  saved._).
+- **Remove key** — asks first (_Remove the license key?_): Codescribe goes back
+  to Basic mode, Agent mode stops working, the key is deleted from this Mac's
+  Keychain, and since the app never shows a stored key, activating again needs
+  the key itself or a new one from the license page. **Cancel** keeps the key;
+  only **Remove key** in that dialog removes it.
+- **Without a key** — _License key_, the field (_Paste license key_) and
+  **Activate**, then, below a line, **Get license key**, which opens the
+  self-service page. There is no Change key and no Remove key.
+- **Activating** — while an activation runs, _Activating the key…_ with a
+  small spinner sits under the field; no result is suggested until it returns.
+- **Invalid key** — the field is outlined in red and the message sits under it
+  (_Couldn't verify the key. Check that it's correct and complete._), with
+  **Details** when the check gave a cause. The key stays in the field to be
+  corrected. A failed save says _Couldn't save the key on this Mac. Try
+  again._ in the same place; **Activate** retries it.
+- **Saved license unreadable** — when storage cannot be read, or the saved
+  license cannot be verified, and no verified license is known, the card does
+  not pretend there is no key: the status reads **Unknown**, the message names
+  the failure (_Couldn't read the saved license. Try again._ or _Couldn't
+  verify the saved license. Try again._), with **Try again** and **Details**,
+  and **Change key** / **Remove key** stay available. The empty-state field
+  is not shown. When a read fails while a verified license is already known,
+  the same message, **Try again** and **Details** appear under the key's
+  buttons and the license keeps its verified state.
+- **Removal failed** — _Couldn't remove the key. Try again._ under the key's
+  buttons, with **Details**; **Try again** asks for confirmation again.
 
-Errors, their details and **Try again** stay under the card. The Agent window's
-**Enter license** opens Settings → User at this section.
+The Agent window's **Enter license** opens Settings → User at this section.
 
 License storage runs in the background, and **Checking license…** or an access
 error remains visible while Settings stays interactive. **Retry license access**

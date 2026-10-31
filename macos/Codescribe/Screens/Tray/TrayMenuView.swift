@@ -104,12 +104,15 @@ struct TrayMenuView: View {
 
   private var primaryActions: some View {
     VStack(spacing: 0) {
+      // The hint is the chord that does what this row does: Command+Shift+Space
+      // fronts the Agent window (fixed, outside the configurable gestures; see
+      // docs/HOTKEYS_CONTRACT.md), glyphs in the macOS modifier order.
       TrayRow(
         icon: .agent,
         title: String(localized: "Agent"),
         titleColor: viewModel.agentAvailable ? CSColor.textBody : CSColor.textMuted,
         titleWeight: .semibold,
-        shortcut: "⌥⌥",
+        shortcut: "⇧⌘Space",
         shortcutColor: TrayRow.primaryShortcutColor,
         style: .primary
       ) { viewModel.onShowAgent() }

@@ -648,6 +648,14 @@ pub enum TrailEvent {
         speech: TrailSpeechEvidence,
         accounted: bool,
     },
+    QuietPublicationBand {
+        observation: ObservationIdentity,
+        band: OccurrenceIdentity,
+        speech: TrailSpeechEvidence,
+        floor: Option<TrailSpeechEvidence>,
+        floor_ungated: Option<bool>,
+        capture_rate_hz: u32,
+    },
     OccurrenceSealed {
         occurrence: OccurrenceIdentity,
         receipt_id: String,
@@ -665,6 +673,8 @@ pub enum TrailEvent {
     Qualification {
         evidence: AcousticEvidence,
         calibration: EnergyCalibration,
+        #[serde(default)]
+        capture_rate_hz: Option<u32>,
     },
     Decision {
         decision: Box<TrailDecision>,
@@ -910,6 +920,30 @@ pub(super) fn record_decode_work(
             decode: decode.clone(),
             speech: TrailSpeechEvidence::from_evidence(speech),
             accounted,
+        },
+    );
+}
+
+pub(super) fn record_quiet_publication_band(
+    observation: &ObservationIdentity,
+    band: &OccurrenceIdentity,
+    speech: &crate::audio::capture_receipt::AcousticSpeechEvidence,
+    floor: Option<&crate::audio::capture_receipt::AcousticSpeechEvidence>,
+    floor_ungated: Option<bool>,
+    rate: u32,
+) {
+    if !is_enabled(&observation.occurrence) {
+        return;
+    }
+    record(
+        &observation.occurrence,
+        TrailEvent::QuietPublicationBand {
+            observation: observation.clone(),
+            band: band.clone(),
+            speech: TrailSpeechEvidence::from_evidence(speech),
+            floor: floor.map(TrailSpeechEvidence::from_evidence),
+            floor_ungated,
+            capture_rate_hz: rate,
         },
     );
 }
@@ -1271,6 +1305,7 @@ fn validate_envelope(records: &[TrailRecord]) -> io::Result<()> {
             TrailEvent::Qualification { evidence, .. } => Some(&evidence.occurrence),
             TrailEvent::Decision { decision } => Some(&decision.observation.occurrence),
             TrailEvent::DecodeWork { observation, .. } => Some(&observation.occurrence),
+            TrailEvent::QuietPublicationBand { observation, .. } => Some(&observation.occurrence),
             TrailEvent::DecodeSkippedNoSpeech { decode, .. } => Some(decode),
             TrailEvent::Frontier { occurrence, .. } => Some(occurrence),
             TrailEvent::SlotStart { operation } => Some(&operation.observation.occurrence),
@@ -1593,6 +1628,65 @@ fn replay_validated(
                     return Err(io::Error::other("decode work accounting differs"));
                 }
             }
+            TrailEvent::QuietPublicationBand {
+                observation,
+                band,
+                speech,
+                floor,
+                floor_ungated,
+                capture_rate_hz,
+            } => {
+                use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
+                if !band.same_capture(&observation.occurrence)
+                    || !band.is_anchored()
+                    || band.sample_start < observation.occurrence.sample_start
+                    || band.sample_end > observation.occurrence.sample_end
+                    || *capture_rate_hz == 0
+                    || ledger.capture_rate() != Some(*capture_rate_hz)
+                {
+                    return Err(io::Error::other("quiet publication identity differs"));
+                }
+                let evidence = speech.evidence()?;
+                let floor_evidence = floor
+                    .as_ref()
+                    .map(TrailSpeechEvidence::evidence)
+                    .transpose()?;
+                if let Some(floor) = &floor_evidence {
+                    if *floor_ungated != Some(true)
+                        || floor.producer() != CAPTURE_ENERGY_PRODUCER
+                        || !floor.identity().matches(&band.session, band.capture_epoch)
+                        || floor
+                            .availability()
+                            .observed_samples()
+                            .is_none_or(|end| end < band.sample_end)
+                        || floor.ranges().iter().any(|range| {
+                            range.session != band.session
+                                || range.capture_epoch != band.capture_epoch
+                                || range.sample_start >= range.sample_end
+                                || floor
+                                    .availability()
+                                    .observed_samples()
+                                    .is_none_or(|end| range.sample_end > end)
+                                || (range.sample_start < band.sample_end
+                                    && band.sample_start < range.sample_end)
+                        })
+                    {
+                        return Err(io::Error::other("quiet publication floor differs"));
+                    }
+                } else if floor_ungated.is_some() || evidence.producer() != CAPTURE_ENERGY_PRODUCER
+                {
+                    return Err(io::Error::other("quiet publication lacks floor evidence"));
+                }
+                ledger.bind_capture_rate(*capture_rate_hz);
+                ledger.record_speech_evidence(&evidence);
+                let prior_fences = ledger.replay_quiet_fences.clone();
+                ledger.replay_quiet_fences = floor_evidence.as_ref().map(|_| vec![band.clone()]);
+                let accepted = ledger.record_quiet_publication_band(observation, band);
+                ledger.replay_quiet_fences = prior_fences;
+                if !accepted {
+                    return Err(io::Error::other("quiet publication accounting differs"));
+                }
+            }
             TrailEvent::SlotStart { operation } => {
                 if pending.is_some() {
                     return Err(io::Error::other("nested slot input"));
@@ -1704,7 +1798,14 @@ fn replay_validated(
             TrailEvent::Qualification {
                 evidence,
                 calibration,
+                capture_rate_hz,
             } => {
+                if let Some(rate) = capture_rate_hz {
+                    if *rate == 0 || ledger.capture_rate().is_some_and(|bound| bound != *rate) {
+                        return Err(io::Error::other("qualification capture rate differs"));
+                    }
+                    ledger.bind_capture_rate(*rate);
+                }
                 if !ledger.qualify(evidence, calibration).is_qualified() {
                     return Err(io::Error::other("recorded qualification refused"));
                 }
@@ -2206,6 +2307,60 @@ mod tests {
             assert_eq!(replayed.text_of(&owner), Some("1286"));
             assert_eq!(replayed.text_of(&second), Some("nie"));
             forensic_trail_assert_exact_replay(&ledger, &owner, &rows);
+        }
+    }
+
+    #[test]
+    fn quiet_publication_roundtrip_requires_capture_rate_and_physical_quiet() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = OccurrenceIdentity::new("quiet-band-replay", 1, 0, 16_000);
+        let sink = TrailSink::open_in(dir.path(), &owner.session, 1, 128).unwrap();
+        let mut pcm = vec![0.00001; 16_000];
+        pcm[2_000..6_000].fill(0.2);
+        let mut ledger = forensic_trail_ledger_over(&owner, &pcm, &[(2_000, 6_000)]);
+        assert!(ledger.require_text_recovery(&owner));
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, owner.clone());
+        let band = OccurrenceIdentity::new(&owner.session, 1, 8_000, 12_000);
+        assert!(ledger.record_quiet_publication_band(&observation, &band));
+        drop(sink);
+        let rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
+        let mut replayed = replay_decisions(&rows, |_, _, _| {}).unwrap();
+        // RecoveryRequired is deliberately a passive diagnostic in replay.
+        // A quiet subrange still cannot manufacture a document or its seal.
+        assert!(ledger.text_recovery_pending(&owner));
+        assert!(replayed.seal(&owner).is_err());
+        assert_eq!(replayed.capture_rate(), Some(16_000));
+        assert_eq!(replayed.text_of(&owner), None);
+        let quiet_index = rows
+            .iter()
+            .position(|row| matches!(row.event, TrailEvent::QuietPublicationBand { .. }))
+            .unwrap();
+        for defect in ["foreign", "voiced", "gated", "rate"] {
+            let mut corrupt = rows.clone();
+            let TrailEvent::QuietPublicationBand {
+                band,
+                floor_ungated,
+                capture_rate_hz,
+                ..
+            } = &mut corrupt[quiet_index].event
+            else {
+                unreachable!()
+            };
+            match defect {
+                "foreign" => band.session = "foreign-capture".into(),
+                "voiced" => {
+                    band.sample_start = 2_000;
+                    band.sample_end = 6_000;
+                }
+                "gated" => *floor_ungated = Some(false),
+                "rate" => *capture_rate_hz = 48_000,
+                _ => unreachable!(),
+            }
+            assert!(
+                replay_decisions(&corrupt, |_, _, _| {}).is_err(),
+                "{defect}"
+            );
         }
     }
 

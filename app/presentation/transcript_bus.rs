@@ -954,6 +954,16 @@ struct TranscriptBusWriter {
     announced_documents: HashSet<u64>,
 }
 
+/// A channel message as delivered: the finished text and the name of the
+/// revision it is (`committed`, `light_plus` or `formatter`). `fallback` says
+/// why a formatter revision was not delivered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChannelDelivery {
+    pub text: String,
+    pub revision: &'static str,
+    pub fallback: Option<&'static str>,
+}
+
 /// One open agent channel as the controller's registry holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ChannelCohortMember {
@@ -1051,6 +1061,21 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Parent `channel_session` identity of a channel message document.
+/// Continuous voice sessions name each segment `<channel_session_id>-s<index>`,
+/// while the session's `open` and terminal `sealed` rows carry `<channel_session_id>`.
+fn channel_session_id_of_document(session: &str) -> &str {
+    if let Some((prefix, segment)) = session.rsplit_once("-s")
+        && prefix.starts_with("agent-channel-")
+        && !segment.is_empty()
+        && segment.bytes().all(|b| b.is_ascii_digit())
+        && segment.parse::<u32>().is_ok_and(|index| index >= 1)
+    {
+        return prefix;
+    }
+    session
+}
+
 /// Read an exact recent capture through the canonical generation/chunk decoder.
 /// Missing old history is a refusal; an append target is never guessed.
 fn capture_attachment_source(
@@ -1081,6 +1106,7 @@ fn capture_attachment_source(
     } else {
         generation::Decoder::from_tail_boundary()
     };
+    let channel_session = channel_session_id_of_document(session);
     let mut latest = None;
     let mut selected = None;
     let mut open = false;
@@ -1095,6 +1121,23 @@ fn capture_attachment_source(
         line.clear();
         for packed in decoder.push(raw)? {
             for row in generation::rows(packed)? {
+                if row["schema"] == "codescribe.channel-session.v1" {
+                    if row["session_id"] == session {
+                        if row["state"] == "open" && !ended {
+                            open = true;
+                        } else {
+                            open = false;
+                            ended = true;
+                        }
+                    } else if row["session_id"] == channel_session {
+                        if row["state"] == "open" && !ended {
+                            open = true;
+                        } else if row["state"] != "segment_sealed" {
+                            open = false;
+                            ended = true;
+                        }
+                    }
+                }
                 if row["session_id"] != session {
                     continue;
                 }
@@ -1109,17 +1152,10 @@ fn capture_attachment_source(
                     }
                     seen_stage = true;
                 }
-                if row["schema"] == "codescribe.channel-session.v1" {
-                    if row["state"] == "open" && !ended {
-                        open = true;
-                    } else {
-                        open = false;
-                        ended = true;
-                    }
-                }
                 if row["status"] == "session_ended"
                     || row["reducer_action"] == "session_ended"
                     || row["schema"] == "codescribe.transcript-publication.v1"
+                    || (row["status"] == "transcript_sealed" && row["terminal"] == true)
                 {
                     ended = true;
                     open = false;
@@ -2373,7 +2409,16 @@ impl TranscriptBus {
     /// Maciej, 2026-10-17 09:59Z: the pause before sending covered typed
     /// messages only. On a day the ledger sealed no channel take, every spoken
     /// message left at once, with no Cancel/Edit.
-    pub(crate) fn publish_channel_closed(&self, hold_sec: u32) -> io::Result<()> {
+    ///
+    /// `delivery` is the channel's finished message (`agent_channel.segment_finish`):
+    /// its text replaces the rendered document on both closing rows and its
+    /// revision name is stamped as `delivered_revision`. `None` delivers the
+    /// committed document unchanged.
+    pub(crate) fn publish_channel_closed(
+        &self,
+        hold_sec: u32,
+        delivery: Option<&ChannelDelivery>,
+    ) -> io::Result<()> {
         if self.session.mode != TranscriptMode::Agent || self.session.audience.is_none() {
             return Ok(());
         }
@@ -2480,8 +2525,17 @@ impl TranscriptBus {
         projection.sequence = writer.sequence.saturating_add(1);
         projection.emitted_at = now.to_rfc3339_opts(SecondsFormat::Micros, true);
         projection.terminal = true;
+        if let Some(delivery) = delivery.filter(|delivery| !delivery.text.trim().is_empty()) {
+            projection.rendered_text = delivery.text.clone();
+        }
         let mut evidence = serde_json::to_value(&projection).map_err(io::Error::other)?;
         evidence["status"] = serde_json::json!("transcript_sealed");
+        if let Some(delivery) = delivery {
+            evidence["delivered_revision"] = serde_json::json!(delivery.revision);
+            if let Some(reason) = delivery.fallback {
+                evidence["delivered_revision_fallback"] = serde_json::json!(reason);
+            }
+        }
         // The one row that authorizes delivery under `publication: controller`.
         evidence["closing_decision"] = serde_json::json!("publish");
         if !certified {
@@ -2504,6 +2558,23 @@ impl TranscriptBus {
         Self::append_projection_locked(&mut writer, &evidence)?;
         writer.sequence = writer.sequence.saturating_add(1);
         Self::append_projection_locked(&mut writer, &clean)
+    }
+
+    /// The committed text the channel's closing seal would deliver, or `None`
+    /// when this session has nothing left to publish.
+    pub(crate) fn channel_closing_text(&self) -> Option<String> {
+        let writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if writer.channel_seal_published {
+            return None;
+        }
+        writer
+            .last_projection
+            .as_ref()
+            .map(|projection| projection.rendered_text.clone())
+            .filter(|text| !text.trim().is_empty())
     }
 
     /// Channel boundaries share the session's destinations and failure state.
@@ -3341,6 +3412,90 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn capture_attachment_accepts_continuous_channel_segments_and_refuses_sealed_segments() {
+        use std::io::Write;
+        let (_temp, buses, base_request) = capture_attachment_fixture();
+        let recipients = serde_json::json!([
+            {"provider":"codex", "provider_session_id":"one", "lease_id":"a", "channel":"7", "audience":"mira", "bus":buses[0]},
+            {"provider":"codex", "provider_session_id":"two", "lease_id":"b", "channel":"7", "audience":"mira", "bus":buses[1]}
+        ]);
+        let recipients_s1 = serde_json::json!({
+            "schema":"codescribe.channel-recipients.v1", "kind":"channel_recipients",
+            "session_id":"agent-channel-7-fixture-s1", "channel":"7", "audience":"mira", "recipients":recipients
+        });
+        let opened = serde_json::json!({
+            "schema":"codescribe.channel-session.v1", "kind":"channel_session",
+            "session_id":"agent-channel-7-fixture", "channel":"7", "state":"open"
+        });
+        let source_s1 = serde_json::json!({
+            "schema":"codescribe.transcript-evidence.v1", "session_id":"agent-channel-7-fixture-s1",
+            "sequence":0, "capture_epoch":1, "reducer_revision":1, "reducer_action":"record_ledger_projection",
+            "occurrence_session_id":"occurrence-s1", "sample_start":10, "sample_end":50, "document_index":0,
+            "channel":"7", "audience":"mira", "recipients":recipients, "rendered_text":"Segment one"
+        });
+        for bus in &buses {
+            std::fs::write(bus, format!("{recipients_s1}\n{opened}\n{source_s1}\n")).unwrap();
+        }
+        let mut request_s1 = base_request.clone();
+        request_s1["stage_id"] = "222222222222222222222222".into();
+        request_s1["session_id"] = "agent-channel-7-fixture-s1".into();
+        request_s1["capture_epoch"] = 1.into();
+        request_s1["source_sequence"] = 0.into();
+        let receipt_s1 = super::append_agent_event(&buses[0], &request_s1).unwrap();
+        assert_eq!(receipt_s1["buses"].as_array().unwrap().len(), 2);
+
+        // Seal segment 1 with segment_sealed and open segment 2 on the same continuous channel session.
+        let segment_sealed_s1 = serde_json::json!({
+            "schema":"codescribe.channel-session.v1", "kind":"channel_session",
+            "session_id":"agent-channel-7-fixture-s1", "channel_session_id":"agent-channel-7-fixture",
+            "channel":"7", "state":"segment_sealed"
+        });
+        let source_s2 = serde_json::json!({
+            "schema":"codescribe.transcript-evidence.v1", "session_id":"agent-channel-7-fixture-s2",
+            "sequence":0, "capture_epoch":1, "reducer_revision":1, "reducer_action":"record_ledger_projection",
+            "occurrence_session_id":"occurrence-s2", "sample_start":60, "sample_end":120, "document_index":0,
+            "channel":"7", "audience":"mira", "recipients":recipients, "rendered_text":"Segment two"
+        });
+        for bus in &buses {
+            writeln!(
+                std::fs::OpenOptions::new().append(true).open(bus).unwrap(),
+                "{segment_sealed_s1}\n{source_s2}"
+            )
+            .unwrap();
+        }
+
+        // Segment 1 is now sealed and must refuse new capture attachments.
+        let mut late_s1 = request_s1.clone();
+        late_s1["stage_id"] = "333333333333333333333333".into();
+        assert!(super::append_agent_event(&buses[0], &late_s1).is_err());
+
+        // Segment 2 is open under the parent channel session and must accept capture attachments.
+        let mut request_s2 = base_request.clone();
+        request_s2["stage_id"] = "444444444444444444444444".into();
+        request_s2["session_id"] = "agent-channel-7-fixture-s2".into();
+        request_s2["capture_epoch"] = 1.into();
+        request_s2["source_sequence"] = 0.into();
+        let receipt_s2 = super::append_agent_event(&buses[0], &request_s2).unwrap();
+        assert_eq!(receipt_s2["buses"].as_array().unwrap().len(), 2);
+
+        // Sealing the parent channel session closes segment 2 as well.
+        let parent_sealed = serde_json::json!({
+            "schema":"codescribe.channel-session.v1", "kind":"channel_session",
+            "session_id":"agent-channel-7-fixture", "channel":"7", "state":"sealed"
+        });
+        for bus in &buses {
+            writeln!(
+                std::fs::OpenOptions::new().append(true).open(bus).unwrap(),
+                "{parent_sealed}"
+            )
+            .unwrap();
+        }
+        let mut late_s2 = request_s2;
+        late_s2["stage_id"] = "555555555555555555555555".into();
+        assert!(super::append_agent_event(&buses[0], &late_s2).is_err());
+    }
     #[test]
     fn typed_publication_uses_private_journal_and_refuses_audio_claims() {
         use sha2::{Digest, Sha256};
@@ -3998,7 +4153,7 @@ mod tests {
                 !before_close.contains("hold_until"),
                 "the reducer seal is still pre-close"
             );
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             bus.record_channel_receipt(&serde_json::json!({
                 "schema": "codescribe.channel-session.v1",
                 "state": "sealed",
@@ -4055,7 +4210,7 @@ mod tests {
                     2
                 );
             }
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 raw,
@@ -4087,7 +4242,7 @@ mod tests {
             let (ledger, _, revision) = committed_fixture(id);
             bus.publish_revision(&revision, &ledger);
             assert!(!bus.writer.lock().unwrap().sealed);
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             bus.record_channel_receipt(&serde_json::json!({
                 "schema": "codescribe.channel-session.v1",
                 "state": "sealed",
@@ -4121,7 +4276,7 @@ mod tests {
                 "the joined close lets the unsealed session end"
             );
             let ended = std::fs::read_to_string(&path).unwrap();
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 ended,
@@ -4175,7 +4330,7 @@ mod tests {
                 }));
             }
             bus.observe_channel_publication_evidence(&ledger);
-            bus.publish_channel_closed(10).unwrap();
+            bus.publish_channel_closed(10, None).unwrap();
 
             let raw = std::fs::read_to_string(&path).unwrap();
             let rows = crate::durable_bus_oracle::rows(&raw).unwrap();
@@ -4260,7 +4415,7 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), before_end);
             assert!(!bus.writer.lock().unwrap().ended);
 
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             assert!(
                 bus.publish_ended(
                     TranscriptSessionEndReason::Completed,
@@ -4312,7 +4467,7 @@ mod tests {
             let (ledger, _, revision) = committed_fixture("plain-send-hold");
             bus.publish_revision(&revision, &ledger);
             let before = std::fs::read(&path).unwrap();
-            bus.publish_channel_closed(10).unwrap();
+            bus.publish_channel_closed(10, None).unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
     }

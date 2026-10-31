@@ -80,21 +80,27 @@ final class OverlayComposerSyncTests: XCTestCase {
     let viewport = try XCTUnwrap(textView.enclosingScrollView)
     let editorFrame = viewport.convert(viewport.bounds, to: host)
     let editorBottom = host.isFlipped ? editorFrame.maxY : host.bounds.height - editorFrame.minY
-    let actionStart = max(0, Int(ceil(editorBottom * pixelScale)))
+    // Actions occupy the editor's bottom corners. The Sync action is folded
+    // into the leading plus menu; it is not a third trailing control.
+    let actionStart = max(0, Int(floor((editorBottom - controlSize) * pixelScale)))
+    let actionEnd = min(bitmap.pixelsHigh, Int(ceil(editorBottom * pixelScale)))
     XCTAssertGreaterThan(textView.enclosingScrollView?.bounds.width ?? 0, 60)
     XCTAssertEqual(textView.font?.pointSize ?? 0, 14)
     var centers: [CGFloat] = []
     var heights: [CGFloat] = []
     var peaks: [CGFloat] = []
     for slot in 0..<3 {
-      let right = host.bounds.width - rightInset - CGFloat(slot) * stride
+      let right =
+        slot == 2
+        ? editorFrame.minX + controlSize
+        : host.bounds.width - rightInset - CGFloat(slot) * stride
       let left = right - controlSize
       var minY = bitmap.pixelsHigh
       var maxY = -1
       var inkCount = 0
       var peak = CGFloat.zero
       var pixels: [(y: Int, brightness: CGFloat)] = []
-      for y in min(actionStart, bitmap.pixelsHigh)..<bitmap.pixelsHigh {
+      for y in min(actionStart, actionEnd)..<actionEnd {
         for x in Int(left * pixelScale)..<Int(right * pixelScale) {
           guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
           let brightness = max(color.redComponent, color.greenComponent, color.blueComponent)
@@ -119,8 +125,15 @@ final class OverlayComposerSyncTests: XCTestCase {
     }
     for index in 1..<3 {
       XCTAssertEqual(centers[index], centers[0], accuracy: 1.5, "Visible glyph centers must align")
-      XCTAssertEqual(
-        heights[index], heights[0], accuracy: 2, "Glyphs must have the same optical size")
+      if index == 1 {
+        XCTAssertEqual(
+          heights[index], heights[0], accuracy: 2, "Microphone and Send retain their optical size")
+      } else {
+        // The leading action is now the system plus, not the former link
+        // symbol. Its shorter ink bounds do not imply a smaller control/font.
+        XCTAssertGreaterThan(heights[index], controlSize / 3)
+        XCTAssertLessThan(heights[index], controlSize)
+      }
       if !linked && sendEnabled {
         XCTAssertEqual(peaks[index], peaks[0], accuracy: 0.05, "Idle glyphs must use the same ink")
       }
@@ -474,6 +487,47 @@ final class OverlayComposerSyncTests: XCTestCase {
     attachment.name = "Three-linked-composers"
     attachment.lifetime = .keepAlways
     add(attachment)
+  }
+
+  // MARK: Draft microphone freezes Sync membership (Roman's pre-join leak)
+
+  private final class MicrophoneFixture: ComposerCaptureControlling, @unchecked Sendable {
+    func isRecording() async -> Bool { false }
+    func startComposerTurnRecording() async throws -> CsCaptureHandle {
+      CsCaptureHandle(captureId: "sync-draft-capture")
+    }
+    func stopComposerTurnRecording(handle: CsCaptureHandle) async throws -> CsConditionalStop {
+      .stopped
+    }
+  }
+
+  /// Falsifier 1: while A's composer microphone is live, B cannot be linked
+  /// from either side, and the Sync menu shows the choice disabled.
+  func testLiveDraftMicrophoneRefusesLinkingAnotherConversation() async throws {
+    let (state, agents) = try fixture(count: 2)
+    state.draftCapture = OverlayDraftCapture(controller: MicrophoneFixture())
+    await state.toggleDraftMicrophone(in: agents[0])
+    XCTAssertTrue(state.draftCapture.hasRequest)
+
+    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    XCTAssertFalse(state.toggleDraftSync(from: agents[1].id, with: agents[0].id))
+    XCTAssertFalse(state.hasSynchronizedDraft(agents[1].id))
+    XCTAssertEqual(state.draftSyncChoices(for: agents[0]).map(\.enabled), [false])
+  }
+
+  /// An existing group is frozen too: no member leaves and nobody joins
+  /// while the take's words are still being spoken.
+  func testLiveDraftMicrophoneFreezesAnExistingGroup() async throws {
+    let (state, agents) = try fixture(count: 3)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    state.draftCapture = OverlayDraftCapture(controller: MicrophoneFixture())
+    await state.toggleDraftMicrophone(in: agents[1])
+
+    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: agents[2].id))
+    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    state.stopDraftSync(for: agents[0].id)
+    XCTAssertEqual(
+      Set(state.draftSyncNames(for: agents[0].id)), [agents[0].name, agents[1].name])
   }
 
   private func append(_ text: String, to id: String, state: OverlayState) {

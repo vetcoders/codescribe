@@ -44,6 +44,7 @@ struct OverlayChannelPill: View {
     /// badge, the face of a button that opens the Intercom group.
     var stacked = false
     var unread = false
+    var unreadCount = 0
     var selected = false
     var enabled = true
     /// False while the panel is hidden or occluded: no pulse keeps the render
@@ -73,6 +74,11 @@ struct OverlayChannelPill: View {
         .overlay(alignment: .topTrailing) {
           if stackedFace {
             stackedBadge
+          } else if form == .rail && display.unreadCount > 0 {
+            OverlayAgentUnreadBadge(
+              count: display.unreadCount, palette: palette, textScale: textScale
+            )
+            .offset(x: 7 * textScale, y: -5 * textScale)
           } else if display.unread {
             Circle()
               .fill(palette.processingStatus.color)

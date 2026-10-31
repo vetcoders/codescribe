@@ -1264,6 +1264,19 @@ impl AcousticLedger {
                     && source.sample_start < other.sample_end
             })
         };
+        let dt_partition_preflight = pins.len() == 1 && self.dt_partition_preflight(observation);
+        let dt_crosses_whisper = |index: usize| {
+            dt_partition_preflight
+                && prior
+                    .iter()
+                    .filter(|source| {
+                        source.producer == ObservationProducer::Whisper
+                            && source.sample_start < pins[index].sample_end
+                            && pins[index].sample_start < source.sample_end
+                    })
+                    .count()
+                    > 1
+        };
         for (index, held) in correspondence.iter().enumerate() {
             if let Some(held) = held {
                 // Apple's phrase assignment is provisional. A measured
@@ -1272,6 +1285,7 @@ impl AcousticLedger {
                 if (observation.producer != ObservationProducer::Whisper
                     || held.producer != ObservationProducer::Apple)
                     && !repartitions_source(index, held)
+                    && !dt_crosses_whisper(index)
                 {
                     identities[index] = self
                         .word_anchor_identity(held)
@@ -1325,6 +1339,7 @@ impl AcousticLedger {
                     // adjudicator from ever considering a complete partition.
                     // The parent remains held until that adjudicator accepts.
                     && !repartitions_source(index, source)
+                    && !dt_crosses_whisper(index)
             });
             let (sample_start, sample_end) = inherited_geometry.map_or_else(
                 || {

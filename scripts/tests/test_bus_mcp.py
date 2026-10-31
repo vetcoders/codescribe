@@ -346,7 +346,7 @@ class MailboxTests(MailboxFixture):
     def test_connect_validates_identity_name_and_channel_before_side_effects(self):
         self.mailbox.owner = self.mailbox.provider = None
         valid = {"provider": self.PROVIDER, "session_id": self.session, "name": "Roman", "channel": "3"}
-        for field, value in (("provider", "claude"), ("provider", "codex"), ("provider", None),
+        for field, value in (("provider", "claude"), ("provider", "unsupported-provider"), ("provider", None),
                              ("session_id", ""), ("session_id", "\n"), ("session_id", 3),
                              ("name", " "), ("name", None), ("channel", "0"),
                              ("channel", "10"), ("channel", 3)):

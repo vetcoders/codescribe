@@ -11,6 +11,7 @@
 //! Canonical gesture semantics live in `docs/HOTKEYS_CONTRACT.md`, which the
 //! defaults here mirror.
 
+use super::detector::DoubleTapOutcome;
 use crate::config::{
     ChannelModifier, Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding, ShortcutBinding,
     UserSettings, WorkMode,
@@ -35,8 +36,13 @@ const BIND_HOLD_CTRL_SHIFT: u16 = 4;
 const BIND_HOLD_CTRL_CMD: u16 = 5;
 /// Packed slot: double-tap Control.
 const BIND_DOUBLE_CTRL: u16 = 6;
+/// Packed slot: double-tap left Option.
+const BIND_DOUBLE_LEFT_OPTION: u16 = 7;
+/// Packed slot: double-tap right Option.
+const BIND_DOUBLE_RIGHT_OPTION: u16 = 8;
 
-/// Boot packing: Fn hold → dictation; Formatting and the agent have no gesture.
+/// Boot packing: Fn hold → dictation; Formatting and the agent stay off until
+/// the user opts into a gesture (the Option double-taps are opt-in).
 const DEFAULT_MODE_BINDINGS_ENCODED: u16 =
     BIND_HOLD_FN | (BIND_DISABLED << 4) | (BIND_DISABLED << 8);
 
@@ -72,6 +78,8 @@ fn encode_shortcut_binding(binding: ShortcutBinding) -> u16 {
         ShortcutBinding::HoldCtrlShift => BIND_HOLD_CTRL_SHIFT,
         ShortcutBinding::HoldCtrlCmd => BIND_HOLD_CTRL_CMD,
         ShortcutBinding::DoubleCtrl => BIND_DOUBLE_CTRL,
+        ShortcutBinding::DoubleLeftOption => BIND_DOUBLE_LEFT_OPTION,
+        ShortcutBinding::DoubleRightOption => BIND_DOUBLE_RIGHT_OPTION,
     }
 }
 
@@ -86,6 +94,8 @@ fn decode_shortcut_binding(value: u16) -> ShortcutBinding {
         BIND_HOLD_CTRL_SHIFT => ShortcutBinding::HoldCtrlShift,
         BIND_HOLD_CTRL_CMD => ShortcutBinding::HoldCtrlCmd,
         BIND_DOUBLE_CTRL => ShortcutBinding::DoubleCtrl,
+        BIND_DOUBLE_LEFT_OPTION => ShortcutBinding::DoubleLeftOption,
+        BIND_DOUBLE_RIGHT_OPTION => ShortcutBinding::DoubleRightOption,
         _ => ShortcutBinding::Disabled,
     }
 }
@@ -312,6 +322,45 @@ pub fn get_double_tap_interval_ms() -> u64 {
     DOUBLE_TAP_INTERVAL_MS.load(AtomicOrdering::SeqCst)
 }
 
+// --- Option tap timing ---
+//
+// Both are read by the detector on every Option release, so a Settings change
+// applies to the next tap without restarting the event tap.
+
+/// Bounds of the longest press that still counts as an Option tap.
+pub const TAP_MAX_MS_RANGE: std::ops::RangeInclusive<u64> = 120..=300;
+/// Bounds of the quiet time after typing during which Option taps are ignored.
+pub const TYPING_QUIET_MS_RANGE: std::ops::RangeInclusive<u64> = 0..=1000;
+
+/// Longest Option press (ms) that still counts as a tap.
+static TAP_MAX_MS: AtomicU64 = AtomicU64::new(220);
+/// Time (ms) after any typed key during which an Option tap counts for nothing.
+static TYPING_QUIET_MS: AtomicU64 = AtomicU64::new(300);
+
+/// Set the longest Option press that still counts as a tap. Clamped.
+pub fn set_tap_max_ms(ms: u64) {
+    let clamped = ms.clamp(*TAP_MAX_MS_RANGE.start(), *TAP_MAX_MS_RANGE.end());
+    TAP_MAX_MS.store(clamped, AtomicOrdering::SeqCst);
+    tracing::info!("Option tap max set to: {}ms", clamped);
+}
+
+/// Longest Option press (ms) that still counts as a tap.
+pub fn get_tap_max_ms() -> u64 {
+    TAP_MAX_MS.load(AtomicOrdering::SeqCst)
+}
+
+/// Set the quiet time after typing during which Option taps are ignored. Clamped.
+pub fn set_typing_quiet_ms(ms: u64) {
+    let clamped = ms.clamp(*TYPING_QUIET_MS_RANGE.start(), *TYPING_QUIET_MS_RANGE.end());
+    TYPING_QUIET_MS.store(clamped, AtomicOrdering::SeqCst);
+    tracing::info!("Option typing quiet time set to: {}ms", clamped);
+}
+
+/// Quiet time (ms) after typing during which Option taps are ignored.
+pub fn get_typing_quiet_ms() -> u64 {
+    TYPING_QUIET_MS.load(AtomicOrdering::SeqCst)
+}
+
 // --- Agent channel, Fn tap, middle mouse ---
 //
 // Channel digits default to Ctrl so a passed-through chord does not type into
@@ -414,6 +463,85 @@ pub fn agent_gesture_capture_active(now: Instant) -> bool {
     until != 0 && capture_millis(now) < until
 }
 
+// ── Composer caret ownership ──────────────────────────────────────────────────
+//
+// Codescribe's own message fields (the Agent composer and the Intercom bus
+// composer) carry their own microphone. While one of them holds the focused
+// caret, a long Fn is not a request for global dictation into that field: the
+// recording controller refuses the hold start and the field shows where its
+// microphone is. Swift is the only writer; it reports first-responder plus
+// key-window truth and clears the flag when the field resigns or leaves.
+
+static COMPOSER_CARET_OWNED: AtomicBool = AtomicBool::new(false);
+
+/// Report whether a Codescribe composer currently owns the focused caret.
+pub fn set_composer_caret_owned(owned: bool) {
+    COMPOSER_CARET_OWNED.store(owned, AtomicOrdering::SeqCst);
+}
+
+/// Whether a Codescribe composer owns the focused caret right now.
+pub fn composer_caret_owned() -> bool {
+    COMPOSER_CARET_OWNED.load(AtomicOrdering::SeqCst)
+}
+
+// --- Gesture tester ---
+//
+// Settings > Shortcuts has a row where the user tries the Option double-tap.
+// While its lease is held a recognised Option pair is reported but starts
+// nothing; like the chooser capture, a Settings window that stops renewing
+// loses the lease on its own.
+
+/// How long one renewal of the gesture tester holds.
+pub const GESTURE_TEST_LEASE: Duration = Duration::from_secs(10);
+/// Tester lease end in milliseconds since [`capture_epoch`]; 0 means off.
+static GESTURE_TEST_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+/// Latest Option double-tap outcome: sequence in the high 24 bits, the
+/// [`DoubleTapOutcome::code`] in the low 8; 0 means none yet.
+static LAST_DOUBLE_TAP_OUTCOME: AtomicU32 = AtomicU32::new(0);
+
+/// Take (or renew) the gesture tester lease, or release it.
+pub fn set_gesture_test_active(active: bool) {
+    let until = if active {
+        capture_millis(Instant::now() + GESTURE_TEST_LEASE).max(1)
+    } else {
+        0
+    };
+    GESTURE_TEST_UNTIL_MS.store(until, AtomicOrdering::SeqCst);
+}
+
+/// Whether the gesture tester holds its lease at `now`.
+pub fn gesture_test_active(now: Instant) -> bool {
+    let until = GESTURE_TEST_UNTIL_MS.load(AtomicOrdering::SeqCst);
+    until != 0 && capture_millis(now) < until
+}
+
+/// Publish the outcome of one Option double-tap attempt.
+pub fn record_double_tap_outcome(outcome: DoubleTapOutcome) {
+    let code = u32::from(outcome.code());
+    let mut current = LAST_DOUBLE_TAP_OUTCOME.load(AtomicOrdering::SeqCst);
+    loop {
+        let sequence = ((current >> 8) + 1) & 0x00FF_FFFF;
+        let next = (sequence.max(1) << 8) | code;
+        match LAST_DOUBLE_TAP_OUTCOME.compare_exchange_weak(
+            current,
+            next,
+            AtomicOrdering::SeqCst,
+            AtomicOrdering::SeqCst,
+        ) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+/// The latest Option double-tap outcome and its sequence number, which
+/// changes on every attempt so a repeat of the same outcome is still news.
+pub fn last_double_tap_outcome() -> Option<(u32, DoubleTapOutcome)> {
+    let raw = LAST_DOUBLE_TAP_OUTCOME.load(AtomicOrdering::SeqCst);
+    let outcome = DoubleTapOutcome::from_code((raw & 0xFF) as u8)?;
+    Some((raw >> 8, outcome))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// The whole hotkey contract as one comparable value.
 ///
@@ -426,6 +554,10 @@ pub struct HotkeyRuntimeConfig {
     pub hold_arm_modifier: HoldArmModifier,
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
+    /// Longest Option press that still counts as a tap.
+    pub tap_max_ms: u64,
+    /// After a typed key, Option taps count for nothing for this long.
+    pub typing_quiet_ms: u64,
     pub deferred_insert_shortcut: DeferredInsertShortcut,
     /// Digit chord modifier. Command cannot be stored here.
     pub channel_modifier: ChannelModifier,
@@ -482,6 +614,8 @@ impl From<&Config> for HotkeyRuntimeConfig {
             hold_arm_modifier: config.hold_arm_modifier,
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
+            tap_max_ms: config.tap_max_ms,
+            typing_quiet_ms: config.typing_quiet_ms,
             deferred_insert_shortcut: config.deferred_insert_shortcut,
             channel_modifier: config.channel_modifier,
             widget_shortcut: config.widget_shortcut,
@@ -501,6 +635,8 @@ pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
         hold_arm_modifier: get_hold_arm_modifier(),
         hold_start_delay_ms: get_hold_start_delay_ms(),
         double_tap_interval_ms: get_double_tap_interval_ms(),
+        tap_max_ms: get_tap_max_ms(),
+        typing_quiet_ms: get_typing_quiet_ms(),
         deferred_insert_shortcut: get_deferred_insert_shortcut(),
         channel_modifier: decode_channel_modifier(((gestures & CHANNEL_MODIFIER_MASK) >> 12) as u8),
         widget_shortcut: get_widget_shortcut(),
@@ -520,6 +656,12 @@ pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
     // out-of-range settings value must not read as "changed" on every apply.
     let normalized = HotkeyRuntimeConfig {
         double_tap_interval_ms: config.double_tap_interval_ms.clamp(100, 450),
+        tap_max_ms: config
+            .tap_max_ms
+            .clamp(*TAP_MAX_MS_RANGE.start(), *TAP_MAX_MS_RANGE.end()),
+        typing_quiet_ms: config
+            .typing_quiet_ms
+            .clamp(*TYPING_QUIET_MS_RANGE.start(), *TYPING_QUIET_MS_RANGE.end()),
         ..config
     };
     // Every settings write funnels through this apply (update_config /
@@ -547,6 +689,8 @@ pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
     set_hold_arm_modifier(normalized.hold_arm_modifier);
     set_hold_start_delay_ms(normalized.hold_start_delay_ms);
     set_double_tap_interval_ms(normalized.double_tap_interval_ms);
+    set_tap_max_ms(normalized.tap_max_ms);
+    set_typing_quiet_ms(normalized.typing_quiet_ms);
     set_deferred_insert_shortcut(normalized.deferred_insert_shortcut);
     set_widget_shortcut(normalized.widget_shortcut);
     set_middle_mouse_acts_as_fn(normalized.middle_mouse_acts_as_fn);
@@ -561,6 +705,7 @@ pub fn apply_hotkey_config(config: &Config) {
 /// Unit coverage for the process-global hotkey atomics (bindings, clamp, apply).
 #[cfg(test)]
 mod tests {
+    use super::super::detector::DoubleTapBlockReason;
     use super::*;
     use std::sync::Mutex;
 
@@ -576,7 +721,7 @@ mod tests {
 
         let bindings = ModeHotkeyBindings {
             dictation: ShortcutBinding::HoldCtrlAlt,
-            formatting: ShortcutBinding::Disabled,
+            formatting: ShortcutBinding::DoubleLeftOption,
             assistive: ShortcutBinding::Disabled,
         };
         set_mode_hotkey_bindings(bindings);
@@ -598,6 +743,76 @@ mod tests {
         assert_eq!(get_double_tap_interval_ms(), 450);
     }
 
+    /// The live double-tap interval atomic is what the runtime snapshot reports,
+    /// so a Settings change reaches the detector's next event.
+    #[test]
+    #[serial_test::serial]
+    fn test_double_tap_interval_is_reflected_in_runtime_snapshot() {
+        let _guard = HOTKEY_ATOMICS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let before = get_double_tap_interval_ms();
+        set_double_tap_interval_ms(350);
+        assert_eq!(get_hotkey_runtime_config().double_tap_interval_ms, 350);
+        set_double_tap_interval_ms(200);
+        assert_eq!(get_hotkey_runtime_config().double_tap_interval_ms, 200);
+        set_double_tap_interval_ms(before);
+    }
+
+    /// Tap-max and typing-quiet setters clamp and reach the snapshot.
+    #[test]
+    #[serial_test::serial]
+    fn test_tap_max_and_typing_quiet_clamp_and_reach_snapshot() {
+        let _guard = HOTKEY_ATOMICS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let (tap_before, quiet_before) = (get_tap_max_ms(), get_typing_quiet_ms());
+        set_tap_max_ms(50);
+        assert_eq!(get_tap_max_ms(), 120);
+        set_tap_max_ms(9_999);
+        assert_eq!(get_tap_max_ms(), 300);
+        set_tap_max_ms(250);
+        set_typing_quiet_ms(9_999);
+        assert_eq!(get_typing_quiet_ms(), 1000);
+        set_typing_quiet_ms(450);
+        let snapshot = get_hotkey_runtime_config();
+        assert_eq!(snapshot.tap_max_ms, 250);
+        assert_eq!(snapshot.typing_quiet_ms, 450);
+        set_tap_max_ms(tap_before);
+        set_typing_quiet_ms(quiet_before);
+    }
+
+    /// The gesture tester lease is held until released, and expires on its own.
+    #[test]
+    #[serial_test::serial]
+    fn test_gesture_test_lease_and_outcome_slot() {
+        let now = Instant::now();
+        set_gesture_test_active(false);
+        assert!(!gesture_test_active(now));
+        set_gesture_test_active(true);
+        assert!(gesture_test_active(Instant::now()));
+        assert!(
+            !gesture_test_active(Instant::now() + Duration::from_secs(3600)),
+            "the lease must lapse if the tester never releases it"
+        );
+        set_gesture_test_active(false);
+        assert!(!gesture_test_active(Instant::now()));
+
+        record_double_tap_outcome(DoubleTapOutcome::Recognized);
+        let (first, outcome) = last_double_tap_outcome().expect("outcome recorded");
+        assert_eq!(outcome, DoubleTapOutcome::Recognized);
+        record_double_tap_outcome(DoubleTapOutcome::Recognized);
+        let (second, _) = last_double_tap_outcome().expect("outcome recorded");
+        assert_ne!(first, second, "a repeated outcome is still news");
+        record_double_tap_outcome(DoubleTapOutcome::Blocked(DoubleTapBlockReason::Mouse));
+        assert_eq!(
+            last_double_tap_outcome().map(|(_, o)| o),
+            Some(DoubleTapOutcome::Blocked(DoubleTapBlockReason::Mouse))
+        );
+    }
+
     /// Apply writes every hotkey atomic when the snapshot differs from live state.
     #[test]
     fn test_apply_hotkey_runtime_config_updates_all_atomics() {
@@ -615,6 +830,8 @@ mod tests {
             hold_arm_modifier: HoldArmModifier::Cmd,
             hold_start_delay_ms: 1234,
             double_tap_interval_ms: 260,
+            tap_max_ms: 220,
+            typing_quiet_ms: 300,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandShiftV,
             channel_modifier: ChannelModifier::Fn,
             widget_shortcut: crate::config::WidgetShortcut::default(),
@@ -654,13 +871,15 @@ mod tests {
         let runtime = HotkeyRuntimeConfig {
             mode_bindings: ModeHotkeyBindings {
                 dictation: ShortcutBinding::HoldFn,
-                formatting: ShortcutBinding::Disabled,
-                assistive: ShortcutBinding::Disabled,
+                formatting: ShortcutBinding::DoubleLeftOption,
+                assistive: ShortcutBinding::DoubleRightOption,
             },
             hold_exclusive: false,
             hold_arm_modifier: HoldArmModifier::Shift,
             hold_start_delay_ms: 800,
             double_tap_interval_ms: 999,
+            tap_max_ms: 220,
+            typing_quiet_ms: 300,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
             channel_modifier: ChannelModifier::Ctrl,
             widget_shortcut: crate::config::WidgetShortcut::default(),
@@ -754,13 +973,15 @@ mod tests {
         let runtime = HotkeyRuntimeConfig {
             mode_bindings: ModeHotkeyBindings {
                 dictation: ShortcutBinding::HoldFn,
-                formatting: ShortcutBinding::Disabled,
-                assistive: ShortcutBinding::Disabled,
+                formatting: ShortcutBinding::DoubleLeftOption,
+                assistive: ShortcutBinding::DoubleRightOption,
             },
             hold_exclusive: false,
             hold_arm_modifier: HoldArmModifier::Shift,
             hold_start_delay_ms: 800,
             double_tap_interval_ms: 200,
+            tap_max_ms: 220,
+            typing_quiet_ms: 300,
             deferred_insert_shortcut: DeferredInsertShortcut::default(),
             channel_modifier: config.channel_modifier,
             widget_shortcut: crate::config::WidgetShortcut::default(),
@@ -790,5 +1011,18 @@ mod tests {
 
         set_agent_gesture_capture(false);
         assert!(!agent_gesture_capture_active(Instant::now()));
+    }
+
+    /// Composer caret ownership is a plain fact the UI sets and clears.
+    #[test]
+    fn composer_caret_ownership_follows_the_last_report() {
+        let _guard = HOTKEY_ATOMICS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        set_composer_caret_owned(true);
+        assert!(composer_caret_owned());
+        set_composer_caret_owned(false);
+        assert!(!composer_caret_owned());
     }
 }

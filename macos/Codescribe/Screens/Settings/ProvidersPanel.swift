@@ -25,7 +25,7 @@ struct ProvidersPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        String(localized: "Providers"),
+        SettingsSection.keys.title,
         blurb: String(
           localized: "Connect accounts or add API keys. Models are chosen under Agent › AI models.",
           comment: "Providers panel blurb; `AI models` is the Agent tab title")
@@ -142,7 +142,7 @@ struct ProviderAccessStatusSlot: View {
 
   private var receipt: String {
     guard let checkedAt else { return "" }
-    let time = checkedAt.formatted(date: .omitted, time: .standard)
+    let time = checkedAt.formatted(date: .omitted, time: .shortened)
     return String(localized: "Checked at \(time)")
   }
 
@@ -450,7 +450,7 @@ struct CustomProviderForm: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text(isEdit ? "Edit custom provider." : "Add custom provider.")
+      Text(isEdit ? "Edit custom provider" : "Add custom provider")
         .font(CSFont.ui(20, .bold))
         .tracking(-0.3)
         .foregroundStyle(Color.primary)
@@ -512,10 +512,8 @@ struct CustomProviderForm: View {
       }
       HStack(spacing: 10) {
         Spacer()
-        Button("Cancel") { dismiss() }
-          .disabled(saving)
+        SettingsSaveButton(title: "Cancel", enabled: !saving) { dismiss() }
           .keyboardShortcut(.cancelAction)
-          .csFocusRing()
         SettingsSaveButton(
           title: isEdit ? "Save changes" : "Add provider", enabled: canSave, action: save
         )
@@ -608,7 +606,7 @@ struct SpeechToTextSection: View {
       // the same truth as Dictation › Cloud & privacy.
       Text("Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription.")
         .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.amberLight)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.top, SettingsScale.headerGap)
       VStack(spacing: CSSpace.sm) {

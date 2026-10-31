@@ -579,7 +579,7 @@ private struct CapabilityMatrixRow: View {
   private var tierColor: Color {
     switch row.tier.lowercased() {
     case "native": return CSColor.oliveLight
-    case "enhanced": return CSColor.amberLight
+    case "enhanced": return CSColor.secondaryInk
     case "unavailable": return CSColor.dangerLight
     default: return CSColor.secondaryInk
     }

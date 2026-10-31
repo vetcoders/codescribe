@@ -14546,6 +14546,7 @@ mod tests {
             rows.push(wrap(TrailEvent::Qualification {
                 evidence,
                 calibration,
+                capture_rate_hz: Some(16_000),
             }));
             let observation =
                 ObservationIdentity::new(ObservationProducer::Apple, index, 0, occurrence.clone());

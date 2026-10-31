@@ -47,6 +47,7 @@ import ctypes
 import datetime
 import fcntl
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -1147,7 +1148,8 @@ def evidence_revision_rows(event: dict[str, Any]) -> list[dict[str, Any]] | None
 
 
 def normalized_revision_events(
-    raw: str, normalizer: EvidenceNormalizer, lease: SessionLease | None = None
+    raw: str, normalizer: EvidenceNormalizer, lease: SessionLease | None = None,
+    *, admit_row: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """One durable row may observe several original publication coordinates."""
     parsed = parse_line(raw)
@@ -1176,6 +1178,8 @@ def normalized_revision_events(
         rows = [snapshot]
     events: list[dict[str, Any]] = []
     for row in rows:
+        if admit_row is not None and not admit_row(row):
+            continue
         if row.get("schema") == PUBLICATION_SCHEMA:
             # A provider lease may retire only its frozen channel ownership.
             if lease and not lease.admits_channel_event(row):
@@ -1310,6 +1314,23 @@ def channel_event_admitted(event: dict[str, Any], *, provider: str, provider_ses
     if channel_of_session(str(event.get("session_id") or "")) is not None:
         return all(event.get(key) == value for key, value in expected.items())
     return frozen is None
+
+
+def has_valid_frozen_recipients(event: dict[str, Any]) -> bool:
+    """Prove foreign refusal ownership without assigning it to this lease."""
+    recipients = event.get("recipients")
+    if not isinstance(recipients, list) or not recipients:
+        return False
+    for owner in recipients:
+        if not isinstance(owner, dict):
+            return False
+        fields = ("provider", "provider_session_id", "lease_id", "bus")
+        if any(not isinstance(owner.get(key), str) or not owner[key] for key in fields):
+            return False
+        if (owner["lease_id"] != lease_identifier(owner["provider"], owner["provider_session_id"])
+                or not Path(owner["bus"]).is_absolute()):
+            return False
+    return True
 
 
 def capture_sample_rate(event: dict[str, Any]) -> int | None:
@@ -2156,7 +2177,7 @@ PROVIDER_SESSION_ENV = {"claude-code": "CLAUDE_CODE_SESSION_ID"}
 REMOTE_HELPER = '"$HOME/.local/bin/cs-bus"'
 REMOTE_HOST_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,252}")
 #: Local paths and native hook modes mean nothing on another Mac.
-REMOTE_REFUSED_FLAGS = ("--bridge-home", "--bus", "--mcp", "--install-junie-extension",
+REMOTE_REFUSED_FLAGS = ("--bridge-home", "--bus", "--mcp", "--codex-mcp", "--install-junie-extension",
                         "--claude-code-wake", "--claude-code-probe", "--omp-wake",
                         "--attach-file", "--from-file", "--extensions-directory")
 
@@ -2842,22 +2863,42 @@ def process_is_alive(pid: Any) -> bool:
     return True
 
 
-def process_identity(pid: int) -> dict[str, str] | None:
-    """Observe one process incarnation and its complete invocation, never TTL."""
+def probe_process_identity(pid: int) -> dict[str, Any]:
+    """Observe an incarnation and retain why observation failed, without argv in errors."""
     import subprocess
 
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return {"identity": None, "error": "invalid_pid"}
     try:
         result = subprocess.run(
             ["/bin/ps", "-ww", "-p", str(pid), "-o", "lstart=", "-o", "state=", "-o", "command="],
             capture_output=True, text=True, check=False, timeout=2,
             env={**os.environ, "LC_ALL": "C"},
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except PermissionError:
+        return {"identity": None, "error": "process_probe_permission_denied"}
+    except subprocess.TimeoutExpired:
+        return {"identity": None, "error": "process_probe_timeout"}
+    except OSError as error:
+        return {"identity": None, "error": "process_probe_os_error", "errno": error.errno}
+    except UnicodeError:
+        return {"identity": None, "error": "process_probe_malformed"}
     fields = result.stdout.strip().split(None, 6)
-    if result.returncode or len(fields) != 7 or fields[5].startswith(("T", "Z", "X")):
-        return None
-    return {"started": " ".join(fields[:5]), "command": fields[6]}
+    if result.returncode:
+        denied = any(message in result.stderr for message in ("Operation not permitted", "Permission denied"))
+        return {"identity": None,
+                "error": "process_probe_permission_denied" if denied else "process_probe_exit",
+                "exit_code": result.returncode}
+    if len(fields) != 7:
+        return {"identity": None, "error": "process_probe_malformed"}
+    if fields[5].startswith(("T", "Z", "X")):
+        return {"identity": None, "error": "process_not_running"}
+    return {"identity": {"started": " ".join(fields[:5]), "command": fields[6]}, "error": None}
+
+
+def process_identity(pid: int) -> dict[str, str] | None:
+    """Observe one process incarnation and its complete invocation, never TTL."""
+    return probe_process_identity(pid)["identity"]
 
 
 def active_leases(root: Path, ttl_seconds: float) -> list[dict[str, Any]]:
@@ -3781,7 +3822,8 @@ class SessionLease:
                 if (not isinstance(refusals, dict) or any(
                         not isinstance(receipt, dict)
                         or channel_publication_refusal_session(receipt) != session
-                        or not self.admits_channel_event(receipt)
+                        or (not self.admits_channel_event(receipt)
+                            and not has_valid_frozen_recipients(receipt))
                         for session, receipt in refusals.items())):
                     raise ValueError("invalid publication refusals; recovery state preserved")
                 self.channel_publication_refusals = refusals
@@ -3987,7 +4029,8 @@ class SessionLease:
 
     def queue_delivery(self, payload: dict[str, Any]) -> bool:
         delivery_id = payload["delivery_id"]
-        if (payload.get("session_id") in self.channel_publication_refusals
+        refusal = self.channel_publication_refusals.get(payload.get("session_id"))
+        if (refusal is not None and self.admits_channel_event(refusal)
                 and payload.get("producer_schema") == EVIDENCE_SCHEMA):
             return False
         if delivery_acknowledged(self.root, self.lease_id, delivery_id, payload):
@@ -4129,6 +4172,11 @@ class SessionLease:
         self.persist(active=True)
         return [dict(payload)]
 
+    def owned_publication_refusals(self) -> list[dict[str, Any]]:
+        """Only this lease's receipts may affect its normalizer."""
+        return [receipt for receipt in self.channel_publication_refusals.values()
+                if self.admits_channel_event(receipt)]
+
     def retire_channel_publication(self, event: dict[str, Any]) -> bool:
         """Retire only this owner's evidence envelopes of the refused capture.
 
@@ -4138,6 +4186,9 @@ class SessionLease:
         session = channel_publication_refusal_session(event)
         if session is None or not self.admits_channel_event(event):
             return False
+        previous = self.channel_publication_refusals.get(session)
+        if previous is not None and not self.admits_channel_event(previous):
+            raise ValueError("conflicting publication refusal; recovery state preserved")
         document = self.unclosed_channel_messages.get(session)
         if (document is not None and document.get("capture_epoch") is not None
                 and document["capture_epoch"] != event["capture_epoch"]):
@@ -5380,7 +5431,7 @@ def run(args: argparse.Namespace) -> int:
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
     if lease:
-        normalizer.restore_publication_refusals(list(lease.channel_publication_refusals.values()))
+        normalizer.restore_publication_refusals(lease.owned_publication_refusals())
         # Prune first: a draft left over from a message that was sealed and
         # acknowledged in an earlier run must not be restored as an unclosed
         # document for a session that is already settled.
@@ -9153,6 +9204,8 @@ def say_reply(args: argparse.Namespace) -> int:
     receipt = publish_reply_event(bus, reply, bridge_root=args.bridge_home)
     remember_published_reply(args.bridge_home, bus, reply, receipt)
     emit(reply)
+    if getattr(args, "text_only", False):
+        return 0
     return speak_published_reply(args, bus, reply, os.urandom(12).hex(), automatic=True)
 
 
@@ -9353,15 +9406,33 @@ def stage_capture_attachment_command(args: argparse.Namespace) -> int:
 
 
 def validate_user_reply_reference(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict) or set(value) != {"message_id", "author", "text"}:
-        raise ValueError("invalid user reply reference")
+    # Refusals name the offending field: one opaque message for seven distinct
+    # conditions made the 2026-10-28 composer refusal undiagnosable from the UI.
+    if not isinstance(value, dict):
+        raise ValueError("invalid user reply reference: not an object")
+    if set(value) != {"message_id", "author", "text"}:
+        raise ValueError(
+            f"invalid user reply reference: keys {sorted(map(str, value))!r}"
+            " != ['author', 'message_id', 'text']")
     identity, author, text = value["message_id"], value["author"], value["text"]
-    if (not isinstance(identity, str) or not identity or len(identity.encode("utf-8")) > 512
-            or any(ord(c) < 32 or ord(c) == 127 for c in identity)
-            or not isinstance(author, str) or not author.strip() or len(author) > 128
-            or any(ord(c) < 32 or ord(c) == 127 for c in author)
-            or not isinstance(text, str) or len(text) > 512):
-        raise ValueError("invalid user reply reference")
+    if not isinstance(identity, str) or not identity:
+        raise ValueError("invalid user reply reference: message_id empty or not a string")
+    if len(identity.encode("utf-8")) > 512:
+        raise ValueError("invalid user reply reference: message_id over 512 bytes")
+    if any(ord(c) < 32 or ord(c) == 127 for c in identity):
+        raise ValueError("invalid user reply reference: message_id has control characters")
+    if not isinstance(author, str) or not author.strip():
+        raise ValueError("invalid user reply reference: author empty or not a string")
+    if len(author) > 128:
+        raise ValueError("invalid user reply reference: author over 128 characters")
+    if any(ord(c) < 32 or ord(c) == 127 for c in author):
+        raise ValueError("invalid user reply reference: author has control characters")
+    if not isinstance(text, str):
+        raise ValueError("invalid user reply reference: text not a string")
+    if len(text) > 512:
+        raise ValueError(
+            f"invalid user reply reference: text {len(text)} code points over 512"
+            " (grapheme-truncated previews can exceed the code-point cap)")
     return {"message_id": identity, "author": author, "text": text}
 
 
@@ -9938,19 +10009,28 @@ def confirm_follower(root: Path, lease_id: str, session: str, bus: str,
         "configuration": configuration,
     })
     deadline = time.monotonic() + 5.0
+    stage = "lease_not_ready"
     while time.monotonic() < deadline:
         if child.poll() is not None:
-            raise OSError(f"follower exited during startup; see {errors_path}")
+            raise OSError(f"follower exited during startup (follower_child_exit: {child.returncode}); see {errors_path}")
         state = read_json(lease_path) or {}
-        if (state.get("schema") == LEASE_SCHEMA and state.get("pid") == child.pid
-                and state.get("lease_id") == lease_id
-                and state.get("active") is True and state.get("bus") == bus
-                and events_path.exists()
-                and verified_follower(root, lease_id, session, child.pid)
-                and child.poll() is None):
+        expected = {"schema": LEASE_SCHEMA, "pid": child.pid, "lease_id": lease_id,
+                    "active": True, "bus": bus}
+        mismatched = next((key for key, value in expected.items() if state.get(key) != value), None)
+        if mismatched:
+            stage = "lease_" + mismatched + "_not_ready"
+        elif not events_path.exists():
+            stage = "events_file_missing"
+        elif not verified_follower(root, lease_id, session, child.pid):
+            stage = "follower_identity_unverified"
+        elif child.poll() is None:
             return
+        else:
+            stage = "child_exit_check"
         time.sleep(0.1)
-    raise OSError(f"follower readiness timed out; see {errors_path}")
+    probe = probe_process_identity(child.pid)
+    reason = probe["error"] or stage
+    raise OSError(f"follower readiness timed out: {reason}; see {errors_path}")
 
 
 def recover_follower(root: Path, provider: str, session: str) -> dict[str, Any]:
@@ -10387,12 +10467,20 @@ def write_channel_binding(
     return path
 
 
-def source_closes_retained_documents(bus: Path, documents: dict[str, Any]) -> bool:
+def source_closes_retained_documents(
+    bus: Path, documents: dict[str, Any], *, provider: str,
+    provider_session_id: str, lease_id: str,
+) -> bool:
     """Resolve stale observer snapshots through the canonical source normalizer."""
     remaining = set(documents)
     normalizer = EvidenceNormalizer()
     for raw in replay(bus):
-        for event in normalized_revision_events(raw, normalizer):
+        for event in normalized_revision_events(
+            raw, normalizer, admit_row=lambda row: channel_event_admitted(
+                row, provider=provider, provider_session_id=provider_session_id,
+                lease_id=lease_id, bus=str(bus),
+            ),
+        ):
             if event.get("status") == SEALED:
                 remaining.discard(event.get("session_id"))
         remaining.difference_update(normalizer.publication_refusals())
@@ -10461,7 +10549,9 @@ def require_drained_lease(
     documents = state.get("unclosed_channel_messages", {})
     if not lenient_catch_up and state.get("held"):
         raise OSError("old source has held deliveries; release or withdraw before retiring it")
-    if not lenient_catch_up and documents and not source_closes_retained_documents(Path(state["bus"]), documents):
+    if (not lenient_catch_up and documents and not source_closes_retained_documents(
+            Path(state["bus"]), documents, provider=state["provider"],
+            provider_session_id=state["provider_session_id"], lease_id=lease_id)):
         raise OSError("old source has an unfinished capture; owner retained")
 
 
@@ -10787,11 +10877,13 @@ def attach_command(args: argparse.Namespace) -> int:
     configuration = wakeup_configuration(args)
     configuration["workspace"] = str(Path.cwd().resolve())
     log_path, events_path = follower_paths(root, lease_id)
+    stage = "binding_lock"
     try:
         # Old lease locks outlive the binding commit; the child owns its own
         # distinct lease. No competing attach can observe a half-started owner.
         with contextlib.ExitStack() as retirements:
             with channel_bindings(root) as bindings:
+                stage = "takeover"
                 original_entry = bindings.get(str(args.channel))
                 if str(args.channel) in bindings and (
                     not isinstance(original_entry, dict)
@@ -10810,6 +10902,7 @@ def attach_command(args: argparse.Namespace) -> int:
                     if disposition not in HANDOVER_CLEAR_STATES:
                         raise OSError(f"previous follower {disposition}; owner retained")
 
+                stage = "existing_follower_verification"
                 pid = live_follower_pid(root, lease_id)
                 lease_state = read_json(lease_path)
                 pid_record = read_json(follower_pidfile(root, lease_id)) or {}
@@ -10830,6 +10923,7 @@ def attach_command(args: argparse.Namespace) -> int:
                             atomic_json(lease_path, lease_state)
                     pid = None
                 if pid is None:
+                    stage = "follower_launch"
                     child = launch_follower(root, follower_command(
                         root, provider=args.provider, session=args.session, name=name,
                         channel=str(args.channel), bus=resolved_bus,
@@ -10837,15 +10931,19 @@ def attach_command(args: argparse.Namespace) -> int:
                         workspace=configuration["workspace"]))
                     pid = child.pid
                     child_state = "starting"
+                    stage = "follower_readiness"
                     confirm_follower(root, lease_id, args.session, resolved_bus, child, configuration)
                     child_state = "ready"
                 if persist_voice:
+                    stage = "voice_profile"
                     write_voice_profile(root, name, voice=args.voice, speed=args.speed, vendor=args.tts_vendor)
                 if previous is not None:
+                    stage = "previous_mailbox_drain"
                     # A producer may have completed another old-owner row while
                     # its reader was exiting. Never hide that row at cutover.
                     require_drained_lease(root, previous["lease_id"])
                 bindings[str(args.channel)] = claimed
+                stage = "binding_commit"
             # channel_bindings commits here, while retirement locks still hold.
     except (OSError, ValueError, RuntimeError) as error:
         if child is not None:
@@ -10871,7 +10969,7 @@ def attach_command(args: argparse.Namespace) -> int:
                   "previous": previous, "new_follower_state": child_state,
                   "binding_path": str(binding_path)})
         suffix = "unchanged" if unchanged else "state uncertain"
-        sys.stderr.write(f"bus-demux: attach failed: {error}; channel {args.channel} {suffix}\n")
+        sys.stderr.write(f"bus-demux: attach failed: {error}; channel {args.channel} {suffix}; stage={stage}\n")
         return 3
     # An explicit attachment is the agent's own decision to listen again.
     reset_listener_streak(root, lease_id, "attach")
@@ -10919,19 +11017,26 @@ def status_command(args: argparse.Namespace) -> int:
     )
     heartbeat = state.get("heartbeat_unix") if isinstance(state, dict) else None
     lease_pid = state.get("pid") if isinstance(state, dict) else None
-    follower_alive = bool(
+    heartbeat_fresh = bool(
         isinstance(heartbeat, (int, float))
-        and time.time() - float(heartbeat) <= args.lease_ttl
-        and process_is_alive(lease_pid)
+        and 0 <= time.time() - float(heartbeat) <= args.lease_ttl
     )
+    probe = probe_process_identity(lease_pid)
+    follower_verified = bool(heartbeat_fresh and probe["identity"] is not None
+                             and verified_follower(root, lease_id, args.session, lease_pid))
+    follower_alive = follower_verified
     channel = None
     binding = read_json(root / AUDIENCE_BINDING_FILENAME) or {}
-    bindings = binding.get("bindings")
+    bindings = binding.get("bindings") if binding.get("schema") == AUDIENCE_BINDING_SCHEMA else None
     if isinstance(bindings, dict):
         for slot, entry in bindings.items():
             if (
                 isinstance(entry, dict)
+                and str(slot) in "123456789" and len(str(slot)) == 1
+                and entry.get("provider") == args.provider.casefold()
                 and entry.get("provider_session_id") == args.session
+                and lease_identifier(entry["provider"], entry["provider_session_id"]) == lease_id
+                and isinstance(state, dict) and entry.get("bus") == state.get("bus")
             ):
                 channel = str(slot)
                 break
@@ -10939,7 +11044,8 @@ def status_command(args: argparse.Namespace) -> int:
     lifecycle = read_json(lifecycle_paths(root, lease_id)[0]) or {}
     watch = read_json(watch_record_path(root, lease_id)) or {}
     watch_pid = watch.get("pid")
-    watch_alive = (isinstance(watch_pid, int) and process_is_alive(watch_pid)
+    watch_alive = (isinstance(watch_pid, int) and watch.get("process_identity") is not None
+                   and process_is_alive(watch_pid)
                    and process_identity(watch_pid) == watch.get("process_identity"))
     emit(
         {
@@ -10966,7 +11072,14 @@ def status_command(args: argparse.Namespace) -> int:
             "lease_id": lease_id,
             "follower_log": str(log_path),
             "follower_events": str(events_path),
-            "attached": state is not None,
+            "lease_recorded": state is not None,
+            "channel_bound": channel is not None,
+            "heartbeat_fresh": heartbeat_fresh,
+            "follower_verified": follower_verified,
+            "follower_problem": (None if follower_verified else probe["error"]
+                                 or ("heartbeat_stale" if not heartbeat_fresh
+                                     else "follower_identity_or_lease_mismatch")),
+            "attached": channel is not None and follower_verified,
             "channel": channel,
             "name": name,
             "follower_alive": follower_alive,
@@ -11354,6 +11467,7 @@ def main() -> int:
     parser.add_argument("--queue-admit", action="store_true", help=argparse.SUPPRESS)
     native = parser.add_mutually_exclusive_group()
     native.add_argument("--mcp", action="store_true", help="serve the native Codescribe MCP conversation over stdio")
+    native.add_argument("--codex-mcp", action="store_true", help="serve session-scoped Codex plugin tools over stdio")
     native.add_argument("--install-junie-extension", action="store_true", help="register the bundled native extension in Junie's user scope")
     native.add_argument("--claude-code-wake", action="store_true",
                         help="Claude Code plugin hook: read the hook payload on stdin and exit 75 when this attached session's mailbox has an unannounced message")
@@ -11541,6 +11655,7 @@ def main() -> int:
     parser.add_argument("--to", metavar="NAME|1-9|0", help="recipient for --send: an agent name (every other session bound to it), "
                         "one channel digit 1-9, or 0 to broadcast to every other bound agent")
     parser.add_argument("--reply-to", metavar="DELIVERY_ID", help="associate --say with this owned delivery envelope")
+    parser.add_argument("--text-only", action="store_true", help="with --say, publish the reply without synthesis or playback")
     playback = parser.add_mutually_exclusive_group()
     playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
     playback.add_argument("--stop-reply", metavar="REPLY_ID", help="request stop from that reply's real player")
@@ -11650,8 +11765,8 @@ def main() -> int:
         except (OSError, ValueError) as error:
             sys.stderr.write(f"cs-bus: broadcast policy refused: {error}\n")
             return 3
-    if args.mcp or args.install_junie_extension or args.claude_code_wake or args.claude_code_probe or args.omp_wake:
-        allowed = {"mcp", "install_junie_extension", "claude_code_wake", "claude_code_probe", "omp_wake", "host_pid",
+    if args.mcp or args.codex_mcp or args.install_junie_extension or args.claude_code_wake or args.claude_code_probe or args.omp_wake:
+        allowed = {"mcp", "codex_mcp", "install_junie_extension", "claude_code_wake", "claude_code_probe", "omp_wake", "host_pid",
                    "provider", "session", "extensions_directory", "bridge_home", "bus", "entrypoint"}
         if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
             parser.error("native extension commands combine only with --bridge-home/--bus")
@@ -11674,6 +11789,12 @@ def main() -> int:
                 return module.claude_code_probe(sys.modules[__name__], root, args.bus, json.load(sys.stdin), os.environ)
             elif args.omp_wake:
                 return module.omp_wake(sys.modules[__name__], root, args.bus, args.session, args.host_pid)
+            elif args.codex_mcp:
+                spec = importlib.util.spec_from_file_location("codescribe_mcp_sessions", Path(__file__).with_name("bus-mcp-sessions.py"))
+                sessions = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(sessions)
+                router = sessions.SessionCapabilities(sys.modules[__name__], module, root, args.bus)
+                module.serve(sys.modules[__name__], root, args.bus, mailbox=router, tools=router.tools)
             else:
                 module.serve(sys.modules[__name__], root, args.bus)
             return 0
@@ -11920,6 +12041,8 @@ def main() -> int:
             return 3
     if args.reply_to and (args.say is None or not re.fullmatch(r"[0-9a-f]{24}", args.reply_to)):
         parser.error("--reply-to requires --say and a delivery id")
+    if args.text_only and args.say is None:
+        parser.error("--text-only requires --say")
     if args.play_reply or args.stop_reply:
         identity = args.play_reply or args.stop_reply
         if (not args.provider or not re.fullmatch(r"[0-9a-f]{24}", identity)

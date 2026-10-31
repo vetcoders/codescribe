@@ -251,27 +251,41 @@ struct OverlayIntentRail: View {
   }
 
   var body: some View {
-    ScrollView(.vertical) {
-      VStack(spacing: 0) {
-        ForEach(visibleBands) { band in
-          VStack(spacing: 0) {
-            if band.showsSeparator {
-              groupSeparator
-                .padding(.vertical, OverlayTranscriptActionsLayout.groupSpacing)
-            }
-            VStack(spacing: OverlayTranscriptActionsLayout.itemSpacing) {
-              ForEach(band.slots, id: \.self) { slot in
-                mountedControl(slot)
+    GeometryReader { geometry in
+      let bands = visibleBands
+      let rowCount = bands.reduce(0) { $0 + $1.slots.count }
+      let groupGaps = max(0, bands.count - 1)
+      let itemGaps = max(0, rowCount - bands.count)
+      let availableSpacing = max(
+        0, geometry.size.height - CGFloat(rowCount) * OverlayTranscriptActionsLayout.controlHeight
+          - CGFloat(groupGaps) * OverlayTranscriptActionsLayout.separatorHeight)
+      let naturalSpacing =
+        2 * OverlayTranscriptActionsLayout.contentVerticalPadding
+        + CGFloat(itemGaps) * OverlayTranscriptActionsLayout.itemSpacing
+        + CGFloat(groupGaps) * 2 * OverlayTranscriptActionsLayout.groupSpacing
+      let spacingScale = naturalSpacing > 0 ? min(1, availableSpacing / naturalSpacing) : 1
+      ScrollView(.vertical, showsIndicators: false) {
+        VStack(spacing: 0) {
+          ForEach(bands) { band in
+            VStack(spacing: 0) {
+              if band.showsSeparator {
+                groupSeparator
+                  .padding(.vertical, OverlayTranscriptActionsLayout.groupSpacing * spacingScale)
+              }
+              VStack(spacing: OverlayTranscriptActionsLayout.itemSpacing * spacingScale) {
+                ForEach(band.slots, id: \.self) { slot in
+                  mountedControl(slot)
+                }
               }
             }
           }
         }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .padding(.vertical, OverlayTranscriptActionsLayout.contentVerticalPadding * spacingScale)
+        .csAutohidingScrollers(.verticalHidden)
       }
-      .frame(maxWidth: .infinity, alignment: .top)
-      .padding(.vertical, OverlayTranscriptActionsLayout.contentVerticalPadding)
-      .csAutohidingScrollers()
+      .csRailOverflowHints(color: palette.mutedText.color)
     }
-    .scrollIndicators(.visible)
     .focusable(false)
     .onChange(of: presented) { _, value in
       onPresentationChange(value != nil)
@@ -326,7 +340,7 @@ struct OverlayIntentRail: View {
       presented: $presented,
       emphasis: .transcriptRail,
       keepsHintInsideWindow: true,
-      popoverArrow: .trailing
+      popoverArrow: .leading
     ) {
       Image(systemName: OverlayControlSymbols.history).frame(width: 24, height: 24)
     } detail: { close in
@@ -349,7 +363,7 @@ struct OverlayIntentRail: View {
       presented: $presented,
       emphasis: .transcriptRail,
       keepsHintInsideWindow: true,
-      popoverArrow: .trailing
+      popoverArrow: .leading
     ) {
       Image(systemName: OverlayControlSymbols.versions).frame(width: 24, height: 24)
     } detail: { close in
@@ -371,7 +385,7 @@ struct OverlayIntentRail: View {
       presented: $presented,
       emphasis: .transcriptRail,
       keepsHintInsideWindow: true,
-      popoverArrow: .trailing
+      popoverArrow: .leading
     ) {
       Image(systemName: OverlayControlSymbols.previousTake).frame(width: 24, height: 24)
     } detail: { close in
@@ -401,7 +415,8 @@ struct OverlayIntentRail: View {
       action: intent == .format || intent == .retranscribe ? nil : { dispatch(intent) },
       emphasis: .transcriptRail,
       keepsHintInsideWindow: true,
-      popoverArrow: .trailing
+      popoverArrow: .leading,
+      detailWidth: 240
     ) {
       Image(systemName: intent.systemImage).frame(width: 24, height: 24)
     } detail: { close in
@@ -413,10 +428,12 @@ struct OverlayIntentRail: View {
               close()
               formatOnce(level)
             }
+            .conversationActionHover(
+              restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
             .accessibilityIdentifier("overlay-format-level-\(level.rawValue)")
           }
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.plain)
         .controlSize(.small)
         .font(CSFont.ui(11, .medium))
       } else if intent == .retranscribe {
@@ -434,18 +451,22 @@ struct OverlayIntentRail: View {
                 close()
                 retranscribe(.fullHq)
               }
+              .conversationActionHover(
+                restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
               .accessibilityIdentifier("overlay-retranscribe-hq")
               if cloudRetranscribeConfigured {
                 Button(OverlayRetranscribeCopy.cloud) {
                   close()
                   retranscribe(.cloud)
                 }
+                .conversationActionHover(
+                  restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
                 .accessibilityIdentifier("overlay-retranscribe-cloud")
               }
             }
           }
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.plain)
         .controlSize(.small)
         .font(CSFont.ui(11, .medium))
       } else {
@@ -570,7 +591,7 @@ struct OverlayIntentRail: View {
       presented: $presented, action: { dispatch(intent) },
       emphasis: .transcriptRail,
       keepsHintInsideWindow: true,
-      popoverArrow: .trailing
+      popoverArrow: .leading
     ) {
       Image(systemName: intent.systemImage).frame(width: 24, height: 24)
     } detail: { _ in

@@ -29,7 +29,7 @@ struct UserPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        String(localized: "User", comment: "User panel header"),
+        SettingsSection.user.title,
         blurb: String(
           localized: "Your license, Codescribe version, local data and privacy.",
           comment: "User panel blurb")
@@ -326,16 +326,14 @@ struct UserPanel: View {
     Link(destination: url) {
       HStack(alignment: .center, spacing: CSSpace.sm) {
         Text(title)
-          .font(SettingsScale.helper)
+          .font(SettingsScale.controlLabel)
           .frame(maxWidth: .infinity, alignment: .leading)
         Image(systemName: "arrow.up.forward.square")
-          .font(.system(size: 11, weight: .medium))
+          .font(CSFont.ui(11, .semibold))
       }
-      .foregroundStyle(CSColor.chromeAccent)
       .padding(.vertical, CSSpace.xs)
-      .contentShape(Rectangle())
     }
-    .csFocusRing()
+    .csLink()
     .accessibilityLabel(accessibility)
   }
 

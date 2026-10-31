@@ -139,6 +139,9 @@ struct ComposerTextView: NSViewRepresentable {
   @Binding var isFocused: Bool
   let history: [String]
   let onSend: () -> Void
+  /// Present when this field has its own microphone: a long Fn while the
+  /// caret sits here is refused and this asks the field to point at it.
+  var onMicrophoneRedirect: (() -> Void)? = nil
 
   func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -200,6 +203,7 @@ struct ComposerTextView: NSViewRepresentable {
     textView.onFocusChange = { [weak coordinator = context.coordinator] active in
       coordinator?.handleFocusChange(active)
     }
+    textView.onMicrophoneRedirect = onMicrophoneRedirect
 
     scrollView.documentView = textView
     scrollView.onContentWidthChange = {
@@ -223,6 +227,9 @@ struct ComposerTextView: NSViewRepresentable {
     textView.onFocusChange = { [weak coordinator = context.coordinator] active in
       coordinator?.handleFocusChange(active)
     }
+    let hadMicrophone = textView.onMicrophoneRedirect != nil
+    textView.onMicrophoneRedirect = onMicrophoneRedirect
+    if hadMicrophone != (onMicrophoneRedirect != nil) { textView.notifyFocusChange() }
 
     let font = ComposerTextLayout.composerFont(size: ComposerControlMetrics.textSize * textScale)
     if textView.font != font {
@@ -410,10 +417,11 @@ private final class ComposerScrollView: NSScrollView {
   }
 }
 
-private final class ComposerNativeTextView: NSTextView {
+private final class ComposerNativeTextView: NSTextView, ComposerMicrophoneRedirecting {
   var placeholder = ""
   var onKeyDown: ((NSEvent) -> Bool)?
   var onFocusChange: ((Bool) -> Void)?
+  var onMicrophoneRedirect: (() -> Void)?
   private var isFirstResponderActive = false
   private var isWindowKey = false
   private var windowObservers: [NSObjectProtocol] = []
@@ -431,12 +439,16 @@ private final class ComposerNativeTextView: NSTextView {
       isWindowKey = false
       clearWindowObservers()
       onFocusChange?(false)
+      ComposerCaretOwnership.shared.report(self, focused: false)
     }
   }
 
   isolated deinit {
     clearWindowObservers()
+    ComposerCaretOwnership.shared.release(ObjectIdentifier(self))
   }
+
+  func showMicrophoneRedirect() { onMicrophoneRedirect?() }
 
   private func clearWindowObservers() {
     for observer in windowObservers {
@@ -491,6 +503,8 @@ private final class ComposerNativeTextView: NSTextView {
 
   func notifyFocusChange() {
     onFocusChange?(isFocusedInKeyWindow)
+    ComposerCaretOwnership.shared.report(
+      self, focused: isFocusedInKeyWindow && onMicrophoneRedirect != nil)
   }
 
   var isFocusedInKeyWindow: Bool {

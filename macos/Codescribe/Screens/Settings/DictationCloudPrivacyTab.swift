@@ -37,7 +37,7 @@ struct DictationCloudPrivacyTab: View {
         RuntimeRow(
           key: CloudPrivacyCopy.savedConsentLabel, value: consentValue,
           tint: false,
-          trailing: .mark(model.cloudConsentGranted ? .good : .warn))
+          trailing: model.cloudConsentGranted ? .mark(.good) : .none)
       }
       .clipShape(.rect(cornerRadius: CSRadius.composer))
       .overlay {
@@ -51,8 +51,8 @@ struct DictationCloudPrivacyTab: View {
       Button(CloudPrivacyCopy.configureCloudServices) {
         SettingsDeepLink.shared.present(.keys, anchor: .providersCloudTranscription)
       }
-      .buttonStyle(.link)
-      .font(CSFont.ui(12, .medium))
+      .font(SettingsScale.controlLabel)
+      .csLink()
     }
   }
 

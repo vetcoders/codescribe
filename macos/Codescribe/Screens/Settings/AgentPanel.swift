@@ -137,9 +137,13 @@ private struct LLMLaneEditor: View {
           title: String(
             localized: "Formatting engine",
             comment: "Settings row: Apple on this Mac or the cloud provider formats the text"),
-          subtitle: String(
-            localized: "Apple on your Mac first; this provider steps in when Apple fails.",
-            comment: "Formatting engine row explanation"),
+          subtitle: model.settings.formatOnDevice
+            ? String(
+              localized: "Apple on your Mac first; this provider steps in when Apple fails.",
+              comment: "Formatting engine row explanation")
+            : String(
+              localized: "This provider formats Correction and Smart.",
+              comment: "Formatting engine row explanation when the cloud provider is selected"),
           inset: 10
         ) {
           Picker(
@@ -325,14 +329,16 @@ private struct LLMLaneEditor: View {
     ) {
       VStack(alignment: .leading, spacing: CSSpace.sm) {
         HStack(spacing: CSSpace.sm) {
+          // A made-up sentence, never a real take: the placeholder shows on
+          // every screenshot and screen share (Founder smoke, 2026-10-26, A7).
           TextField(
             String(
-              localized: "tak jeśli nie stosuje się zaleceń dokumentacji…",
-              comment: "Formatting test placeholder: a raw unpunctuated transcript"),
+              localized: "e.g. meet at nine tomorrow then send me the notes",
+              comment: "Formatting test placeholder: a neutral raw unpunctuated transcript"),
             text: $probeSample, axis: .vertical
           )
           .lineLimit(1...4)
-          .settingsInputChrome(isFocused: false)
+          .settingsInputChrome(isFocused: false, prose: true)
           .accessibilityLabel("Formatting test text")
           Button {
             model.testFormatting(sample: probeSample)

@@ -1071,7 +1071,11 @@ mod tests {
         })).await.expect("file replay must join");
     }
 
+    // Generic PCM replay has no capture identity/calibration. Keep this
+    // historical private probe explicit; calibrated acceptance uses the
+    // recorded-session replay card rather than a default profile.
     #[tokio::test]
+    #[ignore = "private PCM probe needs authenticated capture setup; use codescribe replay SESSION for calibrated acceptance"]
     async fn forensic_saved_pcm_produces_authenticated_projection() {
         if std::env::var_os("CODESCRIBE_APPLE_STT_BRIDGE").is_none() {
             let installed =

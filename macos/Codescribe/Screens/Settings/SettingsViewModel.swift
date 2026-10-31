@@ -162,6 +162,20 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
   }
 
+  /// Explanation of the selected level, separate from its compact name.
+  var summary: String {
+    switch self {
+    case .off:
+      return String(localized: "Keeps the transcript without AI formatting.")
+    case .correction:
+      return String(localized: "Corrects spelling and punctuation while keeping your wording.")
+    case .smart:
+      return String(localized: "Edits the transcript for clarity while keeping its meaning.")
+    case .max:
+      return String(localized: "Uses the Agent model and prompt for the dictated request.")
+    }
+  }
+
   init?(storedValue: String?) {
     switch storedValue {
     case "off", "raw": self = .off
@@ -194,12 +208,24 @@ enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
     return "px-\(size)"
   }
   var visibleName: String {
-    guard let size else {
+    switch self {
+    case .off:
       return String(
         localized: "settings.holdBadge.size.off", defaultValue: "Off",
         comment: "Hold badge size: the badge is disabled")
+    case .four:
+      return String(
+        localized: "settings.holdBadge.size.small", defaultValue: "Small",
+        comment: "Hold badge size: the small indicator")
+    case .eight:
+      return String(
+        localized: "settings.holdBadge.size.medium", defaultValue: "Medium",
+        comment: "Hold badge size: the medium indicator")
+    case .twelve:
+      return String(
+        localized: "settings.holdBadge.size.large", defaultValue: "Large",
+        comment: "Hold badge size: the large indicator")
     }
-    return "\(size)px"
   }
   var size: UInt32? {
     switch self {
@@ -364,7 +390,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .creator:
-      return String(localized: "Creator", comment: "Settings section: first-run setup and basics")
+      return String(
+        localized: "Creator",
+        comment:
+          "Settings section: general settings (language, appearance, permissions, formatting)")
     case .shortcuts: return String(localized: "Hotkeys", comment: "Settings section")
     case .keys:
       return String(localized: "Providers", comment: "Settings section: AI provider accounts")
@@ -920,7 +949,7 @@ struct LLMLaneModel {
     // Presence, not validity: a stored key may still be rejected, and a
     // signed-in account does not open model discovery (`discoveryDescription`).
     if runtime.accountAuth {
-      return String(localized: "Account saved", comment: "Lane auth: stored account identity")
+      return String(localized: "Saved", comment: "Lane auth: stored account identity")
     }
     if runtime.keyPresent {
       return String(localized: "Stored API key", comment: "Lane auth: an API key is stored")
@@ -983,6 +1012,8 @@ struct LLMLaneModel {
       // account token (`core/llm/model_discovery.rs`, `bridge/src/config.rs`),
       // so the list's access says nothing about whether requests using a
       // separately stored account will be accepted.
+      // With a stored account the model is still entered by hand: the account
+      // never opens the list, so one sentence covers both cases.
       return String(
         localized: "The model list needs an API key. You can enter a model ID by hand.")
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
@@ -2085,14 +2116,14 @@ final class SettingsViewModel: ObservableObject {
   @discardableResult
   func addMcpServer(
     name: String, command: String, args: [String],
-    endpoint: String = "", token: String = ""
+    endpoint: String = "", token: String = "", oauth: Bool = false
   ) -> MCPAddFailure? {
     guard let mcpAdmin else { return nil }
     do {
       try mcpAdmin.addServer(
         CsMcpServerInput(
           name: name, command: command, args: args, enabled: true,
-          endpoint: endpoint, authRef: "", token: token
+          endpoint: endpoint, authRef: "", token: token, oauth: oauth
         )
       )
       reloadMcpServers()
@@ -2109,7 +2140,7 @@ final class SettingsViewModel: ObservableObject {
   /// fields. An empty token retains the existing Keychain reference.
   func updateMcpServer(
     _ server: CsMcpServer, command: String, args: [String],
-    endpoint: String, token: String
+    endpoint: String, token: String, oauth: Bool = false
   ) -> MCPAddFailure? {
     guard let mcpAdmin else { return nil }
     do {
@@ -2117,7 +2148,8 @@ final class SettingsViewModel: ObservableObject {
         name: server.name,
         input: CsMcpServerInput(
           name: server.name, command: command, args: args, enabled: server.enabled,
-          endpoint: endpoint, authRef: endpoint.isEmpty ? "" : server.authRef, token: token))
+          endpoint: endpoint, authRef: endpoint.isEmpty ? "" : server.authRef, token: token,
+          oauth: oauth))
       invalidateMcpTest(server.name)
       reloadMcpServers()
       refreshAgentStatus()
@@ -2126,6 +2158,66 @@ final class SettingsViewModel: ObservableObject {
       let failure = MCPAddFailure(error)
       lastError = failure.detail
       return failure
+    }
+  }
+
+  /// Servers with an OAuth sign-in in flight (browser roundtrip pending).
+  @Published private(set) var mcpAuthorizationPending: Set<String> = []
+  /// Last sign-in outcome per server, shown under the row.
+  @Published var mcpAuthNotices: [String: String] = [:]
+
+  /// OAuth sign-in for a remote MCP server — the same two-phase shape as
+  /// provider accounts: `start` binds the loopback listener and returns the
+  /// authorize URL, Swift opens the browser, then the await roundtrip runs
+  /// off the main actor. The result refreshes the row — no restart.
+  func authorizeMcpServer(_ server: CsMcpServer) {
+    guard let mcpAdmin, !mcpAuthorizationPending.contains(server.name) else { return }
+    mcpAuthorizationPending.insert(server.name)
+    mcpAuthNotices[server.name] = nil
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { self.mcpAuthorizationPending.remove(server.name) }
+      do {
+        let started = try await mcpAdmin.startMcpSignIn(
+          name: server.name, endpoint: server.endpoint)
+        guard let authUrl = started.authUrl, let url = URL(string: authUrl) else {
+          self.mcpAuthNotices[server.name] = String(localized: "Sign-in could not start.")
+          return
+        }
+        NSWorkspace.shared.open(url)
+        let login = try await mcpAdmin.awaitMcpSignIn(
+          name: server.name,
+          // Same cap as provider accounts: OAuth browser roundtrip + 2FA.
+          timeoutSeconds: 300
+        )
+        self.mcpAuthNotices[server.name] = Self.mcpSignInNotice(login)
+        if login.signedIn {
+          self.invalidateMcpTest(server.name)
+          self.reloadMcpServers()
+          self.refreshAgentStatus()
+        }
+      } catch {
+        self.lastError = error.userFacingMessage
+      }
+    }
+  }
+
+  /// The bridge sends a wire `status` + propagated `detail`, never a sentence
+  /// (LOCALIZATION_LEDGER.md §4) — the sentence is composed and localized here.
+  private static func mcpSignInNotice(_ result: CsMcpSignInResult) -> String? {
+    switch result.status {
+    case "signed_in":
+      return String(localized: "Signed in — the connector now sends the OAuth token.")
+    case "timeout":
+      return String(localized: "Sign-in was not completed in time. Try again.")
+    case "superseded":
+      return String(localized: "Another sign-in replaced this one.")
+    case "failed":
+      return result.detail.isEmpty
+        ? String(localized: "Sign-in failed.")
+        : String(localized: "Sign-in failed: \(result.detail)")
+    default:
+      return nil
     }
   }
 
@@ -2160,7 +2252,8 @@ final class SettingsViewModel: ObservableObject {
         input: CsMcpServerInput(
           name: server.name, command: server.command,
           args: server.args, enabled: !server.enabled,
-          endpoint: server.endpoint, authRef: server.authRef, token: ""
+          endpoint: server.endpoint, authRef: server.authRef, token: "",
+          oauth: server.oauth
         )
       )
       invalidateMcpTest(server.name)
@@ -2507,6 +2600,10 @@ final class SettingsViewModel: ObservableObject {
     if lane == .assistive { return llmLane(lane).availabilityDescription }
     if FormattingPolicyOption(storedValue: settings.formattingLevel) == .off {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
+    }
+    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .max {
+      return String(
+        localized: "Max uses the Agent model. This lane is not required for readiness.")
     }
     if settings.formatOnDevice {
       // The engine row above already says Apple runs first; this line only
@@ -2956,6 +3053,26 @@ final class SettingsViewModel: ObservableObject {
     } catch {
       lastError = error.userFacingMessage
     }
+  }
+
+  /// Option double-tap timing. Each write reloads the hotkey atomics, so the
+  /// next tap already uses the new value.
+  func setDoubleTapIntervalMs(_ ms: UInt64) {
+    guard settings.doubleTapIntervalMs != ms else { return }
+    settings.doubleTapIntervalMs = ms
+    persist("DOUBLE_TAP_INTERVAL_MS", String(ms))
+  }
+
+  func setTapMaxMs(_ ms: UInt64) {
+    guard settings.tapMaxMs != ms else { return }
+    settings.tapMaxMs = ms
+    persist("TAP_MAX_MS", String(ms))
+  }
+
+  func setTypingQuietMs(_ ms: UInt64) {
+    guard settings.typingQuietMs != ms else { return }
+    settings.typingQuietMs = ms
+    persist("TYPING_QUIET_MS", String(ms))
   }
 
   func setToggleSilenceSeconds(_ seconds: Float) {
@@ -3530,6 +3647,99 @@ final class SettingsViewModel: ObservableObject {
     let bounded = min(30, max(0, seconds))
     if engine == nil { settings.agentSendHoldSec = UInt32(bounded) }
     persist("CODESCRIBE_AGENT_SEND_HOLD_SEC", String(bounded))
+  }
+
+  // MARK: - Voice conversation with an agent (`agent_channel`)
+
+  var agentChannelPolicy: AgentChannelPolicy {
+    AgentChannelPolicy(rawValue: settings.agentChannelSessionPolicy) ?? .continuous
+  }
+
+  /// A policy brings its own voiceless close (never for a conversation, 30 s
+  /// for one message); the slider can change it afterwards.
+  func setAgentChannelPolicy(_ policy: AgentChannelPolicy) {
+    if engine == nil {
+      settings.agentChannelSessionPolicy = policy.rawValue
+      settings.agentChannelVoicelessCloseSec = policy.defaultVoicelessCloseSec
+    }
+    persistMany([
+      CsConfigEntry(key: "AGENT_CHANNEL_SESSION_POLICY", value: policy.rawValue),
+      CsConfigEntry(
+        key: "AGENT_CHANNEL_VOICELESS_CLOSE_SEC", value: String(policy.defaultVoicelessCloseSec)),
+    ])
+  }
+
+  /// The pause that sends; the env override wins over the stored value and
+  /// the row says so.
+  var agentChannelSendPauseOverridden: Bool {
+    settings.agentChannelSendPauseSource == "env_override"
+  }
+
+  var agentChannelSendPauseSlider: Double {
+    get { Double(settings.agentChannelSendPauseSec) }
+    set {
+      let seconds = min(15, max(1, (newValue * 2).rounded() / 2))
+      if engine == nil { settings.agentChannelSendPauseSec = Float(seconds) }
+      persist("AGENT_CHANNEL_SEND_PAUSE_SEC", String(format: "%.1f", seconds))
+    }
+  }
+
+  /// Slider stops: `Never`, then 15 s … 10 min.
+  static let agentChannelVoicelessStops: [UInt64] = [0, 15, 30, 45, 60, 90, 120, 180, 300, 600]
+
+  var agentChannelVoicelessSlider: Double {
+    get {
+      let current = settings.agentChannelVoicelessCloseSec
+      let stops = Self.agentChannelVoicelessStops
+      let index = stops.firstIndex { $0 >= current } ?? stops.count - 1
+      return Double(index)
+    }
+    set {
+      let stops = Self.agentChannelVoicelessStops
+      let index = min(stops.count - 1, max(0, Int(newValue.rounded())))
+      let seconds = stops[index]
+      if engine == nil { settings.agentChannelVoicelessCloseSec = seconds }
+      persist("AGENT_CHANNEL_VOICELESS_CLOSE_SEC", String(seconds))
+    }
+  }
+
+  var agentChannelFinish: AgentChannelFinish {
+    AgentChannelFinish(rawValue: settings.agentChannelSegmentFinish) ?? .lightPlus
+  }
+
+  func setAgentChannelFinish(_ finish: AgentChannelFinish) {
+    if engine == nil { settings.agentChannelSegmentFinish = finish.rawValue }
+    persist("AGENT_CHANNEL_SEGMENT_FINISH", finish.rawValue)
+  }
+
+  var agentChannelFormatWaitSeconds: Binding<Int> {
+    Binding(
+      get: { Int(self.settings.agentChannelFormatWaitSec) },
+      set: { seconds in
+        let bounded = min(10, max(1, seconds))
+        if self.engine == nil { self.settings.agentChannelFormatWaitSec = UInt64(bounded) }
+        self.persist("AGENT_CHANNEL_FORMAT_WAIT_SEC", String(bounded))
+      })
+  }
+
+  var agentAutoSendDelaySeconds: Binding<Int> {
+    Binding(
+      get: { Int(self.settings.agentAutoSendDelaySec) },
+      set: { seconds in
+        let bounded = min(30, max(1, seconds))
+        if self.engine == nil { self.settings.agentAutoSendDelaySec = UInt64(bounded) }
+        self.persist("AGENT_AUTO_SEND_DELAY_SEC", String(bounded))
+      })
+  }
+
+  var agentTakeVoicelessEndSeconds: Binding<Int> {
+    Binding(
+      get: { Int(self.settings.agentTakeVoicelessEndSec) },
+      set: { seconds in
+        let bounded = min(120, max(10, seconds))
+        if self.engine == nil { self.settings.agentTakeVoicelessEndSec = UInt64(bounded) }
+        self.persist("AGENT_TAKE_VOICELESS_END_SEC", String(bounded))
+      })
   }
 
   // MARK: - Agent workspace roots (list_projects tool)

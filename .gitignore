@@ -111,3 +111,4 @@ tests/fixtures/w2_05_local_suspicious_span.json
 libraxis_probe.jsonl
 /.playwright-mcp
 docs/settings.json
+!CLAUDE.md

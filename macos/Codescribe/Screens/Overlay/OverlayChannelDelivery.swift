@@ -50,6 +50,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private var deliveryOrigins: [String: DeliveryOrigin] = [:]
     private var captureAttachmentStages: [String: OverlayCaptureAttachmentReceipt]? = nil
     private var captureAttachmentCommits: [String: OverlayCaptureAttachmentCommit]? = nil
+    private var activeCaptureDocuments: [String: String]? = nil
     private var sessionOpenedAt: [String: String] = [:]
     private(set) var panelFocusResults: [String: OverlayPanelFocusResult] = [:]
     private struct DeliveryOrigin: Codable {
@@ -63,7 +64,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       case seals, sessions, endedSessions, receipts, sealOrder, seenSeals, messages, messageOrder
       case captureRecipients, historicalOwners, playbackByReply, retiredPlaybackTickets,
         messageSequence, messageRevisions, deliveryOrigins, captureAttachmentStages,
-        captureAttachmentCommits, revision, sessionOpenedAt,
+        captureAttachmentCommits, activeCaptureDocuments, revision, sessionOpenedAt,
         destinationVersion, holdProjectionVersion, speechProjectionVersion
     }
     private static let historyLimit = 256
@@ -118,6 +119,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let openedAt = row["opened_at"] as? String,
         let state = row["state"] as? String
       {
+        if state == "segment_sealed" {
+          endedSessions.insert(sessionID)
+          return
+        }
         // A delayed close from an earlier take cannot close its successor.
         if state != "open", let current = sessions[channel], current.openedAt != openedAt {
           return
@@ -428,11 +433,15 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     /// This is read-only bus evidence for a paste waiting for that first segment.
     var activeCaptureAttachmentSessions: [OverlayCaptureAttachmentSession] {
       sessions.compactMap { channel, session in
-        guard session.isOpen, !endedSessions.contains(session.sessionID),
-          let recipients = captureRecipients[session.sessionID], !recipients.isEmpty
+        let documentID = activeCaptureDocuments?[session.sessionID] ?? session.sessionID
+        guard session.isOpen,
+          !endedSessions.contains(session.sessionID),
+          !endedSessions.contains(documentID),
+          let recipients = captureRecipients[documentID] ?? captureRecipients[session.sessionID],
+          !recipients.isEmpty
         else { return nil }
         return OverlayCaptureAttachmentSession(
-          id: session.sessionID, channel: channel, openedAt: session.openedAt,
+          id: documentID, channel: channel, openedAt: session.openedAt,
           recipientIDs: recipients.map(\.id).sorted())
       }
     }
@@ -797,13 +806,17 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           for origin in deliveryOrigins.values
           where origin.channel == channel
             && origin.captureSession != session
+            && Self.channelSessionID(of: origin.captureSession) != session
           {
-            guard let previous = sessionOpenedAt[origin.captureSession],
+            guard
+              let previous = sessionOpenedAt[origin.captureSession]
+                ?? sessionOpenedAt[Self.channelSessionID(of: origin.captureSession)],
               let earlier = Self.openingDate(previous), earlier < opened
             else { continue }
             finalizeRefused(session: origin.captureSession)
           }
         } else {
+          endedSessions.insert(session)
           // A predecessor close can settle its own receipt, never its successor's.
           finalizeRefused(
             session: session, holdUntil: (row["hold_until"] as? String).flatMap(Self.openingDate))
@@ -822,6 +835,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let entries = row["recipients"] as? [[String: Any]]
       {
         captureRecipients[session] = entries.compactMap(OverlayConversationOwner.init(row:))
+        var documents = activeCaptureDocuments ?? [:]
+        documents[Self.channelSessionID(of: session)] = session
+        activeCaptureDocuments = documents
         for owner in captureRecipients[session] ?? [] { historicalOwners[owner.id] = owner }
         return
       }
@@ -940,6 +956,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       if let entries = row["recipients"] as? [[String: Any]] {
         owners = entries.compactMap(OverlayConversationOwner.init(row:))
         captureRecipients[session] = owners
+        var documents = activeCaptureDocuments ?? [:]
+        documents[Self.channelSessionID(of: session)] = session
+        activeCaptureDocuments = documents
       } else {
         owners = captureRecipients[session] ?? []
       }
@@ -997,7 +1016,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       // with its hold deadline) finishes a channel take; a phrase terminal
       // inside the take is still a revision of the same document.
       let closingRow = sealedRow && row["terminal"] as? Bool == true
-      let channelClosed = endedSessions.contains(session) || closingRow
+      let channelClosed =
+        endedSessions.contains(session)
+        || endedSessions.contains(Self.channelSessionID(of: session))
+        || closingRow
       let terminal =
         evidence
         ? row["reducer_action"] as? String == "record_ledger_terminal_seal" || closingRow
@@ -1073,7 +1095,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         // (2026-10-23, 08:02:19 open, 08:02:29 first words, 08:02:30 reply).
         emittedAt: channelMessage != nil
           ? messages[key]?.emittedAt ?? row["emitted_at"] as? String ?? sessionOpenedAt[session]
-            ?? ""
+            ?? sessionOpenedAt[Self.channelSessionID(of: session)] ?? ""
           : row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
         deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
       let captureFinished =
@@ -1348,18 +1370,21 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
     private mutating func finalizeRefused(session: String, holdUntil: Date? = nil) {
       for (id, origin) in deliveryOrigins
-      where origin.captureSession == session {
+      where origin.captureSession == session
+        || Self.channelSessionID(of: origin.captureSession) == session
+      {
+        let originSession = origin.captureSession
         guard var message = messages[id] else { continue }
         message.deliverySealed = true
         message.holdUntil = holdUntil ?? message.holdUntil
-        if origin.terminal && Self.channelMessageKey(session) == nil {
+        if origin.terminal && Self.channelMessageKey(originSession) == nil {
           messages[id] = message
           continue
         }
         let phase =
-          Self.channelMessageKey(session) != nil
-          ? Self.identity(["channel-message-seal", session])
-          : Self.identity(["coverage-refused-seal", session, origin.documentIndex])
+          Self.channelMessageKey(originSession) != nil
+          ? Self.identity(["channel-message-seal", originSession])
+          : Self.identity(["coverage-refused-seal", originSession, origin.documentIndex])
         for index in message.recipients.indices {
           let owner = message.recipients[index].owner
           let delivery = Self.identity([
@@ -1373,13 +1398,13 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         }
         message.captureState = .finished
         messages[id] = message
-        if Self.channelMessageKey(session) != nil,
+        if Self.channelMessageKey(originSession) != nil,
           seenSeals.insert(origin.audience + "\0" + phase).inserted
         {
           sealOrder &+= 1
           seals[origin.audience] = Seal(
             phaseID: phase, audience: origin.audience, order: sealOrder,
-            captureSessionID: session, recipientIDs: message.recipients.map { $0.owner.id })
+            captureSessionID: originSession, recipientIDs: message.recipients.map { $0.owner.id })
         }
       }
     }
@@ -1485,9 +1510,25 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         seenSeals = Set(seals.values.map { $0.audience + "\0" + $0.phaseID })
       }
       if endedSessions.count > Self.historyLimit * 2 {
-        let retained = Set(sessions.values.map(\.sessionID))
+        let retained = Set(
+          sessions.values.map(\.sessionID) + deliveryOrigins.values.map(\.captureSession))
         endedSessions = endedSessions.intersection(retained)
       }
+      if let documents = activeCaptureDocuments, documents.count > Self.historyLimit {
+        let keep = Set(sessions.values.map(\.sessionID))
+        activeCaptureDocuments = documents.filter { keep.contains($0.key) }
+      }
+    }
+
+    static func channelSessionID(of session: String) -> String {
+      guard let range = session.range(of: "-s", options: .backwards) else { return session }
+      let prefix = String(session[..<range.lowerBound])
+      let suffix = session[range.upperBound...]
+      guard prefix.hasPrefix("agent-channel-"), !suffix.isEmpty,
+        suffix.allSatisfy({ $0.isASCII && $0.isNumber }),
+        let index = UInt32(suffix), index >= 1
+      else { return session }
+      return prefix
     }
 
     private static func captureSampleRateHz(_ row: [String: Any]) -> Double? {
@@ -1615,25 +1656,58 @@ struct OverlayUserReplyReference: Codable, Equatable, Sendable {
 
   init(message: OverlayConversationMessage) {
     messageID = message.id
-    author = String(
-      (message.kind == .user
-        ? String(localized: "You") : message.owner?.name ?? String(localized: "Agent")).prefix(128))
+    let fallbackAuthor =
+      message.kind == .user ? String(localized: "You") : String(localized: "Agent")
+    let rawAuthor =
+      message.kind == .user ? fallbackAuthor : (message.owner?.name ?? fallbackAuthor)
+    let sanitizedAuthor = Self.stripControlScalars(from: rawAuthor)
+    let normalizedAuthor =
+      sanitizedAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? fallbackAuthor : sanitizedAuthor
+    let boundedAuthor = Self.scalarBoundedPrefix(of: normalizedAuthor, maxScalars: 128)
+    author =
+      boundedAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? fallbackAuthor : boundedAuthor
     let body = message.bodyText
     let context =
       body.isEmpty
       ? (message.attachments ?? []).map(\.name).joined(separator: ", ") : body
-    text = String(context.prefix(512))
+    text = Self.scalarBoundedPrefix(of: context, maxScalars: 512)
   }
 
   init?(row: [String: Any]) {
     guard let id = row["message_id"] as? String, !id.isEmpty, id.utf8.count <= 512,
-      !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-      let author = row["author"] as? String, !author.isEmpty, author.count <= 128,
-      let text = row["text"] as? String, text.count <= 512
+      !id.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
+      let author = row["author"] as? String,
+      !author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      author.unicodeScalars.count <= 128,
+      !author.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
+      let text = row["text"] as? String, text.unicodeScalars.count <= 512
     else { return nil }
     self.messageID = id
     self.author = author
     self.text = text
+  }
+
+  /// Truncate on whole extended grapheme clusters while keeping Unicode scalar
+  /// count within `bus-demux.py` `validate_user_reply_reference` limits.
+  private static func scalarBoundedPrefix(of value: String, maxScalars: Int) -> String {
+    guard maxScalars > 0 else { return "" }
+    if value.unicodeScalars.count <= maxScalars { return value }
+    var usedScalars = 0
+    var end = value.startIndex
+    for character in value {
+      let count = character.unicodeScalars.count
+      if usedScalars + count > maxScalars { break }
+      usedScalars += count
+      end = value.index(after: end)
+    }
+    return String(value[..<end])
+  }
+
+  private static func stripControlScalars(from value: String) -> String {
+    let filtered = value.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }
+    return String(String.UnicodeScalarView(filtered))
   }
 }
 

@@ -1,9 +1,48 @@
 ---
 name: codescribe
-description: Connect this Claude Code, Junie or OMP conversation to a named Codescribe channel, receive messages without a typed nudge and answer through its attached voice. Use for /codescribe or a request to listen to Codescribe.
+description: Connect the current local Codex, Claude Code, Junie or OMP conversation to Codescribe, read complete owned messages, ACK and reply. Use for Codescribe setup or a request to listen to Codescribe.
 ---
 
 # Codescribe — native conversation (Claude Code, Junie and OMP)
+
+## Codex local desktop
+
+In Codex use the root OpenAI plugin and its explicitly selected `hooks/codex.json`.
+Review and trust that hook definition in the client's normal hook flow. Installing
+the plugin alone does not trust hooks. The trusted host hook supplies a private
+`session_capability`. Pass it in **every** Codescribe MCP call; never print it in
+chat, copy it to another session or pass it to subagents. A parent hook identity
+does not give a child its own mailbox. Missing capability is a setup error;
+never manufacture it from a UUID or fall back to a Terminal attach.
+
+For setup, obtain the requested name and a free channel (1–9), then call
+`codescribe_connect(session_capability, name, channel)`. Do not pass a provider,
+session ID, executable path or BUS path: those come from the trusted local scope.
+Keep voice/vendor defaults unless explicitly requested. An occupied channel stays
+with its current owner. A connection receipt is not live reception acceptance.
+
+For each notification: `codescribe_read` → read the full envelope and attachment
+pointers → `codescribe_ack` with only returned `read_delivery_ids` → act/reply.
+Drain to an empty read. For `codescribe_reply`, pass `delivery_id`, `text` and a
+stable 24-hex `request_id` for this reply. Default is text only. Set `speak=true`
+only when the Founder requests voice, and report the terminal playback receipt
+separately. Retry with the **same** request ID; `uncertain` must never replay.
+
+The canonical follower uses `codex queue` for local idle wake. Do not use Claude
+`asyncRewake`, a polling loop, another runner or a second wake owner. Inspect
+`codescribe_status` for a verified follower, binding and queue disposition.
+Accepted is not proof of a new turn. A rejected queue leaves pending readable.
+Work/Cloud idle wake is outside this plugin's declared variant; never route a
+cloud conversation through an invented local thread. `codescribe_detach` releases
+only this session and retains its history. Disable/uninstall removes tool access;
+detach explicitly first when ending tenure. SessionEnd revokes the capability,
+retaining the lease, cursor, pending and ACKs. Resume issues a new capability for
+the same lease; compact retains it. Re-read after an MCP restart before ACKing.
+
+These Codex instructions take precedence over the other-client identity, waiter
+and automatic voice instructions below. The remaining sections apply to their
+named clients. See `docs/OPENAI_PLUGIN.md` in the source distribution for install,
+upgrade, rollback and evidence limits.
 
 In Claude Code, use `provider=claude-code` and the real session_id injected by
 the native Codescribe session hook. In OMP (oh-my-pi), use `provider=omp` and

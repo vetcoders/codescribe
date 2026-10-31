@@ -1,12 +1,15 @@
 //! Fn+digit agent channel.
 //!
 //! The channel is not a dictation take and not a `State` variant. It subscribes
-//! to the shared capture, seals on a repeated digit, on its own utterance
-//! silence, or after `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` following a measured
-//! speech end, and stamps `audience` on Bus rows. A session a previous process left
-//! open is sealed as an orphan when the controller starts. Paste and the
-//! overlay document stay off. The hold badge is the preview; `ChannelHudState`
-//! is the open-mic fact the overlay paints from.
+//! to the shared capture and stamps `audience` on Bus rows. A repeated digit
+//! hangs up. A measured pause of `agent_channel.send_pause_sec` after heard
+//! voice sends the message; under `session_policy: continuous` (default) the
+//! session keeps listening and the next message starts on the same capture
+//! subscription, under `end_after_message` the session ends as a hang-up does.
+//! A session a previous process left open is sealed as an orphan when the
+//! controller starts. Paste and the overlay document stay off. The hold badge
+//! is the preview; `ChannelHudState` is the open-mic fact the overlay paints
+//! from.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -14,11 +17,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Result, anyhow};
 use codescribe_core::config::Config;
+use codescribe_core::config::agent_channel::{ChannelSegmentFinish, ChannelSessionPolicy};
 use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
 use codescribe_core::pipeline::contracts::EventSink;
 use serde::Deserialize;
@@ -58,6 +62,117 @@ pub(crate) fn channel_presentation_emitter(
         settings.seal_ledger_enabled(),
         settings.apple_live_enabled(),
     )
+}
+
+/// Document of message `index` of a continuous channel session. The label
+/// prefix keeps `agent-channel-<digit>-`, so followers map it to its channel.
+pub(crate) fn segment_document_id(label: &str, index: u32) -> String {
+    format!("{label}-s{index}")
+}
+
+/// One message's transcript document: its bus session, ledger and reducer.
+pub(crate) struct ChannelSegmentParts {
+    pub transcript_bus: Arc<TranscriptBus>,
+    pub ledger: Arc<StdMutex<AcousticLedger>>,
+    pub emitter: Arc<PresentationEmitter>,
+    pub last_text: Arc<StdMutex<String>>,
+    pub refinement_warnings: Arc<StdMutex<Vec<String>>>,
+}
+
+/// Open the bus document, ledger and reducer of one channel message. Its
+/// recipients receipt names the document, so the closing seal can publish.
+/// Speech edges reach the session clock only while this message is current.
+pub(crate) fn open_channel_segment(
+    source: &ChannelSegmentSource,
+    document_id: String,
+    speech_clock: &Arc<StdMutex<ChannelSpeechClock>>,
+    digit: u8,
+) -> ChannelSegmentParts {
+    let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+    let last_text = Arc::new(StdMutex::new(String::new()));
+    let refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
+    let bus = Arc::new(TranscriptBus::open_with_paths(
+        TranscriptSession {
+            session_id: document_id.clone(),
+            mode: TranscriptMode::Agent,
+            has_latched_target: false,
+            latched_target_is_self: false,
+            audience: Some(source.audience.clone()),
+            badge_only: true,
+        },
+        source.bus.clone(),
+        source.broadcast_buses.clone(),
+    ));
+    bus.record_channel_receipt(&serde_json::json!({
+        "schema": "codescribe.channel-recipients.v1", "kind": "channel_recipients",
+        "session_id": document_id, "channel": digit.to_string(),
+        "audience": source.audience, "recipients": source.recipients,
+        "emitted_at": chrono::Utc::now().to_rfc3339(),
+    }));
+    let cursor_token = source.cursor_token;
+    let voice_clock = Arc::clone(speech_clock);
+    let generation = Arc::clone(&source.generation);
+    let own_generation = generation.load(Ordering::SeqCst);
+    let heard_text = Arc::clone(&last_text);
+    let emitter = Arc::new(
+        channel_presentation_emitter(
+            Arc::clone(&bus),
+            Arc::clone(&ledger),
+            &source.runtime_settings,
+        )
+        .with_apple_preview_observer(Arc::new(move |text| {
+            hold_badge::update_transcript(cursor_token, text);
+        }))
+        .with_speech_activity_observer(Arc::new(move |evidence| {
+            if generation.load(Ordering::SeqCst) != own_generation {
+                return;
+            }
+            let mut clock = voice_clock
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            clock.speech.observe(evidence, SystemTime::now());
+            clock.publish_now(SystemTime::now());
+        }))
+        .with_cursor_observer(Arc::new(move |projection| {
+            hold_badge::update_voice_state(cursor_token, projection.voice);
+            crate::os::tray_status::set_tray_voice_for_take(cursor_token, projection.voice);
+            if projection.text.trim().is_empty() {
+                return;
+            }
+            projection
+                .text
+                .clone_into(&mut heard_text.lock().unwrap_or_else(|error| error.into_inner()));
+        }))
+        .with_sentence_pause_sec(
+            source
+                .runtime_settings
+                .values()
+                .light_plus_sentence_pause_sec,
+        )
+        .with_refinement_warnings(Arc::clone(&refinement_warnings)),
+    );
+    ChannelSegmentParts {
+        transcript_bus: bus,
+        ledger,
+        emitter,
+        last_text,
+        refinement_warnings,
+    }
+}
+
+/// Light+ for a channel message: terminal punctuation only. Every earlier
+/// byte stays as committed; text that already ends a sentence is unchanged.
+pub(crate) fn light_plus_terminal_punctuation(committed: &str) -> String {
+    let trimmed = committed.trim_end();
+    match trimmed.chars().last() {
+        Some(last) if last.is_alphanumeric() => {
+            let mut text = trimmed.to_string();
+            text.push('.');
+            text.push_str(&committed[trimmed.len()..]);
+            text
+        }
+        _ => committed.to_string(),
+    }
 }
 
 /// Broadcast marker for Fn+0. Followers treat it as addressed to them.
@@ -381,16 +496,109 @@ impl ChannelSpeechClock {
     }
 }
 
-#[derive(Debug, Clone)]
+/// How one channel session sends and ends, frozen at open from its immutable
+/// runtime snapshot. The HUD countdown and the seal both read it, so the
+/// pause shown is the pause that sends; `toggle_silence_sec` is not an input.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ChannelTiming {
+    pub policy: ChannelSessionPolicy,
+    /// `None`: automatic sending is off (`CODESCRIBE_CHANNEL_AUTOSEAL_SECS=0`).
+    pub send_pause: Option<Duration>,
+    /// `None`: the session never ends for lack of voice.
+    pub voiceless_close: Option<Duration>,
+    pub finish: ChannelSegmentFinish,
+    pub format_wait: Duration,
+}
+
+impl ChannelTiming {
+    pub(crate) fn from_settings(
+        settings: &codescribe_core::config::RuntimeSettingsSnapshot,
+    ) -> Self {
+        Self::from_config(settings.values().agent_channel)
+    }
+
+    pub(crate) fn from_config(
+        channel: codescribe_core::config::agent_channel::AgentChannelConfig,
+    ) -> Self {
+        Self {
+            policy: channel.session_policy,
+            send_pause: channel.send_pause(),
+            voiceless_close: channel.voiceless_close(),
+            finish: channel.segment_finish,
+            format_wait: channel.format_wait(),
+        }
+    }
+
+    /// Whole seconds for the `autoseal_secs` row and HUD fields; `0` = off.
+    pub(crate) fn autoseal_secs(&self) -> u64 {
+        self.send_pause
+            .map_or(0, |pause| pause.as_secs_f64().ceil() as u64)
+    }
+
+    /// The utterance silence the channel's own epoch gate runs with.
+    pub(crate) fn utterance_silence_sec(&self) -> f32 {
+        self.send_pause.map_or(
+            codescribe_core::config::agent_channel::DEFAULT_SEND_PAUSE_SEC,
+            |pause| pause.as_secs_f32(),
+        )
+    }
+
+    pub(crate) fn continuous(&self) -> bool {
+        self.policy == ChannelSessionPolicy::Continuous
+    }
+}
+
+impl Default for ChannelTiming {
+    fn default() -> Self {
+        Self::from_config(codescribe_core::config::agent_channel::AgentChannelConfig::default())
+    }
+}
+
+/// What a live session needs to start its next message on the same capture
+/// subscription: destinations, recipients, and the frozen generation.
+#[derive(Debug)]
+pub(crate) struct ChannelSegmentSource {
+    pub label: String,
+    pub audience: String,
+    pub bus: PathBuf,
+    pub broadcast_buses: Vec<PathBuf>,
+    pub recipients: Vec<serde_json::Value>,
+    pub runtime_settings: Arc<codescribe_core::config::RuntimeSettingsSnapshot>,
+    pub language: Option<String>,
+    pub cursor_token: u64,
+    /// The current message; speech edges of a draining earlier message are
+    /// not this message's clock.
+    pub generation: Arc<AtomicU64>,
+}
+
+#[derive(Clone)]
 pub(crate) struct OpenAgentChannel {
     pub subscriber: CaptureSubscriberId,
     pub audience: String,
+    /// Utterance silence of the channel's epoch gate: the send pause.
     pub silence_sec: f32,
     pub provider: Option<String>,
     pub provider_session_id: Option<String>,
     pub opened_at: SystemTime,
     pub speech_clock: Arc<StdMutex<ChannelSpeechClock>>,
+    /// The current message's document (bus session, ledger, archive). Equal
+    /// to [`Self::channel_session_id`] for the first message of a
+    /// one-message session; `<label>-s<n>` for a continuous session.
     pub session_id: Option<String>,
+    /// Identity of the `channel_session` open and sealed rows.
+    pub channel_session_id: Option<String>,
+    /// When the current message's capture started.
+    pub segment_opened_at: SystemTime,
+    /// Messages this session has started, the current one included.
+    pub segment_index: u32,
+    pub timing: ChannelTiming,
+    /// `None` for `AttachedOnly`, which runs no transcription.
+    pub segment_source: Option<Arc<ChannelSegmentSource>>,
+    /// The current message's reducer, for its one formatter pass.
+    pub emitter: Option<Arc<PresentationEmitter>>,
+    /// Resolves when the previous message of this session was delivered, so
+    /// a slow formatter never reorders messages.
+    pub delivery_turn: Arc<StdMutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
     /// How this channel was opened.
     pub mode: ChannelOpenMode,
     /// Dedicated channel bus; `None` writes receipts to the shared bus.
@@ -424,6 +632,7 @@ fn cohort_members(
                 digit: *digit,
                 channel: digit.to_string(),
                 audience: open.audience.clone(),
+                // The live capture: the current message's document.
                 session_id: open.session_id.clone()?,
                 provider: open.provider.clone(),
                 provider_session_id: open.provider_session_id.clone(),
@@ -529,14 +738,6 @@ fn utterance_silence_ms(seconds: f32) -> u32 {
     }
 }
 
-pub const CHANNEL_AUTOSEAL_SECS_ENV: &str = "CODESCRIBE_CHANNEL_AUTOSEAL_SECS";
-/// Hands-free delivery boundary: five seconds of silence after heard voice
-/// seal the utterance, deliver it and end the channel session — one press,
-/// one message (Founder decision 2026-10-26). This replaces the reopen half
-/// of voice seal cc6c8248 (2026-09-29), under which the channel reopened
-/// immediately and kept the microphone live after every delivery.
-pub const CHANNEL_AUTOSEAL_SECS_DEFAULT: u64 = 5;
-
 pub fn channel_open_label(digit: u8) -> String {
     format!("CHANNEL {digit} OPEN — mic is live")
 }
@@ -597,20 +798,6 @@ pub(crate) fn channel_refusal_feedback(
     }
 }
 
-/// Silence threshold that seals and delivers the current channel utterance.
-///
-/// Unset or unreadable values use [`CHANNEL_AUTOSEAL_SECS_DEFAULT`]. `0`
-/// disables the threshold: a zero value would seal on the opening tick.
-pub fn channel_autoseal_secs() -> u64 {
-    match std::env::var(CHANNEL_AUTOSEAL_SECS_ENV) {
-        Ok(value) => value
-            .trim()
-            .parse()
-            .unwrap_or(CHANNEL_AUTOSEAL_SECS_DEFAULT),
-        Err(_) => CHANNEL_AUTOSEAL_SECS_DEFAULT,
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChannelOpenMode {
     /// Acquire, start the device when idle, and run the channel session.
@@ -624,8 +811,9 @@ pub(crate) enum ChannelOpenMode {
 /// Why a channel session ended: the `reason` of its one `sealed` receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChannelSealReason {
-    /// Utterance silence delivered the words and ended the session, as a
-    /// hang-up does; nothing reopens it (Founder decision 2026-10-26).
+    /// Utterance silence delivered the words. A one-message session ends as
+    /// a hang-up does; a continuous one only seals that message. Also the
+    /// voiceless close.
     Silence,
     /// Fn+digit pressed again: the Founder hung up and nothing reopens it.
     Hangup,
@@ -645,6 +833,36 @@ impl ChannelSealReason {
             Self::Orphan => "orphan",
         }
     }
+}
+
+/// `state` of the row that closes one message of a continuous session. A
+/// follower delivers that message on it; the session's open microphone, its
+/// `opened_at` and the overlay's open channel are not this row's to close.
+pub(crate) const SEGMENT_SEALED_STATE: &str = "segment_sealed";
+
+/// What a settled close ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChannelClose {
+    /// The whole session: its last message and the session's `sealed` row.
+    Session,
+    /// One message of a continuous session; the session keeps listening.
+    Message,
+}
+
+/// What a closed message settles from: its released capture, its retention
+/// lease, the bus it falls back to, and its place in the delivery order.
+pub(crate) struct SettleTail {
+    pub shared_bus: PathBuf,
+    pub closed: Option<crate::audio::streaming_recorder::ClosedChannel>,
+    pub retained_capture:
+        Option<Arc<codescribe_core::state::history::audio_retention::CaptureLease>>,
+    pub order: DeliveryOrder,
+}
+
+/// Delivery order of one session's messages: wait for `prior`, signal `done`.
+pub(crate) struct DeliveryOrder {
+    pub prior: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub done: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// The one writer of a channel session's `sealed` row, for every reason.
@@ -1147,14 +1365,8 @@ impl RecordingController {
         if let Some(open) = channels.remove(&digit) {
             self.publish_cohort(&channels);
             drop(channels);
-            self.close_open_channel(
-                digit,
-                open,
-                ChannelSealReason::Hangup,
-                shared_bus,
-                channel_autoseal_secs(),
-            )
-            .await?;
+            self.close_open_channel(digit, open, ChannelSealReason::Hangup, shared_bus)
+                .await?;
             return Ok(false);
         }
 
@@ -1185,137 +1397,125 @@ impl RecordingController {
             }
         }
         let runtime_settings = self.runtime_settings_arc().await;
-        let silence_sec = runtime_settings.values().toggle_silence_sec;
+        let timing = ChannelTiming::from_settings(&runtime_settings);
+        let silence_sec = timing.utterance_silence_sec();
 
         let opened_at = SystemTime::now();
         let speech_clock = Arc::new(StdMutex::new(ChannelSpeechClock::default()));
-        let last_text = Arc::new(StdMutex::new(String::new()));
-        let refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
+        let last_text;
+        let refinement_warnings;
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = recorder_guard.as_mut().ok_or_else(|| {
             anyhow!("agent channel refused: recording controller has no recorder")
         })?;
 
-        let (subscriber, session_id, transcript_bus, capture_ledger) = match mode {
-            #[cfg(test)]
-            ChannelOpenMode::AttachedOnly => {
-                (recorder.register_channel_feed().id, None, None, None)
-            }
-            ChannelOpenMode::Live => {
-                let session_label = format!("agent-channel-{digit}-{}", uuid::Uuid::new_v4());
-                super::begin_audio_capture(
-                    &session_label,
-                    runtime_settings.values().audio_retention,
-                )
-                .await?;
-                let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
-                let capture_ledger = Some(Arc::clone(&ledger));
-                let sentence_pause = runtime_settings.values().light_plus_sentence_pause_sec;
-                let language = runtime_settings
-                    .values()
-                    .whisper_language
-                    .whisper_hint()
-                    .map(str::to_string);
-                let bus = Arc::new(TranscriptBus::open_with_paths(
-                    TranscriptSession {
-                        session_id: session_label.clone(),
-                        mode: TranscriptMode::Agent,
-                        has_latched_target: false,
-                        latched_target_is_self: false,
-                        audience: Some(bound.audience.clone()),
-                        badge_only: true,
-                    },
-                    bound
-                        .bus
-                        .clone()
-                        .unwrap_or_else(|| shared_bus.to_path_buf()),
-                    broadcast_buses,
-                ));
-                bus.record_channel_receipt(&serde_json::json!({
-                    "schema": "codescribe.channel-recipients.v1", "kind": "channel_recipients",
-                    "session_id": session_label, "channel": digit.to_string(),
-                    "audience": bound.audience, "recipients": recipients,
-                    "emitted_at": chrono::Utc::now().to_rfc3339(),
-                }));
-                let transcript_bus = Some(Arc::clone(&bus));
-                // The Pointer Indicator knob rules every badge path: Settings
-                // promises "Base size; Agent mode stays proportionally larger",
-                // so the channel dot is the persisted base times the Assistive
-                // multiplier, and Off means no dot while the channel listens.
-                let badge_settings = Config::load_without_keychain();
-                if badge_settings.hold_indicator {
-                    hold_badge::show_hold_badge_with_config(
-                        hold_badge::HoldBadgeConfig::from_mode_with_base_diameter(
-                            BadgeMode::Assistive,
-                            f64::from(badge_settings.hold_badge_size),
-                        ),
-                    );
-                }
-                let cursor_token = hold_badge::take_token();
-                let open_label = channel_open_label(digit);
-                hold_badge::update_transcript(cursor_token, &open_label);
-                let voice_clock = Arc::clone(&speech_clock);
-                let heard_text = Arc::clone(&last_text);
-                let emitter = Arc::new(
-                    channel_presentation_emitter(bus, Arc::clone(&ledger), &runtime_settings)
-                        .with_apple_preview_observer(Arc::new(move |text| {
-                            hold_badge::update_transcript(cursor_token, text);
-                        }))
-                        .with_speech_activity_observer(Arc::new(move |evidence| {
-                            let mut clock = voice_clock
-                                .lock()
-                                .unwrap_or_else(|error| error.into_inner());
-                            clock.speech.observe(evidence, SystemTime::now());
-                            clock.publish_now(SystemTime::now());
-                        }))
-                        .with_cursor_observer(Arc::new(move |projection| {
-                            hold_badge::update_voice_state(cursor_token, projection.voice);
-                            crate::os::tray_status::set_tray_voice_for_take(
-                                cursor_token,
-                                projection.voice,
-                            );
-                            if projection.text.trim().is_empty() {
-                                return;
-                            }
-                            projection.text.clone_into(
-                                &mut heard_text.lock().unwrap_or_else(|error| error.into_inner()),
-                            );
-                        }))
-                        .with_sentence_pause_sec(sentence_pause)
-                        .with_refinement_warnings(Arc::clone(&refinement_warnings)),
-                );
-                let sink: Arc<dyn EventSink> = emitter;
-                // The first channel may own the physical microphone without a
-                // dictation take. Install its measured level tap before the
-                // recorder freezes the callback; a later subscriber keeps the
-                // tap already feeding the shared capture.
-                let opens_physical_capture = !recorder.recorder.is_active();
-                Self::configure_level_broadcast(recorder, self.event_broadcast.clone());
-                match recorder
-                    .begin_channel_session(
-                        session_label.clone(),
-                        runtime_settings,
-                        sink,
-                        language,
-                        silence_sec,
-                        ledger,
+        let (subscriber, session_id, document_id, transcript_bus, capture_ledger, emitter, source) =
+            match mode {
+                #[cfg(test)]
+                ChannelOpenMode::AttachedOnly => {
+                    last_text = Arc::new(StdMutex::new(String::new()));
+                    refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
+                    (
+                        recorder.register_channel_feed().id,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                     )
-                    .await
-                {
-                    Ok(id) => (id, Some(session_label), transcript_bus, capture_ledger),
-                    Err(error) => {
-                        if opens_physical_capture {
-                            recorder.set_level_callback(None);
+                }
+                ChannelOpenMode::Live => {
+                    let session_label = format!("agent-channel-{digit}-{}", uuid::Uuid::new_v4());
+                    // A continuous session names each message's document;
+                    // a one-message session's only document is the session.
+                    let document_id = if timing.continuous() {
+                        segment_document_id(&session_label, 1)
+                    } else {
+                        session_label.clone()
+                    };
+                    super::begin_audio_capture(
+                        &document_id,
+                        runtime_settings.values().audio_retention,
+                    )
+                    .await?;
+                    // The Pointer Indicator knob rules every badge path: Settings
+                    // promises "Base size; Agent mode stays proportionally larger",
+                    // so the channel dot is the persisted base times the Assistive
+                    // multiplier, and Off means no dot while the channel listens.
+                    let badge_settings = Config::load_without_keychain();
+                    if badge_settings.hold_indicator {
+                        hold_badge::show_hold_badge_with_config(
+                            hold_badge::HoldBadgeConfig::from_mode_with_base_diameter(
+                                BadgeMode::Assistive,
+                                f64::from(badge_settings.hold_badge_size),
+                            ),
+                        );
+                    }
+                    let cursor_token = hold_badge::take_token();
+                    hold_badge::update_transcript(cursor_token, &channel_open_label(digit));
+                    let source = Arc::new(ChannelSegmentSource {
+                        label: session_label.clone(),
+                        audience: bound.audience.clone(),
+                        bus: bound
+                            .bus
+                            .clone()
+                            .unwrap_or_else(|| shared_bus.to_path_buf()),
+                        broadcast_buses,
+                        recipients,
+                        runtime_settings: Arc::clone(&runtime_settings),
+                        language: runtime_settings
+                            .values()
+                            .whisper_language
+                            .whisper_hint()
+                            .map(str::to_string),
+                        cursor_token,
+                        generation: Arc::new(AtomicU64::new(1)),
+                    });
+                    let parts =
+                        open_channel_segment(&source, document_id.clone(), &speech_clock, digit);
+                    last_text = Arc::clone(&parts.last_text);
+                    refinement_warnings = Arc::clone(&parts.refinement_warnings);
+                    let sink: Arc<dyn EventSink> = parts.emitter.clone();
+                    // The first channel may own the physical microphone without a
+                    // dictation take. Install its measured level tap before the
+                    // recorder freezes the callback; a later subscriber keeps the
+                    // tap already feeding the shared capture.
+                    let opens_physical_capture = !recorder.recorder.is_active();
+                    Self::configure_level_broadcast(recorder, self.event_broadcast.clone());
+                    match recorder
+                        .begin_channel_session(
+                            document_id.clone(),
+                            Arc::clone(&runtime_settings),
+                            sink,
+                            source.language.clone(),
+                            silence_sec,
+                            Arc::clone(&parts.ledger),
+                        )
+                        .await
+                    {
+                        Ok(id) => (
+                            id,
+                            Some(session_label),
+                            Some(document_id),
+                            Some(parts.transcript_bus),
+                            Some(parts.ledger),
+                            Some(parts.emitter),
+                            Some(source),
+                        ),
+                        Err(error) => {
+                            if opens_physical_capture {
+                                recorder.set_level_callback(None);
+                            }
+                            super::finish_audio_capture(Some(document_id.as_str()));
+                            if channels.is_empty() {
+                                hold_badge::hide_hold_badge();
+                            }
+                            return Err(error);
                         }
-                        super::finish_audio_capture(Some(session_label.as_str()));
-                        if channels.is_empty() {
-                            hold_badge::hide_hold_badge();
-                        }
-                        return Err(error);
                     }
                 }
-            }
-        };
+            };
 
         self.follow_cohort(digit, transcript_bus.as_ref());
         let audience = bound.audience.clone();
@@ -1334,7 +1534,14 @@ impl RecordingController {
                 provider_session_id: bound.provider_session_id,
                 opened_at,
                 speech_clock,
-                session_id,
+                session_id: document_id,
+                channel_session_id: session_id,
+                segment_opened_at: opened_at,
+                segment_index: 1,
+                timing,
+                segment_source: source,
+                emitter,
+                delivery_turn: Arc::new(StdMutex::new(None)),
                 mode,
                 bus: bound.bus,
                 last_text,
@@ -1374,7 +1581,7 @@ impl RecordingController {
                     channel: &digit.to_string(),
                     agent: &audience,
                     session_id: receipt_session.as_deref(),
-                    autoseal_secs: channel_autoseal_secs(),
+                    autoseal_secs: timing.autoseal_secs(),
                     opened_at,
                     utterance_silence_sec: silence_sec,
                     provider: receipt_provider.as_deref(),
@@ -1426,7 +1633,6 @@ impl RecordingController {
         open: OpenAgentChannel,
         reason: ChannelSealReason,
         shared_bus: &Path,
-        autoseal_secs: u64,
     ) -> Result<()> {
         let stopped_at = Instant::now();
         open.speech_clock
@@ -1441,6 +1647,11 @@ impl RecordingController {
         let live = matches!(open.mode, ChannelOpenMode::Live);
         let recorder = Arc::clone(&self.recorder);
         let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        let prior = open
+            .delivery_turn
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
         let settlement = async move {
             let closed = {
                 let mut recorder_guard = recorder.lock().await;
@@ -1466,10 +1677,13 @@ impl RecordingController {
                 digit,
                 open,
                 reason,
-                shared_bus,
-                autoseal_secs,
-                closed,
-                retained_capture,
+                ChannelClose::Session,
+                SettleTail {
+                    shared_bus,
+                    closed,
+                    retained_capture,
+                    order: DeliveryOrder { prior, done: None },
+                },
             )
             .await
         };
@@ -1481,14 +1695,7 @@ impl RecordingController {
                     tracing::warn!(%error, digit, "released channel terminal tail failed");
                 }
             });
-            {
-                let mut tails = self
-                    .closed_capture_tails
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                tails.retain(|task| !task.is_finished());
-                tails.push(task);
-            }
+            self.track_closed_capture_tail(task);
         } else {
             settlement.await?;
         }
@@ -1511,17 +1718,256 @@ impl RecordingController {
         Ok(())
     }
 
+    fn track_closed_capture_tail(&self, task: tokio::task::JoinHandle<()>) {
+        let mut tails = self
+            .closed_capture_tails
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        tails.retain(|task| !task.is_finished());
+        tails.push(task);
+    }
+
+    /// A continuous session's pause after heard voice: seal and deliver the
+    /// message, and start the next one on the same capture subscription. The
+    /// physical capture, the subscriber count and the session's open row stay
+    /// as they are; only the message's document, ledger and archive turn over.
+    /// The previous message settles in its own tail and never holds the
+    /// microphone or the next message.
+    async fn continue_channel_after_message(&self, digit: u8, shared_bus: &Path) -> Result<()> {
+        let mut channels = self.agent_channels.lock().await;
+        let Some(open) = channels.get_mut(&digit) else {
+            return Ok(());
+        };
+        let next_index = open.segment_index.saturating_add(1);
+        let next_opened_at = SystemTime::now();
+        let mut previous = open.clone();
+        previous.delivery_turn = Arc::new(StdMutex::new(None));
+        let closed = match open.segment_source.clone() {
+            Some(source) => {
+                let document_id = segment_document_id(&source.label, next_index);
+                super::begin_audio_capture(
+                    &document_id,
+                    source.runtime_settings.values().audio_retention,
+                )
+                .await?;
+                source.generation.fetch_add(1, Ordering::SeqCst);
+                let parts =
+                    open_channel_segment(&source, document_id.clone(), &open.speech_clock, digit);
+                let sink: Arc<dyn EventSink> = parts.emitter.clone();
+                let rotated = {
+                    let mut recorder_guard = self.recorder.lock().await;
+                    match recorder_guard.as_mut() {
+                        Some(recorder) => {
+                            recorder
+                                .rotate_channel_segment(
+                                    open.subscriber,
+                                    crate::audio::streaming_recorder::ChannelSessionSpec {
+                                        session_id: document_id.clone(),
+                                        runtime_settings: Arc::clone(&source.runtime_settings),
+                                        event_sink: sink,
+                                        language: source.language.clone(),
+                                        acoustic_ledger: Arc::clone(&parts.ledger),
+                                    },
+                                    open.silence_sec,
+                                )
+                                .await
+                        }
+                        None => Err(anyhow!("recording controller has no recorder")),
+                    }
+                };
+                let closed = match rotated {
+                    Ok(closed) => closed,
+                    Err(error) => {
+                        // The previous message is still current; the
+                        // session's close delivers it.
+                        super::finish_audio_capture(Some(document_id.as_str()));
+                        return Err(error);
+                    }
+                };
+                if let Some(bus) = &previous.transcript_bus {
+                    let cohort = Arc::clone(
+                        &self
+                            .agent_channel_cohort
+                            .read()
+                            .unwrap_or_else(|error| error.into_inner()),
+                    );
+                    bus.freeze_co_audience(cohort);
+                }
+                open.session_id = Some(document_id);
+                open.last_text = parts.last_text;
+                open.refinement_warnings = parts.refinement_warnings;
+                open.capture_ledger = Some(parts.ledger);
+                open.emitter = Some(parts.emitter);
+                open.transcript_bus = Some(parts.transcript_bus);
+                Some(closed)
+            }
+            None => {
+                open.last_text = Arc::new(StdMutex::new(String::new()));
+                open.refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
+                None
+            }
+        };
+        // The turned-over message delivers after the one before it; the next
+        // delivery of this session waits for it in turn.
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let prior = open
+            .delivery_turn
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .replace(done_rx);
+        let order = DeliveryOrder {
+            prior,
+            done: Some(done_tx),
+        };
+        open.segment_index = next_index;
+        open.segment_opened_at = next_opened_at;
+        {
+            let mut clock = open
+                .speech_clock
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            clock.speech = super::speech_clock::SpeechClock::default();
+            clock.publish_now(next_opened_at);
+        }
+        let follow = open.transcript_bus.clone();
+        // Co-audience names live captures; this one now has a new document.
+        self.publish_cohort(&channels);
+        drop(channels);
+        self.follow_cohort(digit, follow.as_ref());
+
+        let retained_capture = super::retainable_session_id(previous.session_id.as_deref())
+            .and_then(|id| {
+                codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
+            });
+        let live = matches!(previous.mode, ChannelOpenMode::Live);
+        let settlement = Self::settle_closed_channel(
+            digit,
+            previous,
+            ChannelSealReason::Silence,
+            ChannelClose::Message,
+            SettleTail {
+                shared_bus: shared_bus.to_path_buf(),
+                closed,
+                retained_capture,
+                order,
+            },
+        );
+        if live {
+            let task = tokio::spawn(async move {
+                if let Err(error) = settlement.await {
+                    tracing::warn!(%error, digit, "channel message settlement failed");
+                }
+            });
+            self.track_closed_capture_tail(task);
+            Ok(())
+        } else {
+            settlement.await
+        }
+    }
+
+    /// Finish one message before delivery (`agent_channel.segment_finish`).
+    /// Runs after the message's producer joined, so its reducer is terminal.
+    /// A formatter that does not land within `format_wait_sec`, fails, or is
+    /// refused as `stale_source` leaves the Light+ text, named on the row.
+    async fn finish_channel_message(
+        open: &OpenAgentChannel,
+        committed: Option<String>,
+    ) -> Option<crate::presentation::transcript_bus::ChannelDelivery> {
+        use crate::presentation::transcript_bus::ChannelDelivery;
+        let committed = committed?;
+        let light_plus = || light_plus_terminal_punctuation(&committed);
+        match open.timing.finish {
+            ChannelSegmentFinish::Off => Some(ChannelDelivery {
+                text: committed.clone(),
+                revision: "committed",
+                fallback: None,
+            }),
+            ChannelSegmentFinish::LightPlus => Some(ChannelDelivery {
+                text: light_plus(),
+                revision: "light_plus",
+                fallback: None,
+            }),
+            ChannelSegmentFinish::Formatter => {
+                let fallback = |reason| ChannelDelivery {
+                    text: light_plus(),
+                    revision: "light_plus",
+                    fallback: Some(reason),
+                };
+                let (Some(emitter), Some(source)) =
+                    (open.emitter.as_ref(), open.segment_source.as_ref())
+                else {
+                    return Some(fallback("no_formatter_authority"));
+                };
+                let Some(request) = emitter.terminal_formatter_request() else {
+                    return Some(fallback("no_terminal_document"));
+                };
+                let settings = &source.runtime_settings;
+                let policy = settings.formatting_policy();
+                let language = settings.values().whisper_language;
+                let formatted = tokio::time::timeout(
+                    open.timing.format_wait,
+                    codescribe_core::llm::ai_formatting::format_text_with_status_for_policy(
+                        &request.source_text,
+                        language.whisper_hint(),
+                        settings,
+                        None,
+                    ),
+                )
+                .await;
+                let Ok(result) = formatted else {
+                    tracing::info!(
+                        wait = ?open.timing.format_wait,
+                        "channel message formatter missed its budget; Light+ delivered"
+                    );
+                    return Some(fallback("formatter_timeout"));
+                };
+                match emitter.apply_formatter_revision(
+                    request.session_id,
+                    request.source_revision,
+                    policy,
+                    result,
+                ) {
+                    Ok(_) => match emitter
+                        .delivery_projection(policy, &request.source_text)
+                        .map(|projection| projection.rendered_text)
+                        .filter(|text| !text.trim().is_empty())
+                    {
+                        Some(text) => Some(ChannelDelivery {
+                            text,
+                            revision: "formatter",
+                            fallback: None,
+                        }),
+                        None => Some(fallback("stale_source")),
+                    },
+                    Err(refusal) => {
+                        tracing::info!(%refusal, "channel message formatter refused; Light+ delivered");
+                        use crate::presentation::emitter::UserRevisionRefusal;
+                        Some(fallback(match refusal {
+                            UserRevisionRefusal::StaleRevision { .. }
+                            | UserRevisionRefusal::SessionMismatch => "stale_source",
+                            UserRevisionRefusal::FormatterUnavailable => "formatter_unavailable",
+                            UserRevisionRefusal::FormatterNoop => "formatter_noop",
+                            _ => "formatter_failed",
+                        }))
+                    }
+                }
+            }
+        }
+    }
+
     async fn settle_closed_channel(
         digit: u8,
         open: OpenAgentChannel,
         reason: ChannelSealReason,
-        shared_bus: PathBuf,
-        autoseal_secs: u64,
-        closed: Option<crate::audio::streaming_recorder::ClosedChannel>,
-        retained_capture: Option<
-            Arc<codescribe_core::state::history::audio_retention::CaptureLease>,
-        >,
+        close: ChannelClose,
+        tail: SettleTail,
     ) -> Result<()> {
+        let SettleTail {
+            shared_bus,
+            closed,
+            retained_capture,
+            order,
+        } = tail;
         let stopped = match closed {
             Some(closed) => closed.finish().await.map(|(_, path)| path),
             None => Ok(None),
@@ -1570,15 +2016,28 @@ impl RecordingController {
                 )
             }
         };
-        // The producer joined above. Publish its final held snapshot before
-        // retention can yield and before any non-open channel receipt flushes it.
+        // The producer joined above. Finish the message (formatter work may
+        // run while an earlier message of this session is still settling),
+        // then wait for that earlier delivery so messages never reorder.
+        let delivery = match open.transcript_bus.as_ref() {
+            Some(bus) => Self::finish_channel_message(&open, bus.channel_closing_text()).await,
+            None => None,
+        };
+        let DeliveryOrder { prior, done } = order;
+        if let Some(prior) = prior {
+            let _ = prior.await;
+        }
+        // Publish the final held snapshot before retention can yield and
+        // before any non-open channel receipt flushes it.
         if let Some(bus) = open.transcript_bus.as_ref() {
             let settings = Config::load_startup_runtime_snapshot(false);
             if let Some(ledger) = open.capture_ledger.as_ref() {
                 let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
                 bus.observe_channel_publication_evidence(&ledger);
             }
-            if let Err(error) = bus.publish_channel_closed(settings.agent_send_hold_sec()) {
+            if let Err(error) =
+                bus.publish_channel_closed(settings.agent_send_hold_sec(), delivery.as_ref())
+            {
                 tracing::warn!(%error, digit, "channel seal snapshot persistence failed");
             }
         }
@@ -1588,7 +2047,7 @@ impl RecordingController {
         if let Some(path) = retained_audio.as_deref() {
             // W5 retention parity: a capture the channel owned joins the same
             // take store and retention rules as dictation. The path is the
-            // channel's own subscriber-scoped archive; the device spill spans
+            // message's own subscriber-scoped archive; the device spill spans
             // other sessions and never enters this retention. The slug carries
             // the heard words; a voiceless close archives as no-speech.
             let heard = open
@@ -1610,40 +2069,78 @@ impl RecordingController {
             )
             .await;
         }
-        let opened = crate::presentation::agent_ack::ChannelSessionLine {
+        let channel = digit.to_string();
+        let autoseal_secs = open.timing.autoseal_secs();
+        let session = crate::presentation::agent_ack::ChannelSessionLine {
             state: "open",
             reason: "opened",
-            channel: &digit.to_string(),
+            channel: &channel,
             agent: &open.audience,
-            session_id: open.session_id.as_deref(),
+            session_id: open.channel_session_id.as_deref(),
             autoseal_secs,
             opened_at: open.opened_at,
             utterance_silence_sec: open.silence_sec,
             provider: open.provider.as_deref(),
             provider_session_id: open.provider_session_id.as_deref(),
         };
-        let refinement_warnings = open
+        let mut refinement_warnings = open
             .refinement_warnings
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        let mut refinement_warnings = refinement_warnings;
         if let Some(detail) = failure_detail {
             refinement_warnings.push(detail);
         }
-        let receipt = if let Some(bus) = open.transcript_bus.as_ref() {
-            bus.record_channel_receipt(&seal_receipt_line(reason, &opened, &refinement_warnings));
-            Ok(())
-        } else {
-            append_seal_receipt(
-                open.bus.as_deref().unwrap_or(&shared_bus),
+        let mut rows = Vec::new();
+        // A continuous session's message closes under its own document; a
+        // one-message session's document is the session and its seal closes both.
+        let message_document = open.session_id != open.channel_session_id;
+        if message_document {
+            let mut row = seal_receipt_line(
                 reason,
-                &opened,
+                &crate::presentation::agent_ack::ChannelSessionLine {
+                    session_id: open.session_id.as_deref(),
+                    opened_at: open.segment_opened_at,
+                    ..session
+                },
                 &refinement_warnings,
-            )
-        };
+            );
+            row["state"] = serde_json::json!(SEGMENT_SEALED_STATE);
+            row["loud"] = serde_json::json!(false);
+            row["channel_session_id"] = serde_json::json!(open.channel_session_id);
+            row["segment_index"] = serde_json::json!(open.segment_index);
+            if let Some(delivery) = &delivery {
+                row["delivered_revision"] = serde_json::json!(delivery.revision);
+            }
+            rows.push(row);
+        }
+        if close == ChannelClose::Session {
+            rows.push(seal_receipt_line(
+                reason,
+                &session,
+                if message_document {
+                    &[]
+                } else {
+                    &refinement_warnings
+                },
+            ));
+        }
+        let mut receipt = Ok(());
+        for row in &rows {
+            if let Some(bus) = open.transcript_bus.as_ref() {
+                bus.record_channel_receipt(row);
+            } else if let Err(error) = crate::presentation::agent_ack::append_json_line(
+                open.bus.as_deref().unwrap_or(&shared_bus),
+                row,
+            ) {
+                receipt = Err(error);
+            }
+        }
         super::finish_audio_capture(open.session_id.as_deref());
         drop(retained_capture);
+        if let Some(done) = done {
+            let _ = done.send(());
+        }
         Ok(receipt?)
     }
 
@@ -1664,7 +2161,8 @@ impl RecordingController {
         let channels = self.agent_channels.lock().await;
         let live: BTreeSet<String> = channels
             .values()
-            .filter_map(|open| open.session_id.clone())
+            .flat_map(|open| [open.channel_session_id.clone(), open.session_id.clone()])
+            .flatten()
             .collect();
         let mut buses = vec![shared_bus.to_path_buf()];
         if let Ok(binding) = load_binding(binding_file) {
@@ -1745,8 +2243,7 @@ impl RecordingController {
 
     pub(crate) async fn poll_channel_autoseal(&self, now: SystemTime, bus: &Path) -> Vec<u8> {
         let _serial = self.serial_lock.lock().await;
-        self.seal_channels_silent_for(now, bus, channel_autoseal_secs())
-            .await
+        self.seal_channels_silent_for(now, bus).await
     }
 
     /// Ordinary capture admission holds the controller's serial lock. Release
@@ -1766,13 +2263,7 @@ impl RecordingController {
         for (digit, channel) in open {
             let retained = channel.clone();
             if let Err(error) = self
-                .close_open_channel(
-                    digit,
-                    channel,
-                    ChannelSealReason::DictationHandoff,
-                    &bus,
-                    channel_autoseal_secs(),
-                )
+                .close_open_channel(digit, channel, ChannelSealReason::DictationHandoff, &bus)
                 .await
             {
                 let mut channels = self.agent_channels.lock().await;
@@ -1791,51 +2282,57 @@ impl RecordingController {
         }
     }
 
-    /// One press, one message (Founder decision 2026-10-26): silence after
-    /// heard voice seals and delivers the utterance and ends the channel
-    /// session through the same close a hang-up uses, so the capture is
-    /// released. Nothing reopens it; the next message is the next Fn+digit.
-    /// A channel that hears no voice ends the same way
-    /// [`VOICELESS_CLOSE_SECS`](super::speech_clock::VOICELESS_CLOSE_SECS) after it opened; agent playback into it does
-    /// not count. `0` in [`CHANNEL_AUTOSEAL_SECS_ENV`] turns both off.
-    pub(crate) async fn seal_channels_silent_for(
-        &self,
-        now: SystemTime,
-        bus: &Path,
-        secs: u64,
-    ) -> Vec<u8> {
+    /// The pause after heard voice (`agent_channel.send_pause_sec`, frozen in
+    /// each channel's timing when it opened) sends the message. Under
+    /// `end_after_message` the send also ends the session through the close a
+    /// hang-up uses, so the capture is released and the next message is the
+    /// next Fn+digit. Under `continuous` the session keeps its capture and its
+    /// open row; the next message starts on the same subscription. A session
+    /// that hears no voice for `voiceless_close_sec` since its current message
+    /// began ends either way; agent playback into it does not count. A send
+    /// pause of `0` (only via `CODESCRIBE_CHANNEL_AUTOSEAL_SECS`) turns both off.
+    pub(crate) async fn seal_channels_silent_for(&self, now: SystemTime, bus: &Path) -> Vec<u8> {
         let playback = crate::audio::tts_duck::channel_capture_should_drop();
-        let due: Vec<(u8, OpenAgentChannel)> = {
+        let (due, continuing) = {
             let mut channels = self.agent_channels.lock().await;
-            let digits: Vec<u8> = channels
-                .iter()
-                .filter(|(_, open)| {
-                    let mut clock = open
-                        .speech_clock
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    if playback {
-                        clock.speech.note_agent_playback(now);
+            let mut ending = Vec::new();
+            let mut continuing = Vec::new();
+            for (digit, open) in channels.iter() {
+                let mut clock = open
+                    .speech_clock
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if playback {
+                    clock.speech.note_agent_playback(now);
+                }
+                if clock.speech.silence_due(now, open.timing.send_pause) {
+                    if open.timing.continuous() {
+                        continuing.push(*digit);
+                    } else {
+                        ending.push(*digit);
                     }
-                    clock.speech.silence_due(now, secs)
-                        || clock.speech.voiceless_due(open.opened_at, now, secs)
-                })
-                .map(|(digit, _)| *digit)
-                .collect();
-            self.freeze_closing_cohort(digits.iter().filter_map(|digit| channels.get(digit)));
-            let due: Vec<(u8, OpenAgentChannel)> = digits
+                } else if clock.speech.voiceless_due(
+                    open.segment_opened_at,
+                    now,
+                    open.timing.voiceless_close,
+                ) {
+                    ending.push(*digit);
+                }
+            }
+            self.freeze_closing_cohort(ending.iter().filter_map(|digit| channels.get(digit)));
+            let due: Vec<(u8, OpenAgentChannel)> = ending
                 .into_iter()
                 .filter_map(|digit| channels.remove(&digit).map(|open| (digit, open)))
                 .collect();
             if !due.is_empty() {
                 self.publish_cohort(&channels);
             }
-            due
+            (due, continuing)
         };
         let mut sealed = Vec::new();
         for (digit, open) in due {
             if let Err(error) = self
-                .close_open_channel(digit, open, ChannelSealReason::Silence, bus, secs)
+                .close_open_channel(digit, open, ChannelSealReason::Silence, bus)
                 .await
             {
                 tracing::warn!(%error, digit, "channel auto-seal could not close the capture");
@@ -1843,11 +2340,35 @@ impl RecordingController {
             }
             sealed.push(digit);
         }
+        for digit in continuing {
+            match self.continue_channel_after_message(digit, bus).await {
+                Ok(()) => sealed.push(digit),
+                Err(error) => {
+                    // The message cannot turn over: end the session instead
+                    // of leaving its pause due forever.
+                    tracing::warn!(%error, digit, "channel message rotation failed; ending session");
+                    let open = {
+                        let mut channels = self.agent_channels.lock().await;
+                        self.freeze_closing_cohort(channels.get(&digit));
+                        let open = channels.remove(&digit);
+                        self.publish_cohort(&channels);
+                        open
+                    };
+                    if let Some(open) = open
+                        && self
+                            .close_open_channel(digit, open, ChannelSealReason::Silence, bus)
+                            .await
+                            .is_ok()
+                    {
+                        sealed.push(digit);
+                    }
+                }
+            }
+        }
         sealed
     }
 
     pub async fn channel_hud_states(&self) -> Vec<ChannelHudState> {
-        let secs = channel_autoseal_secs();
         let ducking = crate::audio::tts_duck::channel_capture_should_drop();
         let channels = self.agent_channels.lock().await;
         let mut digits: Vec<u8> = channels.keys().copied().collect();
@@ -1861,14 +2382,14 @@ impl RecordingController {
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .speech
-                    .deadline(secs);
+                    .deadline(open.timing.send_pause);
                 Some(ChannelHudState {
                     open: true,
                     loud: true,
                     channel: digit.to_string(),
                     audience: open.audience.clone(),
                     label: channel_open_label(digit),
-                    autoseal_secs: secs,
+                    autoseal_secs: open.timing.autoseal_secs(),
                     autoseal_deadline,
                     tts_ducking: ducking,
                     opened_at: open.opened_at,
@@ -2202,7 +2723,9 @@ mod tests {
     async fn stamp_session(controller: &RecordingController, session: &str) -> SystemTime {
         let mut channels = controller.agent_channels.lock().await;
         let open = channels.get_mut(&3).expect("channel 3 is open");
+        // A one-message session: its document is the session.
         open.session_id = Some(session.to_string());
+        open.channel_session_id = Some(session.to_string());
         open.opened_at
     }
 
@@ -2245,7 +2768,7 @@ mod tests {
         let closing_bus = shared_bus.clone();
         let caller = tokio::spawn(async move {
             closing_controller
-                .close_open_channel(3, open, ChannelSealReason::Hangup, &closing_bus, 4)
+                .close_open_channel(3, open, ChannelSealReason::Hangup, &closing_bus)
                 .await
         });
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -2489,13 +3012,10 @@ mod tests {
                 .dispatch_agent_channel(digit, &binding, &shared_bus, ChannelOpenMode::AttachedOnly)
                 .await
                 .expect("open fixture channel");
-            controller
-                .agent_channels
-                .lock()
-                .await
-                .get_mut(&digit)
-                .expect("open")
-                .session_id = Some(format!("agent-channel-{digit}-handover"));
+            let mut channels = controller.agent_channels.lock().await;
+            let open = channels.get_mut(&digit).expect("open");
+            open.session_id = Some(format!("agent-channel-{digit}-handover"));
+            open.channel_session_id = open.session_id.clone();
         }
         let serial = controller.serial_lock.lock().await;
         controller
@@ -2893,25 +3413,61 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    fn channel_autoseal_knob_defaults_to_the_brief_and_zero_disables() {
-        struct Restore;
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                unsafe { std::env::remove_var(CHANNEL_AUTOSEAL_SECS_ENV) };
+    fn channel_timing_reads_the_send_pause_and_zero_disables() {
+        use codescribe_core::config::agent_channel::{AgentChannelConfig, ChannelSettingSource};
+        let default = ChannelTiming::default();
+        assert_eq!(default.autoseal_secs(), 5);
+        assert!(default.continuous());
+        assert_eq!(
+            default.voiceless_close, None,
+            "a conversation never ends for lack of voice"
+        );
+        let env = |seconds: f32| {
+            ChannelTiming::from_config(AgentChannelConfig {
+                send_pause_sec: seconds,
+                send_pause_source: ChannelSettingSource::EnvOverride,
+                voiceless_close_sec: 30,
+                ..AgentChannelConfig::default()
+            })
+        };
+        assert_eq!(env(15.0).autoseal_secs(), 15);
+        assert_eq!(env(4.5).autoseal_secs(), 5, "rounded up for the row");
+        assert_eq!(env(4.5).utterance_silence_sec(), 4.5);
+        assert_eq!(env(0.0).autoseal_secs(), 0);
+        assert_eq!(env(0.0).send_pause, None);
+        assert_eq!(env(0.0).voiceless_close, None, "0 turns both off");
+        assert_eq!(
+            env(40.0).autoseal_secs(),
+            40,
+            "the env number is kept as given"
+        );
+    }
+
+    /// The pre-continuous seal contract: one message per press, with the
+    /// former fixed voiceless close. `secs = 0` turns both off.
+    fn one_message_timing(secs: u64) -> ChannelTiming {
+        let send_pause = (secs > 0).then(|| Duration::from_secs(secs));
+        ChannelTiming {
+            policy: ChannelSessionPolicy::EndAfterMessage,
+            send_pause,
+            voiceless_close: send_pause.map(|_| Duration::from_secs(VOICELESS_CLOSE_SECS)),
+            ..ChannelTiming::default()
+        }
+    }
+
+    async fn seal_with(
+        controller: &RecordingController,
+        now: SystemTime,
+        bus: &Path,
+        secs: u64,
+    ) -> Vec<u8> {
+        {
+            let mut channels = controller.agent_channels.lock().await;
+            for open in channels.values_mut() {
+                open.timing = one_message_timing(secs);
             }
         }
-        let _restore = Restore;
-        unsafe { std::env::remove_var(CHANNEL_AUTOSEAL_SECS_ENV) };
-        assert_eq!(channel_autoseal_secs(), CHANNEL_AUTOSEAL_SECS_DEFAULT);
-        unsafe { std::env::set_var(CHANNEL_AUTOSEAL_SECS_ENV, "15") };
-        assert_eq!(channel_autoseal_secs(), 15);
-        unsafe { std::env::set_var(CHANNEL_AUTOSEAL_SECS_ENV, "0") };
-        assert_eq!(channel_autoseal_secs(), 0);
-        unsafe { std::env::set_var(CHANNEL_AUTOSEAL_SECS_ENV, "nope") };
-        assert_eq!(channel_autoseal_secs(), CHANNEL_AUTOSEAL_SECS_DEFAULT);
-        unsafe { std::env::set_var(CHANNEL_AUTOSEAL_SECS_ENV, " 40 ") };
-        assert_eq!(channel_autoseal_secs(), 40);
+        controller.seal_channels_silent_for(now, bus).await
     }
 
     #[tokio::test]
@@ -2941,37 +3497,27 @@ mod tests {
 
         let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
         let opened = snapshot.opened_at;
-        let still_open = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(10), &bus, 120)
-            .await;
+        let still_open = seal_with(&controller, opened + Duration::from_secs(10), &bus, 120).await;
         assert!(still_open.is_empty());
         assert!(controller.agent_channel_snapshot(3).await.is_some());
-        let disabled = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(10_000), &bus, 0)
-            .await;
+        let disabled = seal_with(&controller, opened + Duration::from_secs(10_000), &bus, 0).await;
         assert!(disabled.is_empty(), "0 turns automatic closing off");
         assert!(controller.channel_hud_states().await[0].loud);
 
         measured_speech_end(&snapshot, opened + Duration::from_secs(60));
-        let too_soon = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(179), &bus, 120)
-            .await;
+        let too_soon = seal_with(&controller, opened + Duration::from_secs(179), &bus, 120).await;
         assert!(
             too_soon.is_empty(),
             "silence is measured from the last voice"
         );
-        let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(180), &bus, 120)
-            .await;
+        let sealed = seal_with(&controller, opened + Duration::from_secs(180), &bus, 120).await;
         assert_eq!(sealed, vec![3]);
         assert!(controller.agent_channel_snapshot(3).await.is_none());
         assert!(controller.channel_hud_states().await.is_empty());
         let (count, channel, _) = controller.capture_subscriber_view().await;
         assert_eq!(count, 0);
         assert!(!channel);
-        let again = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(500), &bus, 120)
-            .await;
+        let again = seal_with(&controller, opened + Duration::from_secs(500), &bus, 120).await;
         assert!(again.is_empty());
 
         let text = std::fs::read_to_string(&bus).expect("sealed receipt");
@@ -3056,9 +3602,13 @@ mod tests {
         let opened = snapshot.opened_at;
         measured_speech_end(&snapshot, opened + Duration::from_secs(60));
 
-        let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(180), &shared_bus, 120)
-            .await;
+        let sealed = seal_with(
+            &controller,
+            opened + Duration::from_secs(180),
+            &shared_bus,
+            120,
+        )
+        .await;
         assert_eq!(sealed, vec![3]);
 
         assert!(
@@ -3101,9 +3651,7 @@ mod tests {
         let opened = snapshot.opened_at;
         measured_speech_end(&snapshot, opened + Duration::from_secs(1));
 
-        let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(6), &bus, 5)
-            .await;
+        let sealed = seal_with(&controller, opened + Duration::from_secs(6), &bus, 5).await;
         assert_eq!(sealed, vec![3]);
 
         assert!(
@@ -3114,9 +3662,7 @@ mod tests {
         let (count, channel, _) = controller.capture_subscriber_view().await;
         assert_eq!(count, 0, "the channel capture is released");
         assert!(!channel);
-        let later = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(600), &bus, 5)
-            .await;
+        let later = seal_with(&controller, opened + Duration::from_secs(600), &bus, 5).await;
         assert!(later.is_empty(), "no session is left to seal");
 
         let rows = bus_rows(&bus);
@@ -3140,17 +3686,17 @@ mod tests {
         let limit = Duration::from_secs(VOICELESS_CLOSE_SECS);
 
         let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-silent").await;
-        let too_soon = controller
-            .seal_channels_silent_for(opened + limit - Duration::from_secs(1), &shared_bus, 5)
-            .await;
+        let too_soon = seal_with(
+            &controller,
+            opened + limit - Duration::from_secs(1),
+            &shared_bus,
+            5,
+        )
+        .await;
         assert!(too_soon.is_empty(), "the limit counts from the open");
-        let disabled = controller
-            .seal_channels_silent_for(opened + limit * 10, &shared_bus, 0)
-            .await;
+        let disabled = seal_with(&controller, opened + limit * 10, &shared_bus, 0).await;
         assert!(disabled.is_empty(), "0 turns automatic closing off");
-        let sealed = controller
-            .seal_channels_silent_for(opened + limit, &shared_bus, 5)
-            .await;
+        let sealed = seal_with(&controller, opened + limit, &shared_bus, 5).await;
         assert_eq!(sealed, vec![3]);
         assert!(controller.agent_channel_snapshot(3).await.is_none());
         assert!(controller.channel_hud_states().await.is_empty());
@@ -3160,9 +3706,13 @@ mod tests {
 
         let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-spoken").await;
         hear_voice_at(&controller, opened + limit).await;
-        let heard = controller
-            .seal_channels_silent_for(opened + limit + Duration::from_secs(2), &shared_bus, 5)
-            .await;
+        let heard = seal_with(
+            &controller,
+            opened + limit + Duration::from_secs(2),
+            &shared_bus,
+            5,
+        )
+        .await;
         assert!(
             heard.is_empty(),
             "heard voice runs on the utterance silence"
@@ -3191,8 +3741,7 @@ mod tests {
         // has not passed, so no silence seal can precede the hang-up.
         hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
         assert!(
-            controller
-                .seal_channels_silent_for(opened + Duration::from_secs(2), &shared_bus, 5)
+            seal_with(&controller, opened + Duration::from_secs(2), &shared_bus, 5)
                 .await
                 .is_empty()
         );
@@ -3223,7 +3772,10 @@ mod tests {
         assert_eq!(row["loud"], false);
         assert_eq!(row["provider"], "codex");
         assert_eq!(row["provider_session_id"], "leon-session");
-        assert_eq!(row["autoseal_secs"], channel_autoseal_secs());
+        assert_eq!(
+            row["autoseal_secs"],
+            ChannelTiming::default().autoseal_secs()
+        );
         assert!(
             row["opened_at"]
                 .as_str()
@@ -3238,9 +3790,13 @@ mod tests {
         );
 
         // The hung-up session is gone: a later silence poll seals nothing.
-        let later = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(600), &shared_bus, 5)
-            .await;
+        let later = seal_with(
+            &controller,
+            opened + Duration::from_secs(600),
+            &shared_bus,
+            5,
+        )
+        .await;
         assert!(later.is_empty());
         assert_eq!(bus_rows(&channel_bus).len(), 1);
     }
@@ -3655,24 +4211,24 @@ mod tests {
 
         crate::audio::tts_duck::arm_for(Duration::from_secs(600));
         let playing = opened + limit + Duration::from_secs(10);
-        let during = controller
-            .seal_channels_silent_for(playing, &shared_bus, 5)
-            .await;
+        let during = seal_with(&controller, playing, &shared_bus, 5).await;
         crate::audio::tts_duck::clear();
         assert!(
             during.is_empty(),
             "a reply playing into the channel is not silence"
         );
-        let after = controller
-            .seal_channels_silent_for(playing + limit - Duration::from_secs(1), &shared_bus, 5)
-            .await;
+        let after = seal_with(
+            &controller,
+            playing + limit - Duration::from_secs(1),
+            &shared_bus,
+            5,
+        )
+        .await;
         assert!(
             after.is_empty(),
             "the limit counts again from the end of the playback"
         );
-        let sealed = controller
-            .seal_channels_silent_for(playing + limit, &shared_bus, 5)
-            .await;
+        let sealed = seal_with(&controller, playing + limit, &shared_bus, 5).await;
         assert_eq!(sealed, vec![3]);
         assert_eq!(sealed_rows(&bus_rows(&channel_bus)).len(), 1);
     }
@@ -3691,9 +4247,7 @@ mod tests {
 
         let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-first").await;
         hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
-        let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5)
-            .await;
+        let sealed = seal_with(&controller, opened + Duration::from_secs(6), &shared_bus, 5).await;
         assert_eq!(sealed, vec![3]);
         assert!(controller.agent_channel_snapshot(3).await.is_none());
 
@@ -3737,9 +4291,7 @@ mod tests {
         assert!(hud[0].open && hud[0].loud, "{hud:?}");
         assert_eq!(hud[0].audience, "Leon");
         hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
-        let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5)
-            .await;
+        let sealed = seal_with(&controller, opened + Duration::from_secs(6), &shared_bus, 5).await;
         assert_eq!(sealed, vec![3]);
         assert!(controller.agent_channel_snapshot(3).await.is_none());
         assert!(controller.channel_hud_states().await.is_empty());
@@ -4182,6 +4734,7 @@ mod capture_observer_channel_ownership_tests {
         let (_controller, _dir, mut open) = fixture().await;
         open.mode = ChannelOpenMode::Live;
         open.session_id = Some("owned-channel".into());
+        open.channel_session_id = open.session_id.clone();
         let ledger = Arc::new(StdMutex::new(ledger()));
         let original = ledger.lock().unwrap().layer_trail().to_vec();
         open.capture_ledger = Some(Arc::clone(&ledger));
@@ -4214,6 +4767,7 @@ mod capture_observer_channel_ownership_tests {
     async fn attached_channel_cannot_claim_live_evidence_even_if_a_handle_is_present() {
         let (_controller, _dir, mut open) = fixture().await;
         open.session_id = Some("owned-channel".into());
+        open.channel_session_id = open.session_id.clone();
         open.capture_ledger = Some(Arc::new(StdMutex::new(ledger())));
         let card = RecordingController::channel_take_observer(&open);
         assert_eq!(card.session_id, None);
@@ -4530,7 +5084,7 @@ mod channel_transcription_controls_tests {
                     "ledger={ledger_on} apple={apple_on}"
                 );
                 if !ledger_on {
-                    bus.publish_channel_closed(10).unwrap();
+                    bus.publish_channel_closed(10, None).unwrap();
                     let rows = std::fs::read_to_string(path).unwrap();
                     assert!(rows.contains("English survives."));
                     assert!(rows.contains("\"coverage\":\"direct\""));
@@ -4636,7 +5190,11 @@ mod channel_transcription_controls_tests {
             evidence: measured_clock_edge(2, 16_000, false),
         });
         assert_eq!(
-            clock.lock().unwrap().speech.deadline(5),
+            clock
+                .lock()
+                .unwrap()
+                .speech
+                .deadline(Some(Duration::from_secs(5))),
             None,
             "a foreign start cannot pair with this capture's end"
         );
@@ -4648,13 +5206,17 @@ mod channel_transcription_controls_tests {
                 .lock()
                 .unwrap()
                 .speech
-                .silence_due(t + Duration::from_secs(20), 5)
+                .silence_due(t + Duration::from_secs(20), Some(Duration::from_secs(5)))
         );
         emitter.on_event(&EngineEvent::SidebandEvidence {
             evidence: measured_clock_edge(4, 48_000, false),
         });
         assert_eq!(
-            clock.lock().unwrap().speech.deadline(5),
+            clock
+                .lock()
+                .unwrap()
+                .speech
+                .deadline(Some(Duration::from_secs(5))),
             Some(t + Duration::from_secs(5))
         );
         emitter.finish().await;

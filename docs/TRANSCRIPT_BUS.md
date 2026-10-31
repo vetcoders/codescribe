@@ -1643,15 +1643,33 @@ are the duplicate fence if that file is removed. Rows already on the bus are
 not rewritten.
 
 An open channel session also appends `codescribe.channel-session.v1` (`kind: channel_session`). `state: open` with `loud: true` means the microphone is
-live. `state: sealed` with `reason: silence` means
-`CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed after the capture's measured
-Silero speech-end edge, or the session measured no speech edge at all for
-30 s after it opened (time while an agent reply plays into it does not
-count). The words so far are delivered and the session ends as
-a hang-up does: its capture is released and nothing reopens it, so the next
-message is the next Fn+digit (one press, one message; Founder decision
-2026-10-26, which replaces the reopen half of voice seal `cc6c8248`). Text
-arrivals do not start or reset these clocks. While speech is measured
+live; it is written once per session and its `autoseal_secs` is the send
+pause frozen at open (`agent_channel.send_pause_sec`, or the env override
+`CODESCRIBE_CHANNEL_AUTOSEAL_SECS`, rounded up; `0` = off).
+
+Under `agent_channel.session_policy = continuous` (default) each message has
+its own document, `<session_id>-s<n>` (`n` from 1), with its own ledger,
+archive and transcript rows. When the send pause elapses after the
+message's measured Silero speech-end edge, the message closes on a
+`state: segment_sealed` row (`loud: false`, `session_id` = the message
+document, `opened_at` = the message's start, `channel_session_id`,
+`segment_index`, `delivered_revision`). A follower flushes that document on
+this row; the overlay ignores it because its `opened_at` is not the open
+session's. The capture subscription stays the same, the next message starts
+on it, and messages are delivered in order even when an earlier one is still
+being finished. The final held snapshot of each message carries
+`delivered_revision` (`committed` for `segment_finish = off`, `light_plus`,
+or `formatter`) and, when a formatter pass missed `format_wait_sec`, failed
+or was stale, `delivered_revision_fallback` (`formatter_timeout`,
+`formatter_failed`, `stale_source`, …) with the Light+ text delivered.
+
+`state: sealed` with `reason: silence` means a one-message session
+(`end_after_message`) reached its send pause, or any session measured no
+speech edge for `agent_channel.voiceless_close_sec` since its current
+message began (time while an agent reply plays into it does not count). The
+words so far are delivered and the session ends as a hang-up does: its
+capture is released and nothing reopens it. Text arrivals do not start or
+reset these clocks. While speech is measured
 active, or the speech-start/end pair after heard voice is incomplete, there
 is no automatic silence deadline; manual hang-up remains available. `0`
 disables both. `state: sealed` with `reason: hangup` means Fn+digit was
@@ -1718,7 +1736,13 @@ same ID, the exact provider/session/lease and a 24-lowercase-hex
 `tts_error` and `reason` describe failures without credentials. ACK, provider
 queue acceptance, reply text and speech completion remain separate facts.
 
-`cs-say` still attempts speech immediately after text publication. In the app,
+`cs-say` attempts speech immediately after text publication by default.
+`cs-bus --say TEXT --text-only --provider P --session S --reply-to DELIVERY_ID`
+uses the same canonical reply publication and ownership check without synthesis
+or playback. The local OpenAI plugin defaults to this text-only operation and
+uses the existing constrained connector's durable request receipt for retries;
+speech remains an explicit separate choice. See [OpenAI plugin](OPENAI_PLUGIN.md).
+In the app,
 Play is explicit for one reply; viewing a tab never synthesizes or replays.
 The installed helper's control interface is:
 

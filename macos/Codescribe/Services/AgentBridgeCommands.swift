@@ -784,13 +784,18 @@ extension RealAgentBridgeInstaller {
           .trimmingCharacters(in: .whitespacesAndNewlines)
           .components(separatedBy: "\n").last?
           .replacingOccurrences(of: "cs-bus: ", with: "") ?? ""
+        // The helper's refusal names the actual cause (stale epoch, closed
+        // capture, unreadable file); a bare generic sentence left the person
+        // guessing (Maciej, 2026-10-28). Show both.
+        let sentence = String(
+          localized:
+            "Files could not be attached to this live capture. Keep them in your draft and try again."
+        )
         throw NSError(
           domain: "Codescribe.BusAttachment", code: Int(process.terminationStatus),
           userInfo: [
-            NSLocalizedDescriptionKey: String(
-              localized:
-                "Files could not be attached to this live capture. Keep them in your draft and try again."
-            ),
+            NSLocalizedDescriptionKey: refusal.isEmpty
+              ? sentence : sentence + " (" + String(refusal.prefix(200)) + ")",
             NSDebugDescriptionErrorKey: refusal,
           ])
       }

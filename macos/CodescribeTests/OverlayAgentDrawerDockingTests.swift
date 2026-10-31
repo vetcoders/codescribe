@@ -49,10 +49,10 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       id: owner.id, channel: channel, name: name, owner: owner, messages: messages)
   }
 
-  private func hud(session: String) -> OverlayChannelHudProjection {
+  private func hud(session: String, frameDetected: Bool? = nil) -> OverlayChannelHudProjection {
     OverlayChannelHudProjection(
       open: false, loud: false, autosealDeadline: nil, followerAlive: true,
-      provider: "codex", providerSessionID: session)
+      provider: "codex", providerSessionID: session, frameDetected: frameDetected)
   }
 
   private func rosterFixture() throws -> (
@@ -389,8 +389,17 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   // MARK: - The keyboard follows the list (2026-10-19)
 
   func testTheListTakesTheKeyboardFromTheComposerAndGivesItBack() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (broadcast, lena, astra) = try rosterFixture()
     let state = OverlayState.previewFormatted()
+    state.applyChannelRoster(
+      [broadcast, lena, astra].map {
+        CsChannelRosterState(
+          channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+          providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: $0.owner == nil ? nil : true,
+          unreadSinceUnixMs: nil)
+      })
     state.applyConversationSnapshot(
       .init(deliveries: [], conversations: [broadcast, lena, astra]))
     state.selectConversation(lena.id)
@@ -406,7 +415,6 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       other.close()
     }
     let editor = try XCTUnwrap(composerEditor(in: host))
-    try BackgroundTestWindow.requireIsolatedGUI()
     panel.takeKeyForTranscript()
     XCTAssertTrue(panel.makeFirstResponder(editor))
     XCTAssertTrue(panel.isKeyWindow)
@@ -452,10 +460,19 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   }
 
   func testTheRosterOverTheWholeWindowTakesTheKeyboardToo() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
     defaults.set(480.0, forKey: "Overlay.agentDrawerWidth.v1")
     let (broadcast, lena, _) = try rosterFixture()
     let state = OverlayState.previewFormatted()
+    state.applyChannelRoster(
+      [broadcast, lena].map {
+        CsChannelRosterState(
+          channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+          providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: $0.owner == nil ? nil : true,
+          unreadSinceUnixMs: nil)
+      })
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
     state.selectConversation(lena.id)
     let (panel, host) = keyboardPanel(
@@ -466,7 +483,6 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       panel.close()
     }
     let editor = try XCTUnwrap(composerEditor(in: host))
-    try BackgroundTestWindow.requireIsolatedGUI()
     panel.takeKeyForTranscript()
     XCTAssertTrue(panel.makeFirstResponder(editor))
 
@@ -553,7 +569,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
           textScale: 1.0, preferredWidth: widest, windowWidth: 780),
         windowWidth: 780),
       "the conversation slides out at its 320-point minimum")
-    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 60.44, accuracy: 0.001)
+    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 76.44, accuracy: 0.001)
   }
 
   func testTheLayoutIsRememberedAndTheDraggedAgentsViewMigrates() throws {
@@ -770,6 +786,10 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
           x: button.x, y: screenTop - button.y - button.height,
           width: button.width, height: button.height)
         let rect = panel.convertFromScreen(screenRect)
+        XCTAssertEqual(
+          rect.midX,
+          panel.frame.width - OverlayAgentDrawerLayout.railWidth(textScale: scale) / 2,
+          accuracy: 1, "the channel button is centered across the full folded sidebar")
         XCTAssertLessThan(rect.maxX, panel.frame.width - OverlayResizeHit.band)
         for x in [rect.minX + 1, rect.midX, rect.maxX - 1] {
           let point = NSPoint(x: x, y: rect.midY)
@@ -928,13 +948,89 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
   }
 
-  /// Astra's full-view contract (2026-10-22, brief rev c11709ef): the classic
-  /// full roster carries all actions and information inline. A secondary
-  /// click anywhere on it resolves no big agent menu — "Write / Forward…",
-  /// microphone, playback, Show in Agents and archive never hang off a row —
-  /// and no AppKit tooltip duplicates the inline metadata. The resolved
-  /// policy menu on 0 · All is the positive control that the scan sees real
-  /// menus at all.
+  func testCardMenuKeepsExactlyFourSecondaryActionsAndTheirFrozenOwner() throws {
+    let (_, lena, _) = try rosterFixture()
+    let owner = try XCTUnwrap(lena.owner)
+    let row = OverlayChannelDelivery(
+      channel: "2", agent: "lena", deliveryID: "card-menu", stage: .received, isOpen: false)
+    var focusOwners: [OverlayConversationOwner] = []
+    var archiveOwners: [OverlayConversationOwner] = []
+    var primaryCalls = 0
+    var view = OverlayChannelStatusView(
+      channels: [row], unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: owner.providerSessionID, frameDetected: true)],
+      onToggleChannel: { _ in primaryCalls += 1 }, conversations: [lena],
+      onSelectConversation: { _ in primaryCalls += 1 })
+    view.mutedChannels = ["2": false]
+    view.onTogglePlayback = { _ in primaryCalls += 1 }
+    view.onShowAgentInMonitor = { _ in primaryCalls += 1 }
+    view.archiveCandidates = ["2": owner]
+    view.onArchiveAgent = { archiveOwners.append($0) }
+    view.onFocusAgentPanel = { focusOwners.append($0) }
+    view.panelFocusAvailable = true
+    let actions = try XCTUnwrap(view.agentPillMenuActions(for: "2", showsFocusState: true))
+    let focus = try XCTUnwrap(actions.focus)
+    let archive = try XCTUnwrap(actions.archive)
+    XCTAssertTrue(focus.enabled)
+    XCTAssertTrue(archive.enabled)
+    XCTAssertTrue(view.cardAgentMenu(for: "2").secondaryActionsOnly)
+    XCTAssertTrue(view.cardAgentMenu(for: "2", showsButton: true).secondaryActionsOnly)
+    XCTAssertFalse(view.agentPillMenu(for: "2").secondaryActionsOnly)
+
+    let host = NSHostingView(rootView: view.channelRow(row).frame(width: 340, height: 140))
+    host.frame = NSRect(x: 0, y: 0, width: 340, height: 140)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    BackgroundTestWindow.present(window)
+    defer { window.orderOut(nil) }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+    host.layoutSubtreeIfNeeded()
+    var found: NSMenu?
+    scan: for x in stride(from: CGFloat(6), to: host.bounds.width, by: 12) {
+      for y in stride(from: CGFloat(6), to: host.bounds.height, by: 12) {
+        let point = NSPoint(x: x, y: y)
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .rightMouseDown, location: host.convert(point, to: nil), modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 9_400, clickCount: 1, pressure: 1))
+        var hit = host.hitTest(point)
+        while let current = hit {
+          if let menu = current.menu(for: event) {
+            found = menu
+            break scan
+          }
+          hit = current.superview
+        }
+      }
+    }
+    let menu = try XCTUnwrap(found, "the real card must resolve a menu; absence is not a pass")
+    menu.delegate?.menuNeedsUpdate?(menu)
+    let items = menu.items.filter { !$0.isSeparatorItem }
+    XCTAssertEqual(items.count, 4)
+    XCTAssertEqual(
+      Set(items.map(\.title)),
+      Set([
+        String(localized: "Channel 0"), String(localized: "Do not disturb"), focus.title,
+        archive.title,
+      ]))
+    let focusIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == focus.title })
+    let archiveIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == archive.title })
+    menu.performActionForItem(at: focusIndex)
+    menu.performActionForItem(at: archiveIndex)
+    XCTAssertEqual(focusOwners, [owner])
+    XCTAssertEqual(archiveOwners, [owner])
+    XCTAssertEqual(primaryCalls, 0, "secondary actions cannot select, write, record or mute")
+  }
+
+  /// The 2026-10-29 card contract supersedes the older no-menu roster:
+  /// More and right-click expose reception policy, workspace focus and archive.
+  /// Write, microphone, playback and Show in Agents stay out of card menus.
+  /// Both the permitted card menu and the full pill sentinel are required
+  /// positive controls; inline metadata still has no system tooltip.
   func testFullRosterResolvesNoBigAgentMenuAndCarriesNoSystemTooltips() throws {
     let (broadcast, lena, astra) = try rosterFixture()
     let channels = [
@@ -980,13 +1076,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       String(localized: "Write / Forward…"), String(localized: "Speak to agent"),
       String(localized: "Stop speaking to agent"), String(localized: "Mute agent replies"),
       String(localized: "Unmute agent replies"), String(localized: "Show in Agents"),
-      String(localized: "Disconnect and archive agent"),
-      String(localized: "Remove from list and move to archive"),
     ]
     func titles(of menu: NSMenu) -> [String] {
       menu.items.flatMap { [$0.title] + ($0.submenu.map(titles(of:)) ?? []) }
     }
     var resolvedMenus = 0
+    var cardMenus = 0
     let step: CGFloat = 12
     for x in stride(from: CGFloat(6), to: host.bounds.width, by: step) {
       for y in stride(from: CGFloat(6), to: host.bounds.height, by: step) {
@@ -1008,6 +1103,11 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         resolvedMenus += 1
         menu.delegate?.menuNeedsUpdate?(menu)
         let resolved = titles(of: menu)
+        if resolved.contains(String(localized: "Disconnect and archive agent")) {
+          cardMenus += 1
+          XCTAssertTrue(resolved.contains(String(localized: "Channel 0")))
+          XCTAssertTrue(resolved.contains(String(localized: "Do not disturb")))
+        }
         for title in resolved {
           for marker in forbidden {
             XCTAssertFalse(
@@ -1019,6 +1119,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     }
     XCTAssertGreaterThan(
       resolvedMenus, 0, "the scan resolved no menu at all, so absence proves nothing")
+    XCTAssertGreaterThan(cardMenus, 0, "the roster must expose its permitted secondary menu")
 
     var tooltips: [String] = []
     func walk(_ view: NSView) {
@@ -1058,6 +1159,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     probeWindow.contentView = probeHost
     BackgroundTestWindow.present(probeWindow)
     probeHost.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+    probeHost.layoutSubtreeIfNeeded()
 
     func resolvedMenu(in container: NSView, of window: NSWindow, at point: NSPoint) -> NSMenu? {
       guard
@@ -1074,8 +1177,20 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       }
       return nil
     }
-    let probeMenu = resolvedMenu(
-      in: probeHost, of: probeWindow, at: NSPoint(x: 100, y: probeHost.bounds.height - 20))
+    // Resolve the mounted menu instead of assuming which y-coordinate the
+    // hosting view gives its first VStack child in this macOS environment.
+    var probeMenu: NSMenu?
+    probeScan: for x in stride(from: CGFloat(6), to: probeHost.bounds.width, by: 12) {
+      for y in stride(from: CGFloat(6), to: probeHost.bounds.height, by: 12) {
+        if let menu = resolvedMenu(
+          in: probeHost, of: probeWindow, at: NSPoint(x: x, y: y))
+        {
+          menu.delegate?.menuNeedsUpdate?(menu)
+          probeMenu = menu
+          break probeScan
+        }
+      }
+    }
     let probeTitles = probeMenu.map(titles(of:)) ?? []
     XCTAssertTrue(
       forbidden.contains { marker in probeTitles.contains { $0.contains(marker) } },
@@ -1094,8 +1209,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     // The custom hint panel is the other tooltip owner (overlayFastHint →
     // OverlayHintPanel). The probe proves hover really presents a readable
     // hint; then every roster region is hovered, and a hint repeating the
-    // inline metadata — descriptor, preview, session — is the duplicated
-    // tooltip the contract forbids. An action label is not a duplicate.
+    // inline metadata — descriptor or session — is the duplicated tooltip
+    // the contract forbids. Full last-message previews are allowed by the
+    // sidebar request of 2026-10-29; action labels remain allowed as well.
     func regions(in view: NSView) -> [OverlayMenuCursorRegionView] {
       var found: [OverlayMenuCursorRegionView] = []
       if let region = view as? OverlayMenuCursorRegionView { found.append(region) }
@@ -1120,7 +1236,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     }
     XCTAssertTrue(sawProbeHint, "hover must present the probe hint, or absence proves nothing")
 
-    let metadata = ["codex", "gpt-6", "PR is green", "on it", "lena-session", "astra-session"]
+    let metadata = ["codex", "gpt-6", "lena-session", "astra-session"]
     let rosterRegions = regions(in: host)
     XCTAssertFalse(rosterRegions.isEmpty, "the roster composes hover regions")
     for region in rosterRegions {
@@ -1348,21 +1464,24 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "a visual reply control is not a delivery until the envelope carries the source id")
   }
 
-  func testAgentRowStaysWithinFiveLinesAndKeepsUnreadApartFromReceipts() throws {
-    // Maciej (2026-10-17): "ustalmy budżet 5 wierszy". Title, descriptor,
-    // two preview lines, one state line; unread is a badge on the title line.
+  func testCompactAgentRowDropsTheFooterAndKeepsUnreadApartFromReceipts() throws {
+    // The compact card has identity, descriptor and up to two preview lines.
+    // Receipt and unread are distinct marks, neither adds a footer row.
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let label = try section(
-      of: source, from: "private func rosterRowLabel(", to: "func rowStateText(")
+      of: source, from: "private func rosterRowLabel(", to: "func compactAgentActions(")
     let visual = try overlaySource("OverlayAgentRosterLabel.swift")
     let limits = (visual + label).components(separatedBy: ".lineLimit(").dropFirst().compactMap {
       Int($0.prefix { $0.isNumber })
     }
-    XCTAssertEqual(limits.reduce(0, +), 5, "every text in the row is capped, five lines in all")
+    XCTAssertEqual(limits.reduce(0, +), 4, "identity, descriptor and two preview lines")
     XCTAssertTrue(
       visual.contains("OverlayAgentUnreadBadge("), "unread rides the title line as a badge")
     XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
-    XCTAssertTrue(label.contains("rowStateText("), "receipt and reader share one state line")
+    XCTAssertTrue(
+      label.contains("deliveryReceiptDisplay("), "receipt follows frozen delivery evidence")
+    let row = try section(of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
+    XCTAssertFalse(row.contains("rosterRowState("), "compact cards have no separate footer")
   }
 
   func testBroadcastPolicyRidesTheRowsContextMenuWithNoDisclosureList() throws {
@@ -1385,7 +1504,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
   /// A bound channel whose reader died keeps its row, dimmed as one unit,
   /// and its microphone sleeps (Maciej, 2026-10-17).
-  func testDockedRowDimsADisconnectedReaderAndSleepsItsMicrophone() throws {
+  func testDockedRowDimsADisconnectedReaderAndUsesCentralAudioGuards() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let modifier = try section(
       of: source, from: "struct OverlayDisconnectedRowDim: ViewModifier {", to: "\n}\n")
@@ -1394,8 +1513,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let docked = try section(
       of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
     XCTAssertTrue(
-      docked.contains("&& !hasDeadFollower(channel),"),
-      "the docked row's microphone sleeps for a dead reader")
+      docked.contains("compactAgentActions(for: channel)"),
+      "the row uses the same guarded actions as its conversation header")
+    let actions = try section(
+      of: source, from: "func compactAgentActions(", to: "func compactReceptionIndicators(")
+    XCTAssertTrue(actions.contains("agentMicrophoneEnabled(for: channel)"))
+    XCTAssertTrue(actions.contains("agentPlaybackEnabled(for: channel)"))
     XCTAssertTrue(
       docked.contains("OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel))"),
       "the docked row dims as one unit")
@@ -1441,22 +1564,23 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   /// speaker, so the identity pill must leave with it: the host hands the
   /// column's visibility to the conversation view, and the view drops the
   /// whole navigation row (controls and pill) with a collapsed measurement.
-  func testDockedColumnEvacuatesTheIdentityPillAndItsControls() throws {
+  func testHorizontalHeaderKeepsActionsWithFullAndFoldedSidebar() throws {
     let overlay = try overlaySource("DictationOverlayView.swift")
     let canvas = try section(
       of: overlay, from: "private func canvasStack", to: "private var header: some View")
+    XCTAssertFalse(canvas.contains("hidesNavigation: columnShown"))
+    XCTAssertTrue(canvas.contains("navigationActions: conversationHeaderActions(conversation)"))
     XCTAssertTrue(
-      canvas.contains("hidesNavigation: columnShown"),
-      "the visible docked column is exactly when the pill evacuates")
+      canvas.contains("navigationIndicators: conversationHeaderIndicators(conversation)"))
     let conversation = try overlaySource("OverlayConversationView.swift")
     let anchor = try section(
       of: conversation, from: ".overlay(alignment: .top)", to: ".onChange(of: conversation.id)")
     XCTAssertTrue(
       anchor.contains("if hidesNavigation"),
-      "the navigation row is conditional, not just transparent")
+      "the shared Intercom presentation retains its explicit navigation choice")
     XCTAssertTrue(
       anchor.contains("navigationHeight = 0"),
-      "the content margin follows the evacuated row")
+      "the content margin follows the hidden Intercom navigation row")
   }
 
   /// Broadcast-policy choices in a roster row's context menu are checkboxes, so

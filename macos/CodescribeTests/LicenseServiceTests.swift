@@ -241,6 +241,24 @@ final class LicenseServiceTests: XCTestCase {
     XCTAssertFalse(service.canUseAgentic)
   }
 
+  /// Change key verifies the new key before anything is written: a key that
+  /// does not verify leaves the saved license stored and working.
+  func testInvalidReplacementKeyKeepsTheSavedLicense() async {
+    let storage = MemoryLicenseKeychain()
+    let service = LicenseService(
+      keychain: storage, autoload: false,
+      now: { Date(timeIntervalSince1970: 1_775_304_000) })
+    let activated = await service.activate(LicenseTestFixture.devKey)
+    XCTAssertTrue(activated)
+    let durable = storage.data
+    let replacement = await service.activate("CSK1.invalid.invalid")
+    XCTAssertFalse(replacement)
+    XCTAssertEqual(storage.data, durable, "a key that does not verify is never stored")
+    XCTAssertTrue(service.canUseAgentic)
+    XCTAssertEqual(
+      service.lastError, "Couldn't verify the key. Check that it's correct and complete.")
+  }
+
   func testMalformedStoredPayloadFailsClosedAfterSuccessfulRead() async {
     let storage = MemoryLicenseKeychain()
     let service = LicenseService(

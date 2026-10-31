@@ -33,8 +33,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
   }
 
-  /// Segment label. Short on purpose: six of them share one tab bar, and they
-  /// should fit the pane at the 880pt minimum window. Each segment hugs its own
+  /// Segment label, and the page title under the tab bar: a tabbed page is
+  /// headed by the name of the tab the user clicked, read from this one key,
+  /// so the two cannot drift apart (Founder decision, 2026-10-29). Short on
+  /// purpose: six of them share one tab bar, and they should fit the pane at
+  /// the 880pt minimum window. Each segment hugs its own
   /// label, so one long title no longer sets the width of all six; when the six
   /// still do not fit, `SettingsTabBar` scrolls horizontally instead of widening
   /// the pane, so a long translation costs a scroll, never a clipped pane.
@@ -58,31 +61,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
   }
 
-  var headline: String {
-    switch self {
-    case .agentLanes: String(localized: "Model configuration.")
-    case .agentPrompts: String(localized: "Prompts", comment: "Settings tab: editable prompts")
-    case .agentWorkspace:
-      String(localized: "Folders available to the Agent", comment: "Settings tab: Agent folders")
-    case .agentStatus:
-      String(
-        localized: "Agent environment configuration", comment: "Settings tab: Diagnostics headline")
-    case .agentTools: String(localized: "Tool permissions")
-    case .agentMcp: String(localized: "MCP servers")
-    case .dictationEngine:
-      String(localized: "Speech recognition", comment: "Settings tab headline: Dictation › Engine")
-    case .dictationWhisper:
-      String(
-        localized: "Local Whisper model", comment: "Settings tab headline: Dictation › Whisper")
-    case .dictationPreview:
-      String(
-        localized: "Transcript display pace", comment: "Settings tab headline: Dictation › Preview")
-    case .dictationPrivacy: CloudPrivacyCopy.title
-    }
-  }
-
-  /// `nil` where the headline and the pane say enough on their own (Founder
-  /// brief, 2026-10-20: minimum text).
+  /// The sentence under the tab's title. `nil` where the title and the pane
+  /// say enough on their own (Founder brief, 2026-10-20: minimum text).
   var blurb: String? {
     switch self {
     case .agentLanes:
@@ -97,10 +77,14 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       // Only the limit stays on screen: the list validates Codescribe's own
       // file and terminal tools and the MCP calls it knows how to check
       // (Desktop Commander), not a sandbox around the child process. What is
-      // checked is in docs/guide/settings.md, Agent → Workspace.
+      // checked is in docs/guide/settings.md, Agent → Workspace. The folder
+      // list below carries its own label, so the former headline ("Folders
+      // available to the Agent") is not repeated here as a second name for it.
       String(localized: "Processes and MCP servers have their own permissions.")
     case .agentStatus:
-      nil
+      // The page is headed "Diagnostics"; this line says what is diagnosed.
+      String(
+        localized: "Agent environment configuration", comment: "Settings tab blurb: Diagnostics")
     case .agentTools:
       // One sentence: the three levels name themselves on the segmented
       // controls below, and the resolution order has its own note next to the
@@ -123,9 +107,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: "Pick a model, check its availability and manage the space it takes.",
         comment: "Settings tab blurb: Dictation › Whisper")
     case .dictationPreview:
-      // The headline names the setting; the preset picker and its selected
-      // preset's own line say the rest (Founder round-2 copy trim, 2026-10-20).
-      nil
+      // The line names the setting the tab holds; the preset picker and its
+      // selected preset's own line say the rest (Founder round-2 copy trim,
+      // 2026-10-20).
+      String(
+        localized: "Transcript display pace", comment: "Settings tab blurb: Dictation › Preview")
     case .dictationPrivacy:
       String(localized: "See when Codescribe uses online services.")
     }

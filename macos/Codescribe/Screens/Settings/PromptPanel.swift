@@ -224,16 +224,14 @@ private struct PromptEditor: View {
       Spacer(minLength: CSSpace.sm)
       // Hugs its own width so a long prompt name or translation wraps on the
       // left instead of squeezing the tag and the buttons.
-      // One baseline for the tag, the unsaved note and the buttons: the tag
-      // and Edit share the control rung's type and vertical inset, so they
-      // read as one row while the capsule stays a state and the rounded chip
-      // stays the action.
+      // One baseline for the source, the unsaved note and the buttons. The
+      // source is plain metadata; only the actions carry button chrome.
       HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
         sourceTag
         if hasUnsavedChanges {
           Text("Unsaved changes")
             .font(CSFont.ui(12, .medium))
-            .foregroundStyle(CSColor.chromeAccent)
+            .foregroundStyle(Color.primary)
         }
         if editing {
           cancelButton
@@ -244,20 +242,16 @@ private struct PromptEditor: View {
     }
   }
 
-  /// Which prompt the app is actually using, as a quiet capsule instead of a
+  /// Which prompt the app is actually using, as quiet metadata instead of a
   /// row of its own. The full sentence stays as the VoiceOver value, and the
   /// file state it used to carry lives under File details.
   @ViewBuilder
   private var sourceTag: some View {
     if let tag = promptSourceTag(snapshot?.source) {
       Text(tag)
-        .font(SettingsScale.controlLabel)
+        .font(SettingsScale.helper)
         .lineLimit(1)
         .foregroundStyle(CSColor.secondaryInk)
-        .padding(.horizontal, SettingsScale.controlInsetH)
-        .padding(.vertical, SettingsScale.controlInsetV)
-        .background(Capsule().fill(Color.primary.opacity(CSAlpha.line)))
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1))
         .accessibilityElement()
         .accessibilityLabel("Prompt source")
         .accessibilityValue(Text(verbatim: promptSourceLabel(snapshot?.source)))

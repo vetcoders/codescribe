@@ -2076,10 +2076,21 @@ private struct OverlayIntercomCard: View {
     let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
     let tier = controller.groupTier
     let row = expanded ? IntercomRowControls.all : controller.rowControls
-    let hasInlinePreview =
-      controller.contentMetrics.cardContent(
-        width: controller.groupWidth, cardHeight: controller.groupCardHeight) == .preview
+    let contentTier = controller.contentMetrics.cardContent(
+      width: controller.groupWidth, cardHeight: controller.groupCardHeight)
+    let hasInlinePreview = contentTier == .preview
     let hasMessage = conversation?.messages.isEmpty == false
+    // A header-only card has no context strip below it, so the metadata joins
+    // the name line instead of vanishing with the card height (Maciej,
+    // 2026-10-28: "meta … na niskim … powinien wchodzić w skład linii").
+    let inlineDescriptor: String? = {
+      guard !expanded, row.marks, contentTier == .header, let conversation else { return nil }
+      let text =
+        (state.conversationAgentDescriptor(conversation)
+        ?? conversation.owner?.provider)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      return (text?.isEmpty ?? true) ? nil : text
+    }()
     let nameHint = OverlayHeaderControlChrome(
       title: identity.displayDigit + " · " + name, accent: nil, palette: palette,
       hintLeading: true,
@@ -2215,9 +2226,28 @@ private struct OverlayIntercomCard: View {
           Button {
             controller.expand(identity)
           } label: {
-            Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
-              .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-              .contentShape(Rectangle())
+            HStack(spacing: 6) {
+              Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
+                .layoutPriority(1)
+              if let inlineDescriptor {
+                Text(verbatim: inlineDescriptor).csFont(10)
+                  .foregroundStyle(palette.mutedText.color)
+                  .lineLimit(1)
+                  .truncationMode(.middle)
+                  .accessibilityIdentifier("overlay-intercom-context-\(identity.digit)")
+              }
+              // The client focus button lives beside the name, not out with
+              // the audio pair (Maciej, 2026-10-28).
+              if row.slots >= 3 {
+                OverlayIntercomFocusButton(
+                  roster: roster, channel: channelRow,
+                  palette: palette,
+                  diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+              }
+              Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
           // Names rest lightly smoked; the agent talking brightens instead of
@@ -2252,11 +2282,6 @@ private struct OverlayIntercomCard: View {
         // Focus precedes the shared audio pair: live input on the left,
         // reply playback on the right. Narrow rows retain one shared slot.
         Group {
-          if row.slots >= 3 {
-            OverlayIntercomFocusButton(
-              roster: roster, channel: channelRow,
-              palette: palette, diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-          }
           if row.slots >= 1 {
             audioSlot(
               current ? conversation : nil, palette: palette, speaking: speaking, open: open,
@@ -2807,6 +2832,18 @@ private struct OverlayIntercomInstanceCard: View {
     return VStack(spacing: 0) {
       headerRow(instance, conversation: conversation, palette: palette)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+      // The detached fiszka keeps the same metadata line as its group card;
+      // the agent's provider, model and repository must not vanish with the
+      // detach (Maciej, 2026-10-28).
+      if !mini, let conversation {
+        OverlayIntercomConversationContext(
+          descriptor: state.conversationAgentDescriptor(conversation)
+            ?? conversation.owner?.provider,
+          palette: palette
+        )
+        .frame(
+          height: OverlayIntercomWidgetLayout.contextStripHeight(scale: scale), alignment: .top)
+      }
       if !mini {
         if let conversation {
           OverlayIntercomConversationBody(
@@ -2870,10 +2907,31 @@ private struct OverlayIntercomInstanceCard: View {
     // #183). Only the exact owner's row is this window's to control.
     let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
     let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
-    let nameRow = Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-      .contentShape(Rectangle())
-      .background(OverlayIntercomResizeAnchor())
+    // A wide mini fiszka carries the metadata inside the name line; there is
+    // no context strip to hold it (Maciej, 2026-10-28).
+    let instanceDescriptor: String? = {
+      guard mini, layout.controls.marks, let conversation else { return nil }
+      let text =
+        (state.conversationAgentDescriptor(conversation)
+        ?? conversation.owner?.provider)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      return (text?.isEmpty ?? true) ? nil : text
+    }()
+    let nameRow = HStack(spacing: 6) {
+      Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
+        .layoutPriority(1)
+      if let instanceDescriptor {
+        Text(verbatim: instanceDescriptor).csFont(10)
+          .foregroundStyle(palette.mutedText.color)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .accessibilityIdentifier("overlay-intercom-instance-context-\(instance.digit)")
+      }
+      Spacer(minLength: 0)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    .contentShape(Rectangle())
+    .background(OverlayIntercomResizeAnchor())
     return HStack(spacing: 3) {
       if !mini && !instance.isHumanInbox {
         Text(verbatim: instance.displayDigit).csMono(10).foregroundStyle(palette.mutedText.color)
@@ -2922,16 +2980,18 @@ private struct OverlayIntercomInstanceCard: View {
             .accessibilityLabel(Text(verbatim: instance.name))
         }
       }
+      // The client focus button follows the name cluster, before sync and
+      // the audio pair (Maciej, 2026-10-28).
+      if layout.tier != .icon, layout.controls.slots >= 3 {
+        OverlayIntercomFocusButton(
+          roster: roster, channel: channelRow, palette: palette,
+          diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+      }
       if current, let conversation, state.hasSynchronizedDraft(conversation.id) {
         OverlayIntercomSyncIndicator(
           state: state, conversationID: conversation.id, palette: palette)
       }
       if layout.tier != .icon {
-        if layout.controls.slots >= 3 {
-          OverlayIntercomFocusButton(
-            roster: roster, channel: channelRow, palette: palette,
-            diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-        }
         if layout.controls.slots >= 1 {
           OverlayIntercomAudioControls(
             state: state, conversation: current ? conversation : nil, digit: instance.digit,

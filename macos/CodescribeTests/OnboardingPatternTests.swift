@@ -109,4 +109,151 @@ final class OnboardingPatternTests: XCTestCase {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
   }
+
+  /// D1 (2026-10-26): the wizard speaks in one type family. Status labels,
+  /// field labels and sentences use the system face in the E3 roles; the
+  /// success mark is a glyph, not a character inside the sentence.
+  func testWizardUsesOneTypeFamilyAndAGlyphForReady() throws {
+    let sources = try onboardingSources()
+    let steps = try XCTUnwrap(sources["OnboardingSteps.swift"])
+    let whisperURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Settings/WhisperDownloadView.swift")
+    let whisper = try String(contentsOf: whisperURL, encoding: .utf8)
+    let checked = [("OnboardingSteps.swift", steps), ("WhisperDownloadView.swift", whisper)]
+    for (name, source) in checked {
+      XCTAssertFalse(source.contains("CSFont.mono("), "\(name) still sets a mono face")
+      XCTAssertFalse(source.contains(".font(.caption"), "\(name) still uses the caption style")
+    }
+    XCTAssertFalse(steps.contains("\"Ready to go ✓\""), "the check mark left the sentence")
+    XCTAssertTrue(steps.contains("\"Ready to go\""))
+    let frame = try XCTUnwrap(sources["OnboardingView.swift"])
+    let eyebrow =
+      "EyebrowLabel(text: current.label, color: CSColor.textMuted, font: CSFont.ui(11, .semibold))"
+    XCTAssertTrue(frame.contains(eyebrow), "the category label: system face, muted grey")
+    // The step heading sits on the 18 pt display role of the one text scale,
+    // not on a system text style (W0-17).
+    XCTAssertFalse(frame.contains(".title2"), "the step heading left the system title style")
+    XCTAssertTrue(frame.contains(".font(CSFont.ui(18, .semibold))"), "the step heading role")
+    XCTAssertTrue(whisper.contains(".truncationMode(.middle)"), "the model path keeps both ends")
+
+    let polish = try polishCatalog()
+    XCTAssertNil(polish["Ready to go ✓"], "retired key still in the catalog")
+    let expected: [String: String] = [
+      "Ready to go": "Gotowe do pracy",
+      "Source": "Źródło",
+      "Size": "Rozmiar",
+      "Model location on this Mac": "Lokalizacja modelu na komputerze",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+  }
+
+  /// Founder decision of 2026-10-26: the brand terracotta marks state in the
+  /// wizard (progress, the selected choice, the step icon) while the macOS
+  /// accent keeps the controls; verified statuses are an olive capsule with a
+  /// thin check, stored identity the empty circle, on step 6 and step 9 alike.
+  func testStateWearsTheBrandAccentAndStatusesTheOlive() throws {
+    let sources = try onboardingSources()
+    let steps = try XCTUnwrap(sources["OnboardingSteps.swift"])
+    let frame = try XCTUnwrap(sources["OnboardingView.swift"])
+    let componentsURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/DesignSystem/Components.swift")
+    let components = try String(contentsOf: componentsURL, encoding: .utf8)
+
+    XCTAssertTrue(components.contains("func csChoice(selected: Bool)"), "a choice has a style")
+    XCTAssertTrue(
+      components.contains("CSColor.brandAccent.opacity(isEnabled ? CSAlpha.selectionWash"))
+    XCTAssertTrue(steps.contains(".csChoice(selected: isSelected)"))
+    XCTAssertTrue(steps.contains("isSelected ? CSColor.brandAccent : CSColor.secondaryInk"))
+    XCTAssertFalse(steps.contains(".csAction(prominent: isSelected)"), "a selection is no action")
+    XCTAssertTrue(frame.contains("CSProgressBar(value: model.progressFraction)"), "progress")
+    XCTAssertTrue(components.contains("struct CSProgressBar"), "the brand bar lives in the system")
+    XCTAssertFalse(frame.contains("ProgressView("), "the native bar ignores a brand tint")
+    // The step icon carries an explicit tone rather than a hardcoded colour
+    // (W0-20): every step wears the brand accent except the wizard's
+    // not-ready verdict, which is neutral ink — see
+    // testNotReadyHeadingWearsNeutralInk below.
+    XCTAssertTrue(frame.contains(".foregroundStyle(current.tone)"), "the step icon")
+    for source in [steps, frame] {
+      XCTAssertFalse(source.contains(".tint(CSColor.chromeAccent)"), "no chrome-accent progress")
+    }
+
+    XCTAssertTrue(components.contains("struct CSStatusBadge"), "one badge for wizard and Settings")
+    XCTAssertTrue(steps.contains("CSProgressBar(value: SettingsViewModel.calibrationProgress("))
+    // The capsule takes the mark's tint (W0-03): olive for saved and verified,
+    // the danger rung with the warning sign only for a state that blocks;
+    // terracotta is choice and progress, never a problem (W0-17).
+    XCTAssertTrue(components.contains("Capsule().fill(tint.opacity(0.14))"))
+    XCTAssertTrue(components.contains("case .saved, .verified: CSColor.oliveLight"))
+    XCTAssertTrue(components.contains("case .blocked: CSColor.dangerLight"))
+    XCTAssertTrue(
+      components.contains(
+        "CSIconView(icon: .warning, size: 9, weight: .semibold, color: CSColor.dangerLight)"))
+    XCTAssertFalse(components.contains("CSColor.terracottaLight"), "no terracotta problem")
+    XCTAssertTrue(
+      components.contains("CSIconView(icon: .success, size: 9, weight: .semibold,"),
+      "a verified status is the thin check of the glyph canon, never a filled badge")
+    XCTAssertFalse(steps.contains("struct OnboardingStatusBadge"), "the wizard owns no badge")
+    XCTAssertTrue(steps.contains("mark: state.isGranted ? .verified : .none"), "granted scope")
+    XCTAssertTrue(steps.contains("mark: .verified)"), "ready to go")
+    XCTAssertTrue(steps.contains("mark: keySaved ? .saved : .none"), "saved key")
+    XCTAssertTrue(
+      steps.contains("mark: done ? (presenceOnly ? .saved : .verified) : .none)"),
+      "step 9 draws stored identity with the empty circle of step 6, in the capsule")
+    XCTAssertTrue(
+      steps.contains("CSStatusBadge(text: state.status, mark: .verified)"),
+      "a calibrated microphone is a verified state")
+    XCTAssertTrue(
+      steps.contains("CSStatusBadge(text: state.status, mark: state.blocked ? .blocked : .none)"),
+      "step 9 marks blocked recording readiness with a sign, not colour alone (W0-03)")
+    XCTAssertFalse(steps.contains("private func statusBadge("), "one badge, not two")
+    XCTAssertEqual(
+      steps.components(separatedBy: "CSStatusBadge(").count, 8, "seven wizard statuses")
+  }
+
+  /// Problems in the wizard speak in `dangerLight` behind the warning sign;
+  /// a missing optional setting is grey without one; terracotta is left to
+  /// choice and progress (W0-17, D2 2026-10-26).
+  func testProblemsSpeakInTheDangerRungWithASign() throws {
+    let sources = try onboardingSources()
+    let steps = try XCTUnwrap(sources["OnboardingSteps.swift"])
+    XCTAssertFalse(steps.contains("CSColor.terracottaLight"), "no problem drawn in terracotta")
+    XCTAssertTrue(steps.contains("struct OnboardingProblemText"), "one problem line")
+    XCTAssertTrue(
+      steps.contains(
+        "CSIconView(icon: .warning, size: 11, weight: .semibold, color: CSColor.dangerLight)"),
+      "a problem never rests on colour alone")
+    // The three provider errors, the calibration error, the language error,
+    // both agent bridge errors, "Agent needs setup" and the required-grant note.
+    XCTAssertEqual(steps.components(separatedBy: "OnboardingProblemText(").count, 10)
+    XCTAssertTrue(steps.contains("if kind.isRequiredForSetup {"), "optional notes stay grey")
+  }
+
+  /// Founder decision of 2026-10-29 (W0-20): the final summary's not-ready
+  /// verdict heading is neutral ink, not the brand terracotta and not red —
+  /// terracotta is choice and progress, and the concrete blocking rows below
+  /// the heading already carry the red warning sign.
+  func testNotReadyHeadingWearsNeutralInk() throws {
+    let sources = try onboardingSources()
+    let frame = try XCTUnwrap(sources["OnboardingView.swift"])
+    XCTAssertTrue(
+      frame.contains(
+        "\"exclamationmark.circle\",\n        CSColor.secondaryInk,"),
+      "the not-ready heading icon is neutral ink")
+    XCTAssertFalse(
+      frame.contains(
+        "CSColor.brandAccent,\n        String(\n          localized: LocalizedStringResource(\n            \"Codescribe is not ready yet.\""
+      ), "the not-ready heading never wears the brand accent")
+    XCTAssertFalse(
+      frame.contains("\"exclamationmark.circle\",\n        CSColor.terracottaLight,"),
+      "the not-ready heading never wears terracotta")
+    XCTAssertFalse(
+      frame.contains("\"exclamationmark.circle\",\n        CSColor.dangerLight,"),
+      "the not-ready heading never wears red")
+  }
 }

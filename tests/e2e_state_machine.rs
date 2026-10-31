@@ -101,7 +101,7 @@ fn test_mode_bindings_reload_from_settings_storage() {
     let _tmp = setup_test_env();
 
     set_mode_binding(WorkMode::Dictation, ShortcutBinding::HoldCtrlCmd);
-    set_mode_binding(WorkMode::Formatting, ShortcutBinding::Disabled);
+    set_mode_binding(WorkMode::Assistive, ShortcutBinding::DoubleRightOption);
 
     let reloaded = UserSettings::load();
     assert_eq!(
@@ -109,8 +109,8 @@ fn test_mode_bindings_reload_from_settings_storage() {
         ShortcutBinding::HoldCtrlCmd
     );
     assert_eq!(
-        reloaded.mode_binding_for(WorkMode::Formatting),
-        ShortcutBinding::Disabled
+        reloaded.mode_binding_for(WorkMode::Assistive),
+        ShortcutBinding::DoubleRightOption
     );
 }
 
@@ -120,6 +120,7 @@ fn test_assistive_mode_concept() {
     let _tmp = setup_test_env();
 
     set_mode_binding(WorkMode::Dictation, ShortcutBinding::HoldCtrl);
+    set_mode_binding(WorkMode::Assistive, ShortcutBinding::DoubleRightOption);
 
     let settings = UserSettings::load();
     assert_eq!(
@@ -128,8 +129,7 @@ fn test_assistive_mode_concept() {
     );
     assert_eq!(
         settings.mode_binding_for(WorkMode::Assistive),
-        ShortcutBinding::Disabled,
-        "the agent has no key gesture; it starts from the menu bar or the overlay"
+        ShortcutBinding::DoubleRightOption
     );
 }
 

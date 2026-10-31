@@ -127,9 +127,10 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
   /// Transcript actions hint over their document, inside the owning window.
   /// Header and footer controls keep their existing compact hint placement.
   var keepsHintInsideWindow = false
-  /// The transcript column sits on the trailing edge, so its menus open over
-  /// the document. Other chrome keeps the menu below the control.
+  /// The edge of the control used to anchor the popover.
   var popoverArrow: Edge = .top
+  /// Equal widths give related rail menus the same horizontal placement.
+  var detailWidth: CGFloat? = nil
   @ViewBuilder var label: LabelContent
   @ViewBuilder var detail: (@escaping () -> Void) -> Detail
   @State private var hovered = false
@@ -168,7 +169,8 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
     .modifier(
       OverlayMiniTooltip(
         title: title, palette: palette, enabled: showsTooltip && presented == nil,
-        floating: popoverArrow == .trailing, withinWindow: keepsHintInsideWindow)
+        floating: popoverArrow == .leading || popoverArrow == .trailing,
+        withinWindow: keepsHintInsideWindow)
     )
     .popover(
       isPresented: Binding(
@@ -181,10 +183,12 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
         .font(CSFont.ui(12, .medium))
         .foregroundStyle(palette.primaryText.color)
         .padding(10)
+        .frame(width: detailWidth, alignment: .leading)
         .frame(maxWidth: 280)
         .fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial)
         .contentShape(Rectangle())
+        .csFocusPolicy()
         .onExitCommand { presented = nil }
     }
     .onExitCommand { presented = nil }

@@ -126,13 +126,18 @@ struct DictationWhisperModelTab: View {
       }
       cardRow {
         let line = Self.modelStatus(available: status.available, catalog: catalog)
-        Text(
-          String(
-            localized: "Status: \(line.label)",
-            comment:
-              "Whisper tab row: the selected model's state. Placeholder: a state such as Installed or Loaded in memory"
-          )
+        let statusText = String(
+          localized: "Status: \(line.label)",
+          comment:
+            "Whisper tab row: the selected model's state. Placeholder: a state such as Installed or Loaded in memory"
         )
+        Group {
+          if line.tone == .ready {
+            CSStatusBadge(text: statusText, mark: .verified)
+          } else {
+            Text(statusText)
+          }
+        }
         .font(SettingsScale.settingName)
         .foregroundStyle(line.tone.color)
         .fixedSize(horizontal: false, vertical: true)
@@ -145,8 +150,8 @@ struct DictationWhisperModelTab: View {
   }
 
   /// Everything that shadows or contradicts the selection above: an authority
-  /// over the picker, the engine's own notice, and its last error. All three
-  /// stay — they are the states that ask the user to do something.
+  /// over the picker, the engine's own notice, and its last error. Informational
+  /// overrides stay neutral; a failed model selection still needs attention.
   @ViewBuilder
   private func selectionMessages(catalog: CsWhisperModelCatalog?) -> some View {
     let overrideNote = selectionOverrideNote(catalog?.overrideKind)
@@ -157,7 +162,7 @@ struct DictationWhisperModelTab: View {
         if let overrideNote {
           Text(overrideNote)
             .font(SettingsScale.helper)
-            .foregroundStyle(CSColor.amberLight)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let notice = model.whisperModelNotice {
@@ -190,10 +195,15 @@ struct DictationWhisperModelTab: View {
       HStack(spacing: 8) {
         // Readiness is an ordinary word, so it reads in the interface
         // font; monospace stays for technical values on this pane
-        // (Founder brief, round 13, 2026-10-10).
-        Text(localWhisperRuntimeLabel)
-          .font(CSFont.ui(12, .semibold))
-          .foregroundStyle(localWhisperRuntimeColor)
+        // (Founder brief, round 13, 2026-10-10). A ready runtime is the
+        // olive capsule with a check (Founder, 2026-10-26).
+        if model.localWhisperRuntimeState == .livePatchingConfigured {
+          CSStatusBadge(text: localWhisperRuntimeLabel, mark: .verified)
+        } else {
+          Text(localWhisperRuntimeLabel)
+            .font(CSFont.ui(12, .semibold))
+            .foregroundStyle(localWhisperRuntimeColor)
+        }
         Button("Recheck", action: model.recheckLocalWhisperRuntime)
           .buttonStyle(.bordered)
           .controlSize(.small)
@@ -237,9 +247,9 @@ struct DictationWhisperModelTab: View {
     switch model.localWhisperRuntimeState {
     case .livePatchingConfigured:
       CSColor.oliveLight
-    case .livePatchingNotReady, .degradedEnvOverride:
+    case .livePatchingNotReady:
       CSColor.amberLight
-    case .notSelected:
+    case .degradedEnvOverride, .notSelected:
       CSColor.secondaryInk
     }
   }
@@ -247,9 +257,7 @@ struct DictationWhisperModelTab: View {
   private var downloadProgress: some View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
       if let fraction = model.whisperDownloadFraction {
-        ProgressView(value: fraction)
-          .progressViewStyle(.linear)
-          .tint(CSColor.chromeAccent)
+        CSProgressBar(value: fraction)
       } else {
         ProgressView()
           .controlSize(.small)
@@ -292,7 +300,7 @@ struct DictationWhisperModelTab: View {
               Spacer(minLength: CSSpace.sm)
               Text(Self.reasonTag(entry.element.reason))
                 .font(CSFont.ui(12, .medium))
-                .foregroundStyle(CSColor.amberLight)
+                .foregroundStyle(CSColor.secondaryInk)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
             }

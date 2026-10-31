@@ -26,6 +26,9 @@ struct Composer: View {
   /// intrinsic size.
   @Environment(\.csTextScale) private var textScale
   @Environment(\.openWindow) private var openWindow
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// A refused long Fn points here: hint line plus a lit microphone.
+  @State private var microphoneHint = ComposerMicrophoneHintState()
   @State private var fieldHeight = ComposerTextLayout.minimumHeight(
     fontSize: ComposerControlMetrics.textSize)
   @State private var previewAttachment: PendingAttachment?
@@ -73,7 +76,8 @@ struct Composer: View {
           textScale: textScale,
           isFocused: $fieldFocused,
           history: store.selectedThreadID.map { store.composerHistory(in: $0) } ?? [],
-          onSend: { store.send(origin: .enter) }
+          onSend: { store.send(origin: .enter) },
+          onMicrophoneRedirect: { microphoneHint.show(reduceMotion: reduceMotion) }
         )
         .frame(maxWidth: .infinity)
         .frame(height: fieldHeight)
@@ -155,6 +159,13 @@ struct Composer: View {
           .font(CSFont.ui(11, .medium))
           .foregroundStyle(CSColor.amberLight)
           .accessibilityIdentifier("composer.dictation.not-sent")
+      }
+      if microphoneHint.visible {
+        Text(verbatim: ComposerCaretOwnership.microphoneHint)
+          .font(CSFont.ui(11, .medium))
+          .foregroundStyle(CSColor.chromeAccent)
+          .transition(.opacity)
+          .accessibilityIdentifier("composer.microphone-hint")
       }
       dictationFeedback
       recoveryDocuments
@@ -261,7 +272,7 @@ struct Composer: View {
         }
         .csFocusRing()
         .font(CSFont.mono(11, .semibold))
-        .foregroundStyle(CSColor.chromeAccent)
+        .foregroundStyle(Color.primary)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 8)
@@ -446,9 +457,12 @@ struct Composer: View {
         .contentShape(Rectangle())
     }
     .conversationActionHover(
-      restingColor: CSColor.textTertiary, hoverColor: Color.primary,
-      restingOpacity: micState == .recording ? 1 : ComposerControlMetrics.restingActionOpacity
+      restingColor: microphoneHint.visible ? CSColor.chromeAccent : CSColor.textTertiary,
+      hoverColor: microphoneHint.visible ? CSColor.chromeAccent : Color.primary,
+      restingOpacity: micState == .recording || microphoneHint.visible
+        ? 1 : ComposerControlMetrics.restingActionOpacity
     )
+    .scaleEffect(microphoneHint.visible && !reduceMotion ? 1.18 : 1)
     .disabled(!micState.isEnabled)
     .help(micState.accessibilityLabel)
     .accessibilityIdentifier(ComposerAccessibility.micIdentifier)

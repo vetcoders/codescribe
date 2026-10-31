@@ -235,25 +235,17 @@ struct DictionaryRecentTakes: View {
           .textSelection(.enabled)
       }
       if take.ledgerOpen {
+        // Full coverage diagnostics, including anchoredSpeechPercent, remain
+        // available in Lab; the recent-take sentence only names the outcome.
         Group {
-          if let anchored = take.anchoredSpeechPercent {
-            if openLab != nil {
-              Text(
-                "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take. Open Lab to see where."
-              )
-            } else {
-              Text(
-                "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take."
-              )
-            }
-          } else if openLab != nil {
-            Text("The ledger did not close this take. Open Lab to see where.")
+          if openLab != nil {
+            Text("This take did not finish. See Lab for details.")
           } else {
-            Text("The ledger did not close this take.")
+            Text("This take did not finish.")
           }
         }
         .font(CSFont.ui(11))
-        .foregroundStyle(CSColor.amberLight)
+        .foregroundStyle(CSColor.secondaryInk)
       }
     }
     .padding(CSSpace.md)

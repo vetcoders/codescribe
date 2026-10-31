@@ -1616,9 +1616,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         "symbol: \"megaphone.fill\", tint: OverlayRecordingLight.agent.color, mirrored: true"))
     XCTAssertTrue(roster.contains(".scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
     let header = try headerSource(try overlaySource())
-    // Spec §13.4: mini draws the dot without the word; the counter follows.
+    // Spec §13.4: mini draws the dot without the word; the counter follows,
+    // beside the brand in mini and in every vertical form.
     XCTAssertTrue(header.contains("showsWord: !mini"))
-    XCTAssertTrue(header.contains("if mini, let map = channelMap {"))
+    XCTAssertTrue(header.contains("let leadingCounter = mini || state.channelMapCounterStacked"))
+    XCTAssertTrue(header.contains("if leadingCounter, let map = channelMap {"))
     XCTAssertFalse(header.contains("short: mini"))
     XCTAssertFalse(header.contains("miniAgentMicrophone"))
   }

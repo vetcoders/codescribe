@@ -189,6 +189,18 @@ pub(super) fn prepare_env_import(
     {
         settings.toggle_silence_sec = Some(n);
     }
+    // The channel send pause starts from the power user's own autoseal number,
+    // never from hands-free dictation's silence. `0` (off) has no settings
+    // form, so it stays an env-only override.
+    if let Some(v) = migrated_value(
+        file_env,
+        crate::config::agent_channel::CHANNEL_AUTOSEAL_SECS_ENV,
+    ) && let Some(n) = crate::config::agent_channel::parse_autoseal_override(&v)
+        && n > 0.0
+    {
+        settings.agent_channel_send_pause_sec =
+            Some(crate::config::agent_channel::normalize_send_pause_sec(n));
+    }
     if let Some(v) = migrated_value(file_env, "WHISPER_CONTEXT_WINDOW_SEC")
         && let Ok(n) = v.parse::<f32>()
     {

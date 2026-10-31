@@ -74,6 +74,9 @@ mod slot_ops;
 #[path = "acoustic_ledger/speech_anchor.rs"]
 mod speech_anchor;
 pub use speech_anchor::WordAnchorIdentity;
+#[cfg(test)]
+#[path = "acoustic_ledger/forward_publication_tests.rs"]
+mod forward_publication_tests;
 #[path = "acoustic_ledger/word_adjudication.rs"]
 pub mod word_adjudication;
 #[cfg(test)]
@@ -91,6 +94,8 @@ pub mod word_verdict;
 use word_verdict::WordDeletionReceipt;
 #[path = "acoustic_ledger/recovery_diagnostics.rs"]
 mod recovery_diagnostics;
+#[path = "acoustic_ledger/witness.rs"]
+pub mod witness;
 pub use recovery_diagnostics::{
     CoverageDiagnostics, RecoveryAlternativeDiagnostic, RecoveryDiagnostic, RecoveryPinDiagnostic,
 };
@@ -924,6 +929,12 @@ pub struct AcousticLedger {
     /// Returned Whisper and cloud fences merged per capture, so asking whether
     /// complete decode covered an owner is one lookup, not a scan per tick.
     complete_decode_spans: BTreeMap<String, BTreeMap<u64, Vec<(u64, u64)>>>,
+    /// Parts of a retired coarse label that have not yet been published by
+    /// an accepted measured word partition. Decoder context does not pay it.
+    publication_debt: BTreeMap<OccurrenceIdentity, Vec<(u64, u64)>>,
+    /// Matched quiet publication work, bound to its observation and clipped
+    /// owner range. This is not an empty decoder-final receipt.
+    quiet_publication_bands: std::collections::HashSet<(ObservationIdentity, OccurrenceIdentity)>,
     /// Matched successful empty finals; these observations mint no Word.
     successful_empty_decodes: std::collections::HashSet<ObservationIdentity>,
     answered: std::collections::HashSet<ObservationIdentity>,
@@ -2180,10 +2191,7 @@ impl AcousticLedger {
                 slots.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
             } else if incoming
                 .iter()
-                .filter(|other| {
-                    self.same_anchored_word(other, &word)
-                        && normalize_word_token(&other.text) == normalize_word_token(&word.text)
-                })
+                .filter(|other| self.same_anchored_word(other, &word))
                 .count()
                 > 1
             {
@@ -2632,7 +2640,14 @@ impl AcousticLedger {
 
     /// Debt is open until complete decode windows cover its whole range.
     pub fn text_recovery_pending(&self, occurrence: &OccurrenceIdentity) -> bool {
-        self.pending_text_recovery.contains(occurrence) && !self.complete_decode_covers(occurrence)
+        self.publication_debt.get(occurrence).is_some_and(|ranges| {
+            ranges.iter().any(|&(start, end)| {
+                !self
+                    .publication_range_debt(occurrence, start, end)
+                    .is_empty()
+            })
+        }) || (self.pending_text_recovery.contains(occurrence)
+            && !self.complete_decode_covers(occurrence))
     }
 
     pub fn pending_text_recoveries(
@@ -2642,11 +2657,14 @@ impl AcousticLedger {
     ) -> Vec<OccurrenceIdentity> {
         self.pending_text_recovery
             .iter()
+            .chain(self.publication_debt.keys())
             .filter(|occurrence| {
                 occurrence.session == session
                     && occurrence.capture_epoch == capture_epoch
-                    && !self.complete_decode_covers(occurrence)
+                    && self.text_recovery_pending(occurrence)
             })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .cloned()
             .collect()
     }
@@ -2912,6 +2930,16 @@ impl AcousticLedger {
         let held = self.slots_of(owner).unwrap_or(&[]).to_vec();
         let protected = |source: &WordSlot| {
             observation.producer != ObservationProducer::ManualHuman
+                && !operations.iter().any(|operation| {
+                    operation.sources.contains(source)
+                        && self
+                            .independent_dt_partition_debt(
+                                observation,
+                                &operation.sources,
+                                &operation.outputs,
+                            )
+                            .is_some()
+                })
                 && source.producer.authority_rank() > observation.producer.authority_rank()
                 && !self.speech_evidence.as_ref().is_some_and(|speech| {
                     speech
@@ -3404,6 +3432,9 @@ impl AcousticLedger {
         self.record_layer_decision(observation, text, &decision, None);
         let accepted = decision.grants_mutation()
             || (slot_revision && matches!(decision, MutationReceipt::Preserve { .. }));
+        if applies_slots && decision.grants_mutation() {
+            self.account_published_coarse_words(observation, operations);
+        }
         if authorized_recovery
             && observation.producer == ObservationProducer::ManualHuman
             && !slot_revision
@@ -3785,6 +3816,10 @@ impl AcousticLedger {
         if sample_rate_hz > 0 {
             self.capture_rate_hz = Some(sample_rate_hz);
         }
+    }
+
+    pub(super) fn capture_rate(&self) -> Option<u32> {
+        self.capture_rate_hz
     }
 
     /// Spans whose character rate over the declared range is a clock-lie.
@@ -4198,6 +4233,7 @@ impl AcousticLedger {
             super::trail::TrailEvent::Qualification {
                 evidence: evidence.clone(),
                 calibration: calibration.clone(),
+                capture_rate_hz: self.capture_rate_hz,
             },
         );
         AdmissionReceipt::Qualified { occurrence, serial }
