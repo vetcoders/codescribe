@@ -12,7 +12,7 @@
         demo demo-raw demo-assistive check verify semgrep fix clean help corpus-census test-corpus-parity \
         dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
         dmg dmg-signed release-standard release-nightly release-full release-dmgs release-stable install-app-release notarize verify-dmg download-model download-e5 download-embedder ensure-models \
-        hooks site-dev
+        hooks site-dev clean-worktree-targets structural-gate
 
 SHELL := /bin/bash
 # Founder 2026-10-07: worktree sources share the main checkout's Cargo cache.
@@ -1328,6 +1328,15 @@ clean:
 	@cargo clean
 	@rm -rf .loctree
 	@echo "Cleaned"
+
+# Fleet worktrees build into the shared target of the main checkout, so any
+# `target/` left inside a worktree is residue (4-18 GiB each).
+clean-worktree-targets:
+	@scripts/verify-zero-target.sh --sweep
+
+structural-gate:
+	@loct health
+	@scripts/verify-zero-target.sh --check
 
 # ============================================================================
 # Help
