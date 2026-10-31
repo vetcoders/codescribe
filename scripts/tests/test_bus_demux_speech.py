@@ -2037,6 +2037,8 @@ class StreamingSpeechTests(unittest.TestCase):
             def finish(self):
                 self.eof = True
             def poll(self):
+                if take_after_first and self.returncode is None:
+                    return None
                 return 0 if self.eof else self.returncode
             def terminate(self):
                 self.returncode = -15
