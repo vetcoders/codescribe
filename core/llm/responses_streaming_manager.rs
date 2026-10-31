@@ -4241,4 +4241,83 @@ mod tests {
     async fn m3a_cancel_releases_responses_body_read_without_time_passing() {
         m3a_cancel_responses_phase(Some(200)).await;
     }
+
+    // HTTP transfer frames, not two TCP writes: the decoder exposes each
+    // non-empty chunk independently even if the wire bytes arrive together.
+    async fn m3a_two_transfer_chunks(split_complete_scalar: bool) -> String {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1/responses", listener.local_addr().unwrap());
+        let mut first = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"literal-exam\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_utf8_exam\",\"status\":\"completed\"}}\n\n"
+        ).as_bytes().to_vec();
+        let second = if split_complete_scalar {
+            first.extend_from_slice(b": \xe2");
+            b"\x82\xac\n\n".to_vec()
+        } else {
+            b": \xe2".to_vec()
+        };
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            scripted_sse::read_request(&mut socket).await;
+            let mut response = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n".to_vec();
+            for chunk in [first, second] {
+                response.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+                response.extend_from_slice(&chunk);
+                response.extend_from_slice(b"\r\n");
+            }
+            response.extend_from_slice(b"0\r\n\r\n");
+            socket.write_all(&response).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        endpoint
+    }
+
+    /// Fix 1f54ff38f, retained by 61e3a19f3; kills M3a-11 (original M1-05).
+    /// A completed scalar is legal; an incomplete later transfer frame refuses.
+    #[tokio::test(start_paused = true)]
+    async fn m3a_ordinary_terminal_then_second_http_chunk_refuses_truncated_utf8() {
+        for complete in [true, false] {
+            let endpoint = m3a_two_transfer_chunks(complete).await;
+            let client = Client::builder().no_proxy().http1_only().build().unwrap();
+            let manager = ResponsesStreamingManager::new(
+                &client, &endpoint, "exam-key",
+                StreamCallbacks { assistant: None, reasoning: None },
+                Duration::from_secs(30), Duration::from_secs(30),
+            );
+            let result = m3a_ticks(manager.stream(&json!({}))).await.expect("two transfer frames settle without time");
+            if complete {
+                assert_eq!(result.unwrap().assistant_text, "literal-exam");
+            } else {
+                assert!(result.unwrap_err().to_string().contains("incomplete UTF-8"));
+            }
+        }
+    }
+
+    /// Fix 1f54ff38f, retained by 61e3a19f3; kills M3a-12 (original M1-18).
+    /// Never certify a clean agent chain before the later frame is validated.
+    #[tokio::test(start_paused = true)]
+    async fn m3a_agent_terminal_then_second_http_chunk_refuses_truncated_utf8() {
+        for complete in [true, false] {
+            let endpoint = m3a_two_transfer_chunks(complete).await;
+            let client = Client::builder().no_proxy().http1_only().build().unwrap();
+            let manager = ResponsesStreamingManager::new(
+                &client, &endpoint, "exam-key",
+                StreamCallbacks { assistant: None, reasoning: None },
+                Duration::from_secs(30), Duration::from_secs(30),
+            );
+            let events = m3a_ticks(async {
+                drain(manager.stream_agent(&json!({})).await.unwrap()).await
+            }).await.expect("two transfer frames settle without time");
+            assert_eq!(delta_text(&events), "literal-exam");
+            if complete {
+                assert!(has_clean_done(&events), "{events:?}");
+                assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error(_))), "{events:?}");
+            } else {
+                assert!(!has_clean_done(&events), "{events:?}");
+                assert!(events.iter().any(|e| matches!(e, AgentEvent::Error(message) if message.contains("incomplete UTF-8"))), "{events:?}");
+            }
+        }
+    }
 }
