@@ -29,9 +29,9 @@ pub use acp_provider::{AcpProvider, AcpProviderConfig};
 pub use anthropic_provider::AnthropicProvider;
 pub use openai_provider::OpenAiProvider;
 
-/// The host selects the backend before entering the shared provider factory.
-/// ACP process and approval context are explicit until the settings owner
-/// supplies persisted ACP selection.
+/// One provider factory accepts the sealed native settings generation or an
+/// explicit embedding launch. Native ACP selection comes only from the sealed
+/// Agent lane; AgentSession supplies its actual tool and approval context.
 pub enum AgentProviderConfig<'a> {
     Llm(&'a RuntimeSettingsSnapshot),
     Acp(Box<AcpProviderConfig>),
@@ -69,6 +69,9 @@ pub fn create_agent_provider<'a>(
     let lane = runtime_settings.llm_lanes().assistive();
     if let Some(reason) = assistive_unavailable_reason(lane) {
         anyhow::bail!("{reason}");
+    }
+    if let Some(configuration) = lane.acp_configuration() {
+        return Ok(Box::new(AcpProvider::from_runtime(configuration)?));
     }
     let request_timing = runtime_settings.ai_execution().request_timing();
     // Selected by protocol, not vendor: `OpenAiProvider` is the Responses-family

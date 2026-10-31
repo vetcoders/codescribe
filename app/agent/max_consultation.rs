@@ -254,6 +254,7 @@ fn admitted_provider(settings: &RuntimeSettingsSnapshot) -> Result<AdmittedConsu
     lane.wire_family().as_str().hash(&mut identity);
     lane.endpoint().hash(&mut identity);
     lane.model().hash(&mut identity);
+    lane.acp_configuration().hash(&mut identity);
     lane.credential().key_account().hash(&mut identity);
     lane.credential().account_auth().hash(&mut identity);
     options.system_prompt.hash(&mut identity);
@@ -265,9 +266,11 @@ fn admitted_provider(settings: &RuntimeSettingsSnapshot) -> Result<AdmittedConsu
     // rotated or another account signs in; neither the key nor this
     // fingerprint is persisted or logged.
     let mut credential = std::collections::hash_map::DefaultHasher::new();
-    lane.credential().request_api_key().hash(&mut credential);
-    if let Some(vendor) = lane.vendor() {
-        codescribe_core::llm::account_auth::account_id(vendor).hash(&mut credential);
+    if lane.acp_configuration().is_none() {
+        lane.credential().request_api_key().hash(&mut credential);
+        if let Some(vendor) = lane.vendor() {
+            codescribe_core::llm::account_auth::account_id(vendor).hash(&mut credential);
+        }
     }
     Ok(AdmittedConsultationProvider {
         seal: format!(

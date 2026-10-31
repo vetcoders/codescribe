@@ -13,7 +13,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// Explicit argv launch specification. No shell parses the command or arguments.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AcpCommand {
     pub program: String,
     pub args: Vec<String>,
@@ -52,3 +52,15 @@ impl From<std::io::Error> for AcpError {
         Self::Io(error)
     }
 }
+
+#[cfg(target_os = "macos")]
+pub(crate) fn kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) {
+        // SAFETY: the child was spawned as leader of this dedicated group.
+        // A negative positive-child PID addresses that group, never our group.
+        let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn kill_process_group(_pid: Option<u32>) {}

@@ -10,13 +10,38 @@ use async_trait::async_trait;
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 
-use super::{AgentEvent, ContentBlock, Message, ToolDefinition};
+use super::{
+    AgentEvent, AgentUiEvent, ContentBlock, Message, ToolApprovalHandler, ToolDefinition, ToolRegistry,
+};
+
+/// Borrowed runtime owners of the calling AgentSession, cloned only as handles
+/// for an active provider stream. A backend must not replace their policy,
+/// history or approval authority.
+#[derive(Clone)]
+pub struct AgentProviderHost {
+    pub tools: std::sync::Arc<ToolRegistry>,
+    pub ui_tx: tokio::sync::mpsc::Sender<AgentUiEvent>,
+    pub approval_handler: Option<ToolApprovalHandler>,
+    pub approval_timeout: Duration,
+    pub session_id: String,
+    pub thread_id: String,
+}
 
 /// A streaming agent backend (Anthropic, OpenAI Responses, …).
 ///
 /// Implementors are shared across tasks, hence `Send + Sync`.
 #[async_trait]
 pub trait AgentProvider: Send + Sync {
+    /// Bind the actual session's host services immediately before streaming.
+    /// HTTP providers consume ToolCallReady in the session and need no binding.
+    fn bind_host(&self, _host: AgentProviderHost) {}
+
+    /// Whether a provider can prepare a genuinely tool-free disposable chain.
+    /// External agent processes cannot promise this for their own tool runtime.
+    fn supports_context_preparation(&self) -> bool {
+        true
+    }
+
     /// Start a turn and return the channel carrying its [`AgentEvent`] stream.
     ///
     /// The receiver closes when the turn ends; errors mid-turn arrive as events

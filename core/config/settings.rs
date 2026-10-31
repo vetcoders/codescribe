@@ -118,6 +118,25 @@ impl FormattingPolicy {
 /// chosen contract (removed 2026-08-09).
 pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/.codescribe";
 
+/// Explicit local Agent selection in `speech.assistive.acp`. Arguments are
+/// already separated; no shell, model-prefix parser or environment override
+/// can silently select an executable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AcpLaunchSettings {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub cwd: String,
+}
+
+/// Validated local launch facts sealed by the same pass as the Agent lane.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RuntimeAcpConfiguration {
+    pub command: crate::acp::AcpCommand,
+    pub workspace_roots: Vec<PathBuf>,
+}
+
 /// Power-user override of `interaction.agent_send_hold_sec`.
 pub const AGENT_SEND_HOLD_ENV: &str = "CODESCRIBE_AGENT_SEND_HOLD_SEC";
 /// Seconds between an Agent channel seal and automatic delivery; zero disables it.
@@ -273,6 +292,9 @@ pub struct UserSettings {
     /// Assistive lane provider reference (`ProviderRef` spelling); `None` ⇒ OpenAI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_provider: Option<String>,
+    /// Explicit opt-in local ACP backend; absent preserves the HTTP lane.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_acp: Option<AcpLaunchSettings>,
     /// Formatting lane provider reference (`ProviderRef` spelling); `None` ⇒ OpenAI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_formatting_provider: Option<String>,
@@ -731,6 +753,7 @@ pub struct RuntimeLlmLane {
     /// The level requests on this lane ask for. Formatting always carries one
     /// (default `none`); the Agent lane carries one only when the user chose it.
     reasoning: Option<crate::llm::provider::ReasoningEffort>,
+    acp: Option<RuntimeAcpConfiguration>,
 }
 
 impl RuntimeLlmLane {
@@ -751,7 +774,35 @@ impl RuntimeLlmLane {
             unavailable_reason,
             configuration_fault,
             reasoning: None,
+            acp: None,
         }
+    }
+
+    pub(super) fn with_acp(
+        mut self,
+        configuration: Result<RuntimeAcpConfiguration, String>,
+    ) -> Self {
+        match configuration {
+            Ok(configuration) => {
+                self.model = configuration.command.program.clone();
+                self.acp = Some(configuration);
+                self.configuration_fault = None;
+                self.unavailable_reason = None;
+                self.available = true;
+            }
+            Err(reason) => {
+                self.configuration_fault = Some(reason.clone());
+                self.unavailable_reason = Some(reason);
+                self.available = false;
+            }
+        }
+        self
+    }
+
+    /// The selected local backend, if this generation explicitly opted in.
+    /// HTTP provider identity is retained only as the user's inactive choice.
+    pub fn acp_configuration(&self) -> Option<&RuntimeAcpConfiguration> {
+        self.acp.as_ref()
     }
 
     pub(super) fn with_reasoning(mut self, effort: crate::llm::provider::ReasoningEffort) -> Self {
@@ -775,7 +826,11 @@ impl RuntimeLlmLane {
 
     /// Picker label of the provider (vendor display name or custom row name).
     pub fn provider_display_name(&self) -> &str {
-        &self.provider.display_name
+        if self.acp.is_some() {
+            "ACP"
+        } else {
+            &self.provider.display_name
+        }
     }
 
     /// The vendor, when the provider is one; `None` for a Custom provider.
@@ -812,7 +867,8 @@ impl RuntimeLlmLane {
     /// Whether a request can be sent under the credential truth that exists
     /// now, rather than only under the truth observed when this lane was sealed.
     pub fn request_available(&self) -> bool {
-        self.credential.account_auth()
+        self.acp.is_some()
+            || self.credential.account_auth()
             || self.credential.request_api_key().is_some()
             || !self.provider.key_required
     }
@@ -845,7 +901,7 @@ impl RuntimeLlmLane {
 
     pub(super) fn digest_material(&self) -> String {
         format!(
-            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{:?}",
             self.lane.as_str(),
             self.provider.reference,
             self.provider.wire,
@@ -855,6 +911,7 @@ impl RuntimeLlmLane {
             self.credential.api_key.is_some(),
             self.credential.account_auth,
             self.available,
+            self.acp,
         )
     }
 }
@@ -1718,6 +1775,8 @@ struct AssistiveV2 {
     llm_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acp: Option<AcpLaunchSettings>,
 }
 
 /// Pacing of text as it lands in the target app: buffering delay, typing
@@ -2138,6 +2197,7 @@ impl UserSettings {
                     provider: self.llm_assistive_provider.clone(),
                     llm_model: self.llm_assistive_model.clone(),
                     llm_reasoning: self.llm_assistive_reasoning.clone(),
+                    acp: self.agent_acp.clone(),
                 }),
                 emission: Some(EmissionV2 {
                     buffer_delay_ms: self.buffer_delay_ms,
@@ -2319,6 +2379,7 @@ impl UserSettings {
                 .map(|p| p.pending_env_key_imports.clone())
                 .unwrap_or_default(),
             llm_assistive_model: cloned!(v2.speech, assistive, llm_model),
+            agent_acp: cloned!(v2.speech, assistive, acp),
             llm_assistive_reasoning: cloned!(v2.speech, assistive, llm_reasoning),
             llm_assistive_provider: cloned!(v2.speech, assistive, provider),
             chat_zoom: copy!(v2.ui, chat_zoom),
@@ -3084,7 +3145,7 @@ impl UserSettings {
             changed |= remove_json_keys_at(
                 &mut value,
                 &["speech", "assistive"],
-                &["llm_endpoint", "llm_model", "provider"],
+                &["llm_endpoint", "llm_model", "provider", "acp"],
             )?;
             changed |= remove_json_keys_at(
                 &mut value,
@@ -3120,6 +3181,7 @@ impl UserSettings {
                     "llm_assistive_endpoint",
                     "llm_assistive_model",
                     "llm_assistive_provider",
+                    "agent_acp",
                     "openai_oauth_client_id",
                     "anthropic_oauth_client_id",
                     "xai_oauth_client_id",

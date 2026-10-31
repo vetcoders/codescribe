@@ -72,7 +72,7 @@ pub use mcp_projection::{
 pub use permissions::{
     AgentPermissions, PermissionLevel, PermissionSource, ToolCapability, tool_identity,
 };
-pub use provider::{AgentProvider, StreamOptions};
+pub use provider::{AgentProvider, AgentProviderHost, StreamOptions};
 pub use redaction::{
     CommandRedactor, contains_sensitive_key, redact_command_line, redacted_arguments,
 };

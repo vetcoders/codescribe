@@ -27,7 +27,7 @@ use crate::agent::{
     ToolDefinition, ToolExecutionPolicy, ToolRegistry, ToolRisk,
 };
 
-use super::AcpError;
+use super::{AcpError, kill_process_group};
 
 /// Canonical registry identities of the host operations exposed over ACP.
 pub const READ_TOOL: &str = "acp_read_text_file";
@@ -123,10 +123,20 @@ pub struct AcpClientBridge {
     terminals: Mutex<HashMap<String, Arc<Terminal>>>,
     closed: AtomicBool,
     root_dirs: HashMap<PathBuf, Dir>,
+    native_session_id: Option<String>,
 }
 
 impl AcpClientBridge {
     pub fn new(mut config: AcpClientBridgeConfig) -> Result<Self, AcpError> {
+        // The supplied grant roots are canonical, not symlink aliases whose
+        // meaning may change between turns of a retained provider.
+        for root in &config.workspace_roots {
+            if root.canonicalize()? != *root {
+                return Err(AcpError::PermissionDenied(
+                    "ACP workspace root changed after selection".into(),
+                ));
+            }
+        }
         config.workspace_roots = canonical_roots(&config.workspace_roots)?;
         let mut root_dirs = HashMap::new();
         for path in &config.workspace_roots {
@@ -145,7 +155,32 @@ impl AcpClientBridge {
             terminals: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             root_dirs,
+            native_session_id: None,
         })
+    }
+
+    /// Use the exact calling AgentSession's registered native operations and
+    /// approval identity. No ACP-specific permission or registry owner exists
+    /// on this production route.
+    pub fn bind_native_session(&mut self, session_id: String) {
+        self.native_session_id = Some(session_id);
+    }
+
+    /// Pin the launch cwd through the same opened workspace capability as
+    /// filesystem RPCs. A path swap after validation cannot redirect exec.
+    pub fn open_launch_directory(&self, cwd: &Path) -> Result<std::fs::File, AcpError> {
+        let checked = checked_path(cwd, &self.config.workspace_roots, false)?;
+        let dir = self.root_dir(&checked)?.open_dir(&checked.relative)?;
+        let file = dir.into_std_file();
+        if !file.metadata()?.is_dir()
+            || checked.metadata.as_ref().is_none_or(|expected| {
+                file.metadata().map(|actual| !same_file(expected, &actual)).unwrap_or(true)
+            })
+        {
+            return Err(AcpError::PermissionDenied("ACP launch cwd changed after selection".into()));
+        }
+        checked.confirm(&self.config.workspace_roots)?;
+        Ok(file)
     }
 
     /// Bind before handling any client request. A peer cannot reuse a terminal
@@ -233,10 +268,28 @@ impl AcpClientBridge {
     }
 
     async fn authorize(&self, name: &str, input: &Value, call_id: &str) -> Result<(), AcpError> {
-        let session = self
+        let acp_session = self
             .session_id
             .as_deref()
             .ok_or_else(|| AcpError::PermissionDenied("ACP session has not been bound".into()))?;
+        let mut native_input = input.clone();
+        let name = if self.native_session_id.is_some() {
+            match name {
+                READ_TOOL => "read_file",
+                WRITE_TOOL => "write_file",
+                TERMINAL_TOOL => {
+                    // Protocol translation into run_process's actual schema;
+                    // its validator still checks argv and command shape.
+                    native_input["program"] = input["command"].clone();
+                    "run_process"
+                }
+                registered => registered,
+            }
+        } else {
+            name
+        };
+        let input = &native_input;
+        let session = self.native_session_id.as_deref().unwrap_or(acp_session);
         let (decision, targets) = self.config.registry.decide_with_targets(
             name,
             input,
@@ -959,18 +1012,6 @@ fn read_output<R: AsyncRead + Unpin + Send + 'static>(
         }
     })
 }
-
-#[cfg(target_os = "macos")]
-fn kill_process_group(pid: Option<u32>) {
-    if let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) {
-        // SAFETY: the child was spawned as leader of this dedicated group.
-        // A negative positive-child PID addresses that group, never our group.
-        let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn kill_process_group(_pid: Option<u32>) {}
 
 fn exit_status(status: ExitStatus) -> Value {
     #[cfg(unix)]

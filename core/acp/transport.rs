@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::protocol::{diagnostic_prefix, notification, parse_frame, redact_diagnostic};
-use super::{AcpCommand, AcpError};
+use super::{AcpCommand, AcpError, kill_process_group};
 
 /// A frame is bounded before parsing; a missing newline cannot grow forever.
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -27,6 +27,22 @@ enum Outbound {
     Shutdown(Option<String>, Option<oneshot::Sender<()>>),
 }
 
+/// Retained inside the process future even before its first poll. Runtime
+/// shutdown or task abort still closes descendants, not only the direct child.
+struct OwnedProcessGroup(Option<u32>);
+
+impl OwnedProcessGroup {
+    fn kill(&mut self) {
+        kill_process_group(self.0.take());
+    }
+}
+
+impl Drop for OwnedProcessGroup {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
 /// Process ownership stays with this handle, including when its caller drops
 /// a pending turn future. Dropping it requests cancel and then kills/reaps.
 pub struct AcpTransport {
@@ -39,17 +55,43 @@ pub struct AcpTransport {
 impl AcpTransport {
     /// Spawn a configured executable directly, never through an implicit shell.
     pub async fn spawn(command: &AcpCommand) -> Result<Self, AcpError> {
-        let mut child = Command::new(&command.program)
-            .args(&command.args)
+        Self::spawn_in_directory(command, std::fs::File::open(&command.cwd)?).await
+    }
+
+    /// The caller pins a workspace-validated directory capability before exec.
+    pub async fn spawn_in_directory(
+        command: &AcpCommand,
+        cwd: std::fs::File,
+    ) -> Result<Self, AcpError> {
+        if !cwd.metadata()?.is_dir() {
+            return Err(AcpError::PermissionDenied("ACP cwd is not a directory".into()));
+        }
+        let mut launch = Command::new(&command.program);
+        launch.args(&command.args)
             .current_dir(&command.cwd)
             .envs(&command.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(AcpError::Io)?;
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        launch.process_group(0);
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd;
+            // SAFETY: the closure retains an owned directory descriptor and
+            // only calls async-signal-safe fchdir before exec.
+            unsafe {
+                launch.pre_exec(move || {
+                    if libc::fchdir(cwd.as_raw_fd()) == -1 {
+                        Err(std::io::Error::last_os_error())
+                    } else { Ok(()) }
+                });
+            }
+        }
+        let mut child = launch.spawn().map_err(AcpError::Io)?;
         let process_id = child.id();
+        let process_group = OwnedProcessGroup(process_id);
         let stdin = child
             .stdin
             .take()
@@ -75,6 +117,7 @@ impl AcpTransport {
             frames,
             diagnostics,
             stderr_task,
+            process_group,
         ));
         Ok(Self {
             outgoing,
@@ -167,11 +210,13 @@ async fn run_process(
     frames: mpsc::Sender<Result<Value, AcpError>>,
     diagnostics: Arc<Mutex<VecDeque<String>>>,
     mut stderr_task: JoinHandle<()>,
+    mut process_group: OwnedProcessGroup,
 ) {
     let mut session_id = None;
     let mut line = Vec::new();
     let mut completion = None;
     let mut terminal_error = None;
+    let mut pending_permissions: Vec<Value> = Vec::new();
     loop {
         tokio::select! {
             biased;
@@ -179,6 +224,11 @@ async fn run_process(
                 Some(Outbound::Write(bytes, ack)) => {
                     let result = write_frame(&mut stdin, &bytes, WRITE_TIMEOUT).await;
                     let failed = result.is_err();
+                    if !failed && let Ok(frame) = serde_json::from_slice::<Value>(&bytes) {
+                        if frame.get("method").is_none() && let Some(id) = frame.get("id") {
+                            pending_permissions.retain(|pending| pending != id);
+                        }
+                    }
                     let _ = ack.send(result);
                     if failed { break; }
                 }
@@ -192,6 +242,15 @@ async fn run_process(
             },
             result = read_frame(&mut stdout, &mut line) => match result {
                 Ok(Some(frame)) => {
+                    if frame["method"].as_str() == Some("session/request_permission")
+                        && let Some(id) = frame.get("id")
+                    {
+                        if pending_permissions.len() >= 64 || pending_permissions.contains(id) {
+                            terminal_error = Some(AcpError::Protocol("too many or duplicate pending permission requests".into()));
+                            break;
+                        }
+                        pending_permissions.push(id.clone());
+                    }
                     if frames.send(Ok(frame)).await.is_err() { break; }
                 }
                 Ok(None) => {
@@ -204,6 +263,18 @@ async fn run_process(
                 }
             },
         }
+    }
+    // Cancelling a turn also answers every outstanding permission request.
+    // Send one bounded batch so a silent peer cannot extend teardown per card.
+    let mut cancelled_permissions = Vec::new();
+    for id in pending_permissions {
+        let frame = super::protocol::success(id, serde_json::json!({"outcome":{"outcome":"cancelled"}}));
+        if serde_json::to_writer(&mut cancelled_permissions, &frame).is_ok() {
+            cancelled_permissions.push(b'\n');
+        }
+    }
+    if !cancelled_permissions.is_empty() {
+        let _ = write_frame(&mut stdin, &cancelled_permissions, CANCEL_TIMEOUT).await;
     }
     if let Some(id) = session_id
         && let Ok(mut bytes) = serde_json::to_vec(&notification(
@@ -220,6 +291,9 @@ async fn run_process(
     if terminal_error.is_none() {
         let _ = tokio::time::timeout(CANCEL_TIMEOUT, child.wait()).await;
     }
+    // Dedicated group ownership includes descendants holding stdout/stderr,
+    // even after the agent parent has already exited.
+    process_group.kill();
     let status = match child.try_wait() {
         Ok(Some(status)) => Some(status),
         _ => {

@@ -1,7 +1,7 @@
 //! ACP provider lifecycle. The process owns agent execution; Codescribe owns
 //! client permissions, event projection, cancellation and process lifetime.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -13,7 +13,8 @@ use codescribe_core::acp::protocol;
 use codescribe_core::acp::transport::AcpTransport;
 use codescribe_core::acp::{AcpCommand, AcpError};
 use codescribe_core::agent::{
-    AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions, ToolDefinition,
+    AgentEvent, AgentProvider, AgentProviderHost, ContentBlock, Message, Role, StreamOptions,
+    ToolDefinition,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc, watch};
@@ -30,7 +31,11 @@ pub struct AcpProviderConfig {
 
 /// A local ACP process provider, with one active turn and a resumable session id.
 pub struct AcpProvider {
-    config: AcpProviderConfig,
+    command: AcpCommand,
+    workspace_roots: Vec<std::path::PathBuf>,
+    explicit_bridge: Option<AcpClientBridgeConfig>,
+    host: StdMutex<Option<AgentProviderHost>>,
+    invalidated_sessions: Arc<StdMutex<std::collections::HashSet<String>>>,
     chain: Arc<Mutex<Option<String>>>,
     turn: Arc<Mutex<()>>,
     cancel: watch::Sender<u64>,
@@ -38,22 +43,52 @@ pub struct AcpProvider {
 
 impl AcpProvider {
     pub fn new(config: AcpProviderConfig) -> Result<Self> {
-        if config.command.program.trim().is_empty() {
+        Self::configured(
+            config.command,
+            config.bridge.workspace_roots.clone(),
+            Some(config.bridge),
+            config.acp_session_id,
+        )
+    }
+
+    /// Native selection is already resolved by the immutable settings owner.
+    /// Its registry and approvals can only be bound by the owning AgentSession.
+    pub fn from_runtime(
+        configuration: &codescribe_core::config::RuntimeAcpConfiguration,
+    ) -> Result<Self> {
+        Self::configured(
+            configuration.command.clone(),
+            configuration.workspace_roots.clone(),
+            None,
+            None,
+        )
+    }
+
+    fn configured(
+        mut command: AcpCommand,
+        workspace_roots: Vec<std::path::PathBuf>,
+        explicit_bridge: Option<AcpClientBridgeConfig>,
+        session_id: Option<String>,
+    ) -> Result<Self> {
+        if command.program.trim().is_empty() {
             anyhow::bail!("ACP executable is empty");
         }
-        let cwd = config.command.cwd.canonicalize()?;
-        if !cwd.is_dir()
-            || !config
-                .bridge
-                .workspace_roots
-                .iter()
-                .any(|root| root.canonicalize().is_ok_and(|root| cwd.starts_with(root)))
-        {
+        let cwd = command.cwd.canonicalize()?;
+        let roots = workspace_roots
+            .iter()
+            .map(|root| root.canonicalize())
+            .collect::<std::io::Result<Vec<_>>>()?;
+        if !cwd.is_dir() || !roots.iter().any(|root| root.is_dir() && cwd.starts_with(root)) {
             anyhow::bail!("ACP working directory is outside workspace roots");
         }
+        command.cwd = cwd;
         Ok(Self {
-            chain: Arc::new(Mutex::new(config.acp_session_id.clone())),
-            config,
+            command,
+            workspace_roots: roots,
+            explicit_bridge,
+            host: StdMutex::new(None),
+            invalidated_sessions: Arc::default(),
+            chain: Arc::new(Mutex::new(session_id)),
             turn: Arc::new(Mutex::new(())),
             cancel: watch::channel(0).0,
         })
@@ -74,15 +109,45 @@ impl Drop for AcpProvider {
 
 #[async_trait]
 impl AgentProvider for AcpProvider {
+    fn bind_host(&self, host: AgentProviderHost) {
+        *self.host.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(host);
+    }
+
+    fn supports_context_preparation(&self) -> bool {
+        false
+    }
+
     async fn stream(
         &self,
         messages: &[Message],
         _tools: &[ToolDefinition],
         options: &StreamOptions,
     ) -> Result<mpsc::Receiver<AgentEvent>> {
+        let host = self.host.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let bridge_config = if let Some(host) = &host {
+            AcpClientBridgeConfig {
+                registry: Arc::clone(&host.tools),
+                workspace_roots: self.workspace_roots.clone(),
+                approval_handler: host.approval_handler.clone(),
+                ui_tx: Some(host.ui_tx.clone()),
+                approval_timeout: host.approval_timeout,
+                thread_id: host.thread_id.clone(),
+            }
+        } else {
+            self.explicit_bridge.clone().ok_or_else(|| anyhow::anyhow!(
+                "ACP host services must be bound by the owning AgentSession before a turn"))?
+        };
+        let mut bridge = AcpClientBridge::new(bridge_config)?;
+        if let Some(host) = host {
+            bridge.bind_native_session(host.session_id);
+        }
+        let launch_directory = bridge.open_launch_directory(&self.command.cwd)?;
+        let command = self.command.clone();
         let (tx, rx) = mpsc::channel(128);
-        let config = self.config.clone();
         let chain = self.chain.clone();
+        let invalidated_sessions = self.invalidated_sessions.clone();
         let turn = self.turn.clone();
         let messages = messages.to_vec();
         let options = options.clone();
@@ -97,17 +162,10 @@ impl AgentProvider for AcpProvider {
                 *chain.lock().await = None;
             }
             let previous = chain.lock().await.clone();
-            let mut transport = match AcpTransport::spawn(&config.command).await {
+            let mut transport = match AcpTransport::spawn_in_directory(&command, launch_directory).await {
                 Ok(transport) => transport,
                 Err(error) => {
-                    send_failure(&tx, error).await;
-                    return;
-                }
-            };
-            let bridge = match AcpClientBridge::new(config.bridge) {
-                Ok(bridge) => bridge,
-                Err(error) => {
-                    transport.shutdown(None).await;
+                    *chain.lock().await = None;
                     send_failure(&tx, error).await;
                     return;
                 }
@@ -118,7 +176,7 @@ impl AgentProvider for AcpProvider {
                 messages: &messages,
                 options: &options,
                 previous: previous.as_deref(),
-                command: &config.command,
+                command: &command,
             };
             let result = tokio::select! {
                 result = run_turn(
@@ -132,12 +190,32 @@ impl AgentProvider for AcpProvider {
             }
             transport.shutdown(session_id.as_deref()).await;
             match result {
-                Ok(()) => {
-                    *chain.lock().await = session_id;
+                Ok(events) => {
+                    // Publish a clean terminal only after all resources have
+                    // settled and the resumable chain is already authoritative.
+                    if cancelled.has_changed().unwrap_or(true) || tx.is_closed() {
+                        invalidated_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .extend(previous.iter().chain(session_id.iter()).cloned());
+                        *chain.lock().await = None;
+                        send_failure(&tx, AcpError::Cancelled).await;
+                        return;
+                    }
+                    *chain.lock().await = session_id.clone();
+                    for event in events {
+                        if tx.send(event).await.is_err() {
+                            invalidated_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .extend(previous.iter().chain(session_id.iter()).cloned());
+                            *chain.lock().await = None;
+                            break;
+                        }
+                    }
                 }
                 Err(error) => {
                     // A cancelled/failed turn must never advance the resume id.
-                    // Reset so local history, including rollback, can be replayed.
+                    // ACP session/load is not a snapshot rollback: an aborted
+                    // prompt may already have changed the remote conversation.
+                    invalidated_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend(previous.iter().chain(session_id.iter()).cloned());
                     *chain.lock().await = None;
                     send_failure(&tx, error).await;
                 }
@@ -168,6 +246,18 @@ impl AgentProvider for AcpProvider {
     }
 
     async fn restore_response_chain(&self, id: Option<String>) {
+        self.cancel();
+        // Serialize rollback after teardown so a detached cancelled turn
+        // cannot overwrite this restore. Tainted ACP sessions cannot rewind.
+        let _turn = self.turn.lock().await;
+        // The native Stop API passes the pre-turn chain id. An ACP id names
+        // a mutable whole conversation, not a point-in-time response. Even if
+        // a clean terminal raced Stop, it cannot rewind the remote history.
+        let native = self.host.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        let id = id.filter(|id| !native && !self.invalidated_sessions.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner).contains(id));
         *self.chain.lock().await = id;
     }
 }
@@ -197,7 +287,7 @@ async fn run_turn(
     tx: &mpsc::Sender<AgentEvent>,
     session_id: &mut Option<String>,
     active_bridge: &mut Option<Arc<AcpClientBridge>>,
-) -> std::result::Result<(), AcpError> {
+) -> std::result::Result<Vec<AgentEvent>, AcpError> {
     let TurnInput {
         messages,
         options,
@@ -231,7 +321,9 @@ async fn run_turn(
             "unsupported ACP protocol version".into(),
         ));
     }
-    let cwd = command.cwd.canonicalize()?.to_string_lossy().into_owned();
+    // The launch directory was already pinned through the workspace bridge;
+    // do not reinterpret a changed pathname after the child has started.
+    let cwd = command.cwd.to_string_lossy().into_owned();
     let (method, params) = if let Some(previous) = previous {
         if initialized["agentCapabilities"]["loadSession"].as_bool() != Some(true) {
             return Err(AcpError::Protocol(
@@ -251,6 +343,11 @@ async fn run_turn(
     )
     .await
     .map_err(|_| AcpError::Protocol("session setup timed out".into()))??;
+    if let (Some(expected), Some(actual)) = (previous, session["sessionId"].as_str())
+        && expected != actual
+    {
+        return Err(AcpError::Protocol("session/load returned a different identity".into()));
+    }
     let id = previous
         .map(str::to_string)
         .or_else(|| {
@@ -266,6 +363,11 @@ async fn run_turn(
     let bridge = Arc::new(bridge);
     *active_bridge = Some(bridge.clone());
     let prompt = prompt_content(messages, options, previous.is_some())?;
+    if prompt.iter().any(|part| part["type"].as_str() == Some("image"))
+        && initialized["agentCapabilities"]["promptCapabilities"]["image"].as_bool() != Some(true)
+    {
+        return Err(AcpError::Protocol("selected ACP agent does not support image prompts".into()));
+    }
     let result = call(
         transport,
         Some(bridge.clone()),
@@ -280,17 +382,17 @@ async fn run_turn(
     let result = result?;
     match result["stopReason"].as_str() {
         Some("cancelled") => return Err(AcpError::Cancelled),
-        Some("end_turn" | "max_tokens" | "max_turn_requests" | "refusal") => {}
+        Some("end_turn") => {}
+        Some("max_tokens" | "max_turn_requests" | "refusal") => {
+            return Err(AcpError::Protocol("agent ended without completing the requested turn".into()));
+        }
         _ => {
             return Err(AcpError::Protocol(
                 "missing or unknown prompt stopReason".into(),
             ));
         }
     }
-    for event in mapper.finish(&id) {
-        tx.send(event).await.map_err(|_| AcpError::Cancelled)?;
-    }
-    Ok(())
+    Ok(mapper.finish(&id))
 }
 
 /// Consume both directions while an agent method is outstanding. Client
@@ -327,6 +429,9 @@ async fn call(
                     if let Some(request_id) = frame.get("id") {
                         let request_id = request_id.clone();
                         if let Some(bridge) = &bridge {
+                            if incoming.len() >= 64 {
+                                return Err(AcpError::Protocol("too many outstanding client requests".into()));
+                            }
                             let bridge = bridge.clone();
                             let method = method.to_string();
                             incoming.spawn(async move {
@@ -337,13 +442,16 @@ async fn call(
                                 "client requests require an active session")).await?;
                         }
                     } else if method == "session/update" {
+                        // session/load replays history as notifications. The
+                        // local AgentSession already owns it: never present it
+                        // as this turn's newly generated text or reasoning.
                         if let Some(bridge) = &bridge {
                             if params["sessionId"].as_str() != Some(bridge.session_id()) {
                                 return Err(AcpError::Protocol("session update identity mismatch".into()));
                             }
-                        }
-                        if let Some(event) = mapper.update(&params) {
-                            tx.send(event).await.map_err(|_| AcpError::Cancelled)?;
+                            if let Some(event) = mapper.update(&params) {
+                                tx.send(event).await.map_err(|_| AcpError::Cancelled)?;
+                            }
                         }
                     }
                 } else if frame["id"].as_u64() == Some(id) {

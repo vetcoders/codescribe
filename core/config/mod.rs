@@ -100,9 +100,9 @@ pub use portable::{
     write_portable_export,
 };
 pub use settings::{
-    FormattingPolicy, PromptSource, RemovedCustomProvider, RuntimeAiExecution,
-    RuntimeAiRequestTiming, RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane,
-    RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSealedPrompt, RuntimeSettingsSnapshot,
+    AcpLaunchSettings, FormattingPolicy, PromptSource, RemovedCustomProvider, RuntimeAcpConfiguration,
+    RuntimeAiExecution, RuntimeAiRequestTiming, RuntimeFormatterExecution, RuntimeLlmCredential,
+    RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSealedPrompt, RuntimeSettingsSnapshot,
     SettingsLoaderInput, SettingsSnapshotDigest, SettingsSnapshotProvenance,
     SettingsSnapshotValidation, SettingsSnapshotValidationError, UserSettings,
 };

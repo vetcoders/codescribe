@@ -66,6 +66,11 @@ pub fn parse_frame(bytes: &[u8]) -> Result<Value, AcpError> {
     if id.is_some_and(|id| !id.is_string() && !id.is_number() && !id.is_null()) {
         return Err(malformed());
     }
+    // IDs are echoed on cancellation as well as ordinary replies. Keep that
+    // bounded independently of a frame's much larger content allowance.
+    if id.and_then(Value::as_str).is_some_and(|id| id.len() > 1024) {
+        return Err(malformed());
+    }
     if let Some(method) = object.get("method") {
         if !method.as_str().is_some_and(|method| !method.is_empty())
             || object.contains_key("result")
