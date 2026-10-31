@@ -267,7 +267,7 @@ mod tests {
         }
 
         fn run(&self) -> Vec<ChurnMove> {
-            migrate_churn_data(&self.root, &self.churn(), &self.bridge)
+            migrate_churn_data(&self.root, &self.churn(), Some(&self.bridge))
         }
     }
 
