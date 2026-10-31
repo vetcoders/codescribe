@@ -163,6 +163,37 @@ class ConnectionIdentityTests(MailboxFixture):
         self.assertEqual(run.call_args_list[1].args, (["--status"],))
         self.assert_not_acknowledged()
 
+    def test_status_failure_after_attach_preserves_owner_without_claiming_native_wake(self):
+        self.mailbox.provider = self.mailbox.owner = None
+        receipt = {"kind": "attach_receipt", "channel": "3", "audience": "roman"}
+        with patch.object(self.mailbox, "run", side_effect=[receipt, ValueError("probe unavailable")]):
+            result = self.call("connect", {"provider": self.PROVIDER, "session_id": self.session,
+                                            "name": "Roman", "channel": "3"})
+        self.assertEqual((self.mailbox.provider, self.mailbox.owner), (self.PROVIDER, self.session))
+        self.assertEqual(result["mailbox_owner"]["channel"], "3")
+        self.assertFalse(result["events_target"]["follower_alive"])
+        self.assertFalse(result["native_wake_armed"])
+        self.assert_not_acknowledged()
+
+    def test_watch_provider_never_inherits_native_claims_from_stale_configuration(self):
+        for provider in ("agy", "acp"):
+            with self.subTest(provider=provider):
+                mailbox = MCP.Mailbox(DEMUX, self.root, self.bus)
+                mailbox.provider, mailbox.owner = provider, self.session
+                lease_id = DEMUX.lease_identifier(provider, self.session)
+                DEMUX.atomic_json(self.root / "leases" / f"{lease_id}.json", {
+                    "schema": DEMUX.LEASE_SCHEMA, "provider": provider,
+                    "provider_session_id": self.session, "lease_id": lease_id,
+                    "wakeup_configuration": {"wakeup": "codex-queue"}})
+                with patch.object(mailbox, "run", return_value=dict(self.healthy_status(), lease_id=lease_id, native_wake_armed=True)), \
+                        patch.object(MCP, "wake_armed", return_value=True) as native:
+                    result = mailbox.status()
+                self.assertEqual(result["mailbox_owner"]["lease_id"], lease_id)
+                self.assertFalse(result["local_queue_target"]["supported"])
+                self.assertFalse(result["native_wake_armed"])
+                self.assertEqual(result["events_target"]["wakeup_mode"], "watch_until_event")
+                native.assert_not_called()
+
 
 class MailboxTests(MailboxFixture):
     def test_read_returns_complete_owned_envelope_without_ack(self):
@@ -938,6 +969,10 @@ class ServeRobustnessTests(unittest.TestCase):
 class ClaudeCodeMailboxTests(MailboxTests):
     """The whole native contract again, owned by a Claude Code session."""
     PROVIDER = "claude-code"
+
+
+class AcpMailboxTests(MailboxTests):
+    PROVIDER = "acp"
 
 
 class ClaudeCodeProtocolTests(MCPProtocolTests):

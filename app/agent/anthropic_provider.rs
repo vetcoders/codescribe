@@ -651,6 +651,9 @@ async fn run_anthropic_stream(
         };
 
         let Some(chunk_result) = next_chunk else {
+            if !utf8_carry.is_empty() {
+                anyhow::bail!("Anthropic SSE stream ended with incomplete UTF-8");
+            }
             break;
         };
         let chunk = chunk_result.context("Anthropic SSE stream read error")?;
@@ -1891,5 +1894,81 @@ mod tests {
         let events = run_scripted(&provider).await;
         assert_eq!(delta_text(&events), "late");
         assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_comments_do_not_extend_first_event_deadline() {
+        let mut steps = vec![anthropic_head()];
+        for _ in 0..6 {
+            steps.push(Step::Pause(Duration::from_millis(60)));
+            steps.push(scripted_sse::text(": keepalive\n\n"));
+        }
+        let endpoint = scripted_sse::serve("/v1/messages", steps).await;
+        let provider = scripted_provider(
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+        );
+        let events = run_scripted(&provider).await;
+        assert!(
+            events.iter().any(
+                |event| matches!(event, AgentEvent::Error(message) if message.contains("no content event"))
+            ),
+            "{events:?}"
+        );
+        assert!(!has_clean_done(&events), "{events:?}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_comments_refresh_idle_after_generation_starts() {
+        let mut steps = vec![
+            anthropic_head(),
+            scripted_sse::text(&text_block_frames("alive")),
+        ];
+        for _ in 0..6 {
+            steps.push(Step::Pause(Duration::from_millis(60)));
+            steps.push(scripted_sse::text(": connection still alive\n\n"));
+        }
+        steps.push(anthropic_tail());
+        let endpoint = scripted_sse::serve("/v1/messages", steps).await;
+        let provider = scripted_provider(
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(600),
+        );
+        let events = run_scripted(&provider).await;
+        assert_eq!(delta_text(&events), "alive");
+        assert!(has_clean_done(&events), "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Error(_))),
+            "{events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_idle_stall_is_rejected_after_content() {
+        let steps = vec![
+            anthropic_head(),
+            scripted_sse::text(&text_block_frames("partial")),
+            Step::Pause(Duration::from_millis(250)),
+            anthropic_tail(),
+        ];
+        let endpoint = scripted_sse::serve("/v1/messages", steps).await;
+        let provider = scripted_provider(
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(600),
+        );
+        let events = run_scripted(&provider).await;
+        assert_eq!(delta_text(&events), "partial");
+        assert!(
+            events.iter().any(
+                |event| matches!(event, AgentEvent::Error(message) if message.contains("inter-chunk timeout"))
+            ),
+            "{events:?}"
+        );
+        assert!(!has_clean_done(&events), "{events:?}");
     }
 }

@@ -426,6 +426,9 @@ impl<'a> ResponsesStreamingManager<'a> {
             };
 
             let Some(chunk_result) = next_chunk else {
+                if !utf8_carry.is_empty() {
+                    anyhow::bail!("SSE stream ended with incomplete UTF-8");
+                }
                 break;
             };
 
@@ -534,6 +537,9 @@ impl<'a> ResponsesStreamingManager<'a> {
             }
 
             if saw_done {
+                if !utf8_carry.is_empty() {
+                    anyhow::bail!("SSE stream ended with incomplete UTF-8");
+                }
                 break;
             }
         }
@@ -690,6 +696,9 @@ impl<'a> ResponsesStreamingManager<'a> {
             };
 
             let Some(chunk_result) = next_chunk else {
+                if !utf8_carry.is_empty() {
+                    anyhow::bail!("Resume SSE stream ended with incomplete UTF-8");
+                }
                 break;
             };
             let chunk = chunk_result.context("Resume stream read error")?;
@@ -701,6 +710,9 @@ impl<'a> ResponsesStreamingManager<'a> {
             }) = next_sse_data(&mut buffer, &mut current_event)
             {
                 if data == "[DONE]" {
+                    if !utf8_carry.is_empty() {
+                        anyhow::bail!("Resume SSE stream ended with incomplete UTF-8");
+                    }
                     anyhow::ensure!(completed, "Resume stream ended without a clean terminal");
                     return Ok(ResponsesStreamOutput {
                         assistant_text,
@@ -783,6 +795,9 @@ impl<'a> ResponsesStreamingManager<'a> {
                 }
             }
             if completed {
+                if !utf8_carry.is_empty() {
+                    anyhow::bail!("Resume SSE stream ended with incomplete UTF-8");
+                }
                 break;
             }
         }
@@ -872,6 +887,7 @@ async fn run_agent_stream(
     let mut tool_tracker = ToolCallTracker::default();
     let mut response_id: Option<String> = None;
     let mut sent_done_event = false;
+    let mut pending_clean_done: Option<Option<String>> = None;
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -901,6 +917,9 @@ async fn run_agent_stream(
         };
 
         let Some(chunk_result) = next_chunk else {
+            if !utf8_carry.is_empty() {
+                anyhow::bail!("Agent SSE stream ended with incomplete UTF-8");
+            }
             break;
         };
         let chunk = chunk_result.context("Agent SSE stream read error")?;
@@ -948,6 +967,7 @@ async fn run_agent_stream(
                     chunk.chunk_type
                 );
                 sent_done_event = true;
+                pending_clean_done = None;
                 if tx
                     .send(AgentEvent::ResponseDone {
                         response_id: terminal_id,
@@ -978,6 +998,16 @@ async fn run_agent_stream(
                             callback(delta);
                         }
                     }
+                    AgentEvent::ResponseDone {
+                        response_id: done_id,
+                        clean: true,
+                    } => {
+                        // Hold clean completion until `[DONE]` or clean EOF so
+                        // trailing incomplete UTF-8 in the same or a later chunk
+                        // is refused before certifying a clean response chain.
+                        pending_clean_done = Some(done_id.clone());
+                        continue;
+                    }
                     AgentEvent::ResponseDone { .. } => {
                         sent_done_event = true;
                     }
@@ -996,7 +1026,24 @@ async fn run_agent_stream(
         }
 
         if saw_done {
+            if !utf8_carry.is_empty() {
+                anyhow::bail!("Agent SSE stream ended with incomplete UTF-8");
+            }
             break;
+        }
+    }
+
+    if let Some(done_id) = pending_clean_done.take() {
+        sent_done_event = true;
+        if tx
+            .send(AgentEvent::ResponseDone {
+                response_id: done_id,
+                clean: true,
+            })
+            .await
+            .is_err()
+        {
+            return Ok(());
         }
     }
 
@@ -1978,6 +2025,7 @@ pub mod scripted_sse {
     use tokio::net::{TcpListener, TcpStream};
 
     /// One scripted server action.
+    #[derive(Clone)]
     pub enum Step {
         /// Write these bytes as one segment and flush.
         Bytes(Vec<u8>),
@@ -3776,5 +3824,100 @@ mod tests {
             .unwrap();
         assert_eq!(output.assistant_text, "Hello");
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordinary_and_agent_streams_refuse_truncated_utf8_at_eof() {
+        let incomplete_tail = vec![
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Zażółć\"}\n\n",
+            ),
+            Step::Bytes(vec![0xF0, 0x9F, 0x9A]),
+        ];
+        let endpoint = scripted_sse::serve("/v1/responses", incomplete_tail.clone()).await;
+        let client = Client::new();
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        );
+        let err = manager
+            .stream(&json!({}))
+            .await
+            .expect_err("truncated UTF-8 at EOF must fail");
+        assert!(
+            err.to_string().contains("incomplete UTF-8"),
+            "unexpected error: {err}"
+        );
+
+        let endpoint = scripted_sse::serve("/v1/responses", incomplete_tail).await;
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        );
+        let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+        assert!(
+            events.iter().any(
+                |event| matches!(event, AgentEvent::Error(message) if message.contains("incomplete UTF-8"))
+            ),
+            "{events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_and_agent_streams_refuse_truncated_utf8_after_terminal_in_same_or_later_chunk()
+     {
+        let terminal_frame = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_utf8_tail\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\ndata: {\"type\":\"response.output_text.done\",\"text\":\"Hello\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_utf8_tail\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello\"}]}]}}\n\n";
+        let mut same_chunk_bytes = terminal_frame.as_bytes().to_vec();
+        same_chunk_bytes.extend_from_slice(&[0xF0, 0x9F, 0x9A]);
+
+        for steps in [
+            vec![Step::Bytes(same_chunk_bytes)],
+            vec![
+                scripted_sse::text(terminal_frame),
+                Step::Bytes(vec![0xF0, 0x9F, 0x9A]),
+            ],
+        ] {
+            let endpoint = scripted_sse::serve("/v1/responses", steps.clone()).await;
+            let client = Client::new();
+            let manager = timed_manager(
+                &client,
+                &endpoint,
+                Duration::from_millis(80),
+                Duration::from_secs(2),
+            );
+            let err = manager
+                .stream(&json!({}))
+                .await
+                .expect_err("truncated UTF-8 after terminal must fail");
+            assert!(
+                err.to_string().contains("incomplete UTF-8"),
+                "unexpected error: {err}"
+            );
+
+            let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+            let manager = timed_manager(
+                &client,
+                &endpoint,
+                Duration::from_millis(80),
+                Duration::from_secs(2),
+            );
+            let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+            assert!(
+                events.iter().any(
+                    |event| matches!(event, AgentEvent::Error(message) if message.contains("incomplete UTF-8"))
+                ),
+                "{events:?}"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::ResponseDone { clean: true, .. })),
+                "truncated UTF-8 after terminal must not certify a clean response chain: {events:?}"
+            );
+        }
     }
 }

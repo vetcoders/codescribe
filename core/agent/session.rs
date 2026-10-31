@@ -1300,6 +1300,7 @@ mod tests {
         scripted_events: Mutex<VecDeque<Vec<AgentEvent>>>,
         received_messages: Arc<Mutex<Vec<Vec<Message>>>>,
         response_chain: Mutex<Option<String>>,
+        stream_timeouts: Option<(Duration, Duration)>,
     }
 
     impl ScriptedProvider {
@@ -1309,6 +1310,7 @@ mod tests {
                 scripted_events: Mutex::new(scripted_events.into()),
                 received_messages: Arc::new(Mutex::new(Vec::new())),
                 response_chain: Mutex::new(None),
+                stream_timeouts: None,
             }
         }
     }
@@ -1378,6 +1380,10 @@ mod tests {
         /// Stable provider label for logs and retry diagnostics.
         fn name(&self) -> &str {
             "scripted-provider"
+        }
+
+        fn stream_timeouts(&self) -> Option<(Duration, Duration)> {
+            self.stream_timeouts
         }
     }
 
@@ -3193,6 +3199,118 @@ mod tests {
         assert_eq!(
             *dispatched_args.lock().expect("args lock"),
             vec![json!({ "path": "/tmp/a.txt", "content": "hello" })]
+        );
+    }
+
+    /// Approval and local tools outlive both stream budgets without ending the turn.
+    #[tokio::test(start_paused = true)]
+    async fn slow_approval_and_tool_execution_do_not_consume_stream_timeouts() {
+        let stream_budget = Duration::from_millis(10);
+        let local_delay = Duration::from_millis(60);
+        let mut provider = ScriptedProvider::new(vec![
+            vec![
+                AgentEvent::ToolCallReady {
+                    id: "call_slow_local".to_string(),
+                    name: "slow_local_tool".to_string(),
+                    arguments: json!({}),
+                },
+                AgentEvent::ResponseDone {
+                    response_id: Some("resp_before_local".to_string()),
+                    clean: true,
+                },
+            ],
+            vec![
+                AgentEvent::TextDone("local work complete".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("resp_after_local".to_string()),
+                    clean: true,
+                },
+            ],
+        ]);
+        provider.stream_timeouts = Some((stream_budget, stream_budget));
+        let received_messages = Arc::clone(&provider.received_messages);
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&handler_calls);
+        let mut registry = ToolRegistry::new();
+        registry
+            .register_with_policy(
+                ToolDefinition {
+                    name: "slow_local_tool".to_string(),
+                    description: "Wait for a local operation".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(move |_| {
+                    let calls = Arc::clone(&calls);
+                    Box::pin(async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(local_delay).await;
+                        vec![ToolResultContent::Text("local result".to_string())]
+                    })
+                }),
+                ToolExecutionPolicy {
+                    origin: ToolOrigin::Mcp {
+                        server: "local-test".to_string(),
+                        upstream_tool: "slow_operation".to_string(),
+                    },
+                    risk: ToolRisk::Mutating,
+                    requires_approval: true,
+                },
+                None,
+            )
+            .expect("register slow local tool");
+        let approval_calls = Arc::new(AtomicUsize::new(0));
+        let approvals = Arc::clone(&approval_calls);
+        let approval_handler = Arc::new(move |request: crate::agent::ToolApprovalRequest| {
+            assert_eq!(request.call_id, "call_slow_local");
+            assert_eq!(request.thread_id, "thread-slow-local");
+            approvals.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                tokio::time::sleep(local_delay).await;
+                true
+            }) as crate::agent::ToolApprovalFuture
+        });
+        let (ui_tx, mut ui_rx) = mpsc::channel(32);
+        let mut session = AgentSession::new(Box::new(provider), Arc::new(registry), ui_tx)
+            .with_tool_approval("thread-slow-local", approval_handler);
+        let started = tokio::time::Instant::now();
+
+        session
+            .send(
+                "perform local work".to_string(),
+                Vec::new(),
+                &StreamOptions::default(),
+            )
+            .await
+            .expect("approval and local execution do not inherit LLM stream deadlines");
+
+        assert!(started.elapsed() >= local_delay * 2);
+        assert_eq!(approval_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(session.thread_id(), Some("resp_after_local"));
+        let requests = received_messages.lock().expect("messages lock");
+        assert_eq!(
+            requests.len(),
+            2,
+            "tool result opens a fresh provider round"
+        );
+        assert!(
+            requests[1]
+                .iter()
+                .any(|message| message.content.iter().any(|block| {
+                    matches!(block, ContentBlock::ToolResult { tool_use_id, is_error: false, .. }
+                if tool_use_id == "call_slow_local")
+                }))
+        );
+        let mut events = Vec::new();
+        while let Ok(event) = ui_rx.try_recv() {
+            events.push(event);
+        }
+        assert!(events.contains(&AgentUiEvent::TextDone("local work complete".to_string())));
+        assert!(events.contains(&AgentUiEvent::Done));
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, AgentUiEvent::Error(_)))
         );
     }
 }

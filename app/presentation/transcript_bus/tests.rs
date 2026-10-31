@@ -2904,4 +2904,40 @@ fn forensic_l77_shared_document_conserves_all_durable_receipts() {
         revision.rendered_text.len()
     );
 }
+
+#[test]
+fn playback_journal_preserves_states_and_refuses_false_spoken_receipts() {
+    use sha2::{Digest, Sha256};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("playback.jsonl");
+    let lease = hex::encode(Sha256::digest(b"codex\0playback-owner"));
+    let mut event = serde_json::json!({
+        "schema": "codescribe.agent-reply-playback.v1",
+        "kind": "agent_reply_playback",
+        "provider": "codex", "provider_session_id": "playback-owner",
+        "lease_id": &lease[..32], "emitted_at": "2026-10-31T05:00:00Z",
+        "reply_id": "111111111111111111111111",
+        "playback_ticket": "222222222222222222222222"
+    });
+    for state in [
+        "waiting", "playing", "spoken", "failed", "refused", "stopped",
+    ] {
+        event["state"] = state.into();
+        event["spoken"] = (state == "spoken").into();
+        assert!(super::append_agent_event(&path, &event).is_ok(), "{state}");
+        let before = std::fs::read(&path).unwrap();
+        event["spoken"] = (state != "spoken").into();
+        assert!(super::append_agent_event(&path, &event).is_err(), "{state}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    event["state"] = "queued".into();
+    event["spoken"] = false.into();
+    assert!(super::append_agent_event(&path, &event).is_err());
+    event["state"] = "waiting".into();
+    for ticket in ["", "22222222222222222222222", "AAAAAAAAAAAAAAAAAAAAAAAA"] {
+        event["playback_ticket"] = ticket.into();
+        assert!(super::append_agent_event(&path, &event).is_err());
+    }
+}
+
 include!("../transcript_bus_co_audience_tests.rs");

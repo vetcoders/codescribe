@@ -92,20 +92,20 @@ def schema(properties=None, required=None):
 
 
 TOOLS = [
-    {"name": "codescribe_connect", "description": "Bind THIS conversation to a named Codescribe channel. Pass exactly this conversation's provider and real session_id from the Claude Code session hook or Junie's native /link. Never take over another conversation.",
+    {"name": "codescribe_connect", "description": "Bind THIS conversation to a named Codescribe channel. Pass exactly this conversation's provider and real native session_id. The receipt separates mailbox owner, local queue target and follower events target. Never take over another conversation.",
      "inputSchema": schema({"provider": {"type": "string", "enum": sorted(WAIT_SECONDS)},
                             "session_id": {"type": "string"}, "name": {"type": "string"},
                             "channel": {"type": "string", "pattern": "^[1-9]$"},
                             "voice": {"type": "string"}, "tts_vendor": {"type": "string", "enum": ["xai", "openai"]}},
                            ["provider", "session_id", "name", "channel"])},
-    {"name": "codescribe_wait", "description": "Wait for one complete owned message without ACKing. Ends with an explicit wait_idle receipt before the host's tool deadline (Junie 150 s, Claude Code 900 s); this is not indefinite idle wakeup. A newer wait supersedes this one; cancel to stop waiting. After read, ACK before acting.",
+    {"name": "codescribe_wait", "description": "Wait for one complete owned message without ACKing. Ends with an explicit wait_idle receipt before the host's tool deadline (Junie 150 s, Claude Code 900 s); this is not indefinite idle wakeup. Providers without a native wake hook, including agy and acp, must call codescribe_wait again or run cs-bus --watch --until-event. A newer wait supersedes this one; cancel to stop waiting. After read, ACK before acting.",
      "inputSchema": schema({"timeout_seconds": {"type": "integer", "minimum": 1}})},
     {"name": "codescribe_read", "description": "Read one complete pending message without ACKing. Drain before waiting; preserve sender and attachment pointers.", "inputSchema": schema()},
     {"name": "codescribe_ack", "description": "Acknowledge ONLY exact delivery IDs completely read through this MCP connection, immediately before work. ACK means read, not completed.",
      "inputSchema": schema({"delivery_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}}}, ["delivery_ids"])},
     {"name": "codescribe_reply", "description": "Save and speak one requested voice reply associated with an exact read and acknowledged delivery. Retains the existing voice, credentials and microphone/playback interlocks. Report spoken/reason truthfully.",
      "inputSchema": schema({"delivery_id": {"type": "string"}, "text": {"type": "string"}}, ["delivery_id", "text"])},
-    {"name": "codescribe_status", "description": "Inspect this connection without claiming listening_verified. Only a fresh delivery and answer prove listening.", "inputSchema": schema()},
+    {"name": "codescribe_status", "description": "Inspect this connection's mailbox owner, local queue target, follower event target and wake support without claiming listening_verified. Only a fresh delivery and answer prove listening.", "inputSchema": schema()},
     {"name": "codescribe_detach", "description": "Release this conversation's channel on explicit stop; stops an active wait first. Unread messages can prevent release; never delete them.", "inputSchema": schema()},
 ]
 
@@ -828,7 +828,10 @@ class Mailbox:
             self.provider, self.owner = previous
             raise
         if isinstance(result, dict) and result.get("kind") == "attach_receipt":
-            status = self.run(["--status"])
+            try:
+                status = self.run(["--status"])
+            except (ValueError, OSError, subprocess.SubprocessError):
+                status = {}
             result.update(connection_identities(self.demux, self.root, provider, session, result, status))
         return result
 
