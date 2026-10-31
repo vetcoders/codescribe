@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::Duration;
 
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir, OpenOptions};
+use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
@@ -170,7 +170,7 @@ impl AcpClientBridge {
     /// filesystem RPCs. A path swap after validation cannot redirect exec.
     pub fn open_launch_directory(&self, cwd: &Path) -> Result<std::fs::File, AcpError> {
         let checked = checked_path(cwd, &self.config.workspace_roots, false)?;
-        let dir = self.root_dir(&checked)?.open_dir(&checked.relative)?;
+        let dir = open_relative_directory(self.root_dir(&checked)?, &checked.relative)?;
         let file = dir.into_std_file();
         if !file.metadata()?.is_dir()
             || checked.metadata.as_ref().is_none_or(|expected| {
@@ -361,7 +361,7 @@ impl AcpClientBridge {
         }
         let mut locations = Vec::new();
         let mut invalid_location =
-            !check_input_paths(&mut input, &self.config.workspace_roots, &mut locations);
+            !check_input_paths(&input, &self.config.workspace_roots, &mut locations);
         if let Some(paths) = tool["locations"].as_array() {
             for path in paths {
                 let checked = path["path"].as_str().and_then(|raw| {
@@ -376,7 +376,10 @@ impl AcpClientBridge {
         input["_acp_targets"] = json!(
             locations
                 .iter()
-                .map(|p| p.canonical.display().to_string())
+                .flat_map(|p| [
+                    p.requested.display().to_string(),
+                    p.canonical.display().to_string()
+                ])
                 .collect::<Vec<_>>()
         );
         let name = tool["name"]
@@ -403,14 +406,13 @@ impl AcpClientBridge {
         })
     }
 
-    async fn read_file(&self, mut params: Value) -> Result<Value, AcpError> {
+    async fn read_file(&self, params: Value) -> Result<Value, AcpError> {
         let checked = checked_path(
             Path::new(required_string(&params, "path")?),
             &self.config.workspace_roots,
             false,
         )?;
         let mut file = checked.open_existing(self.root_dir(&checked)?, false)?;
-        params["path"] = json!(checked.canonical);
         self.authorize(READ_TOOL, &params, &uuid::Uuid::new_v4().to_string())
             .await?;
         checked.confirm(&self.config.workspace_roots)?;
@@ -457,7 +459,7 @@ impl AcpClientBridge {
         Ok(json!({"content":content}))
     }
 
-    async fn write_file(&self, mut params: Value) -> Result<Value, AcpError> {
+    async fn write_file(&self, params: Value) -> Result<Value, AcpError> {
         let checked = checked_path(
             Path::new(required_string(&params, "path")?),
             &self.config.workspace_roots,
@@ -478,7 +480,10 @@ impl AcpClientBridge {
         } else {
             None
         };
-        let parent = root.open_dir(checked.relative.parent().unwrap_or_else(|| Path::new("")))?;
+        let parent = open_relative_directory(
+            root,
+            checked.relative.parent().unwrap_or_else(|| Path::new("")),
+        )?;
         let expected_parent = std::fs::metadata(
             checked
                 .canonical
@@ -493,7 +498,6 @@ impl AcpClientBridge {
                 "ACP write parent changed while opening".into(),
             ));
         }
-        params["path"] = json!(checked.canonical);
         self.authorize(WRITE_TOOL, &params, &uuid::Uuid::new_v4().to_string())
             .await?;
         checked.confirm(&self.config.workspace_roots)?;
@@ -526,12 +530,12 @@ impl AcpClientBridge {
             .map(str::to_owned)
             .unwrap_or_else(|| self.config.workspace_roots[0].display().to_string());
         let checked = checked_path(Path::new(&raw_cwd), &self.config.workspace_roots, false)?;
+        params["cwd"] = json!(raw_cwd);
         if !checked.canonical.is_dir() {
             return Err(AcpError::PermissionDenied(
                 "ACP terminal cwd is not a directory".into(),
             ));
         }
-        params["cwd"] = json!(checked.canonical);
         let command_name = required_string(&params, "command")?.to_string();
         let args = string_array(params.get("args"))?;
         let env = terminal_env(params.get("env"))?;
@@ -541,7 +545,7 @@ impl AcpClientBridge {
         if self.closed.load(Ordering::Acquire) {
             return Err(AcpError::Cancelled);
         }
-        let cwd_dir = self.root_dir(&checked)?.open_dir(&checked.relative)?;
+        let cwd_dir = open_relative_directory(self.root_dir(&checked)?, &checked.relative)?;
         if checked.metadata.as_ref().is_none_or(|expected| {
             cwd_dir
                 .try_clone()
@@ -729,8 +733,22 @@ impl CheckedPath {
     }
 
     fn open_existing(&self, dir: &Dir, writing: bool) -> Result<std::fs::File, AcpError> {
+        if self
+            .metadata
+            .as_ref()
+            .is_none_or(|metadata| !metadata.is_file())
+        {
+            return Err(AcpError::PermissionDenied(
+                "ACP target is not a regular file".into(),
+            ));
+        }
         let mut options = OpenOptions::new();
-        options.read(!writing).write(writing);
+        // A file swapped for a FIFO must not block before authorization or
+        // prevent cancellation; identity and regular-file type are rechecked.
+        options
+            .read(!writing)
+            .write(writing)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
         let file = dir.open_with(&self.relative, &options)?.into_std();
         self.confirm_file(&file)?;
         if !file.metadata()?.is_file() {
@@ -756,16 +774,23 @@ impl CheckedPath {
     }
 }
 
-fn check_input_paths(input: &mut Value, roots: &[PathBuf], checked: &mut Vec<CheckedPath>) -> bool {
+fn open_relative_directory(root: &Dir, relative: &Path) -> std::io::Result<Dir> {
+    if relative.as_os_str().is_empty() {
+        root.try_clone()
+    } else {
+        root.open_dir(relative)
+    }
+}
+
+fn check_input_paths(input: &Value, roots: &[PathBuf], checked: &mut Vec<CheckedPath>) -> bool {
     match input {
-        Value::Object(fields) => fields.iter_mut().all(|(key, value)| {
+        Value::Object(fields) => fields.iter().all(|(key, value)| {
             if matches!(key.as_str(), "path" | "file_path" | "cwd" | "directory") {
                 let Some(raw) = value.as_str() else {
                     return false;
                 };
                 match checked_path(Path::new(raw), roots, true) {
                     Ok(path) => {
-                        *value = json!(path.canonical);
                         checked.push(path);
                         true
                     }
@@ -776,7 +801,7 @@ fn check_input_paths(input: &mut Value, roots: &[PathBuf], checked: &mut Vec<Che
             }
         }),
         Value::Array(values) => values
-            .iter_mut()
+            .iter()
             .all(|value| check_input_paths(value, roots, checked)),
         _ => true,
     }
@@ -1135,6 +1160,72 @@ mod tests {
         .expect("UI backpressure must be bounded");
         assert!(matches!(result, Err(AcpError::PermissionDenied(_))));
         assert_eq!(std::fs::read_to_string(file).unwrap(), "fixture-private");
+    }
+
+    #[tokio::test]
+    async fn both_secret_alias_directions_require_consent_for_rpc_and_permission() {
+        for secret_alias in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let plain = root.path().join("plain.txt");
+            let secret = root.path().join(".env");
+            let (target, alias) = if secret_alias {
+                (&plain, &secret)
+            } else {
+                (&secret, &plain)
+            };
+            std::fs::write(target, "fixture-private").unwrap();
+            std::os::unix::fs::symlink(target, alias).unwrap();
+            let bridge = bridge(root.path(), AgentPermissions::default());
+            let result = bridge.handle("fs/read_text_file", params(alias)).await;
+            assert!(
+                matches!(result, Err(AcpError::PermissionDenied(_))),
+                "secret_alias={secret_alias}: {result:?}"
+            );
+            let permission = bridge.handle("session/request_permission", json!({
+                "sessionId":"session-1", "toolCall":{"toolCallId":"alias-read", "name":READ_TOOL, "rawInput":{"path":alias}},
+                "options":[{"kind":"allow_once","optionId":"yes"},{"kind":"reject_once","optionId":"no"}]
+            })).await.unwrap();
+            assert_eq!(permission["outcome"]["optionId"], "no");
+        }
+    }
+
+    #[test]
+    fn fifo_open_refuses_without_waiting_for_a_peer() {
+        use std::os::unix::fs::OpenOptionsExt as StdOpenOptionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let fifo = root.path().join("fifo");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: the path is an owned disposable fixture and the C string is valid.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let root_path = root.path().canonicalize().unwrap();
+        let checked = checked_path(&fifo, &[root_path.clone()], false).unwrap();
+        let dir = Dir::open_ambient_dir(&root_path, ambient_authority()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let task = std::thread::spawn(move || {
+            tx.send(matches!(
+                checked.open_existing(&dir, false),
+                Err(AcpError::PermissionDenied(_))
+            ))
+            .unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        // Also release the peer if this falsifier regresses, so failure cannot
+        // hang the test process indefinitely.
+        let peer = if result.is_err() {
+            Some(
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&fifo)
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        task.join().unwrap();
+        drop(peer);
+        assert_eq!(result.unwrap(), true);
     }
 
     #[cfg(unix)]

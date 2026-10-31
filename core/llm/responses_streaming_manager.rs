@@ -382,12 +382,13 @@ impl<'a> ResponsesStreamingManager<'a> {
                                  attempting resume (response_id={}, seq={})",
                                 partial_len, resp_id, seq
                             );
-                            match self.resume_stream(resp_id, seq).await {
+                            match self
+                                .resume_stream(resp_id, seq, &assistant_text, &reasoning_text)
+                                .await
+                            {
                                 Ok(resumed) => {
-                                    assistant_text.push_str(&resumed.assistant_text);
-                                    if let Some(r) = resumed.reasoning_text {
-                                        reasoning_text.push_str(&r);
-                                    }
+                                    assistant_text = resumed.assistant_text;
+                                    reasoning_text = resumed.reasoning_text.unwrap_or_default();
                                     saw_completed = true;
                                     break;
                                 }
@@ -657,6 +658,8 @@ impl<'a> ResponsesStreamingManager<'a> {
         &self,
         response_id: &str,
         starting_after: u64,
+        assistant_prefix: &str,
+        reasoning_prefix: &str,
     ) -> Result<ResponsesStreamOutput> {
         let base = self.endpoint.trim_end_matches('/');
         let resume_url =
@@ -687,8 +690,8 @@ impl<'a> ResponsesStreamingManager<'a> {
             anyhow::bail!("Resume HTTP {} - {}", status, body);
         }
 
-        let mut assistant_text = String::new();
-        let mut reasoning_text = String::new();
+        let mut assistant_text = assistant_prefix.to_string();
+        let mut reasoning_text = reasoning_prefix.to_string();
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut utf8_carry = Vec::new();
@@ -765,6 +768,16 @@ impl<'a> ResponsesStreamingManager<'a> {
                                 reasoning_text.push_str(&delta);
                             }
                         }
+                        "response.output_text.done" => {
+                            if let Some(text) = chunk.text {
+                                assistant_text = text;
+                            }
+                        }
+                        "response.reasoning_summary_text.done" => {
+                            if let Some(text) = chunk.text {
+                                reasoning_text = text;
+                            }
+                        }
                         "response.output_item.added" | "response.output_item.done" => {
                             log_sse_lifecycle_event("Resume SSE", &chunk);
                         }
@@ -772,6 +785,15 @@ impl<'a> ResponsesStreamingManager<'a> {
                             log_sse_lifecycle_event("Resume SSE", &chunk);
                         }
                         "response.completed" | "response.done" => {
+                            if let Some(response) = &chunk.response {
+                                let full = extract_output_channels(&response.output);
+                                if !full.assistant_text.is_empty() {
+                                    assistant_text = full.assistant_text;
+                                }
+                                if let Some(reasoning) = full.reasoning_text {
+                                    reasoning_text = reasoning;
+                                }
+                            }
                             completed = true;
                             debug!(
                                 "Resume stream completed ({}B accumulated text)",
@@ -3663,7 +3685,7 @@ mod tests {
         );
         assert_eq!(
             manager
-                .resume_stream("resp_cut3", 1)
+                .resume_stream("resp_cut3", 1, "", "")
                 .await
                 .unwrap()
                 .assistant_text,
@@ -3693,9 +3715,41 @@ mod tests {
                 Duration::from_secs(2),
             );
             assert!(
-                manager.resume_stream("resp_cut3", 1).await.is_err(),
+                manager.resume_stream("resp_cut3", 1, "", "").await.is_err(),
                 "tail={tail:?}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_repairs_partial_text_from_final_events_without_duplication() {
+        for repair in [
+            "data: {\"type\":\"response.output_text.done\",\"text\":\"Hello\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+            "",
+        ] {
+            let final_output = if repair.is_empty() {
+                json!([{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}])
+            } else {
+                json!([])
+            };
+            let steps = vec![
+                scripted_sse::text(repair),
+                scripted_sse::text(&format!(
+                    "data: {}\n\n",
+                    json!({"type":"response.completed","response":{"id":"repair","status":"completed","output":final_output}})
+                )),
+            ];
+            let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+            let client = Client::new();
+            let manager = timed_manager(
+                &client,
+                &endpoint,
+                Duration::from_millis(100),
+                Duration::from_secs(2),
+            );
+            let response = manager.resume_stream("repair", 1, "Hel", "").await.unwrap();
+            assert_eq!(response.assistant_text, "Hello", "repair={repair}");
         }
     }
 }
