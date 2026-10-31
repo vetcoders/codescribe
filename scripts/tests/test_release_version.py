@@ -110,6 +110,67 @@ class ReleaseVersionTests(unittest.TestCase):
         self.run_release()
         self.assertEqual(before, self.snapshot())
 
+    def divergent_source_boundary(self):
+        current = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "--detach", "v0.1.0")
+        (self.root / "other-line.txt").write_text("another release source line\n")
+        self.commit("feat: Prepare another source line")
+        boundary = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "--detach", current)
+        return boundary
+
+    def test_automatic_divergent_changelog_boundary_selects_reachable_history(self):
+        self.run_release()
+        self.commit("chore: Prepare an untagged source version")
+        foreign = self.divergent_source_boundary()
+        changelog = self.root / "CHANGELOG.md"
+        text = changelog.read_text()
+        marker = "<!-- release-boundary: 0.1.1 "
+        start = text.index(marker) + len(marker)
+        changelog.write_text(text[:start] + foreign + text[start + 40:])
+        self.commit("docs: Import the boundary from another release line")
+
+        diagnostics = io.StringIO()
+        with contextlib.redirect_stderr(diagnostics):
+            self.run_release()
+
+        self.assertEqual(release.cargo_version((self.root / "Cargo.toml").read_text()), "0.1.2")
+        receipt = json.loads((self.root / "docs/releases/0.1.2-commits.json").read_text())
+        self.assertEqual(receipt["from_sha"], self.git("rev-parse", "v0.1.0"))
+        self.assertIn(foreign, diagnostics.getvalue())
+        self.assertIn("not an ancestor", diagnostics.getvalue())
+        self.assertIn("0.1.0", diagnostics.getvalue())
+
+    def test_explicit_divergent_boundary_is_never_replaced(self):
+        foreign = self.divergent_source_boundary()
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "not an ancestor"):
+            self.run_release(since=foreign)
+        self.assertEqual(before, self.snapshot())
+
+    def test_recorded_target_boundary_is_never_replaced(self):
+        foreign = self.divergent_source_boundary()
+        inventory = self.root / "docs/releases/0.1.1-commits.json"
+        inventory.parent.mkdir(parents=True)
+        inventory.write_text(json.dumps({"version": "0.1.1", "from_sha": foreign}))
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "not an ancestor"):
+            self.run_release()
+        self.assertEqual(before, self.snapshot())
+
+    def test_automatic_tags_respect_the_requested_release_end(self):
+        end = self.git("rev-parse", "HEAD")
+        (self.root / "feature.txt").write_text("later source outside the selected release\n")
+        self.commit("feat: Add a later change")
+        self.git("tag", "v0.1.1")
+
+        self.run_release(to_version="0.2.0", until=end)
+
+        receipt = json.loads((self.root / "docs/releases/0.2.0-commits.json").read_text())
+        self.assertEqual(receipt["from_sha"], self.git("rev-parse", "v0.1.0"))
+        self.assertEqual(receipt["to_sha"], end)
+        self.assertEqual([c["sha"] for c in receipt["commits"]], [end])
+
     def test_a_different_requested_bump_is_not_silently_ignored(self):
         self.run_release()
         pending = self.snapshot()
