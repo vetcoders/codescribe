@@ -42,6 +42,120 @@ const STREAM_DEADLINE: Duration = Duration::from_secs(10 * 60);
 /// (much shorter) inter-chunk timeout would abort a healthy stream.
 const REASONING_INTER_CHUNK_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Default budget from sending the request to the first content event.
+///
+/// Prefill of a long context, a queued request, or a server-side tool run can
+/// keep a healthy stream silent far longer than the idle timeout allows once
+/// tokens flow. The runtime snapshot owns the effective value
+/// (`RuntimeAiRequestTiming::first_event_timeout`); this is its default.
+pub const DEFAULT_FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Two-phase read clock shared by every SSE loop.
+///
+/// Phase one runs from the request send until the first content event: the
+/// whole wait shares one `first_event_timeout` budget, and lifecycle chunks
+/// such as `response.created` or SSE comments do not shorten it. Phase two
+/// starts at the first content event: each read may wait `idle_timeout`.
+/// Every received chunk ends the current wait, so an SSE comment line
+/// (`: keepalive <ts>`) restarts the idle clock without being parsed as data.
+#[derive(Debug, Clone)]
+pub struct StreamWatchdog {
+    first_event_timeout: Duration,
+    first_event_deadline: tokio::time::Instant,
+    idle_timeout: Duration,
+    generating: bool,
+}
+
+impl StreamWatchdog {
+    /// Start the clock. Call immediately before sending the HTTP request.
+    ///
+    /// The first-event budget never undercuts the idle timeout: a prefill may
+    /// always stay silent at least as long as a stream that already started.
+    pub fn start(first_event_timeout: Duration, idle_timeout: Duration) -> Self {
+        let first_event_timeout = first_event_timeout.max(idle_timeout);
+        Self {
+            first_event_timeout,
+            first_event_deadline: tokio::time::Instant::now() + first_event_timeout,
+            idle_timeout,
+            generating: false,
+        }
+    }
+
+    /// Record the first content event; later reads use the idle timeout.
+    pub fn generation_started(&mut self) {
+        self.generating = true;
+    }
+
+    /// Whether a content event has been seen on this stream.
+    pub fn is_generating(&self) -> bool {
+        self.generating
+    }
+
+    /// How long the next read may wait for a chunk.
+    pub fn next_wait(&self) -> Duration {
+        if self.generating {
+            self.idle_timeout
+        } else {
+            self.first_event_deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+        }
+    }
+
+    /// Effective first-event budget, for timeout messages.
+    pub fn first_event_timeout(&self) -> Duration {
+        self.first_event_timeout
+    }
+
+    /// Idle budget between chunks once generation started.
+    pub fn idle_timeout(&self) -> Duration {
+        self.idle_timeout
+    }
+}
+
+/// Append raw network bytes to `line_buffer` without splitting characters.
+///
+/// TCP and HTTP chunk boundaries ignore UTF-8: a Polish letter or an emoji can
+/// arrive as two halves. The longest valid prefix is decoded; an incomplete
+/// sequence at the very end (at most three bytes) stays in `utf8_carry` until
+/// the next chunk completes it. Only bytes that can never become valid UTF-8
+/// are replaced with U+FFFD.
+pub fn append_utf8_chunk(line_buffer: &mut String, utf8_carry: &mut Vec<u8>, chunk: &[u8]) {
+    if utf8_carry.is_empty()
+        && let Ok(valid) = std::str::from_utf8(chunk)
+    {
+        line_buffer.push_str(valid);
+        return;
+    }
+    utf8_carry.extend_from_slice(chunk);
+    let mut start = 0;
+    loop {
+        match std::str::from_utf8(&utf8_carry[start..]) {
+            Ok(valid) => {
+                line_buffer.push_str(valid);
+                utf8_carry.clear();
+                return;
+            }
+            Err(error) => {
+                let valid_end = start + error.valid_up_to();
+                // `valid_up_to` marks a prefix `from_utf8` already accepted.
+                line_buffer.push_str(
+                    std::str::from_utf8(&utf8_carry[start..valid_end]).unwrap_or_default(),
+                );
+                match error.error_len() {
+                    None => {
+                        utf8_carry.drain(..valid_end);
+                        return;
+                    }
+                    Some(invalid_len) => {
+                        line_buffer.push('\u{FFFD}');
+                        start = valid_end + invalid_len;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One `data:` payload after the shared SSE framing step.
 struct SseData {
     event: Option<String>,
@@ -129,14 +243,17 @@ pub struct ResponsesStreamingManager<'a> {
     callbacks: StreamCallbacks,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
+    first_event_timeout: Duration,
 }
 
 impl<'a> ResponsesStreamingManager<'a> {
     /// Build a manager for one endpoint/credential pair.
     ///
     /// `initial_response_timeout` bounds the wait for response headers;
-    /// `inter_chunk_timeout` bounds the gap between SSE chunks once streaming
-    /// has begun. Defaults to [`AuthHeaderMode::BearerAndApiKey`].
+    /// `inter_chunk_timeout` bounds the gap between SSE chunks once the first
+    /// content event arrived. Before that, [`DEFAULT_FIRST_EVENT_TIMEOUT`]
+    /// applies unless [`Self::with_first_event_timeout`] overrides it.
+    /// Defaults to [`AuthHeaderMode::BearerAndApiKey`].
     pub fn new(
         client: &'a Client,
         endpoint: &'a str,
@@ -154,7 +271,15 @@ impl<'a> ResponsesStreamingManager<'a> {
             callbacks,
             initial_response_timeout,
             inter_chunk_timeout,
+            first_event_timeout: DEFAULT_FIRST_EVENT_TIMEOUT,
         }
+    }
+
+    /// Budget from the request send to the first content event (builder
+    /// style). See [`StreamWatchdog`].
+    pub fn with_first_event_timeout(mut self, first_event_timeout: Duration) -> Self {
+        self.first_event_timeout = first_event_timeout;
+        self
     }
 
     /// Override the auth header shape (builder style).
@@ -195,6 +320,8 @@ impl<'a> ResponsesStreamingManager<'a> {
         .header("Accept", "text/event-stream")
         .timeout(STREAM_REQUEST_TIMEOUT)
         .json(request);
+        let mut watchdog =
+            StreamWatchdog::start(self.first_event_timeout, self.inter_chunk_timeout);
         let response =
             match tokio::time::timeout(self.initial_response_timeout, request_builder.send()).await
             {
@@ -223,6 +350,7 @@ impl<'a> ResponsesStreamingManager<'a> {
         let mut response_id: Option<String> = None;
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut utf8_carry = Vec::new();
         let mut current_event: Option<String> = None;
         let mut saw_done = false;
         let mut last_sequence_number: Option<u64> = None;
@@ -240,9 +368,9 @@ impl<'a> ResponsesStreamingManager<'a> {
                 && assistant_text.is_empty()
                 && assistant_done.is_none()
             {
-                self.inter_chunk_timeout.max(REASONING_INTER_CHUNK_TIMEOUT)
+                watchdog.idle_timeout().max(REASONING_INTER_CHUNK_TIMEOUT)
             } else {
-                self.inter_chunk_timeout
+                watchdog.next_wait()
             };
             let next_chunk = match tokio::time::timeout(chunk_timeout, stream.next()).await {
                 Ok(chunk) => chunk,
@@ -309,6 +437,11 @@ impl<'a> ResponsesStreamingManager<'a> {
                             chunk_timeout,
                             partial_len
                         );
+                    } else if !watchdog.is_generating() {
+                        anyhow::bail!(
+                            "SSE initial response timeout: no content event within {:?} of the request",
+                            watchdog.first_event_timeout()
+                        );
                     } else {
                         anyhow::bail!(
                             "SSE stream inter-chunk timeout after {:?} (no data received)",
@@ -323,7 +456,7 @@ impl<'a> ResponsesStreamingManager<'a> {
             };
 
             let chunk = chunk_result.context("Stream read error")?;
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            append_utf8_chunk(&mut buffer, &mut utf8_carry, &chunk);
 
             while let Some(SseData {
                 event: data_event,
@@ -348,6 +481,9 @@ impl<'a> ResponsesStreamingManager<'a> {
                     }
                 };
                 {
+                    if starts_generation(&chunk) {
+                        watchdog.generation_started();
+                    }
                     if let Some(seq) = chunk.sequence_number {
                         last_sequence_number = Some(seq);
                     }
@@ -500,6 +636,7 @@ impl<'a> ResponsesStreamingManager<'a> {
             extra_headers: self.extra_headers.clone(),
             initial_response_timeout: self.initial_response_timeout,
             inter_chunk_timeout: self.inter_chunk_timeout,
+            first_event_timeout: self.first_event_timeout,
         };
         let callbacks = self.callbacks.clone();
 
@@ -554,6 +691,7 @@ impl<'a> ResponsesStreamingManager<'a> {
         let mut reasoning_text = String::new();
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
+        let mut utf8_carry = Vec::new();
         let mut current_event: Option<String> = None;
 
         loop {
@@ -575,7 +713,7 @@ impl<'a> ResponsesStreamingManager<'a> {
                 break;
             };
             let chunk = chunk_result.context("Resume stream read error")?;
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            append_utf8_chunk(&mut buffer, &mut utf8_carry, &chunk);
 
             while let Some(SseData {
                 event: data_event,
@@ -658,8 +796,8 @@ impl<'a> ResponsesStreamingManager<'a> {
 /// Everything one spawned agent SSE turn owns about its transport.
 ///
 /// Bundled because the task entry point took nine positional arguments; the
-/// six transport values always travel together and are moved into the task as
-/// a unit, so a struct is the honest shape.
+/// transport values always travel together and are moved into the task as a
+/// unit, so a struct is the honest shape.
 struct AgentStreamTransport {
     client: Client,
     endpoint: String,
@@ -668,6 +806,7 @@ struct AgentStreamTransport {
     extra_headers: Vec<(String, String)>,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
+    first_event_timeout: Duration,
 }
 
 /// Body of the task spawned by [`ResponsesStreamingManager::stream_agent`].
@@ -691,6 +830,7 @@ async fn run_agent_stream(
         extra_headers,
         initial_response_timeout,
         inter_chunk_timeout,
+        first_event_timeout,
     } = transport;
     let endpoint_url = validated_endpoint_url(&endpoint)
         .map_err(|reason| anyhow::anyhow!("Invalid agent streaming endpoint URL: {reason}"))?;
@@ -708,6 +848,7 @@ async fn run_agent_stream(
     .timeout(STREAM_REQUEST_TIMEOUT)
     .json(&request_payload);
 
+    let mut watchdog = StreamWatchdog::start(first_event_timeout, inter_chunk_timeout);
     let response =
         match tokio::time::timeout(initial_response_timeout, request_builder.send()).await {
             Ok(Ok(resp)) => resp,
@@ -730,6 +871,7 @@ async fn run_agent_stream(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut utf8_carry = Vec::new();
     let mut current_event: Option<String> = None;
     let mut saw_done = false;
     let stream_deadline = tokio::time::Instant::now() + STREAM_DEADLINE;
@@ -742,21 +884,23 @@ async fn run_agent_stream(
             );
         }
 
-        let next_chunk = match tokio::time::timeout(inter_chunk_timeout, stream.next()).await {
+        let next_chunk = match tokio::time::timeout(watchdog.next_wait(), stream.next()).await {
             Ok(chunk) => chunk,
-            Err(_) => {
-                anyhow::bail!(
-                    "Agent SSE inter-chunk timeout after {:?}",
-                    inter_chunk_timeout
-                );
-            }
+            Err(_) if !watchdog.is_generating() => anyhow::bail!(
+                "Agent SSE initial response timeout: no content event within {:?} of the request",
+                watchdog.first_event_timeout()
+            ),
+            Err(_) => anyhow::bail!(
+                "Agent SSE inter-chunk timeout after {:?}",
+                watchdog.idle_timeout()
+            ),
         };
 
         let Some(chunk_result) = next_chunk else {
             break;
         };
         let chunk = chunk_result.context("Agent SSE stream read error")?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        append_utf8_chunk(&mut buffer, &mut utf8_carry, &chunk);
 
         while let Some(SseData {
             event: data_event,
@@ -789,6 +933,9 @@ async fn run_agent_stream(
 
             debug!("Agent SSE received event type={}", chunk.chunk_type);
             log_sse_lifecycle_event("Agent SSE", &chunk);
+            if starts_generation(&chunk) {
+                watchdog.generation_started();
+            }
 
             // P2.13: a failed/incomplete/cancelled terminal maps (below) to an
             // `AgentEvent::Error`, but the chain reset is keyed on a dirty
@@ -839,6 +986,7 @@ async fn run_agent_stream(
                     | AgentEvent::ToolCallStart { .. }
                     | AgentEvent::ToolCallArgsDelta { .. }
                     | AgentEvent::ToolCallReady { .. }
+                    | AgentEvent::ServerToolProgress { .. }
                     | AgentEvent::Error(_) => {}
                 }
 
@@ -1121,6 +1269,9 @@ fn parse_agent_event(
     tracker: &mut ToolCallTracker,
     fallback_response_id: Option<&str>,
 ) -> Option<AgentEvent> {
+    if let Some(progress) = parse_web_search_progress(chunk) {
+        return Some(progress);
+    }
     match chunk.chunk_type.as_str() {
         "response.output_text.delta" => chunk.delta.clone().map(AgentEvent::TextDelta),
         "response.output_text.done" => chunk
@@ -1173,6 +1324,68 @@ fn parse_agent_event(
         "response.failed" => Some(response_failed_event(chunk)),
         "response.incomplete" => Some(response_incomplete_event(chunk)),
         _ => None,
+    }
+}
+
+/// Project a hosted `web_search` call onto [`AgentEvent::ServerToolProgress`].
+///
+/// The server runs the search itself, so nothing here is executed locally; the
+/// event only tells the user which search is running. `output_item.done`
+/// closes the call and carries the query; the `web_search_call.*` progress
+/// events and `output_item.added` keep it open. A call without an id cannot be
+/// shown as a row and is ignored (its chunk still counts as liveness).
+fn parse_web_search_progress(chunk: &StreamChunk) -> Option<AgentEvent> {
+    let (id, done, query) = match chunk.chunk_type.as_str() {
+        "response.web_search_call.in_progress"
+        | "response.web_search_call.searching"
+        | "response.web_search_call.completed" => (chunk.item_id.as_deref()?, false, None),
+        "response.output_item.added" | "response.output_item.done" => {
+            let item = chunk
+                .item
+                .as_ref()
+                .filter(|item| item.item_type == "web_search_call")?;
+            let query = item
+                .action
+                .as_ref()
+                .and_then(|action| action.query.as_deref())
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+                .map(ToString::to_string);
+            (
+                item.id.as_deref()?,
+                chunk.chunk_type == "response.output_item.done",
+                query,
+            )
+        }
+        _ => return None,
+    };
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    Some(AgentEvent::ServerToolProgress {
+        id: id.to_string(),
+        name: "web_search".to_string(),
+        done,
+        query,
+    })
+}
+
+/// Whether `chunk` ends the first-event phase of [`StreamWatchdog`].
+///
+/// `response.created`, `response.queued` and `response.in_progress` only
+/// prove the request was accepted, and an empty `reasoning` item opens before
+/// a silent think; none of them shortens the prefill budget. Every other
+/// chunk (text, reasoning text, tool calls, hosted tool progress, terminals)
+/// is content.
+fn starts_generation(chunk: &StreamChunk) -> bool {
+    match chunk.chunk_type.as_str() {
+        "response.created" | "response.queued" | "response.in_progress" => false,
+        "response.output_item.added" => chunk
+            .item
+            .as_ref()
+            .is_none_or(|item| item.item_type != "reasoning"),
+        _ => true,
     }
 }
 
@@ -1678,7 +1891,8 @@ struct StreamResponseIncompleteDetails {
 }
 
 /// Output item announced by an `output_item.added` / `.done` lifecycle event.
-/// Only `function_call` items are acted on; the rest are logged.
+/// `function_call` items drive tool calls and `web_search_call` items drive
+/// hosted-search progress; the rest are logged.
 #[derive(Debug, Deserialize)]
 struct StreamItem {
     #[serde(rename = "type")]
@@ -1691,6 +1905,16 @@ struct StreamItem {
     name: Option<String>,
     #[serde(default)]
     arguments: Option<String>,
+    /// `web_search_call` action; its `query` names the search being run.
+    #[serde(default)]
+    action: Option<StreamItemAction>,
+}
+
+/// Action of a hosted tool item. Only the search query is read.
+#[derive(Debug, Deserialize)]
+struct StreamItemAction {
+    #[serde(default)]
+    query: Option<String>,
 }
 
 /// Lifecycle diagnostics consume only the part kind; terminal text is read by
@@ -1736,9 +1960,100 @@ fn summarize_error_body(body: &str) -> String {
     }
 }
 
+/// Loopback SSE server that writes a scripted byte sequence with pauses.
+///
+/// Tests use it to control exactly where TCP chunk boundaries and silences
+/// fall, which `mockito` bodies cannot express. Shared with the app crate's
+/// provider tests through the `test-isolation` feature.
+#[cfg(any(test, feature = "test-isolation"))]
+pub mod scripted_sse {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    /// One scripted server action.
+    pub enum Step {
+        /// Write these bytes as one segment and flush.
+        Bytes(Vec<u8>),
+        /// Stay silent for this long.
+        Pause(Duration),
+    }
+
+    /// Shorthand for a [`Step::Bytes`] holding UTF-8 text.
+    pub fn text(text: &str) -> Step {
+        Step::Bytes(text.as_bytes().to_vec())
+    }
+
+    /// Serve one request on a fresh loopback port and return `http://…{path}`.
+    ///
+    /// The request is read to its end, a `200 text/event-stream` head is sent,
+    /// then every step runs in order and the connection closes.
+    pub async fn serve(path: &str, steps: Vec<Step>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback SSE server");
+        let url = format!(
+            "http://{}{path}",
+            listener.local_addr().expect("loopback SSE address")
+        );
+        tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let _ = socket.set_nodelay(true);
+            read_request(&mut socket).await;
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                        cache-control: no-cache\r\nconnection: close\r\n\r\n";
+            if socket.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            for step in steps {
+                match step {
+                    Step::Bytes(bytes) => {
+                        if socket.write_all(&bytes).await.is_err() || socket.flush().await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Step::Pause(duration) => tokio::time::sleep(duration).await,
+                }
+            }
+            let _ = socket.shutdown().await;
+        });
+        url
+    }
+
+    /// Consume headers and a `content-length` body so closing the socket
+    /// never resets a request the client is still writing.
+    async fn read_request(socket: &mut TcpStream) {
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let read = match socket.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(read) => read,
+            };
+            data.extend_from_slice(&buf[..read]);
+            let Some(head_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&data[..head_end]).to_ascii_lowercase();
+            let body_len = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if data.len() >= head_end + 4 + body_len {
+                return;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::responses_output::{ResponsesOutputItem, extract_output_channels};
+    use super::scripted_sse::{self, Step};
     use super::{
         AgentEvent, AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks, StreamChunk,
         ToolCallTracker, apply_auth_headers, dirty_terminal_response_id, fallback_reasoning,
@@ -2846,5 +3161,411 @@ mod tests {
             super::summarize_error_body(r#"{"error":{"message":""}}"#),
             r#"{"error":{"message":""}}"#
         );
+    }
+
+    /// The F1 payload: a 4-byte emoji and Polish 2-byte letters in one delta.
+    const SPLIT_TEXT: &str = "🚀 Żółć";
+
+    /// SSE frame carrying [`SPLIT_TEXT`], and the byte offsets that cut it in
+    /// the middle of `🚀` (`F0 9F | 9A 80`) and of `Ż` (`C5 | BB`).
+    fn split_delta_frame() -> (Vec<u8>, usize, usize) {
+        let frame = format!(
+            "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{SPLIT_TEXT}\"}}\n\n"
+        )
+        .into_bytes();
+        let emoji = frame
+            .windows(4)
+            .position(|window| window == "🚀".as_bytes())
+            .expect("frame holds the emoji");
+        let letter = frame
+            .windows(2)
+            .position(|window| window == "Ż".as_bytes())
+            .expect("frame holds Ż");
+        (frame, emoji + 2, letter + 1)
+    }
+
+    /// Script the split frame as three TCP segments with pauses between them.
+    fn split_frame_steps() -> Vec<Step> {
+        let (frame, emoji_cut, letter_cut) = split_delta_frame();
+        vec![
+            Step::Bytes(frame[..emoji_cut].to_vec()),
+            Step::Pause(Duration::from_millis(30)),
+            Step::Bytes(frame[emoji_cut..letter_cut].to_vec()),
+            Step::Pause(Duration::from_millis(30)),
+            Step::Bytes(frame[letter_cut..].to_vec()),
+        ]
+    }
+
+    /// Clean Responses terminal: `output_text.done`, `response.completed`, `[DONE]`.
+    fn completed_tail(text: &str) -> Step {
+        scripted_sse::text(&format!(
+            "data: {{\"type\":\"response.output_text.done\",\"text\":\"{text}\"}}\n\n\
+             data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"resp_cut3\",\"status\":\"completed\"}}}}\n\n\
+             data: [DONE]\n\n"
+        ))
+    }
+
+    /// Manager with explicit idle and first-event budgets and no callbacks.
+    fn timed_manager<'a>(
+        client: &'a Client,
+        endpoint: &'a str,
+        idle: Duration,
+        first_event: Duration,
+    ) -> ResponsesStreamingManager<'a> {
+        ResponsesStreamingManager::new(
+            client,
+            endpoint,
+            "test-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_secs(2),
+            idle,
+        )
+        .with_first_event_timeout(first_event)
+    }
+
+    /// Drain an agent stream until the channel closes (bounded at 5 s).
+    async fn drain(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+            events.push(event);
+        }
+        events
+    }
+
+    /// Concatenated `TextDelta` payloads.
+    fn delta_text(events: &[AgentEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::TextDelta(delta) => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn has_clean_done(events: &[AgentEvent]) -> bool {
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::ResponseDone { clean: true, .. }))
+    }
+
+    /// F1 (unit): every split position, including the two named cuts, decodes
+    /// to the original frame; only a byte that can never be UTF-8 becomes
+    /// U+FFFD.
+    #[test]
+    fn append_utf8_chunk_carries_split_multibyte_sequences() {
+        let (frame, emoji_cut, letter_cut) = split_delta_frame();
+        for (first, second) in [(emoji_cut, letter_cut), (1, frame.len() - 1)] {
+            let mut buffer = String::new();
+            let mut carry = Vec::new();
+            super::append_utf8_chunk(&mut buffer, &mut carry, &frame[..first]);
+            super::append_utf8_chunk(&mut buffer, &mut carry, &frame[first..second]);
+            super::append_utf8_chunk(&mut buffer, &mut carry, &frame[second..]);
+            assert!(carry.is_empty());
+            assert_eq!(buffer.as_bytes(), frame.as_slice());
+        }
+        for step in 1..=5 {
+            let mut buffer = String::new();
+            let mut carry = Vec::new();
+            for chunk in frame.chunks(step) {
+                super::append_utf8_chunk(&mut buffer, &mut carry, chunk);
+            }
+            assert!(carry.is_empty(), "step={step} left trailing bytes");
+            assert_eq!(buffer.as_bytes(), frame.as_slice(), "step={step}");
+        }
+
+        let mut buffer = String::new();
+        let mut carry = Vec::new();
+        super::append_utf8_chunk(&mut buffer, &mut carry, b"a\xFFb\xC5");
+        assert_eq!(buffer, "a\u{FFFD}b");
+        assert_eq!(carry, b"\xC5");
+        super::append_utf8_chunk(&mut buffer, &mut carry, b"\xBB");
+        assert_eq!(buffer, "a\u{FFFD}bŻ");
+        assert!(carry.is_empty());
+    }
+
+    /// F1 (agent wire): a delta cut inside `🚀` and inside `Ż` across TCP
+    /// segments reaches the agent loop intact.
+    #[tokio::test]
+    async fn stream_agent_joins_utf8_split_across_tcp_segments() {
+        let mut steps = split_frame_steps();
+        steps.push(completed_tail(SPLIT_TEXT));
+        let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+        let client = Client::new();
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        );
+        let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+
+        assert_eq!(delta_text(&events), SPLIT_TEXT);
+        assert!(events.contains(&AgentEvent::TextDone(SPLIT_TEXT.to_string())));
+        assert!(!format!("{events:?}").contains('\u{FFFD}'));
+        assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    /// F1 + F2 (formatter wire): the accumulating stream decodes the split
+    /// frame after a keepalive-only prefill longer than the idle timeout.
+    #[tokio::test]
+    async fn stream_joins_split_utf8_after_keepalive_prefill() {
+        let mut steps = vec![scripted_sse::text(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_cut3\"}}\n\n",
+        )];
+        for beat in 0..6 {
+            steps.push(Step::Pause(Duration::from_millis(60)));
+            steps.push(scripted_sse::text(&format!(": keepalive {beat}\n\n")));
+        }
+        steps.extend(split_frame_steps());
+        steps.push(completed_tail(SPLIT_TEXT));
+        let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+        let client = Client::new();
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(600),
+        );
+        let output = manager.stream(&json!({})).await.unwrap();
+        assert_eq!(output.assistant_text, SPLIT_TEXT);
+    }
+
+    /// F2: `response.created`, then `: keepalive` every 60 ms for 360 ms
+    /// before the first delta, with a 100 ms idle and a 600 ms first-event
+    /// budget, completes cleanly.
+    #[tokio::test]
+    async fn stream_agent_keepalive_prefill_completes_cleanly() {
+        let mut steps = vec![scripted_sse::text(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_cut3\"}}\n\n",
+        )];
+        for beat in 0..6 {
+            steps.push(Step::Pause(Duration::from_millis(60)));
+            steps.push(scripted_sse::text(&format!(": keepalive {beat}\n\n")));
+        }
+        steps.push(scripted_sse::text(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\n",
+        ));
+        steps.push(completed_tail("pong"));
+        let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+        let client = Client::new();
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(600),
+        );
+        let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Error(_))),
+            "{events:?}"
+        );
+        assert_eq!(delta_text(&events), "pong");
+        assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    /// A silent prefill longer than the idle timeout but inside the
+    /// first-event budget is not a stall. Before the split this died on the
+    /// 100 ms inter-chunk timeout.
+    #[tokio::test]
+    async fn stream_agent_silent_prefill_uses_first_event_budget() {
+        let steps = vec![
+            scripted_sse::text(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_cut3\"}}\n\n",
+            ),
+            Step::Pause(Duration::from_millis(300)),
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"late\"}\n\n",
+            ),
+            completed_tail("late"),
+        ];
+        let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+        let client = Client::new();
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(600),
+        );
+        let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+        assert_eq!(delta_text(&events), "late");
+        assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    /// Keepalives do not extend the prefill forever: past the first-event
+    /// budget without content the stream fails as an initial-response timeout.
+    #[tokio::test]
+    async fn stream_agent_first_event_budget_bounds_keepalive_prefill() {
+        let mut steps = vec![scripted_sse::text(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_cut3\"}}\n\n",
+        )];
+        for beat in 0..20 {
+            steps.push(Step::Pause(Duration::from_millis(50)));
+            steps.push(scripted_sse::text(&format!(": keepalive {beat}\n\n")));
+        }
+        let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+        let client = Client::new();
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_millis(300),
+        );
+        let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AgentEvent::Error(message) if message.contains("initial response timeout")
+            )),
+            "{events:?}"
+        );
+    }
+
+    /// Once content flows, silence longer than the idle timeout still fails.
+    #[tokio::test]
+    async fn stream_agent_idle_timeout_applies_after_first_content() {
+        let steps = vec![
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"half\"}\n\n",
+            ),
+            Step::Pause(Duration::from_millis(400)),
+            completed_tail("half"),
+        ];
+        let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+        let client = Client::new();
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        );
+        let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AgentEvent::Error(message) if message.contains("inter-chunk timeout")
+            )),
+            "{events:?}"
+        );
+    }
+
+    /// Hosted web_search frames: an added item, `searching` progress, and the
+    /// closing item that carries the query.
+    fn web_search_steps(pause: Duration) -> Vec<Step> {
+        vec![
+            scripted_sse::text(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_ws\"}}\n\n",
+            ),
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"status\":\"in_progress\"}}\n\n",
+            ),
+            Step::Pause(pause),
+            scripted_sse::text(
+                "data: {\"type\":\"response.web_search_call.in_progress\",\"item_id\":\"ws_1\"}\n\n",
+            ),
+            Step::Pause(pause),
+            scripted_sse::text(
+                "data: {\"type\":\"response.web_search_call.searching\",\"item_id\":\"ws_1\"}\n\n",
+            ),
+            Step::Pause(pause),
+            scripted_sse::text(
+                "data: {\"type\":\"response.web_search_call.completed\",\"item_id\":\"ws_1\"}\n\n",
+            ),
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"pogoda Kielce\"}}}\n\n",
+            ),
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Słonecznie\"}\n\n",
+            ),
+            completed_tail("Słonecznie"),
+        ]
+    }
+
+    /// F3: a web_search series before the first text delta keeps the stream
+    /// alive (each gap stays under the idle timeout, the sum exceeds it),
+    /// surfaces the search as progress and still delivers `TextDone`.
+    #[tokio::test]
+    async fn stream_agent_projects_web_search_progress_before_text() {
+        let endpoint =
+            scripted_sse::serve("/v1/responses", web_search_steps(Duration::from_millis(80))).await;
+        let client = Client::new();
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_millis(150),
+            Duration::from_millis(150),
+        );
+        let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+
+        let progress: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::ServerToolProgress {
+                    id,
+                    name,
+                    done,
+                    query,
+                } => Some((id.as_str(), name.as_str(), *done, query.clone())),
+                _ => None,
+            })
+            .collect();
+        assert!(progress.len() >= 4, "{events:?}");
+        assert!(
+            progress
+                .iter()
+                .all(|(id, name, _, _)| *id == "ws_1" && *name == "web_search")
+        );
+        assert_eq!(
+            progress.last(),
+            Some(&(
+                "ws_1",
+                "web_search",
+                true,
+                Some("pogoda Kielce".to_string())
+            ))
+        );
+        assert_eq!(
+            progress.iter().filter(|(_, _, done, _)| *done).count(),
+            1,
+            "only the closing item marks the call done"
+        );
+        assert!(events.contains(&AgentEvent::TextDone("Słonecznie".to_string())));
+        assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    /// The prefill phase ignores lifecycle chunks and empty reasoning items;
+    /// hosted search progress and text end it.
+    #[test]
+    fn starts_generation_skips_lifecycle_and_reasoning_items() {
+        let chunk = |value: serde_json::Value| -> StreamChunk {
+            serde_json::from_value(value).expect("valid chunk")
+        };
+        for lifecycle in [
+            "response.created",
+            "response.queued",
+            "response.in_progress",
+        ] {
+            assert!(!super::starts_generation(&chunk(
+                json!({"type": lifecycle})
+            )));
+        }
+        assert!(!super::starts_generation(&chunk(json!({
+            "type": "response.output_item.added",
+            "item": {"type": "reasoning", "id": "rs_1"}
+        }))));
+        assert!(super::starts_generation(&chunk(json!({
+            "type": "response.web_search_call.searching",
+            "item_id": "ws_1"
+        }))));
+        assert!(super::starts_generation(&chunk(json!({
+            "type": "response.output_text.delta",
+            "delta": "x"
+        }))));
     }
 }
