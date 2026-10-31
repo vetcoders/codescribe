@@ -2014,6 +2014,8 @@ class StreamingSpeechTests(unittest.TestCase):
         started = threading.Event()
         finished = threading.Event()
         stopped = threading.Event()
+        take_observed = threading.Event()
+        player_disposed = threading.Event()
         order, audio, states, requests = [], [], [], []
         class Player:
             PREFILL_SECONDS = 0.3
@@ -2032,6 +2034,10 @@ class StreamingSpeechTests(unittest.TestCase):
                 order.append('audio')
                 if stop_after_first:
                     stopped.set()
+                # Keep first playback unfinished while synthesis may prefetch.
+                # Cancellation, rather than scheduler timing, releases the feed.
+                if take_after_first and not player_disposed.wait(3):
+                    raise AssertionError('take guard did not dispose the active player')
             def can_enqueue(self):
                 return True
             def finish(self):
@@ -2042,8 +2048,10 @@ class StreamingSpeechTests(unittest.TestCase):
                 return 0 if self.eof else self.returncode
             def terminate(self):
                 self.returncode = -15
+                player_disposed.set()
             def kill(self):
                 self.returncode = -9
+                player_disposed.set()
             def wait(self, timeout=None):
                 return self.returncode
         def exchange(request, on_pcm=None):
@@ -2067,13 +2075,17 @@ class StreamingSpeechTests(unittest.TestCase):
         original_stopped = DEMUX.ReplyPlaybackControl.stopped
         def should_stop(control):
             return stopped.is_set() or original_stopped(control)
+        def installation_idle(*args, **kwargs):
+            if take_after_first and started.is_set():
+                take_observed.set()
+                return False
+            return True
         with (patch.object(DEMUX, 'PCMStreamPlayer', Player),
               patch.object(DEMUX, '_xai_speech_key', return_value='test-only-key'),
               patch.object(DEMUX, '_tts_exchange', side_effect=exchange),
               patch.object(DEMUX, 'bus_path', return_value=bus),
               patch.object(DEMUX, '_wait_for_take_end', return_value=True),
-              patch.object(DEMUX, 'installation_idle', side_effect=lambda *a, **k:
-                           not (take_after_first and started.is_set())),
+              patch.object(DEMUX, 'installation_idle', side_effect=installation_idle),
               patch.object(DEMUX, '_cursor_holds_take', return_value=True),
               patch.object(DEMUX, '_acquire_playback_lock', return_value=True) as lock,
               patch.object(DEMUX.ReplyPlaybackControl, 'stopped', should_stop),
@@ -2089,6 +2101,9 @@ class StreamingSpeechTests(unittest.TestCase):
         self.assertEqual(sum(event['state'] not in ('waiting', 'playing') for event in states), 1)
         self.assertEqual(len({event['playback_ticket'] for event in states}), 1)
         self.assertTrue(finished.is_set())
+        if take_after_first:
+            self.assertTrue(take_observed.is_set(), 'the lifecycle owner must observe the new take')
+            self.assertTrue(player_disposed.is_set(), 'the new take must cancel active playback')
         return code, audio, states[-1], requests, root
 
     def test_pipeline_streams_and_prefetches_under_one_ticket_and_lock(self):
