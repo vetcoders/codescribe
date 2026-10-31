@@ -21,8 +21,9 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use super::{
-    BridgeRequest, BridgeResponse, ENV_ALLOW_DOWNLOAD, bridge_binary, bridge_global_lock, env_bool,
-    resolved_locale,
+    BRIDGE_TEARDOWN_BUDGET, BridgeRequest, BridgeResponse, BridgeTeardownOutcome,
+    ENV_ALLOW_DOWNLOAD, bridge_binary, bridge_global_lock, configure_bridge_process_group,
+    env_bool, kill_and_reap_bridge_group_until, resolved_locale, teardown_bridge_reader,
 };
 use crate::pipeline::contracts::TranscriptSegment;
 
@@ -88,6 +89,7 @@ pub struct LiveStreamSession {
     stdin: Option<ChildStdin>,
     events_rx: Receiver<LiveStreamEvent>,
     reader: Option<JoinHandle<()>>,
+    teardown_outcome: Option<BridgeTeardownOutcome>,
     /// Held for the whole session so SFSpeech never races a concurrent bridge.
     _lock_guard: std::sync::MutexGuard<'static, ()>,
     sample_rate: u32,
@@ -106,7 +108,9 @@ impl LiveStreamSession {
 
         let locale = resolved_locale(language);
         let bridge_bin = bridge_binary();
-        let mut child = Command::new(&bridge_bin)
+        let mut command = Command::new(&bridge_bin);
+        configure_bridge_process_group(&mut command);
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -118,41 +122,62 @@ impl LiveStreamSession {
                 )
             })?;
 
-        let mut stdin = child
-            .stdin
-            .take()
-            .context("Apple STT bridge stdin unavailable")?;
-        // Every `write_pcm` below targets this pipe. Without this the first
-        // write after the bridge dies raises SIGPIPE, which is fatal in the
-        // Swift host and leaves no crash report — killing the bridge took the
-        // whole app down on 2026-08-12. See `util::pipes`.
-        crate::util::pipes::disable_sigpipe(&stdin);
-        let stdout = child
-            .stdout
-            .take()
-            .context("Apple STT bridge stdout unavailable")?;
+        let handshake = (|| -> Result<(ChildStdin, std::process::ChildStdout)> {
+            let mut stdin = child
+                .stdin
+                .take()
+                .context("Apple STT bridge stdin unavailable")?;
+            // Every `write_pcm` below targets this pipe. Without this the first
+            // write after the bridge dies raises SIGPIPE, which is fatal in the
+            // Swift host and leaves no crash report — killing the bridge took the
+            // whole app down on 2026-08-12. See `util::pipes`.
+            crate::util::pipes::disable_sigpipe(&stdin);
+            let stdout = child
+                .stdout
+                .take()
+                .context("Apple STT bridge stdout unavailable")?;
 
-        let vocabulary = crate::stt::recognizer_vocabulary::RecognizerVocabulary::load_read_only();
-        let request = BridgeRequest {
-            protocol_version: 1,
-            command: "stream",
-            locale: &locale,
-            audio_path: None,
-            contextual_strings: vocabulary.apple_contextual_strings(),
-            allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
-            deadline_policy: None,
-            backend: None,
+            let vocabulary =
+                crate::stt::recognizer_vocabulary::RecognizerVocabulary::load_read_only();
+            let request = BridgeRequest {
+                protocol_version: 1,
+                command: "stream",
+                locale: &locale,
+                audio_path: None,
+                contextual_strings: vocabulary.apple_contextual_strings(),
+                allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+                deadline_policy: None,
+                backend: None,
+            };
+            let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
+            stdin
+                .write_all(&req_payload)
+                .context("write stream request")?;
+            stdin.write_all(b"\n").context("write stream request EOL")?;
+            let header = format!("{{\"rate\":{},\"channels\":1}}\n", sample_rate as f64);
+            stdin
+                .write_all(header.as_bytes())
+                .context("write stream PCM header")?;
+            stdin.flush().context("flush stream header")?;
+            Ok((stdin, stdout))
+        })();
+        let (stdin, stdout) = match handshake {
+            Ok(handles) => handles,
+            Err(error) => {
+                let reaped = kill_and_reap_bridge_group_until(
+                    &mut child,
+                    false,
+                    std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET,
+                );
+                if !reaped {
+                    tracing::warn!(
+                        pid = child.id(),
+                        "Apple STT live stream open teardown did not reap child within budget"
+                    );
+                }
+                return Err(error);
+            }
         };
-        let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
-        stdin
-            .write_all(&req_payload)
-            .context("write stream request")?;
-        stdin.write_all(b"\n").context("write stream request EOL")?;
-        let header = format!("{{\"rate\":{},\"channels\":1}}\n", sample_rate as f64);
-        stdin
-            .write_all(header.as_bytes())
-            .context("write stream PCM header")?;
-        stdin.flush().context("flush stream header")?;
 
         let (events_tx, events_rx) = mpsc::channel();
         let reader = thread::spawn(move || {
@@ -164,10 +189,33 @@ impl LiveStreamSession {
             stdin: Some(stdin),
             events_rx,
             reader: Some(reader),
+            teardown_outcome: None,
             _lock_guard: lock_guard,
             sample_rate,
             frames_written: 0,
         })
+    }
+
+    /// Idempotent bounded teardown of the bridge process group and stdout reader.
+    /// Executes at most once per session so `child.id()` is never signalled after
+    /// being reaped.
+    fn teardown_bridge(&mut self) -> BridgeTeardownOutcome {
+        drop(self.stdin.take());
+        if let Some(outcome) = self.teardown_outcome {
+            return outcome;
+        }
+        let deadline = std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET;
+        let outcome = teardown_bridge_reader(&mut self.child, false, &mut self.reader, deadline);
+        if !outcome.is_complete() {
+            tracing::warn!(
+                pid = self.child.id(),
+                child_reaped = outcome.child_reaped,
+                readers_joined = outcome.readers_joined,
+                "Apple STT live stream bridge teardown did not complete within budget"
+            );
+        }
+        self.teardown_outcome = Some(outcome);
+        outcome
     }
 
     /// The rate declared to the bridge at open time; PCM fed to
@@ -270,31 +318,28 @@ impl LiveStreamSession {
             }
         }
 
-        // A blocked stdout read ends only when the child closes its pipe.
-        // Reap the bridge before joining; otherwise the idle cutoff cannot
-        // bound finish when the child is alive but emits no more events.
-        if self.child.try_wait()?.is_none() {
-            let _ = self.child.kill();
-        }
-        let _ = self.child.wait();
-        if let Some(handle) = self.reader.take() {
-            let _ = handle.join();
-        }
+        // A blocked stdout read ends only when the entire bridge process group
+        // closes its pipe. Terminate the group and drain the reader under one
+        // shared deadline so a wedged bridge or grandchild cannot hang finish.
+        let outcome = self.teardown_bridge();
         events.extend(self.poll_events());
+        if !outcome.is_complete() {
+            bail!(
+                "Apple STT live stream bridge teardown incomplete after {}ms (child_reaped={}, readers_joined={})",
+                BRIDGE_TEARDOWN_BUDGET.as_millis(),
+                outcome.child_reaped,
+                outcome.readers_joined
+            );
+        }
 
         Ok(events)
     }
 }
 
 impl Drop for LiveStreamSession {
-    /// Best-effort teardown: close stdin, kill the bridge child, join the reader.
+    /// Bounded teardown: close stdin, kill the bridge process group, join the reader.
     fn drop(&mut self) {
-        drop(self.stdin.take());
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(handle) = self.reader.take() {
-            let _ = handle.join();
-        }
+        let _ = self.teardown_bridge();
     }
 }
 
@@ -481,6 +526,7 @@ mod tests {
             stdin,
             events_rx: rx,
             reader: Some(reader),
+            teardown_outcome: None,
             _lock_guard: TEST_LOCK.lock().expect("test lock"),
             sample_rate: 16_000,
             frames_written: 0,

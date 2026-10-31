@@ -58,6 +58,126 @@ pub const ENV_DICTATION_TRANSCRIBER: &str = "CODESCRIBE_APPLE_DICTATION_TRANSCRI
 const BRIDGE_TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Wall-clock budget for probe/init bridge calls (asset install can be slow).
 const BRIDGE_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Shared wall-clock budget for killing a bridge process group, reaping the
+/// group leader, and joining its stdout/stderr pipe readers.
+pub(super) const BRIDGE_TEARDOWN_BUDGET: Duration = Duration::from_secs(1);
+
+/// Explicit completion state of a bounded bridge process-group teardown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BridgeTeardownOutcome {
+    pub child_reaped: bool,
+    pub readers_joined: bool,
+}
+
+impl BridgeTeardownOutcome {
+    pub(super) fn is_complete(self) -> bool {
+        self.child_reaped && self.readers_joined
+    }
+}
+
+/// Put every spawned Apple STT bridge in its own process group (`pgid = pid`),
+/// so terminating the bridge also kills any disclaimed grandchild spawned by
+/// `respawnSelfResponsibleIfRequested()` without signalling the caller's group.
+pub(super) fn configure_bridge_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+    }
+}
+
+/// Terminate the bridge process group (`pgid = child.id()`) and poll `try_wait`
+/// until `deadline`. Never signals `killpg` when `already_reaped` is true, so a
+/// recycled OS PID can never be targeted. Never blocks in `child.wait()`.
+pub(super) fn kill_and_reap_bridge_group_until(
+    child: &mut std::process::Child,
+    already_reaped: bool,
+    deadline: std::time::Instant,
+) -> bool {
+    if already_reaped {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        if let Ok(pgid) = libc::pid_t::try_from(child.id())
+            && pgid > 1
+        {
+            // SAFETY: `already_reaped` is false, so `child` has not been reaped by
+            // `try_wait`/`wait` yet. The kernel still holds this PID in our process
+            // table (running or zombie) and `pgid == child.id()` belongs exclusively
+            // to the bridge process group created with `process_group(0)`.
+            let _ = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        }
+    }
+    let _ = child.kill();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Wait up to `deadline` for a pipe-reader thread to finish before joining it.
+/// If the thread is still blocked on an unclosed pipe at `deadline`, returns
+/// `None` without blocking the caller in `JoinHandle::join`.
+pub(super) fn join_thread_until<T>(
+    slot: &mut Option<std::thread::JoinHandle<T>>,
+    deadline: std::time::Instant,
+) -> Option<T> {
+    let handle = slot.as_ref()?;
+    while !handle.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    slot.take()?.join().ok()
+}
+
+/// Shared bounded teardown for a bridge child and a single stdout reader thread.
+pub(super) fn teardown_bridge_reader<T>(
+    child: &mut std::process::Child,
+    already_reaped: bool,
+    reader: &mut Option<std::thread::JoinHandle<T>>,
+    deadline: std::time::Instant,
+) -> BridgeTeardownOutcome {
+    let child_reaped = kill_and_reap_bridge_group_until(child, already_reaped, deadline);
+    let readers_joined = reader.is_none() || join_thread_until(reader, deadline).is_some();
+    BridgeTeardownOutcome {
+        child_reaped,
+        readers_joined,
+    }
+}
+
+/// Shared bounded teardown for a bridge child and its stdout/stderr reader threads.
+fn teardown_bridge_process_and_readers<T, U>(
+    child: &mut std::process::Child,
+    already_reaped: bool,
+    stdout_thread: &mut Option<std::thread::JoinHandle<T>>,
+    stderr_thread: &mut Option<std::thread::JoinHandle<U>>,
+    deadline: std::time::Instant,
+) -> BridgeTeardownOutcome {
+    let child_reaped = kill_and_reap_bridge_group_until(child, already_reaped, deadline);
+    let stdout_joined =
+        stdout_thread.is_none() || join_thread_until(stdout_thread, deadline).is_some();
+    let stderr_joined =
+        stderr_thread.is_none() || join_thread_until(stderr_thread, deadline).is_some();
+    BridgeTeardownOutcome {
+        child_reaped,
+        readers_joined: stdout_joined && stderr_joined,
+    }
+}
 /// In-bridge SFSpeech recognition deadline (seconds). Must stay under the
 /// Apple final-pass budget (~3 s) and far below `BRIDGE_TRANSCRIBE_TIMEOUT` so
 /// a stalled callback can still fall through to Whisper. Mirrors
@@ -1021,7 +1141,9 @@ fn run_bridge_stream(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let bridge_bin = bridge_binary();
-    let mut child = Command::new(&bridge_bin)
+    let mut command = Command::new(&bridge_bin);
+    configure_bridge_process_group(&mut command);
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1075,8 +1197,18 @@ fn run_bridge_stream(
         Ok(())
     })();
     if let Err(e) = write_result {
-        let _ = child.kill();
-        let _ = child.wait();
+        drop(child.stdin.take());
+        let reaped = kill_and_reap_bridge_group_until(
+            &mut child,
+            false,
+            std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET,
+        );
+        if !reaped {
+            tracing::warn!(
+                pid = child.id(),
+                "Apple STT bridge stream teardown did not reap child within budget after write error"
+            );
+        }
         return Err(e);
     }
     // EOF ends the stream session on the bridge side.
@@ -1243,6 +1375,7 @@ fn run_bridge_exchange(
 
     let bridge_bin = bridge_binary();
     let mut command = Command::new(&bridge_bin);
+    configure_bridge_process_group(&mut command);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1260,7 +1393,7 @@ fn run_bridge_exchange(
         )
     })?;
 
-    // Write request to stdin; on error, reap the child to avoid zombie.
+    // Write request to stdin; on error, reap the child group within budget to avoid orphans.
     let write_result = (|| -> Result<()> {
         let stdin = child
             .stdin
@@ -1277,21 +1410,25 @@ fn run_bridge_exchange(
         Ok(())
     })();
     if let Err(e) = write_result {
-        let _ = child.kill();
-        let _ = child.wait();
+        drop(child.stdin.take());
+        let reaped = kill_and_reap_bridge_group_until(
+            &mut child,
+            false,
+            std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET,
+        );
+        if !reaped {
+            tracing::warn!(
+                pid = child.id(),
+                "Apple STT bridge exchange teardown did not reap child within budget after write error"
+            );
+        }
         return Err(e);
     }
 
     // Drop stdin handle so the bridge sees EOF and can finish.
     drop(child.stdin.take());
 
-    let output = if let Some(dur) = timeout {
-        wait_with_timeout(&mut child, dur)?
-    } else {
-        child
-            .wait_with_output()
-            .context("wait for Apple STT bridge output")?
-    };
+    let output = wait_with_timeout(&mut child, timeout.unwrap_or(BRIDGE_TRANSCRIBE_TIMEOUT))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1317,55 +1454,94 @@ fn run_bridge_exchange(
     Ok(response)
 }
 
-/// Wait for child process with a timeout. Kills+reaps on timeout to avoid zombies.
+/// Wait for child process with a timeout. Terminates the bridge process group
+/// and bounds both child reaping and pipe-reader draining on every exit path.
 fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Result<Output> {
     let pid = child.id();
     let mut stdout_handle = child.stdout.take();
     let mut stderr_handle = child.stderr.take();
 
-    let stdout_thread = std::thread::spawn(move || -> Vec<u8> {
+    let mut stdout_thread = Some(std::thread::spawn(move || -> Vec<u8> {
         let mut buf = Vec::new();
         if let Some(ref mut r) = stdout_handle {
             let _ = r.read_to_end(&mut buf);
         }
         buf
-    });
-    let stderr_thread = std::thread::spawn(move || -> Vec<u8> {
+    }));
+    let mut stderr_thread = Some(std::thread::spawn(move || -> Vec<u8> {
         let mut buf = Vec::new();
         if let Some(ref mut r) = stderr_handle {
             let _ = r.read_to_end(&mut buf);
         }
         buf
-    });
+    }));
 
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout = stdout_thread.join().unwrap_or_default();
-                let stderr = stderr_thread.join().unwrap_or_default();
-                return Ok(Output {
-                    status,
-                    stdout,
-                    stderr,
-                });
+                let teardown_deadline = std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET;
+                let stdout = join_thread_until(&mut stdout_thread, teardown_deadline);
+                let stderr = join_thread_until(&mut stderr_thread, teardown_deadline);
+                if let (Some(stdout), Some(stderr)) = (stdout, stderr) {
+                    return Ok(Output {
+                        status,
+                        stdout,
+                        stderr,
+                    });
+                }
+                tracing::warn!(
+                    pid,
+                    ?status,
+                    stdout_joined = stdout.is_some(),
+                    stderr_joined = stderr.is_some(),
+                    "Apple STT bridge exited, but output pipe readers did not finish within teardown budget"
+                );
+                bail!(
+                    "Apple STT bridge (pid {pid}) exited with {status}, but output readers did not finish within {}ms (stdout_joined={}, stderr_joined={})",
+                    BRIDGE_TEARDOWN_BUDGET.as_millis(),
+                    stdout.is_some(),
+                    stderr.is_some()
+                );
             }
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
-                    tracing::warn!(
-                        "Apple STT bridge (pid {pid}) timed out after {}s, killing",
-                        timeout.as_secs()
+                    let outcome = teardown_bridge_process_and_readers(
+                        child,
+                        false,
+                        &mut stdout_thread,
+                        &mut stderr_thread,
+                        std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET,
                     );
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    bail!("Apple STT bridge timed out after {}s", timeout.as_secs());
+                    tracing::warn!(
+                        pid,
+                        timeout_secs = timeout.as_secs(),
+                        child_reaped = outcome.child_reaped,
+                        readers_joined = outcome.readers_joined,
+                        "Apple STT bridge timed out; process group terminated"
+                    );
+                    bail!(
+                        "Apple STT bridge timed out after {}s (teardown: child_reaped={}, readers_joined={})",
+                        timeout.as_secs(),
+                        outcome.child_reaped,
+                        outcome.readers_joined
+                    );
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(anyhow::anyhow!("wait for bridge pid {pid}: {e}"));
+                let outcome = teardown_bridge_process_and_readers(
+                    child,
+                    false,
+                    &mut stdout_thread,
+                    &mut stderr_thread,
+                    std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET,
+                );
+                return Err(anyhow::anyhow!(
+                    "wait for bridge pid {pid}: {e} (teardown: child_reaped={}, readers_joined={})",
+                    outcome.child_reaped,
+                    outcome.readers_joined
+                ));
             }
         }
     }
