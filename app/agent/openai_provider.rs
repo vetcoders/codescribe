@@ -494,7 +494,15 @@ async fn forward_events_and_track_chain(
     previous_response_id: Option<Arc<Mutex<Option<String>>>>,
     account_model: Option<String>,
 ) {
-    while let Some(mut event) = provider_rx.recv().await {
+    loop {
+        let mut event = tokio::select! {
+            biased;
+            _ = tx.closed() => break,
+            event = provider_rx.recv() => match event {
+                Some(event) => event,
+                None => break,
+            },
+        };
         if let (Some(model), AgentEvent::Error(message)) = (&account_model, &mut event) {
             *message = account_model_error(model, message);
         }
@@ -2202,6 +2210,28 @@ mod tests {
             }
             assert!(consumer_rx.recv().await.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn forwarder_cancellation_contract_releases_a_silent_upstream() {
+        let (provider_tx, provider_rx) = mpsc::channel::<AgentEvent>(1);
+        let (consumer_tx, consumer_rx) = mpsc::channel::<AgentEvent>(1);
+        let forwarder = tokio::spawn(forward_events_and_track_chain(
+            provider_rx,
+            consumer_tx,
+            None,
+            None,
+        ));
+        drop(consumer_rx);
+        let released = tokio::time::timeout(Duration::from_secs(1), provider_tx.closed()).await;
+        if released.is_err() {
+            forwarder.abort();
+        }
+        assert!(
+            released.is_ok(),
+            "receiver closure must propagate before an upstream event arrives"
+        );
+        forwarder.await.unwrap();
     }
 
     /// P3.7: the detached forwarder must not advance `previous_response_id` once

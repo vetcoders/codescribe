@@ -239,7 +239,7 @@ pub struct ResponsesStreamingManager<'a> {
     /// `ChatGPT-Account-ID` and `originator`). Applied to every request.
     extra_headers: Vec<(String, String)>,
     callbacks: StreamCallbacks,
-    initial_response_timeout: Duration,
+    error_body_timeout: Duration,
     inter_chunk_timeout: Duration,
     first_event_timeout: Duration,
 }
@@ -247,7 +247,7 @@ pub struct ResponsesStreamingManager<'a> {
 impl<'a> ResponsesStreamingManager<'a> {
     /// Build a manager for one endpoint/credential pair.
     ///
-    /// `initial_response_timeout` bounds the wait for response headers;
+    /// `error_body_timeout` bounds non-SSE HTTP error-body reads;
     /// `inter_chunk_timeout` bounds the gap between SSE chunks once the first
     /// content event arrived. Before that, [`DEFAULT_FIRST_EVENT_TIMEOUT`]
     /// applies unless [`Self::with_first_event_timeout`] overrides it.
@@ -257,7 +257,7 @@ impl<'a> ResponsesStreamingManager<'a> {
         endpoint: &'a str,
         api_key: &'a str,
         callbacks: StreamCallbacks,
-        initial_response_timeout: Duration,
+        error_body_timeout: Duration,
         inter_chunk_timeout: Duration,
     ) -> Self {
         Self {
@@ -267,7 +267,7 @@ impl<'a> ResponsesStreamingManager<'a> {
             auth_header_mode: AuthHeaderMode::BearerAndApiKey,
             extra_headers: Vec::new(),
             callbacks,
-            initial_response_timeout,
+            error_body_timeout,
             inter_chunk_timeout,
             first_event_timeout: DEFAULT_FIRST_EVENT_TIMEOUT,
         }
@@ -323,7 +323,7 @@ impl<'a> ResponsesStreamingManager<'a> {
         // Phase 1 of StreamWatchdog covers the whole prefill window from
         // `request.send()` (including HTTP response headers and initial
         // lifecycle/keepalive SSE frames) until the first content event.
-        // Do not clamp `header_wait` to the 30 s `initial_response_timeout`,
+        // Do not clamp `header_wait` to the 30 s `error_body_timeout`,
         // which would abort responses whose headers arrive at 30–90 s.
         let header_wait = watchdog.next_wait();
         let response = match tokio::time::timeout(header_wait, request_builder.send()).await {
@@ -336,7 +336,10 @@ impl<'a> ResponsesStreamingManager<'a> {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = tokio::time::timeout(self.error_body_timeout, response.text())
+                .await
+                .with_context(|| format!("SSE HTTP {status} error body timeout"))?
+                .unwrap_or_default();
             anyhow::bail!("HTTP {} - {}", status, body);
         }
 
@@ -622,7 +625,7 @@ impl<'a> ResponsesStreamingManager<'a> {
             api_key: self.api_key.to_string(),
             auth_header_mode: self.auth_header_mode,
             extra_headers: self.extra_headers.clone(),
-            initial_response_timeout: self.initial_response_timeout,
+            error_body_timeout: self.error_body_timeout,
             inter_chunk_timeout: self.inter_chunk_timeout,
             first_event_timeout: self.first_event_timeout,
         };
@@ -676,7 +679,10 @@ impl<'a> ResponsesStreamingManager<'a> {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = tokio::time::timeout(self.error_body_timeout, response.text())
+                .await
+                .with_context(|| format!("SSE resume HTTP {status} error body timeout"))?
+                .unwrap_or_default();
             anyhow::bail!("Resume HTTP {} - {}", status, body);
         }
 
@@ -828,7 +834,7 @@ struct AgentStreamTransport {
     api_key: String,
     auth_header_mode: AuthHeaderMode,
     extra_headers: Vec<(String, String)>,
-    initial_response_timeout: Duration,
+    error_body_timeout: Duration,
     inter_chunk_timeout: Duration,
     first_event_timeout: Duration,
 }
@@ -852,7 +858,7 @@ async fn run_agent_stream(
         api_key,
         auth_header_mode,
         extra_headers,
-        initial_response_timeout: _,
+        error_body_timeout,
         inter_chunk_timeout,
         first_event_timeout,
     } = transport;
@@ -874,15 +880,26 @@ async fn run_agent_stream(
 
     let mut watchdog = StreamWatchdog::start(first_event_timeout, inter_chunk_timeout);
     let header_wait = watchdog.next_wait();
-    let response = match tokio::time::timeout(header_wait, request_builder.send()).await {
-        Ok(Ok(resp)) => resp,
-        Ok(Err(error)) => return Err(error).context("Agent SSE request failed"),
-        Err(_) => anyhow::bail!("Agent SSE initial response timeout after {:?}", header_wait),
+    let response = tokio::select! {
+        biased;
+        _ = tx.closed() => return Ok(()),
+        result = tokio::time::timeout(header_wait, request_builder.send()) => match result {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(error)) => return Err(error).context("Agent SSE request failed"),
+            Err(_) => anyhow::bail!("Agent SSE initial response timeout after {:?}", header_wait),
+        },
     };
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = tokio::select! {
+            biased;
+            _ = tx.closed() => return Ok(()),
+            result = tokio::time::timeout(error_body_timeout, response.text()) => {
+                result.with_context(|| format!("Agent SSE HTTP {status} error body timeout"))?
+                    .unwrap_or_default()
+            },
+        };
         anyhow::bail!("Agent SSE HTTP {}: {}", status, summarize_error_body(&body));
     }
 
@@ -906,16 +923,20 @@ async fn run_agent_stream(
             );
         }
 
-        let next_chunk = match tokio::time::timeout(watchdog.next_wait(), stream.next()).await {
-            Ok(chunk) => chunk,
-            Err(_) if !watchdog.is_generating() => anyhow::bail!(
-                "Agent SSE initial response timeout: no content event within {:?} of the request",
-                watchdog.first_event_timeout()
-            ),
-            Err(_) => anyhow::bail!(
-                "Agent SSE inter-chunk timeout after {:?}",
-                watchdog.idle_timeout()
-            ),
+        let next_chunk = tokio::select! {
+            biased;
+            _ = tx.closed() => return Ok(()),
+            result = tokio::time::timeout(watchdog.next_wait(), stream.next()) => match result {
+                Ok(chunk) => chunk,
+                Err(_) if !watchdog.is_generating() => anyhow::bail!(
+                    "Agent SSE initial response timeout: no content event within {:?} of the request",
+                    watchdog.first_event_timeout()
+                ),
+                Err(_) => anyhow::bail!(
+                    "Agent SSE inter-chunk timeout after {:?}",
+                    watchdog.idle_timeout()
+                ),
+            },
         };
 
         let Some(chunk_result) = next_chunk else {
@@ -2045,6 +2066,15 @@ pub mod scripted_sse {
     /// The request is read to its end, a `200 text/event-stream` head is sent,
     /// then every step runs in order and the connection closes.
     pub async fn serve(path: &str, steps: Vec<Step>) -> String {
+        serve_with_header_delay(path, Duration::ZERO, steps).await
+    }
+
+    /// Delay the HTTP headers themselves, independently of SSE body pauses.
+    pub async fn serve_with_header_delay(
+        path: &str,
+        header_delay: Duration,
+        steps: Vec<Step>,
+    ) -> String {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind loopback SSE server");
@@ -2058,6 +2088,7 @@ pub mod scripted_sse {
             };
             let _ = socket.set_nodelay(true);
             read_request(&mut socket).await;
+            tokio::time::sleep(header_delay).await;
             let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
                         cache-control: no-cache\r\nconnection: close\r\n\r\n";
             if socket.write_all(head.as_bytes()).await.is_err() {
@@ -2077,6 +2108,37 @@ pub mod scripted_sse {
             let _ = socket.shutdown().await;
         });
         url
+    }
+
+    /// Hold a request before headers, in a successful body, or in an error
+    /// body, and independently observe whether the client releases its socket.
+    pub async fn held_response(
+        path: &str,
+        status: Option<u16>,
+        prefix: String,
+    ) -> (
+        String,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Receiver<std::io::Result<usize>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}{path}", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            if let Some(status) = status {
+                let response = format!(
+                    "HTTP/1.1 {status} Fixture\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{prefix}"
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                socket.flush().await.unwrap();
+            }
+            let _ = seen_tx.send(());
+            let _ = closed_tx.send(socket.read(&mut [0u8; 1]).await);
+        });
+        (endpoint, seen_rx, closed_rx)
     }
 
     /// Consume headers and a `content-length` body so closing the socket
@@ -3795,6 +3857,153 @@ mod tests {
                 "partial stream must reach the caller's complete Raw fallback: {tail}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn ordinary_and_agent_headers_honor_first_event_budget() {
+        for agent in [false, true] {
+            let endpoint = scripted_sse::serve_with_header_delay(
+                "/v1/responses",
+                Duration::from_millis(50),
+                vec![
+                    scripted_sse::text(
+                        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+                    ),
+                    completed_tail("ok"),
+                ],
+            )
+            .await;
+            let client = Client::new();
+            let manager = ResponsesStreamingManager::new(
+                &client,
+                &endpoint,
+                "test-key",
+                StreamCallbacks {
+                    assistant: None,
+                    reasoning: None,
+                },
+                Duration::from_millis(10),
+                Duration::from_millis(20),
+            )
+            .with_first_event_timeout(Duration::from_millis(200));
+            if agent {
+                let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+                assert_eq!(delta_text(&events), "ok");
+                assert!(has_clean_done(&events));
+            } else {
+                assert_eq!(
+                    manager.stream(&json!({})).await.unwrap().assistant_text,
+                    "ok"
+                );
+            }
+        }
+        let endpoint = scripted_sse::serve_with_header_delay(
+            "/v1/responses",
+            Duration::from_millis(120),
+            vec![completed_tail("late")],
+        )
+        .await;
+        let client = Client::new();
+        let manager = ResponsesStreamingManager::new(
+            &client,
+            &endpoint,
+            "test-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        )
+        .with_first_event_timeout(Duration::from_millis(20));
+        assert!(
+            manager
+                .stream(&json!({}))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("timeout")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_cancellation_contract_releases_each_pending_http_phase() {
+        for status in [None, Some(200), Some(503)] {
+            let prefix = if status == Some(200) {
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ready\"}\n\n"
+            } else {
+                ""
+            };
+            let (endpoint, seen, closed) =
+                scripted_sse::held_response("/v1/responses", status, prefix.into()).await;
+            let client = Client::new();
+            let manager = ResponsesStreamingManager::new(
+                &client,
+                &endpoint,
+                "test-key",
+                StreamCallbacks {
+                    assistant: None,
+                    reasoning: None,
+                },
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            )
+            .with_first_event_timeout(Duration::from_secs(5));
+            let mut rx = manager.stream_agent(&json!({})).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), seen)
+                .await
+                .unwrap()
+                .unwrap();
+            if status == Some(200) {
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                        .await
+                        .unwrap(),
+                    Some(AgentEvent::TextDelta("ready".into()))
+                );
+            } else if status.is_some() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            drop(rx);
+            let result = tokio::time::timeout(Duration::from_secs(1), closed)
+                .await
+                .expect("cancelled agent kept its HTTP request")
+                .unwrap();
+            assert!(
+                matches!(result, Ok(0))
+                    || result.is_err_and(|error| matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                    )),
+                "phase {status:?} did not disconnect"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_cancellation_contract_bounds_non_sse_error_body() {
+        let (endpoint, _seen, _closed) =
+            scripted_sse::held_response("/v1/responses", Some(503), String::new()).await;
+        let client = Client::new();
+        let manager = ResponsesStreamingManager::new(
+            &client,
+            &endpoint,
+            "test-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_millis(20),
+            Duration::from_secs(5),
+        )
+        .with_first_event_timeout(Duration::from_secs(5));
+        let events = tokio::time::timeout(
+            Duration::from_millis(500),
+            drain(manager.stream_agent(&json!({})).await.unwrap()),
+        )
+        .await
+        .expect("error body must use the attempt budget");
+        assert!(events.iter().any(|event| matches!(event, AgentEvent::Error(message) if message.contains("503") && message.contains("body"))), "{events:?}");
     }
 
     #[tokio::test]
