@@ -42,6 +42,7 @@ generation = '( cd macos && xcodegen generate ) || exit $?'
 bridge_directory = 'mkdir -p "$CODESCRIBE_DATA_DIR/agent-bridge" || exit $?'
 bridge_export = 'export TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME="$CODESCRIBE_DATA_DIR/agent-bridge"'
 gui_export = 'export TEST_RUNNER_CODESCRIBE_TEST_ISOLATED_GUI="${CODESCRIBE_TEST_ISOLATED_GUI:-0}"'
+ax_cleanup = """trap 'kill "$AX_PROBE_PID" 2>/dev/null || true; wait "$AX_PROBE_PID" 2>/dev/null || true' EXIT"""
 
 with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
     base = Path(tmp)
@@ -190,7 +191,7 @@ with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
         ('ax-directory-live-home', 'mkdir -p "$CODESCRIBE_DATA_DIR/ax-probe" || exit $?', 'mkdir -p "$HOME/.codescribe/ax-probe" || exit $?'),
         ('ax-not-forwarded', 'export TEST_RUNNER_CODESCRIBE_AX_PROBE="$CODESCRIBE_DATA_DIR/ax-probe"', 'export CODESCRIBE_AX_PROBE="$CODESCRIBE_DATA_DIR/ax-probe"'),
         ('ax-no-owned-pid', 'AX_PROBE_PID=$!', 'AX_PROBE_PID=1'),
-        ('ax-no-owned-cleanup', next(line for line in helper_source.splitlines() if line.lstrip().startswith("trap 'kill")), 'true'),
+        ('ax-no-owned-cleanup', ax_cleanup, 'true'),
         ('ax-no-readiness', 'while [[ ! -f "$CODESCRIBE_DATA_DIR/ax-probe/ready" ]]; do', 'while false; do'),
         ('ax-untrusted-accepted', 'if [[ "$(cat "$CODESCRIBE_DATA_DIR/ax-probe/ready")" != trusted ]]; then', 'if false; then'),
     ):
@@ -294,32 +295,50 @@ sys.exit(0)
         passed += 1
         print(f'PASS verify-wiring-{harness_exit}: make exit={result.returncode}', flush=True)
 
-    # Reuse all 54 scenarios, then independently inspect their recorded order.
+    # 15 profile/layout cases + 38 boundary modes + 1 unsupported profile.
+    swift_scenarios = 54
+    # Reuse every scenario, then independently inspect its recorded order.
     swift_evidence = evidence / 'swift-path'
     result = subprocess.run(['/bin/bash', str(source / 'scripts/tests/test-swift-target-root-test.sh'),
                              str(source), str(swift_evidence)], text=True, capture_output=True)
     (evidence / 'swift-path.stdout').write_text(result.stdout)
     (evidence / 'swift-path.stderr').write_text(result.stderr)
     (evidence / 'swift-path.exit').write_text(str(result.returncode) + '\n')
-    assert result.returncode == 0 and 'scenarios=54 passed=54 failed=0' in result.stdout, result
+    summary = f'scenarios={swift_scenarios} passed={swift_scenarios} failed=0'
+    assert result.returncode == 0 and summary in result.stdout, result
     receipts = list(swift_evidence.glob('*.json'))
-    assert len(receipts) == 54, len(receipts)
+    assert len(receipts) == swift_scenarios, len(receipts)
     for path in receipts:
         receipt = json.loads(path.read_text())
         names = [c['tool'] for c in receipt['calls'] if 'selected' not in c]
         if receipt['exit'] == 0:
             ordered = [n for n in names if n not in ('security', 'git')]
-            assert ordered in (['codescribe-stt-bridge', 'cargo', 'xcodegen', 'xcrun', 'xcodebuild'],
-                               ['codescribe-stt-bridge', 'cargo', 'xcodegen', 'xcodebuild'],
-                               ['custom-helper', 'cargo', 'xcodegen', 'xcrun', 'xcodebuild'],
-                               ['custom-helper', 'cargo', 'xcodegen', 'xcodebuild']), (path, names)
+            helper = 'custom-helper' if path.stem == 'debug-spaces-override-helper' else 'codescribe-stt-bridge'
+            expected_order = [helper, 'cargo', 'xcodegen']
+            if path.stem == 'debug-spaces-gui-opt-in':
+                # These are fixture tool/receipt witnesses, not real GUI acceptance.
+                selected = [c for c in receipt['calls'] if 'selected' in c]
+                assert len(selected) == 1, (path, selected)
+                ax_calls = [c for c in receipt['calls'] if c['tool'] == 'xcrun']
+                assert len(ax_calls) == 1, (path, ax_calls)
+                assert ax_calls[0]['argv'] == [
+                    'swift', '-swift-version', '6', '-warnings-as-errors',
+                    'scripts/tests/native-ax-probe.swift',
+                    str(Path(selected[0]['data']) / 'ax-probe')], (path, ax_calls)
+                log = path.with_suffix('.log').read_text().splitlines()
+                assert log.count('test-swift: verified synthetic test-host AX actions=1') == 1, (path, log)
+                expected_order.append('xcrun')
+            else:
+                assert 'xcrun' not in names, (path, names)
+            expected_order.append('xcodebuild')
+            assert ordered == expected_order, (path, ordered, expected_order)
         if path.stem.endswith('-helper-error'):
             assert not set(names) & {'cargo', 'xcodegen', 'xcrun', 'xcodebuild'}, names
         if path.stem.endswith('-generation-error'):
             assert 'xcodegen' in names and not set(names) & {'xcrun', 'xcodebuild'}, names
         if path.stem.endswith('-metadata-error'):
             assert 'cargo' in names and not set(names) & {'xcodegen', 'xcrun', 'xcodebuild'}, names
-    passed += 54
-    print('PASS real Make/helper: 54 scenarios plus event-order/short-circuit assertions', flush=True)
+    passed += swift_scenarios
+    print(f'PASS real Make/helper: {swift_scenarios} scenarios plus event-order/short-circuit assertions', flush=True)
 print(f'validate-gates-test: scenarios={passed} passed={passed} failed=0')
 PY
