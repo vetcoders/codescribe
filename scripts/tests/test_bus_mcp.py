@@ -121,6 +121,49 @@ class MailboxFixture(unittest.TestCase):
         return cancel, thread, outcome
 
 
+class ConnectionIdentityTests(MailboxFixture):
+    PROVIDER = "codex"
+
+    def healthy_status(self):
+        return {"kind": "status", "lease_id": self.lease, "follower_pid": 42,
+                "follower_alive": True, "follower_verified": True,
+                "heartbeat_fresh": True, "channel_bound": True, "attached": True,
+                "wakeup": "codex-queue", "listener": {"until_event_alive": False}}
+
+    def test_codex_target_is_thread_and_archive_is_only_receipts(self):
+        receipt = MCP.connection_identities(DEMUX, self.root, self.PROVIDER, self.session,
+                                           self.healthy_status())
+        self.assertTrue(receipt["native_wake_armed"])
+        self.assertEqual(receipt["local_queue_target"], {
+            "rail": "codex_queue", "provider_session_id": self.session, "queue_path": None,
+            "receipts_path": str(self.root / "wakeups" / self.lease), "supported": True})
+
+    def test_pid_alone_never_arms_wake_on_status_or_connect(self):
+        for key, value in [("heartbeat_fresh", False), ("follower_verified", False),
+                           ("channel_bound", False), ("attached", False),
+                           ("lease_id", "another-lease"), ("wakeup", "none")]:
+            status = dict(self.healthy_status(), **{key: value})
+            for attach in [False, True]:
+                with self.subTest(key=key, attach=attach):
+                    result = {"kind": "attach_receipt", "lease_id": self.lease,
+                              "follower_pid": 42, "wakeup": "codex-queue"} if attach else status
+                    receipt = MCP.connection_identities(DEMUX, self.root, self.PROVIDER,
+                                                       self.session, result, status if attach else None)
+                    self.assertFalse(receipt["native_wake_armed"])
+
+    def test_connect_observes_canonical_status_without_another_attachment(self):
+        attached = {"kind": "attach_receipt", "lease_id": self.lease, "follower_pid": 42,
+                    "wakeup": "codex-queue"}
+        stale = dict(self.healthy_status(), heartbeat_fresh=False, attached=False)
+        with patch.object(self.mailbox, "run", side_effect=[attached, stale]) as run:
+            receipt = self.mailbox.connect({"provider": self.PROVIDER, "session_id": self.session,
+                                            "name": "lena", "channel": "2"})
+        self.assertFalse(receipt["native_wake_armed"])
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[1].args, (["--status"],))
+        self.assert_not_acknowledged()
+
+
 class MailboxTests(MailboxFixture):
     def test_read_returns_complete_owned_envelope_without_ack(self):
         self.pending[0]["text"] = "Iwo — cała wiadomość, nie podgląd. " * 100

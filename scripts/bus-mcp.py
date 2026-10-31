@@ -212,7 +212,7 @@ def announcer(demux, root, lease_id):
     return announce
 
 
-def connection_identities(demux, root, provider, session, result):
+def connection_identities(demux, root, provider, session, result, status=None):
     """The three separate identities of one connection, as fields of `result`.
 
     `mailbox_owner` is who the deliveries belong to; `local_queue_target` is
@@ -222,13 +222,14 @@ def connection_identities(demux, root, provider, session, result):
     native wake path is live now; a provider without one says so with
     `wakeup_supported: false` and the way to listen instead.
     """
-    lease_id = result.get("lease_id") or demux.lease_identifier(provider, session)
+    lease_id = demux.lease_identifier(provider, session)
     mode = WAKEUP_MODE[provider]
-    if "follower_alive" in result:
-        pid = result.get("follower_pid") if result.get("follower_alive") else None
-    else:
-        pid = demux.live_follower_pid(root, lease_id)
-    listener = result.get("listener") if isinstance(result.get("listener"), dict) else {}
+    status = result if status is None else status
+    verified = (status.get("kind") == "status" and status.get("lease_id") == lease_id
+                and all(status.get(key) is True for key in
+                        ("follower_verified", "heartbeat_fresh", "channel_bound", "attached")))
+    pid = status.get("follower_pid") if verified else None
+    listener = status.get("listener") if isinstance(status.get("listener"), dict) else {}
     until_event_alive = listener.get("until_event_alive")
     if until_event_alive is None:
         until_event_alive = lock_held(demux.until_event_lock_path(root, lease_id))
@@ -236,7 +237,7 @@ def connection_identities(demux, root, provider, session, result):
     if mode in ("stop_hook", "omp_extension"):
         armed = wake_armed(root, lease_id)
     elif queue_supported:
-        armed = result.get("wakeup") == "codex-queue" and pid is not None
+        armed = verified and status.get("wakeup") == "codex-queue" and pid is not None
     else:
         armed = False
     identities = {
@@ -244,8 +245,11 @@ def connection_identities(demux, root, provider, session, result):
                           "channel": result.get("channel"),
                           "name": result.get("name") or result.get("audience")},
         "local_queue_target": {"rail": "codex_queue" if queue_supported else None,
-                               "queue_path": str(root / "wakeups" / lease_id) if queue_supported else None,
-                               "supported": queue_supported},
+                               "queue_path": None,
+                               "supported": queue_supported,
+                               **({"provider_session_id": session,
+                                   "receipts_path": str(root / "wakeups" / lease_id)}
+                                  if queue_supported else {})},
         "events_target": {"follower_pid": pid, "follower_alive": pid is not None, "wakeup_mode": mode,
                           "until_event_alive": bool(until_event_alive)},
         "wakeup_supported": mode in NATIVE_WAKEUP_MODES,
@@ -824,7 +828,8 @@ class Mailbox:
             self.provider, self.owner = previous
             raise
         if isinstance(result, dict) and result.get("kind") == "attach_receipt":
-            result.update(connection_identities(self.demux, self.root, provider, session, result))
+            status = self.run(["--status"])
+            result.update(connection_identities(self.demux, self.root, provider, session, result, status))
         return result
 
     def read(self):
