@@ -67,42 +67,42 @@
         },
         {
           "symbol": "AcousticSerial",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/anchors.rs",
           "cardinality": 1
         },
         {
           "symbol": "WordEvidenceReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/anchors.rs",
           "cardinality": 1
         },
         {
           "symbol": "LayerDecisionReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/replay.rs",
           "cardinality": 1
         },
         {
           "symbol": "ManualEditReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/replay.rs",
           "cardinality": 1
         },
         {
           "symbol": "ObservationFrontier",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/fence.rs",
           "cardinality": 1
         },
         {
           "symbol": "LedgerSealReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/fence.rs",
           "cardinality": 1
         },
         {
           "symbol": "SealCoverageReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/replay.rs",
           "cardinality": 1
         },
         {
           "symbol": "TranscriptComparisonReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/replay.rs",
           "cardinality": 1
         },
         {
@@ -169,7 +169,7 @@
       "required_unwired": [
         {
           "symbol": "AcousticSerial",
-          "owner_files": ["core/pipeline/acoustic_ledger.rs"]
+          "owner_files": ["core/pipeline/acoustic_ledger/anchors.rs"]
         },
         {
           "symbol": "TranscriptRevision",
@@ -271,32 +271,32 @@
         },
         {
           "symbol": "AcousticSerial",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/anchors.rs",
           "cardinality": 1
         },
         {
           "symbol": "WordEvidenceReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/anchors.rs",
           "cardinality": 1
         },
         {
           "symbol": "LayerDecisionReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/replay.rs",
           "cardinality": 1
         },
         {
           "symbol": "LedgerSealReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/fence.rs",
           "cardinality": 1
         },
         {
           "symbol": "SealCoverageReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/replay.rs",
           "cardinality": 1
         },
         {
           "symbol": "TranscriptComparisonReceipt",
-          "owner": "core/pipeline/acoustic_ledger.rs",
+          "owner": "core/pipeline/acoustic_ledger/replay.rs",
           "cardinality": 1
         },
         {
@@ -1155,7 +1155,7 @@
             },
             {
               "symbol": "admit_pinned_label",
-              "file": "core/pipeline/acoustic_ledger.rs",
+              "file": "core/pipeline/acoustic_ledger/reducer.rs",
               "required_code": [
                 "if observation.producer != ObservationProducer::Apple",
                 "|| self.is_sealed(occurrence)",
@@ -1176,12 +1176,12 @@
             },
             {
               "symbol": "decide_observation",
-              "file": "core/pipeline/acoustic_ledger.rs",
+              "file": "core/pipeline/acoustic_ledger/reducer.rs",
               "required_code": ["if overlaps && !has_word_pins {"]
             },
             {
               "symbol": "qualify",
-              "file": "core/pipeline/acoustic_ledger.rs",
+              "file": "core/pipeline/acoustic_ledger/anchors.rs",
               "required_code": [
                 "if !occurrence.is_anchored()",
                 "if evidence.evidence_calibration_version != calibration.version",
@@ -1194,7 +1194,7 @@
             },
             {
               "symbol": "mint",
-              "file": "core/pipeline/acoustic_ledger.rs",
+              "file": "core/pipeline/acoustic_ledger/anchors.rs",
               "signature_contains": "pub fn mint(evidence: &AcousticEvidence) -> Self",
               "required_code": [
                 "let digest = Self::digest_of(evidence)",
@@ -1436,16 +1436,16 @@
             },
             {
               "callee": "qualify",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "callee_file": "core/pipeline/acoustic_ledger/anchors.rs",
               "caller": "qualify_owned_occurrence",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "minimum_count": 1
             },
             {
               "callee": "mint",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "callee_file": "core/pipeline/acoustic_ledger/anchors.rs",
               "caller": "qualify",
-              "caller_file": "core/pipeline/acoustic_ledger.rs",
+              "caller_file": "core/pipeline/acoustic_ledger/anchors.rs",
               "minimum_count": 1
             },
             {
@@ -2042,7 +2042,7 @@
           "hops": [
             {
               "symbol": "mint",
-              "file": "core/pipeline/acoustic_ledger.rs",
+              "file": "core/pipeline/acoustic_ledger/anchors.rs",
               "signature_contains": "pub fn mint(evidence: &AcousticEvidence) -> Self",
               "required_code": [
                 "let digest = Self::digest_of(evidence)",
@@ -2259,7 +2259,7 @@
             },
             {
               "symbol": "assess_seal_coverage",
-              "file": "core/pipeline/acoustic_ledger.rs",
+              "file": "core/pipeline/acoustic_ledger/replay.rs",
               "required_code": [
                 "speech: &AcousticSpeechEvidence",
                 "SealCoverageStatus::Unavailable(gap)",
@@ -2274,7 +2274,7 @@
             },
             {
               "symbol": "seal_terminal",
-              "file": "core/pipeline/acoustic_ledger.rs",
+              "file": "core/pipeline/acoustic_ledger/fence.rs",
               "required_code": [
                 "coverage.status == SealCoverageStatus::Incomplete",
                 "coverage.status.unavailable_reason().is_some()",
@@ -2480,14 +2480,14 @@
             },
             {
               "callee": "assess_seal_coverage",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "callee_file": "core/pipeline/acoustic_ledger/replay.rs",
               "caller": "reconcile_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "minimum_count": 1
             },
             {
               "callee": "record_seal_coverage",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "callee_file": "core/pipeline/acoustic_ledger/replay.rs",
               "caller": "reconcile_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs"
             },
@@ -2499,13 +2499,13 @@
             },
             {
               "callee": "assess_seal_coverage",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "callee_file": "core/pipeline/acoustic_ledger/replay.rs",
               "caller": "publish_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs"
             },
             {
               "callee": "record_seal_coverage",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "callee_file": "core/pipeline/acoustic_ledger/replay.rs",
               "caller": "publish_terminal_coverage",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs"
             },
@@ -2602,7 +2602,7 @@
               "caller": "finish",
               "caller_file": "core/audio/streaming_recorder.rs",
               "callee": "terminal_finality",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "callee_file": "core/pipeline/acoustic_ledger/fence.rs",
               "minimum_count": 1
             },
             {
@@ -2616,14 +2616,14 @@
               "caller": "uncovered_gap_ranges",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "callee": "assess_seal_coverage",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "callee_file": "core/pipeline/acoustic_ledger/replay.rs",
               "minimum_count": 1
             },
             {
               "caller": "uncovered_gap_ranges",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "callee": "qualified_occurrences",
-              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "callee_file": "core/pipeline/acoustic_ledger/anchors.rs",
               "minimum_count": 1
             }
           ],

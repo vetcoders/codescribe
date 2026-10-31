@@ -31,13 +31,11 @@ const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_f
 /// upstream repos ship either `model.safetensors` or `weights.safetensors`.
 const REQUIRED_MODEL_WEIGHTS: [&str; 2] = crate::whisper_weights::SUPPORTED_NAMES;
 
-/// Canonicalize a path, falling back to the original on failure.
-///
-/// Resolution must not fail just because a path cannot be canonicalized (a
-/// symlink into an unmounted volume, a permission gap): the caller gets a usable
-/// path and a warning rather than an error.
+/// Report the canonical location when known, retaining a failed input for a
+/// diagnostic row. Readiness is established separately by the typed validator;
+/// returning an input here never certifies it usable or on internal media.
 fn canonicalize_or_self(path: PathBuf) -> PathBuf {
-    match path.canonicalize() {
+    match hf_cache::resolve_local_path(&path) {
         Ok(canonical) => canonical,
         Err(err) => {
             tracing::warn!(
@@ -70,7 +68,8 @@ fn is_complete_whisper_model_dir(path: &Path) -> bool {
 /// has no payload checksum. The validator checks the complete tensor table,
 /// dtype allowlist, byte sizes, contiguous offsets, and final file length.
 pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
-    crate::whisper_weights::validate_whisper_model_bundle(path)
+    let resolved = hf_cache::validate_model_directory(path)?;
+    crate::whisper_weights::validate_whisper_model_bundle(&resolved)
 }
 
 /// One child of the user's models directory. Status uses the loader's own
@@ -277,10 +276,10 @@ fn models_root_contains_complete_whisper_model(path: &Path) -> bool {
 /// A reference containing `/` is treated as a repo id and looked up directly.
 /// The bare [`DEFAULT_MODEL`] alias maps to [`DEFAULT_WHISPER_REPO`]. Any other
 /// bare name is a models-dir alias, not a repo, so it yields `None` here.
-fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
+fn hf_snapshot_for_model(model_ref: &str) -> Result<Option<PathBuf>> {
     let trimmed = model_ref.trim();
     if trimmed.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let repo = if trimmed.contains('/') {
@@ -288,14 +287,14 @@ fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
     } else if trimmed == DEFAULT_MODEL {
         DEFAULT_WHISPER_REPO
     } else {
-        return None;
+        return Ok(None);
     };
-    hf_cache::find_snapshot_with_any_matching(
+    Ok(hf_cache::find_snapshot_with_any_matching_checked(
         repo,
         &REQUIRED_MODEL_FILES,
         &REQUIRED_MODEL_WEIGHTS,
         is_complete_whisper_model_dir,
-    )
+    )?)
 }
 
 /// Find a warm default-repo snapshot containing one valid config/weights pair.
@@ -424,9 +423,10 @@ impl ModelManager {
     /// Purely positional — the returned path is not checked for completeness and
     /// need not exist.
     pub fn get_model_path(&self, model_name: &str) -> PathBuf {
-        // Check if it's an absolute path that exists
+        // An explicit absolute reference remains explicit even if its volume
+        // is disconnected; the validator must retain the actual failure.
         let candidate = PathBuf::from(model_name);
-        if candidate.is_absolute() && candidate.exists() {
+        if candidate.is_absolute() {
             return candidate;
         }
 
@@ -435,12 +435,15 @@ impl ModelManager {
 
     /// Resolve a reference that may be a path or a models-dir alias.
     ///
-    /// Differs from [`Self::get_model_path`] by accepting *relative* paths that
-    /// exist (canonicalizing them) before falling back to alias semantics.
+    /// Accepts explicit paths even while unavailable, retaining their identity
+    /// for diagnostics, before falling back to models-directory alias semantics.
     pub fn resolve_model_reference(&self, model_ref: &str) -> PathBuf {
-        let candidate = PathBuf::from(model_ref);
-        if candidate.exists() {
-            return canonicalize_or_self(candidate);
+        let candidate = expand_home_path(model_ref);
+        if candidate.is_absolute() || model_ref.starts_with("./") || model_ref.starts_with("../") {
+            return candidate;
+        }
+        if hf_cache::resolve_local_path(&candidate).is_ok() {
+            return candidate;
         }
 
         self.models_dir.join(model_ref)
@@ -498,10 +501,14 @@ impl ModelManager {
 /// 4. Default models-dir alias (`whisper-large-v3-turbo`)
 /// 5. Default Hugging Face snapshot (`mlx-community/whisper-large-v3-turbo`)
 pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Result<PathBuf> {
-    if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH") {
-        let candidate = PathBuf::from(path.trim());
-        if is_complete_whisper_model_dir(&candidate) {
-            return Ok(canonicalize_or_self(candidate));
+    let mut path_failure = None;
+    if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH")
+        && !path.trim().is_empty()
+    {
+        let candidate = expand_home_path(path.trim());
+        match validate_whisper_model_bundle(&candidate) {
+            Ok(()) => return Ok(canonicalize_or_self(candidate)),
+            Err(error) => path_failure = Some(error),
         }
     }
 
@@ -512,22 +519,60 @@ pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Res
 
     if let Some(model_ref) = configured_model {
         let local_candidate = manager.resolve_model_reference(model_ref);
-        if is_complete_whisper_model_dir(&local_candidate) {
-            return Ok(canonicalize_or_self(local_candidate));
+        match validate_whisper_model_bundle(&local_candidate) {
+            Ok(()) => return Ok(canonicalize_or_self(local_candidate)),
+            Err(error) => {
+                let missing = error
+                    .downcast_ref::<hf_cache::CachePathStatus>()
+                    .is_some_and(|status| matches!(status, hf_cache::CachePathStatus::Missing { .. }));
+                if path_failure.is_none()
+                    && (!missing
+                        || Path::new(model_ref).is_absolute()
+                        || model_ref.starts_with("~/")
+                        || model_ref.starts_with("./")
+                        || model_ref.starts_with("../"))
+                {
+                    path_failure = Some(error);
+                }
+            }
         }
 
-        if let Some(snapshot) = hf_snapshot_for_model(model_ref) {
-            return Ok(snapshot);
+        match hf_snapshot_for_model(model_ref) {
+            Ok(Some(snapshot)) => return Ok(snapshot),
+            Ok(None) => {}
+            Err(error) => {
+                if path_failure.is_none() {
+                    path_failure = Some(error);
+                }
+            }
         }
     }
 
     let default_local = manager.get_model_path(DEFAULT_MODEL);
-    if is_complete_whisper_model_dir(&default_local) {
-        return Ok(canonicalize_or_self(default_local));
+    match validate_whisper_model_bundle(&default_local) {
+        Ok(()) => return Ok(canonicalize_or_self(default_local)),
+        Err(error) => {
+            let missing = error
+                .downcast_ref::<hf_cache::CachePathStatus>()
+                .is_some_and(|status| matches!(status, hf_cache::CachePathStatus::Missing { .. }));
+            if path_failure.is_none() && !missing {
+                path_failure = Some(error);
+            }
+        }
     }
 
-    if let Some(snapshot) = hf_snapshot_for_model(DEFAULT_MODEL) {
-        return Ok(snapshot);
+    match hf_snapshot_for_model(DEFAULT_MODEL) {
+        Ok(Some(snapshot)) => return Ok(snapshot),
+        Ok(None) => {}
+        Err(error) => {
+            if path_failure.is_none() {
+                path_failure = Some(error);
+            }
+        }
+    }
+
+    if let Some(error) = path_failure {
+        return Err(error);
     }
 
     Err(anyhow!(
@@ -756,6 +801,9 @@ fn is_whisper_family_dir(path: &Path, name: &str) -> bool {
 /// Short single-line refusal reason for the picker; quantized bundles get the
 /// explicit cause instead of a generic validation error.
 fn short_validation_reason(error: &anyhow::Error) -> String {
+    if let Some(status) = error.downcast_ref::<hf_cache::CachePathStatus>() {
+        return status.to_string();
+    }
     if error
         .chain()
         .any(|cause| cause.to_string().contains("quantized"))
@@ -817,19 +865,16 @@ fn push_whisper_option(
     options: &mut Vec<WhisperModelOption>,
     seen: &mut Vec<PathBuf>,
 ) {
+    // Validate the selected path before canonicalization loses a cache alias's
+    // exact trust boundary. Preserve the typed cause for the existing UI field.
+    let validation = validate_whisper_model_bundle(&path);
     let canonical = canonicalize_or_self(path);
     if seen.contains(&canonical) {
         return;
     }
     seen.push(canonical.clone());
-    let usable = is_complete_whisper_model_dir(&canonical);
-    let reason = if usable {
-        None
-    } else {
-        validate_whisper_model_bundle(&canonical)
-            .err()
-            .map(|error| short_validation_reason(&error))
-    };
+    let usable = validation.is_ok();
+    let reason = validation.err().map(|error| short_validation_reason(&error));
     let is_active = active == Some(&canonical);
     options.push(WhisperModelOption {
         label: whisper_display_label(&id, usable),
@@ -890,7 +935,12 @@ pub fn whisper_model_options(configured: Option<&str>) -> WhisperCatalogInventor
         && let Ok(manager) = ModelManager::new()
     {
         let path = manager.resolve_model_reference(reference);
-        if path.is_dir() {
+        if hf_cache::resolve_local_path(&path).is_ok()
+            || Path::new(reference).is_absolute()
+            || reference.starts_with("~/")
+            || reference.starts_with("./")
+            || reference.starts_with("../")
+        {
             push_whisper_option(
                 reference.to_string(),
                 path,
@@ -929,6 +979,26 @@ pub fn whisper_model_options(configured: Option<&str>) -> WhisperCatalogInventor
         |base| {
             let mut options = Vec::new();
             let mut seen = Vec::new();
+            if let status @ (hf_cache::CachePathStatus::UnmountedExternalVolume { .. }
+                | hf_cache::CachePathStatus::Io { .. }
+                | hf_cache::CachePathStatus::SymlinkLoop { .. }
+                | hf_cache::CachePathStatus::Missing { .. }) = hf_cache::classify_cache_root(base)
+            {
+                if !matches!(status, hf_cache::CachePathStatus::Missing { .. })
+                    || hf_cache::is_configured_cache_base(base)
+                {
+                    options.push(WhisperModelOption {
+                        id: format!("hf-cache-root:{}", base.display()),
+                        label: "Hugging Face cache".into(),
+                        path: base.display().to_string(),
+                        source: "hf_cache".into(),
+                        usable: false,
+                        reason: Some(status.to_string()),
+                        active: false,
+                    });
+                }
+                return options;
+            }
             for (repo, snapshot) in hf_cache::whisper_cache_snapshots(base) {
                 push_whisper_option(repo, snapshot, "hf_cache", None, &mut options, &mut seen);
             }

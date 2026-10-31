@@ -363,6 +363,8 @@ impl From<DictionaryTeachResult> for CsDictionaryTeachResult {
 
 /// Teach live dictionary from quality store (corrections.jsonl + proposed.jsonl).
 /// Product: Dictionary panel "Teach" so rules leave the udawany 0-learned state.
+/// Live Swift consumer: `Screens/Settings/SettingsEngine.swift` calls
+/// `qualityTeachDictionaryFromStore`; retain this cross-language entry point.
 #[uniffi::export]
 pub fn quality_teach_dictionary_from_store() -> Result<CsDictionaryTeachResult, CsError> {
     teach_dictionary_from_store()

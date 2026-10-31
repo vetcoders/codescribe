@@ -782,6 +782,9 @@ fn whisper_selection_override_kind() -> Option<&'static str> {
 }
 
 /// Snapshot the canonical local-Whisper catalog for Settings → Dictation.
+/// Live Swift consumer: `Screens/Settings/SettingsEngine.swift` calls
+/// `whisperModelCatalog` through `WhisperModelCatalogIO` off the main actor.
+/// No Rust caller edge is expected for this UniFFI product entry point.
 #[uniffi::export]
 pub fn whisper_model_catalog() -> CsWhisperModelCatalog {
     let configured = codescribe_core::stt::whisper::singleton::configured_model_reference();
