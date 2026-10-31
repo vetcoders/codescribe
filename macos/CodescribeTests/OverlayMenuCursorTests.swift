@@ -521,8 +521,12 @@ final class OverlayMenuCursorTests: XCTestCase {
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     content.layoutSubtreeIfNeeded()
 
+    // The group and both buttons register regions in an unordered hash table.
+    // Inspect the group rather than whichever individual button appears first.
     let region = try XCTUnwrap(
-      panel.menuCursorRegions.allObjects.first { $0.window === panel },
+      panel.menuCursorRegions.allObjects
+        .filter { $0.window === panel }
+        .max { $0.bounds.width < $1.bounds.width },
       "the controls register a cursor region")
     let frame = region.convert(region.bounds, to: nil)
     XCTAssertGreaterThan(frame.width, 50, "both buttons and their gap, got \(frame)")
