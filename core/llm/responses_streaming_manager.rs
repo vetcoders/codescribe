@@ -389,22 +389,12 @@ impl<'a> ResponsesStreamingManager<'a> {
                                 Ok(resumed) => {
                                     assistant_text = resumed.assistant_text;
                                     reasoning_text = resumed.reasoning_text.unwrap_or_default();
+                                    assistant_done = None;
+                                    reasoning_done = None;
                                     saw_completed = true;
                                     break;
                                 }
                                 Err(e) => {
-                                    if reasoning_content_available(&reasoning_done, &reasoning_text)
-                                        && assistant_text.is_empty()
-                                        && assistant_done.is_none()
-                                    {
-                                        warn!(
-                                            "SSE inter-chunk timeout after {:?} with reasoning but \
-                                             no output_text; resume failed: {}; falling back to \
-                                             reasoning summary",
-                                            chunk_timeout, e
-                                        );
-                                        break;
-                                    }
                                     anyhow::bail!(
                                         "SSE inter-chunk timeout after {:?} with {}B partial text; \
                                          resume failed: {}",
@@ -414,17 +404,6 @@ impl<'a> ResponsesStreamingManager<'a> {
                                     );
                                 }
                             }
-                        }
-                        if reasoning_content_available(&reasoning_done, &reasoning_text)
-                            && assistant_text.is_empty()
-                            && assistant_done.is_none()
-                        {
-                            warn!(
-                                "SSE inter-chunk timeout after {:?} with reasoning but no \
-                                 output_text; resume unavailable; falling back to reasoning summary",
-                                chunk_timeout
-                            );
-                            break;
                         }
                         anyhow::bail!(
                             "SSE inter-chunk timeout after {:?} with {}B partial text \
@@ -468,13 +447,12 @@ impl<'a> ResponsesStreamingManager<'a> {
                     anyhow::bail!("{}", format_sse_error("SSE", &error));
                 }
 
-                let chunk = match serde_json::from_str::<StreamChunk>(&data) {
-                    Ok(parsed) => parsed,
-                    Err(error) => {
-                        warn!("Skipping malformed SSE chunk: {}", error);
-                        continue;
-                    }
-                };
+                let chunk: StreamChunk = serde_json::from_str(&data)
+                    .map_err(|_| anyhow::anyhow!("Malformed Responses SSE frame"))?;
+                anyhow::ensure!(
+                    dirty_terminal_response_id(&chunk, response_id.as_deref()).is_none(),
+                    "SSE reported a dirty terminal"
+                );
                 {
                     if starts_generation(&chunk) {
                         watchdog.generation_started();
@@ -560,6 +538,10 @@ impl<'a> ResponsesStreamingManager<'a> {
             }
         }
 
+        anyhow::ensure!(
+            saw_completed || saw_done,
+            "SSE closed without a clean terminal"
+        );
         let (assistant_text, reasoning_text) = if saw_completed {
             if let Some(completed) = completed_output {
                 completed
@@ -736,13 +718,8 @@ impl<'a> ResponsesStreamingManager<'a> {
                     anyhow::bail!("{}", format_sse_error("Resume SSE", &error));
                 }
 
-                let chunk = match serde_json::from_str::<StreamChunk>(&data) {
-                    Ok(parsed) => parsed,
-                    Err(error) => {
-                        warn!("Skipping malformed SSE chunk: {}", error);
-                        continue;
-                    }
-                };
+                let chunk: StreamChunk = serde_json::from_str(&data)
+                    .map_err(|_| anyhow::anyhow!("Malformed Responses SSE frame"))?;
                 if starts_generation(&chunk) {
                     watchdog.generation_started();
                 }
@@ -944,13 +921,8 @@ async fn run_agent_stream(
                 anyhow::bail!("{}", format_sse_error("Agent SSE", &error));
             }
 
-            let chunk = match serde_json::from_str::<StreamChunk>(&data) {
-                Ok(parsed) => parsed,
-                Err(error) => {
-                    warn!("Skipping malformed SSE chunk: {}", error);
-                    continue;
-                }
-            };
+            let chunk: StreamChunk = serde_json::from_str(&data)
+                .map_err(|_| anyhow::anyhow!("Malformed Responses SSE frame"))?;
 
             if let Some(response_meta) = &chunk.response
                 && !response_meta.id.is_empty()
@@ -1451,10 +1423,7 @@ fn dirty_terminal_response_id(
                 .response
                 .as_ref()
                 .and_then(|response| response.status.as_deref());
-            matches!(
-                status,
-                Some("failed") | Some("incomplete") | Some("cancelled")
-            )
+            status.is_some_and(|status| status != "completed")
         }
         "response.failed" | "response.incomplete" => true,
         _ => false,
@@ -2062,7 +2031,7 @@ pub mod scripted_sse {
 
     /// Consume headers and a `content-length` body so closing the socket
     /// never resets a request the client is still writing.
-    async fn read_request(socket: &mut TcpStream) {
+    pub(super) async fn read_request(socket: &mut TcpStream) {
         let mut data = Vec::new();
         let mut buf = [0u8; 4096];
         loop {
@@ -3751,5 +3720,61 @@ mod tests {
             let response = manager.resume_stream("repair", 1, "Hel", "").await.unwrap();
             assert_eq!(response.assistant_text, "Hello", "repair={repair}");
         }
+    }
+
+    #[tokio::test]
+    async fn ordinary_stream_refuses_partial_eof_dirty_or_malformed_completion() {
+        for tail in [
+            "",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\"}}\n\n",
+            "data: broken-json\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+        ] {
+            let endpoint = scripted_sse::serve("/v1/responses", vec![
+                scripted_sse::text("data: {\"type\":\"response.output_text.delta\",\"delta\":\"only the first utterance\"}\n\n"),
+                scripted_sse::text(tail),
+            ]).await;
+            let client = Client::new();
+            let manager = timed_manager(
+                &client,
+                &endpoint,
+                Duration::from_millis(100),
+                Duration::from_secs(2),
+            );
+            assert!(
+                manager.stream(&json!({})).await.is_err(),
+                "partial stream must reach the caller's complete Raw fallback: {tail}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ordinary_stream_resume_replaces_stale_done_text_once() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1/responses", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut initial, _) = listener.accept().await.unwrap();
+            scripted_sse::read_request(&mut initial).await;
+            let headers =
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+            initial.write_all(format!("{headers}data: {{\"type\":\"response.created\",\"response\":{{\"id\":\"repair\"}},\"sequence_number\":0}}\n\ndata: {{\"type\":\"response.output_text.delta\",\"delta\":\"Hel\",\"sequence_number\":1}}\n\ndata: {{\"type\":\"response.output_text.done\",\"text\":\"Hel\",\"sequence_number\":2}}\n\n").as_bytes()).await.unwrap();
+            let (mut resumed, _) = listener.accept().await.unwrap();
+            scripted_sse::read_request(&mut resumed).await;
+            resumed.write_all(format!("{headers}data: {{\"type\":\"response.output_text.done\",\"text\":\"Hello\"}}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"repair\",\"status\":\"completed\"}}}}\n\n").as_bytes()).await.unwrap();
+            resumed.shutdown().await.unwrap();
+        });
+        let client = Client::new();
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        );
+        let output = tokio::time::timeout(Duration::from_secs(5), manager.stream(&json!({})))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(output.assistant_text, "Hello");
+        server.await.unwrap();
     }
 }

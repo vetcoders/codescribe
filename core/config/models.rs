@@ -1574,7 +1574,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            resolve_runtime_whisper_model_path(Some("fixture/whisper-diagnostic")).unwrap(),
+            resolve_runtime_whisper_model_path(Some("fixture/whisper-diagnostic"))
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
             older.canonicalize().unwrap()
         );
     }
