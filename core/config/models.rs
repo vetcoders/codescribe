@@ -1543,6 +1543,7 @@ mod tests {
         let _hf_other = EnvGuard::set("HF_HUB_CACHE", &base);
         let _hf_old = EnvGuard::set("HUGGINGFACE_HUB_CACHE", &base);
         let _hf_home = EnvGuard::set("HF_HOME", temp.path());
+        fs::create_dir_all(temp.path().join("models")).unwrap();
         let _models = EnvGuard::set("CODESCRIBE_MODELS_DIR", temp.path().join("models"));
         let _path = EnvGuard::remove("CODESCRIBE_MODEL_PATH");
         let _local = EnvGuard::remove("LOCAL_MODEL");
