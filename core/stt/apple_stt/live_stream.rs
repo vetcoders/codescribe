@@ -449,6 +449,10 @@ pub fn progressive_live_enabled() -> bool {
     !mode.eq_ignore_ascii_case("wav") && !mode.eq_ignore_ascii_case("transcribe_live")
 }
 
+#[cfg(all(test, target_os = "macos"))]
+#[path = "live_stream_pipe_acceptance.rs"]
+mod pipe_acceptance;
+
 /// Bridge stdout line parsers for progressive multi-seal events.
 #[cfg(test)]
 mod tests {
