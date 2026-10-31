@@ -1,0 +1,680 @@
+//! ACP provider lifecycle. The process owns agent execution; Codescribe owns
+//! client permissions, event projection, cancellation and process lifetime.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Result;
+use async_trait::async_trait;
+use base64::Engine;
+use codescribe_core::acp::client_bridge::{AcpClientBridge, AcpClientBridgeConfig};
+use codescribe_core::acp::mapper::AcpEventMapper;
+use codescribe_core::acp::protocol;
+use codescribe_core::acp::transport::AcpTransport;
+use codescribe_core::acp::{AcpCommand, AcpError};
+use codescribe_core::agent::{
+    AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions, ToolDefinition,
+};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, mpsc, watch};
+use tokio::task::JoinSet;
+
+/// Host-supplied process and permission context. The host must obtain these
+/// from its sealed configuration and bind its approval UI before construction.
+#[derive(Clone)]
+pub struct AcpProviderConfig {
+    pub command: AcpCommand,
+    pub bridge: AcpClientBridgeConfig,
+    pub acp_session_id: Option<String>,
+}
+
+/// A local ACP process provider, with one active turn and a resumable session id.
+pub struct AcpProvider {
+    config: AcpProviderConfig,
+    chain: Arc<Mutex<Option<String>>>,
+    turn: Arc<Mutex<()>>,
+    cancel: watch::Sender<u64>,
+}
+
+impl AcpProvider {
+    pub fn new(config: AcpProviderConfig) -> Result<Self> {
+        if config.command.program.trim().is_empty() {
+            anyhow::bail!("ACP executable is empty");
+        }
+        let cwd = config.command.cwd.canonicalize()?;
+        if !cwd.is_dir()
+            || !config
+                .bridge
+                .workspace_roots
+                .iter()
+                .any(|root| root.canonicalize().is_ok_and(|root| cwd.starts_with(root)))
+        {
+            anyhow::bail!("ACP working directory is outside workspace roots");
+        }
+        Ok(Self {
+            chain: Arc::new(Mutex::new(config.acp_session_id.clone())),
+            config,
+            turn: Arc::new(Mutex::new(())),
+            cancel: watch::channel(0).0,
+        })
+    }
+
+    /// Cancel active turns; a later stream subscribes to the new generation.
+    pub fn cancel(&self) {
+        self.cancel
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+}
+
+impl Drop for AcpProvider {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+#[async_trait]
+impl AgentProvider for AcpProvider {
+    async fn stream(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolDefinition],
+        options: &StreamOptions,
+    ) -> Result<mpsc::Receiver<AgentEvent>> {
+        let (tx, rx) = mpsc::channel(128);
+        let config = self.config.clone();
+        let chain = self.chain.clone();
+        let turn = self.turn.clone();
+        let messages = messages.to_vec();
+        let options = options.clone();
+        let mut cancelled = self.cancel.subscribe();
+        tokio::spawn(async move {
+            let _turn = tokio::select! {
+                guard = turn.lock() => guard,
+                _ = tx.closed() => return,
+                _ = cancelled.changed() => return,
+            };
+            if options.reset_chain {
+                *chain.lock().await = None;
+            }
+            let previous = chain.lock().await.clone();
+            let mut transport = match AcpTransport::spawn(&config.command).await {
+                Ok(transport) => transport,
+                Err(error) => {
+                    send_failure(&tx, error).await;
+                    return;
+                }
+            };
+            let bridge = match AcpClientBridge::new(config.bridge) {
+                Ok(bridge) => bridge,
+                Err(error) => {
+                    transport.shutdown(None).await;
+                    send_failure(&tx, error).await;
+                    return;
+                }
+            };
+            let mut session_id = None;
+            let mut active_bridge = None;
+            let input = TurnInput {
+                messages: &messages,
+                options: &options,
+                previous: previous.as_deref(),
+                command: &config.command,
+            };
+            let result = tokio::select! {
+                result = run_turn(
+                    &mut transport, bridge, &input, &tx, &mut session_id, &mut active_bridge,
+                ) => result,
+                _ = tx.closed() => Err(AcpError::Cancelled),
+                _ = cancelled.changed() => Err(AcpError::Cancelled),
+            };
+            if let Some(bridge) = active_bridge {
+                bridge.shutdown().await;
+            }
+            transport.shutdown(session_id.as_deref()).await;
+            match result {
+                Ok(()) => {
+                    *chain.lock().await = session_id;
+                }
+                Err(error) => {
+                    // A cancelled/failed turn must never advance the resume id.
+                    // Reset so local history, including rollback, can be replayed.
+                    *chain.lock().await = None;
+                    send_failure(&tx, error).await;
+                }
+            }
+        });
+        Ok(rx)
+    }
+
+    fn build_tool_result(
+        &self,
+        call_id: &str,
+        content: Vec<ContentBlock>,
+        is_error: bool,
+    ) -> Message {
+        super::user_tool_result(call_id, content, is_error)
+    }
+
+    fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
+        super::image_block(data, media_type)
+    }
+
+    fn name(&self) -> &str {
+        "acp"
+    }
+
+    async fn response_chain_id(&self) -> Option<String> {
+        self.chain.lock().await.clone()
+    }
+
+    async fn restore_response_chain(&self, id: Option<String>) {
+        *self.chain.lock().await = id;
+    }
+}
+
+async fn send_failure(tx: &mpsc::Sender<AgentEvent>, error: AcpError) {
+    let detail = codescribe_core::agent::redact_command_line(&error.to_string());
+    let _ = tx
+        .send(AgentEvent::ResponseDone {
+            response_id: None,
+            clean: false,
+        })
+        .await;
+    let _ = tx.send(AgentEvent::Error(detail)).await;
+}
+
+struct TurnInput<'a> {
+    messages: &'a [Message],
+    options: &'a StreamOptions,
+    previous: Option<&'a str>,
+    command: &'a AcpCommand,
+}
+
+async fn run_turn(
+    transport: &mut AcpTransport,
+    mut bridge: AcpClientBridge,
+    input: &TurnInput<'_>,
+    tx: &mpsc::Sender<AgentEvent>,
+    session_id: &mut Option<String>,
+    active_bridge: &mut Option<Arc<AcpClientBridge>>,
+) -> std::result::Result<(), AcpError> {
+    let TurnInput {
+        messages,
+        options,
+        previous,
+        command,
+    } = *input;
+    let mut mapper = AcpEventMapper::default();
+    let initialized = tokio::time::timeout(
+        Duration::from_secs(30),
+        call(
+            transport,
+            None,
+            &mut mapper,
+            tx,
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": 1,
+                "clientCapabilities": {
+                    "fs": {"readTextFile": true, "writeTextFile": true},
+                    "terminal": true
+                },
+                "clientInfo": {"name": "codescribe", "version": env!("CARGO_PKG_VERSION")}
+            }),
+        ),
+    )
+    .await
+    .map_err(|_| AcpError::Protocol("initialize timed out".into()))??;
+    if initialized["protocolVersion"].as_u64() != Some(1) {
+        return Err(AcpError::Protocol(
+            "unsupported ACP protocol version".into(),
+        ));
+    }
+    let cwd = command.cwd.canonicalize()?.to_string_lossy().into_owned();
+    let (method, params) = if let Some(previous) = previous {
+        if initialized["agentCapabilities"]["loadSession"].as_bool() != Some(true) {
+            return Err(AcpError::Protocol(
+                "agent cannot load the retained ACP session".into(),
+            ));
+        }
+        (
+            "session/load",
+            json!({"sessionId": previous, "cwd": cwd, "mcpServers": []}),
+        )
+    } else {
+        ("session/new", json!({"cwd": cwd, "mcpServers": []}))
+    };
+    let session = tokio::time::timeout(
+        Duration::from_secs(30),
+        call(transport, None, &mut mapper, tx, 2, method, params),
+    )
+    .await
+    .map_err(|_| AcpError::Protocol("session setup timed out".into()))??;
+    let id = previous
+        .map(str::to_string)
+        .or_else(|| {
+            session["sessionId"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        })
+        .ok_or_else(|| AcpError::Protocol("session/new omitted sessionId".into()))?;
+    *session_id = Some(id.clone());
+    transport.set_session_id(id.clone());
+    bridge.set_session_id(id.clone());
+    let bridge = Arc::new(bridge);
+    *active_bridge = Some(bridge.clone());
+    let prompt = prompt_content(messages, options, previous.is_some())?;
+    let result = call(
+        transport,
+        Some(bridge.clone()),
+        &mut mapper,
+        tx,
+        3,
+        "session/prompt",
+        json!({"sessionId": id, "prompt": prompt}),
+    )
+    .await;
+    bridge.shutdown().await;
+    let result = result?;
+    match result["stopReason"].as_str() {
+        Some("cancelled") => return Err(AcpError::Cancelled),
+        Some("end_turn" | "max_tokens" | "max_turn_requests" | "refusal") => {}
+        _ => {
+            return Err(AcpError::Protocol(
+                "missing or unknown prompt stopReason".into(),
+            ));
+        }
+    }
+    for event in mapper.finish(&id) {
+        tx.send(event).await.map_err(|_| AcpError::Cancelled)?;
+    }
+    Ok(())
+}
+
+/// Consume both directions while an agent method is outstanding. Client
+/// requests execute independently, so a terminal wait cannot block its kill.
+async fn call(
+    transport: &mut AcpTransport,
+    bridge: Option<Arc<AcpClientBridge>>,
+    mapper: &mut AcpEventMapper,
+    tx: &mpsc::Sender<AgentEvent>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> std::result::Result<Value, AcpError> {
+    transport
+        .send(protocol::request(id, method, params))
+        .await?;
+    let mut incoming = JoinSet::new();
+    loop {
+        tokio::select! {
+            completed = incoming.join_next(), if !incoming.is_empty() => {
+                if let Some(Ok((request_id, result))) = completed {
+                    let frame = match result {
+                        Ok(result) => protocol::success(request_id, result),
+                        Err(error) => protocol::error(request_id, -32000,
+                            &codescribe_core::agent::redact_command_line(&error.to_string())),
+                    };
+                    transport.send(frame).await?;
+                }
+            }
+            frame = transport.recv() => {
+                let frame = frame?;
+                if let Some(method) = frame["method"].as_str() {
+                    let params = frame.get("params").cloned().unwrap_or(Value::Null);
+                    if let Some(request_id) = frame.get("id") {
+                        let request_id = request_id.clone();
+                        if let Some(bridge) = &bridge {
+                            let bridge = bridge.clone();
+                            let method = method.to_string();
+                            incoming.spawn(async move {
+                                (request_id, bridge.handle(&method, params).await)
+                            });
+                        } else {
+                            transport.send(protocol::error(request_id.clone(), -32000,
+                                "client requests require an active session")).await?;
+                        }
+                    } else if method == "session/update" {
+                        if let Some(bridge) = &bridge {
+                            if params["sessionId"].as_str() != Some(bridge.session_id()) {
+                                return Err(AcpError::Protocol("session update identity mismatch".into()));
+                            }
+                        }
+                        if let Some(event) = mapper.update(&params) {
+                            tx.send(event).await.map_err(|_| AcpError::Cancelled)?;
+                        }
+                    }
+                } else if frame["id"].as_u64() == Some(id) {
+                    if let Some(error) = frame.get("error") {
+                        return Err(AcpError::Protocol(codescribe_core::agent::redact_command_line(
+                            error["message"].as_str().unwrap_or("agent request failed"))));
+                    }
+                    return frame.get("result").cloned()
+                        .ok_or_else(|| AcpError::Protocol("response omitted result".into()));
+                } else {
+                    return Err(AcpError::Protocol("unexpected response id".into()));
+                }
+            }
+        }
+    }
+}
+
+fn prompt_content(
+    messages: &[Message],
+    options: &StreamOptions,
+    resumed: bool,
+) -> std::result::Result<Vec<Value>, AcpError> {
+    let mut prompt = Vec::new();
+    if !resumed && let Some(system) = &options.system_prompt {
+        prompt.push(json!({"type": "text", "text": system}));
+    }
+    let selected = if resumed {
+        let latest = messages
+            .iter()
+            .rposition(|message| message.role == Role::User)
+            .ok_or_else(|| AcpError::Protocol("no user prompt".into()))?;
+        &messages[latest..=latest]
+    } else {
+        messages
+    };
+    for message in selected {
+        if !resumed && selected.len() > 1 {
+            prompt.push(json!({"type": "text", "text": format!("{:?}:", message.role)}));
+        }
+        for block in &message.content {
+            match block {
+                ContentBlock::Text(text) => prompt.push(json!({"type": "text", "text": text})),
+                ContentBlock::Image { data, media_type } => prompt.push(json!({
+                    "type": "image", "data": base64::engine::general_purpose::STANDARD.encode(data),
+                    "mimeType": media_type
+                })),
+                ContentBlock::ImageAsset(asset) => {
+                    let bytes = codescribe_core::agent::AgentAssetStore::read_image(&asset.path)
+                        .map_err(|error| AcpError::Protocol(error.to_string()))?;
+                    prompt.push(json!({"type": "image", "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                        "mimeType": asset.media_type}));
+                }
+                ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. } => {
+                    prompt.push(json!({"type": "text", "text": serde_json::to_string(block)
+                        .map_err(|error| AcpError::Protocol(error.to_string()))?}));
+                }
+            }
+        }
+    }
+    if prompt.is_empty() {
+        return Err(AcpError::Protocol("empty prompt".into()));
+    }
+    Ok(prompt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codescribe_core::agent::AgentPermissions;
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    const AGENT: &str = r#"
+import json, os, sys, time
+mode, log = sys.argv[1:]
+def record(text):
+    with open(log, 'a') as f: f.write(text + '\n')
+def send(frame):
+    print(json.dumps(dict(jsonrpc='2.0', **frame)), flush=True)
+record('pid:' + str(os.getpid()))
+if mode == 'malformed':
+    print('TOKEN=do-not-leak broken-banner', flush=True)
+    time.sleep(60)
+for line in sys.stdin:
+    frame = json.loads(line)
+    method, params = frame.get('method'), frame.get('params', {})
+    record(method or 'client-response')
+    if method == 'initialize':
+        assert params['protocolVersion'] == 1
+        assert params['clientCapabilities']['fs']['readTextFile']
+        assert params['clientCapabilities']['fs']['writeTextFile']
+        assert params['clientCapabilities']['terminal']
+        send(dict(id=frame['id'], result=dict(protocolVersion=1, agentCapabilities=dict(loadSession=True))))
+    elif method in ('session/new', 'session/load'):
+        assert os.path.isabs(params['cwd'])
+        send(dict(id=frame['id'], result=dict(sessionId='session-fixture')))
+    elif method == 'session/prompt':
+        assert params['sessionId'] == 'session-fixture'
+        assert any(p.get('text') == 'hello' for p in params['prompt'])
+        if mode == 'attachments':
+            assert any(p.get('type') == 'image' and p['data'] == 'AQID' for p in params['prompt'])
+        if mode == 'cancel': continue
+        if mode == 'denied-read':
+            send(dict(id='read-1', method='fs/read_text_file', params=dict(sessionId='session-fixture', path=os.path.join(params.get('cwd', os.getcwd()), '.env'))))
+            response=json.loads(sys.stdin.readline())
+            assert 'error' in response and 'result' not in response
+            record('secret-refused')
+        for kind, text in [('agent_thought_chunk', 'thinking'), ('agent_message_chunk', 'answer')]:
+            send(dict(method='session/update', params=dict(sessionId='session-fixture', update=dict(sessionUpdate=kind, content=dict(type='text', text=text)))))
+        if mode == 'eof': sys.exit(7)
+        if mode == 'error': send(dict(id=frame['id'], error=dict(code=-32000,message='TOKEN=do-not-leak failed')))
+        else: send(dict(id=frame['id'], result=dict(stopReason='cancelled' if mode == 'cancelled' else 'end_turn')))
+    elif method == 'session/cancel':
+        record('cancel-seen')
+        break
+"#;
+
+    fn fixture(root: &Path, mode: &str) -> AcpProviderConfig {
+        let script = root.join("agent.py");
+        std::fs::write(&script, AGENT).unwrap();
+        AcpProviderConfig {
+            command: AcpCommand {
+                program: "/usr/bin/python3".into(),
+                args: vec![
+                    "-u".into(),
+                    script.display().to_string(),
+                    mode.into(),
+                    root.join("receipt").display().to_string(),
+                ],
+                cwd: root.to_path_buf(),
+                env: BTreeMap::new(),
+            },
+            bridge: AcpClientBridgeConfig::for_workspace(
+                vec![root.to_path_buf()],
+                AgentPermissions::default(),
+            )
+            .unwrap(),
+            acp_session_id: None,
+        }
+    }
+
+    fn messages() -> Vec<Message> {
+        vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("hello".into())],
+        )]
+    }
+
+    async fn collect(mut rx: mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        })
+        .await
+        .expect("ACP turn must terminate")
+    }
+
+    #[tokio::test]
+    async fn acp_handshake_stream_thought_separation_and_resume_through_factory() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = super::super::create_agent_provider(fixture(root.path(), "normal")).unwrap();
+        let expected = vec![
+            AgentEvent::ReasoningDelta("thinking".into()),
+            AgentEvent::TextDelta("answer".into()),
+            AgentEvent::TextDone("answer".into()),
+            AgentEvent::ResponseDone {
+                response_id: Some("session-fixture".into()),
+                clean: true,
+            },
+        ];
+        assert_eq!(
+            collect(
+                provider
+                    .stream(&messages(), &[], &StreamOptions::default())
+                    .await
+                    .unwrap()
+            )
+            .await,
+            expected
+        );
+        assert_eq!(
+            provider.response_chain_id().await.as_deref(),
+            Some("session-fixture")
+        );
+        assert_eq!(
+            collect(
+                provider
+                    .stream(&messages(), &[], &StreamOptions::default())
+                    .await
+                    .unwrap()
+            )
+            .await,
+            expected
+        );
+        let log = std::fs::read_to_string(root.path().join("receipt")).unwrap();
+        assert!(
+            log.contains("initialize\nsession/new\nsession/prompt"),
+            "{log}"
+        );
+        assert!(
+            log.contains("initialize\nsession/load\nsession/prompt"),
+            "{log}"
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_prompt_carries_attachments_and_denies_unapproved_secret_callback() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = AcpProvider::new(fixture(root.path(), "attachments")).unwrap();
+        let mut messages = messages();
+        messages[0].content.push(ContentBlock::Image {
+            data: vec![1, 2, 3],
+            media_type: "image/png".into(),
+        });
+        let events = collect(
+            provider
+                .stream(&messages, &[], &StreamOptions::default())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ResponseDone { clean: true, .. }))
+        );
+        std::fs::write(root.path().join(".env"), "TOP_SECRET=not-for-agent").unwrap();
+        let provider = AcpProvider::new(fixture(root.path(), "denied-read")).unwrap();
+        let events = collect(
+            provider
+                .stream(&messages, &[], &StreamOptions::default())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ResponseDone { clean: true, .. })),
+            "{events:?}"
+        );
+        assert!(
+            std::fs::read_to_string(root.path().join("receipt"))
+                .unwrap()
+                .contains("secret-refused")
+        );
+    }
+
+    #[tokio::test]
+    async fn acp_malformed_eof_error_and_cancelled_response_are_dirty() {
+        for mode in ["malformed", "eof", "error", "cancelled"] {
+            let root = tempfile::tempdir().unwrap();
+            let provider = AcpProvider::new(fixture(root.path(), mode)).unwrap();
+            let events = collect(
+                provider
+                    .stream(&messages(), &[], &StreamOptions::default())
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert!(
+                events.iter().any(|event| matches!(
+                    event,
+                    AgentEvent::ResponseDone {
+                        response_id: None,
+                        clean: false
+                    }
+                )),
+                "{mode}: {events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::Error(_))),
+                "{mode}: {events:?}"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::TextDone(_)))
+            );
+            assert!(!format!("{events:?}").contains("do-not-leak"));
+            assert_eq!(provider.response_chain_id().await, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn acp_cancel_notifies_and_reaps_child() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = AcpProvider::new(fixture(root.path(), "cancel")).unwrap();
+        let rx = provider
+            .stream(&messages(), &[], &StreamOptions::default())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let receipt =
+                    std::fs::read_to_string(root.path().join("receipt")).unwrap_or_default();
+                if receipt.contains("session/prompt") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        provider.cancel();
+        let events = collect(rx).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ResponseDone { clean: false, .. }))
+        );
+        let receipt = std::fs::read_to_string(root.path().join("receipt")).unwrap();
+        assert!(receipt.contains("cancel-seen"), "{receipt}");
+        let pid = receipt
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("pid:")
+            .unwrap();
+        assert!(
+            !std::process::Command::new("/bin/kill")
+                .args(["-0", pid])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}

@@ -35,6 +35,8 @@
 // Core modules (namespaced)
 // ═══════════════════════════════════════════════════════════
 
+/// Bidirectional Agent Client Protocol with permission-gated client methods.
+pub mod acp;
 /// Agent runtime: threads, sessions, capabilities, permissions, tool grants,
 /// and durable run monitoring.
 pub mod agent;
