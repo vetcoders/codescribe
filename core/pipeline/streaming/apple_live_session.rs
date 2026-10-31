@@ -3550,6 +3550,7 @@ impl AppleSealState {
                 .iter()
                 .filter_map(|(id, _)| self.pending_events.get(id))
                 .map(|pending| pending.layer1_baseline.as_str())
+                .filter(|label| !label.is_empty())
                 .collect::<Vec<_>>()
                 .join(" ");
             self.refinement_pending.push_back(TailPatchRequest {
@@ -8411,9 +8412,26 @@ fn reconcile_terminal_coverage(
     let threshold_samples =
         u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
     let speech = coverage_speech_evidence(state);
+    // Settled owners already consumed their returned windows. Reconsider a
+    // retained frame only where measured speech still has no qualified owner;
+    // old quiet/settled frames must not re-enter admission at capture Stop.
+    // Use zero tolerance for eligibility: a returned short real word remains
+    // admissible even below the terminal coverage reporting threshold.
+    let uncovered = {
+        let ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        uncovered_gap_ranges(&ledger, &state.session_id, state.capture_epoch, &speech, 0)
+    };
     let retained = state
         .retained_word_decodes
         .iter()
+        .filter(|payload| {
+            uncovered
+                .iter()
+                .any(|gap| gap.overlaps(&payload.identity.range))
+        })
         .cloned()
         .collect::<Vec<_>>();
     for payload in &retained {
@@ -16329,6 +16347,145 @@ mod rc_w2_acoustic_tests {
         );
     }
 
+    #[test]
+    fn long_quiet_take_does_not_reoffer_settled_prefix_at_stop() {
+        use crate::stt::tail_provider::TailSegmentGrain;
+
+        let mut state = one_burst_in_a_ten_second_take("settled-prefix-stop");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let owner = commit_the_burst(&mut state, &tx);
+        let seal = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .seal_of(&owner)
+            .expect("the utterance seals while recording, before the quiet tail")
+            .clone();
+        assert!(!state.capture_stopping);
+
+        // A retained ASR frame includes a word hallucinated over measured
+        // quiet. Stop must not re-offer this historical frame once its real
+        // speech is settled, even as a refused mutation/diagnostic proposal.
+        let request = TailProviderRequest {
+            identity: TailRequestIdentity {
+                request_id: 42,
+                range: TailSampleRange {
+                    session: state.session_id.clone(),
+                    capture_epoch: state.capture_epoch,
+                    sample_start: 0,
+                    sample_end: at(9.0),
+                },
+            },
+            sample_rate: RATE,
+            language: Some("pl".into()),
+        };
+        let mut payload = gap_payload(&request);
+        payload.evidence.segment_grain = TailSegmentGrain::Word;
+        payload.text = "Dziękuję.".into();
+        payload.segments = vec![TimedTailSegment {
+            confidence: None,
+            grain: TailSegmentGrain::Word,
+            text: "Dziękuję.".into(),
+            range: TailSampleRange {
+                sample_start: at(4.0),
+                sample_end: at(4.5),
+                ..request.identity.range.clone()
+            },
+        }];
+        payload.validate().unwrap();
+        state.retain_word_decode(&payload);
+        assert_eq!(state.retained_word_decodes.len(), 1);
+
+        let quiet = vec![0.0; at(60.0) as usize];
+        for _ in 0..30 {
+            state.audio.push(&quiet);
+        }
+        let captured = state.audio.session_sample_end();
+        state
+            .fusion
+            .as_mut()
+            .unwrap()
+            .note_observed_pcm(captured - at(10.0), captured);
+        while rx.try_recv().is_ok() {}
+        let (requests, mut requested) = mpsc::channel(4);
+        state.tail_patch = Some(requests);
+        state.capture_stopping = true;
+        let admitted = state.windows_admitted;
+
+        let coverage = reconcile_terminal_coverage(&mut state, &tx);
+        assert_eq!(coverage.status, SealCoverageStatus::Complete);
+        assert_eq!(state.windows_admitted, admitted);
+        assert!(
+            requested.try_recv().is_err(),
+            "no new model request for the prefix"
+        );
+        assert!(
+            !std::iter::from_fn(|| rx.try_recv().ok())
+                .any(|event| matches!(event, EngineEvent::LedgerMutation { .. })),
+            "Stop must not re-offer historical settled/quiet words, even to refuse them"
+        );
+        let ledger = state.acoustic_ledger.lock().unwrap();
+        assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+        assert_eq!(ledger.seal_of(&owner), Some(&seal));
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn terminal_retained_recovery_still_accounts_for_unowned_speech() {
+        use crate::stt::tail_provider::TailSegmentGrain;
+
+        for speech_end in [2.0, 1.0625] {
+            let mut state = state_for(&format!("unsettled-retained-{speech_end}"), 10.0);
+            CaptureLevelAccumulator::bound_to_at_rate(&state.capture_energy, RATE)
+                .push_samples(&vec![0.25; at(10.0) as usize]);
+            let mut ingress = SileroIngress::new(RATE, state.session_id.clone(), 0);
+            ingress.note_observed_pcm(at(10.0), at(10.0));
+            ingress.observe_boundaries(&[
+                crossing(VadBoundaryKind::SpeechStart, at(1.0)),
+                crossing(VadBoundaryKind::SpeechEnd, at(speech_end)),
+            ]);
+            ingress.observe(Some((0, at(10.0))), true, at(10.0));
+            state.fusion = Some(ingress);
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let range = coverage_speech_evidence(&state).ranges()[0].clone();
+            if speech_end < 2.0 {
+                assert!(range.sample_end - range.sample_start < THRESHOLD);
+            }
+            let request = TailProviderRequest {
+                identity: TailRequestIdentity {
+                    request_id: 43,
+                    range: TailSampleRange {
+                        session: state.session_id.clone(),
+                        capture_epoch: state.capture_epoch,
+                        sample_start: 0,
+                        sample_end: at(9.0),
+                    },
+                },
+                sample_rate: RATE,
+                language: Some("pl".into()),
+            };
+            let mut payload = gap_payload(&request);
+            payload.evidence.segment_grain = TailSegmentGrain::Word;
+            payload.segments[0].grain = TailSegmentGrain::Word;
+            payload.segments[0].range = range.clone();
+            payload.validate().unwrap();
+            state.retain_word_decode(&payload);
+            state.capture_stopping = true;
+
+            let coverage = reconcile_terminal_coverage(&mut state, &tx);
+            assert_eq!(coverage.status, SealCoverageStatus::Complete);
+            assert_eq!(
+                state
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap()
+                    .text_of(&OccurrenceIdentity::from(&range)),
+                Some("Iwo"),
+                "settled-history filtering must retain real speech, including sub-threshold words"
+            );
+        }
+    }
+
     /// A sealed occurrence is finished. A later machine observation of the same
     /// PCM is refused as a replay, and the committed label does not move.
     #[test]
@@ -24027,6 +24184,27 @@ mod live_refinement_admission_tests {
             )));
             state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
             assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn shared_decode_window_has_no_whitespace_labels_for_unresolved_owners() {
+        for label in ["", "Iwo"] {
+            let (mut state, events, _receiver, mut requests) = fixture(3);
+            CaptureLevelAccumulator::bound_to_at_rate(&state.capture_energy, RATE)
+                .push_samples(&vec![0.25; 20_000]);
+            reconcile_silero_ledger(&mut state, &events, &closed(3), &[]);
+            state.pending_events.get_mut(&2).unwrap().layer1_baseline = label.into();
+            state.pump_capture_windows(&events);
+            let request = requests
+                .try_recv()
+                .expect("one live window for three owners");
+            assert_eq!(request.member_occurrences.len(), 3);
+            assert_eq!(
+                request.committed_text, label,
+                "unresolved labels must not become padding around the real baseline"
+            );
+            assert!(!state.capture_stopping, "this is the live path before Stop");
         }
     }
 
