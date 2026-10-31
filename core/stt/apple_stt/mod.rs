@@ -1483,6 +1483,8 @@ fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Resu
                 let teardown_deadline = std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET;
                 let stdout = join_thread_until(&mut stdout_thread, teardown_deadline);
                 let stderr = join_thread_until(&mut stderr_thread, teardown_deadline);
+                let stdout_joined = stdout.is_some();
+                let stderr_joined = stderr.is_some();
                 if let (Some(stdout), Some(stderr)) = (stdout, stderr) {
                     return Ok(Output {
                         status,
@@ -1493,15 +1495,13 @@ fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Resu
                 tracing::warn!(
                     pid,
                     ?status,
-                    stdout_joined = stdout.is_some(),
-                    stderr_joined = stderr.is_some(),
+                    stdout_joined,
+                    stderr_joined,
                     "Apple STT bridge exited, but output pipe readers did not finish within teardown budget"
                 );
                 bail!(
-                    "Apple STT bridge (pid {pid}) exited with {status}, but output readers did not finish within {}ms (stdout_joined={}, stderr_joined={})",
-                    BRIDGE_TEARDOWN_BUDGET.as_millis(),
-                    stdout.is_some(),
-                    stderr.is_some()
+                    "Apple STT bridge (pid {pid}) exited with {status}, but output readers did not finish within {}ms (stdout_joined={stdout_joined}, stderr_joined={stderr_joined})",
+                    BRIDGE_TEARDOWN_BUDGET.as_millis()
                 );
             }
             Ok(None) => {
