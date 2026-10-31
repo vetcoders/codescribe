@@ -103,11 +103,13 @@ pub fn is_cloud_code_assist(base: &str) -> bool {
 /// Numeric loopback only: a fixture must not rely on a hostname resolving to
 /// the same address later when credentialed HTTP is sent.
 pub fn is_loopback_endpoint(base: &str) -> bool {
-    reqwest::Url::parse(base).is_ok_and(|url| url.host_str().is_some_and(|host| {
-        host.trim_matches(['[', ']'])
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
-    }))
+    reqwest::Url::parse(base).is_ok_and(|url| {
+        url.host_str().is_some_and(|host| {
+            host.trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+        })
+    })
 }
 
 /// Wrap the native payload for CCA. The Custom endpoint's `project` query

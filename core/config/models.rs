@@ -524,7 +524,9 @@ pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Res
             Err(error) => {
                 let missing = error
                     .downcast_ref::<hf_cache::CachePathStatus>()
-                    .is_some_and(|status| matches!(status, hf_cache::CachePathStatus::Missing { .. }));
+                    .is_some_and(|status| {
+                        matches!(status, hf_cache::CachePathStatus::Missing { .. })
+                    });
                 if path_failure.is_none()
                     && (!missing
                         || Path::new(model_ref).is_absolute()
@@ -874,7 +876,9 @@ fn push_whisper_option(
     }
     seen.push(canonical.clone());
     let usable = validation.is_ok();
-    let reason = validation.err().map(|error| short_validation_reason(&error));
+    let reason = validation
+        .err()
+        .map(|error| short_validation_reason(&error));
     let is_active = active == Some(&canonical);
     options.push(WhisperModelOption {
         label: whisper_display_label(&id, usable),
@@ -980,9 +984,9 @@ pub fn whisper_model_options(configured: Option<&str>) -> WhisperCatalogInventor
             let mut options = Vec::new();
             let mut seen = Vec::new();
             if let status @ (hf_cache::CachePathStatus::UnmountedExternalVolume { .. }
-                | hf_cache::CachePathStatus::Io { .. }
-                | hf_cache::CachePathStatus::SymlinkLoop { .. }
-                | hf_cache::CachePathStatus::Missing { .. }) = hf_cache::classify_cache_root(base)
+            | hf_cache::CachePathStatus::Io { .. }
+            | hf_cache::CachePathStatus::SymlinkLoop { .. }
+            | hf_cache::CachePathStatus::Missing { .. }) = hf_cache::classify_cache_root(base)
             {
                 if !matches!(status, hf_cache::CachePathStatus::Missing { .. })
                     || hf_cache::is_configured_cache_base(base)
@@ -1466,6 +1470,75 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    #[test]
+    fn bundle_and_catalog_reason_retain_detached_optional_link() {
+        let temp = TempDir::new().unwrap();
+        let model = temp.path().join("model");
+        create_complete_whisper_model(&model);
+        std::os::unix::fs::symlink(
+            "/Volumes/NonExistentExternalDrive/tokenizer_config.json",
+            model.join("tokenizer_config.json"),
+        )
+        .unwrap();
+        let error = validate_whisper_model_bundle(&model).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<hf_cache::CachePathStatus>(),
+                Some(hf_cache::CachePathStatus::UnmountedExternalVolume { .. })
+            ),
+            "{error:#}"
+        );
+        let mut options = Vec::new();
+        push_whisper_option(
+            "selected".into(),
+            model,
+            "models_dir",
+            None,
+            &mut options,
+            &mut Vec::new(),
+        );
+        assert_eq!(options.len(), 1);
+        assert!(!options[0].usable);
+        assert!(
+            options[0]
+                .reason
+                .as_ref()
+                .unwrap()
+                .contains("NonExistentExternalDrive")
+        );
+    }
+
+    #[test]
+    fn explicit_missing_model_reference_keeps_its_path_and_refusal_row() {
+        let temp = TempDir::new().unwrap();
+        let missing = temp.path().join("missing-model");
+        let manager = ModelManager {
+            models_dir: temp.path().join("models"),
+        };
+        assert_eq!(
+            manager.resolve_model_reference(missing.to_str().unwrap()),
+            missing
+        );
+        let mut options = Vec::new();
+        push_whisper_option(
+            "selected".into(),
+            missing.clone(),
+            "models_dir",
+            None,
+            &mut options,
+            &mut Vec::new(),
+        );
+        assert!(!options[0].usable);
+        assert_eq!(options[0].path, missing.display().to_string());
+        assert!(
+            options[0]
+                .reason
+                .as_ref()
+                .unwrap()
+                .contains("Missing cache/model path")
+        );
+    }
 
     #[test]
     fn inventory_reports_active_usable_refused_broken_and_duplicate_tokenizers() {

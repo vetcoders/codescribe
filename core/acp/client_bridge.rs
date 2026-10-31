@@ -174,10 +174,14 @@ impl AcpClientBridge {
         let file = dir.into_std_file();
         if !file.metadata()?.is_dir()
             || checked.metadata.as_ref().is_none_or(|expected| {
-                file.metadata().map(|actual| !same_file(expected, &actual)).unwrap_or(true)
+                file.metadata()
+                    .map(|actual| !same_file(expected, &actual))
+                    .unwrap_or(true)
             })
         {
-            return Err(AcpError::PermissionDenied("ACP launch cwd changed after selection".into()));
+            return Err(AcpError::PermissionDenied(
+                "ACP launch cwd changed after selection".into(),
+            ));
         }
         checked.confirm(&self.config.workspace_roots)?;
         Ok(file)
@@ -1104,6 +1108,33 @@ mod tests {
         };
         assert!(request.paths.iter().any(|path| path.ends_with("/.env")));
         assert_eq!(std::fs::read_to_string(file).unwrap(), "TOP_SECRET_VALUE");
+    }
+
+    #[tokio::test]
+    async fn acp_full_ui_queue_is_inside_the_approval_timeout() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join(".env");
+        std::fs::write(&file, "fixture-private").unwrap();
+        let mut config = AcpClientBridgeConfig::for_workspace(
+            vec![root.path().into()],
+            AgentPermissions::default(),
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        tx.send(AgentUiEvent::Done).await.unwrap();
+        config.ui_tx = Some(tx);
+        config.approval_timeout = Duration::from_millis(20);
+        config.approval_handler = Some(Arc::new(|_| Box::pin(async { true })));
+        let mut bridge = AcpClientBridge::new(config).unwrap();
+        bridge.set_session_id("session-1".into());
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            bridge.handle("fs/read_text_file", params(&file)),
+        )
+        .await
+        .expect("UI backpressure must be bounded");
+        assert!(matches!(result, Err(AcpError::PermissionDenied(_))));
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "fixture-private");
     }
 
     #[cfg(unix)]

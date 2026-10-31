@@ -782,21 +782,28 @@ impl Config {
                 || (provider.wire == WireFamily::OpenAiResponses
                     && provider.oauth_vendor.is_some()));
         let configuration_fault = unavailable_reason.clone();
-        let credential_required = provider.key_required
-            || provider.wire == WireFamily::GoogleGenerateContent;
+        let credential_required =
+            provider.key_required || provider.wire == WireFamily::GoogleGenerateContent;
         let credentialed = api_key.is_some() || account_auth || !credential_required;
         if !credentialed && unavailable_reason.is_none() {
-            unavailable_reason = Some(if provider.wire == WireFamily::GoogleGenerateContent
-                && crate::llm::vendors::google::is_cloud_code_assist(&provider.endpoint)
-            {
-                format!("The {} lane uses Cloud Code Assist, which requires locally provisioned Google account credentials or authorized-user ADC. A public Gemini API key cannot authenticate this endpoint.", lane.as_str())
-            } else { format!(
-                "The {} lane points at {} ({}), which requires a credential, but neither Keychain account {} nor a supported signed-in provider account is available.",
-                lane.as_str(),
-                provider.display_name,
-                provider.endpoint,
-                provider.key_account,
-            ) });
+            unavailable_reason = Some(
+                if provider.wire == WireFamily::GoogleGenerateContent
+                    && crate::llm::vendors::google::is_cloud_code_assist(&provider.endpoint)
+                {
+                    format!(
+                        "The {} lane uses Cloud Code Assist, which requires locally provisioned Google account credentials or authorized-user ADC. A public Gemini API key cannot authenticate this endpoint.",
+                        lane.as_str()
+                    )
+                } else {
+                    format!(
+                        "The {} lane points at {} ({}), which requires a credential, but neither Keychain account {} nor a supported signed-in provider account is available.",
+                        lane.as_str(),
+                        provider.display_name,
+                        provider.endpoint,
+                        provider.key_account,
+                    )
+                },
+            );
         }
         let credential =
             RuntimeLlmCredential::seal(provider.key_account.clone(), api_key, account_auth);
@@ -819,7 +826,10 @@ impl Config {
                     path.is_absolute()
                         && !raw.chars().any(char::is_control)
                         && path.components().all(|component| {
-                            matches!(component, std::path::Component::RootDir | std::path::Component::Normal(_))
+                            matches!(
+                                component,
+                                std::path::Component::RootDir | std::path::Component::Normal(_)
+                            )
                         })
                 };
                 if !absolute(&launch.program)
@@ -838,7 +848,9 @@ impl Config {
                     roots.into_iter().map(Into::into).collect();
                 let cwd = std::path::PathBuf::from(&launch.cwd);
                 if !workspace_roots.iter().any(|root| cwd.starts_with(root)) {
-                    return Err("ACP cwd must be inside a configured Agent workspace root".to_string());
+                    return Err(
+                        "ACP cwd must be inside a configured Agent workspace root".to_string()
+                    );
                 }
                 Ok(super::settings::RuntimeAcpConfiguration {
                     command: crate::acp::AcpCommand {
@@ -4802,6 +4814,100 @@ mod captured_startup_tests {
     use super::super::repair::{ConfigUnrepairable, RepairAction};
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn google_custom_lane_needs_credentials_and_cca_needs_account() {
+        for (endpoint, key, signed_in, ready) in [
+            ("https://example.invalid/v1beta", None, false, false),
+            (
+                "https://example.invalid/v1internal?project=fixture",
+                Some("fixture-key"),
+                false,
+                false,
+            ),
+            (
+                "https://example.invalid/v1internal?project=fixture",
+                None,
+                true,
+                true,
+            ),
+        ] {
+            let mut input = CapturedRuntimeInputs::defaults_at("/fixture/google-lane".into(), 0);
+            let row = crate::llm::provider::CustomProvider::new(
+                "Google fixture",
+                WireFamily::GoogleGenerateContent,
+                endpoint,
+            )
+            .unwrap();
+            input.user_settings.llm_assistive_provider = Some(format!("custom:{}", row.id));
+            input.user_settings.llm_assistive_model = Some("gemini-fixture".into());
+            input.credentials.insert(
+                row.key_account(),
+                CapturedLaneCredential {
+                    api_key: key.map(str::to_string),
+                    signed_in,
+                },
+            );
+            input.user_settings.add_custom_provider(row).unwrap();
+            let snapshot = Config::runtime_snapshot_from_captured(input);
+            assert_eq!(
+                snapshot
+                    .llm_lanes()
+                    .assistive()
+                    .request_unavailable_reason()
+                    .is_none(),
+                ready,
+                "{endpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_acp_selection_is_sealed_and_invalid_launch_never_falls_to_http() {
+        let mut input = CapturedRuntimeInputs::defaults_at("/fixture/acp".into(), 0);
+        input.user_settings.agent_workspace_roots = Some(vec!["/fixture/workspace".into()]);
+        input.user_settings.agent_acp = Some(super::super::settings::AcpLaunchSettings {
+            program: "/usr/bin/python3".into(),
+            args: vec!["-u".into()],
+            cwd: "/fixture/workspace".into(),
+        });
+        let valid = Config::runtime_snapshot_from_captured(input.clone());
+        assert!(
+            valid
+                .llm_lanes()
+                .assistive()
+                .request_unavailable_reason()
+                .is_none()
+        );
+        assert!(valid.llm_lanes().assistive().acp_configuration().is_some());
+        input.user_settings.agent_acp.as_mut().unwrap().cwd =
+            "/fixture/workspace/../outside".into();
+        let refused = Config::runtime_snapshot_from_captured(input);
+        assert!(
+            refused
+                .llm_lanes()
+                .assistive()
+                .acp_configuration()
+                .is_none()
+        );
+        assert!(
+            refused
+                .llm_lanes()
+                .assistive()
+                .request_unavailable_reason()
+                .is_some()
+        );
+        assert_eq!(
+            valid
+                .llm_lanes()
+                .assistive()
+                .acp_configuration()
+                .unwrap()
+                .command
+                .cwd,
+            PathBuf::from("/fixture/workspace")
+        );
+    }
 
     fn inputs() -> CapturedRuntimeInputs {
         let mut input =

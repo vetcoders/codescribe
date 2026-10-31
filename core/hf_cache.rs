@@ -68,7 +68,9 @@ impl std::fmt::Display for CachePathStatus {
             ),
             Self::Missing { path } => write!(f, "Missing cache/model path: {}", path.display()),
             Self::SymlinkLoop { path } => write!(f, "Cache/model symlink loop: {}", path.display()),
-            Self::Io { path, message, .. } => write!(f, "Cannot read {}: {message}", path.display()),
+            Self::Io { path, message, .. } => {
+                write!(f, "Cannot read {}: {message}", path.display())
+            }
             Self::OutsideCacheRoot { resolved } => write!(
                 f,
                 "Cache file resolves outside the selected cache root: {}",
@@ -94,13 +96,6 @@ fn path_error(path: &Path, error: std::io::Error) -> CachePathStatus {
     }
 }
 
-impl CachePathStatus {
-    /// Whether the path can be read as part of the cache.
-    pub fn is_ready(&self) -> bool {
-        matches!(self, Self::Ready { .. })
-    }
-}
-
 /// Resolve the selected cache trust anchor and retain read/permission errors.
 pub(crate) fn classify_cache_root(base: &Path) -> CachePathStatus {
     match resolve_links(base) {
@@ -123,10 +118,14 @@ fn trusted_roots(base: &Path) -> Result<Vec<PathBuf>, CachePathStatus> {
 
 /// Whether a root was explicitly configured rather than discovered by default.
 pub(crate) fn is_configured_cache_base(base: &Path) -> bool {
-    ["CODESCRIBE_HF_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HUB_CACHE"]
-        .iter()
-        .filter_map(env::var_os)
-        .any(|value| Path::new(&value) == base)
+    [
+        "CODESCRIBE_HF_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "HF_HUB_CACHE",
+    ]
+    .iter()
+    .filter_map(env::var_os)
+    .any(|value| Path::new(&value) == base)
         || env::var_os("HF_HOME").is_some_and(|home| Path::new(&home).join("hub") == base)
 }
 
@@ -583,7 +582,8 @@ where
         status => return Err(status),
     };
 
-    let entries = fs::read_dir(&snapshots_dir).map_err(|error| path_error(&snapshots_dir, error))?;
+    let entries =
+        fs::read_dir(&snapshots_dir).map_err(|error| path_error(&snapshots_dir, error))?;
 
     let mut candidates = Vec::new();
     let mut failure = None;
@@ -591,7 +591,9 @@ where
     for entry in entries {
         let entry = entry.map_err(|error| path_error(&snapshots_dir, error))?;
         let path = entry.path();
-        let file_type = entry.file_type().map_err(|error| path_error(&path, error))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| path_error(&path, error))?;
         if !file_type.is_dir() && !file_type.is_symlink() {
             continue;
         }
@@ -735,12 +737,14 @@ pub(crate) fn whisper_cache_snapshots(base: &Path) -> Vec<(String, PathBuf)> {
                 CachePathStatus::Ready { resolved } => {
                     // lstat retains broken/inaccessible weight links for the
                     // caller's typed refusal; no detached target is followed.
-                    crate::whisper_weights::SUPPORTED_NAMES.iter().any(|weights| {
-                        match fs::symlink_metadata(resolved.join(weights)) {
-                            Ok(_) => true,
-                            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
-                        }
-                    })
+                    crate::whisper_weights::SUPPORTED_NAMES
+                        .iter()
+                        .any(
+                            |weights| match fs::symlink_metadata(resolved.join(weights)) {
+                                Ok(_) => true,
+                                Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+                            },
+                        )
                 }
                 _ => true,
             })
@@ -791,6 +795,102 @@ mod tests {
 
         assert_eq!(found, older);
         assert_ne!(found, newer);
+    }
+
+    #[test]
+    fn checked_finder_refuses_hub_sibling_escape_and_accepts_later_root() {
+        let temp = TempDir::new().unwrap();
+        let hub = temp.path().join("hub");
+        let invalid = snapshot(&hub, "org/repo", "rev", 10);
+        let sibling = temp.path().join("outside.bin");
+        fs::write(&sibling, b"outside").unwrap();
+        std::os::unix::fs::symlink(&sibling, invalid.join("model.bin")).unwrap();
+        let found = find_snapshot_in_bases_matching_checked(
+            [hub.clone()],
+            "org/repo",
+            &["model.bin"],
+            &[],
+            &|_| true,
+        );
+        assert!(
+            matches!(found, Err(CachePathStatus::OutsideCacheRoot { .. })),
+            "{found:?}"
+        );
+        let later = temp.path().join("later");
+        let valid = snapshot(&later, "org/repo", "good", 10);
+        fs::write(valid.join("model.bin"), b"valid").unwrap();
+        assert_eq!(
+            find_snapshot_in_bases_matching_checked(
+                [hub, later],
+                "org/repo",
+                &["model.bin"],
+                &[],
+                &|_| true
+            )
+            .unwrap(),
+            Some(valid)
+        );
+    }
+
+    #[test]
+    fn checked_finder_does_not_accept_directory_as_required_file() {
+        let temp = TempDir::new().unwrap();
+        let invalid = snapshot(temp.path(), "org/repo", "rev", 10);
+        fs::create_dir(invalid.join("model.bin")).unwrap();
+        assert_eq!(
+            find_snapshot_in_bases_matching_checked(
+                [temp.path().to_path_buf()],
+                "org/repo",
+                &["model.bin"],
+                &[],
+                &|_| true
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn resolution_retains_loop_and_non_directory_io_causes() {
+        let temp = TempDir::new().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        std::os::unix::fs::symlink(&second, &first).unwrap();
+        std::os::unix::fs::symlink(&first, &second).unwrap();
+        assert!(matches!(
+            resolve_local_path(&first),
+            Err(CachePathStatus::SymlinkLoop { .. })
+        ));
+        let file = temp.path().join("file");
+        fs::write(&file, b"not a directory").unwrap();
+        assert!(matches!(
+            resolve_local_path(&file.join("child")),
+            Err(CachePathStatus::Io {
+                kind: std::io::ErrorKind::NotADirectory,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn permission_denial_is_not_reported_as_missing_or_detached() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new().unwrap();
+        let locked = temp.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0)).unwrap();
+        let status = classify_cache_root(&locked);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            matches!(
+                status,
+                CachePathStatus::Io {
+                    kind: std::io::ErrorKind::PermissionDenied,
+                    ..
+                }
+            ),
+            "{status:?}"
+        );
     }
 
     #[test]

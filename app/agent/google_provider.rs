@@ -23,6 +23,7 @@ use codescribe_core::llm::account_auth::{
     GoogleCredential, redact_google_secrets, resolve_google_account_credential,
     resolve_google_credential,
 };
+use codescribe_core::llm::responses_streaming_manager::StreamWatchdog;
 use codescribe_core::llm::vendors::google;
 
 const STREAM_DEADLINE: Duration = Duration::from_secs(600);
@@ -43,6 +44,7 @@ pub struct GoogleProvider {
     fixture_key: Option<String>,
     initial_timeout: Duration,
     chunk_timeout: Duration,
+    first_event_timeout: Duration,
     history: Arc<Mutex<Vec<RetainedTurn>>>,
     turn_lock: Arc<tokio::sync::Mutex<()>>,
 }
@@ -109,6 +111,7 @@ impl GoogleProvider {
             fixture_key: (!api_key.is_empty()).then_some(api_key),
             initial_timeout: timing.attempt_timeout(),
             chunk_timeout: timing.inter_chunk_timeout(),
+            first_event_timeout: timing.first_event_timeout(),
             history: Arc::new(Mutex::new(Vec::new())),
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
@@ -395,7 +398,7 @@ impl GoogleProvider {
         mut turn: RetainedTurn,
         tx: &mpsc::Sender<AgentEvent>,
     ) -> Result<()> {
-        let initial_deadline = tokio::time::Instant::now() + self.initial_timeout;
+        let mut watchdog = StreamWatchdog::start(self.first_event_timeout, self.chunk_timeout);
         let mut request = self
             .client
             .post(endpoint)
@@ -408,7 +411,7 @@ impl GoogleProvider {
         let response = tokio::select! {
             biased;
             _ = tx.closed() => return Ok(()),
-            result = tokio::time::timeout(self.initial_timeout, request.send()) => {
+            result = tokio::time::timeout(self.initial_timeout.min(watchdog.next_wait()), request.send()) => {
                 result.map_err(|_| anyhow!("Google response headers timed out"))?
                     .map_err(|error| anyhow!("Google transport failed: {}", redact_google_secrets(&error.without_url().to_string())))?
             }
@@ -439,11 +442,7 @@ impl GoogleProvider {
                 _ = tx.closed() => return Ok(()),
                 _ = tokio::time::sleep_until(deadline) => bail!("Google stream exceeded its deadline"),
                 chunk = tokio::time::timeout(
-                    if state.content_started {
-                        self.chunk_timeout
-                    } else {
-                        initial_deadline.saturating_duration_since(tokio::time::Instant::now())
-                    },
+                    watchdog.next_wait(),
                     stream.next(),
                 ) => chunk.map_err(|_| anyhow!(if state.content_started {
                     "Google stream stalled"
@@ -455,6 +454,9 @@ impl GoogleProvider {
                 Some(Ok(bytes)) => {
                     for event in parser.push(&bytes)? {
                         state.consume(event, tx).await?;
+                        if state.content_started {
+                            watchdog.generation_started();
+                        }
                     }
                 }
                 Some(Err(_)) => bail!("Google stream transport failed"),
@@ -484,7 +486,10 @@ impl GoogleProvider {
         // Persist before exposing the clean terminal: the next session step
         // can immediately build functionResponse from these exact signed parts.
         {
-            let mut history = self.history.lock().unwrap_or_else(|poison| poison.into_inner());
+            let mut history = self
+                .history
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
             let retained_bytes: usize = history.iter().map(|item| item.part_bytes).sum();
             ensure!(
                 history.len() < MAX_RETAINED_TURNS
@@ -543,7 +548,10 @@ impl GoogleSse {
             }
         } else if let Some(data) = line.strip_prefix("data:") {
             let data = data.strip_prefix(' ').unwrap_or(data);
-            self.event_bytes = self.event_bytes.saturating_add(data.len()).saturating_add(1);
+            self.event_bytes = self
+                .event_bytes
+                .saturating_add(data.len())
+                .saturating_add(1);
             ensure!(
                 self.event_bytes <= MAX_SSE_EVENT_BYTES && self.data.len() < MAX_SSE_DATA_LINES,
                 "Google SSE event exceeds limit"
@@ -584,7 +592,10 @@ impl ResponseState {
     }
     async fn consume(&mut self, envelope: Value, tx: &mpsc::Sender<AgentEvent>) -> Result<()> {
         ensure!(envelope.is_object(), "Google SSE event must be an object");
-        ensure!(envelope.get("error").is_none(), "Google reported an SSE error");
+        ensure!(
+            envelope.get("error").is_none(),
+            "Google reported an SSE error"
+        );
         let value = envelope.get("response").unwrap_or(&envelope);
         ensure!(value.is_object(), "Google response must be an object");
         ensure!(value.get("error").is_none(), "Google reported an SSE error");
@@ -599,14 +610,24 @@ impl ResponseState {
             );
             return Ok(());
         };
-        let candidates = raw_candidates.as_array().ok_or_else(|| anyhow!("Google candidates must be an array"))?;
+        let candidates = raw_candidates
+            .as_array()
+            .ok_or_else(|| anyhow!("Google candidates must be an array"))?;
         ensure!(
             candidates.iter().all(|candidate| candidate.is_object()
-                && candidate.get("index").is_none_or(|index| index.as_u64().is_some())),
+                && candidate
+                    .get("index")
+                    .is_none_or(|index| index.as_u64().is_some())),
             "Google candidate or index is malformed"
         );
         ensure!(
-            candidates.iter().filter(|candidate| candidate.get("index").and_then(Value::as_u64).unwrap_or(0) == 0).count() <= 1,
+            candidates
+                .iter()
+                .filter(
+                    |candidate| candidate.get("index").and_then(Value::as_u64).unwrap_or(0) == 0
+                )
+                .count()
+                <= 1,
             "Google returned more than one primary candidate"
         );
         // The Agent asks for one candidate. Never mix alternative answers/tools.
@@ -617,7 +638,9 @@ impl ResponseState {
             return Ok(());
         };
         if let Some(raw_parts) = candidate.pointer("/content/parts") {
-            let parts = raw_parts.as_array().ok_or_else(|| anyhow!("Google parts must be an array"))?;
+            let parts = raw_parts
+                .as_array()
+                .ok_or_else(|| anyhow!("Google parts must be an array"))?;
             ensure!(
                 !self.clean_terminal,
                 "Google emitted content after its terminal"
@@ -689,8 +712,13 @@ impl ResponseState {
             }
         }
         if let Some(reason) = candidate.get("finishReason") {
-            let reason = reason.as_str().ok_or_else(|| anyhow!("Google finish reason must be a string"))?;
-            ensure!(!self.clean_terminal, "Google emitted more than one terminal");
+            let reason = reason
+                .as_str()
+                .ok_or_else(|| anyhow!("Google finish reason must be a string"))?;
+            ensure!(
+                !self.clean_terminal,
+                "Google emitted more than one terminal"
+            );
             ensure!(
                 reason == "STOP",
                 "Google did not complete the response (non-STOP finish reason)"
@@ -787,10 +815,162 @@ mod tests {
     use mockito::Matcher;
 
     fn timing() -> RuntimeAiRequestTiming {
-        RuntimeAiRequestTiming::default()
+        codescribe_core::config::Config::runtime_snapshot_from_captured(
+            codescribe_core::config::CapturedRuntimeInputs::defaults_at(
+                "/fixture/google".into(),
+                0,
+            ),
+        )
+        .ai_execution()
+        .request_timing()
+        .clone()
     }
     fn user(text: &str) -> Message {
         Message::new(Role::User, vec![ContentBlock::Text(text.into())])
+    }
+
+    #[tokio::test]
+    async fn real_session_lazy_mcp_preserves_every_signed_part_and_rejects_restore() {
+        use codescribe_core::agent::{AgentSession, ToolResultContent};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut server = mockito::Server::new_async().await;
+        let path = "/v1beta/models/gemini-test:streamGenerateContent?alt=sse";
+        let parts = json!([
+            {"thought":true,"text":"planning","thoughtSignature":"thought-distinct"},
+            {"text":"","thoughtSignature":"empty-distinct"},
+            {"functionCall":{"name":"mcp_search_tools","args":{"query":"read"}},"thoughtSignature":"search-distinct"}
+        ]);
+        let first = server
+            .mock("POST", path)
+            .match_request(|request| {
+                serde_json::from_slice::<Value>(request.body().unwrap()).unwrap()["contents"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+                    == 1
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(
+                json!({"candidates":[{"content":{"parts":parts},"finishReason":"STOP"}]}),
+            ))
+            .create_async()
+            .await;
+        let expected = parts.clone();
+        let call_parts = json!([{ "functionCall": {"name":"call_mcp_tool", "id":"wire-read", "args":{"server":"local","tool":"read","arguments":{"path":"fixture.txt"}}}, "thoughtSignature":"read-distinct" }]);
+        let second = server
+            .mock("POST", path)
+            .match_request(move |request| {
+                let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                body["contents"].as_array().unwrap().len() == 3
+                    && body["contents"][1]["parts"] == expected
+                    && body["contents"][2]["parts"][0]["functionResponse"]["name"]
+                        == "mcp_search_tools"
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(
+                json!({"candidates":[{"content":{"parts":call_parts},"finishReason":"STOP"}]}),
+            ))
+            .create_async()
+            .await;
+        let expected = parts.clone();
+        let expected_call = call_parts.clone();
+        let third = server.mock("POST", path)
+            .match_request(move |request| {
+                let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                body["contents"].as_array().unwrap().len() == 5 && body["contents"][1]["parts"] == expected
+                    && body["contents"][3]["parts"] == expected_call
+                    && body["contents"][4]["parts"][0]["functionResponse"]["id"] == "wire-read"
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(json!({"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]})))
+            .create_async().await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let called = count.clone();
+        let mut tools = ToolRegistry::new();
+        tools.register_with_policy(ToolDefinition {name:"mcp__local__read".into(),description:"read fixture".into(),input_schema:json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})}, Box::new(move |_| {
+            let called = called.clone();
+            Box::pin(async move {called.fetch_add(1, Ordering::SeqCst); vec![ToolResultContent::Text("fixture result".into())]})
+        }), ToolExecutionPolicy {origin:ToolOrigin::Mcp {server:"local".into(),upstream_tool:"read".into()},risk:ToolRisk::ReadOnly,requires_approval:false},None).unwrap();
+        let endpoint = format!("{}/v1beta", server.url());
+        let provider = GoogleProvider::from_configuration(
+            endpoint.clone(),
+            "gemini-test".into(),
+            "fixture-key".into(),
+            &timing(),
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel(128);
+        let mut session = AgentSession::new(Box::new(provider), Arc::new(tools), tx);
+        session
+            .send("read".into(), Vec::new(), &StreamOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        for mock in [first, second, third] {
+            mock.assert_async().await;
+        }
+        let restored = GoogleProvider::from_configuration(
+            endpoint,
+            "gemini-test".into(),
+            "fixture-key".into(),
+            &timing(),
+        )
+        .unwrap();
+        assert!(
+            restored
+                .stream(session.messages(), &[], &StreamOptions::default())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn real_session_never_executes_google_tool_from_dirty_terminal() {
+        use codescribe_core::agent::{AgentSession, ToolResultContent};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("POST", "/v1beta/models/gemini-test:streamGenerateContent?alt=sse")
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"fixture_mutation","args":{}}}]},"finishReason":"MAX_TOKENS"}]})))
+            .create_async().await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let called = count.clone();
+        let mut tools = ToolRegistry::new();
+        tools
+            .register_with_policy(
+                ToolDefinition {
+                    name: "fixture_mutation".into(),
+                    description: "fixture".into(),
+                    input_schema: json!({"type":"object"}),
+                },
+                Box::new(move |_| {
+                    let called = called.clone();
+                    Box::pin(async move {
+                        called.fetch_add(1, Ordering::SeqCst);
+                        Vec::<ToolResultContent>::new()
+                    })
+                }),
+                ToolExecutionPolicy::native(ToolRisk::ReadOnly),
+                None,
+            )
+            .unwrap();
+        let provider = GoogleProvider::from_configuration(
+            format!("{}/v1beta", server.url()),
+            "gemini-test".into(),
+            "fixture-key".into(),
+            &timing(),
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel(32);
+        let mut session = AgentSession::new(Box::new(provider), Arc::new(tools), tx);
+        assert!(
+            session
+                .send("run".into(), Vec::new(), &StreamOptions::default())
+                .await
+                .is_err()
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        mock.assert_async().await;
     }
     fn sse(body: Value) -> String {
         format!("data: {body}\n\n")
@@ -979,7 +1159,11 @@ mod tests {
                     "/v1beta/models/gemini-test:streamGenerateContent?alt=sse",
                 )
                 .with_status(status)
-                .with_body("AIzaDoNotLeak ya29.NeverReveal arbitrary-fixture-secret")
+                .with_body(concat!(
+                    "AI",
+                    "zaDoNotLeak ya",
+                    "29.NeverReveal arbitrary-fixture-secret"
+                ))
                 .create_async()
                 .await;
             let provider = GoogleProvider::from_configuration(

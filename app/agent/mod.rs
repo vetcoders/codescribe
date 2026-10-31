@@ -88,7 +88,9 @@ pub fn create_agent_provider<'a>(
             lane,
             request_timing,
         )?)),
-        WireFamily::GoogleGenerateContent => Ok(Box::new(GoogleProvider::from_lane(lane, request_timing)?)),
+        WireFamily::GoogleGenerateContent => {
+            Ok(Box::new(GoogleProvider::from_lane(lane, request_timing)?))
+        }
     }
 }
 

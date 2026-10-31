@@ -58,8 +58,7 @@ pub fn google_api_key() -> Option<String> {
 /// Availability hint captured only when a Google lane is selected. ADC file
 /// contents and tokens are acquired later on the blocking pool, at secret use.
 pub fn google_credentials_available() -> bool {
-    google_api_key().is_some()
-        || google_credential_status().is_ok_and(|status| status.available)
+    google_api_key().is_some() || google_credential_status().is_ok_and(|status| status.available)
 }
 
 /// Secret-free account projection for snapshot capture and the existing
@@ -92,7 +91,9 @@ pub fn google_credential_status() -> Result<GoogleCredentialStatus, AccountAuthE
         });
     }
     if std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some_and(|path| !path.is_empty()) {
-        return Err(AccountAuthError::Storage("The configured Google ADC file is unavailable".into()));
+        return Err(AccountAuthError::Storage(
+            "The configured Google ADC file is unavailable".into(),
+        ));
     }
     Ok(GoogleCredentialStatus {
         available: false,
@@ -106,7 +107,9 @@ pub fn google_credential_status() -> Result<GoogleCredentialStatus, AccountAuthE
 /// storage refuses deletion; an old response must never recreate this record.
 pub fn clear_google_account_tokens() -> Result<(), AccountAuthError> {
     provider_auth_state(ProviderKind::GoogleGemini).replace_with(|| {
-        *refreshed_cache().lock().unwrap_or_else(|error| error.into_inner()) = None;
+        *refreshed_cache()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
         keychain::delete_key(GOOGLE_ACCOUNT_TOKENS_ACCOUNT)
             .map_err(|_| AccountAuthError::Storage("Google account could not be removed".into()))?;
         // SAFETY: same account mutation boundary as the other provider owners.
@@ -154,7 +157,9 @@ fn refreshed_cache() -> &'static Mutex<Option<CachedToken>> {
 
 fn parse_record(raw: &str) -> Result<Value, AccountAuthError> {
     if raw.len() as u64 > MAX_CREDENTIAL_BYTES {
-        return Err(AccountAuthError::Storage("Google credential record exceeds the size limit".into()));
+        return Err(AccountAuthError::Storage(
+            "Google credential record exceeds the size limit".into(),
+        ));
     }
     let record: Value = serde_json::from_str(raw).map_err(|_| {
         AccountAuthError::Storage("Google credential record is not valid JSON".into())
@@ -317,15 +322,19 @@ pub async fn resolve_google_credential(
 /// CCA accepts the account rail, not a public Gemini API key. Keep account
 /// selection and refresh in this credential owner rather than in providers.
 pub async fn resolve_google_account_credential() -> Result<GoogleCredential, AccountAuthError> {
-    let keychain_present = credential_io(|| {
-        Ok(keychain::runtime_key(GOOGLE_ACCOUNT_TOKENS_ACCOUNT).is_some())
-    }).await?;
+    let keychain_present =
+        credential_io(|| Ok(keychain::runtime_key(GOOGLE_ACCOUNT_TOKENS_ACCOUNT).is_some()))
+            .await?;
     let source = if keychain_present {
         TokenSource::Keychain
     } else {
-        TokenSource::Adc(adc_path().ok_or_else(|| AccountAuthError::NotSignedIn("google-gemini".into()))?)
+        TokenSource::Adc(
+            adc_path().ok_or_else(|| AccountAuthError::NotSignedIn("google-gemini".into()))?,
+        )
     };
-    resolve_token_source(source).await.map(GoogleCredential::Bearer)
+    resolve_token_source(source)
+        .await
+        .map(GoogleCredential::Bearer)
 }
 
 async fn resolve_token_source(source: TokenSource) -> Result<String, AccountAuthError> {
@@ -347,12 +356,15 @@ async fn resolve_token_source(source: TokenSource) -> Result<String, AccountAuth
             let cache = refreshed_cache()
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            cache.as_ref().filter(|cached| {
-                cached.source == snapshot.source
-                    && cached.raw == snapshot.raw
-                    && cached.expires_at_unix
-                        > now_unix().saturating_add(REFRESH_SKEW.as_secs() as i64)
-            }).map(|cached| cached.access_token.clone())
+            cache
+                .as_ref()
+                .filter(|cached| {
+                    cached.source == snapshot.source
+                        && cached.raw == snapshot.raw
+                        && cached.expires_at_unix
+                            > now_unix().saturating_add(REFRESH_SKEW.as_secs() as i64)
+                })
+                .map(|cached| cached.access_token.clone())
         });
         if let Some(token) = ready_token {
             let check_state = state.clone();
@@ -361,7 +373,8 @@ async fn resolve_token_source(source: TokenSource) -> Result<String, AccountAuth
                     ensure_snapshot_current(&snapshot)?;
                     Ok(token)
                 })
-            }).await;
+            })
+            .await;
         }
         let refreshed = refresh_record(&snapshot.record).await?;
         snapshot.record["access_token"] = Value::String(refreshed.access_token.clone());
@@ -497,4 +510,107 @@ pub fn redact_google_secrets(message: &str) -> String {
         })
         .replace_all(message, "[REDACTED]")
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn google_credential_shapes_and_diagnostics_fail_closed() {
+        assert!(parse_record(r#"{"type":"service_account","private_key":"fixture"}"#).is_err());
+        assert!(parse_record(r#"{"type":"external_account"}"#).is_err());
+        assert!(validate_token_endpoint("https://example.invalid/token").is_err());
+        // Build public fixture markers without embedding a scanner-shaped token.
+        assert!(
+            !redact_google_secrets(concat!("AI", "zaFixtureKey ya", "29.FixtureToken"))
+                .contains("Fixture")
+        );
+        assert!(
+            !format!("{:?}", GoogleCredential::ApiKey("private-fixture".into()))
+                .contains("private-fixture")
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn adc_refresh_cannot_overwrite_replacement_or_survive_account_removal() {
+        for replace_source in [false, true] {
+            let _tokens = crate::test_isolation::EnvGuard::remove(GOOGLE_ACCOUNT_TOKENS_ACCOUNT);
+            let root = tempfile::tempdir().unwrap();
+            let adc = root.path().join("adc.json");
+            let _bundle = keychain::test_support::install_bundle(&[]);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}/token", listener.local_addr().unwrap());
+            let record = json!({"type":"authorized_user","access_token":"expired-fixture", "expires_at_unix":1,"refresh_token":"fixture-refresh", "client_id":"fixture-id","client_secret":"fixture-client","token_uri":endpoint});
+            std::fs::write(&adc, record.to_string()).unwrap();
+            let seen = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let observed = seen.clone();
+            let released = release.clone();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buf = [0u8; 4096];
+                    let read = socket.read(&mut buf).await.unwrap();
+                    assert_ne!(read, 0);
+                    request.extend_from_slice(&buf[..read]);
+                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let headers = std::str::from_utf8(&request[..end]).unwrap();
+                        let size: usize = headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+                            .unwrap()
+                            .1
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        if request.len() >= end + 4 + size {
+                            break;
+                        }
+                    }
+                }
+                observed.notify_one();
+                released.notified().await;
+                let body =
+                    json!({"access_token":"old-refresh-result","expires_in":3600}).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            });
+            let path = adc.clone();
+            let acquisition =
+                tokio::spawn(async move { resolve_token_source(TokenSource::Adc(path)).await });
+            tokio::time::timeout(std::time::Duration::from_secs(3), seen.notified())
+                .await
+                .unwrap();
+            let expected = if replace_source {
+                let mut changed = record.clone();
+                changed["refresh_token"] = json!("replacement-fixture");
+                let raw = changed.to_string();
+                std::fs::write(&adc, &raw).unwrap();
+                raw
+            } else {
+                clear_google_account_tokens().unwrap();
+                record.to_string()
+            };
+            release.notify_one();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(3), acquisition)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err()
+            );
+            server.await.unwrap();
+            assert_eq!(std::fs::read_to_string(&adc).unwrap(), expected);
+        }
+    }
 }

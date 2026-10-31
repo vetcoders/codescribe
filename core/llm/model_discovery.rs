@@ -499,7 +499,11 @@ async fn fetch_google_models(
         if !response.status().is_success() {
             // A custom endpoint may echo an arbitrary API key or bearer token;
             // never put its rejection body into Settings or the model cache.
-            return Err(http_status_error(reference, response.status(), "Google model discovery rejected the credentialed request"));
+            return Err(http_status_error(
+                reference,
+                response.status(),
+                "Google model discovery rejected the credentialed request",
+            ));
         }
         let body = response_body_or_error(reference, response).await?;
         let parsed: serde_json::Value =

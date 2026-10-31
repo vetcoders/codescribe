@@ -1185,6 +1185,7 @@ verify:
 	bash scripts/tests/download-model-test.sh; \
 	echo "=== Verify (optional build model discovery) ==="; \
 	python3 scripts/tests/test_build_optional_model_discovery.py; \
+	python3 -m unittest scripts/tests/test_verify_zero_target.py; \
 	python3 scripts/tests/test_appcast_version.py; \
 	echo "=== Verify (bus demux: routing, lease, coalesce, attach) ==="; \
 	bash scripts/tests/bus-demux-test.sh; \

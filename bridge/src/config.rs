@@ -1233,7 +1233,8 @@ impl CodescribeConfig {
             let account_unavailable = if provider.wire == WireFamily::GoogleGenerateContent {
                 account_auth::google_credential_status().is_err()
             } else {
-                provider.oauth_vendor
+                provider
+                    .oauth_vendor
                     .is_some_and(|vendor| account_auth::account_status_snapshot(vendor).is_err())
             };
             let option = provider_option(provider);
@@ -2800,7 +2801,8 @@ fn resolve_catalog_provider(
 fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
     let google = provider.wire == WireFamily::GoogleGenerateContent;
     let google_status = google.then(account_auth::google_credential_status);
-    let google_account_available = google_status.as_ref()
+    let google_account_available = google_status
+        .as_ref()
         .is_some_and(|status| status.as_ref().is_ok_and(|status| status.available));
     let google_message = google_status.as_ref().map(|status| match status {
         Ok(status) => status.message.clone(),
@@ -2833,9 +2835,13 @@ fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
         account_signed_in: if google {
             // Saved storage is not a token-acceptance receipt. ADC remains
             // externally managed and is not shown as a removable account.
-            google_status.as_ref().and_then(|status| status.as_ref().ok())
-                .map_or_else(|| keychain::key_present(account_auth::GOOGLE_ACCOUNT_TOKENS_ACCOUNT),
-                    |status| status.stored_account)
+            google_status
+                .as_ref()
+                .and_then(|status| status.as_ref().ok())
+                .map_or_else(
+                    || keychain::key_present(account_auth::GOOGLE_ACCOUNT_TOKENS_ACCOUNT),
+                    |status| status.stored_account,
+                )
         } else {
             status.as_ref().is_some_and(|status| status.signed_in)
         },

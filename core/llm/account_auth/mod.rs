@@ -25,8 +25,8 @@ pub mod pkce;
 pub mod server;
 
 pub use google::{
-    GOOGLE_ACCOUNT_TOKENS_ACCOUNT, GOOGLE_API_KEY_ACCOUNT, GoogleCredential,
-    google_api_key, google_credential_status, google_credentials_available, redact_google_secrets,
+    GOOGLE_ACCOUNT_TOKENS_ACCOUNT, GOOGLE_API_KEY_ACCOUNT, GoogleCredential, google_api_key,
+    google_credential_status, google_credentials_available, redact_google_secrets,
     resolve_google_account_credential, resolve_google_credential,
 };
 

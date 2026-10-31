@@ -867,10 +867,17 @@ impl RuntimeLlmLane {
     /// Whether a request can be sent under the credential truth that exists
     /// now, rather than only under the truth observed when this lane was sealed.
     pub fn request_available(&self) -> bool {
+        if self.acp.is_none()
+            && self.provider.wire == WireFamily::GoogleGenerateContent
+            && crate::llm::vendors::google::is_cloud_code_assist(&self.provider.endpoint)
+        {
+            return self.credential.account_auth();
+        }
         self.acp.is_some()
             || self.credential.account_auth()
             || self.credential.request_api_key().is_some()
-            || !self.provider.key_required
+            || (!self.provider.key_required
+                && self.provider.wire != WireFamily::GoogleGenerateContent)
     }
 
     pub fn unavailable_reason(&self) -> Option<&str> {

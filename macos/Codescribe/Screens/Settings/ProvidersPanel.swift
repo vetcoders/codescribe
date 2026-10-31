@@ -37,11 +37,15 @@ struct ProvidersPanel: View {
       }
 
       if let error = model.providerAccessError {
-        Text(model.providerAccessResolved
-          ? String(localized: "Provider access is unavailable. The last checked values are shown below.")
-          : String(localized: "Provider access is unavailable. No credential status has been confirmed."))
-          .font(SettingsScale.helper)
-          .padding(.top, SettingsScale.sectionGap)
+        Text(
+          model.providerAccessResolved
+            ? String(
+              localized: "Provider access is unavailable. The last checked values are shown below.")
+            : String(
+              localized: "Provider access is unavailable. No credential status has been confirmed.")
+        )
+        .font(SettingsScale.helper)
+        .padding(.top, SettingsScale.sectionGap)
         Text(error).font(CSFont.mono(11)).textSelection(.enabled)
       }
       HStack(spacing: CSSpace.md) {
@@ -119,11 +123,13 @@ struct ProviderAccessStatusSlot: View {
       HStack(spacing: CSSpace.sm) {
         ProgressView()
           .controlSize(.small)
-        Text(mutationPending
-          ? String(localized: "Updating provider access…")
-          : String(localized: "Checking provider access…"))
-          .font(SettingsScale.helper)
-          .lineLimit(1)
+        Text(
+          mutationPending
+            ? String(localized: "Updating provider access…")
+            : String(localized: "Checking provider access…")
+        )
+        .font(SettingsScale.helper)
+        .lineLimit(1)
       }
       .opacity(busy ? 1 : 0)
       .accessibilityHidden(!busy)
@@ -220,7 +226,10 @@ struct ProviderCard: View {
   }
   /// "Responses" / "Messages" — the one thing every provider declares.
   private var wireLabel: String {
-    ["responses": "Responses", "messages": "Messages", "google-generate-content": "GenerateContent"][provider.wire] ?? provider.wire
+    [
+      "responses": "Responses", "messages": "Messages",
+      "google-generate-content": "GenerateContent",
+    ][provider.wire] ?? provider.wire
   }
   /// The badge is where the wire is named, so the card title must not name it
   /// twice. Core ships `OpenAI (Responses)` and `Anthropic (Messages)`
@@ -580,7 +589,8 @@ struct CustomProviderForm: View {
         }
         dismiss()
       } catch {
-        Self.log.error("Custom provider save failed: \(String(reflecting: error), privacy: .private)")
+        Self.log.error(
+          "Custom provider save failed: \(String(reflecting: error), privacy: .private)")
         // The bridge currently carries ProviderError's Display sentence in Config.
         // Match its endpoint reason, never revalidate the URL with a second parser.
         if let bridgeError = error as? CsError,
@@ -617,11 +627,13 @@ struct SpeechToTextSection: View {
       // recording egresses are the live Cloud mode session and an explicit
       // cloud re-transcription (`cloud:` pass in `bridge/src/recording.rs`),
       // the same truth as Dictation › Cloud & privacy.
-      Text("Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription.")
-        .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.secondaryInk)
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(.top, SettingsScale.headerGap)
+      Text(
+        "Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription."
+      )
+      .font(SettingsScale.helper)
+      .foregroundStyle(CSColor.secondaryInk)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.top, SettingsScale.headerGap)
       VStack(spacing: CSSpace.sm) {
         ForEach(model.sttLanes, id: \.id) { lane in
           SttLaneCard(model: model, lane: lane)
@@ -646,9 +658,11 @@ struct SttLaneCard: View {
   static func title(for lane: CsSttLane) -> String {
     switch lane.id {
     case "file":
-      return String(localized: "File transcription", comment: "Cloud transcription lane: recorded files")
+      return String(
+        localized: "File transcription", comment: "Cloud transcription lane: recorded files")
     case "live":
-      return String(localized: "Live transcription", comment: "Cloud transcription lane: live socket")
+      return String(
+        localized: "Live transcription", comment: "Cloud transcription lane: live socket")
     default:
       return lane.title
     }

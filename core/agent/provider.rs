@@ -11,7 +11,8 @@ use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 
 use super::{
-    AgentEvent, AgentUiEvent, ContentBlock, Message, ToolApprovalHandler, ToolDefinition, ToolRegistry,
+    AgentEvent, AgentUiEvent, ContentBlock, Message, ToolApprovalHandler, ToolDefinition,
+    ToolRegistry,
 };
 
 /// Borrowed runtime owners of the calling AgentSession, cloned only as handles

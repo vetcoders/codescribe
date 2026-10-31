@@ -4903,6 +4903,7 @@
         }
       }
     },
+
     "Checking provider access…" : {
       "comment" : "Setup Agent readiness while the provider snapshot is loading\nSetup provider row status while credentials are loading",
       "localizations" : {
@@ -9072,6 +9073,10 @@
           }
         }
       }
+    },
+    "Gemini (GenerateContent)" : {
+      "comment" : "Provider and wire protocol names.",
+      "shouldTranslate" : false
     },
     "Get license key" : {
       "localizations" : {
@@ -15629,6 +15634,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Usuń serwer"
+          }
+        }
+      }
+    },
+    "Remove stored account" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń zapisane konto"
           }
         }
       }

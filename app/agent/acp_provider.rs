@@ -78,7 +78,11 @@ impl AcpProvider {
             .iter()
             .map(|root| root.canonicalize())
             .collect::<std::io::Result<Vec<_>>>()?;
-        if !cwd.is_dir() || !roots.iter().any(|root| root.is_dir() && cwd.starts_with(root)) {
+        if !cwd.is_dir()
+            || !roots
+                .iter()
+                .any(|root| root.is_dir() && cwd.starts_with(root))
+        {
             anyhow::bail!("ACP working directory is outside workspace roots");
         }
         command.cwd = cwd;
@@ -110,7 +114,10 @@ impl Drop for AcpProvider {
 #[async_trait]
 impl AgentProvider for AcpProvider {
     fn bind_host(&self, host: AgentProviderHost) {
-        *self.host.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(host);
+        *self
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(host);
     }
 
     fn supports_context_preparation(&self) -> bool {
@@ -123,7 +130,9 @@ impl AgentProvider for AcpProvider {
         _tools: &[ToolDefinition],
         options: &StreamOptions,
     ) -> Result<mpsc::Receiver<AgentEvent>> {
-        let host = self.host.lock()
+        let host = self
+            .host
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let bridge_config = if let Some(host) = &host {
@@ -136,8 +145,11 @@ impl AgentProvider for AcpProvider {
                 thread_id: host.thread_id.clone(),
             }
         } else {
-            self.explicit_bridge.clone().ok_or_else(|| anyhow::anyhow!(
-                "ACP host services must be bound by the owning AgentSession before a turn"))?
+            self.explicit_bridge.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ACP host services must be bound by the owning AgentSession before a turn"
+                )
+            })?
         };
         let mut bridge = AcpClientBridge::new(bridge_config)?;
         if let Some(host) = host {
@@ -162,14 +174,15 @@ impl AgentProvider for AcpProvider {
                 *chain.lock().await = None;
             }
             let previous = chain.lock().await.clone();
-            let mut transport = match AcpTransport::spawn_in_directory(&command, launch_directory).await {
-                Ok(transport) => transport,
-                Err(error) => {
-                    *chain.lock().await = None;
-                    send_failure(&tx, error).await;
-                    return;
-                }
-            };
+            let mut transport =
+                match AcpTransport::spawn_in_directory(&command, launch_directory).await {
+                    Ok(transport) => transport,
+                    Err(error) => {
+                        *chain.lock().await = None;
+                        send_failure(&tx, error).await;
+                        return;
+                    }
+                };
             let mut session_id = None;
             let mut active_bridge = None;
             let input = TurnInput {
@@ -194,7 +207,9 @@ impl AgentProvider for AcpProvider {
                     // Publish a clean terminal only after all resources have
                     // settled and the resumable chain is already authoritative.
                     if cancelled.has_changed().unwrap_or(true) || tx.is_closed() {
-                        invalidated_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        invalidated_sessions
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .extend(previous.iter().chain(session_id.iter()).cloned());
                         *chain.lock().await = None;
                         send_failure(&tx, AcpError::Cancelled).await;
@@ -203,7 +218,9 @@ impl AgentProvider for AcpProvider {
                     *chain.lock().await = session_id.clone();
                     for event in events {
                         if tx.send(event).await.is_err() {
-                            invalidated_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                            invalidated_sessions
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .extend(previous.iter().chain(session_id.iter()).cloned());
                             *chain.lock().await = None;
                             break;
@@ -214,7 +231,9 @@ impl AgentProvider for AcpProvider {
                     // A cancelled/failed turn must never advance the resume id.
                     // ACP session/load is not a snapshot rollback: an aborted
                     // prompt may already have changed the remote conversation.
-                    invalidated_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                    invalidated_sessions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .extend(previous.iter().chain(session_id.iter()).cloned());
                     *chain.lock().await = None;
                     send_failure(&tx, error).await;
@@ -253,11 +272,19 @@ impl AgentProvider for AcpProvider {
         // The native Stop API passes the pre-turn chain id. An ACP id names
         // a mutable whole conversation, not a point-in-time response. Even if
         // a clean terminal raced Stop, it cannot rewind the remote history.
-        let native = self.host.lock()
+        let native = self
+            .host
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_some();
-        let id = id.filter(|id| !native && !self.invalidated_sessions.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner).contains(id));
+        let id = id.filter(|id| {
+            !native
+                && !self
+                    .invalidated_sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(id)
+        });
         *self.chain.lock().await = id;
     }
 }
@@ -346,7 +373,9 @@ async fn run_turn(
     if let (Some(expected), Some(actual)) = (previous, session["sessionId"].as_str())
         && expected != actual
     {
-        return Err(AcpError::Protocol("session/load returned a different identity".into()));
+        return Err(AcpError::Protocol(
+            "session/load returned a different identity".into(),
+        ));
     }
     let id = previous
         .map(str::to_string)
@@ -363,10 +392,14 @@ async fn run_turn(
     let bridge = Arc::new(bridge);
     *active_bridge = Some(bridge.clone());
     let prompt = prompt_content(messages, options, previous.is_some())?;
-    if prompt.iter().any(|part| part["type"].as_str() == Some("image"))
+    if prompt
+        .iter()
+        .any(|part| part["type"].as_str() == Some("image"))
         && initialized["agentCapabilities"]["promptCapabilities"]["image"].as_bool() != Some(true)
     {
-        return Err(AcpError::Protocol("selected ACP agent does not support image prompts".into()));
+        return Err(AcpError::Protocol(
+            "selected ACP agent does not support image prompts".into(),
+        ));
     }
     let result = call(
         transport,
@@ -384,7 +417,9 @@ async fn run_turn(
         Some("cancelled") => return Err(AcpError::Cancelled),
         Some("end_turn") => {}
         Some("max_tokens" | "max_turn_requests" | "refusal") => {
-            return Err(AcpError::Protocol("agent ended without completing the requested turn".into()));
+            return Err(AcpError::Protocol(
+                "agent ended without completing the requested turn".into(),
+            ));
         }
         _ => {
             return Err(AcpError::Protocol(
@@ -409,7 +444,7 @@ async fn call(
     transport
         .send(protocol::request(id, method, params))
         .await?;
-    let mut incoming = JoinSet::new();
+    let mut incoming: JoinSet<(Value, std::result::Result<Value, AcpError>)> = JoinSet::new();
     loop {
         tokio::select! {
             completed = incoming.join_next(), if !incoming.is_empty() => {
@@ -544,9 +579,11 @@ for line in sys.stdin:
         assert params['clientCapabilities']['fs']['readTextFile']
         assert params['clientCapabilities']['fs']['writeTextFile']
         assert params['clientCapabilities']['terminal']
-        send(dict(id=frame['id'], result=dict(protocolVersion=1, agentCapabilities=dict(loadSession=True))))
+        send(dict(id=frame['id'], result=dict(protocolVersion=1, agentCapabilities=dict(loadSession=True, promptCapabilities=dict(image=mode != 'no-images')))))
     elif method in ('session/new', 'session/load'):
         assert os.path.isabs(params['cwd'])
+        if method == 'session/load' and mode == 'replay':
+            send(dict(method='session/update', params=dict(sessionId='session-fixture', update=dict(sessionUpdate='agent_message_chunk', content=dict(type='text', text='old history')))))
         send(dict(id=frame['id'], result=dict(sessionId='session-fixture')))
     elif method == 'session/prompt':
         assert params['sessionId'] == 'session-fixture'
@@ -563,7 +600,7 @@ for line in sys.stdin:
             send(dict(method='session/update', params=dict(sessionId='session-fixture', update=dict(sessionUpdate=kind, content=dict(type='text', text=text)))))
         if mode == 'eof': sys.exit(7)
         if mode == 'error': send(dict(id=frame['id'], error=dict(code=-32000,message='TOKEN=do-not-leak failed')))
-        else: send(dict(id=frame['id'], result=dict(stopReason='cancelled' if mode == 'cancelled' else 'end_turn')))
+        else: send(dict(id=frame['id'], result=dict(stopReason=mode if mode in ('cancelled', 'max_tokens', 'max_turn_requests', 'refusal') else 'end_turn')))
     elif method == 'session/cancel':
         record('cancel-seen')
         break
@@ -705,7 +742,15 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn acp_malformed_eof_error_and_cancelled_response_are_dirty() {
-        for mode in ["malformed", "eof", "error", "cancelled"] {
+        for mode in [
+            "malformed",
+            "eof",
+            "error",
+            "cancelled",
+            "max_tokens",
+            "max_turn_requests",
+            "refusal",
+        ] {
             let root = tempfile::tempdir().unwrap();
             let provider = AcpProvider::new(fixture(root.path(), mode)).unwrap();
             let events = collect(
@@ -739,6 +784,104 @@ for line in sys.stdin:
             assert!(!format!("{events:?}").contains("do-not-leak"));
             assert_eq!(provider.response_chain_id().await, None);
         }
+    }
+
+    #[tokio::test]
+    async fn acp_load_replay_is_not_new_output() {
+        let root = tempfile::tempdir().unwrap();
+        let provider = AcpProvider::new(fixture(root.path(), "replay")).unwrap();
+        for _ in 0..2 {
+            let events = collect(
+                provider
+                    .stream(&messages(), &[], &StreamOptions::default())
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert!(
+                events.contains(&AgentEvent::TextDone("answer".into())),
+                "{events:?}"
+            );
+            assert!(!format!("{events:?}").contains("old history"), "{events:?}");
+        }
+        assert!(
+            std::fs::read_to_string(root.path().join("receipt"))
+                .unwrap()
+                .contains("session/load")
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn native_settings_factory_uses_calling_session_registry_and_approval() {
+        use codescribe_core::agent::{
+            AgentSession, AgentUiEvent, ToolApprovalFuture, ToolApprovalRequest,
+        };
+        use codescribe_core::config::{AcpLaunchSettings, Config, UserSettings};
+        use codescribe_core::test_isolation::EnvGuard;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root_path.to_str().unwrap());
+        let launch = fixture(&root_path, "denied-read").command;
+        std::fs::write(root_path.join(".env"), "FIXTURE_SECRET=keep-private").unwrap();
+        let mut settings = UserSettings::default();
+        settings.agent_acp = Some(AcpLaunchSettings {
+            program: launch.program,
+            args: launch.args,
+            cwd: root_path.display().to_string(),
+        });
+        settings.agent_workspace_roots = Some(vec![root_path.display().to_string()]);
+        settings.save().unwrap();
+        let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(
+            snapshot
+                .llm_lanes()
+                .assistive()
+                .acp_configuration()
+                .is_some()
+        );
+        let provider = super::super::create_agent_provider(&snapshot).unwrap();
+        assert_eq!(provider.name(), "acp");
+        assert!(
+            provider
+                .stream(&messages(), &[], &StreamOptions::default())
+                .await
+                .is_err(),
+            "unbound native provider must not launch"
+        );
+        assert!(!root_path.join("receipt").exists());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let approvals = calls.clone();
+        let handler = Arc::new(move |request: ToolApprovalRequest| {
+            assert_eq!(request.tool, "read_file");
+            assert_eq!(request.thread_id, "native-thread");
+            approvals.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { false }) as ToolApprovalFuture
+        });
+        let (tx, mut rx) = mpsc::channel(32);
+        let tools = Arc::new(super::super::tools::configured_registry());
+        let mut session =
+            AgentSession::new(provider, tools, tx).with_tool_approval("native-thread", handler);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            session.send("hello".into(), Vec::new(), &StreamOptions::default()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let mut approval_seen = false;
+        while let Ok(event) = rx.try_recv() {
+            approval_seen |= matches!(event, AgentUiEvent::ToolApprovalRequested(_));
+            assert!(!format!("{event:?}").contains("keep-private"));
+        }
+        assert!(approval_seen);
+        assert!(
+            std::fs::read_to_string(root_path.join("receipt"))
+                .unwrap()
+                .contains("secret-refused")
+        );
     }
 
     #[tokio::test]

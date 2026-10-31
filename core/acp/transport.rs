@@ -64,10 +64,13 @@ impl AcpTransport {
         cwd: std::fs::File,
     ) -> Result<Self, AcpError> {
         if !cwd.metadata()?.is_dir() {
-            return Err(AcpError::PermissionDenied("ACP cwd is not a directory".into()));
+            return Err(AcpError::PermissionDenied(
+                "ACP cwd is not a directory".into(),
+            ));
         }
         let mut launch = Command::new(&command.program);
-        launch.args(&command.args)
+        launch
+            .args(&command.args)
             .current_dir(&command.cwd)
             .envs(&command.env)
             .stdin(Stdio::piped())
@@ -85,7 +88,9 @@ impl AcpTransport {
                 launch.pre_exec(move || {
                     if libc::fchdir(cwd.as_raw_fd()) == -1 {
                         Err(std::io::Error::last_os_error())
-                    } else { Ok(()) }
+                    } else {
+                        Ok(())
+                    }
                 });
             }
         }
@@ -268,7 +273,8 @@ async fn run_process(
     // Send one bounded batch so a silent peer cannot extend teardown per card.
     let mut cancelled_permissions = Vec::new();
     for id in pending_permissions {
-        let frame = super::protocol::success(id, serde_json::json!({"outcome":{"outcome":"cancelled"}}));
+        let frame =
+            super::protocol::success(id, serde_json::json!({"outcome":{"outcome":"cancelled"}}));
         if serde_json::to_writer(&mut cancelled_permissions, &frame).is_ok() {
             cancelled_permissions.push(b'\n');
         }
