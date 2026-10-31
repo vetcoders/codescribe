@@ -146,6 +146,16 @@ class EnvRegistryTests(unittest.TestCase):
         for name in ("LLM_XAI_API_KEY", "LLM_ANTHROPIC_API_KEY", "CODESCRIBE_EMBED_MODEL"):
             self.assertEqual(names.count(name), 1)
 
+    def test_feature_flag_metadata_requires_owner_metric_and_removal_condition(self):
+        self.assert_invalid(VALID + '\n[vars.FLAG_A]\ndefault = "0"\nowner = "stt"\n')
+        self.registry.write_text(
+            VALID
+            + '\n[vars.FLAG_A]\ndefault = "0"\nowner = "stt"\nmetric = "WER"\nremoval_condition = "after rollout"\n'
+        )
+        result = self.parser()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("FLAG_A", result.stdout.splitlines())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,167 @@
+name: PR Risk & Self-Verification Gate
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  risk-and-control-gate:
+    name: PR Risk & Control Map
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify control-codescribe surface map, env registry, and gate ledger
+        run: |
+          python3 bin/control-codescribe map --check --json
+          bash scripts/validate-envs.sh
+          bash scripts/validate-gates.sh
+          python3 -m unittest scripts/tests/test_env_registry.py
+
+      - name: Classify risk tier and check test-expectation changes on PRs
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+
+          base = os.environ["BASE_SHA"]
+          head = os.environ["HEAD_SHA"]
+          body = os.environ.get("PR_BODY") or ""
+
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only", f"{base}...{head}"],
+              text=True,
+          ).splitlines()
+
+          high_patterns = (
+              r"^\.github/workflows/release\.yml$",
+              r"^scripts/release",
+              r"^scripts/build-app\.sh$",
+              r"^scripts/build-dmg\.sh$",
+              r"^scripts/entitlements\.plist$",
+              r"^scripts/generate-appcast\.sh$",
+              r"^macos/project\.yml$",
+              r"^core/pipeline/acoustic_ledger\.rs$",
+              r"^app/presentation/emitter\.rs$",
+              r"^app/presentation/transcript_bus\.rs$",
+              r"^bridge/",
+          )
+          high_files = [
+              f for f in changed if any(re.search(p, f) for p in high_patterns)
+          ]
+          test_files = [
+              f for f in changed
+              if f.startswith(("tests/", "macos/CodescribeTests/", "scripts/tests/"))
+              or f.endswith(("_test.rs", "Tests.swift", ".test.ts", "-test.sh"))
+          ]
+          test_set = set(test_files)
+          prod_files = [
+              f for f in changed
+              if f not in test_set
+              and f.startswith(
+                  (
+                      "core/",
+                      "app/",
+                      "bridge/",
+                      "macos/Codescribe/",
+                      "scripts/",
+                      "bin/",
+                      "site/src/",
+                  )
+              )
+          ]
+
+          m = re.search(r"Risk:\s*(low|medium|high)", body, re.IGNORECASE)
+          if not m:
+              print(
+                  "ERROR: PR body must explicitly declare 'Risk: low | medium | high' under ## System recap.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          declared_risk = m.group(1).lower()
+
+          print(f"Changed files ({len(changed)}): {changed}")
+          print(f"Declared risk: {declared_risk}")
+          if high_files:
+              print(f"Always-Human high-risk surfaces touched: {high_files}")
+              if declared_risk != "high":
+                  print(
+                      "ERROR: PR touches Always-Human surfaces (Release/signing/appcast or Core ledger/bus/FFI) "
+                      "and must declare 'Risk: high' in ## System recap.",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+
+          if prod_files and test_files:
+              print(f"Both production ({len(prod_files)}) and test ({len(test_files)}) files changed.")
+              if "## Testing" not in body or "## Why" not in body:
+                  print(
+                      "ERROR: PR modifies both production code and tests; include ## Why and ## Testing in PR body.",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+
+          # Check only added lines (+, excluding +++ headers) in PR diff for banned vocabulary:
+          diff_out = subprocess.check_output(
+              [
+                  "git",
+                  "diff",
+                  "-U0",
+                  f"{base}...{head}",
+                  "--",
+                  ".",
+                  ":!.github/workflows/pr-risk-gate.yml",
+                  ":!AGENTS.md",
+                  ":!.github/copilot-instructions.md",
+                  ":!docs/ADR/README.md",
+                  ":!Cargo.lock",
+                  ":!**/package-lock.json",
+                  ":!**/*.xcstrings",
+                  ":!macos/Codescribe/Bridge/codescribe_ffi.swift",
+                  ":!macos/Codescribe/Bridge/codescribe_ffiFFI.h",
+              ],
+              text=True,
+          )
+          banned_words = [
+              "sh" + "im",
+              "com" + "pat",
+              "leg" + "acy",
+              "adapter-" + "for-old",
+              "fallback-" + "to-previous",
+              "bridge-" + "until",
+          ]
+          word_re = re.compile(
+              r"\b(" + "|".join(re.escape(w) for w in banned_words) + r")\b|" + re.escape("TODO " + "remove"),
+              re.IGNORECASE,
+          )
+          violations = []
+          cur_file = None
+          for line in diff_out.splitlines():
+              if line.startswith("+++ b/"):
+                  cur_file = line[6:]
+              elif line.startswith("+") and not line.startswith("+++"):
+                  hit = word_re.search(line[1:])
+                  if hit:
+                      violations.append(f"{cur_file}: {hit.group(0)!r} in added line: {line[1:].strip()[:120]}")
+          if violations:
+              print("ERROR: Banned vocabulary from AGENTS.md found in added PR lines:", file=sys.stderr)
+              for v in violations:
+                  print(f"  - {v}", file=sys.stderr)
+              sys.exit(1)
+          PY
