@@ -13,6 +13,7 @@ use reqwest::blocking::{Client, Response};
 use serde_json::json;
 
 use crate::config::{Config, keychain};
+use crate::llm::account_auth;
 use crate::llm::provider::{
     ALL_PROVIDERS, LlmMode, ProviderRef, ProviderRegistry, ResolvedProvider, WireFamily,
 };
@@ -91,6 +92,7 @@ pub fn probe_api_key_liveness(
         );
     }
     let client = match Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(PROBE_TIMEOUT)
         .connect_timeout(PROBE_TIMEOUT)
         .build()
@@ -113,7 +115,11 @@ pub fn probe_api_key_liveness(
             probe_stt_live_key(&config, account, api_key)
         };
     }
-    let api_key = keychain::runtime_key(account);
+    let api_key = keychain::runtime_key(account).or_else(|| {
+        (account == "LLM_GOOGLE_API_KEY")
+            .then(account_auth::google_api_key)
+            .flatten()
+    });
     let Some(api_key) = api_key else {
         return ApiKeyLivenessResult::new(
             account,
@@ -152,6 +158,9 @@ pub fn probe_api_key_liveness(
         }
         WireFamily::AnthropicMessages => {
             probe_anthropic_key(&client, &provider, model, account, &api_key)
+        }
+        WireFamily::GoogleGenerateContent => {
+            probe_google_key(&client, &provider, model, account, &api_key)
         }
     }
 }
@@ -429,6 +438,45 @@ fn probe_anthropic_key(
     response_result(account, endpoint, response)
 }
 
+/// One native GenerateContent ping. This button tests the API key itself;
+/// account-only ADC availability is not an API-key acceptance receipt.
+fn probe_google_key(
+    client: &Client,
+    provider: &ResolvedProvider,
+    model: &str,
+    account: &str,
+    api_key: &str,
+) -> ApiKeyLivenessResult {
+    if vendors::google::is_cloud_code_assist(&provider.endpoint) {
+        return ApiKeyLivenessResult::new(
+            account,
+            ApiKeyLivenessStatus::Unsupported,
+            "Cloud Code Assist requires an OAuth account rather than an API-key probe",
+        );
+    }
+    let (endpoint, body) = match vendors::google::prepare_request(
+        &provider.endpoint,
+        model,
+        vendors::google::liveness_probe_body(model),
+        false,
+    ) {
+        Ok(request) => request,
+        Err(message) => {
+            return ApiKeyLivenessResult::new(account, ApiKeyLivenessStatus::Rejected, message);
+        }
+    };
+    let response = client
+        .post(&endpoint)
+        .header("x-goog-api-key", api_key)
+        .json(&body)
+        .send();
+    let mut result = response_result(account, endpoint, response);
+    if !api_key.is_empty() {
+        result.message = result.message.replace(api_key, "[REDACTED]");
+    }
+    result
+}
+
 /// Probe a GitHub token with an authenticated `GET /user`.
 ///
 /// Not an LLM provider, so it bypasses the registry entirely. The endpoint is
@@ -470,9 +518,14 @@ fn response_result(
         Err(error) => ApiKeyLivenessResult::new(
             account,
             ApiKeyLivenessStatus::Network,
-            format!("network error: {error}"),
+            format!(
+                "network error: {}",
+                account_auth::redact_google_secrets(&error.without_url().to_string())
+            ),
         ),
     };
+    let mut result = result;
+    result.message = account_auth::redact_google_secrets(&result.message);
     result.with_probed_endpoint(probed_endpoint)
 }
 

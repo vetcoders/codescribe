@@ -244,6 +244,7 @@ fn get_client() -> &'static Client {
         );
 
         Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(timeout)
             .connect_timeout(connect_timeout)
             .pool_idle_timeout(pool_idle_timeout)
@@ -302,6 +303,8 @@ struct ThreadTitleProvider {
     endpoint: String,
     model: String,
     api_key: Option<String>,
+    /// Google resolves API-key/ADC credentials at the request boundary.
+    credential_account: Option<String>,
 }
 
 /// Generate one isolated title through the currently selected formatting lane.
@@ -334,7 +337,10 @@ fn resolve_thread_title_provider(lane: &RuntimeLlmLane) -> Result<ThreadTitlePro
     // Titles are a one-shot JSON call with key headers. A signed-in account
     // lane without a stored key is not wired for this call; say so instead
     // of sending an unauthenticated request.
-    if api_key.is_none() && lane.credential().account_auth() {
+    if api_key.is_none()
+        && lane.credential().account_auth()
+        && lane.wire_family() != WireFamily::GoogleGenerateContent
+    {
         anyhow::bail!(
             "Thread titles need a stored API key on the formatting lane; the signed-in {} account serves formatting only",
             lane.provider_display_name()
@@ -346,6 +352,7 @@ fn resolve_thread_title_provider(lane: &RuntimeLlmLane) -> Result<ThreadTitlePro
         endpoint: lane.endpoint().to_string(),
         model: lane.model().to_string(),
         api_key,
+        credential_account: Some(lane.credential().key_account().to_string()),
     })
 }
 
@@ -369,6 +376,7 @@ async fn request_thread_title(text: &str, provider: &ThreadTitleProvider) -> Res
     match provider.wire_family {
         WireFamily::OpenAiResponses => request_responses_thread_title(text, provider).await,
         WireFamily::AnthropicMessages => request_anthropic_thread_title(text, provider).await,
+        WireFamily::GoogleGenerateContent => request_google_thread_title(text, provider).await,
     }
 }
 
@@ -475,6 +483,38 @@ async fn request_anthropic_thread_title(
         );
     }
     Ok(extract_anthropic_text(&response))
+}
+
+/// Title requests use the native Google protocol without joining a tool or
+/// response chain. ADC is refreshed at send time rather than frozen in settings.
+async fn request_google_thread_title(text: &str, provider: &ThreadTitleProvider) -> Result<String> {
+    let credential = if super::vendors::google::is_cloud_code_assist(&provider.endpoint) {
+        account_auth::resolve_google_account_credential().await?
+    } else {
+        match provider.api_key.as_ref() {
+            Some(key) => account_auth::GoogleCredential::ApiKey(key.clone()),
+            None => {
+                account_auth::resolve_google_credential(
+                    provider
+                        .credential_account
+                        .as_deref()
+                        .unwrap_or("LLM_GOOGLE_API_KEY"),
+                )
+                .await?
+            }
+        }
+    };
+    let output = call_google_generate_content(
+        &provider.endpoint,
+        &provider.model,
+        text,
+        THREAD_TITLE_PROMPT,
+        credential,
+        Some(THREAD_TITLE_MAX_TOKENS),
+        None,
+    )
+    .await?;
+    Ok(output.assistant_text)
 }
 
 /// Turn a raw model reply into a usable one-line title, or `None` if nothing
@@ -1583,6 +1623,7 @@ async fn format_text_with_status_channels_for_policy(
         let should_stream = streaming_enabled && wire_family == WireFamily::OpenAiResponses;
         let route = match (wire_family, should_stream) {
             (WireFamily::AnthropicMessages, _) => "anthropic-messages-json",
+            (WireFamily::GoogleGenerateContent, _) => "google-generate-content-json",
             (WireFamily::OpenAiResponses, true) => "responses-sse",
             (WireFamily::OpenAiResponses, false) => "responses-json",
         };
@@ -1873,6 +1914,23 @@ async fn call_provider_once(
     stream_context: StreamRequestContext,
 ) -> Result<ProviderOutput> {
     match wire_family {
+        WireFamily::GoogleGenerateContent => {
+            let credential = if super::vendors::google::is_cloud_code_assist(lane.endpoint()) {
+                account_auth::resolve_google_account_credential().await?
+            } else {
+                account_auth::resolve_google_credential(lane.credential().key_account()).await?
+            };
+            call_google_generate_content(
+                lane.endpoint(),
+                lane.model(),
+                user_message,
+                system_prompt,
+                credential,
+                None,
+                get_temperature(assistive),
+            )
+            .await
+        }
         WireFamily::AnthropicMessages => {
             call_anthropic_messages(user_message, system_prompt, assistive, lane).await
         }
@@ -1913,6 +1971,113 @@ async fn call_provider_once(
             }
         }
     }
+}
+
+/// One native JSON GenerateContent request for a text-only lane. The caller
+/// owns attempt timeouts/retries; this transport never fabricates a response
+/// chain or borrows the Responses API's body shape.
+async fn call_google_generate_content(
+    configured_endpoint: &str,
+    model: &str,
+    user_message: &str,
+    system_prompt: &str,
+    credential: account_auth::GoogleCredential,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+) -> Result<ProviderOutput> {
+    let mut body = serde_json::json!({
+        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+    });
+    if !system_prompt.trim().is_empty() {
+        body["systemInstruction"] = serde_json::json!({"parts": [{"text": system_prompt}]});
+    }
+    let mut generation = serde_json::Map::new();
+    if let Some(tokens) = max_tokens.filter(|tokens| *tokens > 0) {
+        generation.insert("maxOutputTokens".to_string(), tokens.into());
+    }
+    if let Some(temperature) = temperature.filter(|temperature| temperature.is_finite()) {
+        generation.insert("temperature".to_string(), temperature.into());
+    }
+    if !generation.is_empty() {
+        body["generationConfig"] = Value::Object(generation);
+    }
+    let (endpoint, body) =
+        super::vendors::google::prepare_request(configured_endpoint, model, body, false)
+            .map_err(anyhow::Error::msg)?;
+    let mut request = get_client().post(endpoint).json(&body);
+    request = match &credential {
+        account_auth::GoogleCredential::ApiKey(key) => request.header("x-goog-api-key", key),
+        account_auth::GoogleCredential::Bearer(token) => request.bearer_auth(token),
+    };
+    let response = request.send().await.map_err(|error| {
+        anyhow::anyhow!(
+            "Google request failed: {}",
+            account_auth::redact_google_secrets(&error.without_url().to_string())
+        )
+    })?;
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|error| {
+        anyhow::anyhow!(
+            "Google response download failed: {}",
+            account_auth::redact_google_secrets(&error.without_url().to_string())
+        )
+    })?;
+    if !status.is_success() {
+        anyhow::bail!("Google HTTP {status}");
+    }
+    let body: Value = serde_json::from_slice(&bytes).context("Failed to parse Google response")?;
+    extract_google_output(body.get("response").unwrap_or(&body))
+}
+
+/// A successful HTTP status alone cannot turn a truncated or refused
+/// completion into a formatted transcript. Thoughts stay on their own channel.
+fn extract_google_output(body: &Value) -> Result<ProviderOutput> {
+    if body
+        .get("promptFeedback")
+        .and_then(|feedback| feedback.get("blockReason"))
+        .is_some()
+    {
+        anyhow::bail!("Google refused the prompt");
+    }
+    let candidate = body
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|candidates| candidates.first())
+        .ok_or_else(|| anyhow::anyhow!("No candidate in Google response"))?;
+    let finish = candidate
+        .get("finishReason")
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    anyhow::ensure!(
+        finish == "STOP",
+        "Google response did not finish cleanly ({})",
+        account_auth::redact_google_secrets(finish)
+    );
+    let mut assistant_text = String::new();
+    let mut reasoning_text = String::new();
+    for part in candidate
+        .get("content")
+        .and_then(|content| content.get("parts"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(text) = part.get("text").and_then(Value::as_str) {
+            if part.get("thought").and_then(Value::as_bool) == Some(true) {
+                reasoning_text.push_str(text);
+            } else {
+                assistant_text.push_str(text);
+            }
+        }
+    }
+    anyhow::ensure!(
+        !assistant_text.trim().is_empty(),
+        "No text content in Google response"
+    );
+    Ok(ProviderOutput {
+        assistant_text,
+        reasoning_text: (!reasoning_text.is_empty()).then_some(reasoning_text),
+    })
 }
 
 /// One Responses request, streamed or JSON, at one reasoning effort.
@@ -2622,6 +2787,7 @@ mod tests {
             endpoint,
             model: model.to_string(),
             api_key: api_key.map(ToOwned::to_owned),
+            credential_account: None,
         }
     }
 

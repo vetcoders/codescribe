@@ -19,6 +19,7 @@ use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::config::Config;
+use crate::llm::account_auth::{self, GoogleCredential};
 use crate::llm::provider::{ProviderRef, ResolvedProvider, WireFamily};
 use crate::llm::vendors;
 
@@ -303,7 +304,10 @@ pub fn discover_models(
 ) -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
     let reference = &provider.reference;
     let api_key = api_key.map(str::trim).filter(|key| !key.is_empty());
-    if api_key.is_none() && provider.key_required {
+    if api_key.is_none()
+        && provider.key_required
+        && provider.wire != WireFamily::GoogleGenerateContent
+    {
         return Err(ModelDiscoveryError::NoKey {
             provider: reference.clone(),
             env_key: provider.key_account.clone(),
@@ -315,6 +319,7 @@ pub fn discover_models(
     run_test_after_claim(reference);
 
     let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(DISCOVERY_TIMEOUT)
         .build()
         .map_err(|error| ModelDiscoveryError::Network {
@@ -339,6 +344,9 @@ pub fn discover_models(
                 }
                 WireFamily::AnthropicMessages => {
                     fetch_anthropic_models(&client, provider, api_key.unwrap_or_default()).await
+                }
+                WireFamily::GoogleGenerateContent => {
+                    fetch_google_models(&client, provider, api_key).await
                 }
             }
         };
@@ -436,6 +444,97 @@ async fn fetch_openai_models(
         .collect())
 }
 
+/// Native Gemini model discovery. Google paginates by `nextPageToken`, and
+/// model names on this wire carry a `models/` resource prefix.
+async fn fetch_google_models(
+    client: &Client,
+    provider: &ResolvedProvider,
+    api_key: Option<&str>,
+) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
+    let reference = &provider.reference;
+    if vendors::google::is_cloud_code_assist(&provider.endpoint) {
+        return Err(ModelDiscoveryError::Parse {
+            provider: reference.clone(),
+            message:
+                "Cloud Code Assist model discovery is not available through the Gemini models API"
+                    .to_string(),
+        });
+    }
+    let credential = match api_key {
+        Some(key) => GoogleCredential::ApiKey(key.to_string()),
+        None => account_auth::resolve_google_credential(&provider.key_account)
+            .await
+            .map_err(|error| ModelDiscoveryError::Network {
+                provider: reference.clone(),
+                message: account_auth::redact_google_secrets(&error.to_string()),
+            })?,
+    };
+    vendors::google::prepare_request(
+        &provider.endpoint,
+        "discovery",
+        serde_json::Value::Null,
+        false,
+    )
+    .map_err(|message| ModelDiscoveryError::Parse {
+        provider: reference.clone(),
+        message,
+    })?;
+    let endpoint = vendors::google::models_endpoint(&provider.endpoint);
+    let mut page_token = None;
+    let mut seen_tokens = HashSet::new();
+    let mut models = Vec::new();
+    loop {
+        let mut request = client.get(&endpoint);
+        request = match &credential {
+            GoogleCredential::ApiKey(key) => request.header("x-goog-api-key", key),
+            GoogleCredential::Bearer(token) => request.bearer_auth(token),
+        };
+        if let Some(token) = page_token.as_deref() {
+            request = request.query(&[("pageToken", token)]);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| network_error(reference, error))?;
+        if !response.status().is_success() {
+            // A custom endpoint may echo an arbitrary API key or bearer token;
+            // never put its rejection body into Settings or the model cache.
+            return Err(http_status_error(reference, response.status(), "Google model discovery rejected the credentialed request"));
+        }
+        let body = response_body_or_error(reference, response).await?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| ModelDiscoveryError::Parse {
+                provider: reference.clone(),
+                message: format!("failed to parse Google models response: {error}"),
+            })?;
+        models.extend(
+            vendors::google::models_from_response(&parsed)
+                .into_iter()
+                .map(|(id, display_name)| DiscoveredModel {
+                    display_name: display_name
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or_else(|| id.clone()),
+                    id,
+                }),
+        );
+        page_token = parsed
+            .get("nextPageToken")
+            .and_then(serde_json::Value::as_str)
+            .filter(|token| !token.is_empty())
+            .map(str::to_string);
+        let Some(token) = page_token.as_ref() else {
+            break;
+        };
+        if !seen_tokens.insert(token.clone()) {
+            return Err(ModelDiscoveryError::Parse {
+                provider: reference.clone(),
+                message: "Google models response repeated a page token".to_string(),
+            });
+        }
+    }
+    Ok(models)
+}
+
 /// Fetch the full Anthropic model list, following `after_id` pagination until
 /// the provider reports no more pages. A `has_more` page without a cursor is a
 /// parse error rather than a silent truncation of the picker.
@@ -527,7 +626,7 @@ async fn response_body_or_error(
 fn network_error(provider: &ProviderRef, error: reqwest::Error) -> ModelDiscoveryError {
     ModelDiscoveryError::Network {
         provider: provider.clone(),
-        message: error.to_string(),
+        message: account_auth::redact_google_secrets(&error.without_url().to_string()),
     }
 }
 
@@ -539,9 +638,9 @@ fn http_status_error(
     status: StatusCode,
     body: &str,
 ) -> ModelDiscoveryError {
-    let mut message = body.trim().replace('\n', " ");
-    if message.len() > 240 {
-        message.truncate(240);
+    let mut message = account_auth::redact_google_secrets(body.trim()).replace('\n', " ");
+    if message.chars().count() > 240 {
+        message = message.chars().take(240).collect();
         message.push_str("...");
     }
     if message.is_empty() {

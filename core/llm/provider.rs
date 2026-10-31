@@ -35,6 +35,8 @@ pub enum ProviderKind {
     /// Libraxis gateway on the OpenAI Responses protocol at `api.libraxis.com`.
     /// Last in the picker until I1 promotes it on a live keyed witness (§B.3).
     LibraxisResponses,
+    /// Google Gemini GenerateContent API; Cloud Code Assist uses a Custom row.
+    GoogleGemini,
 }
 
 /// The request/response protocol a provider speaks.
@@ -50,6 +52,15 @@ pub enum WireFamily {
     /// Anthropic Messages (`/v1/messages`, adaptive thinking, refusal stops).
     #[serde(rename = "messages")]
     AnthropicMessages,
+    /// Google GenerateContent (Gemini and configured Cloud Code Assist hosts).
+    #[serde(
+        rename = "google-generate-content",
+        alias = "gemini",
+        alias = "google",
+        alias = "antigravity",
+        alias = "agy"
+    )]
+    GoogleGenerateContent,
 }
 
 impl WireFamily {
@@ -58,6 +69,7 @@ impl WireFamily {
         match self {
             WireFamily::OpenAiResponses => "responses",
             WireFamily::AnthropicMessages => "messages",
+            WireFamily::GoogleGenerateContent => "google-generate-content",
         }
     }
 
@@ -66,6 +78,9 @@ impl WireFamily {
         match raw.trim().to_ascii_lowercase().as_str() {
             "responses" | "openai-responses" => Some(WireFamily::OpenAiResponses),
             "messages" | "anthropic-messages" => Some(WireFamily::AnthropicMessages),
+            "google-generate-content" | "gemini" | "google" | "antigravity" | "agy" => {
+                Some(WireFamily::GoogleGenerateContent)
+            }
             _ => None,
         }
     }
@@ -75,6 +90,7 @@ impl WireFamily {
         match self {
             WireFamily::OpenAiResponses => "/v1/responses",
             WireFamily::AnthropicMessages => "/v1/messages",
+            WireFamily::GoogleGenerateContent => "/v1beta",
         }
     }
 
@@ -87,7 +103,11 @@ impl WireFamily {
         if endpoint_host(raw.trim()).is_empty() {
             return raw.trim().to_string();
         }
+        if self == WireFamily::GoogleGenerateContent {
+            return vendors::google::normalize_endpoint(raw);
+        }
         let known = [
+            "/v1beta",
             "/v1/responses",
             "/v1/messages",
             "/v1/chat/completions",
@@ -202,23 +222,38 @@ const ANTHROPIC_IDENTITY: ProviderIdentity = ProviderIdentity {
     assistive_model: vendors::anthropic::DEFAULT_ASSISTIVE_MODEL,
 };
 
+const GOOGLE_IDENTITY: ProviderIdentity = ProviderIdentity {
+    kind: ProviderKind::GoogleGemini,
+    canonical: vendors::google::CANONICAL,
+    aliases: vendors::google::ALIASES,
+    display_name: vendors::google::DISPLAY_NAME,
+    api_key_account: vendors::google::API_KEY_ACCOUNT,
+    wire_family: WireFamily::GoogleGenerateContent,
+    endpoint: vendors::google::ENDPOINT,
+    extra_hosts: &[],
+    formatting_model: vendors::google::DEFAULT_FORMATTING_MODEL,
+    assistive_model: vendors::google::DEFAULT_ASSISTIVE_MODEL,
+};
+
 /// Every vendor row, in picker order.
-const PROVIDER_REGISTRY: [ProviderIdentity; 4] = [
+const PROVIDER_REGISTRY: [ProviderIdentity; 5] = [
     LIBRAXIS_IDENTITY,
     OPENAI_IDENTITY,
     XAI_IDENTITY,
     ANTHROPIC_IDENTITY,
+    GOOGLE_IDENTITY,
 ];
 
 /// Every vendor handle, in picker order: Libraxis, OpenAI, xAI, Anthropic.
 /// Libraxis earned the first slot on a live two-part witness at integration
 /// (2026-09-07 18:16Z: `GET /v1/models` 200 with 8 aliases, one Responses call
 /// completed); the lane default stays OpenAI (`ProviderKind::default`).
-pub const ALL_PROVIDERS: [ProviderKind; 4] = [
+pub const ALL_PROVIDERS: [ProviderKind; 5] = [
     ProviderKind::LibraxisResponses,
     ProviderKind::OpenAiResponses,
     ProviderKind::XaiResponses,
     ProviderKind::AnthropicMessages,
+    ProviderKind::GoogleGemini,
 ];
 
 impl ProviderKind {
@@ -228,6 +263,7 @@ impl ProviderKind {
             ProviderKind::AnthropicMessages => &ANTHROPIC_IDENTITY,
             ProviderKind::XaiResponses => &XAI_IDENTITY,
             ProviderKind::LibraxisResponses => &LIBRAXIS_IDENTITY,
+            ProviderKind::GoogleGemini => &GOOGLE_IDENTITY,
         }
     }
 
@@ -748,6 +784,11 @@ pub fn capability_policy(provider: ProviderKind, model: &str) -> CapabilityPolic
     match provider.wire_family() {
         WireFamily::OpenAiResponses => openai_policy(),
         WireFamily::AnthropicMessages => anthropic_policy_for_model(model),
+        WireFamily::GoogleGenerateContent => CapabilityPolicy {
+            previous_response_id: false,
+            effort: false,
+            ..openai_policy()
+        },
     }
 }
 
@@ -906,8 +947,8 @@ mod tests {
             );
         }
         assert_eq!(
-            ProviderKind::from_str("gemini").unwrap_err(),
-            ParseProviderError("gemini".to_string())
+            ProviderKind::from_str("unknown-provider").unwrap_err(),
+            ParseProviderError("unknown-provider".to_string())
         );
     }
 
@@ -926,6 +967,7 @@ mod tests {
                 ProviderKind::OpenAiResponses,
                 ProviderKind::XaiResponses,
                 ProviderKind::AnthropicMessages,
+                ProviderKind::GoogleGemini,
             ]
         );
     }

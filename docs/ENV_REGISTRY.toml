@@ -317,6 +317,45 @@ reload = "hot"
 category = "llm"
 description = "Anthropic vendor key account (Settings › Providers / Keychain bundle); env is a fallback, never the URL. Anthropic Messages API key account shared by Anthropic formatting and assistive lanes"
 
+[vars.LLM_GOOGLE_API_KEY]
+default = ""
+type = "secret"
+secret = true
+reload = "hot"
+category = "llm"
+description = "Google Gemini API key account in the Codescribe Keychain bundle; the provider sends it in x-goog-api-key, never in settings.json or a URL"
+
+[vars.LLM_GOOGLE_ACCOUNT_TOKENS]
+default = ""
+type = "secret"
+secret = true
+reload = "hot"
+category = "llm"
+description = "Dev/CI injection of a Google OAuth credential JSON record; production reads the Keychain bundle and never seeds this account into child-process env. Refresh records carry client_id, client_secret, refresh_token and optional access_token/expires_at_unix"
+
+[vars.GEMINI_API_KEY]
+default = ""
+type = "secret"
+secret = true
+reload = "hot"
+category = "llm"
+description = "Google Gemini vendor environment API key, after Codescribe Keychain credentials and before GOOGLE_API_KEY / ADC"
+
+[vars.GOOGLE_API_KEY]
+default = ""
+type = "secret"
+secret = true
+reload = "hot"
+category = "llm"
+description = "Google vendor environment API key, after Codescribe Keychain credentials and GEMINI_API_KEY, before ADC"
+
+[vars.GOOGLE_APPLICATION_CREDENTIALS]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Path to a Google authorized_user ADC JSON file; unset uses ~/.config/gcloud/application_default_credentials.json. OAuth refresh uses the official HTTPS Google token endpoint; service-account and workload-identity records are explicitly unsupported"
+
 [vars.LLM_API_KEY]
 default = ""
 type = "secret"

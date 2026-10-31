@@ -6,6 +6,8 @@
 
 /// Anthropic Messages API (`https://api.anthropic.com/v1/messages`).
 pub mod anthropic;
+/// Google Gemini GenerateContent API and Cloud Code Assist wire helpers.
+pub mod google;
 /// Libraxis gateway on the OpenAI Responses protocol (`https://api.libraxis.com/v1/responses`).
 pub mod libraxis;
 /// OpenAI Responses API (`https://api.openai.com/v1/responses`).

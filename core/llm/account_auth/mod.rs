@@ -15,12 +15,20 @@ use crate::llm::provider::ProviderKind;
 
 /// Device-code OAuth grant for providers that cannot do loopback redirects.
 pub mod device_code;
+/// Google API keys and locally provisioned OAuth / ADC credentials.
+pub mod google;
 /// Paste-code flow: user copies `"code#state"` from the provider's page.
 pub mod paste_code;
 /// PKCE verifier/challenge helpers shared by loopback and paste-code logins.
 pub mod pkce;
 /// Local loopback HTTP server that receives OAuth redirect callbacks.
 pub mod server;
+
+pub use google::{
+    GOOGLE_ACCOUNT_TOKENS_ACCOUNT, GOOGLE_API_KEY_ACCOUNT, GoogleCredential,
+    google_api_key, google_credential_status, google_credentials_available, redact_google_secrets,
+    resolve_google_account_credential, resolve_google_credential,
+};
 
 pub use device_code::{
     DeviceAuthConfig, DeviceCode, complete_device_code_login, request_device_code,
@@ -806,6 +814,9 @@ fn cached_account_tokens(provider: ProviderKind) -> Result<AccountTokens, Accoun
 /// Both are required — leaving the env override in place would let the next
 /// [`load_account_tokens`] resurrect the session the operator just ended.
 pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthError> {
+    if provider == ProviderKind::GoogleGemini {
+        return google::clear_google_account_tokens();
+    }
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
     provider_auth_state(provider).replace_with(|| {
