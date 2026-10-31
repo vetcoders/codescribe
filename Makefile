@@ -1329,10 +1329,10 @@ clean:
 	@rm -rf .loctree
 	@echo "Cleaned"
 
-# Fleet worktrees build into the shared target of the main checkout, so any
-# `target/` left inside a worktree is residue (4-18 GiB each).
+# Inventory isolated targets. Cleanup requires the existing terminal-run,
+# policy and lease admission; names or absent compiler PIDs do not authorize it.
 clean-worktree-targets:
-	@scripts/verify-zero-target.sh --sweep
+	@scripts/verify-zero-target.sh --dry-run
 
 structural-gate:
 	@loct health

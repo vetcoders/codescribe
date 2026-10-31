@@ -73,6 +73,8 @@ impl From<LicenseStatus> for CsLicenseStatus {
 
 /// Validate a newly entered signed key. The successful explicit validation is
 /// Active and its timestamp is persisted by `LicenseService` with the key.
+/// Live Swift consumer: `Services/LicenseService.swift` calls `licenseActivate`.
+/// UniFFI exports have no Rust caller edge; that does not make this dead code.
 #[uniffi::export]
 pub fn license_activate(key: String, now_unix_seconds: i64) -> Result<CsLicenseStatus, CsError> {
     let now = timestamp(now_unix_seconds)?;
