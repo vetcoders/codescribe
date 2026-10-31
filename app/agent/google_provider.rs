@@ -1,9 +1,10 @@
 //! Native Gemini / Cloud Code Assist streaming Agent provider.
 //!
-//! The session owns tool execution and its approval gate. This provider owns
-//! only Google wire parts, including opaque signatures that must never be
-//! reconstructed from display text or moved to another part.
+//! The session owns history, tool execution and approvals. This provider parses
+//! in-flight Google wire parts and hands one clean response to canonical Message
+//! metadata. Signatures are never reconstructed from text or moved to a part.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,12 +12,14 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use codescribe_core::agent::{
-    AgentEvent, AgentProvider, ContentBlock, Message, Role, StreamOptions, ToolDefinition,
+    AgentEvent, AgentProvider, ContentBlock, Message, ProviderResponseMetadata, Role, StreamOptions,
+    ToolDefinition,
 };
 use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane};
 use codescribe_core::llm::account_auth::{
@@ -45,7 +48,7 @@ pub struct GoogleProvider {
     initial_timeout: Duration,
     chunk_timeout: Duration,
     first_event_timeout: Duration,
-    history: Arc<Mutex<Vec<RetainedTurn>>>,
+    completed_response: Arc<Mutex<Option<ProviderResponseMetadata>>>,
     turn_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -57,17 +60,29 @@ struct Call {
     wire_id: Option<String>,
 }
 
-/// The prefix binds wire metadata to the exact session history that produced
-/// it. A rollback/truncation or a different model cannot borrow a signature.
-#[derive(Clone)]
+/// A bounded projection of canonical message metadata for this one request.
+/// It is rebuilt from Message/ThreadMessage; the provider retains no history.
 struct RetainedTurn {
     prefix_len: usize,
-    prefix_digest: [u8; 32],
-    model: String,
-    text: String,
-    calls: Vec<Call>,
+    message_count: usize,
     parts: Vec<Value>,
-    part_bytes: usize,
+    calls: Vec<Call>,
+    metadata_bytes: usize,
+}
+
+struct PendingTurn {
+    context_digest: String,
+    provider_id: String,
+    model: String,
+    history_bytes: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GoogleTurnPayload {
+    parts: Vec<Value>,
+    /// In original functionCall part order; these are canonical native call IDs.
+    call_ids: Vec<String>,
 }
 
 impl GoogleProvider {
@@ -112,7 +127,7 @@ impl GoogleProvider {
             initial_timeout: timing.attempt_timeout(),
             chunk_timeout: timing.inter_chunk_timeout(),
             first_event_timeout: timing.first_event_timeout(),
-            history: Arc::new(Mutex::new(Vec::new())),
+            completed_response: Arc::new(Mutex::new(None)),
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
@@ -126,26 +141,21 @@ impl AgentProvider for GoogleProvider {
         tools: &[ToolDefinition],
         options: &StreamOptions,
     ) -> Result<mpsc::Receiver<AgentEvent>> {
-        // Serialize metadata reconciliation and commit across provider clones.
-        // The canonical AgentSession remains the only message-history owner.
         let turn_guard = self.turn_lock.clone().lock_owned().await;
+        ensure!(self.completed_response.lock().unwrap_or_else(|poison| poison.into_inner()).is_none(),
+            "The canonical session has not consumed the previous Google response metadata");
         let model = if options.model.trim().is_empty() {
             &self.default_model
         } else {
             &options.model
         };
-        let retained = {
-            let mut history = self
-                .history
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            history.retain(|turn| turn.model == *model && turn.matches(messages));
-            ensure!(
-                history.len() < MAX_RETAINED_TURNS,
-                "Google signed history reached its retention limit; start a new conversation"
-            );
-            history.clone()
-        };
+        ensure!(!model.is_empty() && model.len() <= 1024, "Invalid Google model identity");
+        // Endpoint/account identity is private routing provenance, not a key.
+        let provider_id = format!("{:x}", Sha256::digest(format!("{}|{}", self.endpoint,
+            self.credential_account.as_deref().unwrap_or(google::API_KEY_ACCOUNT)).as_bytes()));
+        let retained = restore_turns(messages, model, &provider_id)?;
+        ensure!(retained.len() < MAX_RETAINED_TURNS,
+            "Google signed history reached its retention limit; start a new conversation");
         let body = build_request(messages, tools, options, &retained)?;
         let (endpoint, body) = google::prepare_request(&self.endpoint, model, body, true)
             .map_err(|error| anyhow!(error))?;
@@ -163,14 +173,11 @@ impl AgentProvider for GoogleProvider {
         };
         let (tx, rx) = mpsc::channel(256);
         let transport = self.clone();
-        let pending = RetainedTurn {
-            prefix_len: messages.len(),
-            prefix_digest: history_digest(messages)?,
+        let pending = PendingTurn {
+            context_digest: history_digest(messages)?,
+            provider_id,
             model: model.clone(),
-            text: String::new(),
-            calls: Vec::new(),
-            parts: Vec::new(),
-            part_bytes: 0,
+            history_bytes: retained.iter().map(|turn| turn.metadata_bytes).sum(),
         };
         tokio::spawn(async move {
             let _turn_guard = turn_guard;
@@ -178,6 +185,7 @@ impl AgentProvider for GoogleProvider {
                 .run_stream(endpoint, body, credential, pending, &tx)
                 .await;
             if let Err(error) = result {
+                drop(transport.completed_response.lock().unwrap_or_else(|poison| poison.into_inner()).take());
                 let _ = tx
                     .send(AgentEvent::ResponseDone {
                         response_id: None,
@@ -190,6 +198,18 @@ impl AgentProvider for GoogleProvider {
             }
         });
         Ok(rx)
+    }
+
+    fn take_completed_response_metadata(&self) -> Option<ProviderResponseMetadata> {
+        self.completed_response.lock().unwrap_or_else(|poison| poison.into_inner()).take()
+    }
+
+    async fn restore_response_chain(&self, _id: Option<String>) {
+        // The receiver's drop cancels the transport. Wait for its handoff to
+        // settle, then discard only ephemeral state; canonical history rolls
+        // back with the owning AgentSession's message vector.
+        let _turn = self.turn_lock.lock().await;
+        drop(self.completed_response.lock().unwrap_or_else(|poison| poison.into_inner()).take());
     }
 
     fn build_tool_result(
@@ -211,40 +231,130 @@ impl AgentProvider for GoogleProvider {
     }
 }
 
-fn history_digest(messages: &[Message]) -> Result<[u8; 32]> {
-    Ok(Sha256::digest(serde_json::to_vec(messages)?).into())
+fn hash_message(digest: &mut Sha256, message: &Message) -> Result<()> {
+    let bytes = serde_json::to_vec(message)?;
+    digest.update((bytes.len() as u64).to_be_bytes());
+    digest.update(bytes);
+    Ok(())
 }
 
-impl RetainedTurn {
-    fn assistant_messages(&self) -> Vec<Vec<ContentBlock>> {
-        let mut result = Vec::new();
-        if !self.text.trim().is_empty() {
-            result.push(vec![ContentBlock::Text(self.text.trim().to_string())]);
-        }
-        if !self.calls.is_empty() {
-            result.push(
-                self.calls
-                    .iter()
-                    .map(|call| ContentBlock::ToolUse {
-                        id: call.id.clone(),
-                        name: call.name.clone(),
-                        input: call.arguments.clone(),
-                    })
-                    .collect(),
-            );
-        }
-        result
+fn history_digest(messages: &[Message]) -> Result<String> {
+    let mut digest = Sha256::new();
+    for message in messages { hash_message(&mut digest, message)?; }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn assistant_segments(text: &str, calls: &[Call]) -> Vec<Vec<ContentBlock>> {
+    let mut segments = Vec::new();
+    if !text.trim().is_empty() {
+        segments.push(vec![ContentBlock::Text(text.trim().to_string())]);
     }
-    fn matches(&self, messages: &[Message]) -> bool {
-        let expected = self.assistant_messages();
-        !expected.is_empty()
-            && self.prefix_len + expected.len() <= messages.len()
-            && history_digest(&messages[..self.prefix_len]).ok() == Some(self.prefix_digest)
-            && expected.iter().enumerate().all(|(offset, content)| {
-                let message = &messages[self.prefix_len + offset];
-                message.role == Role::Assistant && message.content == *content
-            })
+    if !calls.is_empty() {
+        segments.push(calls.iter().map(|call| ContentBlock::ToolUse {
+            id: call.id.clone(), name: call.name.clone(), input: call.arguments.clone(),
+        }).collect());
     }
+    segments
+}
+
+/// Validate a payload before either committing it or replaying it. Occurrence
+/// UUIDs establish identity; content comparisons below only check integrity.
+fn decode_payload(payload: &GoogleTurnPayload) -> Result<(String, Vec<Call>)> {
+    ensure!(payload.parts.len() <= MAX_TURN_PARTS
+        && serde_json::to_vec(&payload.parts)?.len() <= MAX_TURN_PART_BYTES,
+        "Google signed parts exceed their bounds");
+    let mut filter = PlanningFilter::default();
+    let mut visible = String::new();
+    let mut calls = Vec::new();
+    let mut ids = HashSet::new();
+    let mut wire_ids = HashSet::new();
+    for part in &payload.parts {
+        let object = part.as_object().ok_or_else(|| anyhow!("Malformed Google stored part"))?;
+        ensure!(object.keys().all(|key| matches!(key.as_str(), "text" | "thought" | "thoughtSignature" | "functionCall"))
+            && part.get("text").is_none_or(Value::is_string)
+            && part.get("thought").is_none_or(Value::is_boolean)
+            && part.get("thoughtSignature").is_none_or(Value::is_string)
+            && !(part.get("text").is_some() && part.get("functionCall").is_some()),
+            "Unsupported Google stored part schema");
+        if let Some(text) = part.get("text").and_then(Value::as_str)
+            && part.get("thought").and_then(Value::as_bool) != Some(true)
+            && let Some(text) = filter.push(text)
+        { visible.push_str(&text); }
+        if let Some(raw) = part.get("functionCall") {
+            let call = raw.as_object().ok_or_else(|| anyhow!("Malformed Google stored call"))?;
+            ensure!(call.keys().all(|key| matches!(key.as_str(), "name" | "args" | "id")),
+                "Unsupported Google stored function call schema");
+            let name = raw.get("name").and_then(Value::as_str)
+                .filter(|name| !name.is_empty() && name.len() <= 1024)
+                .ok_or_else(|| anyhow!("Malformed Google stored tool name"))?;
+            let arguments = raw.get("args").cloned().unwrap_or_else(|| json!({}));
+            ensure!(arguments.is_object(), "Malformed Google stored tool arguments");
+            let id = payload.call_ids.get(calls.len()).ok_or_else(|| anyhow!("Missing Google native call identity"))?;
+            ensure!(id.strip_prefix("google_").is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|id| !id.is_nil()))
+                && ids.insert(id.clone()), "Invalid or duplicate Google native call identity");
+            let wire_id = match raw.get("id") {
+                Some(Value::String(id)) if !id.is_empty() && id.len() <= 1024 && wire_ids.insert(id.clone()) => Some(id.clone()),
+                None => None,
+                _ => bail!("Invalid or duplicate Google wire call identity"),
+            };
+            calls.push(Call {id: id.clone(), name: name.to_string(), arguments, wire_id});
+        }
+    }
+    ensure!(calls.len() == payload.call_ids.len(), "Orphan Google native call identity");
+    if let Some(text) = filter.finish() { visible.push_str(&text); }
+    Ok((visible, calls))
+}
+
+fn restore_turns(messages: &[Message], model: &str, provider_id: &str) -> Result<Vec<RetainedTurn>> {
+    let mut turns = Vec::new();
+    let mut groups = HashSet::new();
+    let mut native_calls = HashSet::new();
+    let mut digest = Sha256::new();
+    let mut total_bytes = 0usize;
+    let mut index = 0usize;
+    while index < messages.len() {
+        let metadata = messages[index].metadata.as_ref()
+            .map(|metadata| metadata.provider_wire()).transpose()?.flatten();
+        let Some(first) = metadata else {
+            ensure!(messages[index].role != Role::Assistant,
+                "Google history has no original signed parts; start a new conversation");
+            hash_message(&mut digest, &messages[index])?;
+            index += 1;
+            continue;
+        };
+        ensure!(messages[index].role == Role::Assistant && first.segment_index == 0
+            && groups.insert(first.occurrence_id.clone()), "Orphan or duplicate Google response occurrence");
+        let count = usize::from(first.segment_count);
+        let response = first.response.as_ref().ok_or_else(|| anyhow!("Missing Google wire response"))?;
+        ensure!(response.wire == "google-generate-content" && response.model == model
+            && response.provider_id == provider_id
+            && response.context_digest == format!("{:x}", digest.clone().finalize()),
+            "Google history provider, model or context does not match its signed response");
+        let metadata_bytes = serde_json::to_vec(response)?.len();
+        total_bytes = total_bytes.saturating_add(metadata_bytes);
+        ensure!(turns.len() < MAX_RETAINED_TURNS && total_bytes <= MAX_RETAINED_HISTORY_BYTES,
+            "Google signed history exceeds its bounds");
+        let payload: GoogleTurnPayload = serde_json::from_value(response.payload.clone())
+            .map_err(|_| anyhow!("Malformed Google signed payload"))?;
+        let (visible, calls) = decode_payload(&payload)?;
+        let expected = assistant_segments(&visible, &calls);
+        ensure!(expected.len() == count && index + count <= messages.len(), "Invalid Google response segment count");
+        for offset in 0..count {
+            let message = &messages[index + offset];
+            let segment = message.metadata.as_ref().map(|metadata| metadata.provider_wire())
+                .transpose()?.flatten().ok_or_else(|| anyhow!("Missing Google response segment"))?;
+            ensure!(message.role == Role::Assistant && segment.occurrence_id == first.occurrence_id
+                && segment.segment_count == first.segment_count && usize::from(segment.segment_index) == offset
+                && message.content == expected[offset], "Google response occurrence does not match canonical content");
+            hash_message(&mut digest, message)?;
+        }
+        for call in &calls {
+            ensure!(native_calls.insert(call.id.clone()), "Google call identity belongs to more than one occurrence");
+        }
+        turns.push(RetainedTurn {prefix_len: index, message_count: count, parts: payload.parts, calls, metadata_bytes});
+        index += count;
+    }
+    Ok(turns)
 }
 
 fn build_request(
@@ -262,11 +372,15 @@ fn build_request(
     {
         system.push(json!({"text": prompt}));
     }
+    let mut pending_calls: HashMap<&str, &Call> = HashMap::new();
+    let mut answered = HashSet::new();
     let mut index = 0;
     while index < messages.len() {
         if let Some(turn) = retained.iter().find(|turn| turn.prefix_len == index) {
+            ensure!(pending_calls.is_empty(), "Google model turn precedes outstanding tool results");
             contents.push(json!({"role":"model","parts":turn.parts}));
-            index += turn.assistant_messages().len();
+            for call in &turn.calls { pending_calls.insert(call.id.as_str(), call); }
+            index += turn.message_count;
             continue;
         }
         let message = &messages[index];
@@ -277,7 +391,10 @@ fn build_request(
         let mut parts = Vec::new();
         for block in &message.content {
             match block {
-                ContentBlock::Text(text) => parts.push(json!({"text":text})),
+                ContentBlock::Text(text) => {
+                    ensure!(pending_calls.is_empty(), "Google conversation text precedes outstanding tool results");
+                    parts.push(json!({"text":text}));
+                }
                 ContentBlock::Image { data, media_type } => {
                     if !data.is_empty() {
                         parts.push(json!({"inlineData":{"mimeType":media_type,"data":BASE64.encode(data)}}));
@@ -298,13 +415,10 @@ fn build_request(
                     content,
                     is_error,
                 } => {
-                    let call = retained
-                        .iter()
-                        .flat_map(|turn| &turn.calls)
-                        .find(|call| call.id == *tool_use_id)
-                        .ok_or_else(|| {
-                            anyhow!("Google tool result has no matching model function call")
-                        })?;
+                    ensure!(message.role == Role::User && answered.insert(tool_use_id.as_str()),
+                        "Duplicate or non-user Google tool result");
+                    let call = pending_calls.remove(tool_use_id.as_str()).ok_or_else(||
+                        anyhow!("Google tool result has no preceding outstanding model call"))?;
                     let mut response = json!({"name":call.name,"response":{"result":tool_result_text(content),"is_error":is_error}});
                     if let Some(id) = &call.wire_id {
                         response["id"] = json!(id);
@@ -344,6 +458,7 @@ fn build_request(
         }
         index += 1;
     }
+    ensure!(pending_calls.is_empty(), "Google history has incomplete tool results");
     let mut body = json!({"contents":contents});
     if !system.is_empty() {
         body["systemInstruction"] = json!({"parts":system});
@@ -395,7 +510,7 @@ impl GoogleProvider {
         endpoint: String,
         body: Value,
         credential: GoogleCredential,
-        mut turn: RetainedTurn,
+        turn: PendingTurn,
         tx: &mpsc::Sender<AgentEvent>,
     ) -> Result<()> {
         let mut watchdog = StreamWatchdog::start(self.first_event_timeout, self.chunk_timeout);
@@ -479,26 +594,26 @@ impl GoogleProvider {
             !state.visible.trim().is_empty() || !state.calls.is_empty(),
             "Google returned no answer or tool calls"
         );
-        turn.text = state.visible;
-        turn.calls = state.calls;
-        turn.parts = state.parts;
-        turn.part_bytes = state.part_bytes;
-        // Persist before exposing the clean terminal: the next session step
-        // can immediately build functionResponse from these exact signed parts.
-        {
-            let mut history = self
-                .history
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            let retained_bytes: usize = history.iter().map(|item| item.part_bytes).sum();
-            ensure!(
-                history.len() < MAX_RETAINED_TURNS
-                    && retained_bytes.saturating_add(turn.part_bytes) <= MAX_RETAINED_HISTORY_BYTES,
-                "Google signed history reached its retention limit; start a new conversation"
-            );
-            history.push(turn.clone());
-        }
-        tx.send(AgentEvent::TextDone(turn.text))
+        let payload = GoogleTurnPayload {
+            parts: state.parts,
+            call_ids: state.calls.iter().map(|call| call.id.clone()).collect(),
+        };
+        let (visible, calls) = decode_payload(&payload)?;
+        ensure!(assistant_segments(&visible, &calls) == assistant_segments(&state.visible, &state.calls),
+            "Google completed wire state does not match its canonical response");
+        let metadata = ProviderResponseMetadata {
+            wire: "google-generate-content".into(),
+            provider_id: turn.provider_id,
+            model: turn.model,
+            context_digest: turn.context_digest,
+            payload: serde_json::to_value(payload)?,
+        };
+        ensure!(turn.history_bytes.saturating_add(serde_json::to_vec(&metadata)?.len()) <= MAX_RETAINED_HISTORY_BYTES,
+            "Google signed history reached its retention limit; start a new conversation");
+        // One clean response handoff, not provider-owned conversation history.
+        // AgentSession takes this only after accepting the terminal and EOF.
+        *self.completed_response.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(metadata);
+        tx.send(AgentEvent::TextDone(state.visible))
             .await
             .map_err(|_| anyhow!("Google receiver closed"))?;
         tx.send(AgentEvent::ResponseDone {

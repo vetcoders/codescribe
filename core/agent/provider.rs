@@ -43,6 +43,12 @@ pub trait AgentProvider: Send + Sync {
         true
     }
 
+    /// Move one clean response's private wire state into canonical messages.
+    /// Called only after the receiver closed and its terminal was accepted.
+    fn take_completed_response_metadata(&self) -> Option<super::ProviderResponseMetadata> {
+        None
+    }
+
     /// Start a turn and return the channel carrying its [`AgentEvent`] stream.
     ///
     /// The receiver closes when the turn ends; errors mid-turn arrive as events

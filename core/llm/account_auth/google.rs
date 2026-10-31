@@ -50,9 +50,26 @@ fn non_empty_env(name: &str) -> Option<String> {
 /// Silent key acquisition for runtime-snapshot capture. No Keychain prompt or
 /// network request is permitted here. Full precedence is resolved at send time.
 pub fn google_api_key() -> Option<String> {
-    keychain::cached_runtime_key(GOOGLE_API_KEY_ACCOUNT)
+    google_api_key_for_account(GOOGLE_API_KEY_ACCOUNT)
+}
+
+/// Silent key eligibility for the selected public Google account. This shares
+/// the sender's dedicated-account/global/env rails without reading ADC or
+/// prompting Keychain from a UI availability getter.
+pub fn google_api_key_available(account: &str) -> bool {
+    google_api_key_for_account(account).is_some()
+}
+
+fn google_api_key_for_account(account: &str) -> Option<String> {
+    stored_api_key(account, keychain::cached_runtime_key)
         .or_else(|| non_empty_env("GEMINI_API_KEY"))
         .or_else(|| non_empty_env("GOOGLE_API_KEY"))
+}
+
+fn stored_api_key(account: &str, lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
+    lookup(account).or_else(|| {
+        if account == GOOGLE_API_KEY_ACCOUNT { None } else { lookup(GOOGLE_API_KEY_ACCOUNT) }
+    })
 }
 
 /// Availability hint captured only when a Google lane is selected. ADC file
@@ -284,15 +301,7 @@ pub async fn resolve_google_credential(
 ) -> Result<GoogleCredential, AccountAuthError> {
     let account = account.to_string();
     let keychain_credential = credential_io(move || {
-        if let Some(key) = keychain::runtime_key(&account) {
-            return Ok(Some(GoogleCredential::ApiKey(key)));
-        }
-        if account != GOOGLE_API_KEY_ACCOUNT {
-            if let Some(key) = keychain::runtime_key(GOOGLE_API_KEY_ACCOUNT) {
-                return Ok(Some(GoogleCredential::ApiKey(key)));
-            }
-        }
-        Ok(None)
+        Ok(stored_api_key(&account, keychain::runtime_key).map(GoogleCredential::ApiKey))
     })
     .await?;
     if let Some(credential) = keychain_credential {
