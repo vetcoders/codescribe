@@ -188,7 +188,7 @@ struct IntercomContentMetrics: Equatable {
   func compactPreviewLayout(width: CGFloat, cardHeight: CGFloat) -> IntercomCompactPreviewLayout? {
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return nil }
     let scale = nameFontSize / 11
-    let font = NSFont.systemFont(ofSize: 13 * scale)
+    let font = NSFont.systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)
     let readableWidth = ("Message preview" as NSString).size(withAttributes: [.font: font]).width
     guard width - 24 >= readableWidth else { return nil }
     let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
@@ -286,7 +286,9 @@ enum OverlayIntercomWidgetLayout {
   /// still scrolls; this is the same reading budget used by the input gate.
   static func minimumReadableConversationHeight(scale: CGFloat) -> CGFloat {
     let layout = NSLayoutManager()
-    let body = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 13 * scale)))
+    let body = ceil(
+      layout.defaultLineHeight(
+        for: .systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)))
     let metadata = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
     return 2 * body + 2 * metadata + 2 * 5 + 2 * 12 + 2 * 8 + 12 + 1
   }

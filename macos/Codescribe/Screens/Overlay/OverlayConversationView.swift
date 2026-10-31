@@ -57,6 +57,7 @@ enum OverlayConversationPresentation: Equatable, Sendable {
 /// The same rich body and attachment chips on a conversation bubble or a
 /// larger Intercom preview. Document and capture state stay in their owners.
 struct OverlayConversationMessageContent: View {
+  static let bodyFontSize: CGFloat = 10
   @Environment(\.csTextScale) private var textScale
   let message: OverlayConversationMessage
   let palette: OverlayAppearancePalette
@@ -68,12 +69,12 @@ struct OverlayConversationMessageContent: View {
         if OversizedBubblePolicy.isOversized(message.bodyText) {
           OversizedMessageBody(fullText: message.bodyText) { head in
             MarkdownText(
-              raw: head, size: 13, bodyColor: palette.primaryText.color,
+              raw: head, size: Self.bodyFontSize, bodyColor: palette.primaryText.color,
               showsUnderlineCaret: showsActivity)
           }
         } else {
           MarkdownText(
-            raw: message.bodyText, size: 13, bodyColor: palette.primaryText.color,
+            raw: message.bodyText, size: Self.bodyFontSize, bodyColor: palette.primaryText.color,
             showsUnderlineCaret: showsActivity)
         }
       }
