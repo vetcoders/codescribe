@@ -382,9 +382,34 @@ impl AcpClientBridge {
                 ])
                 .collect::<Vec<_>>()
         );
-        let name = tool["name"]
-            .as_str()
-            .and_then(|name| self.config.registry.resolve_tool_name(name));
+        let name = if let Some(raw_name) = tool.get("name").and_then(Value::as_str) {
+            self.config.registry.resolve_tool_name(raw_name)
+        } else {
+            tool.get("title")
+                .and_then(Value::as_str)
+                .and_then(|title| self.config.registry.resolve_tool_name(title))
+                .or_else(|| {
+                    let mapped = match tool.get("kind").and_then(Value::as_str) {
+                        Some("read" | "search") => Some(READ_TOOL),
+                        Some("edit" | "write" | "delete" | "move") => Some(WRITE_TOOL),
+                        Some("execute") => Some(TERMINAL_TOOL),
+                        _ => None,
+                    }?;
+                    self.config.registry.resolve_tool_name(mapped)
+                })
+        };
+        if let Some(first_loc) = locations.first() {
+            let loc_str = first_loc.requested.display().to_string();
+            match name.as_deref() {
+                Some(READ_TOOL | WRITE_TOOL) if input.get("path").is_none() => {
+                    input["path"] = json!(loc_str);
+                }
+                Some(TERMINAL_TOOL) if input.get("cwd").is_none() => {
+                    input["cwd"] = json!(loc_str);
+                }
+                _ => {}
+            }
+        }
         let call_id = tool["toolCallId"].as_str().unwrap_or("acp-permission");
         let allowed = if let Some(name) = name.filter(|_| !invalid_location) {
             self.authorize(&name, &input, call_id).await.is_ok()
@@ -480,19 +505,11 @@ impl AcpClientBridge {
         } else {
             None
         };
-        let parent = open_relative_directory(
-            root,
-            checked.relative.parent().unwrap_or_else(|| Path::new("")),
-        )?;
-        let expected_parent = std::fs::metadata(
-            checked
-                .canonical
-                .parent()
-                .ok_or_else(|| AcpError::Protocol("ACP write has no parent".into()))?,
-        )?;
+        let ancestor_dir = open_relative_directory(root, &checked.existing_ancestor_relative)?;
+        let expected_ancestor = std::fs::metadata(&checked.existing_ancestor)?;
         if !same_file(
-            &expected_parent,
-            &parent.try_clone()?.into_std_file().metadata()?,
+            &expected_ancestor,
+            &ancestor_dir.try_clone()?.into_std_file().metadata()?,
         ) {
             return Err(AcpError::PermissionDenied(
                 "ACP write parent changed while opening".into(),
@@ -501,6 +518,16 @@ impl AcpClientBridge {
         self.authorize(WRITE_TOOL, &params, &uuid::Uuid::new_v4().to_string())
             .await?;
         checked.confirm(&self.config.workspace_roots)?;
+        let parent_rel = checked.relative.parent().unwrap_or_else(|| Path::new(""));
+        let missing_dirs = parent_rel
+            .strip_prefix(&checked.existing_ancestor_relative)
+            .unwrap_or(parent_rel);
+        let parent = if missing_dirs.as_os_str().is_empty() {
+            ancestor_dir
+        } else {
+            ancestor_dir.create_dir_all(missing_dirs)?;
+            ancestor_dir.open_dir(missing_dirs)?
+        };
         let mut file = if let Some(file) = existing.take() {
             checked.confirm_file(&file)?;
             file
@@ -659,6 +686,8 @@ struct CheckedPath {
     canonical: PathBuf,
     root: PathBuf,
     relative: PathBuf,
+    existing_ancestor: PathBuf,
+    existing_ancestor_relative: PathBuf,
     metadata: Option<std::fs::Metadata>,
 }
 
@@ -677,29 +706,69 @@ fn checked_path(path: &Path, roots: &[PathBuf], writing: bool) -> Result<Checked
         Err(error) if writing && error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
     };
-    let canonical = if metadata.is_some() {
-        path.canonicalize()?
+    let (canonical, existing_ancestor) = if let Some(ref meta) = metadata {
+        let canonical = path.canonicalize()?;
+        let existing_ancestor = if meta.is_dir() {
+            canonical.clone()
+        } else {
+            canonical
+                .parent()
+                .ok_or_else(|| AcpError::PermissionDenied("ACP path has no parent".into()))?
+                .to_path_buf()
+        };
+        (canonical, existing_ancestor)
     } else {
-        let parent = path
-            .parent()
-            .ok_or_else(|| AcpError::PermissionDenied("ACP path has no parent".into()))?;
-        // Refuse dangling symlinks: a missing destination is not a new file.
-        if std::fs::symlink_metadata(path).is_ok() {
+        if path.file_name().is_none() {
             return Err(AcpError::PermissionDenied(
-                "ACP refuses a dangling symlink".into(),
+                "ACP path has no filename".into(),
             ));
         }
-        parent.canonicalize()?.join(
-            path.file_name()
-                .ok_or_else(|| AcpError::PermissionDenied("ACP path has no filename".into()))?,
-        )
+        let mut cursor = path;
+        let mut missing_tail = Vec::new();
+        let existing_ancestor = loop {
+            match std::fs::metadata(cursor) {
+                Ok(meta) => {
+                    if !meta.is_dir() {
+                        return Err(AcpError::PermissionDenied(
+                            "ACP parent is not a directory".into(),
+                        ));
+                    }
+                    break cursor.canonicalize()?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // Refuse dangling symlinks: a missing destination is not a new file or dir.
+                    if std::fs::symlink_metadata(cursor).is_ok() {
+                        return Err(AcpError::PermissionDenied(
+                            "ACP refuses a dangling symlink".into(),
+                        ));
+                    }
+                    let name = cursor.file_name().ok_or_else(|| {
+                        AcpError::PermissionDenied("ACP path has no filename".into())
+                    })?;
+                    missing_tail.push(name.to_os_string());
+                    cursor = cursor.parent().ok_or_else(|| {
+                        AcpError::PermissionDenied("ACP path has no parent".into())
+                    })?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let mut canonical = existing_ancestor.clone();
+        for part in missing_tail.iter().rev() {
+            canonical.push(part);
+        }
+        (canonical, existing_ancestor)
     };
     let root = roots
         .iter()
-        .find(|root| canonical.starts_with(root))
+        .find(|root| canonical.starts_with(root) && existing_ancestor.starts_with(root))
         .ok_or_else(|| AcpError::PermissionDenied("ACP path is outside workspace roots".into()))?
         .clone();
     let relative = canonical
+        .strip_prefix(&root)
+        .map_err(|_| AcpError::PermissionDenied("ACP path is outside workspace roots".into()))?
+        .to_path_buf();
+    let existing_ancestor_relative = existing_ancestor
         .strip_prefix(&root)
         .map_err(|_| AcpError::PermissionDenied("ACP path is outside workspace roots".into()))?
         .to_path_buf();
@@ -708,6 +777,8 @@ fn checked_path(path: &Path, roots: &[PathBuf], writing: bool) -> Result<Checked
         canonical,
         root,
         relative,
+        existing_ancestor,
+        existing_ancestor_relative,
         metadata,
     })
 }
@@ -716,6 +787,7 @@ impl CheckedPath {
     fn confirm(&self, roots: &[PathBuf]) -> Result<(), AcpError> {
         let current = checked_path(&self.requested, roots, self.metadata.is_none())?;
         if current.canonical != self.canonical
+            || current.existing_ancestor != self.existing_ancestor
             || current.metadata.is_some() != self.metadata.is_some()
         {
             return Err(AcpError::PermissionDenied(
@@ -1429,5 +1501,77 @@ mod tests {
         let text = String::from_utf8_lossy(&output.bytes);
         assert!(text.contains("[REDACTED]") && text.contains("visible"));
         assert!(!text.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn acp_write_creates_missing_subdirectories_after_authorization_and_permission_maps_kind()
+    {
+        let root = tempfile::tempdir().unwrap();
+        let canonical_root = root.path().canonicalize().unwrap();
+        let nested = root.path().join("nested/sub/new.txt");
+
+        let mut denied_policy = AgentPermissions::default();
+        denied_policy
+            .tools
+            .insert(WRITE_TOOL.into(), PermissionLevel::Deny);
+        let denied_bridge = bridge(root.path(), denied_policy);
+        assert!(
+            denied_bridge.open_launch_directory(&canonical_root).is_ok(),
+            "root cwd launch must succeed when cwd equals the sole workspace root"
+        );
+        let mut denied_write = params(&nested);
+        denied_write["content"] = json!("should not write");
+        assert!(
+            denied_bridge
+                .handle("fs/write_text_file", denied_write)
+                .await
+                .is_err()
+        );
+        assert!(
+            !root.path().join("nested").exists(),
+            "denied write must not create parent directories before authorization"
+        );
+
+        let allow_policy = AgentPermissions {
+            side_effect_default: PermissionLevel::Allow,
+            ..Default::default()
+        };
+        let allow_bridge = bridge(root.path(), allow_policy);
+        let mut write = params(&nested);
+        write["content"] = json!("hello nested\n");
+        allow_bridge
+            .handle("fs/write_text_file", write)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&nested).unwrap(), "hello nested\n");
+        assert!(
+            allow_bridge
+                .open_launch_directory(&root.path().join("nested/sub"))
+                .is_ok(),
+            "nested cwd inside workspace root must succeed"
+        );
+
+        let perm = allow_bridge
+            .handle(
+                "session/request_permission",
+                json!({
+                    "sessionId": "session-1",
+                    "toolCall": {
+                        "toolCallId": "tc-kind-1",
+                        "kind": "edit",
+                        "locations": [{"path": nested}]
+                    },
+                    "options": [
+                        {"optionId": "opt-allow", "kind": "allow_once"},
+                        {"optionId": "opt-reject", "kind": "reject_once"}
+                    ]
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            perm,
+            json!({"outcome":{"outcome":"selected","optionId":"opt-allow"}})
+        );
     }
 }

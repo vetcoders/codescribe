@@ -261,17 +261,130 @@ fn normalize_schema_node(
         expanded.extend(source);
         source = expanded;
     }
+
+    let mut constraint_notes = Vec::new();
+    for key in [
+        "pattern",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+    ] {
+        if let Some(val) = source.remove(key) {
+            let rendered = match &val {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            constraint_notes.push(format!("{key}: {rendered}"));
+        }
+    }
+
+    if let Some(format_val) = source.remove("format") {
+        if let Some(fmt) = format_val.as_str() {
+            if matches!(
+                fmt,
+                "enum" | "date-time" | "int32" | "int64" | "float" | "double"
+            ) {
+                source.insert("format".into(), Value::String(fmt.to_string()));
+            } else {
+                constraint_notes.push(format!("format: {fmt}"));
+            }
+        }
+    }
+
+    if let Some(const_val) = source.remove("const") {
+        match const_val {
+            Value::Null => {
+                source.insert("nullable".into(), json!(true));
+            }
+            Value::String(s) => {
+                source
+                    .entry("type".to_string())
+                    .or_insert_with(|| Value::String("string".to_string()));
+                source.insert("enum".into(), Value::Array(vec![Value::String(s)]));
+            }
+            other => {
+                constraint_notes.push(format!("const: {other}"));
+            }
+        }
+    }
+
+    if let Some(Value::Array(values)) = source.remove("enum") {
+        let mut strings = Vec::new();
+        let mut non_strings = Vec::new();
+        let mut saw_null = false;
+        for item in values {
+            match item {
+                Value::Null => saw_null = true,
+                Value::String(s) => strings.push(Value::String(s)),
+                other => non_strings.push(other.to_string()),
+            }
+        }
+        if saw_null {
+            source.insert("nullable".into(), json!(true));
+        }
+        if !strings.is_empty() && non_strings.is_empty() {
+            source
+                .entry("type".to_string())
+                .or_insert_with(|| Value::String("string".to_string()));
+            source.insert("enum".into(), Value::Array(strings));
+        } else if !non_strings.is_empty() || !strings.is_empty() {
+            let mut combined: Vec<String> = strings
+                .into_iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            combined.extend(non_strings);
+            constraint_notes.push(format!("allowed values: {}", combined.join(", ")));
+        }
+    }
+
     for key in [
         "$schema",
         "$id",
         "$defs",
         "definitions",
+        "$anchor",
+        "$dynamicRef",
+        "$dynamicAnchor",
+        "$vocabulary",
+        "$comment",
         "additionalProperties",
+        "patternProperties",
+        "unevaluatedProperties",
+        "propertyNames",
+        "dependentRequired",
+        "dependentSchemas",
+        "dependencies",
+        "additionalItems",
+        "unevaluatedItems",
+        "contains",
+        "minContains",
+        "maxContains",
+        "prefixItems",
+        "minProperties",
+        "maxProperties",
+        "if",
+        "then",
+        "else",
+        "not",
+        "contentEncoding",
+        "contentMediaType",
+        "contentSchema",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
         "default",
         "examples",
     ] {
         source.remove(key);
     }
+
     if let Some(kind) = source.remove("type") {
         if let Value::Array(types) = kind {
             let nullable = types.iter().any(|kind| kind == "null");
@@ -287,6 +400,8 @@ fn normalize_schema_node(
             if nullable {
                 source.insert("nullable".into(), json!(true));
             }
+        } else if kind == "null" {
+            source.insert("nullable".into(), json!(true));
         } else {
             source.insert("type".into(), kind);
         }
@@ -295,6 +410,20 @@ fn normalize_schema_node(
         for property in properties.values_mut() {
             *property = normalize_schema_node(property, root, refs, depth + 1)?;
         }
+    }
+    if let Some(valid_keys) =
+        source
+            .get("properties")
+            .and_then(Value::as_object)
+            .map(|properties| {
+                properties
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::HashSet<String>>()
+            })
+        && let Some(Value::Array(required)) = source.get_mut("required")
+    {
+        required.retain(|entry| entry.as_str().is_some_and(|name| valid_keys.contains(name)));
     }
     if let Some(items) = source.get_mut("items") {
         *items = normalize_schema_node(items, root, refs, depth + 1)?;
@@ -305,12 +434,52 @@ fn normalize_schema_node(
     if source.contains_key("allOf") {
         return Err("Google tool schema allOf needs explicit expansion".into());
     }
-    if let Some(Value::Array(variants)) = source.get_mut("anyOf") {
+    if let Some(Value::Array(variants)) = source.remove("anyOf") {
+        let mut non_null = Vec::new();
+        let mut saw_null = false;
         for variant in variants {
-            *variant = normalize_schema_node(variant, root, refs, depth + 1)?;
+            if is_null_schema_branch(&variant) {
+                saw_null = true;
+            } else {
+                non_null.push(normalize_schema_node(&variant, root, refs, depth + 1)?);
+            }
+        }
+        if saw_null {
+            source.insert("nullable".into(), json!(true));
+        }
+        if non_null.len() == 1 {
+            if let Some(only_obj) = non_null.pop().and_then(|v| v.as_object().cloned()) {
+                for (k, v) in only_obj {
+                    source.entry(k).or_insert(v);
+                }
+            }
+        } else if !non_null.is_empty() {
+            source.insert("anyOf".into(), Value::Array(non_null));
+        }
+    }
+    if !constraint_notes.is_empty() {
+        let suffix = format!("({})", constraint_notes.join("; "));
+        match source.get("description").and_then(Value::as_str) {
+            Some(existing) if !existing.trim().is_empty() => {
+                source.insert(
+                    "description".into(),
+                    Value::String(format!("{} {suffix}", existing.trim())),
+                );
+            }
+            _ => {
+                source.insert("description".into(), Value::String(suffix));
+            }
         }
     }
     Ok(Value::Object(source))
+}
+
+fn is_null_schema_branch(branch: &Value) -> bool {
+    let Some(obj) = branch.as_object() else {
+        return false;
+    };
+    obj.get("type").and_then(Value::as_str) == Some("null")
+        || matches!(obj.get("const"), Some(Value::Null))
 }
 
 #[cfg(test)]
@@ -337,6 +506,35 @@ mod tests {
                 &json!({"$ref":"#/$defs/cycle","$defs":{"cycle":{"$ref":"#/$defs/cycle"}}})
             )
             .is_err()
+        );
+
+        let rich_schema = json!({
+            "type": "object",
+            "required": ["mode", "ghost", "query"],
+            "properties": {
+                "mode": {
+                    "oneOf": [
+                        {"const": "fast"},
+                        {"type": "null"}
+                    ]
+                },
+                "query": {
+                    "type": "string",
+                    "format": "uri",
+                    "minLength": 3,
+                    "description": "Target URL"
+                }
+            }
+        });
+        let rich_norm = normalize_schema_for_gemini(&rich_schema).unwrap();
+        assert_eq!(rich_norm["required"], json!(["mode", "query"]));
+        assert_eq!(
+            rich_norm["properties"]["mode"],
+            json!({"type": "string", "enum": ["fast"], "nullable": true})
+        );
+        assert_eq!(
+            rich_norm["properties"]["query"],
+            json!({"type": "string", "description": "Target URL (minLength: 3; format: uri)"})
         );
     }
 

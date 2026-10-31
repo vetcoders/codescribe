@@ -351,12 +351,9 @@ async fn run_turn(
     // The launch directory was already pinned through the workspace bridge;
     // do not reinterpret a changed pathname after the child has started.
     let cwd = command.cwd.to_string_lossy().into_owned();
-    let (method, params) = if let Some(previous) = previous {
-        if initialized["agentCapabilities"]["loadSession"].as_bool() != Some(true) {
-            return Err(AcpError::Protocol(
-                "agent cannot load the retained ACP session".into(),
-            ));
-        }
+    let can_load_session = initialized["agentCapabilities"]["loadSession"].as_bool() == Some(true);
+    let resumed_previous = previous.filter(|_| can_load_session);
+    let (method, params) = if let Some(previous) = resumed_previous {
         (
             "session/load",
             json!({"sessionId": previous, "cwd": cwd, "mcpServers": []}),
@@ -370,14 +367,14 @@ async fn run_turn(
     )
     .await
     .map_err(|_| AcpError::Protocol("session setup timed out".into()))??;
-    if let (Some(expected), Some(actual)) = (previous, session["sessionId"].as_str())
+    if let (Some(expected), Some(actual)) = (resumed_previous, session["sessionId"].as_str())
         && expected != actual
     {
         return Err(AcpError::Protocol(
             "session/load returned a different identity".into(),
         ));
     }
-    let id = previous
+    let id = resumed_previous
         .map(str::to_string)
         .or_else(|| {
             session["sessionId"]
@@ -391,7 +388,7 @@ async fn run_turn(
     bridge.set_session_id(id.clone());
     let bridge = Arc::new(bridge);
     *active_bridge = Some(bridge.clone());
-    let prompt = prompt_content(messages, options, previous.is_some())?;
+    let prompt = prompt_content(messages, options, resumed_previous.is_some())?;
     if prompt
         .iter()
         .any(|part| part["type"].as_str() == Some("image"))

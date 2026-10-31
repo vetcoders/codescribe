@@ -1024,25 +1024,39 @@ fn is_planning_leak_prefix(text: &str) -> bool {
 struct PlanningFilter {
     pending: String,
     decided: bool,
-    suppress: bool,
+    suppress_until_object_end: bool,
+    suppress_permanently: bool,
 }
 impl PlanningFilter {
     fn push(&mut self, text: &str) -> Option<String> {
-        if self.decided {
-            return (!self.suppress).then(|| text.to_string());
+        if self.suppress_permanently {
+            return None;
+        }
+        if self.decided && !self.suppress_until_object_end {
+            return Some(text.to_string());
         }
         self.pending.push_str(text);
         let trimmed = self.pending.trim_start();
-        if is_planning_leak_prefix(trimmed) {
+        if self.suppress_until_object_end || is_planning_leak_prefix(trimmed) {
             self.decided = true;
-            self.suppress = true;
-            self.pending.clear();
+            self.suppress_until_object_end = true;
+            if let Some(remainder) = strip_leading_planning_leak(trimmed) {
+                self.suppress_until_object_end = false;
+                let out = remainder.to_string();
+                self.pending.clear();
+                return (!out.is_empty()).then_some(out);
+            }
+            if self.pending.len() > 16_384 {
+                self.suppress_until_object_end = false;
+                self.suppress_permanently = true;
+                self.pending.clear();
+            }
             return None;
         }
         if trimmed.is_empty() {
             if self.pending.len() > 512 {
                 self.decided = true;
-                self.suppress = true;
+                self.suppress_permanently = true;
                 self.pending.clear();
             }
             return None;
@@ -1055,7 +1069,7 @@ impl PlanningFilter {
         if possible && !trimmed.contains(':') {
             if self.pending.len() > 512 {
                 self.decided = true;
-                self.suppress = true;
+                self.suppress_permanently = true;
                 self.pending.clear();
             }
             return None;
@@ -1065,12 +1079,68 @@ impl PlanningFilter {
     }
     fn finish(&mut self) -> Option<String> {
         // An unfinished possible planning JSON must never leak on EOF/STOP.
-        if !self.decided && self.pending.trim_start().starts_with(['{', '`']) {
+        if self.suppress_permanently
+            || self.suppress_until_object_end
+            || (!self.decided && self.pending.trim_start().starts_with(['{', '`']))
+        {
             self.pending.clear();
             return None;
         }
-        (!self.suppress).then(|| std::mem::take(&mut self.pending))
+        let out = std::mem::take(&mut self.pending);
+        (!out.is_empty()).then_some(out)
     }
+}
+
+fn strip_leading_planning_leak(trimmed: &str) -> Option<&str> {
+    let fenced = trimmed.starts_with("```");
+    let body = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .map(str::trim_start)
+        .unwrap_or(trimmed);
+    let (_, after_obj) = split_leading_json_object(body)?;
+    let rest = after_obj.trim_start();
+    let rest = if fenced {
+        rest.strip_prefix("```")?.trim_start()
+    } else {
+        rest
+    };
+    Some(rest)
+}
+
+fn split_leading_json_object(text: &str) -> Option<(&str, &str)> {
+    let bytes = text.as_bytes();
+    if bytes.first().copied() != Some(b'{') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (idx, &byte) in bytes.iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let end = idx + 1;
+                    return Some((&text[..end], &text[end..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1537,5 +1607,14 @@ mod tests {
                 .await
                 .is_err()
         );
+
+        let mut filter = PlanningFilter::default();
+        assert_eq!(filter.push("{\"thought\": \"plan"), None);
+        assert_eq!(
+            filter.push("ning step\"} Real visible answer"),
+            Some("Real visible answer".into())
+        );
+        assert_eq!(filter.push(" continues."), Some(" continues.".into()));
+        assert_eq!(filter.finish(), None);
     }
 }

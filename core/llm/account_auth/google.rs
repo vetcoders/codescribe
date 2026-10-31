@@ -518,7 +518,7 @@ pub fn redact_google_secrets(message: &str) -> String {
     static PATTERN: OnceLock<regex::Regex> = OnceLock::new();
     PATTERN
         .get_or_init(|| {
-            regex::Regex::new(r"(?:AIza|ya29\.)[A-Za-z0-9_.~+/-]*")
+            regex::Regex::new(r"(?:AIza|ya29\.|1//[A-Za-z0-9_.~+/-]{10})[A-Za-z0-9_.~+/-]*")
                 .expect("constant Google credential regex")
         })
         .replace_all(message, "[REDACTED]")
@@ -539,8 +539,12 @@ mod tests {
         assert!(validate_token_endpoint("https://example.invalid/token").is_err());
         // Build public fixture markers without embedding a scanner-shaped token.
         assert!(
-            !redact_google_secrets(concat!("AI", "zaFixtureKey ya", "29.FixtureToken"))
-                .contains("Fixture")
+            !redact_google_secrets(concat!(
+                "AI",
+                "zaFixtureKey ya",
+                "29.FixtureToken 1//0gFixtureRefreshTokenValue"
+            ))
+            .contains("Fixture")
         );
         assert!(
             !format!("{:?}", GoogleCredential::ApiKey("private-fixture".into()))
