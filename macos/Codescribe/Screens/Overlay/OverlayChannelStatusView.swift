@@ -2037,13 +2037,14 @@ struct OverlayChannelStatusView: View {
               isOpen: conversation.map { $0.id == selectedConversationID } ?? false,
               onOpen: { viewConversation(channel) }))
         }
-        // Identity owns the full first line. Audio and More spend the preview's
-        // width below it, never the agent name (Founder recording, 2026-10-30).
+        // Identity owns the full first line. Like message-header actions,
+        // audio and More float over the preview's top trailing corner without
+        // narrowing its text layout.
         // Under the preview, the delivery state of the last sent message in
         // the bubble's own words, then the reader's state: the mini status
         // Maciej asked back for in place of the name row's checkmarks
         // (2026-10-30: "mini statusy pod podglądem wiadomości").
-        HStack(alignment: .center, spacing: 4) {
+        ZStack(alignment: .topTrailing) {
           VStack(alignment: .leading, spacing: 2) {
             Group {
               if let conversation, onSelectConversation != nil {

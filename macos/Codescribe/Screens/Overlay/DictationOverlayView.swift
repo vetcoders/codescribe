@@ -679,6 +679,7 @@ struct DictationOverlayView: View {
                 },
                 focusAgentPanelHint: conversation.owner.flatMap { state.agentPanelFocusHelp($0) },
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
+                navigationMenu: conversationHeaderMenu(conversation),
                 navigationActions: conversationHeaderActions(conversation),
                 navigationIndicators: conversationHeaderIndicators(conversation),
                 composerConversation: resolvedTarget,
@@ -1428,6 +1429,14 @@ struct DictationOverlayView: View {
       }
       return identity.provider == owner.provider && identity.session == owner.providerSessionID
         && identity.leaseID == owner.leaseID
+    }
+  }
+
+  private func conversationHeaderMenu(_ conversation: OverlayConversation)
+    -> OverlayBroadcastPolicyMenu?
+  {
+    conversationHeaderChannel(conversation).map {
+      channelStatusView.agentPillMenu(for: $0.channel, showsInlineError: false)
     }
   }
 

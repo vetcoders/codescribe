@@ -148,6 +148,8 @@ struct OverlayConversationView: View {
   var onOpenOwnerConversation: ((OverlayConversationOwner) -> Void)? = nil
   /// Presentations may hide navigation when their own chrome replaces it.
   var hidesNavigation = false
+  /// Supplied only after the caller verifies the current frozen owner.
+  var navigationMenu: OverlayBroadcastPolicyMenu? = nil
   /// Optional controls for the horizontal bus window only.
   var navigationActions: AnyView? = nil
   var navigationIndicators: AnyView? = nil
@@ -520,6 +522,7 @@ struct OverlayConversationView: View {
             }
             navigationIndicators
             conversationNamePill
+              .modifier(navigationLabelMenu)
               .onGeometryChange(for: CGFloat.self) {
                 $0.size.height
               } action: {
@@ -563,6 +566,7 @@ struct OverlayConversationView: View {
         .help(Text(verbatim: conversation.displayTitle))
         .accessibilityAddTraits(.isHeader)
         .accessibilityIdentifier("overlay-conversation-name")
+        .modifier(navigationLabelMenu)
         if let navigationActions {
           navigationActions
             .fixedSize()
@@ -593,6 +597,13 @@ struct OverlayConversationView: View {
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-conversation-navigation")
     }
+  }
+
+  private var navigationLabelMenu: OverlayBroadcastPolicyMenu {
+    guard allowsLiveActions, let navigationMenu else {
+      return OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
+    }
+    return navigationMenu
   }
 
   @ViewBuilder

@@ -39,10 +39,12 @@ records the compact-card layout and its matching More/right-click menu.
 The runtime action semantics and availability are defined below.
 
 An agent row gives its full first line to identity, receipt and clock. The
-waveform microphone, speaker and More menu remain visible alongside the
-provider/model/project descriptor and routed two-line preview below it. The
-Founder's 2026-10-30 recording supersedes the previous beside-name placement:
-audio may spend preview width, not reduce the agent name to one or two letters.
+waveform microphone, speaker and More menu remain visible over the top trailing
+corner of the provider/model/project descriptor and routed two-line preview
+below it. The preview keeps the full text layout width underneath the controls,
+like the conversation's message-header actions. The delivery/reader state line
+remains below the preview; panel and Sync controls keep their separate targets
+on the identity row.
 The conversation button and these controls remain siblings; opening a
 conversation never opens its microphone. Long names retain their full tooltip
 and accessibility label.
@@ -72,8 +74,10 @@ more control and in the menu; removing the footer must not erase that feedback.
 `cardAgentMenu` selects only these secondary actions for the compact More
 control. The roster label's right-click uses the full `agentPillMenu`, restoring
 Write/Forward, microphone, playback and Show in Agents with the existing command
-guards (Founder correction, 2026-10-30). The conversation header's More control
-keeps the compact subset.
+guards (Founder correction, 2026-10-30). The conversation header label uses
+the same full menu only after matching its current frozen owner and when the
+presentation allows live actions. Historical owners retain reading and copying
+without live commands. The header's More control keeps the compact subset.
 
 Opening the workspace dispatches the existing `focusAgentPanel` command to
 the detected Frame pane, terminal or Codex thread. `showAgentInMonitor` is a
