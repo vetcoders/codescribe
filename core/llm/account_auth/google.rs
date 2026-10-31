@@ -141,10 +141,10 @@ pub fn clear_google_account_tokens() -> Result<(), AccountAuthError> {
 }
 
 fn adc_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS") {
-        if !path.is_empty() {
-            return Some(PathBuf::from(path));
-        }
+    if let Some(path) = std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS")
+        && !path.is_empty()
+    {
+        return Some(PathBuf::from(path));
     }
     directories::BaseDirs::new().map(|dirs| {
         dirs.home_dir()

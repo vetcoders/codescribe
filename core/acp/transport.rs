@@ -115,14 +115,13 @@ impl AcpTransport {
         let (outgoing, commands) = mpsc::unbounded_channel();
         let (frames, incoming) = mpsc::channel(64);
         let actor = tokio::spawn(run_process(
-            child,
+            (child, process_group),
             stdin,
             BufReader::new(stdout),
             commands,
             frames,
             diagnostics,
             stderr_task,
-            process_group,
         ));
         Ok(Self {
             outgoing,
@@ -208,14 +207,13 @@ async fn write_frame(
 }
 
 async fn run_process(
-    mut child: Child,
+    (mut child, mut process_group): (Child, OwnedProcessGroup),
     mut stdin: ChildStdin,
     mut stdout: BufReader<tokio::process::ChildStdout>,
     mut commands: mpsc::UnboundedReceiver<Outbound>,
     frames: mpsc::Sender<Result<Value, AcpError>>,
     diagnostics: Arc<Mutex<VecDeque<String>>>,
     mut stderr_task: JoinHandle<()>,
-    mut process_group: OwnedProcessGroup,
 ) {
     let mut session_id = None;
     let mut line = Vec::new();
@@ -232,10 +230,9 @@ async fn run_process(
                 Some(Outbound::Write(bytes, ack)) => {
                     let result = write_frame(&mut stdin, &bytes, WRITE_TIMEOUT).await;
                     let failed = result.is_err();
-                    if !failed && let Ok(frame) = serde_json::from_slice::<Value>(&bytes) {
-                        if frame.get("method").is_none() && let Some(id) = frame.get("id") {
-                            pending_permissions.retain(|pending| pending != id);
-                        }
+                    if !failed && let Ok(frame) = serde_json::from_slice::<Value>(&bytes)
+                        && frame.get("method").is_none() && let Some(id) = frame.get("id") {
+                        pending_permissions.retain(|pending| pending != id);
                     }
                     let _ = ack.send(result);
                     if failed { break; }

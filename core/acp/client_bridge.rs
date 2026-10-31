@@ -1198,7 +1198,7 @@ mod tests {
         // SAFETY: the path is an owned disposable fixture and the C string is valid.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
         let root_path = root.path().canonicalize().unwrap();
-        let checked = checked_path(&fifo, &[root_path.clone()], false).unwrap();
+        let checked = checked_path(&fifo, std::slice::from_ref(&root_path), false).unwrap();
         let dir = Dir::open_ambient_dir(&root_path, ambient_authority()).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let task = std::thread::spawn(move || {
@@ -1225,7 +1225,7 @@ mod tests {
         };
         task.join().unwrap();
         drop(peer);
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
     }
 
     #[cfg(unix)]
@@ -1264,8 +1264,10 @@ mod tests {
         std::fs::write(&file, "first").unwrap();
         std::fs::write(&second, "second").unwrap();
         symlink(&file, &alias).unwrap();
-        let mut policy = AgentPermissions::default();
-        policy.read_only_default = PermissionLevel::Ask;
+        let policy = AgentPermissions {
+            read_only_default: PermissionLevel::Ask,
+            ..Default::default()
+        };
         let mut config =
             AcpClientBridgeConfig::for_workspace(vec![root.path().into()], policy).unwrap();
         let (ui_tx, _ui_rx) = mpsc::channel(8);

@@ -1460,9 +1460,7 @@ mod tests {
 
     #[test]
     fn google_provider_sse_split_utf8_multiline_and_truncated_stream() {
-        let wire = format!(
-            ": ping\r\ndata: {{\"candidates\":\r\ndata: [{{\"content\":{{\"parts\":[{{\"text\":\"Zażółć 🐾\"}}]}},\"finishReason\":\"STOP\"}}]}}\r\n\r\n"
-        );
+        let wire = ": ping\r\ndata: {\"candidates\":\r\ndata: [{\"content\":{\"parts\":[{\"text\":\"Zażółć 🐾\"}]},\"finishReason\":\"STOP\"}]}\r\n\r\n";
         for split in 0..wire.len() {
             let mut parser = GoogleSse::default();
             let mut result = parser.push(&wire.as_bytes()[..split]).unwrap();

@@ -897,13 +897,15 @@ for line in sys.stdin:
         let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root_path.to_str().unwrap());
         let launch = fixture(&root_path, "denied-read").command;
         std::fs::write(root_path.join(".env"), "FIXTURE_SECRET=keep-private").unwrap();
-        let mut settings = UserSettings::default();
-        settings.agent_acp = Some(AcpLaunchSettings {
-            program: launch.program,
-            args: launch.args,
-            cwd: root_path.display().to_string(),
-        });
-        settings.agent_workspace_roots = Some(vec![root_path.display().to_string()]);
+        let settings = UserSettings {
+            agent_acp: Some(AcpLaunchSettings {
+                program: launch.program,
+                args: launch.args,
+                cwd: root_path.display().to_string(),
+            }),
+            agent_workspace_roots: Some(vec![root_path.display().to_string()]),
+            ..Default::default()
+        };
         settings.save().unwrap();
         let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
         assert!(

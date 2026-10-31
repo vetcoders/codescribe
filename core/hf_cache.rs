@@ -904,7 +904,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let locked = temp.path().join("locked");
         fs::create_dir(&locked).unwrap();
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o0)).unwrap();
         let status = classify_cache_root(&locked);
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(
