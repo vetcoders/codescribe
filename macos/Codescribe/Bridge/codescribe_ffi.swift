@@ -1510,6 +1510,12 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func getAssistivePrompt()  -> String
 
     /**
+     * Saved formatter Keywords, normalized, from one runtime snapshot. A
+     * failed read serves the last good snapshot instead of an empty list.
+     */
+    func getFormatterKeywords()  -> [String]
+
+    /**
      * Current BASE formatting prompt (the editable `formatting.txt`, WITHOUT
      * the appended `*_tuning.txt`). Falls back to the built-in default when the
      * file does not exist yet.
@@ -1674,7 +1680,8 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
 
     /**
      * Persist a normalized Auto Format policy and return prompt-free
-     * post-write truth. Unknown policy IDs fail without changing disk state.
+     * post-write truth. Only off, correction and smart are automatic; Max and
+     * unknown policy IDs fail without changing disk state.
      */
     func setAutoFormatLevel(level: String) throws  -> CsTrayToggles
 
@@ -1684,6 +1691,15 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      * mode is `off`, so an armed `comfort` choice survives a redundant on.
      */
     func setAutoPasteEnabled(enabled: Bool) throws  -> CsTrayToggles
+
+    /**
+     * Replace the formatter Keywords and return the normalized stored list.
+     * Only `formatter_keywords` changes; the automatic level and every other
+     * setting keep their stored values. The settings owner refuses an
+     * oversized list whole; nothing is truncated and the error is returned.
+     * An empty list removes the Keywords.
+     */
+    func setFormatterKeywords(keywords: [String]) throws  -> [String]
 
     /**
      * Save the BASE formatting prompt through the core's atomic writer.
@@ -2076,6 +2092,18 @@ open func getAssistivePrompt() -> String  {
 }
 
     /**
+     * Saved formatter Keywords, normalized, from one runtime snapshot. A
+     * failed read serves the last good snapshot instead of an empty list.
+     */
+open func getFormatterKeywords() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_get_formatter_keywords(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * Current BASE formatting prompt (the editable `formatting.txt`, WITHOUT
      * the appended `*_tuning.txt`). Falls back to the built-in default when the
      * file does not exist yet.
@@ -2393,7 +2421,8 @@ open func setAssistivePrompt(content: String)throws   {try rustCallWithError(Ffi
 
     /**
      * Persist a normalized Auto Format policy and return prompt-free
-     * post-write truth. Unknown policy IDs fail without changing disk state.
+     * post-write truth. Only off, correction and smart are automatic; Max and
+     * unknown policy IDs fail without changing disk state.
      */
 open func setAutoFormatLevel(level: String)throws  -> CsTrayToggles  {
     return try  FfiConverterTypeCsTrayToggles_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -2414,6 +2443,22 @@ open func setAutoPasteEnabled(enabled: Bool)throws  -> CsTrayToggles  {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_set_auto_paste_enabled(
             self.uniffiCloneHandle(),
         FfiConverterBool.lower(enabled),$0
+    )
+})
+}
+
+    /**
+     * Replace the formatter Keywords and return the normalized stored list.
+     * Only `formatter_keywords` changes; the automatic level and every other
+     * setting keep their stored values. The settings owner refuses an
+     * oversized list whole; nothing is truncated and the error is returned.
+     * An empty list removes the Keywords.
+     */
+open func setFormatterKeywords(keywords: [String])throws  -> [String]  {
+    return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_set_formatter_keywords(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceString.lower(keywords),$0
     )
 })
 }
@@ -14409,7 +14454,17 @@ public struct CsSettings: Equatable, Hashable {
      * Agent reasoning level: `default` (the model's own) or a chosen level.
      */
     public var llmAssistiveReasoning: String
+    /**
+     * Automatic formatting policy: off, correction or smart. A stored legacy
+     * `max`/`creative` reads as smart here; Max is invoked through Format.
+     */
     public var formattingLevel: String?
+    /**
+     * Formatter Keywords: preferred vocabulary given as context to
+     * Correction, Smart and Max. Normalized terms from the same seal; empty
+     * means no extra context. Written only through `set_formatter_keywords`.
+     */
+    public var formatterKeywords: [String]
     public var whisperModel: String?
     /**
      * Read-only diagnostic env override captured by the runtime snapshot.
@@ -14569,7 +14624,16 @@ public struct CsSettings: Equatable, Hashable {
          */llmFormattingReasoning: String, llmAssistiveProvider: String?, llmAssistiveModel: String?,
         /**
          * Agent reasoning level: `default` (the model's own) or a chosen level.
-         */llmAssistiveReasoning: String, formattingLevel: String?, whisperModel: String?,
+         */llmAssistiveReasoning: String,
+        /**
+         * Automatic formatting policy: off, correction or smart. A stored legacy
+         * `max`/`creative` reads as smart here; Max is invoked through Format.
+         */formattingLevel: String?,
+        /**
+         * Formatter Keywords: preferred vocabulary given as context to
+         * Correction, Smart and Max. Normalized terms from the same seal; empty
+         * means no extra context. Written only through `set_formatter_keywords`.
+         */formatterKeywords: [String], whisperModel: String?,
         /**
          * Read-only diagnostic env override captured by the runtime snapshot.
          * ASR mode owns the default; Settings never writes this value.
@@ -14676,6 +14740,7 @@ public struct CsSettings: Equatable, Hashable {
         self.llmAssistiveModel = llmAssistiveModel
         self.llmAssistiveReasoning = llmAssistiveReasoning
         self.formattingLevel = formattingLevel
+        self.formatterKeywords = formatterKeywords
         self.whisperModel = whisperModel
         self.layeredTranscription = layeredTranscription
         self.agentWorkspaceRoots = agentWorkspaceRoots
@@ -14780,6 +14845,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 llmAssistiveModel: FfiConverterOptionString.read(from: &buf),
                 llmAssistiveReasoning: FfiConverterString.read(from: &buf),
                 formattingLevel: FfiConverterOptionString.read(from: &buf),
+                formatterKeywords: FfiConverterSequenceString.read(from: &buf),
                 whisperModel: FfiConverterOptionString.read(from: &buf),
                 layeredTranscription: FfiConverterOptionString.read(from: &buf),
                 agentWorkspaceRoots: FfiConverterSequenceString.read(from: &buf),
@@ -14872,6 +14938,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.llmAssistiveModel, into: &buf)
         FfiConverterString.write(value.llmAssistiveReasoning, into: &buf)
         FfiConverterOptionString.write(value.formattingLevel, into: &buf)
+        FfiConverterSequenceString.write(value.formatterKeywords, into: &buf)
         FfiConverterOptionString.write(value.whisperModel, into: &buf)
         FfiConverterOptionString.write(value.layeredTranscription, into: &buf)
         FfiConverterSequenceString.write(value.agentWorkspaceRoots, into: &buf)
@@ -16197,7 +16264,8 @@ public struct CsTrayToggles: Equatable, Hashable {
      */
     public var autoPasteEnabled: Bool
     /**
-     * Normalized automatic formatting policy: off, correction, smart, or max.
+     * Normalized automatic formatting policy: off, correction or smart.
+     * A stored legacy `max`/`creative` reads as smart.
      */
     public var formattingLevel: String
     /**
@@ -16230,7 +16298,8 @@ public struct CsTrayToggles: Equatable, Hashable {
          * Never persisted; `paste_mode` is the one stored choice.
          */autoPasteEnabled: Bool,
         /**
-         * Normalized automatic formatting policy: off, correction, smart, or max.
+         * Normalized automatic formatting policy: off, correction or smart.
+         * A stored legacy `max`/`creative` reads as smart.
          */formattingLevel: String,
         /**
          * UI-initiated recording starts in the assistive lane when enabled.
@@ -22636,6 +22705,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_get_assistive_prompt() != 46234) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_get_formatter_keywords() != 59150) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_get_formatting_prompt() != 56109) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -22714,10 +22786,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_assistive_prompt() != 16734) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_format_level() != 8217) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_format_level() != 8771) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_auto_paste_enabled() != 24266) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_formatter_keywords() != 4195) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_formatting_prompt() != 21880) {

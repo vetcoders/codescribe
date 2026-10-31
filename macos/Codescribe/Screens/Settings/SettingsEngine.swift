@@ -153,6 +153,8 @@ protocol SettingsEngine {
   func restoreFormattingPromptToDefault() throws
   func restoreFormattingPromptToDefault(level: String) throws
   func restoreAssistivePromptToDefault() throws
+  func setFormatterKeywords(keywords: [String]) throws -> [String]
+  func setFormatterKeywordsAsync(keywords: [String]) async throws -> [String]
 
   // Recoverable reset: preview live impact, move local data to Trash, and
   // optionally remove Keychain keys. MCP-only clear is a separate concern.
@@ -201,6 +203,10 @@ extension SettingsEngine {
     providerId: String, timeoutSeconds: UInt64
   ) async throws -> CsAccountLoginResult {
     try awaitAccountLogin(providerId: providerId, timeoutSeconds: timeoutSeconds)
+  }
+  func setFormatterKeywords(keywords: [String]) throws -> [String] { keywords }
+  func setFormatterKeywordsAsync(keywords: [String]) async throws -> [String] {
+    try setFormatterKeywords(keywords: keywords)
   }
 }
 
@@ -417,6 +423,14 @@ final class RealSettingsEngine: SettingsEngine {
   func restoreAssistivePromptToDefault() throws {
     try config.restoreAssistivePromptToDefault()
   }
+  func setFormatterKeywords(keywords: [String]) throws -> [String] {
+    try config.setFormatterKeywords(keywords: keywords)
+  }
+  nonisolated func setFormatterKeywordsAsync(keywords: [String]) async throws -> [String] {
+    try await Task.detached(priority: .userInitiated) {
+      try CodescribeConfig().setFormatterKeywords(keywords: keywords)
+    }.value
+  }
 
   func resetPreview() -> CsResetPreview { config.resetPreview() }
   func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
@@ -462,6 +476,7 @@ struct MockSettingsEngine: SettingsEngine {
   var promptStore: MockPromptStore = MockPromptStore()
   var promptSaveObserver: ((String, String) throws -> Void)?
   var promptRestoreObserver: ((String) throws -> Void)?
+  var setFormatterKeywordsObserver: (([String]) throws -> [String])?
   var resetAppDataObserver: ((Bool, Bool) throws -> Void)?
   var resetAgentDataObserver: (() throws -> Void)?
   var clearMcpConfigurationObserver: (() throws -> Void)?
@@ -733,6 +748,12 @@ struct MockSettingsEngine: SettingsEngine {
     try promptRestoreObserver?("assistive")
     promptStore.restored["assistive"] = .builtIn(
       assistiveSnapshot, content: CsSettings.sampleAssistivePrompt)
+  }
+  func setFormatterKeywords(keywords: [String]) throws -> [String] {
+    if let setFormatterKeywordsObserver {
+      return try setFormatterKeywordsObserver(keywords)
+    }
+    return keywords
   }
   func resetPreview() -> CsResetPreview { resetPreviewValue }
   func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
@@ -1099,6 +1120,7 @@ extension CsSettings {
     llmAssistiveModel: "gpt-4o",
     llmAssistiveReasoning: "default",
     formattingLevel: "correction",
+    formatterKeywords: [],
     whisperModel: "whisper-large-v3-turbo",
     layeredTranscription: nil,
     agentWorkspaceRoots: ["~/.codescribe"],

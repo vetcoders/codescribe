@@ -17,11 +17,11 @@ final class SettingsLiveProjectionTests: XCTestCase {
     XCTAssertEqual(settings.pasteMode, .safe)
 
     tray.setPasteMode(.comfort)
-    tray.setAutoFormatLevel(.max)
+    tray.setAutoFormatLevel(.smart)
 
     XCTAssertEqual(settings.pasteMode, .comfort, "open Settings must show the tray's paste mode")
     XCTAssertEqual(
-      FormattingPolicyOption(storedValue: settings.settings.formattingLevel), .max,
+      FormattingPolicyOption(storedValue: settings.settings.formattingLevel), .smart,
       "open Settings must show the tray's formatting level")
     XCTAssertEqual(file.writes.map { $0.key }, ["PASTE_MODE", "FORMATTING_LEVEL"])
     XCTAssertEqual(

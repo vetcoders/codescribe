@@ -266,6 +266,7 @@ data  CsSettings.llmAssistiveProvider
 data  CsSettings.llmAssistiveModel
 data  CsSettings.llmAssistiveReasoning
 data  CsSettings.formattingLevel
+data  CsSettings.formatterKeywords
 data  CsSettings.whisperModel
 data  CsSettings.layeredTranscription
 data  CsSettings.agentWorkspaceRoots
@@ -425,9 +426,11 @@ data  CodescribeConfig.configDir()
 data  CodescribeConfig.defaultAssistivePrompt()
 data  CodescribeConfig.defaultFormattingPrompt()
 data  CodescribeConfig.getAssistivePrompt()
+data  CodescribeConfig.getFormatterKeywords()
 data  CodescribeConfig.getFormattingPrompt()
 data  CodescribeConfig.onboardingMode()
 data  CodescribeConfig.serviceKeyAccounts()
+data  CodescribeConfig.setFormatterKeywords()
 data  CodescribeConfig.settingsFilePath()
 data  CsAudioReadLease.rootDirectory()
 data  CodescribeHotkeys.archiveAgentChannel()

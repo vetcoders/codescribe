@@ -1409,7 +1409,7 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var whisperModelSwitchPending = false
 
   /// Shared invalidation edges from `AppModel` (nil in tests and previews).
-  private let configurationInvalidation: ConfigurationInvalidation?
+  let configurationInvalidation: ConfigurationInvalidation?
   private var configurationInvalidationSink: AnyCancellable?
   /// CoreAudio edge while Settings is visible; see `beginAudioDeviceObservation`.
   private var audioDeviceMonitor: AudioInputDeviceMonitor?
@@ -1446,7 +1446,7 @@ final class SettingsViewModel: ObservableObject {
   let buildInfo: AppBuildInfo
   var appVersion: String { buildInfo.version }
 
-  private let engine: SettingsEngine?
+  let engine: SettingsEngine?
   private let creatorAgentBridge: AgentBridgeInstalling
   private let permissionProbe: PermissionProbing
   private let agentStatus: AgentStatusEngine?
@@ -3886,7 +3886,7 @@ final class SettingsViewModel: ObservableObject {
   /// Applies an already-read bridge snapshot without writing it back. Keep
   /// this as the only read path so passive reloads cannot reset the picker to
   /// a UI default while persisted truth says otherwise.
-  private func applyLoadedSettings(_ loaded: CsSettings) {
+  func applyLoadedSettings(_ loaded: CsSettings) {
     settings = loaded
     deferredInsertShortcut = DeferredInsertShortcutOption(
       wireId: loaded.deferredInsertShortcut
