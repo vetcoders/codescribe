@@ -103,6 +103,22 @@ func query(_ request: Request) throws -> Reception {
     requestID: request.requestID, trusted: AXIsProcessTrusted(), elements: elements,
     pressStatus: pressStatus, trace: trace, errorCode: nil)
 }
+func removeRequestIfPresent(_ input: URL) throws {
+  do {
+    try FileManager.default.removeItem(at: input)
+  } catch let error as NSError {
+    guard error.domain == NSCocoaErrorDomain,
+      error.code == CocoaError.fileNoSuchFile.rawValue,
+      let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError,
+      underlying.domain == NSPOSIXErrorDomain, underlying.code == Int(ENOENT)
+    else { throw error }
+    // The client also unlinks its request when it finishes or times out.
+  }
+}
+#if NATIVE_AX_PROBE_CLEANUP_TEST
+guard CommandLine.arguments.count == 2 else { exit(2) }
+try removeRequestIfPresent(URL(fileURLWithPath: CommandLine.arguments[1]))
+#else
 guard CommandLine.arguments.count == 2 else { exit(2) }
 let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 try Data((AXIsProcessTrusted() ? "trusted" : "untrusted").utf8)
@@ -114,7 +130,7 @@ while Date() < deadline {
   where input.lastPathComponent.hasSuffix(".request.json") {
     let requestID = String(input.lastPathComponent.dropLast(".request.json".count))
     guard UUID(uuidString: requestID) != nil else {
-      try FileManager.default.removeItem(at: input)
+      try removeRequestIfPresent(input)
       continue
     }
     let result: Reception
@@ -132,7 +148,8 @@ while Date() < deadline {
     let output = input.deletingPathExtension().deletingPathExtension().appendingPathExtension(
       "response.json")
     try JSONEncoder().encode(result).write(to: output, options: .atomic)
-    try FileManager.default.removeItem(at: input)
+    try removeRequestIfPresent(input)
   }
   Thread.sleep(forTimeInterval: 0.01)
 }
+#endif

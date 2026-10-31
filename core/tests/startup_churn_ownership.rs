@@ -69,7 +69,10 @@ fn isolated(name: &str, embedded: bool, defaults: bool) {
     if !defaults {
         command
             .env("CODESCRIBE_DATA_DIR", root.join("standalone"))
-            .env("CODESCRIBE_AGENT_BRIDGE_HOME", root.join("standalone-bridge"));
+            .env(
+                "CODESCRIBE_AGENT_BRIDGE_HOME",
+                root.join("standalone-bridge"),
+            );
     }
     let output = command.output().unwrap();
     assert!(
