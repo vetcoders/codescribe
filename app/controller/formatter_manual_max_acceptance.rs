@@ -58,3 +58,45 @@ async fn controller_with_stored_max_admits_automatic_smart_for_capture() {
     assert_eq!(admitted.formatting_policy(), FormattingPolicy::Smart);
     assert!(controller.max_consultation.lock().await.is_none());
 }
+
+/// Kills mutant 09 (manual-source-generation-writeback): capture may derive a
+/// Smart snapshot, but reading settings must retain the exact stored Max Arc,
+/// digest, provenance and vocabulary in the controller's source-generation slot.
+#[tokio::test]
+async fn controller_capture_keeps_stored_max_source_generation() {
+    let controller = RecordingController::new_without_keychain();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut inputs = CapturedRuntimeInputs::defaults_at(dir.path().to_path_buf(), 42);
+    inputs.user_settings.formatting_level = Some("max".to_string());
+    inputs.user_settings.formatter_keywords = Some(vec!["Vetcoders".to_string()]);
+    let source = Arc::new(Config::runtime_snapshot_from_captured(inputs));
+    let source_digest = source.digest().clone();
+    let source_provenance = source.provenance().clone();
+    *controller.runtime_settings.write().await = Arc::clone(&source);
+
+    let borrowed = controller.runtime_settings_arc().await;
+    assert!(
+        Arc::ptr_eq(&borrowed, &source),
+        "read must borrow the stored generation"
+    );
+    let admitted = automatic_take_settings(borrowed);
+    assert_eq!(admitted.formatting_policy(), FormattingPolicy::Smart);
+    assert_eq!(admitted.formatter_keywords(), &["Vetcoders".to_string()]);
+
+    // Read the owning slot directly: another accessor call must not hide a writeback.
+    let stored = Arc::clone(&*controller.runtime_settings.read().await);
+    assert!(
+        Arc::ptr_eq(&stored, &source),
+        "capture must not replace the source Arc"
+    );
+    assert_eq!(stored.formatting_policy(), FormattingPolicy::Max);
+    assert_eq!(stored.digest(), &source_digest);
+    assert_eq!(stored.provenance(), &source_provenance);
+    assert_eq!(stored.provenance().loaded_at_unix_ms, 42);
+    assert_eq!(stored.formatter_keywords(), &["Vetcoders".to_string()]);
+    assert_eq!(
+        stored.formatting_vocabulary_context(),
+        source.formatting_vocabulary_context()
+    );
+    assert!(controller.max_consultation.lock().await.is_none());
+}
