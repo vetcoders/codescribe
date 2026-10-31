@@ -37,7 +37,7 @@ struct DictationCloudPrivacyTab: View {
         RuntimeRow(
           key: CloudPrivacyCopy.savedConsentLabel, value: consentValue,
           tint: false,
-          trailing: .dot(model.cloudConsentGranted ? CSColor.oliveLight : CSColor.amber))
+          trailing: .dot(model.cloudConsentGranted ? CSColor.oliveLight : CSColor.amberLight))
       }
       .clipShape(.rect(cornerRadius: CSRadius.composer))
       .overlay {
@@ -92,7 +92,7 @@ struct DictationCloudPrivacyTab: View {
           .foregroundStyle(Color.primary)
         Text(detail)
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -144,7 +144,7 @@ struct DictationCloudPrivacyTab: View {
   private func prose(_ line: String) -> some View {
     Text(line)
       .font(SettingsScale.helper)
-      .foregroundStyle(Color.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .frame(maxWidth: .infinity, alignment: .leading)
       .fixedSize(horizontal: false, vertical: true)
   }

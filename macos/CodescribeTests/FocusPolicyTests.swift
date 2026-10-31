@@ -5,6 +5,12 @@ import XCTest
 
 @MainActor
 final class FocusPolicyTests: XCTestCase {
+  func testPointerSuppressesOutlineBeforeDeferredFocusRelease() {
+    XCTAssertFalse(CSFocusPolicy.shouldShowOutline(isFocused: true, modality: .pointer))
+    XCTAssertTrue(CSFocusPolicy.shouldShowOutline(isFocused: true, modality: .keyboard))
+    XCTAssertFalse(CSFocusPolicy.shouldShowOutline(isFocused: false, modality: .keyboard))
+  }
+
   func testPointerReleasesButtonFocusButKeyboardNavigationKeepsIt() {
     XCTAssertTrue(
       CSFocusPolicy.shouldReleaseFocus(for: .pointer, hitView: NSButton())

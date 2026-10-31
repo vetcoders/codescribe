@@ -830,13 +830,25 @@ pub async fn access_token(provider: ProviderKind) -> Result<String, AccountAuthE
         return Ok(tokens.access_token);
     }
 
-    let _lock = refresh_lock(provider).lock().await;
+    let lock = refresh_lock(provider).lock().await;
     // Re-read under the lock: a concurrent holder may have just refreshed.
     let tokens = credential_io(move || load_account_tokens(provider)).await?;
     if !tokens.expires_within(REFRESH_SKEW) {
         return Ok(tokens.access_token);
     }
-    Ok(refresh_tokens(provider, tokens).await?.access_token)
+    // The refresh and its storage write are one transaction that owns the lock.
+    // A caller's deadline (a formatter timeout) drops only this future: the
+    // provider may already have rotated the refresh token, so releasing the lock
+    // before the write landed would let the next caller refresh with the token
+    // the provider just invalidated.
+    let transaction = tokio::spawn(async move {
+        let _lock = lock;
+        refresh_tokens(provider, tokens).await
+    });
+    let refreshed = transaction.await.map_err(|error| {
+        AccountAuthError::Storage(format!("credential refresh task ended: {error}"))
+    })??;
+    Ok(refreshed.access_token)
 }
 
 /// Run a Keychain operation on the blocking pool. A Keychain call can wait on
@@ -900,7 +912,12 @@ pub async fn refresh_tokens(
     let refreshed =
         refresh_provider_tokens(provider, config, &issuer, &client_id, &refresh_token).await?;
     let stored = refreshed.clone();
-    credential_io(move || store_account_tokens(provider, &stored)).await?;
+    credential_io(move || {
+        #[cfg(test)]
+        tests::pause_refresh_persistence();
+        store_account_tokens(provider, &stored)
+    })
+    .await?;
     Ok(refreshed)
 }
 
@@ -1020,6 +1037,45 @@ mod tests {
     }
     use super::*;
     use serial_test::serial;
+
+    type RefreshPersistenceGate = (
+        tokio::sync::oneshot::Sender<()>,
+        std::sync::mpsc::Receiver<()>,
+    );
+    static REFRESH_PERSISTENCE_GATE: std::sync::Mutex<Option<RefreshPersistenceGate>> =
+        std::sync::Mutex::new(None);
+
+    pub(super) fn pause_refresh_persistence() {
+        let gate = REFRESH_PERSISTENCE_GATE.lock().unwrap().take();
+        if let Some((entered, release)) = gate {
+            let _ = entered.send(());
+            let _ = release.recv();
+        }
+    }
+
+    struct RefreshPersistencePause {
+        entered: tokio::sync::oneshot::Receiver<()>,
+        release: Option<std::sync::mpsc::Sender<()>>,
+    }
+
+    impl RefreshPersistencePause {
+        fn new() -> Self {
+            let (entered_tx, entered) = tokio::sync::oneshot::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            *REFRESH_PERSISTENCE_GATE.lock().unwrap() = Some((entered_tx, release_rx));
+            Self {
+                entered,
+                release: Some(release),
+            }
+        }
+    }
+
+    impl Drop for RefreshPersistencePause {
+        fn drop(&mut self) {
+            REFRESH_PERSISTENCE_GATE.lock().unwrap().take();
+            self.release.take();
+        }
+    }
 
     /// Point the settings store at an isolated scratch dir so these tests never
     /// read (or depend on) the operator's real settings.json.
@@ -1240,6 +1296,81 @@ mod tests {
         let _bundle = crate::config::keychain::test_support::install_bundle(&[]);
         let probe = crate::config::keychain::CredentialAcquisitionProbe::forbid();
         let _ = access_token(ProviderKind::OpenAiResponses).await;
+        assert!(probe.attempts().is_empty(), "{:?}", probe.attempts());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn cancelled_access_token_keeps_provider_locked_until_refresh_is_persisted() {
+        let (_settings_guard, _directory) = isolated_settings_dir("cancelled_refresh");
+        let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let mut server = mockito::Server::new_async().await;
+        let _issuer = EnvGuard::set(OPENAI_ISSUER_ENV, server.url());
+        let provider = ProviderKind::OpenAiResponses;
+        let expired = AccountTokens::new(
+            provider,
+            "expired-access".to_string(),
+            Some("expired-refresh".to_string()),
+            None,
+            None,
+            Some(0),
+        );
+        let payload = serde_json::to_string(&expired).unwrap();
+        let _bundle = crate::config::keychain::test_support::install_bundle(&[(
+            OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+            &payload,
+        )]);
+        let probe = crate::config::keychain::CredentialAcquisitionProbe::forbid();
+        let refresh = server
+            .mock("POST", "/oauth/token")
+            .match_body(mockito::Matcher::UrlEncoded(
+                "refresh_token".to_string(),
+                "expired-refresh".to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":3600}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let mut persistence = RefreshPersistencePause::new();
+        let first = tokio::spawn(access_token(provider));
+        tokio::time::timeout(Duration::from_secs(5), &mut persistence.entered)
+            .await
+            .expect("refresh did not reach persistence")
+            .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        assert!(
+            refresh_lock(provider).try_lock().is_err(),
+            "cancelling a caller must not release the refresh transaction's lock"
+        );
+        assert_eq!(
+            cached_account_tokens(provider).unwrap().access_token,
+            "expired-access"
+        );
+
+        let mut second = tokio::spawn(access_token(provider));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut second)
+                .await
+                .is_err(),
+            "another caller must wait for the rotated credentials to be stored"
+        );
+        persistence.release.take().unwrap().send(()).unwrap();
+        let token = tokio::time::timeout(Duration::from_secs(5), second)
+            .await
+            .expect("second caller did not resume after persistence")
+            .unwrap()
+            .unwrap();
+        assert_eq!(token, "rotated-access");
+        let stored = cached_account_tokens(provider).unwrap();
+        assert_eq!(stored.access_token, "rotated-access");
+        assert_eq!(stored.refresh_token.as_deref(), Some("rotated-refresh"));
+        refresh.assert_async().await;
         assert!(probe.attempts().is_empty(), "{:?}", probe.attempts());
     }
 

@@ -8,6 +8,52 @@ enum OverlayContentSurface: String, CaseIterable, Hashable, Sendable {
   case agents
 }
 
+/// Motion uses geometry first. Only a mounted menu candidate may need a
+/// native editable-text hit test; ordinary interior motion belongs to AppKit.
+enum OverlayPointerZone: Equatable {
+  case outside, interior, menu, dragStrip
+  case resize(OverlayResizeHit.Edge)
+
+  static func resolve(
+    at point: NSPoint, in bounds: NSRect, mode: OverlayPresentationMode,
+    resizable: Bool, menuContains: () -> Bool, dragContains: () -> Bool
+  ) -> Self {
+    guard bounds.contains(point) else { return .outside }
+    if resizable, let edge = OverlayResizeHit.edge(at: point, in: bounds, mode: mode) {
+      return .resize(edge)
+    }
+    if menuContains() { return .menu }
+    if dragContains() { return .dragStrip }
+    return .interior
+  }
+}
+
+/// Remember our own application, not NSCursor.current: overlapping AppKit
+/// tracking can change that global value between otherwise identical events.
+struct OverlayCursorState {
+  private var zone: OverlayPointerZone?
+  private var cursor: ObjectIdentifier?
+  private var region: ObjectIdentifier?
+
+  mutating func update(
+    zone: OverlayPointerZone, cursor: ObjectIdentifier?, region: ObjectIdentifier? = nil
+  ) -> Bool {
+    let changed = self.zone != zone || self.cursor != cursor || self.region != region
+    let releasesResize: Bool
+    if case .resize = self.zone, self.cursor != nil, cursor == nil,
+      zone == .interior || zone == .menu
+    {
+      releasesResize = true
+    } else {
+      releasesResize = false
+    }
+    self.zone = zone
+    self.cursor = cursor
+    self.region = region
+    return (cursor != nil && changed) || releasesResize
+  }
+}
+
 // Borderless floating window host for the dictation overlay.
 //
 // This is a FACTORY ONLY. Summon/dismiss wiring (hotkey, placement, focus handoff,
@@ -30,6 +76,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Mounted controls and the drawer share this panel's cursor authority.
   /// Weak membership prevents a removed or hidden SwiftUI candidate owning it.
   let menuCursorRegions = NSHashTable<NSView>.weakObjects()
+  let windowDragRegions = NSHashTable<NSView>.weakObjects()
+  private var cursorState = OverlayCursorState()
   /// Selectable SwiftUI text that opens the keyboard gate without owning clicks.
   let selectableTextRegions = NSHashTable<NSView>.weakObjects()
   /// Grow-only expanded height for a candidate width. Nil keeps the remembered
@@ -528,31 +576,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
         region.updateHover(at: event.locationInWindow)
       }
     }
-    // The drawer owns cursor motion before overlapping transcript tracking
-    // can set an I-beam. Clicks still follow the native controls below.
-    if event.type == .mouseMoved || event.type == .cursorUpdate,
-      containsMenuCursorPoint(event.locationInWindow)
-    {
-      refreshCursor(at: event.locationInWindow)
-      return
-    }
-    // Text tracking areas can overlap the resize strip even when hitTest
-    // returns the container. Dispatching these motions to AppKit first sets
-    // an iBeam, then the panel sets a resize cursor on every event.
-    // The strip owns motion as well as dragging; interior tracking stays native.
-    if event.type == .mouseMoved || event.type == .cursorUpdate,
-      styleMask.contains(.resizable), let contentView,
-      OverlayResizeHit.edge(
-        at: event.locationInWindow, in: contentView.bounds, mode: presentationMode) != nil
-    {
-      refreshCursor(at: event.locationInWindow)
-      return
-    }
-    if event.type == .mouseMoved || event.type == .cursorUpdate,
-      isWindowDragHit(at: event.locationInWindow)
-    {
-      refreshCursor(at: event.locationInWindow)
-      return
+    if event.type == .mouseMoved || event.type == .cursorUpdate {
+      // Resolve once. Owned zones consume motion before overlapping text
+      // tracking can set an I-beam. Leaving resize restores the arrow before
+      // native dispatch; ordinary interior motion never writes a cursor.
+      let decision = pointerDecision(at: event.locationInWindow)
+      applyCursor(decision)
+      if decision.cursor != nil { return }
     }
     if event.type == .leftMouseDown {
       if isUserResizing { endUserResize() }
@@ -643,7 +673,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       dispatchingGateClick = openedKeyboardGate
       super.sendEvent(event)
       dispatchingGateClick = false
-      if event.type == .mouseMoved { refreshCursor(at: event.locationInWindow) }
     }
   }
 
@@ -753,37 +782,80 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     pendingResizePresentation = nil
   }
 
-  /// Native tracking owns the interior, including SwiftUI text and links
-  /// whose hit surface is not an NSTextView. Only resize edges and the
-  /// explicitly inert window-drag chrome override it.
+  private struct PointerDecision {
+    let zone: OverlayPointerZone
+    var cursor: NSCursor?
+    var region: ObjectIdentifier?
+  }
+
+  /// Invalidated by the content boundary on exit/re-entry. A cursor installed
+  /// by another window must not suppress our next region entry.
+  func invalidateCursorOwnership() {
+    cursorState = OverlayCursorState()
+  }
+
+  override func orderOut(_ sender: Any?) {
+    invalidateCursorOwnership()
+    super.orderOut(sender)
+  }
+
+  private func pointerDecision(at point: NSPoint) -> PointerDecision {
+    guard let contentView else { return PointerDecision(zone: .outside) }
+    var menu: OverlayMenuCursorRegionView?
+    let zone = OverlayPointerZone.resolve(
+      at: contentView.convert(point, from: nil), in: contentView.bounds, mode: presentationMode,
+      resizable: styleMask.contains(.resizable),
+      menuContains: {
+        menu = self.menuCursorRegion(at: point)
+        return menu != nil
+      },
+      dragContains: {
+        self.windowDragRegions.allObjects.contains { region in
+          // The body has a drag background UNDER selectable text. Only the
+          // inert header strip can claim motion by frame without hit testing.
+          (self.presentationMode == .mini
+            || region.accessibilityIdentifier().hasPrefix("overlay-header"))
+            && self.containsCursorPoint(point, in: region)
+        }
+      })
+    switch zone {
+    case .resize(let edge):
+      return PointerDecision(zone: zone, cursor: OverlayResizeHit.cursor(for: edge))
+    case .menu:
+      guard let menu else { return PointerDecision(zone: .interior) }
+      // Exactly one hit test, and only after mounted menu geometry matched.
+      let editable = nativeEditableText(at: point, in: contentView)
+      return PointerDecision(
+        zone: zone, cursor: editable ? nil : menu.cursor, region: ObjectIdentifier(menu))
+    case .dragStrip:
+      return PointerDecision(zone: zone, cursor: .arrow)
+    case .interior, .outside:
+      return PointerDecision(zone: zone)
+    }
+  }
+
+  @discardableResult
+  private func applyCursor(_ decision: PointerDecision) -> Bool {
+    let shouldSet = cursorState.update(
+      zone: decision.zone, cursor: decision.cursor.map(ObjectIdentifier.init),
+      region: decision.region)
+    guard shouldSet else { return false }
+    (decision.cursor ?? .arrow).set()
+    return true
+  }
+
   @discardableResult
   func refreshCursor(at point: NSPoint) -> Bool {
-    guard let contentView else { return false }
-    if let desired = menuCursor(at: point) {
-      guard NSCursor.current != desired else { return false }
-      desired.set()
-      return true
-    }
-    let resizeEdge =
-      styleMask.contains(.resizable)
-      && OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode) != nil
-    guard resizeEdge || isWindowDragHit(at: point) else { return false }
-    let desired = resizeEdge ? cursor(at: point) : NSCursor.arrow
-    guard desired != .iBeam, NSCursor.current != desired else { return false }
-    desired.set()
-    return true
+    applyCursor(pointerDecision(at: point))
   }
 
   /// Resolve from this panel's hit surface, never the inactive app below it.
   func cursor(at point: NSPoint) -> NSCursor {
     guard let contentView else { return .arrow }
-    if let desired = menuCursor(at: point) { return desired }
-    if styleMask.contains(.resizable),
-      let edge = OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode)
-    {
-      return OverlayResizeHit.cursor(for: edge)
-    }
-    var hit = contentView.hitTest(point)
+    let decision = pointerDecision(at: point)
+    if let cursor = decision.cursor { return cursor }
+    // Inspection for callers asking about text, never the motion path.
+    var hit = contentView.hitTest(contentView.convert(point, from: nil))
     while let view = hit {
       if view is NSTextView { return .iBeam }
       if let field = view as? NSTextField, field.isEditable { return .iBeam }
@@ -792,28 +864,31 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     return .arrow
   }
 
-  private func containsMenuCursorPoint(_ point: NSPoint) -> Bool {
-    menuCursor(at: point) != nil
-  }
-
-  private func menuCursor(at point: NSPoint) -> NSCursor? {
-    if styleMask.contains(.resizable), let contentView,
-      OverlayResizeHit.edge(at: point, in: contentView.bounds, mode: presentationMode) != nil
-    {
-      return nil
-    }
+  private func nativeEditableText(at point: NSPoint, in contentView: NSView) -> Bool {
     // The drawer can contain native text entry (live search). Its field
     // editor keeps native tracking, unlike the transcript behind the drawer.
-    var hit = contentView?.hitTest(point)
+    var hit = contentView.hitTest(contentView.convert(point, from: nil))
     while let view = hit {
       if let text = view as? NSTextView, text.isEditable,
         !(text is LiveTranscriptNativeTextView)
       {
-        return nil
+        return true
       }
-      if let field = view as? NSTextField, field.isEditable { return nil }
+      if let field = view as? NSTextField, field.isEditable { return true }
       hit = view.superview
     }
+    return false
+  }
+
+  private func containsCursorPoint(_ point: NSPoint, in region: NSView) -> Bool {
+    guard region.window === self, !region.isHiddenOrHasHiddenAncestor,
+      let parent = region.superview
+    else { return false }
+    return parent.convert(region.frame, to: nil).contains(point)
+      && region.convert(region.visibleRect, to: nil).contains(point)
+  }
+
+  private func menuCursorRegion(at point: NSPoint) -> OverlayMenuCursorRegionView? {
     // Events use window coordinates. Bound the override by the mounted
     // drawer's frame as well as its clipped visible rect, in that same space.
     // A native text hit outside this frame must never inherit menu ownership.
@@ -821,15 +896,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     // the single cursor owner; nested SwiftUI hover handlers cannot fight it.
     return menuCursorRegions.allObjects.compactMap { $0 as? OverlayMenuCursorRegionView }.filter {
       region in
-      guard region.window === self, !region.isHiddenOrHasHiddenAncestor,
-        let parent = region.superview
-      else { return false }
-      let frameInWindow = parent.convert(region.frame, to: nil)
-      let visibleInWindow = region.convert(region.visibleRect, to: nil)
-      return frameInWindow.contains(point) && visibleInWindow.contains(point)
+      containsCursorPoint(point, in: region)
     }.min { lhs, rhs in
       lhs.bounds.width * lhs.bounds.height < rhs.bounds.width * rhs.bounds.height
-    }?.cursor
+    }
   }
 
   func isWindowDragHit(at point: NSPoint) -> Bool {
@@ -898,6 +968,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 /// stays structurally dead.
 final class OverlayContentContainer: NSView {
   private let hosting: NSView
+  private var cursorBoundary: NSTrackingArea?
   let grabPad = OverlayResizeGrabPad()
 
   /// While the panel morphs, the content keeps one size, held at the window's
@@ -965,7 +1036,26 @@ final class OverlayContentContainer: NSView {
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
+    (window as? FloatingOverlayPanel)?.invalidateCursorOwnership()
     refreshGrabPad()
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let cursorBoundary { removeTrackingArea(cursorBoundary) }
+    let area = NSTrackingArea(
+      rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+      owner: self, userInfo: nil)
+    addTrackingArea(area)
+    cursorBoundary = area
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    (window as? FloatingOverlayPanel)?.invalidateCursorOwnership()
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    (window as? FloatingOverlayPanel)?.invalidateCursorOwnership()
   }
 
   /// The pad follows the frame and the mode; a mini panel has no resize zone.

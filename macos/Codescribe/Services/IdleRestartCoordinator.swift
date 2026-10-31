@@ -23,7 +23,7 @@ final class IdleRestartCoordinator {
   private let root: URL
   private let ready: Ready
   private let acquireLease: @MainActor () async throws -> FileHandle
-  private let reserveCapture: @MainActor () async throws -> Bool
+  private let reserveCapture: @MainActor () -> Bool
   /// The Founder talking to an agent includes typing to one: a focused
   /// composer, keys within the typing horizon or an unsent draft refuse the
   /// restart the same way a live take does (Maciej, 2026-10-23, after a
@@ -38,7 +38,7 @@ final class IdleRestartCoordinator {
     nonce: String = UUID().uuidString, bundle: URL = Bundle.main.bundleURL,
     commit: String = Bundle.main.object(forInfoDictionaryKey: "CSBuildCommit") as? String ?? "",
     acquireLease: @escaping @MainActor () async throws -> FileHandle,
-    reserveCapture: @escaping @MainActor () async throws -> Bool,
+    reserveCapture: @escaping @MainActor () -> Bool,
     founderComposing: @escaping @MainActor () -> Bool = { false },
     terminate: @escaping @MainActor () -> Void
   ) throws {
@@ -82,24 +82,42 @@ final class IdleRestartCoordinator {
         return
       }
       let heldLease = try await acquireLease()
-      // The lease wait is a window too: words typed during it count.
-      guard try await reserveCapture(), !founderComposing() else {
-        try? heldLease.close()
-        handling = false
-        try receipt(
-          id, status: "refused",
-          reason: founderComposing() ? "founder_composing" : "capture_busy_or_not_ready")
-        return
+      // AppKit's deferred termination must start from the run loop, not a
+      // main-queue job. Check composing and reserve together on that tick.
+      try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<Void, Error>) in
+        RunLoop.main.perform {
+          MainActor.assumeIsolated {
+            continuation.resume(
+              with: Result { try self.reserveAndTerminate(id, heldLease: heldLease) })
+          }
+        }
       }
-      lease = heldLease
-      // Admission is now closed under the controller's start lock. Complete
-      // normal termination even if writing the final receipt fails.
-      try? receipt(id, status: "accepted", reason: nil)
-      terminate()
     } catch {
       handling = false
       try? receipt(id, status: "refused", reason: "idle_lease_unavailable")
     }
+  }
+
+  private func reserveAndTerminate(_ id: String, heldLease: FileHandle) throws {
+    // No suspension is permitted between this check and requesting termination.
+    guard !founderComposing() else {
+      try? heldLease.close()
+      handling = false
+      try receipt(id, status: "refused", reason: "founder_composing")
+      return
+    }
+    guard reserveCapture() else {
+      try? heldLease.close()
+      handling = false
+      try receipt(id, status: "refused", reason: "capture_busy_or_not_ready")
+      return
+    }
+    lease = heldLease
+    // Admission is closed under the controller's start lock. Complete normal
+    // termination even if writing the final receipt fails.
+    try? receipt(id, status: "accepted", reason: nil)
+    terminate()
   }
 
   func invalidate() {

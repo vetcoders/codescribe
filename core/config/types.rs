@@ -554,6 +554,24 @@ pub struct ModeBinding {
     pub binding: ShortcutBinding,
 }
 
+/// Whether the hotkey detector can start `mode` from `binding`.
+///
+/// Disabled binds nothing. Holds and double-tap Ctrl dictate; the two Option
+/// gestures belong to Formatting and Assistive respectively.
+pub fn mode_binding_reachable(mode: WorkMode, binding: ShortcutBinding) -> bool {
+    match binding {
+        ShortcutBinding::Disabled => true,
+        ShortcutBinding::HoldFn
+        | ShortcutBinding::HoldCtrl
+        | ShortcutBinding::HoldCtrlAlt
+        | ShortcutBinding::HoldCtrlShift
+        | ShortcutBinding::HoldCtrlCmd
+        | ShortcutBinding::DoubleCtrl => mode == WorkMode::Dictation,
+        ShortcutBinding::DoubleLeftOption => mode == WorkMode::Formatting,
+        ShortcutBinding::DoubleRightOption => mode == WorkMode::Assistive,
+    }
+}
+
 /// Factory-default gesture for each work mode: Fn-hold dictates, double-tap
 /// left Option formats, double-tap right Option talks to the agent.
 pub fn default_mode_bindings() -> Vec<ModeBinding> {
@@ -734,20 +752,27 @@ impl HoldArmModifier {
 ///
 /// `Ctrl` is the product default. `Fn` is the optional alternative.
 /// Command is not a variant: it collides with tab switching.
+///
+/// `Off` is never chosen or persisted: the loader resolves to it only when
+/// both keys record dictation (see [`RecordingKeys::channel_modifier`]). No
+/// digit chord opens a channel then; the overlay roster still does.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ChannelModifier {
     #[default]
     Ctrl,
     Fn,
+    Off,
 }
 
 impl ChannelModifier {
-    /// Stable settings.json / env token (`ctrl` or `fn`).
+    /// Stable settings.json / env token (`ctrl` or `fn`; `off` only in the
+    /// resolved snapshot, never accepted as input).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ctrl => "ctrl",
             Self::Fn => "fn",
+            Self::Off => "off",
         }
     }
 
@@ -756,6 +781,80 @@ impl ChannelModifier {
         match self {
             Self::Ctrl => "Ctrl",
             Self::Fn => "Fn",
+            Self::Off => "Off",
+        }
+    }
+}
+
+impl ShortcutBinding {
+    /// The gesture records with the Fn key.
+    pub fn records_with_fn(self) -> bool {
+        matches!(self, Self::HoldFn)
+    }
+
+    /// The gesture records with the Ctrl key (held or double-tapped).
+    pub fn records_with_ctrl(self) -> bool {
+        matches!(
+            self,
+            Self::HoldCtrl
+                | Self::HoldCtrlAlt
+                | Self::HoldCtrlShift
+                | Self::HoldCtrlCmd
+                | Self::DoubleCtrl
+        )
+    }
+}
+
+/// Which channel-modifier keys a recording gesture uses.
+///
+/// One key, one role: a key that records cannot also be the agent-channel
+/// modifier, so Fn+digit (or Ctrl+digit) can never be read as the start of a
+/// take, and a take can never be read as a channel chord. The loader applies
+/// this once, when it resolves the configuration; every consumer (hotkey
+/// detector, controller, Settings) reads the resolved value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RecordingKeys {
+    /// Fn records: `Hold Fn/Globe` is bound, or the Fn tap toggles dictation.
+    pub fn_key: bool,
+    /// Fn records through a binding (`Hold Fn/Globe`), not only the Fn tap.
+    /// Settings names what frees Fn: rebinding, turning the tap off, or both.
+    pub fn_binding: bool,
+    /// Ctrl records: a `Hold Ctrl…` or `Double-tap Ctrl` binding is set.
+    pub ctrl: bool,
+}
+
+impl RecordingKeys {
+    /// Collect the keys from the three work-mode bindings and the Fn tap.
+    pub fn from_bindings(bindings: [ShortcutBinding; 3], fn_tap_toggles_dictation: bool) -> Self {
+        let fn_binding = bindings.iter().any(|binding| binding.records_with_fn());
+        Self {
+            fn_key: fn_binding || fn_tap_toggles_dictation,
+            fn_binding,
+            ctrl: bindings.iter().any(|binding| binding.records_with_ctrl()),
+        }
+    }
+
+    /// The channel modifier in effect for `requested`.
+    ///
+    /// A requested key that records gives way to the other key; when both
+    /// keys record, no digit chord opens a channel (`Off`).
+    pub fn channel_modifier(self, requested: ChannelModifier) -> ChannelModifier {
+        match requested {
+            ChannelModifier::Fn if self.fn_key => {
+                if self.ctrl {
+                    ChannelModifier::Off
+                } else {
+                    ChannelModifier::Ctrl
+                }
+            }
+            ChannelModifier::Ctrl if self.ctrl => {
+                if self.fn_key {
+                    ChannelModifier::Off
+                } else {
+                    ChannelModifier::Fn
+                }
+            }
+            other => other,
         }
     }
 }
@@ -798,6 +897,10 @@ impl FromStr for HoldArmModifier {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
     // ===== Hotkeys =====
+    /// Mode bindings from the same settings capture as the resolved modifier.
+    #[serde(default = "default_mode_bindings")]
+    pub mode_bindings: Vec<ModeBinding>,
+
     /// Whether to ignore extra modifiers when hold key is pressed
     #[serde(default)]
     pub hold_exclusive: bool,
@@ -1049,6 +1152,7 @@ pub struct Config {
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
+            .field("mode_bindings", &self.mode_bindings)
             .field("hold_exclusive", &self.hold_exclusive)
             .field("hold_arm_modifier", &self.hold_arm_modifier)
             .field("hold_start_delay_ms", &self.hold_start_delay_ms)
@@ -1135,6 +1239,7 @@ impl Default for Config {
     /// Ship-safe defaults: hold modifiers on, STT prompt off, Responses LLM endpoint.
     fn default() -> Self {
         Self {
+            mode_bindings: default_mode_bindings(),
             hold_exclusive: false, // Allow Shift/Cmd mode modifiers by default
             hold_arm_modifier: HoldArmModifier::default(),
             hold_start_delay_ms: default_hold_start_delay_ms(),
@@ -1383,5 +1488,120 @@ mod tests {
             config.sanitize();
             assert_eq!(config.hold_badge_size, 12);
         }
+    }
+}
+
+#[cfg(test)]
+mod recording_keys_tests {
+    use super::*;
+
+    const DEFAULT_REST: [ShortcutBinding; 2] = [
+        ShortcutBinding::DoubleLeftOption,
+        ShortcutBinding::DoubleRightOption,
+    ];
+
+    fn keys(dictation: ShortcutBinding, fn_tap: bool) -> RecordingKeys {
+        RecordingKeys::from_bindings([dictation, DEFAULT_REST[0], DEFAULT_REST[1]], fn_tap)
+    }
+
+    #[test]
+    fn each_recording_source_claims_its_key() {
+        assert_eq!(
+            keys(ShortcutBinding::HoldFn, false),
+            RecordingKeys {
+                fn_key: true,
+                fn_binding: true,
+                ctrl: false
+            }
+        );
+        assert_eq!(
+            keys(ShortcutBinding::Disabled, true),
+            RecordingKeys {
+                fn_key: true,
+                fn_binding: false,
+                ctrl: false
+            },
+            "the Fn tap alone records with Fn"
+        );
+        for ctrl in [
+            ShortcutBinding::HoldCtrl,
+            ShortcutBinding::HoldCtrlAlt,
+            ShortcutBinding::HoldCtrlShift,
+            ShortcutBinding::HoldCtrlCmd,
+            ShortcutBinding::DoubleCtrl,
+        ] {
+            assert_eq!(
+                keys(ctrl, false),
+                RecordingKeys {
+                    fn_key: false,
+                    fn_binding: false,
+                    ctrl: true
+                },
+                "{ctrl:?}"
+            );
+        }
+        assert_eq!(
+            keys(ShortcutBinding::HoldCtrl, true),
+            RecordingKeys {
+                fn_key: true,
+                fn_binding: false,
+                ctrl: true
+            }
+        );
+        assert_eq!(
+            keys(ShortcutBinding::Disabled, false),
+            RecordingKeys::default()
+        );
+    }
+
+    /// One key, one role: a key that records never stays the channel modifier.
+    #[test]
+    fn a_recording_key_is_never_the_channel_modifier() {
+        let fn_records = keys(ShortcutBinding::HoldFn, true);
+        assert_eq!(
+            fn_records.channel_modifier(ChannelModifier::Fn),
+            ChannelModifier::Ctrl
+        );
+        assert_eq!(
+            fn_records.channel_modifier(ChannelModifier::Ctrl),
+            ChannelModifier::Ctrl
+        );
+
+        let ctrl_records = keys(ShortcutBinding::HoldCtrl, false);
+        assert_eq!(
+            ctrl_records.channel_modifier(ChannelModifier::Ctrl),
+            ChannelModifier::Fn
+        );
+        assert_eq!(
+            ctrl_records.channel_modifier(ChannelModifier::Fn),
+            ChannelModifier::Fn
+        );
+
+        let both = keys(ShortcutBinding::DoubleCtrl, true);
+        assert_eq!(
+            both.channel_modifier(ChannelModifier::Fn),
+            ChannelModifier::Off
+        );
+        assert_eq!(
+            both.channel_modifier(ChannelModifier::Ctrl),
+            ChannelModifier::Off
+        );
+
+        let neither = keys(ShortcutBinding::Disabled, false);
+        assert_eq!(
+            neither.channel_modifier(ChannelModifier::Fn),
+            ChannelModifier::Fn
+        );
+        assert_eq!(
+            neither.channel_modifier(ChannelModifier::Ctrl),
+            ChannelModifier::Ctrl
+        );
+    }
+
+    /// `off` exists only in the resolved snapshot; nobody can choose it.
+    #[test]
+    fn off_is_never_accepted_as_input() {
+        assert!("off".parse::<ChannelModifier>().is_err());
+        assert_eq!(ChannelModifier::Off.as_str(), "off");
     }
 }

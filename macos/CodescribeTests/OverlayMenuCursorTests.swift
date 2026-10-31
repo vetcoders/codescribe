@@ -6,6 +6,176 @@ import XCTest
 
 @MainActor
 final class OverlayMenuCursorTests: XCTestCase {
+  func testInteriorDecisionBudgetAcrossTenThousandMoves() {
+    let bounds = NSRect(x: 0, y: 0, width: 600, height: 500)
+    var state = OverlayCursorState()
+    var editableHitDecisions = 0
+    var cursorWrites = 0
+    for step in 0..<10_000 {
+      let point = NSPoint(x: 100 + step % 300, y: 100 + step % 200)
+      let zone = OverlayPointerZone.resolve(
+        at: point, in: bounds, mode: .expanded, resizable: true,
+        menuContains: { false }, dragContains: { false })
+      XCTAssertEqual(zone, .interior)
+      if zone == .menu { editableHitDecisions += 1 }
+      if state.update(zone: zone, cursor: nil) { cursorWrites += 1 }
+    }
+    XCTAssertEqual(editableHitDecisions, 0)
+    XCTAssertEqual(cursorWrites, 0)
+  }
+
+  func testGeometryPrecedenceAndPresentationModes() {
+    let bounds = NSRect(x: 0, y: 0, width: 600, height: 500)
+    var menuLookups = 0
+    var dragLookups = 0
+    func zone(_ point: NSPoint, mode: OverlayPresentationMode = .expanded) -> OverlayPointerZone {
+      OverlayPointerZone.resolve(
+        at: point, in: bounds, mode: mode, resizable: true,
+        menuContains: {
+          menuLookups += 1
+          return true
+        },
+        dragContains: {
+          dragLookups += 1
+          return true
+        })
+    }
+    for (point, edge) in [
+      (NSPoint(x: 5, y: 200), OverlayResizeHit.Edge.left),
+      (NSPoint(x: 595, y: 200), .right),
+      (NSPoint(x: 200, y: 495), .top),
+      (NSPoint(x: 200, y: 5), .bottom),
+      (NSPoint(x: 5, y: 495), .topLeft),
+      (NSPoint(x: 595, y: 495), .topRight),
+      (NSPoint(x: 25, y: 25), .bottomLeft),
+      (NSPoint(x: 575, y: 25), .bottomRight),
+    ] {
+      XCTAssertEqual(zone(point), .resize(edge))
+    }
+    // Bottom capsule and its margin belong to the same geometry owner.
+    let grip = OverlayResizeChrome.gripRect(in: bounds).insetBy(dx: 0, dy: -4)
+    for y in [grip.minY, grip.midY, grip.maxY] {
+      XCTAssertEqual(zone(NSPoint(x: grip.midX, y: y)), .resize(.bottom))
+    }
+    XCTAssertEqual(menuLookups, 0, "Resize never inspects a menu or text")
+    XCTAssertEqual(dragLookups, 0)
+    XCTAssertEqual(zone(NSPoint(x: -1, y: 250)), .outside)
+    XCTAssertEqual(menuLookups, 0)
+    XCTAssertEqual(zone(NSPoint(x: 300, y: 250)), .menu)
+    XCTAssertEqual(dragLookups, 0, "Mounted menu wins over overlapping drag chrome")
+    XCTAssertEqual(zone(NSPoint(x: 5, y: 250), mode: .mini), .menu)
+    XCTAssertEqual(zone(NSPoint(x: 5, y: 250), mode: .midi), .resize(.left))
+  }
+
+  func testCursorStateChangesOnlyForZoneCursorOrMountedOwner() {
+    let arrow = NSObject()
+    let resize = NSObject()
+    let drawer = NSObject()
+    let divider = NSObject()
+    var state = OverlayCursorState()
+    var writes = 0
+    for _ in 0..<1_000 {
+      if state.update(
+        zone: .menu, cursor: ObjectIdentifier(arrow), region: ObjectIdentifier(drawer))
+      {
+        writes += 1
+      }
+    }
+    XCTAssertEqual(writes, 1)
+    XCTAssertTrue(
+      state.update(zone: .menu, cursor: ObjectIdentifier(arrow), region: ObjectIdentifier(divider)),
+      "A newly mounted owner may need to establish the same cursor")
+    XCTAssertTrue(
+      state.update(zone: .menu, cursor: ObjectIdentifier(resize), region: ObjectIdentifier(divider))
+    )
+    XCTAssertTrue(state.update(zone: .resize(.right), cursor: ObjectIdentifier(resize)))
+    XCTAssertFalse(state.update(zone: .resize(.right), cursor: ObjectIdentifier(resize)))
+    XCTAssertTrue(state.update(zone: .dragStrip, cursor: ObjectIdentifier(arrow)))
+    XCTAssertFalse(state.update(zone: .interior, cursor: nil), "Native text releases ownership")
+    XCTAssertTrue(state.update(zone: .dragStrip, cursor: ObjectIdentifier(arrow)))
+    state = OverlayCursorState()  // Boundary exit/re-entry or orderOut.
+    XCTAssertTrue(state.update(zone: .dragStrip, cursor: ObjectIdentifier(arrow)))
+  }
+
+  func testPanelInteriorRefreshNeverHitTestsAndSameMenuIgnoresCurrentCursorReset() {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
+    let content = CursorHitCountingView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+    panel.contentView = content
+    let body = OverlayWindowDragRegionView(frame: content.bounds)
+    body.setAccessibilityIdentifier("overlay-body-drag-region")
+    content.addSubview(body)
+    let header = OverlayWindowDragRegionView(frame: NSRect(x: 50, y: 450, width: 500, height: 40))
+    header.setAccessibilityIdentifier("overlay-header-drag-region")
+    content.addSubview(header)
+    let menu = OverlayMenuCursorRegionView(frame: NSRect(x: 300, y: 100, width: 280, height: 300))
+    content.addSubview(menu)
+    let saved = NSCursor.current
+    defer {
+      panel.close()
+      saved.set()
+    }
+
+    content.hits = 0
+    for _ in 0..<1_000 {
+      XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: 100, y: 200)))
+    }
+    XCTAssertEqual(content.hits, 0, "The body drag background cannot cause a motion hit test")
+    XCTAssertTrue(panel.refreshCursor(at: NSPoint(x: 100, y: 470)))
+    XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: 110, y: 470)))
+    XCTAssertEqual(content.hits, 0, "Header motion is geometry only")
+    XCTAssertTrue(panel.refreshCursor(at: NSPoint(x: 400, y: 200)))
+    XCTAssertEqual(content.hits, 1, "Only the menu asks about editable text")
+    NSCursor.iBeam.set()  // Model an AppKit reset between unchanged events.
+    XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: 400, y: 200)))
+    XCTAssertEqual(NSCursor.current, .iBeam, "Do not restart the cursor ping-pong")
+    panel.invalidateCursorOwnership()
+    XCTAssertTrue(panel.refreshCursor(at: NSPoint(x: 400, y: 200)))
+    header.removeFromSuperview()
+    XCTAssertFalse(panel.windowDragRegions.contains(header))
+    menu.removeFromSuperview()
+    content.hits = 0
+    XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: 400, y: 200)))
+    XCTAssertEqual(content.hits, 0, "Removed menu immediately returns the interior budget")
+  }
+
+  func testLeavingResizeResetsArrowOnceAndThenYieldsToNativeText() {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
+    let content = CursorHitCountingView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+    panel.contentView = content
+    let saved = NSCursor.current
+    defer {
+      panel.close()
+      saved.set()
+    }
+    let edge = NSPoint(x: 1, y: 250)
+    let interior = NSPoint(x: 200, y: 250)
+    XCTAssertTrue(panel.refreshCursor(at: edge))
+    XCTAssertEqual(NSCursor.current, OverlayResizeHit.cursor(for: .left))
+    XCTAssertTrue(panel.refreshCursor(at: interior))
+    XCTAssertEqual(NSCursor.current, .arrow)
+    NSCursor.iBeam.set()
+    XCTAssertFalse(panel.refreshCursor(at: interior))
+    XCTAssertEqual(NSCursor.current, .iBeam)
+    XCTAssertEqual(content.hits, 0)
+
+    XCTAssertTrue(panel.refreshCursor(at: edge))
+    NSCursor.pointingHand.set()
+    XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: -1, y: 250)))
+    XCTAssertEqual(NSCursor.current, .pointingHand, "Outside belongs to the destination window")
+  }
+
+  func testLeavingResizeForAnEditableMenuReleasesCursorOwnership() {
+    let resize = NSObject()
+    var state = OverlayCursorState()
+    XCTAssertTrue(state.update(zone: .resize(.left), cursor: ObjectIdentifier(resize)))
+    XCTAssertTrue(state.update(zone: .menu, cursor: nil))
+    XCTAssertFalse(state.update(zone: .menu, cursor: nil))
+  }
+
   func testSidebarDividerCursorWinsInsideDrawerAndYieldsWhenRemoved() {
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 0, y: 0, width: 1000, height: 500),
@@ -325,8 +495,8 @@ final class OverlayMenuCursorTests: XCTestCase {
         fromScreen: NSPoint(
           x: button.x + button.width / 2, y: screenTop - button.y - button.height / 2))
       XCTAssertEqual(panel.cursor(at: point), .arrow, identifier)
+      NSCursor.iBeam.set()
       for type in [NSEvent.EventType.mouseMoved, .cursorUpdate] {
-        NSCursor.iBeam.set()
         let event =
           type == .cursorUpdate
           ? NSEvent.enterExitEvent(
@@ -559,6 +729,16 @@ final class OverlayMenuCursorTests: XCTestCase {
       panel.cursor(at: NSPoint(x: 599, y: 200)), OverlayResizeHit.cursor(for: .right))
     XCTAssertEqual(
       panel.cursor(at: NSPoint(x: 400, y: 499)), OverlayResizeHit.cursor(for: .top))
+  }
+}
+
+@MainActor
+private final class CursorHitCountingView: NSView {
+  var hits = 0
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    hits += 1
+    return super.hitTest(point)
   }
 }
 
