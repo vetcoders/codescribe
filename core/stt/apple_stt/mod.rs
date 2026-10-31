@@ -15,6 +15,8 @@
 //!
 //! Optional `backend` field is additive.
 
+#[cfg(all(test, target_os = "macos"))]
+mod bridge_process_acceptance;
 mod live_stream;
 pub use live_stream::{LiveStreamEvent, LiveStreamSession, progressive_live_enabled};
 
