@@ -11,6 +11,8 @@ use codescribe_core::llm::provider::WireFamily;
 
 /// Anthropic Messages-family assistive provider client.
 pub mod anthropic_provider;
+/// Google Gemini / Cloud Code Assist GenerateContent provider.
+pub mod google_provider;
 /// Max consultation host admission on the Agent lane.
 pub mod max_consultation;
 /// Resident agent-run monitor (progress, cancel, status surfaces).
@@ -24,6 +26,7 @@ mod openai_schema;
 pub mod tools;
 
 pub use anthropic_provider::AnthropicProvider;
+pub use google_provider::GoogleProvider;
 pub use openai_provider::OpenAiProvider;
 
 /// Build the tool-capable Agent provider from the sealed Agent (assistive)
@@ -49,6 +52,7 @@ pub fn create_agent_provider(
             lane,
             request_timing,
         )?)),
+        WireFamily::GoogleGenerateContent => Ok(Box::new(GoogleProvider::from_lane(lane, request_timing)?)),
     }
 }
 

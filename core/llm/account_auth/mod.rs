@@ -15,12 +15,20 @@ use crate::llm::provider::ProviderKind;
 
 /// Device-code OAuth grant for providers that cannot do loopback redirects.
 pub mod device_code;
+/// Google API keys and locally provisioned OAuth / ADC credentials.
+pub mod google;
 /// Paste-code flow: user copies `"code#state"` from the provider's page.
 pub mod paste_code;
 /// PKCE verifier/challenge helpers shared by loopback and paste-code logins.
 pub mod pkce;
 /// Local loopback HTTP server that receives OAuth redirect callbacks.
 pub mod server;
+
+pub use google::{
+    GOOGLE_ACCOUNT_TOKENS_ACCOUNT, GOOGLE_API_KEY_ACCOUNT, GoogleCredential,
+    google_api_key, google_credentials_available, redact_google_secrets,
+    resolve_google_credential,
+};
 
 pub use device_code::{
     DeviceAuthConfig, DeviceCode, complete_device_code_login, request_device_code,
