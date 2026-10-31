@@ -522,6 +522,7 @@ impl AgentSession {
                                 || "search completed".to_string(),
                                 |query| format!("searched: {query}"),
                             );
+                            let summary = truncate_summary(&redact_tool_summary(&summary), 120);
                             send_ui_event(
                                 &self.ui_tx,
                                 AgentUiEvent::ToolResult {
@@ -2116,6 +2117,56 @@ mod tests {
                 )
             })
         }));
+    }
+
+    #[tokio::test]
+    async fn hosted_search_summaries_use_tool_redaction_and_unicode_limit() {
+        for (query, expected) in [
+            (
+                Some("token=fixture-secret".to_string()),
+                "[redacted sensitive tool output]".to_string(),
+            ),
+            (
+                Some("api_key=fixture-secret".to_string()),
+                "[redacted sensitive tool output]".to_string(),
+            ),
+            (
+                Some("Ż🚀".repeat(100)),
+                format!(
+                    "searched: {}...",
+                    "Ż🚀".repeat(100).chars().take(107).collect::<String>()
+                ),
+            ),
+            (None, "search completed".to_string()),
+        ] {
+            let provider = ScriptedProvider::new(vec![vec![
+                AgentEvent::ServerToolProgress {
+                    id: "hosted".into(),
+                    name: "web_search".into(),
+                    done: true,
+                    query,
+                },
+                AgentEvent::ResponseDone {
+                    response_id: Some("clean".into()),
+                    clean: true,
+                },
+            ]]);
+            let (ui_tx, mut ui_rx) = mpsc::channel(32);
+            let mut session =
+                AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+            session
+                .send("search".into(), Vec::new(), &StreamOptions::default())
+                .await
+                .unwrap();
+            let mut summaries = Vec::new();
+            while let Ok(event) = ui_rx.try_recv() {
+                if let AgentUiEvent::ToolResult { summary, .. } = event {
+                    summaries.push(summary);
+                }
+            }
+            assert_eq!(summaries, vec![expected]);
+            assert!(summaries[0].chars().count() <= 120);
+        }
     }
 
     /// Missing tool becomes an error tool_result; turn recovers without fatal UI error.

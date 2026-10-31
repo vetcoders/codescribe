@@ -607,15 +607,15 @@ async fn run_anthropic_stream(
         .json(&request_body);
 
     let mut watchdog = StreamWatchdog::start(first_event_timeout, inter_chunk_timeout);
-    let response =
-        match tokio::time::timeout(initial_response_timeout, request_builder.send()).await {
-            Ok(Ok(resp)) => resp,
-            Ok(Err(error)) => return Err(error).context("Anthropic SSE request failed"),
-            Err(_) => anyhow::bail!(
-                "Anthropic SSE initial response timeout after {:?}",
-                initial_response_timeout
-            ),
-        };
+    let header_wait = initial_response_timeout.min(watchdog.next_wait());
+    let response = match tokio::time::timeout(header_wait, request_builder.send()).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(error)) => return Err(error).context("Anthropic SSE request failed"),
+        Err(_) => anyhow::bail!(
+            "Anthropic SSE initial response timeout after {:?}",
+            header_wait
+        ),
+    };
 
     if !response.status().is_success() {
         let status = response.status();
@@ -686,9 +686,7 @@ async fn run_anthropic_stream(
                 }
             };
 
-            // `message_start` and `ping` only prove the request is alive;
-            // the first content block ends the prefill budget.
-            if !matches!(event.chunk_type.as_str(), "message_start" | "ping") {
+            if starts_generation(&event) {
                 watchdog.generation_started();
             }
             if handle_chunk(&event, &mut state, &tx).await? {
@@ -989,6 +987,22 @@ fn validate_anthropic_endpoint(endpoint: &str) -> Result<reqwest::Url> {
         other => anyhow::bail!("Unsupported endpoint URL scheme: {}", other),
     }
     Ok(url)
+}
+
+/// Empty text/thinking blocks and lifecycle events do not end prefill.
+fn starts_generation(event: &AnthropicChunk) -> bool {
+    match event.chunk_type.as_str() {
+        "content_block_start" => event
+            .content_block
+            .as_ref()
+            .is_some_and(|block| block.block_type == "tool_use"),
+        "content_block_delta" => event.delta.as_ref().is_some_and(|delta| {
+            [&delta.text, &delta.thinking, &delta.partial_json]
+                .into_iter()
+                .any(|text| text.as_ref().is_some_and(|text| !text.is_empty()))
+        }),
+        _ => false,
+    }
 }
 
 // ── SSE wire types ───────────────────────────────────────────────────────────
@@ -1852,6 +1866,30 @@ mod tests {
             "{events:?}"
         );
         assert_eq!(delta_text(&events), "pong");
+        assert!(has_clean_done(&events), "{events:?}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_empty_blocks_preserve_prefill_budget() {
+        let steps = vec![
+            anthropic_head(),
+            scripted_sse::text(
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\"}}\n\n",
+            ),
+            Step::Pause(Duration::from_millis(300)),
+            scripted_sse::text(
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"late\"}}\n\n",
+            ),
+            anthropic_tail(),
+        ];
+        let endpoint = scripted_sse::serve("/v1/messages", steps).await;
+        let provider = scripted_provider(
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        );
+        let events = run_scripted(&provider).await;
+        assert_eq!(delta_text(&events), "late");
         assert!(has_clean_done(&events), "{events:?}");
     }
 }

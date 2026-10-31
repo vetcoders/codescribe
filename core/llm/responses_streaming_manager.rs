@@ -69,10 +69,8 @@ pub struct StreamWatchdog {
 impl StreamWatchdog {
     /// Start the clock. Call immediately before sending the HTTP request.
     ///
-    /// The first-event budget never undercuts the idle timeout: a prefill may
-    /// always stay silent at least as long as a stream that already started.
+    /// The first-event and idle budgets are independent policy values.
     pub fn start(first_event_timeout: Duration, idle_timeout: Duration) -> Self {
-        let first_event_timeout = first_event_timeout.max(idle_timeout);
         Self {
             first_event_timeout,
             first_event_deadline: tokio::time::Instant::now() + first_event_timeout,
@@ -322,18 +320,14 @@ impl<'a> ResponsesStreamingManager<'a> {
         .json(request);
         let mut watchdog =
             StreamWatchdog::start(self.first_event_timeout, self.inter_chunk_timeout);
-        let response =
-            match tokio::time::timeout(self.initial_response_timeout, request_builder.send()).await
-            {
-                Ok(Ok(resp)) => resp,
-                Ok(Err(e)) => return Err(e).context("SSE request failed"),
-                Err(_) => {
-                    anyhow::bail!(
-                        "SSE initial response timeout after {:?}",
-                        self.initial_response_timeout
-                    );
-                }
-            };
+        let header_wait = self.initial_response_timeout.min(watchdog.next_wait());
+        let response = match tokio::time::timeout(header_wait, request_builder.send()).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(e)) => return Err(e).context("SSE request failed"),
+            Err(_) => {
+                anyhow::bail!("SSE initial response timeout after {:?}", header_wait);
+            }
+        };
 
         if !response.status().is_success() {
             let status = response.status();
@@ -673,13 +667,19 @@ impl<'a> ResponsesStreamingManager<'a> {
             resume_url, starting_after
         );
 
-        let response = self.client.get(&resume_url);
-        let response = apply_auth_headers(response, self.api_key, self.auth_header_mode)
+        let request = self.client.get(&resume_url);
+        let request = apply_auth_headers(request, self.api_key, self.auth_header_mode)
             .header("Accept", "text/event-stream")
-            .timeout(STREAM_REQUEST_TIMEOUT)
-            .send()
-            .await
-            .context("SSE resume request failed")?;
+            .timeout(STREAM_REQUEST_TIMEOUT);
+        let mut watchdog =
+            StreamWatchdog::start(self.first_event_timeout, self.inter_chunk_timeout);
+        let response = tokio::time::timeout(
+            self.initial_response_timeout.min(watchdog.next_wait()),
+            request.send(),
+        )
+        .await
+        .context("SSE resume initial response timeout")?
+        .context("SSE resume request failed")?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -694,19 +694,14 @@ impl<'a> ResponsesStreamingManager<'a> {
         let mut utf8_carry = Vec::new();
         let mut current_event: Option<String> = None;
 
+        // A reconnect cannot certify a partial response just because its new
+        // socket closed. The caller adopts the chain only after this terminal.
+        let mut completed = false;
+
         loop {
-            let next_chunk = match tokio::time::timeout(self.inter_chunk_timeout, stream.next())
-                .await
-            {
+            let next_chunk = match tokio::time::timeout(watchdog.next_wait(), stream.next()).await {
                 Ok(chunk) => chunk,
-                Err(_) => {
-                    warn!(
-                        "Resume stream inter-chunk timeout after {:?}; returning what we have ({}B)",
-                        self.inter_chunk_timeout,
-                        assistant_text.len()
-                    );
-                    break;
-                }
+                Err(_) => anyhow::bail!("Resume stream timed out before a clean terminal"),
             };
 
             let Some(chunk_result) = next_chunk else {
@@ -721,6 +716,7 @@ impl<'a> ResponsesStreamingManager<'a> {
             }) = next_sse_data(&mut buffer, &mut current_event)
             {
                 if data == "[DONE]" {
+                    anyhow::ensure!(completed, "Resume stream ended without a clean terminal");
                     return Ok(ResponsesStreamOutput {
                         assistant_text,
                         reasoning_text: if reasoning_text.is_empty() {
@@ -744,6 +740,13 @@ impl<'a> ResponsesStreamingManager<'a> {
                         continue;
                     }
                 };
+                if starts_generation(&chunk) {
+                    watchdog.generation_started();
+                }
+                anyhow::ensure!(
+                    dirty_terminal_response_id(&chunk, Some(response_id)).is_none(),
+                    "Resume stream reported a dirty terminal"
+                );
                 {
                     match chunk.chunk_type.as_str() {
                         "response.output_text.delta" => {
@@ -769,6 +772,7 @@ impl<'a> ResponsesStreamingManager<'a> {
                             log_sse_lifecycle_event("Resume SSE", &chunk);
                         }
                         "response.completed" | "response.done" => {
+                            completed = true;
                             debug!(
                                 "Resume stream completed ({}B accumulated text)",
                                 assistant_text.len()
@@ -779,8 +783,12 @@ impl<'a> ResponsesStreamingManager<'a> {
                     }
                 }
             }
+            if completed {
+                break;
+            }
         }
 
+        anyhow::ensure!(completed, "Resume stream closed without a clean terminal");
         Ok(ResponsesStreamOutput {
             assistant_text,
             reasoning_text: if reasoning_text.is_empty() {
@@ -849,15 +857,12 @@ async fn run_agent_stream(
     .json(&request_payload);
 
     let mut watchdog = StreamWatchdog::start(first_event_timeout, inter_chunk_timeout);
-    let response =
-        match tokio::time::timeout(initial_response_timeout, request_builder.send()).await {
-            Ok(Ok(resp)) => resp,
-            Ok(Err(error)) => return Err(error).context("Agent SSE request failed"),
-            Err(_) => anyhow::bail!(
-                "Agent SSE initial response timeout after {:?}",
-                initial_response_timeout
-            ),
-        };
+    let header_wait = initial_response_timeout.min(watchdog.next_wait());
+    let response = match tokio::time::timeout(header_wait, request_builder.send()).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(error)) => return Err(error).context("Agent SSE request failed"),
+        Err(_) => anyhow::bail!("Agent SSE initial response timeout after {:?}", header_wait),
+    };
 
     if !response.status().is_success() {
         let status = response.status();
@@ -1373,19 +1378,29 @@ fn parse_web_search_progress(chunk: &StreamChunk) -> Option<AgentEvent> {
 
 /// Whether `chunk` ends the first-event phase of [`StreamWatchdog`].
 ///
-/// `response.created`, `response.queued` and `response.in_progress` only
-/// prove the request was accepted, and an empty `reasoning` item opens before
-/// a silent think; none of them shortens the prefill budget. Every other
-/// chunk (text, reasoning text, tool calls, hosted tool progress, terminals)
-/// is content.
+/// Only meaningful content or tool activity ends prefill. Empty blocks and
+/// unknown lifecycle events may precede a long silent think.
 fn starts_generation(chunk: &StreamChunk) -> bool {
     match chunk.chunk_type.as_str() {
-        "response.created" | "response.queued" | "response.in_progress" => false,
-        "response.output_item.added" => chunk
-            .item
-            .as_ref()
-            .is_none_or(|item| item.item_type != "reasoning"),
-        _ => true,
+        "response.output_text.delta"
+        | "response.reasoning_summary_text.delta"
+        | "response.reasoning_text.delta"
+        | "response.function_call_arguments.delta" => {
+            chunk.delta.as_ref().is_some_and(|text| !text.is_empty())
+        }
+        "response.output_text.done" | "response.reasoning_summary_text.done" => {
+            chunk.text.as_ref().is_some_and(|text| !text.is_empty())
+        }
+        "response.function_call_arguments.done" => true,
+        "response.web_search_call.in_progress"
+        | "response.web_search_call.searching"
+        | "response.web_search_call.completed" => true,
+        "response.output_item.added" | "response.output_item.done" => {
+            chunk.item.as_ref().is_some_and(|item| {
+                matches!(item.item_type.as_str(), "function_call" | "web_search_call")
+            })
+        }
+        _ => false,
     }
 }
 
@@ -3550,6 +3565,8 @@ mod tests {
             "response.created",
             "response.queued",
             "response.in_progress",
+            "response.content_part.added",
+            "response.future_lifecycle",
         ] {
             assert!(!super::starts_generation(&chunk(
                 json!({"type": lifecycle})
@@ -3559,6 +3576,12 @@ mod tests {
             "type": "response.output_item.added",
             "item": {"type": "reasoning", "id": "rs_1"}
         }))));
+        assert!(!super::starts_generation(&chunk(json!({
+            "type": "response.output_item.added", "item": {"type": "message"}
+        }))));
+        assert!(!super::starts_generation(&chunk(json!({
+            "type": "response.output_text.delta", "delta": ""
+        }))));
         assert!(super::starts_generation(&chunk(json!({
             "type": "response.web_search_call.searching",
             "item_id": "ws_1"
@@ -3567,5 +3590,112 @@ mod tests {
             "type": "response.output_text.delta",
             "delta": "x"
         }))));
+        assert!(super::starts_generation(&chunk(json!({
+            "type": "response.output_item.added", "item": {"type": "function_call"}
+        }))));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_event_budget_is_independent_and_absolute() {
+        let mut clock =
+            super::StreamWatchdog::start(Duration::from_millis(100), Duration::from_secs(2));
+        tokio::time::advance(Duration::from_millis(75)).await;
+        assert_eq!(clock.next_wait(), Duration::from_millis(25));
+        tokio::time::advance(Duration::from_millis(26)).await;
+        assert_eq!(clock.next_wait(), Duration::ZERO);
+        clock.generation_started();
+        assert_eq!(clock.next_wait(), Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn empty_message_and_content_part_preserve_prefill_on_both_streams() {
+        for agent in [false, true] {
+            let steps = vec![
+                scripted_sse::text(
+                    "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\"}}\n\ndata: {\"type\":\"response.content_part.added\",\"part\":{\"type\":\"output_text\"}}\n\n",
+                ),
+                Step::Pause(Duration::from_millis(300)),
+                scripted_sse::text(
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"late\"}\n\n",
+                ),
+                completed_tail("late"),
+            ];
+            let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+            let client = Client::new();
+            let manager = timed_manager(
+                &client,
+                &endpoint,
+                Duration::from_millis(100),
+                Duration::from_secs(2),
+            );
+            if agent {
+                let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+                assert_eq!(delta_text(&events), "late");
+                assert!(has_clean_done(&events), "{events:?}");
+            } else {
+                assert_eq!(
+                    manager.stream(&json!({})).await.unwrap().assistant_text,
+                    "late"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn resumed_stream_preserves_prefill_until_real_content() {
+        let steps = vec![
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\"}}\n\n",
+            ),
+            Step::Pause(Duration::from_millis(300)),
+            scripted_sse::text(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"resumed\"}\n\n",
+            ),
+            completed_tail("resumed"),
+        ];
+        let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+        let client = Client::new();
+        let manager = timed_manager(
+            &client,
+            &endpoint,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        );
+        assert_eq!(
+            manager
+                .resume_stream("resp_cut3", 1)
+                .await
+                .unwrap()
+                .assistant_text,
+            "resumed"
+        );
+    }
+
+    #[tokio::test]
+    async fn resumed_partial_text_requires_a_clean_terminal() {
+        for tail in [
+            "",
+            "data: [DONE]\n\n",
+            "data: {\"type\":\"response.incomplete\"}\n\n",
+        ] {
+            let steps = vec![
+                scripted_sse::text(
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+                ),
+                scripted_sse::text(tail),
+            ];
+            let endpoint = scripted_sse::serve("/v1/responses", steps).await;
+            let client = Client::new();
+            let manager = timed_manager(
+                &client,
+                &endpoint,
+                Duration::from_millis(100),
+                Duration::from_secs(2),
+            );
+            assert!(
+                manager.resume_stream("resp_cut3", 1).await.is_err(),
+                "tail={tail:?}"
+            );
+        }
     }
 }
