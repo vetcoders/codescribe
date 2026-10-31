@@ -4131,4 +4131,114 @@ mod tests {
             );
         }
     }
+
+    // Bounded scheduler turns keep Tokio's paused clock from auto-advancing
+    // while the real loopback I/O driver handles a request. No wall-time sleep.
+    async fn m3a_ticks<F: std::future::Future>(future: F) -> Option<F::Output> {
+        use std::task::Poll;
+        tokio::pin!(future);
+        for _ in 0..10_000 {
+            let polled = std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await;
+            if let Poll::Ready(value) = polled {
+                return Some(value);
+            }
+            tokio::task::yield_now().await;
+        }
+        None
+    }
+
+    async fn m3a_gated_headers() -> (
+        String,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1/responses", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            scripted_sse::read_request(&mut socket).await;
+            let _ = seen_tx.send(());
+            if release_rx.await.is_ok() {
+                let body = concat!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"exam\"}\n\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_exam\",\"status\":\"completed\"}}\n\n"
+                );
+                let _ = socket.write_all(body.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (endpoint, seen_rx, release_tx)
+    }
+
+    /// Fix 6486e049f / 61e3a19f3; kills M3a-01, M3a-02, M3a-03.
+    /// Literal 31 s headers must survive the old 30 s cap within a 90 s budget.
+    #[tokio::test(start_paused = true)]
+    async fn m3a_headers_at_31_seconds_survive_all_responses_routes() {
+        for route in ["ordinary", "resume", "agent"] {
+            let (endpoint, seen, release) = m3a_gated_headers().await;
+            let task = tokio::spawn(async move {
+                let client = Client::builder().no_proxy().build().unwrap();
+                let manager = ResponsesStreamingManager::new(
+                    &client, &endpoint, "exam-key",
+                    StreamCallbacks { assistant: None, reasoning: None },
+                    Duration::from_secs(30), Duration::from_secs(30),
+                ).with_first_event_timeout(Duration::from_secs(90));
+                match route {
+                    "ordinary" => assert_eq!(manager.stream(&json!({})).await.unwrap().assistant_text, "exam"),
+                    "resume" => assert_eq!(manager.resume_stream("resp_exam", 1, "", "").await.unwrap().assistant_text, "exam"),
+                    _ => {
+                        let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
+                        assert_eq!(delta_text(&events), "exam");
+                        assert!(has_clean_done(&events), "{events:?}");
+                        assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error(_))), "{events:?}");
+                    }
+                }
+            });
+            m3a_ticks(seen).await.expect("request reached loopback").unwrap();
+            let before = tokio::time::Instant::now();
+            tokio::time::advance(Duration::from_secs(31)).await;
+            let _ = release.send(());
+            m3a_ticks(task).await.expect("headers completed without another timer").unwrap();
+            assert_eq!(tokio::time::Instant::now() - before, Duration::from_secs(31));
+        }
+    }
+
+    async fn m3a_cancel_responses_phase(status: Option<u16>) {
+        let prefix = if status == Some(200) {
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"body-entered\"}\n\n"
+        } else { "" };
+        let (endpoint, seen, closed) = scripted_sse::held_response("/v1/responses", status, prefix.into()).await;
+        let client = Client::builder().no_proxy().build().unwrap();
+        let manager = ResponsesStreamingManager::new(
+            &client, &endpoint, "exam-key",
+            StreamCallbacks { assistant: None, reasoning: None },
+            Duration::from_secs(30), Duration::from_secs(30),
+        ).with_first_event_timeout(Duration::from_secs(90));
+        let mut rx = manager.stream_agent(&json!({})).await.unwrap();
+        m3a_ticks(seen).await.expect("request must be pending").unwrap();
+        if status == Some(200) {
+            assert_eq!(m3a_ticks(rx.recv()).await.unwrap(), Some(AgentEvent::TextDelta("body-entered".into())));
+        }
+        let before = tokio::time::Instant::now();
+        drop(rx);
+        let result = m3a_ticks(closed).await.expect("receiver drop must disconnect before any timeout").unwrap();
+        assert!(matches!(result, Ok(0)) || result.is_err_and(|e| matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted)));
+        assert_eq!(tokio::time::Instant::now(), before);
+    }
+
+    /// Fix 61e3a19f3; kills M3a-05 while HTTP headers are still absent.
+    #[tokio::test(start_paused = true)]
+    async fn m3a_cancel_releases_responses_header_read_without_time_passing() {
+        m3a_cancel_responses_phase(None).await;
+    }
+
+    /// Fix 61e3a19f3; kills M3a-06 after a content event proves body entry.
+    #[tokio::test(start_paused = true)]
+    async fn m3a_cancel_releases_responses_body_read_without_time_passing() {
+        m3a_cancel_responses_phase(Some(200)).await;
+    }
 }

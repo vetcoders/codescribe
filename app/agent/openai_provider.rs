@@ -2698,4 +2698,34 @@ mod tests {
         assert!(events.contains(&AgentEvent::TextDone("Słonecznie".to_string())));
         assert!(has_clean_done(&events), "{events:?}");
     }
+
+    async fn m3a_ticks<F: std::future::Future>(future: F) -> Option<F::Output> {
+        use std::task::Poll;
+        tokio::pin!(future);
+        for _ in 0..10_000 {
+            let polled = std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await;
+            if let Poll::Ready(value) = polled { return Some(value); }
+            tokio::task::yield_now().await;
+        }
+        None
+    }
+
+    /// Fix 61e3a19f3; kills M3a-09 with a silent, still-owned upstream.
+    #[tokio::test(start_paused = true)]
+    async fn m3a_forwarder_drop_releases_upstream_and_preserves_chain() {
+        let (upstream_tx, upstream_rx) = mpsc::channel(1);
+        let (tx, mut rx) = mpsc::channel(1);
+        let chain = Arc::new(Mutex::new(Some("resp_before_exam".into())));
+        let task = tokio::spawn(super::forward_events_and_track_chain(
+            upstream_rx, tx, Some(Arc::clone(&chain)), None,
+        ));
+        upstream_tx.send(AgentEvent::TextDelta("forwarded".into())).await.unwrap();
+        assert_eq!(m3a_ticks(rx.recv()).await.unwrap(), Some(AgentEvent::TextDelta("forwarded".into())));
+        let before = tokio::time::Instant::now();
+        drop(rx);
+        m3a_ticks(upstream_tx.closed()).await.expect("silent upstream receiver retained");
+        m3a_ticks(task).await.expect("forwarder retained the turn").unwrap();
+        assert_eq!(chain.lock().await.as_deref(), Some("resp_before_exam"));
+        assert_eq!(tokio::time::Instant::now(), before);
+    }
 }
