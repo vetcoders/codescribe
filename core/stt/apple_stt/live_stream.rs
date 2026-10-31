@@ -27,6 +27,10 @@ use super::{
 };
 use crate::pipeline::contracts::TranscriptSegment;
 
+/// Wall-clock budget for one stream handshake or `write_pcm` call into the
+/// bridge stdin pipe when the child stops draining it.
+const LIVE_STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Progressive events from a live `stream` bridge session.
 #[derive(Debug, Clone)]
 pub enum LiveStreamEvent {
@@ -132,6 +136,7 @@ impl LiveStreamSession {
             // Swift host and leaves no crash report — killing the bridge took the
             // whole app down on 2026-08-12. See `util::pipes`.
             crate::util::pipes::disable_sigpipe(&stdin);
+            set_nonblocking(&stdin).context("set Apple STT bridge stdin non-blocking")?;
             let stdout = child
                 .stdout
                 .take()
@@ -150,15 +155,14 @@ impl LiveStreamSession {
                 backend: None,
             };
             let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
-            stdin
-                .write_all(&req_payload)
+            let handshake_deadline = std::time::Instant::now() + LIVE_STREAM_WRITE_TIMEOUT;
+            write_all_until(&mut stdin, &req_payload, handshake_deadline)
                 .context("write stream request")?;
-            stdin.write_all(b"\n").context("write stream request EOL")?;
+            write_all_until(&mut stdin, b"\n", handshake_deadline)
+                .context("write stream request EOL")?;
             let header = format!("{{\"rate\":{},\"channels\":1}}\n", sample_rate as f64);
-            stdin
-                .write_all(header.as_bytes())
+            write_all_until(&mut stdin, header.as_bytes(), handshake_deadline)
                 .context("write stream PCM header")?;
-            stdin.flush().context("flush stream header")?;
             Ok((stdin, stdout))
         })();
         let (stdin, stdout) = match handshake {
@@ -226,19 +230,33 @@ impl LiveStreamSession {
 
     /// Append mono f32le frames into the long-lived SFSpeech request.
     pub fn write_pcm(&mut self, samples: &[f32]) -> Result<()> {
-        let Some(stdin) = self.stdin.as_mut() else {
-            bail!("live stream: stdin already closed");
-        };
         if samples.is_empty() {
+            if self.stdin.is_none() {
+                bail!("live stream: stdin already closed");
+            }
             return Ok(());
         }
         let mut pcm = Vec::with_capacity(samples.len() * 4);
         for &sample in samples {
             pcm.extend_from_slice(&sample.to_le_bytes());
         }
-        stdin
-            .write_all(&pcm)
-            .context("write live stream PCM frames")?;
+        let deadline = std::time::Instant::now() + LIVE_STREAM_WRITE_TIMEOUT;
+        let write_result = {
+            let Some(stdin) = self.stdin.as_mut() else {
+                bail!("live stream: stdin already closed");
+            };
+            write_all_until(stdin, &pcm, deadline).context("write live stream PCM frames")
+        };
+        if let Err(error) = write_result {
+            let outcome = self.teardown_bridge();
+            if !outcome.is_complete() {
+                return Err(error.context(format!(
+                    "Apple STT live stream bridge teardown incomplete after write failure (child_reaped={}, readers_joined={})",
+                    outcome.child_reaped, outcome.readers_joined
+                )));
+            }
+            return Err(error);
+        }
         self.frames_written += samples.len() as u64;
         Ok(())
     }
@@ -341,6 +359,139 @@ impl Drop for LiveStreamSession {
     fn drop(&mut self) {
         let _ = self.teardown_bridge();
     }
+}
+
+/// Put a child stdin pipe into non-blocking mode so writes surface
+/// `ErrorKind::WouldBlock` instead of hanging the capture/session thread inside
+/// the kernel when the bridge child stops draining stdin.
+#[cfg(unix)]
+fn set_nonblocking<F: std::os::fd::AsRawFd>(pipe: &F) -> std::io::Result<()> {
+    let fd = pipe.as_raw_fd();
+    // SAFETY: `fd` belongs to `pipe` for the duration of this call; `F_GETFL`
+    // only reads descriptor status flags.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `F_SETFL` sets `O_NONBLOCK` on a valid pipe descriptor owned by caller.
+    let rc = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_nonblocking<F>(_pipe: &F) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Wait until `pipe` becomes writable (or closed/errored by peer) before `deadline`.
+#[cfg(unix)]
+fn wait_stdin_writable_until<F: std::os::fd::AsRawFd>(
+    pipe: &F,
+    deadline: std::time::Instant,
+) -> std::io::Result<()> {
+    let fd = pipe.as_raw_fd();
+    loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Apple STT bridge stdin remained full past write deadline",
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        let timeout_ms = remaining.as_millis().clamp(1, 50) as libc::c_int;
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: `pollfd` is a valid stack-allocated descriptor entry for `fd`.
+        let rc = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+        if rc > 0 {
+            if (pollfd.revents & libc::POLLNVAL) != 0 {
+                return Err(std::io::Error::from_raw_os_error(libc::EBADF));
+            }
+            if (pollfd.revents & (libc::POLLOUT | libc::POLLHUP | libc::POLLERR)) != 0 {
+                return Ok(());
+            }
+        } else if rc < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn wait_stdin_writable_until<F>(_pipe: &F, deadline: std::time::Instant) -> std::io::Result<()> {
+    if std::time::Instant::now() >= deadline {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "Apple STT bridge stdin write timed out",
+        ));
+    }
+    std::thread::sleep(Duration::from_millis(5));
+    Ok(())
+}
+
+/// Write `bytes` completely in exact byte order before `deadline` without
+/// resetting the deadline on partial progress.
+fn write_all_until(
+    stdin: &mut ChildStdin,
+    bytes: &[u8],
+    deadline: std::time::Instant,
+) -> Result<()> {
+    let mut offset = 0usize;
+    let mut made_attempt = false;
+    while offset < bytes.len() {
+        if made_attempt && std::time::Instant::now() >= deadline {
+            return Err(anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "Apple STT bridge stdin write timed out after {offset}/{} bytes",
+                    bytes.len()
+                ),
+            )));
+        }
+        made_attempt = true;
+        match stdin.write(&bytes[offset..]) {
+            Ok(0) => {
+                return Err(anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    format!(
+                        "Apple STT bridge stdin closed after {offset}/{} bytes",
+                        bytes.len()
+                    ),
+                )));
+            }
+            Ok(written) => {
+                offset += written;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_stdin_writable_until(stdin, deadline).with_context(|| {
+                    format!(
+                        "Apple STT bridge stdin write timed out after {offset}/{} bytes",
+                        bytes.len()
+                    )
+                })?;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "write Apple STT bridge stdin ({offset}/{} bytes written)",
+                        bytes.len()
+                    )
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Reader-thread body: parse bridge stdout line by line and forward typed events.
