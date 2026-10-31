@@ -235,24 +235,29 @@ impl AgentProvider for GoogleProvider {
                 let id = format!("google_schema_skip_{}", skipped.registered_name);
                 let summary = skipped.warning_message();
                 if let Some(host) = &host {
-                    let _ = host
-                        .ui_tx
-                        .send(AgentUiEvent::ToolResult {
+                    tokio::select! {
+                        biased;
+                        _ = tx.closed() => return,
+                        _ = host.ui_tx.send(AgentUiEvent::ToolResult {
                             name: skipped.registered_name.clone(),
                             id,
                             summary,
                             is_error: true,
-                        })
-                        .await;
+                        }) => {}
+                    }
                 } else {
-                    let _ = tx
+                    if tx
                         .send(AgentEvent::ServerToolProgress {
                             id,
                             name: skipped.registered_name.clone(),
                             done: true,
                             query: Some(summary),
                         })
-                        .await;
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
                 }
             }
             let result = transport
@@ -1405,6 +1410,70 @@ mod tests {
                 None,
             )
             .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn google_warning_cancellation_releases_turn_with_a_full_ui_queue() {
+        let server = mockito::Server::new_async().await;
+        let provider = GoogleProvider::from_configuration(
+            format!("{}/v1beta", server.url()),
+            "gemini-test".into(),
+            "fixture-key".into(),
+            &timing(),
+        )
+        .unwrap();
+        let (ui_tx, ui_rx) = mpsc::channel(1);
+        ui_tx
+            .try_send(AgentUiEvent::ToolResult {
+                name: "occupied".into(),
+                id: "occupied".into(),
+                summary: "occupied".into(),
+                is_error: false,
+            })
+            .unwrap();
+        provider.bind_host(AgentProviderHost {
+            tools: Arc::new(ToolRegistry::new()),
+            ui_tx,
+            approval_handler: None,
+            approval_timeout: Duration::from_secs(5),
+            session_id: "cancel-fixture".into(),
+            thread_id: "cancel-fixture".into(),
+        });
+        let tools = [
+            ToolDefinition {
+                name: "valid".into(),
+                description: "valid".into(),
+                input_schema: json!({"type":"object"}),
+            },
+            ToolDefinition {
+                name: "bad".into(),
+                description: "bad".into(),
+                input_schema: json!({"enum":[1,2]}),
+            },
+        ];
+        let rx = provider
+            .stream(&[user("hello")], &tools, &StreamOptions::default())
+            .await
+            .unwrap();
+        assert!(provider.turn_lock.try_lock().is_err());
+        drop(rx);
+        let released = tokio::time::timeout(
+            Duration::from_secs(1),
+            provider.restore_response_chain(None),
+        )
+        .await;
+        drop(ui_rx);
+        if released.is_err() {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(1),
+                provider.restore_response_chain(None),
+            )
+            .await;
+        }
+        assert!(
+            released.is_ok(),
+            "a blocked warning must not retain a cancelled turn"
         );
     }
 
