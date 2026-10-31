@@ -18,9 +18,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use codescribe_core::agent::{
-    AgentEvent, AgentProvider, AgentProviderHost, AgentUiEvent, ContentBlock, MCP_CALL_TOOL_NAME,
-    MCP_SEARCH_TOOL_NAME, Message, ProviderResponseMetadata, Role, StreamOptions, ToolDefinition,
-    mcp_projection::build_mcp_search_tool_definition,
+    AgentEvent, AgentProvider, AgentProviderHost, AgentUiEvent, ContentBlock, MCP_SEARCH_TOOL_NAME,
+    Message, ProviderResponseMetadata, Role, StreamOptions, ToolDefinition,
 };
 use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane};
 use codescribe_core::llm::account_auth::{
@@ -709,49 +708,10 @@ fn build_request_with_host(
     {
         body["generationConfig"] = generation;
     }
-    let mut skipped = Vec::new();
+    let mut skipped: Vec<SkippedGoogleTool> = Vec::new();
     if !tools.is_empty() {
         let mut declarations = Vec::new();
-        let mcp_entries = host
-            .map(|bound| bound.tools.mcp_entries())
-            .unwrap_or_default();
-        let had_mcp_entries =
-            !mcp_entries.is_empty() && tools.iter().any(|tool| tool.name == MCP_SEARCH_TOOL_NAME);
-        let mut valid_mcp_entries = Vec::new();
-        if had_mcp_entries {
-            for entry in mcp_entries {
-                match google::normalize_schema_for_gemini(entry.input_schema) {
-                    Ok(_) => valid_mcp_entries.push(entry),
-                    Err(reason) => {
-                        skipped.push(SkippedGoogleTool {
-                            registered_name: entry.registered_name.to_string(),
-                            server: entry.server.to_string(),
-                            tool: entry.upstream_tool.to_string(),
-                            reason,
-                        });
-                    }
-                }
-            }
-        }
         for tool in tools {
-            if had_mcp_entries
-                && (tool.name == MCP_SEARCH_TOOL_NAME || tool.name == MCP_CALL_TOOL_NAME)
-            {
-                if valid_mcp_entries.is_empty() {
-                    continue;
-                }
-                if tool.name == MCP_SEARCH_TOOL_NAME && !skipped.is_empty() {
-                    let rebuilt = build_mcp_search_tool_definition(&valid_mcp_entries);
-                    let schema = google::normalize_schema_for_gemini(&rebuilt.input_schema)
-                        .map_err(|error| anyhow!(error))?;
-                    declarations.push(json!({
-                        "name": rebuilt.name,
-                        "description": rebuilt.description,
-                        "parameters": schema,
-                    }));
-                    continue;
-                }
-            }
             match google::normalize_schema_for_gemini(&tool.input_schema) {
                 Ok(schema) => {
                     declarations.push(json!({
@@ -1354,6 +1314,98 @@ mod tests {
     }
     fn user(text: &str) -> Message {
         Message::new(Role::User, vec![ContentBlock::Text(text.into())])
+    }
+
+    #[test]
+    fn google_wire_filter_preserves_lazy_mcp_registry_schemas() {
+        let mut registry = ToolRegistry::new();
+        registry.register_with_policy(
+            ToolDefinition {
+                name: "mcp__local__choose".into(), description: "choose a number".into(),
+                input_schema: json!({"type":"object","properties":{"n":{"type":"integer","enum":[1,2]}}}),
+            },
+            Box::new(|_| Box::pin(async { Vec::new() })),
+            ToolExecutionPolicy {
+                origin: ToolOrigin::Mcp { server: "local".into(), upstream_tool: "choose".into() },
+                risk: ToolRisk::ReadOnly, requires_approval: false,
+            }, None,
+        ).unwrap();
+        let (ui_tx, _ui_rx) = mpsc::channel(1);
+        let host = AgentProviderHost {
+            tools: Arc::new(registry),
+            ui_tx,
+            approval_handler: None,
+            approval_timeout: Duration::from_secs(1),
+            session_id: "wire-fixture".into(),
+            thread_id: "wire-fixture".into(),
+        };
+        let tools = host.tools.wire_definitions();
+        let (body, skipped) = build_request_with_host(
+            &[user("choose")],
+            &tools,
+            &StreamOptions::default(),
+            &[],
+            Some(&host),
+        )
+        .expect("valid gateways do not submit the upstream numeric enum to Gemini");
+        assert!(skipped.is_empty());
+        let names = body["tools"][0]["functionDeclarations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["mcp_search_tools", "call_mcp_tool"]);
+        assert_eq!(host.tools.mcp_entries().len(), 1);
+        let results = host.tools.search_mcp_tools(&json!({"query":"choose"}));
+        assert!(format!("{results:?}").contains("choose"));
+    }
+
+    #[test]
+    fn google_wire_filter_warns_for_skipped_declarations_and_refuses_an_empty_set() {
+        let valid = ToolDefinition {
+            name: "valid".into(),
+            description: "valid".into(),
+            input_schema: json!({"type":"object"}),
+        };
+        let invalid = ToolDefinition {
+            name: "mcp__local__bad".into(),
+            description: "invalid".into(),
+            input_schema: json!({"type":"object","properties":{"n":{"enum":[1,2]}}}),
+        };
+        let (body, skipped) = build_request_with_host(
+            &[user("hello")],
+            &[valid, invalid.clone()],
+            &StreamOptions::default(),
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "valid");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].registered_name, invalid.name);
+        assert!(
+            body["systemInstruction"]
+                .to_string()
+                .contains(&invalid.name)
+        );
+        assert!(
+            build_request_with_host(
+                &[user("hello")],
+                &[invalid],
+                &StreamOptions::default(),
+                &[],
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
