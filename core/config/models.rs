@@ -289,12 +289,15 @@ fn hf_snapshot_for_model(model_ref: &str) -> Result<Option<PathBuf>> {
     } else {
         return Ok(None);
     };
-    Ok(hf_cache::find_snapshot_with_any_matching_checked(
+    hf_cache::find_snapshot_with_any_matching_checked(
         repo,
         &REQUIRED_MODEL_FILES,
         &REQUIRED_MODEL_WEIGHTS,
-        is_complete_whisper_model_dir,
-    )?)
+        |path| {
+            validate_whisper_model_bundle(path)?;
+            Ok(true)
+        },
+    )
 }
 
 /// Find a warm default-repo snapshot containing one valid config/weights pair.
