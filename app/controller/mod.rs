@@ -4382,6 +4382,21 @@ impl RecordingController {
             );
             return Ok(disposition);
         }
+        let selected_refused = if seal_refused && !assistive {
+            let settings = automatic_take_settings(self.runtime_settings_arc().await);
+            Some(
+                self.select_paste_projection_with_assembly(
+                    take_id,
+                    settings.as_ref(),
+                    trimmed.to_string(),
+                    crate::presentation::emitter::ProjectionAssembly::RefusedPerOccurrence,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let trimmed = selected_refused.as_deref().unwrap_or(trimmed).trim();
         let notes_save_only = config.quick_notes_enabled && config.quick_notes_save_only;
         let intent = delivery_intent_from_session(assistive, force_ai, notes_save_only);
         let latched_target = self.pre_overlay_frontmost_app.read().await.clone();
@@ -7580,19 +7595,46 @@ impl RecordingController {
         runtime_settings: &RuntimeSettingsSnapshot,
         raw: String,
     ) -> String {
+        self.select_paste_projection_with_assembly(
+            take_id,
+            runtime_settings,
+            raw,
+            crate::presentation::emitter::ProjectionAssembly::AllOrWholeRaw,
+        )
+        .await
+    }
+
+    async fn select_paste_projection_with_assembly(
+        &self,
+        take_id: Option<&str>,
+        runtime_settings: &RuntimeSettingsSnapshot,
+        raw: String,
+        assembly: crate::presentation::emitter::ProjectionAssembly,
+    ) -> String {
+        use crate::presentation::emitter::ProjectionAssembly;
         let policy = runtime_settings.formatting_policy();
-        if !matches!(
-            policy,
-            FormattingPolicy::Correction | FormattingPolicy::Smart | FormattingPolicy::Max
-        ) {
+        let policy_supported = match assembly {
+            ProjectionAssembly::AllOrWholeRaw => matches!(
+                policy,
+                FormattingPolicy::Correction | FormattingPolicy::Smart | FormattingPolicy::Max
+            ),
+            ProjectionAssembly::RefusedPerOccurrence => {
+                matches!(
+                    policy,
+                    FormattingPolicy::Correction | FormattingPolicy::Smart
+                )
+            }
+        };
+        if !policy_supported {
             return raw;
         }
         let Some(presentation) = self.active_presentation.read().await.clone() else {
             return raw;
         };
+        let expected_session = take_id.map(|id| id.strip_suffix(STOPPING_SUFFIX).unwrap_or(id));
         if !presentation
             .visible_canvas_snapshot()
-            .is_some_and(|canvas| Some(canvas.session_id.as_str()) == take_id)
+            .is_some_and(|canvas| Some(canvas.session_id.as_str()) == expected_session)
         {
             warn!(
                 take_id,
@@ -7607,18 +7649,32 @@ impl RecordingController {
             policy,
             FormattingPolicy::Correction | FormattingPolicy::Smart
         ) {
-            presentation
-                .wait_for_occurrence_projections(
-                    policy,
-                    &raw,
-                    runtime_settings
-                        .ai_execution()
-                        .request_timing()
-                        .attempt_timeout(),
-                )
-                .await;
+            match assembly {
+                ProjectionAssembly::AllOrWholeRaw => {
+                    presentation
+                        .wait_for_occurrence_projections(
+                            policy,
+                            &raw,
+                            runtime_settings
+                                .ai_execution()
+                                .request_timing()
+                                .attempt_timeout(),
+                        )
+                        .await;
+                }
+                ProjectionAssembly::RefusedPerOccurrence => {
+                    presentation
+                        .wait_for_refused_occurrence_projections(policy, &raw)
+                        .await;
+                }
+            }
         }
-        let Some(projection) = presentation.delivery_projection(policy, &raw) else {
+        let Some(projection) =
+            presentation.delivery_projection_with_assembly(take_id, policy, &raw, assembly)
+        else {
+            if assembly == ProjectionAssembly::RefusedPerOccurrence {
+                self.publish_formatting_degraded(expected_session);
+            }
             return raw;
         };
         if policy == FormattingPolicy::Smart
@@ -7628,7 +7684,12 @@ impl RecordingController {
         }
         if projection.requested_mode != projection.delivered_mode || projection.status != "applied"
         {
-            self.publish_formatting_degraded(take_id);
+            self.publish_formatting_degraded(expected_session);
+        }
+        if assembly == ProjectionAssembly::RefusedPerOccurrence
+            && let Some(session_id) = expected_session
+        {
+            self.sync_live_archive(&presentation, session_id).await;
         }
         projection.rendered_text
     }

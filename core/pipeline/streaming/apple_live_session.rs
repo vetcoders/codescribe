@@ -856,6 +856,14 @@ impl RetainedFormatterJobs {
     }
 }
 
+impl Drop for RetainedFormatterJobs {
+    fn drop(&mut self) {
+        self.requests.close();
+        self.jobs.clear();
+        self.event_sink.on_formatter_pending(false);
+    }
+}
+
 #[cfg(test)]
 mod formatter_deadline_tests {
     use super::*;
