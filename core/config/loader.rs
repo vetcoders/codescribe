@@ -777,7 +777,7 @@ impl Config {
         }
         let credential =
             RuntimeLlmCredential::seal(provider.key_account.clone(), api_key, account_auth);
-        let sealed = RuntimeLlmLane::seal(
+        let mut sealed = RuntimeLlmLane::seal(
             lane,
             provider,
             model,
@@ -785,6 +785,50 @@ impl Config {
             configuration_fault,
             unavailable_reason,
         );
+        if lane == RuntimeLlmLaneKind::Assistive
+            && let Some(launch) = &settings.agent_acp
+        {
+            // This resolver consumes only captured input. Filesystem identity
+            // is checked again when the chosen provider opens its capabilities.
+            let resolved = (|| {
+                let absolute = |raw: &str| {
+                    let path = std::path::Path::new(raw);
+                    path.is_absolute()
+                        && !raw.chars().any(char::is_control)
+                        && path.components().all(|component| {
+                            matches!(component, std::path::Component::RootDir | std::path::Component::Normal(_))
+                        })
+                };
+                if !absolute(&launch.program)
+                    || !absolute(&launch.cwd)
+                    || launch.args.iter().any(|arg| arg.contains('\0'))
+                {
+                    return Err("ACP requires absolute program/cwd paths and literal argv without NUL or traversal".to_string());
+                }
+                let roots = normalize_agent_workspace_roots(
+                    settings.agent_workspace_roots.clone().unwrap_or_default(),
+                );
+                if roots.is_empty() || roots.iter().any(|root| !absolute(root)) {
+                    return Err("ACP requires explicit absolute system.agent_workspace_roots; home expansion and process cwd are not implicit grants".to_string());
+                }
+                let workspace_roots: Vec<std::path::PathBuf> =
+                    roots.into_iter().map(Into::into).collect();
+                let cwd = std::path::PathBuf::from(&launch.cwd);
+                if !workspace_roots.iter().any(|root| cwd.starts_with(root)) {
+                    return Err("ACP cwd must be inside a configured Agent workspace root".to_string());
+                }
+                Ok(super::settings::RuntimeAcpConfiguration {
+                    command: crate::acp::AcpCommand {
+                        program: launch.program.clone(),
+                        args: launch.args.clone(),
+                        cwd,
+                        env: Default::default(),
+                    },
+                    workspace_roots,
+                })
+            })();
+            sealed = sealed.with_acp(resolved);
+        }
         match lane {
             RuntimeLlmLaneKind::Formatting => sealed.with_reasoning(
                 settings

@@ -9,6 +9,8 @@ use codescribe_core::agent::{AgentProvider, ContentBlock, Message, Role, StreamO
 use codescribe_core::config::{FormattingPolicy, RuntimeLlmLane, RuntimeSettingsSnapshot};
 use codescribe_core::llm::provider::WireFamily;
 
+/// Local Agent Client Protocol process and streaming event projection.
+pub mod acp_provider;
 /// Anthropic Messages-family assistive provider client.
 pub mod anthropic_provider;
 /// Max consultation host admission on the Agent lane.
@@ -23,19 +25,53 @@ mod openai_schema;
 #[cfg(target_os = "macos")]
 pub mod tools;
 
+pub use acp_provider::{AcpProvider, AcpProviderConfig};
 pub use anthropic_provider::AnthropicProvider;
 pub use openai_provider::OpenAiProvider;
+
+/// One provider factory accepts the sealed native settings generation or an
+/// explicit embedding launch. Native ACP selection comes only from the sealed
+/// Agent lane; AgentSession supplies its actual tool and approval context.
+pub enum AgentProviderConfig<'a> {
+    Llm(&'a RuntimeSettingsSnapshot),
+    Acp(Box<AcpProviderConfig>),
+}
+
+impl<'a> From<&'a RuntimeSettingsSnapshot> for AgentProviderConfig<'a> {
+    fn from(settings: &'a RuntimeSettingsSnapshot) -> Self {
+        Self::Llm(settings)
+    }
+}
+
+impl<'a> From<&'a std::sync::Arc<RuntimeSettingsSnapshot>> for AgentProviderConfig<'a> {
+    fn from(settings: &'a std::sync::Arc<RuntimeSettingsSnapshot>) -> Self {
+        Self::Llm(settings.as_ref())
+    }
+}
+
+impl From<AcpProviderConfig> for AgentProviderConfig<'_> {
+    fn from(config: AcpProviderConfig) -> Self {
+        Self::Acp(Box::new(config))
+    }
+}
 
 /// Build the tool-capable Agent provider from the sealed Agent (assistive)
 /// lane. Chat and Max share this one constructor, so Max runs on exactly the
 /// Agent's provider, endpoint, model and account; the formatting lane never
 /// enters the tool-capable runtime.
-pub fn create_agent_provider(
-    runtime_settings: &RuntimeSettingsSnapshot,
+pub fn create_agent_provider<'a>(
+    config: impl Into<AgentProviderConfig<'a>>,
 ) -> Result<Box<dyn AgentProvider>> {
+    let runtime_settings = match config.into() {
+        AgentProviderConfig::Llm(settings) => settings,
+        AgentProviderConfig::Acp(config) => return Ok(Box::new(AcpProvider::new(*config)?)),
+    };
     let lane = runtime_settings.llm_lanes().assistive();
     if let Some(reason) = assistive_unavailable_reason(lane) {
         anyhow::bail!("{reason}");
+    }
+    if let Some(configuration) = lane.acp_configuration() {
+        return Ok(Box::new(AcpProvider::from_runtime(configuration)?));
     }
     let request_timing = runtime_settings.ai_execution().request_timing();
     // Selected by protocol, not vendor: `OpenAiProvider` is the Responses-family
