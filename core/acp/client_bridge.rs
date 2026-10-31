@@ -1362,6 +1362,42 @@ mod tests {
                 .await
                 .is_err()
         );
+
+        let subdir = root.path().join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let subdir_target = subdir.join("created.txt");
+        let subdir_swap = subdir.clone();
+        let outside_swap = outside.path().to_path_buf();
+        let write_policy = AgentPermissions {
+            side_effect_default: PermissionLevel::Ask,
+            ..Default::default()
+        };
+        let mut write_config =
+            AcpClientBridgeConfig::for_workspace(vec![root.path().into()], write_policy).unwrap();
+        let (write_ui_tx, _write_ui_rx) = mpsc::channel(8);
+        write_config.ui_tx = Some(write_ui_tx);
+        write_config.approval_handler = Some(Arc::new(move |_| {
+            let subdir_swap = subdir_swap.clone();
+            let outside_swap = outside_swap.clone();
+            Box::pin(async move {
+                std::fs::remove_dir(&subdir_swap).unwrap();
+                symlink(&outside_swap, &subdir_swap).unwrap();
+                true
+            })
+        }));
+        let mut write_bridge = AcpClientBridge::new(write_config).unwrap();
+        write_bridge.set_session_id("session-1".into());
+        let mut write_input = params(&subdir_target);
+        write_input["content"] = json!("escaped write");
+        assert!(
+            write_bridge
+                .handle("fs/write_text_file", write_input)
+                .await
+                .is_err(),
+            "directory swapped to symlink outside workspace during approval must be refused"
+        );
+        assert!(!outside.path().join("created.txt").exists());
     }
 
     #[tokio::test]

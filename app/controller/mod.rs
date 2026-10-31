@@ -47,6 +47,8 @@ pub use live_archive::ArchiveRefusal;
 #[cfg(test)]
 mod channel_tray_tests;
 #[cfg(test)]
+mod formatter_manual_max_acceptance;
+#[cfg(test)]
 mod formatter_selection_acceptance;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;

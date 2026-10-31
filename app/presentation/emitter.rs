@@ -40,6 +40,9 @@ use super::transcript_bus::{TranscriptBus, TranscriptBusEvidenceEvent};
 /// the file sits beside the emitter, hence the explicit path.
 #[path = "formatter_live.rs"]
 mod formatter_live;
+#[cfg(test)]
+#[path = "formatter_live_acceptance.rs"]
+mod formatter_live_acceptance;
 
 /// Read-only capture paint observer: full overlay text and acoustic warning state.
 pub type CursorObserver = Arc<dyn Fn(&CompactProjection) + Send + Sync>;
