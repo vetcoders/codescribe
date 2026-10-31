@@ -1956,6 +1956,12 @@ enum OverlayResizeHit: Sendable {
 }
 
 extension NSPanel {
+  /// Mounted bubble geometry belongs to its actual presentation window.
+  var conversationTextRegions: NSHashTable<NSView>? {
+    if let overlay = self as? FloatingOverlayPanel { return overlay.selectableTextRegions }
+    return (self as? OverlayIntercomPanel)?.selectableTextRegions
+  }
+
   /// ⌘C for whatever holds the focus in this panel. Shared by every
   /// non-activating Codescribe panel: the overlay and the Intercom cards.
   func performCopyChord(_ event: NSEvent) -> Bool {
@@ -1963,16 +1969,31 @@ extension NSPanel {
       event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
       event.charactersIgnoringModifiers?.lowercased() == "c"
     else { return false }
-    if let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:))) {
+    if let textView = firstResponder as? NSTextView {
       // The focused responder owns its copy: the transcript canvas routes
       // through the tagged clipboard bridge in its own `copy(_:)`, and any
-      // other text view keeps the behaviour it overrides.
-      if let textView = responder as? NSTextView {
+      // other text view keeps the behaviour it overrides. An empty composer
+      // selection must not swallow the bubble's copy chord.
+      if textView.isSelectable, textView.selectedRange().length > 0 {
         textView.copy(nil)
         return true
       }
-      return responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
+    } else if let responder = firstResponder,
+      responder.responds(to: #selector(NSText.copy(_:))),
+      responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
+    {
+      return true
     }
+    if let region = conversationTextRegions?.allObjects
+      .compactMap({ $0 as? OverlaySelectableTextRegionView })
+      .first(where: { $0.contains(windowPoint: mouseLocationOutsideOfEventStream) }),
+      region.copyContent()
+    {
+      return true
+    }
+    // Sending Copy back through the app would rediscover the empty editor and
+    // report success without copying anything.
+    if firstResponder is NSTextView { return false }
     // This panel is non-activating, so the app's Edit menu does not receive
     // key equivalents while another app is active; the action has to be sent
     // explicitly down the responder chain.

@@ -1396,11 +1396,14 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 }
 
-/// No window spans the invisible desktop gaps. Only explicitly opened
-/// conversations may become key; nonactivating hover remains passive.
+/// No window spans the invisible desktop gaps. Opening a conversation or
+/// selecting its text may take the keyboard; nonactivating hover stays passive.
 /// Internal so the text-size shortcuts can name the Intercom's windows.
 @MainActor
 final class OverlayIntercomPanel: NSPanel {
+  let selectableTextRegions = NSHashTable<NSView>.weakObjects()
+  private var allowsKeyForSelection = false
+
   /// Intercom cards stay above the ordinary main overlay at `.floating`;
   /// explicitly opened conversations stay above their compact chrome.
   /// Regular app windows retain the separate yield policy below.
@@ -1489,7 +1492,22 @@ final class OverlayIntercomPanel: NSPanel {
 
   override func sendEvent(_ event: NSEvent) {
     if event.type == .keyDown, performCopyChord(event) { return }
+    if event.type == .leftMouseDown {
+      for case let region as OverlaySelectableTextRegionView in selectableTextRegions.allObjects
+      where region.contains(windowPoint: event.locationInWindow) {
+        // Selecting a bubble is an explicit keyboard interaction, including in
+        // a compact card. Hover alone keeps the non-activating card passive.
+        allowsKeyForSelection = true
+        if !isKeyWindow { makeKey() }
+        break
+      }
+    }
     super.sendEvent(event)
+  }
+
+  override func resignKey() {
+    super.resignKey()
+    allowsKeyForSelection = false
   }
 
   override func scrollWheel(with event: NSEvent) {
@@ -1515,7 +1533,7 @@ final class OverlayIntercomPanel: NSPanel {
     animationBehavior = .none
   }
 
-  override var canBecomeKey: Bool { acceptsConversationFocus }
+  override var canBecomeKey: Bool { acceptsConversationFocus || allowsKeyForSelection }
   override var canBecomeMain: Bool { false }
 }
 

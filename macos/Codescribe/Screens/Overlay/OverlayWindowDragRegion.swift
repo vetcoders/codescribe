@@ -177,18 +177,25 @@ final class OverlayMenuCursorRegionView: NSView {
   }
 }
 
-/// Geometry and mounted identity only; this background never intercepts clicks.
+/// Mounted bubble bounds and Copy payload; this background never intercepts clicks.
 /// A click inside opens the panel keyboard gate for selectable SwiftUI text.
 struct OverlaySelectableTextRegion: NSViewRepresentable {
+  var copyText = ""
+
   func makeNSView(context: Context) -> OverlaySelectableTextRegionView {
-    OverlaySelectableTextRegionView()
+    let view = OverlaySelectableTextRegionView()
+    view.copyText = copyText
+    return view
   }
 
-  func updateNSView(_ nsView: OverlaySelectableTextRegionView, context: Context) {}
+  func updateNSView(_ nsView: OverlaySelectableTextRegionView, context: Context) {
+    nsView.copyText = copyText
+  }
 }
 
 final class OverlaySelectableTextRegionView: NSView {
-  private weak var owner: FloatingOverlayPanel?
+  private weak var owner: NSPanel?
+  var copyText = ""
 
   func contains(windowPoint: NSPoint) -> Bool {
     window != nil && !isHiddenOrHasHiddenAncestor
@@ -197,10 +204,17 @@ final class OverlaySelectableTextRegionView: NSView {
 
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+  func copyContent() -> Bool {
+    guard copyText.contains(where: { !$0.isWhitespace }) else { return false }
+    let text = copyText
+    Task { @MainActor in await chatCopy(text) }
+    return true
+  }
+
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    owner?.selectableTextRegions.remove(self)
-    owner = window as? FloatingOverlayPanel
-    owner?.selectableTextRegions.add(self)
+    owner?.conversationTextRegions?.remove(self)
+    owner = window as? NSPanel
+    owner?.conversationTextRegions?.add(self)
   }
 }

@@ -79,7 +79,7 @@ struct OverlayConversationMessageContent: View {
         }
       }
       .fixedSize(horizontal: false, vertical: true)
-      .background(OverlaySelectableTextRegion())
+      .background(OverlaySelectableTextRegion(copyText: message.text))
       .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
       if let attachments = message.attachments, !attachments.isEmpty {
         WrapLayout(spacing: 6) {
