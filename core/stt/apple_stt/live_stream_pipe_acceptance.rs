@@ -111,3 +111,33 @@ fn backpressure_that_clears_preserves_all_f32le_frames_in_order() {
     assert_eq!(session.frames_written, samples.len() as u64);
     session.finish().expect("complete synthetic stream cleanup");
 }
+
+#[test]
+#[serial_test::serial]
+fn healthy_calls_do_not_spend_a_lifetime_backpressure_budget() {
+    let root = tempfile::tempdir().expect("test root");
+    // Each complete call has only 150 ms of ordinary backpressure. Across
+    // twenty calls that exceeds two seconds, but it is a healthy stream.
+    let bridge = fake_bridge(
+        root.path(),
+        "for index in range(20):\n\
+             \x20   time.sleep(0.15)\n\
+             \x20   data = sys.stdin.buffer.read(1048576)\n\
+             \x20   assert data == b'\\x00\\x00\\x80\\x3e' * 262144\n\
+             \x20   print(json.dumps(dict(event='partial', text=str(index))), flush=True)",
+    );
+    let _bridge = EnvGuard::set("CODESCRIBE_APPLE_STT_BRIDGE", bridge);
+    let mut session = ready_session();
+    let samples = vec![0.25_f32; 262_144];
+    for index in 0..20 {
+        session
+            .write_pcm(&samples)
+            .unwrap_or_else(|error| panic!("healthy write {index} was refused: {error:#}"));
+        assert!(matches!(
+            session.events_rx.recv_timeout(Duration::from_secs(2)),
+            Ok(LiveStreamEvent::Partial { text, .. }) if text == index.to_string()
+        ));
+    }
+    assert_eq!(session.frames_written, 20 * samples.len() as u64);
+    session.finish().expect("healthy multi-call cleanup");
+}
