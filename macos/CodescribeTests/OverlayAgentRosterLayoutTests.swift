@@ -273,7 +273,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
   func testIntercomControlsRestSmokedAndNamesBrightenInsteadOfViolet() throws {
     let roster = try overlaySource("OverlayChannelStatusView.swift")
     XCTAssertFalse(roster.contains("AnyShapeStyle(.foreground)"), "an explicit ink is primary")
-    XCTAssertTrue(roster.contains("return chrome ? AnyShapeStyle(palette.primaryText.color) : nil"))
+    XCTAssertTrue(roster.contains("private var idleControlInk: Color { palette.mutedText.color }"))
     let focus = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomFocusButton: View {",
       to: "private struct OverlayIntercomConversationBody: View {")
@@ -387,7 +387,8 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertFalse(
       marks.contains("litColor: palette.processingStatus"), "the lit moon is not a warning")
     XCTAssertTrue(marks.contains("unlitOpacity: Double = 1"), "the antenna keeps its existing tone")
-    XCTAssertTrue(marks.contains("lit ? litColor : palette.mutedText.color.opacity(unlitOpacity)"))
+    XCTAssertTrue(
+      marks.contains("palette: palette, lit: lit ? litColor : nil, unlitOpacity: unlitOpacity"))
   }
 
   func testActionButtonsSitBelowThePrimaryLabel() throws {

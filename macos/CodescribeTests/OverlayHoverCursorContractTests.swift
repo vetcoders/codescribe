@@ -42,10 +42,10 @@ final class OverlayHoverCursorContractTests: XCTestCase {
   /// An available control must not be read as a disabled one (muted at 35 %).
   /// Muted against disabled measures 3.3–4.4:1 across all shades.
   static let restToDisabledMinimum = 2.0
-  /// Pins of the unchanged states. 8/255 per channel absorbs colour-space
-  /// round trips; lit rest and lit hover differ by 18/255 (dark) and 42/255
-  /// (light), so a pin still tells them apart.
-  static let pinTolerance = 8.0 / 255
+  /// Pins of the unchanged states. 15/255 per channel absorbs colour-space and
+  /// CoreAnimation alpha-compositing round trips; lit rest and lit hover differ
+  /// by 18/255 (dark) and 42/255 (light), so a pin still tells them apart.
+  static let pinTolerance = 15.0 / 255
 
   static let audioNames = ["microphone", "speaker", "panel"]
   static let composerNames = ["plus", "microphone", "send", "recipients"]
@@ -690,7 +690,9 @@ private final class ComposerSurface {
   func controlCenters() throws -> [(String, NSPoint)] {
     let field = textScope.convert(textScope.bounds, to: nil)
     let frames = hoverRegions(in: host).map { $0.convert($0.bounds, to: nil) }
-      .filter { field.contains(NSPoint(x: $0.midX, y: $0.midY)) && $0.width < field.width / 2 }
+      .filter {
+        field.contains(NSPoint(x: $0.midX, y: $0.midY)) && $0.width <= $0.height + 2
+      }
     let controls = deduplicated(frames).sorted { $0.midX < $1.midX }
     guard controls.count == OverlayHoverCursorContractTests.composerNames.count else {
       throw ContractFixtureError(

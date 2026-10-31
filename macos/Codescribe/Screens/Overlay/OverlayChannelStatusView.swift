@@ -585,10 +585,7 @@ struct OverlayAgentAudioControls: View {
 
   /// Recording shares the appearance-aware active-speaker accent.
   private var recordingAccent: Color { palette.agentAccent.color }
-  static let idleControlOpacity = 0.72
-  private var idleControlInk: Color {
-    palette.primaryText.color.opacity(Self.idleControlOpacity)
-  }
+  private var idleControlInk: Color { palette.mutedText.color }
 
   /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
   /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie

@@ -801,6 +801,9 @@ private struct ConversationMessageField: NSViewRepresentable {
 
   func makeNSView(context: Context) -> NSScrollView {
     let scroll = MessageScrollView()
+    let clipView = MessageClipView(frame: scroll.contentView.frame)
+    clipView.drawsBackground = false
+    scroll.contentView = clipView
     // This editor mutates TextKit geometry during main-thread layout. Give it
     // explicit backing layers so an ancestor's flattened layer cannot draw it
     // on a Core Animation worker while layout holds the view-hierarchy lock.
@@ -812,6 +815,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     scroll.contentView.canDrawConcurrently = false
     scroll.contentView.layer?.drawsAsynchronously = false
     scroll.drawsBackground = false
+    scroll.documentCursor = nil
+    scroll.contentView.documentCursor = nil
     scroll.hasVerticalScroller = true
     // The scroller policy lives in `CSScrollerPin` (Founder, 2026-10-18); the
     // coordinator keeps it pinned across "Show scroll bars" changes.
@@ -1083,7 +1088,26 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
   }
 
+  private final class MessageClipView: NSClipView {
+    override var documentCursor: NSCursor? {
+      get { nil }
+      set {}
+    }
+
+    override func resetCursorRects() {
+      discardCursorRects()
+    }
+  }
+
   private final class MessageScrollView: NSScrollView {
+    override var documentCursor: NSCursor? {
+      get { nil }
+      set {}
+    }
+
+    override func resetCursorRects() {
+      discardCursorRects()
+    }
     var onHeightChange: (CGFloat) -> Void = { _ in }
     var maximumEditorHeight = ComposerControlMetrics.conversationEditorMaximumHeight {
       didSet {
