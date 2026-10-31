@@ -90,6 +90,81 @@ pub(super) fn configure_bridge_process_group(command: &mut Command) {
     }
 }
 
+/// Inspect whether `child` has already terminated without reaping it, keeping
+/// the process in the kernel zombie state (`WNOWAIT`) so its PID and process
+/// group (`pgid == child.id()`) cannot be recycled before group cleanup runs.
+#[cfg(unix)]
+pub(super) fn child_has_exited_without_reap(
+    child: &std::process::Child,
+) -> std::io::Result<bool> {
+    let Ok(pid) = libc::id_t::try_from(child.id()) else {
+        return Ok(false);
+    };
+    // SAFETY: `info` is zero-initialized on the stack. `waitid` with
+    // `WEXITED | WNOHANG | WNOWAIT` only inspects the child's exit state
+    // without reaping the zombie or releasing its PID in the kernel.
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        let rc = libc::waitid(
+            libc::P_PID,
+            pid,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        );
+        if rc == 0 {
+            Ok(info.si_pid != 0)
+        } else {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                Ok(false)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub(super) fn child_has_exited_without_reap(
+    _child: &std::process::Child,
+) -> std::io::Result<bool> {
+    Ok(false)
+}
+
+/// Terminate any surviving descendants in the bridge process group (`pgid = child.id()`)
+/// while `child` is still unreaped, then reap `child` and return its [`std::process::ExitStatus`]
+/// within `deadline`.
+fn reap_exited_bridge_group_until(
+    child: &mut std::process::Child,
+    deadline: std::time::Instant,
+) -> Option<std::process::ExitStatus> {
+    #[cfg(unix)]
+    {
+        if let Ok(pgid) = libc::pid_t::try_from(child.id())
+            && pgid > 1
+        {
+            // SAFETY: `child` has not been reaped by `try_wait`/`wait` yet (it is in
+            // the waitable zombie state verified by `waitid(..., WNOWAIT)`). The
+            // kernel still holds `pgid == child.id()` in our process table, and
+            // `SIGKILL` terminates only remaining group members without changing
+            // the already-exited leader's status or buffered pipe output.
+            let _ = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        }
+    }
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
 /// Terminate the bridge process group (`pgid = child.id()`) and poll `try_wait`
 /// until `deadline`. Never signals `killpg` when `already_reaped` is true, so a
 /// recycled OS PID can never be targeted. Never blocks in `child.wait()`.
@@ -1478,14 +1553,16 @@ fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Resu
 
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
+        match child_has_exited_without_reap(child) {
+            Ok(true) => {
                 let teardown_deadline = std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET;
+                let status = reap_exited_bridge_group_until(child, teardown_deadline);
                 let stdout = join_thread_until(&mut stdout_thread, teardown_deadline);
                 let stderr = join_thread_until(&mut stderr_thread, teardown_deadline);
+                let child_reaped = status.is_some();
                 let stdout_joined = stdout.is_some();
                 let stderr_joined = stderr.is_some();
-                if let (Some(stdout), Some(stderr)) = (stdout, stderr) {
+                if let (Some(status), Some(stdout), Some(stderr)) = (status, stdout, stderr) {
                     return Ok(Output {
                         status,
                         stdout,
@@ -1495,16 +1572,17 @@ fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Resu
                 tracing::warn!(
                     pid,
                     ?status,
+                    child_reaped,
                     stdout_joined,
                     stderr_joined,
-                    "Apple STT bridge exited, but output pipe readers did not finish within teardown budget"
+                    "Apple STT bridge exited, but group teardown or output pipe readers did not finish within budget"
                 );
                 bail!(
-                    "Apple STT bridge (pid {pid}) exited with {status}, but output readers did not finish within {}ms (stdout_joined={stdout_joined}, stderr_joined={stderr_joined})",
+                    "Apple STT bridge (pid {pid}) exited, but output readers did not finish within {}ms (child_reaped={child_reaped}, stdout_joined={stdout_joined}, stderr_joined={stderr_joined})",
                     BRIDGE_TEARDOWN_BUDGET.as_millis()
                 );
             }
-            Ok(None) => {
+            Ok(false) => {
                 if std::time::Instant::now() >= deadline {
                     let outcome = teardown_bridge_process_and_readers(
                         child,

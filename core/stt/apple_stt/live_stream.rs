@@ -22,8 +22,9 @@ use serde::Deserialize;
 
 use super::{
     BRIDGE_TEARDOWN_BUDGET, BridgeRequest, BridgeResponse, BridgeTeardownOutcome,
-    ENV_ALLOW_DOWNLOAD, bridge_binary, bridge_global_lock, configure_bridge_process_group,
-    env_bool, kill_and_reap_bridge_group_until, resolved_locale, teardown_bridge_reader,
+    ENV_ALLOW_DOWNLOAD, bridge_binary, bridge_global_lock, child_has_exited_without_reap,
+    configure_bridge_process_group, env_bool, kill_and_reap_bridge_group_until, resolved_locale,
+    teardown_bridge_reader,
 };
 use crate::pipeline::contracts::TranscriptSegment;
 
@@ -315,8 +316,11 @@ impl LiveStreamSession {
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // Keep waiting until hard deadline unless reader already exited.
-                    if self.reader.as_ref().is_some_and(|h| h.is_finished()) {
+                    // Keep waiting until hard deadline unless reader already exited
+                    // or the group leader has terminated while a descendant holds stdout open.
+                    if self.reader.as_ref().is_some_and(|h| h.is_finished())
+                        || child_has_exited_without_reap(&self.child).unwrap_or(false)
+                    {
                         // Drain any last bits.
                         events.extend(self.poll_events());
                         break;
