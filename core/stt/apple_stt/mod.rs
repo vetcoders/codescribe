@@ -220,23 +220,8 @@ pub(super) fn join_thread_until<T>(
     slot.take()?.join().ok()
 }
 
-/// Shared bounded teardown for a bridge child and a single stdout reader thread.
-pub(super) fn teardown_bridge_reader<T>(
-    child: &mut std::process::Child,
-    already_reaped: bool,
-    reader: &mut Option<std::thread::JoinHandle<T>>,
-    deadline: std::time::Instant,
-) -> BridgeTeardownOutcome {
-    let child_reaped = kill_and_reap_bridge_group_until(child, already_reaped, deadline);
-    let readers_joined = reader.is_none() || join_thread_until(reader, deadline).is_some();
-    BridgeTeardownOutcome {
-        child_reaped,
-        readers_joined,
-    }
-}
-
 /// Shared bounded teardown for a bridge child and its stdout/stderr reader threads.
-fn teardown_bridge_process_and_readers<T, U>(
+pub(super) fn teardown_bridge_process_and_readers<T, U>(
     child: &mut std::process::Child,
     already_reaped: bool,
     stdout_thread: &mut Option<std::thread::JoinHandle<T>>,

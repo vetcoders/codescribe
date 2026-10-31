@@ -11,7 +11,7 @@
 //! A/B alternative is an older Apple temp-WAV `transcribe_live` request
 //! transport, not a VAD/scheduler route.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
@@ -23,14 +23,19 @@ use serde::Deserialize;
 use super::{
     BRIDGE_TEARDOWN_BUDGET, BridgeRequest, BridgeResponse, BridgeTeardownOutcome,
     ENV_ALLOW_DOWNLOAD, bridge_binary, bridge_global_lock, child_has_exited_without_reap,
-    configure_bridge_process_group, env_bool, kill_and_reap_bridge_group_until, resolved_locale,
-    teardown_bridge_reader,
+    configure_bridge_process_group, env_bool, resolved_locale,
+    teardown_bridge_process_and_readers,
 };
 use crate::pipeline::contracts::TranscriptSegment;
 
 /// Wall-clock budget for one stream handshake or `write_pcm` call into the
 /// bridge stdin pipe when the child stops draining it.
 const LIVE_STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Maximum diagnostic bytes retained in memory from bridge stderr per live
+/// stream session; bytes beyond this cap are still drained from the pipe so a
+/// chatty bridge never blocks on a full stderr pipe buffer.
+const LIVE_STREAM_STDERR_RETAIN_BYTES: usize = 16 * 1024;
 
 /// Progressive events from a live `stream` bridge session.
 #[derive(Debug, Clone)]
@@ -94,6 +99,7 @@ pub struct LiveStreamSession {
     stdin: Option<ChildStdin>,
     events_rx: Receiver<LiveStreamEvent>,
     reader: Option<JoinHandle<()>>,
+    stderr_reader: Option<JoinHandle<()>>,
     teardown_outcome: Option<BridgeTeardownOutcome>,
     /// Held for the whole session so SFSpeech never races a concurrent bridge.
     _lock_guard: std::sync::MutexGuard<'static, ()>,
@@ -127,7 +133,11 @@ impl LiveStreamSession {
                 )
             })?;
 
-        let handshake = (|| -> Result<(ChildStdin, std::process::ChildStdout)> {
+        let (events_tx, events_rx) = mpsc::channel();
+        let mut reader = None;
+        let mut stderr_reader = None;
+
+        let handshake = (|| -> Result<ChildStdin> {
             let mut stdin = child
                 .stdin
                 .take()
@@ -142,6 +152,20 @@ impl LiveStreamSession {
                 .stdout
                 .take()
                 .context("Apple STT bridge stdout unavailable")?;
+            let stderr = child
+                .stderr
+                .take()
+                .context("Apple STT bridge stderr unavailable")?;
+
+            // Start draining stdout and stderr before writing the handshake so a
+            // chatty bridge emitting startup diagnostics cannot fill its stderr
+            // pipe buffer and stall stdin reads.
+            reader = Some(thread::spawn(move || {
+                read_stream_stdout(stdout, events_tx);
+            }));
+            stderr_reader = Some(thread::spawn(move || {
+                drain_stream_stderr(stderr);
+            }));
 
             let vocabulary =
                 crate::stt::recognizer_vocabulary::RecognizerVocabulary::load_read_only();
@@ -164,36 +188,36 @@ impl LiveStreamSession {
             let header = format!("{{\"rate\":{},\"channels\":1}}\n", sample_rate as f64);
             write_all_until(&mut stdin, header.as_bytes(), handshake_deadline)
                 .context("write stream PCM header")?;
-            Ok((stdin, stdout))
+            Ok(stdin)
         })();
-        let (stdin, stdout) = match handshake {
-            Ok(handles) => handles,
+        let stdin = match handshake {
+            Ok(stdin) => stdin,
             Err(error) => {
-                let reaped = kill_and_reap_bridge_group_until(
+                let outcome = teardown_bridge_process_and_readers(
                     &mut child,
                     false,
+                    &mut reader,
+                    &mut stderr_reader,
                     std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET,
                 );
-                if !reaped {
+                if !outcome.is_complete() {
                     tracing::warn!(
                         pid = child.id(),
-                        "Apple STT live stream open teardown did not reap child within budget"
+                        child_reaped = outcome.child_reaped,
+                        readers_joined = outcome.readers_joined,
+                        "Apple STT live stream open teardown did not complete within budget"
                     );
                 }
                 return Err(error);
             }
         };
 
-        let (events_tx, events_rx) = mpsc::channel();
-        let reader = thread::spawn(move || {
-            read_stream_stdout(stdout, events_tx);
-        });
-
         Ok(Self {
             child,
             stdin: Some(stdin),
             events_rx,
-            reader: Some(reader),
+            reader,
+            stderr_reader,
             teardown_outcome: None,
             _lock_guard: lock_guard,
             sample_rate,
@@ -201,7 +225,7 @@ impl LiveStreamSession {
         })
     }
 
-    /// Idempotent bounded teardown of the bridge process group and stdout reader.
+    /// Idempotent bounded teardown of the bridge process group and stdout/stderr readers.
     /// Executes at most once per session so `child.id()` is never signalled after
     /// being reaped.
     fn teardown_bridge(&mut self) -> BridgeTeardownOutcome {
@@ -210,7 +234,13 @@ impl LiveStreamSession {
             return outcome;
         }
         let deadline = std::time::Instant::now() + BRIDGE_TEARDOWN_BUDGET;
-        let outcome = teardown_bridge_reader(&mut self.child, false, &mut self.reader, deadline);
+        let outcome = teardown_bridge_process_and_readers(
+            &mut self.child,
+            false,
+            &mut self.reader,
+            &mut self.stderr_reader,
+            deadline,
+        );
         if !outcome.is_complete() {
             tracing::warn!(
                 pid = self.child.id(),
@@ -498,6 +528,42 @@ fn write_all_until(
     Ok(())
 }
 
+/// Drain bridge stderr until EOF so stderr writes can never fill the kernel
+/// pipe buffer and stall the bridge process. Retains at most
+/// [`LIVE_STREAM_STDERR_RETAIN_BYTES`] in memory for bounded diagnostic logging.
+fn drain_stream_stderr(mut stderr: impl Read) {
+    let mut retained = Vec::with_capacity(1024);
+    let mut total_bytes = 0usize;
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stderr.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read_len) => {
+                total_bytes = total_bytes.saturating_add(read_len);
+                let remaining_cap = LIVE_STREAM_STDERR_RETAIN_BYTES.saturating_sub(retained.len());
+                if remaining_cap > 0 {
+                    let keep = read_len.min(remaining_cap);
+                    retained.extend_from_slice(&chunk[..keep]);
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    if !retained.is_empty() {
+        let preview = String::from_utf8_lossy(&retained);
+        let detail = preview.trim();
+        if !detail.is_empty() {
+            tracing::debug!(
+                stderr_bytes = total_bytes,
+                retained_bytes = retained.len(),
+                stderr = %detail,
+                "Apple STT live stream bridge stderr"
+            );
+        }
+    }
+}
+
 /// Reader-thread body: parse bridge stdout line by line and forward typed events.
 ///
 /// Stops on a terminal event, an unparsable line ending the stream, or a closed
@@ -681,6 +747,7 @@ mod tests {
             stdin,
             events_rx: rx,
             reader: Some(reader),
+            stderr_reader: None,
             teardown_outcome: None,
             _lock_guard: TEST_LOCK.lock().expect("test lock"),
             sample_rate: 16_000,
