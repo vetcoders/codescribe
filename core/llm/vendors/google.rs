@@ -298,49 +298,67 @@ fn normalize_schema_node(
         }
     }
 
-    if let Some(const_val) = source.remove("const") {
-        match const_val {
-            Value::Null => {
-                source.insert("nullable".into(), json!(true));
-            }
-            Value::String(s) => {
-                source
-                    .entry("type".to_string())
-                    .or_insert_with(|| Value::String("string".to_string()));
-                source.insert("enum".into(), Value::Array(vec![Value::String(s)]));
-            }
-            other => {
-                constraint_notes.push(format!("const: {other}"));
-            }
-        }
-    }
-
-    if let Some(Value::Array(values)) = source.remove("enum") {
+    if let Some(enum_val) = source.remove("enum") {
+        let Value::Array(values) = enum_val else {
+            return Err("Google tool schema enum must be an array".into());
+        };
         let mut strings = Vec::new();
-        let mut non_strings = Vec::new();
         let mut saw_null = false;
         for item in values {
             match item {
                 Value::Null => saw_null = true,
                 Value::String(s) => strings.push(Value::String(s)),
-                other => non_strings.push(other.to_string()),
+                _ => {
+                    return Err(
+                        "Google tool schema enum supports only string or null values".into(),
+                    );
+                }
             }
+        }
+        if strings.is_empty() {
+            return Err("Google tool schema enum must contain at least one string value".into());
+        }
+        if !schema_type_allows_string(source.get("type")) {
+            return Err("Google tool schema enum requires string type".into());
         }
         if saw_null {
             source.insert("nullable".into(), json!(true));
         }
-        if !strings.is_empty() && non_strings.is_empty() {
-            source
-                .entry("type".to_string())
-                .or_insert_with(|| Value::String("string".to_string()));
-            source.insert("enum".into(), Value::Array(strings));
-        } else if !non_strings.is_empty() || !strings.is_empty() {
-            let mut combined: Vec<String> = strings
-                .into_iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect();
-            combined.extend(non_strings);
-            constraint_notes.push(format!("allowed values: {}", combined.join(", ")));
+        source
+            .entry("type".to_string())
+            .or_insert_with(|| Value::String("string".to_string()));
+        source.insert("enum".into(), Value::Array(strings));
+    }
+
+    if let Some(const_val) = source.remove("const") {
+        match const_val {
+            Value::Null => {
+                if source.contains_key("enum")
+                    && source.get("nullable").and_then(Value::as_bool) != Some(true)
+                {
+                    return Err("Google tool schema const null conflicts with non-null enum".into());
+                }
+                source.insert("nullable".into(), json!(true));
+            }
+            Value::String(s) => {
+                if !schema_type_allows_string(source.get("type")) {
+                    return Err("Google tool schema const requires string type".into());
+                }
+                if let Some(Value::Array(existing_enum)) = source.get("enum")
+                    && !existing_enum
+                        .iter()
+                        .any(|entry| entry.as_str() == Some(s.as_str()))
+                {
+                    return Err("Google tool schema const conflicts with enum".into());
+                }
+                source
+                    .entry("type".to_string())
+                    .or_insert_with(|| Value::String("string".to_string()));
+                source.insert("enum".into(), Value::Array(vec![Value::String(s)]));
+            }
+            _ => {
+                return Err("Google tool schema const supports only string or null values".into());
+            }
         }
     }
 
@@ -474,12 +492,30 @@ fn normalize_schema_node(
     Ok(Value::Object(source))
 }
 
+fn schema_type_allows_string(kind: Option<&Value>) -> bool {
+    match kind {
+        None => true,
+        Some(Value::String(kind)) => kind == "string",
+        Some(Value::Array(kinds)) => {
+            kinds.iter().any(|kind| kind == "string")
+                && kinds
+                    .iter()
+                    .all(|kind| matches!(kind.as_str(), Some("string" | "null")))
+        }
+        Some(_) => false,
+    }
+}
+
 fn is_null_schema_branch(branch: &Value) -> bool {
     let Some(obj) = branch.as_object() else {
         return false;
     };
     obj.get("type").and_then(Value::as_str) == Some("null")
         || matches!(obj.get("const"), Some(Value::Null))
+        || obj
+            .get("enum")
+            .and_then(Value::as_array)
+            .is_some_and(|values| !values.is_empty() && values.iter().all(Value::is_null))
 }
 
 #[cfg(test)]

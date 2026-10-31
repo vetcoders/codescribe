@@ -82,8 +82,18 @@ const AI_INTER_CHUNK_TIMEOUT_MS_ENV: &str = "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_M
 const AI_FIRST_EVENT_TIMEOUT_MS_ENV: &str = "CODESCRIBE_AI_FIRST_EVENT_TIMEOUT_MS";
 const DEFAULT_AI_MAX_RETRIES: u32 = 3;
 const DEFAULT_AI_RETRY_DELAY_MS: u64 = 2_000;
+/// Single-request attempt budget for non-streaming calls, paste-selection
+/// fallback, and formatting readiness probes (`CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS`).
+/// Streaming SSE requests use [`DEFAULT_AI_FIRST_EVENT_TIMEOUT_MS`] for Phase 1
+/// (from `request.send()` through HTTP response headers and prefill frames until
+/// the first content event) so a 30–90 s prefill before headers is not cut short.
 const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 30_000;
+/// Phase-2 SSE idle budget between chunks after the first content event arrives
+/// (`CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS`).
 const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 30_000;
+/// Phase-1 SSE prefill budget from `request.send()` (covering both HTTP response
+/// headers and initial lifecycle/keepalive frames) until the first content event
+/// arrives (`CODESCRIBE_AI_FIRST_EVENT_TIMEOUT_MS`, default 90 s).
 const DEFAULT_AI_FIRST_EVENT_TIMEOUT_MS: u64 =
     crate::llm::responses_streaming_manager::DEFAULT_FIRST_EVENT_TIMEOUT.as_millis() as u64;
 

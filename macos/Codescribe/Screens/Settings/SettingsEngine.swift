@@ -204,6 +204,7 @@ extension SettingsEngine {
   ) async throws -> CsAccountLoginResult {
     try awaitAccountLogin(providerId: providerId, timeoutSeconds: timeoutSeconds)
   }
+  func loadSettingsAsync() async -> CsSettings { loadSettings() }
   func setFormatterKeywords(keywords: [String]) throws -> [String] { keywords }
   func setFormatterKeywordsAsync(keywords: [String]) async throws -> [String] {
     try setFormatterKeywords(keywords: keywords)
@@ -246,6 +247,11 @@ final class RealSettingsEngine: SettingsEngine {
   }
 
   func loadSettings() -> CsSettings { config.loadSettings() }
+  nonisolated func loadSettingsAsync() async -> CsSettings {
+    await Task.detached(priority: .userInitiated) {
+      CodescribeConfig().loadSettings()
+    }.value
+  }
   func configDir() -> String { config.configDir() }
   func shouldShowOnboarding() -> Bool { config.shouldShowOnboarding() }
   func onboardingMode() -> String? { config.onboardingMode() }

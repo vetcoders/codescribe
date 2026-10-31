@@ -590,7 +590,7 @@ async fn run_anthropic_stream(
         endpoint,
         api_key,
         anthropic_version,
-        initial_response_timeout,
+        initial_response_timeout: _,
         inter_chunk_timeout,
         first_event_timeout,
     } = transport;
@@ -607,7 +607,7 @@ async fn run_anthropic_stream(
         .json(&request_body);
 
     let mut watchdog = StreamWatchdog::start(first_event_timeout, inter_chunk_timeout);
-    let header_wait = initial_response_timeout.min(watchdog.next_wait());
+    let header_wait = watchdog.next_wait();
     let response = match tokio::time::timeout(header_wait, request_builder.send()).await {
         Ok(Ok(resp)) => resp,
         Ok(Err(error)) => return Err(error).context("Anthropic SSE request failed"),

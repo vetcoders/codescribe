@@ -19,11 +19,13 @@ extension SettingsViewModel {
     guard let engine else { return formatterKeywords }
     do {
       let stored = try await engine.setFormatterKeywordsAsync(keywords: terms)
-      applyLoadedSettings(engine.loadSettings())
+      let reloaded = await engine.loadSettingsAsync()
+      applyLoadedSettings(reloaded)
       configurationInvalidation?.settingsWritten(by: self)
       return stored
     } catch {
-      applyLoadedSettings(engine.loadSettings())
+      let reloaded = await engine.loadSettingsAsync()
+      applyLoadedSettings(reloaded)
       throw error
     }
   }
