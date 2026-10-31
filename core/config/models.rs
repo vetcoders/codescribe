@@ -124,7 +124,7 @@ pub fn inspect_model_directories(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     };
-    let active = active_model.and_then(|path| path.canonicalize().ok());
+    let active = active_model.and_then(|path| hf_cache::resolve_local_path(path).ok());
     let mut models = Vec::new();
     let mut tokenizers = Vec::new();
     for entry in entries {
@@ -135,9 +135,9 @@ pub fn inspect_model_directories(
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let is_active = active
-            .as_ref()
-            .is_some_and(|selected| path.canonicalize().ok().as_ref() == Some(selected));
+        let is_active = active.as_ref().is_some_and(|selected| {
+            hf_cache::resolve_local_path(&path).ok().as_ref() == Some(selected)
+        });
         let verdict = if name == "moshiko-q8" || name == "moshika-q8" {
             let mut config = if name == "moshiko-q8" {
                 crate::conversation::MoshiConfig::moshiko()
@@ -264,6 +264,9 @@ pub(crate) use crate::whisper_weights::{
 /// existence as Whisper ownership shadows the user-installed fp16 model and
 /// could incorrectly select a quantized cache instead.
 fn models_root_contains_complete_whisper_model(path: &Path) -> bool {
+    let Ok(path) = hf_cache::resolve_local_path(path) else {
+        return false;
+    };
     fs::read_dir(path).is_ok_and(|entries| {
         entries
             .filter_map(std::result::Result::ok)
@@ -376,7 +379,9 @@ impl ModelManager {
         // Environment override
         if let Ok(path) = std::env::var("CODESCRIBE_MODELS_DIR") {
             let p = expand_home_path(path.trim());
-            if p.exists() {
+            if let Ok(resolved) = hf_cache::resolve_local_path(&p)
+                && resolved.is_dir()
+            {
                 return Ok(p);
             }
         }
@@ -467,16 +472,19 @@ impl ModelManager {
     /// result is safe to surface as user-selectable options. A missing models
     /// directory yields an empty list, not an error.
     pub fn list_models(&self) -> Result<Vec<String>> {
-        if !self.models_dir.exists() {
+        let Ok(models_dir) = hf_cache::resolve_local_path(&self.models_dir) else {
+            return Ok(Vec::new());
+        };
+        if !models_dir.is_dir() {
             return Ok(Vec::new());
         }
 
         let mut out = Vec::new();
-        let entries = fs::read_dir(&self.models_dir).context("Failed to read models directory")?;
+        let entries = fs::read_dir(&models_dir).context("Failed to read models directory")?;
         for entry in entries {
             let entry = entry.context("Failed to read models directory entry")?;
             let path = entry.path();
-            if path.is_dir() {
+            if hf_cache::resolve_local_path(&path).is_ok_and(|resolved| resolved.is_dir()) {
                 // Only advertise fully usable Whisper models, not half-downloaded shells.
                 if is_complete_whisper_model_dir(&path)
                     && let Some(name) = path.file_name().and_then(|s| s.to_str())
@@ -786,8 +794,11 @@ fn is_whisper_family_dir(path: &Path, name: &str) -> bool {
     if name.to_ascii_lowercase().contains("whisper") {
         return true;
     }
+    let Ok(config) = hf_cache::resolve_local_path(&path.join("config.json")) else {
+        return false;
+    };
     crate::whisper_weights::read_bounded_metadata_file(
-        &path.join("config.json"),
+        &config,
         crate::whisper_weights::MAX_WHISPER_CONFIG_BYTES,
         "config",
     )
@@ -912,7 +923,8 @@ pub fn whisper_model_options(configured: Option<&str>) -> WhisperCatalogInventor
 
     // 1. Whisper-family children of the resolved models directory.
     if let Ok(manager) = ModelManager::new()
-        && let Ok(entries) = fs::read_dir(manager.models_dir())
+        && let Ok(root) = hf_cache::resolve_local_path(manager.models_dir())
+        && let Ok(entries) = fs::read_dir(root)
     {
         for entry in entries.flatten() {
             let path = entry.path();

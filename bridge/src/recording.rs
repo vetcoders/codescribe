@@ -2563,4 +2563,46 @@ mod tests {
         assert!(device_is_available(Some("Studio Mic"), &devices));
         assert!(!device_is_available(Some("Unplugged Mic"), &devices));
     }
+
+    #[test]
+    fn whisper_model_catalog_is_consumed_by_swift_settings_engine() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../macos/Codescribe/Screens/Settings/SettingsEngine.swift");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert!(
+            source.contains("whisperModelCatalog()"),
+            "{} no longer calls whisperModelCatalog(); remove the export",
+            path.display()
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn whisper_model_catalog_projects_inventory_across_bridge() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+
+        let catalog = whisper_model_catalog();
+        assert!(!catalog.configured.trim().is_empty());
+
+        let directories = model_directories().expect("inspect empty temp model directories");
+        assert!(directories.is_empty());
+
+        let err = set_local_whisper_model("nonexistent-whisper-model".to_string())
+            .await
+            .expect_err("unknown local Whisper model reference must fail closed");
+        assert!(matches!(
+            err,
+            CsError::Config { ref msg } if msg.contains("unknown local Whisper model")
+        ));
+
+        let _ = std::hint::black_box(download_whisper_model);
+        let _ = std::hint::black_box(
+            audio_input_snapshot as fn() -> Result<CsAudioInputSnapshot, CsError>,
+        );
+        let _ = std::hint::black_box(mic_permission_granted as fn() -> bool);
+        let _ = std::hint::black_box(request_mic_permission as fn() -> bool);
+    }
 }
