@@ -5756,8 +5756,8 @@ impl EventSink for PresentationEmitter {
                     self.repaint_cursor();
                 }
                 // The accepted fragment reaches the overlay as part of the whole
-                // live view: `LiveViewRefresh` publishes it when this event ends,
-                // after the ledger guard below is released.
+                // live view: `LiveViewRefresh` (derived paint, like `publish_derived_paint`)
+                // publishes it when this event ends, after the ledger guard below is released.
                 // Raw shaping does not depend on formatting; this tick is an
                 // idempotent re-check of the unchanged acoustic label.
                 self.mint_incremental_light_plus(
