@@ -18,8 +18,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use codescribe_core::agent::{
-    AgentEvent, AgentProvider, ContentBlock, Message, ProviderResponseMetadata, Role,
-    StreamOptions, ToolDefinition,
+    AgentEvent, AgentProvider, AgentProviderHost, AgentUiEvent, ContentBlock, MCP_CALL_TOOL_NAME,
+    MCP_SEARCH_TOOL_NAME, Message, ProviderResponseMetadata, Role, StreamOptions, ToolDefinition,
+    mcp_projection::build_mcp_search_tool_definition,
 };
 use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane};
 use codescribe_core::llm::account_auth::{
@@ -50,6 +51,24 @@ pub struct GoogleProvider {
     first_event_timeout: Duration,
     completed_response: Arc<Mutex<Option<ProviderResponseMetadata>>>,
     turn_lock: Arc<tokio::sync::Mutex<()>>,
+    host: Arc<Mutex<Option<AgentProviderHost>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkippedGoogleTool {
+    registered_name: String,
+    server: String,
+    tool: String,
+    reason: String,
+}
+
+impl SkippedGoogleTool {
+    fn warning_message(&self) -> String {
+        format!(
+            "Skipped MCP tool '{}' (server: '{}', tool: '{}') on Google Gemini: {}",
+            self.registered_name, self.server, self.tool, self.reason
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -129,12 +148,20 @@ impl GoogleProvider {
             first_event_timeout: timing.first_event_timeout(),
             completed_response: Arc::new(Mutex::new(None)),
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
+            host: Arc::new(Mutex::new(None)),
         })
     }
 }
 
 #[async_trait]
 impl AgentProvider for GoogleProvider {
+    fn bind_host(&self, host: AgentProviderHost) {
+        *self
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(host);
+    }
+
     async fn stream(
         &self,
         messages: &[Message],
@@ -174,7 +201,13 @@ impl AgentProvider for GoogleProvider {
             retained.len() < MAX_RETAINED_TURNS,
             "Google signed history reached its retention limit; start a new conversation"
         );
-        let body = build_request(messages, tools, options, &retained)?;
+        let host = self
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let (body, skipped_tools) =
+            build_request_with_host(messages, tools, options, &retained, host.as_ref())?;
         let (endpoint, body) = google::prepare_request(&self.endpoint, model, body, true)
             .map_err(|error| anyhow!(error))?;
         let credential = if let Some(key) = &self.fixture_key {
@@ -199,6 +232,30 @@ impl AgentProvider for GoogleProvider {
         };
         tokio::spawn(async move {
             let _turn_guard = turn_guard;
+            for skipped in &skipped_tools {
+                let id = format!("google_schema_skip_{}", skipped.registered_name);
+                let summary = skipped.warning_message();
+                if let Some(host) = &host {
+                    let _ = host
+                        .ui_tx
+                        .send(AgentUiEvent::ToolResult {
+                            name: skipped.registered_name.clone(),
+                            id,
+                            summary,
+                            is_error: true,
+                        })
+                        .await;
+                } else {
+                    let _ = tx
+                        .send(AgentEvent::ServerToolProgress {
+                            id,
+                            name: skipped.registered_name.clone(),
+                            done: true,
+                            query: Some(summary),
+                        })
+                        .await;
+                }
+            }
             let result = transport
                 .run_stream(endpoint, body, credential, pending, &tx)
                 .await;
@@ -483,12 +540,51 @@ fn restore_turns(
     Ok(turns)
 }
 
+fn parse_tool_origin(name: &str, host: Option<&AgentProviderHost>) -> (String, String) {
+    if let Some(host) = host
+        && let Some(entry) = host
+            .tools
+            .mcp_entries()
+            .into_iter()
+            .find(|entry| entry.registered_name == name || entry.upstream_tool == name)
+    {
+        return (entry.server.to_string(), entry.upstream_tool.to_string());
+    }
+    if let Some(rest) = name.strip_prefix("mcp__")
+        && let Some((server, tool)) = rest.split_once("__")
+        && !server.is_empty()
+        && !tool.is_empty()
+    {
+        return (server.to_string(), tool.to_string());
+    }
+    for sep in ['/', ':'] {
+        if let Some((server, tool)) = name.split_once(sep)
+            && !server.is_empty()
+            && !tool.is_empty()
+        {
+            return (server.to_string(), tool.to_string());
+        }
+    }
+    ("mcp".to_string(), name.to_string())
+}
+
+#[cfg(test)]
 fn build_request(
     messages: &[Message],
     tools: &[ToolDefinition],
     options: &StreamOptions,
     retained: &[RetainedTurn],
 ) -> Result<Value> {
+    build_request_with_host(messages, tools, options, retained, None).map(|(body, _)| body)
+}
+
+fn build_request_with_host(
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    options: &StreamOptions,
+    retained: &[RetainedTurn],
+    host: Option<&AgentProviderHost>,
+) -> Result<(Value, Vec<SkippedGoogleTool>)> {
     let mut contents: Vec<Value> = Vec::new();
     let mut system = Vec::new();
     if let Some(prompt) = options
@@ -600,9 +696,6 @@ fn build_request(
         "Google history has incomplete tool results"
     );
     let mut body = json!({"contents":contents});
-    if !system.is_empty() {
-        body["systemInstruction"] = json!({"parts":system});
-    }
     let mut generation = json!({});
     if let Some(tokens) = options.max_tokens.filter(|tokens| *tokens > 0) {
         generation["maxOutputTokens"] = json!(tokens);
@@ -616,18 +709,118 @@ fn build_request(
     {
         body["generationConfig"] = generation;
     }
+    let mut skipped = Vec::new();
     if !tools.is_empty() {
-        let declarations = tools
-            .iter()
-            .map(|tool| -> Result<Value> {
-                let schema = google::normalize_schema_for_gemini(&tool.input_schema)
-                    .map_err(|error| anyhow!(error))?;
-                Ok(json!({"name":tool.name,"description":tool.description,"parameters":schema}))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut declarations = Vec::new();
+        let mcp_entries = host
+            .map(|bound| bound.tools.mcp_entries())
+            .unwrap_or_default();
+        let had_mcp_entries =
+            !mcp_entries.is_empty() && tools.iter().any(|tool| tool.name == MCP_SEARCH_TOOL_NAME);
+        let mut valid_mcp_entries = Vec::new();
+        if had_mcp_entries {
+            for entry in mcp_entries {
+                match google::normalize_schema_for_gemini(entry.input_schema) {
+                    Ok(_) => valid_mcp_entries.push(entry),
+                    Err(reason) => {
+                        skipped.push(SkippedGoogleTool {
+                            registered_name: entry.registered_name.to_string(),
+                            server: entry.server.to_string(),
+                            tool: entry.upstream_tool.to_string(),
+                            reason,
+                        });
+                    }
+                }
+            }
+        }
+        for tool in tools {
+            if had_mcp_entries
+                && (tool.name == MCP_SEARCH_TOOL_NAME || tool.name == MCP_CALL_TOOL_NAME)
+            {
+                if valid_mcp_entries.is_empty() {
+                    continue;
+                }
+                if tool.name == MCP_SEARCH_TOOL_NAME && !skipped.is_empty() {
+                    let rebuilt = build_mcp_search_tool_definition(&valid_mcp_entries);
+                    let schema = google::normalize_schema_for_gemini(&rebuilt.input_schema)
+                        .map_err(|error| anyhow!(error))?;
+                    declarations.push(json!({
+                        "name": rebuilt.name,
+                        "description": rebuilt.description,
+                        "parameters": schema,
+                    }));
+                    continue;
+                }
+            }
+            match google::normalize_schema_for_gemini(&tool.input_schema) {
+                Ok(schema) => {
+                    declarations.push(json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": schema,
+                    }));
+                }
+                Err(reason) => {
+                    let (server, upstream_tool) = parse_tool_origin(&tool.name, host);
+                    if !skipped.iter().any(|item| item.registered_name == tool.name) {
+                        skipped.push(SkippedGoogleTool {
+                            registered_name: tool.name.clone(),
+                            server,
+                            tool: upstream_tool,
+                            reason,
+                        });
+                    }
+                }
+            }
+        }
+        for item in &skipped {
+            tracing::warn!(
+                tool = %item.registered_name,
+                upstream_tool = %item.tool,
+                server = %item.server,
+                reason = %item.reason,
+                "{}",
+                item.warning_message()
+            );
+        }
+        if declarations.is_empty() {
+            let details = skipped
+                .iter()
+                .map(SkippedGoogleTool::warning_message)
+                .collect::<Vec<_>>()
+                .join("; ");
+            bail!(
+                "Google tool schema normalization rejected all {} requested tool(s): {}",
+                tools.len(),
+                details
+            );
+        }
+        if !skipped.is_empty() {
+            let warning_block = skipped
+                .iter()
+                .map(SkippedGoogleTool::warning_message)
+                .collect::<Vec<_>>()
+                .join("\n");
+            system.push(json!({"text": warning_block}));
+            for decl in &mut declarations {
+                if decl.get("name").and_then(Value::as_str) == Some(MCP_SEARCH_TOOL_NAME)
+                    && let Some(desc) = decl
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                {
+                    decl["description"] = Value::String(format!(
+                        "{desc}\n\nUnavailable on Google Gemini:\n{warning_block}"
+                    ));
+                }
+            }
+        }
         body["tools"] = json!([{"functionDeclarations":declarations}]);
     }
-    Ok(body)
+    if !system.is_empty() {
+        body["systemInstruction"] = json!({"parts":system});
+    }
+    Ok((body, skipped))
 }
 
 fn tool_result_text(content: &[ContentBlock]) -> String {
