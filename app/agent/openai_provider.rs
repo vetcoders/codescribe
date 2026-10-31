@@ -655,7 +655,15 @@ fn prepend_event(
         {
             return;
         }
-        while let Some(event) = rest.recv().await {
+        loop {
+            let event = tokio::select! {
+                biased;
+                _ = tx.closed() => break,
+                event = rest.recv() => match event {
+                    Some(event) => event,
+                    None => break,
+                },
+            };
             if tx.send(event).await.is_err() {
                 break;
             }
@@ -2210,6 +2218,25 @@ mod tests {
             }
             assert!(consumer_rx.recv().await.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn prepend_cancellation_contract_releases_silent_reasoning_upstream() {
+        let (provider_tx, provider_rx) = mpsc::channel::<AgentEvent>(1);
+        let mut rx = super::prepend_event(Some(AgentEvent::TextDelta("first".into())), provider_rx);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap(),
+            Some(AgentEvent::TextDelta("first".into()))
+        );
+        drop(rx);
+        let released = tokio::time::timeout(Duration::from_secs(1), provider_tx.closed()).await;
+        drop(provider_tx);
+        assert!(
+            released.is_ok(),
+            "reasoning prefix must release the real stream before another event"
+        );
     }
 
     #[tokio::test]
