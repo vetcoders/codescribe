@@ -413,7 +413,7 @@ class ReceiptStateTests(ReceiptFixture):
         fixtures = Path(__file__).resolve().parent / "fixtures" / "receipts"
         cases = sorted(p for p in fixtures.iterdir() if p.is_dir())
         self.assertGreaterEqual(len(cases), 7)
-        self.assertLessEqual({"skipped-on-sent-to", "legacy-delivered-unread"}, {case.name for case in cases})
+        self.assertLessEqual({"skipped-on-sent-to", "delivered-unread-unknown-wake"}, {case.name for case in cases})
         for case in cases:
             with self.subTest(case=case.name):
                 expected = json.loads((case / "expected.json").read_text())
@@ -768,16 +768,16 @@ class BackfillTests(ReceiptFixture):
                                               "written": dict.fromkeys(self.EXPECTED["written"], 0)})
 
 
-class LegacySkipMarkerTests(ReceiptFixture):
+class UnattributedSkipMarkerTests(ReceiptFixture):
     """A skip marker older than `message_id` finds its copy in the reader's own bus."""
 
     backfill = BackfillTests.backfill
     M1, M2 = "0123456789abcdef00000201", "0123456789abcdef00000202"
     # Delivery ids the helper computed before `delivery_identity` was shared
     # (`SessionLease.enrich` at e5ce9b41, lease "a" * 32): the identity every
-    # legacy marker on disk was written under.
-    GOLDEN = {"typed": "d24e62a48a03543421986898", "channel_seal": "3d1bf387f4c8be166f6a5edd",
-              "channel_revision": "58599ad19cd649801fe4192d", "terminal_seal": "59d96b9762c4185fde51f9b0"}
+    # earlier marker on disk was written under.
+    GOLDEN = {"typed": "d24e62a48a03543421986898", "channel_seal": "faa6f01311def62f140c2c00",
+              "channel_revision": "67889437bfb98d212530de99", "terminal_seal": "59d96b9762c4185fde51f9b0"}
 
     def owner(self):
         owner, refusal = DEMUX.binding_identity("3", {
@@ -824,7 +824,7 @@ class LegacySkipMarkerTests(ReceiptFixture):
         receipts.rename(self.home / "runtime-receipts")
         return skipped
 
-    def legacy(self, delivery_id):
+    def without_message_id(self, delivery_id):
         """Rewrite one marker the way a helper older than W2-00 left it: no `message_id`."""
         path = DEMUX.broadcast_skip_path(self.root, self.lease_id, delivery_id)
         row = json.loads(path.read_text())
@@ -834,10 +834,10 @@ class LegacySkipMarkerTests(ReceiptFixture):
     def skipped_file(self, delivery_id):
         return DEMUX.receipts_directory(self.root, self.M1) / f"{delivery_id}.skipped.json"
 
-    def test_one_delivery_id_is_computed_by_one_function_with_the_legacy_identity(self):
+    def test_one_delivery_id_is_computed_by_one_function_with_the_previous_identity(self):
         lease = mock.Mock(lease_id="a" * 32, provider="codex", provider_session_id="receipt-session",
                           bus="/fixture/bus.jsonl")
-        take = "agent-channel-0-legacy-take"
+        take = "agent-channel-0-previous-take"
         cases = {
             "typed": {"kind": "message", "source_event_id": "0" * 23 + "1", "message_id": MESSAGE_ID,
                       "audience": "lena", "producer_schema": DEMUX.AGENT_USER_MESSAGE_SCHEMA},
@@ -873,13 +873,13 @@ class LegacySkipMarkerTests(ReceiptFixture):
         expected = self.skipped_file(delivery).read_bytes()
         (self.root / "runtime" / "receipts").rename(self.home / "receipts-from-current-marker")
 
-        self.legacy(delivery)
+        self.without_message_id(delivery)
         sources = BackfillTests.sources(self)
         result, output, error = self.backfill("--backfill-receipts")
         self.assertEqual((result, error), (0, ""))
-        legacy = json.loads(output)
-        self.assertEqual((legacy["written"]["skipped"], legacy["mapped_by_bus"], legacy["unmapped"],
-                          legacy["failed"]), (1, 1, 0, 0))
+        backfilled = json.loads(output)
+        self.assertEqual((backfilled["written"]["skipped"], backfilled["mapped_by_bus"], backfilled["unmapped"],
+                          backfilled["failed"]), (1, 1, 0, 0))
         self.assertEqual(self.skipped_file(delivery).read_bytes(), expected)
         self.assertEqual(BackfillTests.sources(self), sources, "the marker and the bus are only read")
         state = DEMUX.receipt_state(self.root, self.M1)
@@ -894,7 +894,7 @@ class LegacySkipMarkerTests(ReceiptFixture):
     def test_dry_run_counts_the_mapping_and_writes_nothing(self):
         self.publish(self.typed(self.M1))
         [delivery] = self.skip_on_runtime()
-        self.legacy(delivery)
+        self.without_message_id(delivery)
         result, output, _ = self.backfill("--backfill-receipts", "--dry-run")
         planned = json.loads(output)
         self.assertEqual((result, planned["written"]["skipped"], planned["mapped_by_bus"], planned["dry_run"]),
@@ -904,7 +904,7 @@ class LegacySkipMarkerTests(ReceiptFixture):
     def test_a_marker_whose_bus_lost_the_copy_stays_unmapped(self):
         self.publish(self.typed(self.M1))
         [delivery] = self.skip_on_runtime()
-        self.legacy(delivery)
+        self.without_message_id(delivery)
         # The bus rotated: only a later message is left in it.
         self.bus.write_text("")
         self.publish(self.typed(self.M2))
@@ -921,7 +921,7 @@ class LegacySkipMarkerTests(ReceiptFixture):
     def test_a_delivery_id_matching_two_messages_stays_unmapped(self):
         self.publish(self.typed(self.M1))
         [delivery] = self.skip_on_runtime()
-        self.legacy(delivery)
+        self.without_message_id(delivery)
         # Not reachable from today's publishers (a typed copy's phase is its
         # own message id); the rule is that an ambiguous match is not a match.
         with mock.patch.object(DEMUX, "reader_copies_in_bus", return_value={delivery: {self.M1, self.M2}}):

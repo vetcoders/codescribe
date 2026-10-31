@@ -204,7 +204,7 @@ final class OverlayBroadcastSentToTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(cases.count, 8)
     XCTAssertTrue(
       Set(cases.map(\.lastPathComponent)).isSuperset(of: [
-        "skipped-on-sent-to", "legacy-delivered-unread", "withdrawn-after-delivered",
+        "skipped-on-sent-to", "delivered-unread-unknown-wake", "withdrawn-after-delivered",
       ]))
     for directory in cases {
       let expected = try XCTUnwrap(

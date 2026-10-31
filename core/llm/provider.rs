@@ -469,19 +469,39 @@ pub struct CustomProvider {
 
 impl CustomProvider {
     /// Validate and build a row: `id = slug(name)` must be non-empty, the
-    /// endpoint is normalized onto the wire's canonical path and must carry an
-    /// `http(s)` scheme and a host.
+    /// endpoint must carry an explicit `http(s)` authority before its path is
+    /// normalized onto the wire's canonical path.
     pub fn new(name: &str, wire: WireFamily, endpoint: &str) -> Result<Self, ProviderError> {
         let name = name.trim();
         let id = slug(name);
         if id.is_empty() {
             return Err(ProviderError::EmptyName);
         }
-        let endpoint = wire.normalize_endpoint(endpoint);
-        let scheme_ok = endpoint.starts_with("http://") || endpoint.starts_with("https://");
-        if !scheme_ok || endpoint_host(&endpoint).is_empty() {
-            return Err(ProviderError::InvalidEndpoint(endpoint));
+        let endpoint = endpoint.trim();
+        let scheme = endpoint.split(':').next().unwrap_or_default();
+        let scheme_ok = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+        // URL parsing repairs missing authority separators and ignores some
+        // control characters. Refuse those spellings before a path can become
+        // the host of a different endpoint.
+        let authority_ok = endpoint
+            .strip_prefix(scheme)
+            .and_then(|rest| rest.strip_prefix("://"))
+            .is_some_and(|rest| {
+                let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+                !authority.is_empty()
+                    && !authority
+                        .chars()
+                        .any(|ch| ch == '\\' || ch.is_ascii_control())
+            });
+        let host_ok = reqwest::Url::parse(endpoint).is_ok_and(|url| url.host_str().is_some());
+        if !scheme_ok || !authority_ok || !host_ok {
+            return Err(ProviderError::InvalidEndpoint(if scheme_ok {
+                endpoint.to_string()
+            } else {
+                wire.normalize_endpoint(endpoint)
+            }));
         }
+        let endpoint = wire.normalize_endpoint(endpoint);
         Ok(Self {
             id,
             name: name.to_string(),
@@ -537,7 +557,7 @@ pub fn is_custom_key_account(account: &str) -> bool {
 pub enum ProviderError {
     /// The name slugs to nothing (`""`, `"---"`, `"  "`).
     EmptyName,
-    /// Missing `http(s)` scheme or host; carries the normalized endpoint.
+    /// Missing or malformed `http(s)` authority; carries the rejected endpoint.
     InvalidEndpoint(String),
     /// A row with this id already exists.
     DuplicateId(String),

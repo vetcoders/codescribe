@@ -108,8 +108,61 @@ fi
 # 7. build-app.sh: stamp gated on the lane, before stage 7, seal verified after;
 #    the install and DMG lanes set the lane knob.
 python3 - "$ROOT" <<'PY' || fail "build-app.sh / install lanes do not wire the stamp before codesign"
-import re, sys
+import re, shlex, sys
 from pathlib import Path
+
+
+def dmg_forwards_install_lane(text):
+    """Check the array tokens consumed by the release-app command, in order.
+
+    This bounded source contract admits one-line Bash array assignments and
+    the explicit release command; it does not execute or infer shell branches.
+    """
+    environment = []
+    builds = 0
+    for line in text.splitlines():
+        assignment = re.fullmatch(r"\s*BUILD_ENV(\+?)=\((.*)\)\s*(?:#.*)?", line)
+        if assignment:
+            words = shlex.split(assignment.group(2), comments=True)
+            environment = environment + words if assignment.group(1) else words
+        if not re.match(r'\s*(?:"\$\{BUILD_ENV\[@\]\}"\s+)?make\s+app\s+PROFILE=release\b', line):
+            continue
+        command = shlex.split(line, comments=True)
+        if command != ['${BUILD_ENV[@]}', 'make', 'app', 'PROFILE=release']:
+            return False
+        if not environment or environment[0] != 'env':
+            return False
+        values = [word.partition('=')[2] for word in environment
+                  if word.partition('=')[0] == 'CODESCRIBE_INSTALL_LANE']
+        if not values or values[-1] != '1':
+            return False
+        builds += 1
+    return builds == 1
+
+
+# Exercise the instrument itself: unrelated array arguments are allowed, but
+# a commented, missing, reset, wrong or unconsumed lane cannot pass.
+release = '"${BUILD_ENV[@]}" make app PROFILE=release\n'
+lane = 'BUILD_ENV+=(CODESCRIBE_INSTALL_LANE=1)\n'
+grouped = 'BUILD_ENV+=(CODESCRIBE_INSTALL_LANE=1 CODESCRIBE_BUILD_CHANNEL="$BUILD_CHANNEL")\n'
+controls = [
+    ('dedicated assignment', lane + release, True),
+    ('grouped assignment', grouped + release, True),
+    ('reordered arguments', 'BUILD_ENV+=(CODESCRIBE_BUILD_CHANNEL="$BUILD_CHANNEL" CODESCRIBE_INSTALL_LANE=1)\n' + release, True),
+    ('missing lane', release, False),
+    ('wrong value', lane.replace('LANE=1', 'LANE=0') + release, False),
+    ('longer value', lane.replace('LANE=1', 'LANE=10') + release, False),
+    ('different key', lane.replace('LANE=1', 'LANE_HINT=1') + release, False),
+    ('commented assignment', '# ' + lane + release, False),
+    ('late assignment', release + lane, False),
+    ('array reset', lane + 'BUILD_ENV=(env)\n' + release, False),
+    ('later override', lane + 'BUILD_ENV+=(CODESCRIBE_INSTALL_LANE=0)\n' + release, False),
+    ('array not consumed', lane + 'make app PROFILE=release\n', False),
+    ('missing env command', 'BUILD_ENV=()\n' + lane + release, False),
+]
+for name, source, expected in controls:
+    assert dmg_forwards_install_lane('BUILD_ENV=(env)\n' + source) == expected, f'DMG lane control failed: {name}'
+
 root = Path(sys.argv[1])
 build = (root / "scripts/build-app.sh").read_text(encoding="utf-8")
 stamp = build.index('"$REPO_ROOT/scripts/lib/stamp-single-instance.sh" "$APP"')
@@ -129,6 +182,8 @@ dmg = (root / "scripts/build-dmg.sh").read_text(encoding="utf-8")
 lane = re.search(r"(?m)^BUILD_ENV\+=\([^\n)]*\bCODESCRIBE_INSTALL_LANE=1(?=[ \t)])", dmg)
 assert lane, "DMG build environment must enable the install lane"
 assert lane.start() < dmg.index('"${BUILD_ENV[@]}" make app PROFILE=release')
+assert dmg_forwards_install_lane(dmg), "release app build must consume install lane 1"
+print(f"single-instance-stamp: {len(controls)} DMG wiring controls passed")
 PY
 
 echo "single-instance-stamp: ok"
