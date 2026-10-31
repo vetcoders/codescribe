@@ -5,7 +5,7 @@
 //! down/up plus a modifier snapshot) and emits [`HotkeyEvent`]s. The
 //! CoreGraphics event tap that produces those inputs lives in
 //! [`super::platform`]. Keeping the two apart is what makes the gesture rules —
-//! hold combos, double taps, arm modifiers, block diagnostics — unit-testable
+//! hold combos, double taps, arm modifiers, arm diagnostics — unit-testable
 //! without Accessibility permission or a live event tap; the tests at the
 //! bottom of this file drive [`HotkeyDetector::feed`] with synthetic
 //! `Instant`s and never touch macOS.
@@ -81,22 +81,19 @@ pub enum HotkeyEvent {
     /// Captures the current OS selection as `{selection_N}` without changing
     /// destination, hiding the overlay, or fronting Agent.
     AttachSelection,
-    /// Normal toggle gesture (double-tap left Option)
+    /// Formatting toggle, started from the menu bar or the overlay. No key
+    /// produces it: Option only types characters.
     ToggleNormal,
     /// Raw toggle gesture (double-tap Ctrl)
     ToggleRaw,
-    /// Assistive toggle gesture (double-tap right Option)
+    /// Assistive toggle, started from the menu bar or the overlay. No key
+    /// produces it: Option only types characters.
     ToggleAssistive,
     /// Configured modifier + 0..9 toggles one agent channel. This is not a dictation take.
     ///
     /// The modifier is [`ChannelModifier`] on the hotkey runtime config (Ctrl by
     /// default, Fn optional). Command never opens a channel.
     AgentChannel { digit: u8 },
-    /// A double-tap gesture was detected but could not be routed.
-    DoubleTapBlocked {
-        gesture: DoubleTapGesture,
-        reason: DoubleTapBlockReason,
-    },
     /// Input for the overlay's middle-mouse agent chooser. UI-only, like
     /// [`Self::ShowAgent`]: it never starts or ends a dictation take itself.
     AgentGesture(AgentGestureInput),
@@ -117,82 +114,6 @@ pub enum AgentGestureInput {
     LeftClick,
     /// Escape while choosing: leave the chooser without acting.
     Cancel,
-}
-
-/// Which physical double-tap the user performed.
-///
-/// Carried by [`HotkeyEvent::DoubleTapBlocked`] so the UI and the log line can
-/// name the gesture the user actually made, independently of whichever mode it
-/// failed to reach.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DoubleTapGesture {
-    LeftOption,
-    RightOption,
-}
-
-impl DoubleTapGesture {
-    /// Human-facing gesture name, as shown to the user in Diagnostics.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::LeftOption => "Double-tap Left Option",
-            Self::RightOption => "Double-tap Right Option",
-        }
-    }
-
-    /// Stable token for log/Diagnostics lines (`blocked_double_tap gesture=…`).
-    ///
-    /// Kept separate from [`Self::label`] on purpose: the label is prose that
-    /// may be reworded, the token is a grep-stable contract asserted by
-    /// `blocked_double_tap_diagnostic_line_uses_stable_reason_tokens`.
-    pub fn reason_token(self) -> &'static str {
-        match self {
-            Self::LeftOption => "left_option",
-            Self::RightOption => "right_option",
-        }
-    }
-}
-
-/// Why a recognised double-tap could not be routed to a mode.
-///
-/// The detector still *sees* the gesture; it just has nowhere to send it. Both
-/// variants are surfaced to the user rather than swallowed, so a mis-bound
-/// shortcut looks like a refusal with a reason instead of a dead key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DoubleTapBlockReason {
-    /// No Codescribe mode is bound to this gesture in the current config.
-    BindingDisabled,
-    /// A hold combo or another modifier was active, so the tap was ambiguous.
-    ModifierComboActive,
-}
-
-impl DoubleTapBlockReason {
-    /// User-facing explanation, phrased to complete "…because …".
-    pub fn message(self) -> &'static str {
-        match self {
-            Self::BindingDisabled => "that gesture is not assigned to a Codescribe mode",
-            Self::ModifierComboActive => "another modifier or hold gesture is active",
-        }
-    }
-
-    /// Stable token for log/Diagnostics lines (`blocked_double_tap reason=…`).
-    pub fn reason_token(self) -> &'static str {
-        match self {
-            Self::BindingDisabled => "binding_disabled",
-            Self::ModifierComboActive => "modifier_combo_active",
-        }
-    }
-}
-
-/// Stable INFO log line for a blocked double-tap (visibility only — no routing change).
-pub fn blocked_double_tap_diagnostic_line(
-    gesture: DoubleTapGesture,
-    reason: DoubleTapBlockReason,
-) -> String {
-    format!(
-        "blocked_double_tap gesture={} reason={}",
-        gesture.reason_token(),
-        reason.reason_token()
-    )
 }
 
 /// Stable INFO log line when an arm attempt is ignored (visibility only).
@@ -269,10 +190,9 @@ pub struct HotkeyModifierSnapshot {
 
 /// The physical key an event came from, already mapped off macOS keycodes.
 ///
-/// Left/right variants are kept apart because the whole double-tap routing
-/// depends on the side: left Option and right Option drive different modes,
-/// and a tap that starts on one side and ends on the other is discarded.
-/// Everything the detector does not care about collapses into `Other`.
+/// Left and right stay apart as macOS reports them. No gesture depends on the
+/// Option side, because Option only types characters. Everything the detector
+/// does not care about collapses into `Other`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyPhysicalKey {
     LeftOption,
@@ -290,16 +210,6 @@ pub enum HotkeyPhysicalKey {
 }
 
 impl HotkeyPhysicalKey {
-    /// Either Option key, regardless of side.
-    fn is_option(self) -> bool {
-        matches!(self, Self::LeftOption | Self::RightOption)
-    }
-
-    /// Right Option specifically — the side that routes to assistive mode.
-    fn is_right_option(self) -> bool {
-        matches!(self, Self::RightOption)
-    }
-
     /// Either Control key, regardless of side.
     fn is_ctrl(self) -> bool {
         matches!(self, Self::LeftControl | Self::RightControl)
@@ -360,30 +270,18 @@ pub enum HotkeyDetectorInput {
 /// All state is per-instance and time is supplied by the caller, so a detector
 /// is cheap to construct in tests and carries no global or platform coupling.
 /// The fields track what a single event cannot tell you: whether a hold is
-/// already running, which Option side was pressed, when the last tap landed,
-/// and whether a real key was struck during a modifier (which disqualifies the
-/// modifier release from counting as a tap).
+/// already running, when the last Ctrl tap landed, and whether a real key was
+/// struck during a modifier (which disqualifies the modifier release from
+/// counting as a tap).
 #[derive(Debug, Clone)]
 pub struct HotkeyDetector {
     hold_active: bool,
     hold_active_ts: Option<Instant>,
     hold_mode: HoldMode,
     hold_event_sent: bool,
-    last_left_tap_ts: Option<Instant>,
-    last_right_tap_ts: Option<Instant>,
     last_ctrl_tap_ts: Option<Instant>,
     ctrl_down: bool,
     ctrl_down_ts: Option<Instant>,
-    option_down: bool,
-    option_side: Option<bool>,
-    /// When Option went down, so its release can be judged as a tap at all.
-    option_down_ts: Option<Instant>,
-    /// Last key-down the HID system reported, fed by the platform layer from
-    /// `CGEventSourceSecondsSinceLastEventType`. It covers chords whose letter
-    /// events never reached the tap (secure keyboard entry, another tap
-    /// swallowing them): Option released after such a key-down was typing,
-    /// never a tap.
-    last_hid_key_down: Option<Instant>,
     key_pressed_during_modifier: bool,
     show_agent_space_down: bool,
     /// The widget chord's key is down; key repeat must not toggle twice.
@@ -419,15 +317,9 @@ impl Default for HotkeyDetector {
             hold_active_ts: None,
             hold_mode: HoldMode::Raw,
             hold_event_sent: false,
-            last_left_tap_ts: None,
-            last_right_tap_ts: None,
             last_ctrl_tap_ts: None,
             ctrl_down: false,
             ctrl_down_ts: None,
-            option_down: false,
-            option_side: None,
-            option_down_ts: None,
-            last_hid_key_down: None,
             key_pressed_during_modifier: false,
             show_agent_space_down: false,
             toggle_widget_key_down: false,
@@ -699,11 +591,6 @@ impl HotkeyDetector {
     /// the pending hold (the user meant to type, not to dictate), and any key
     /// struck while a modifier is down marks that modifier as "used", which
     /// disqualifies its later release from registering as a tap.
-    /// Note a key-down the HID system saw, whether or not this tap received it.
-    pub fn observe_hid_key_down(&mut self, at: Instant) {
-        self.last_hid_key_down = Some(at);
-    }
-
     fn handle_key_down(
         &mut self,
         now: Instant,
@@ -792,12 +679,6 @@ impl HotkeyDetector {
             self.last_ctrl_tap_ts = None;
         }
 
-        if modifiers.option && self.option_down {
-            self.key_pressed_during_modifier = true;
-            self.last_left_tap_ts = None;
-            self.last_right_tap_ts = None;
-        }
-
         emitted
     }
 
@@ -805,10 +686,9 @@ impl HotkeyDetector {
     /// actually decided.
     ///
     /// Order matters and is deliberate: hold transitions are resolved first
-    /// (so a hold always wins over a tap interpretation), then the double-tap
-    /// paths run per binding. A gesture that is recognised but unroutable
-    /// leaves through [`HotkeyEvent::DoubleTapBlocked`] rather than being
-    /// dropped, so the user sees a reason instead of a dead key.
+    /// (so a hold always wins over a tap interpretation), then the Fn tap and
+    /// the double-tap Ctrl path run. Option starts nothing here: it only types
+    /// characters.
     fn handle_flags_changed(
         &mut self,
         now: Instant,
@@ -819,10 +699,6 @@ impl HotkeyDetector {
         let dictation_binding = config.mode_bindings.dictation;
         let assistive_binding = config.mode_bindings.assistive;
         let raw_toggle_enabled = dictation_binding == ShortcutBinding::DoubleCtrl;
-        let normal_toggle_enabled =
-            config.mode_bindings.formatting == ShortcutBinding::DoubleLeftOption;
-        let assistive_toggle_enabled =
-            config.mode_bindings.assistive == ShortcutBinding::DoubleRightOption;
         let assistive_selection_combo_active = assistive_hold_binding(assistive_binding)
             .is_some_and(|binding| check_hold_combo(modifiers, binding));
         let dictation_combo_active = check_hold_combo(modifiers, dictation_binding);
@@ -977,126 +853,6 @@ impl HotkeyDetector {
             return emitted.or(toggle_event);
         }
 
-        if !normal_toggle_enabled && !assistive_toggle_enabled {
-            if key.is_option() {
-                if modifiers.option {
-                    self.option_down = true;
-                    self.option_side = Some(key.is_right_option());
-                    self.option_down_ts = Some(now);
-                } else {
-                    self.option_down = false;
-                    self.option_side = None;
-                    self.option_down_ts = None;
-                }
-            } else if !modifiers.option {
-                self.option_down = false;
-                self.option_side = None;
-                self.option_down_ts = None;
-            }
-            return emitted;
-        }
-
-        if key.is_option() && modifiers.option && !self.option_down {
-            self.option_down = true;
-            self.option_side = Some(key.is_right_option());
-            self.option_down_ts = Some(now);
-        } else if !modifiers.option && self.option_down {
-            self.option_down = false;
-            let released_right = key.is_right_option();
-            let pressed_side = self.option_side.take();
-            let option_down_ts = self.option_down_ts.take();
-            let held_for = option_down_ts
-                .map(|ts| elapsed_between(now, ts))
-                .unwrap_or_default();
-            // A key-down the HID system saw while Option was down means the
-            // user typed with Option, even if the letter never reached the tap.
-            // Both ends of the hold are event times, so a late callback cannot
-            // move the letter outside the hold.
-            let typed_meanwhile = match (option_down_ts, self.last_hid_key_down) {
-                (Some(down), Some(at)) => at >= down && at <= now,
-                _ => false,
-            };
-
-            if !key.is_option() {
-                self.last_left_tap_ts = None;
-                self.last_right_tap_ts = None;
-                self.key_pressed_during_modifier = false;
-                return emitted;
-            }
-
-            if let Some(pressed_right) = pressed_side
-                && pressed_right != released_right
-            {
-                self.last_left_tap_ts = None;
-                self.last_right_tap_ts = None;
-                return emitted;
-            }
-
-            let hold_binding_blocks_toggle = match dictation_binding {
-                ShortcutBinding::HoldCtrlAlt => modifiers.ctrl || self.hold_active,
-                _ => modifiers.ctrl || modifiers.cmd || self.hold_active,
-            };
-
-            if self.key_pressed_during_modifier {
-                self.key_pressed_during_modifier = false;
-                return emitted;
-            }
-
-            // A tap is a short press with nothing typed in between. Anything
-            // else is a chord or a hold and must not pair into a double-tap.
-            if typed_meanwhile || held_for > Duration::from_millis(TAP_MAX_MS) {
-                self.last_left_tap_ts = None;
-                self.last_right_tap_ts = None;
-                return emitted;
-            }
-
-            let toggle_event = if hold_binding_blocks_toggle {
-                register_blocked_option_double_tap(
-                    self,
-                    released_right,
-                    now,
-                    config.double_tap_interval_ms,
-                    DoubleTapBlockReason::ModifierComboActive,
-                )
-            } else if released_right {
-                self.last_left_tap_ts = None;
-                if assistive_toggle_enabled {
-                    register_double_tap(
-                        &mut self.last_right_tap_ts,
-                        now,
-                        config.double_tap_interval_ms,
-                        HotkeyEvent::ToggleAssistive,
-                    )
-                } else {
-                    register_blocked_option_double_tap(
-                        self,
-                        released_right,
-                        now,
-                        config.double_tap_interval_ms,
-                        DoubleTapBlockReason::BindingDisabled,
-                    )
-                }
-            } else if normal_toggle_enabled {
-                self.last_right_tap_ts = None;
-                register_double_tap(
-                    &mut self.last_left_tap_ts,
-                    now,
-                    config.double_tap_interval_ms,
-                    HotkeyEvent::ToggleNormal,
-                )
-            } else {
-                register_blocked_option_double_tap(
-                    self,
-                    released_right,
-                    now,
-                    config.double_tap_interval_ms,
-                    DoubleTapBlockReason::BindingDisabled,
-                )
-            };
-
-            emitted = emitted.or(toggle_event);
-        }
-
         if !modifiers.ctrl && !modifiers.option && !modifiers.cmd && !modifiers.fn_key {
             self.key_pressed_during_modifier = false;
         }
@@ -1231,40 +987,6 @@ fn consume_double_tap(last_tap: &mut Option<Instant>, now: Instant, interval_ms:
     false
 }
 
-/// Run an Option double-tap through the same window as a routable one, but emit
-/// [`HotkeyEvent::DoubleTapBlocked`] instead of a mode switch.
-///
-/// The block still consumes the tap pair and clears the opposite side's
-/// timestamp, so a blocked gesture cannot leave half-state that makes the next
-/// single tap look like a double. An INFO line is logged on the same edge, once
-/// per completed pair.
-fn register_blocked_option_double_tap(
-    detector: &mut HotkeyDetector,
-    released_right: bool,
-    now: Instant,
-    interval_ms: u64,
-    reason: DoubleTapBlockReason,
-) -> Option<HotkeyEvent> {
-    let (last_tap, gesture) = if released_right {
-        detector.last_left_tap_ts = None;
-        (
-            &mut detector.last_right_tap_ts,
-            DoubleTapGesture::RightOption,
-        )
-    } else {
-        detector.last_right_tap_ts = None;
-        (&mut detector.last_left_tap_ts, DoubleTapGesture::LeftOption)
-    };
-
-    if consume_double_tap(last_tap, now, interval_ms) {
-        let line = blocked_double_tap_diagnostic_line(gesture, reason);
-        tracing::info!("{line}");
-        Some(HotkeyEvent::DoubleTapBlocked { gesture, reason })
-    } else {
-        None
-    }
-}
-
 /// Whether the *base* modifiers of a hold binding are down, ignoring any arm
 /// modifier layered on top.
 ///
@@ -1292,10 +1014,7 @@ fn hold_base_pressed(
         ShortcutBinding::HoldCtrlAlt => modifiers.ctrl && modifiers.option,
         ShortcutBinding::HoldCtrlShift => modifiers.ctrl && modifiers.shift,
         ShortcutBinding::HoldCtrlCmd => modifiers.ctrl && modifiers.cmd,
-        ShortcutBinding::Disabled
-        | ShortcutBinding::DoubleCtrl
-        | ShortcutBinding::DoubleLeftOption
-        | ShortcutBinding::DoubleRightOption => false,
+        ShortcutBinding::Disabled | ShortcutBinding::DoubleCtrl => false,
     }
 }
 
@@ -1305,7 +1024,7 @@ fn hold_base_pressed(
 /// The Option guard up front is the difference from [`hold_base_pressed`]: for
 /// every binding that does not itself involve Option, a held Option vetoes the
 /// hold, so `Ctrl+Opt` cannot be mistaken for a plain `Ctrl` hold while the
-/// user is reaching for an Option gesture.
+/// user types an Option character.
 fn check_hold_combo(modifiers: HotkeyModifierSnapshot, dictation_binding: ShortcutBinding) -> bool {
     if modifiers.option
         && !matches!(
@@ -1322,18 +1041,15 @@ fn check_hold_combo(modifiers: HotkeyModifierSnapshot, dictation_binding: Shortc
         ShortcutBinding::HoldCtrlAlt => modifiers.ctrl && modifiers.option,
         ShortcutBinding::HoldCtrlShift => modifiers.ctrl && modifiers.shift,
         ShortcutBinding::HoldCtrlCmd => modifiers.ctrl && modifiers.cmd,
-        ShortcutBinding::Disabled
-        | ShortcutBinding::DoubleCtrl
-        | ShortcutBinding::DoubleLeftOption
-        | ShortcutBinding::DoubleRightOption => false,
+        ShortcutBinding::Disabled | ShortcutBinding::DoubleCtrl => false,
     }
 }
 
 /// The hold binding that arms Selection mode for a given assistive binding.
 ///
-/// Currently returns `None` for every [`ShortcutBinding`] variant: assistive is
-/// reached by double-tapping right Option, not by holding, so no binding maps
-/// to an assistive *hold*. The function is kept as the single seam where a hold
+/// Currently returns `None` for every [`ShortcutBinding`] variant: assistive has
+/// no key gesture (it starts from the menu bar or the overlay), so no binding
+/// maps to an assistive *hold*. The function is kept as the single seam where a hold
 /// route would be reintroduced — its two call sites in
 /// [`HotkeyDetector::handle_flags_changed`] and
 /// [`HotkeyDetector::handle_key_down`] already fold the `Some` case in, so the
@@ -1346,9 +1062,7 @@ fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
         | ShortcutBinding::HoldCtrlAlt
         | ShortcutBinding::HoldCtrlShift
         | ShortcutBinding::HoldCtrlCmd
-        | ShortcutBinding::DoubleCtrl
-        | ShortcutBinding::DoubleLeftOption
-        | ShortcutBinding::DoubleRightOption => None,
+        | ShortcutBinding::DoubleCtrl => None,
     }
 }
 
@@ -1400,21 +1114,17 @@ mod tests {
         }
     }
 
-    /// Dictation on Fn hold, formatting on double-left Option, assistive on double-right.
-    fn fn_hold_double_option_config() -> HotkeyRuntimeConfig {
+    /// The defaults: Fn hold dictates; Formatting and the agent have no gesture.
+    fn fn_hold_config() -> HotkeyRuntimeConfig {
         test_config(
             ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
+            ShortcutBinding::Disabled,
+            ShortcutBinding::Disabled,
         )
     }
 
-    fn fn_hold_double_option_detector() -> (HotkeyDetector, HotkeyRuntimeConfig, Instant) {
-        (
-            HotkeyDetector::default(),
-            fn_hold_double_option_config(),
-            Instant::now(),
-        )
+    fn fn_hold_detector() -> (HotkeyDetector, HotkeyRuntimeConfig, Instant) {
+        (HotkeyDetector::default(), fn_hold_config(), Instant::now())
     }
 
     /// Shorthand HotkeyModifierSnapshot constructor for compact test tables.
@@ -1436,7 +1146,7 @@ mod tests {
 
     #[test]
     fn fn_digit_toggles_an_agent_channel_once_per_press() {
-        let mut config = fn_hold_double_option_config();
+        let mut config = fn_hold_config();
         config.channel_modifier = ChannelModifier::Fn;
         let now = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -1499,7 +1209,7 @@ mod tests {
     #[test]
     /// ⌘⇧Space emits ShowAgent once per physical press; repeats and wrong mods are silent.
     fn detector_show_agent_command_table_emits_once_per_space_press() {
-        let config = fn_hold_double_option_config();
+        let config = fn_hold_config();
         let base = Instant::now();
         let command_shift = mods(false, false, true, true, false);
 
@@ -1555,7 +1265,7 @@ mod tests {
     #[test]
     /// The default ⌃⇧B emits ToggleWidget once per physical press; repeats and wrong mods are silent.
     fn detector_toggle_widget_command_table_emits_once_per_b_press() {
-        let config = fn_hold_double_option_config();
+        let config = fn_hold_config();
         let base = Instant::now();
         let control_shift = mods(true, false, true, false, false);
         let b = HotkeyPhysicalKey::Letter(b'B');
@@ -1614,7 +1324,7 @@ mod tests {
     #[test]
     /// A user-chosen chord (⌥⌘Space) replaces ⌃⇧B outright and never collides with the Agent summon.
     fn detector_toggle_widget_follows_the_configured_chord() {
-        let mut config = fn_hold_double_option_config();
+        let mut config = fn_hold_config();
         config.widget_shortcut = "option+cmd+space"
             .parse()
             .expect("a valid custom widget chord");
@@ -1695,7 +1405,7 @@ mod tests {
     #[test]
     /// Configured deferred-insert chord fires InsertHere once; key-repeat is suppressed.
     fn detector_deferred_insert_command_uses_configured_chord_once_per_press() {
-        let mut config = fn_hold_double_option_config();
+        let mut config = fn_hold_config();
         config.deferred_insert_shortcut = DeferredInsertShortcut::CommandShiftV;
         let mut detector = HotkeyDetector::default();
         let base = Instant::now();
@@ -1855,7 +1565,7 @@ mod tests {
     #[test]
     /// Fn hold produces one Hold(Down) after delay and matching Hold(Up) on release.
     fn detector_fn_hold_emits_down_and_up_for_one_physical_hold() {
-        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let (mut detector, config, base) = fn_hold_detector();
 
         assert_eq!(
             detector.feed(
@@ -1891,7 +1601,7 @@ mod tests {
     #[test]
     /// Fn then Shift attaches selection; release stays Raw dictation.
     fn detector_fn_then_shift_attaches_selection_and_up_stays_raw() {
-        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let (mut detector, config, base) = fn_hold_detector();
 
         assert_eq!(
             detector.feed(
@@ -1937,7 +1647,7 @@ mod tests {
     #[test]
     /// Fn+Shift from idle is dictation, not Assistive / Chat.
     fn detector_fn_shift_from_idle_stays_dictation() {
-        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let (mut detector, config, base) = fn_hold_detector();
 
         assert_eq!(
             detector.feed(
@@ -1984,7 +1694,7 @@ mod tests {
     #[test]
     /// Two Shift pulses during one Fn hold emit two AttachSelection events.
     fn detector_two_shift_pulses_emit_two_attach_selection() {
-        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let (mut detector, config, base) = fn_hold_detector();
 
         assert_eq!(
             detector.feed(
@@ -2123,376 +1833,55 @@ mod tests {
     }
 
     #[test]
-    /// Left Option double-tap fires only inside the configured interval window.
-    fn detector_option_double_tap_window_table() {
-        let table = [(200_u64, true), (201_u64, false)];
-
-        for (gap_ms, expect_toggle) in table {
-            let mut detector = HotkeyDetector::default();
-            let config = fn_hold_double_option_config();
-            let base = Instant::now();
-
-            assert_eq!(
-                detector.feed(
-                    HotkeyDetectorInput::FlagsChanged {
-                        now: base,
-                        key: HotkeyPhysicalKey::LeftOption,
-                        modifiers: mods(false, true, false, false, false),
-                    },
-                    config,
-                ),
-                None
-            );
-            assert_eq!(
-                detector.feed(
-                    HotkeyDetectorInput::FlagsChanged {
-                        now: base + Duration::from_millis(1),
-                        key: HotkeyPhysicalKey::LeftOption,
-                        modifiers: mods(false, false, false, false, false),
-                    },
-                    config,
-                ),
-                None
-            );
-            assert_eq!(
-                detector.feed(
-                    HotkeyDetectorInput::FlagsChanged {
-                        now: base + Duration::from_millis(gap_ms),
-                        key: HotkeyPhysicalKey::LeftOption,
-                        modifiers: mods(false, true, false, false, false),
-                    },
-                    config,
-                ),
-                None
-            );
-
-            let second_release = detector.feed(
+    /// Option types characters and starts nothing (one key, one role): no
+    /// double-tap of either Option key, alone or with Command, emits an event.
+    fn detector_option_double_taps_start_nothing() {
+        let (mut detector, config, base) = fn_hold_detector();
+        let mut tap = |at: u64, key: HotkeyPhysicalKey, cmd: bool| {
+            let press = detector.feed(
                 HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(gap_ms + 1),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, false, false),
+                    now: base + Duration::from_millis(at),
+                    key,
+                    modifiers: mods(false, true, false, cmd, false),
                 },
                 config,
             );
-            assert_eq!(
-                second_release,
-                if expect_toggle {
-                    Some(HotkeyEvent::ToggleNormal)
-                } else {
-                    None
-                }
+            let release = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(at + 1),
+                    key,
+                    modifiers: mods(false, false, false, cmd, false),
+                },
+                config,
             );
+            press.or(release)
+        };
+        for (at, key, cmd) in [
+            (0, HotkeyPhysicalKey::LeftOption, false),
+            (100, HotkeyPhysicalKey::LeftOption, false),
+            (400, HotkeyPhysicalKey::RightOption, false),
+            (500, HotkeyPhysicalKey::RightOption, false),
+            (800, HotkeyPhysicalKey::LeftOption, true),
+            (900, HotkeyPhysicalKey::LeftOption, true),
+        ] {
+            assert_eq!(tap(at, key, cmd), None, "{key:?} at {at} ms");
         }
     }
 
     #[test]
-    /// Right Option double-tap routes to ToggleAssistive, not formatting toggle.
-    fn detector_right_option_double_tap_emits_toggle_assistive() {
-        let (mut detector, config, base) = fn_hold_double_option_detector();
-
-        // First tap: press then release right Option.
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base,
-                    key: HotkeyPhysicalKey::RightOption,
-                    modifiers: mods(false, true, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(1),
-                    key: HotkeyPhysicalKey::RightOption,
-                    modifiers: mods(false, false, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-
-        // Second tap within the double-tap window: press then release again.
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(100),
-                    key: HotkeyPhysicalKey::RightOption,
-                    modifiers: mods(false, true, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(101),
-                    key: HotkeyPhysicalKey::RightOption,
-                    modifiers: mods(false, false, false, false, false),
-                },
-                config,
-            ),
-            Some(HotkeyEvent::ToggleAssistive)
-        );
-    }
-
-    #[test]
-    /// Two Option+letter chords whose letter events never reached the tap must
-    /// not read as a double-tap when the HID system saw the key-downs
-    /// (secure keyboard entry, another tap swallowing letters).
-    fn detector_right_option_chords_with_unseen_letters_do_not_toggle_assistive() {
-        let (mut detector, config, base) = fn_hold_double_option_detector();
-        let press = |t| HotkeyDetectorInput::FlagsChanged {
-            now: t,
-            key: HotkeyPhysicalKey::RightOption,
-            modifiers: mods(false, true, false, false, false),
-        };
-        let release = |t| HotkeyDetectorInput::FlagsChanged {
-            now: t,
-            key: HotkeyPhysicalKey::RightOption,
-            modifiers: mods(false, false, false, false, false),
-        };
-
-        // Option+s typed: the letter key-down is only visible to the HID system.
-        assert_eq!(detector.feed(press(base), config), None);
-        detector.observe_hid_key_down(base + Duration::from_millis(30));
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(90)), config),
-            None
-        );
-
-        // Option+c typed right after, inside the double-tap window.
-        assert_eq!(
-            detector.feed(press(base + Duration::from_millis(150)), config),
-            None
-        );
-        detector.observe_hid_key_down(base + Duration::from_millis(180));
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(240)), config),
-            None
-        );
-
-        // A key-down from before the press does not poison a genuine double-tap.
-        detector.observe_hid_key_down(base + Duration::from_millis(400));
-        assert_eq!(
-            detector.feed(press(base + Duration::from_millis(600)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(650)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(press(base + Duration::from_millis(700)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(750)), config),
-            Some(HotkeyEvent::ToggleAssistive)
-        );
-    }
-
-    #[test]
-    /// The hold is bounded by event times, so a letter the HID system stamped
-    /// inside the hold counts as typing even when it is only reported at the
-    /// release, and a letter stamped before the press does not.
-    fn detector_option_hold_bounds_use_event_times() {
-        let (mut detector, config, base) = fn_hold_double_option_detector();
-        let press = |t| HotkeyDetectorInput::FlagsChanged {
-            now: t,
-            key: HotkeyPhysicalKey::RightOption,
-            modifiers: mods(false, true, false, false, false),
-        };
-        let release = |t| HotkeyDetectorInput::FlagsChanged {
-            now: t,
-            key: HotkeyPhysicalKey::RightOption,
-            modifiers: mods(false, false, false, false, false),
-        };
-
-        // Letter stamped at +30 ms, reported only when the release arrives.
-        assert_eq!(detector.feed(press(base), config), None);
-        detector.observe_hid_key_down(base + Duration::from_millis(30));
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(60)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(press(base + Duration::from_millis(120)), config),
-            None
-        );
-        detector.observe_hid_key_down(base + Duration::from_millis(150));
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(180)), config),
-            None
-        );
-
-        // Letter stamped just before the press: a genuine pair still toggles.
-        detector.observe_hid_key_down(base + Duration::from_millis(599));
-        assert_eq!(
-            detector.feed(press(base + Duration::from_millis(600)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(650)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(press(base + Duration::from_millis(700)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(750)), config),
-            Some(HotkeyEvent::ToggleAssistive)
-        );
-    }
-
-    #[test]
-    /// An Option press longer than a tap is a hold or a chord, never half of a
-    /// double-tap, even when no key event arrived.
-    fn detector_right_option_long_presses_do_not_toggle_assistive() {
-        let (mut detector, config, base) = fn_hold_double_option_detector();
-        let press = |t| HotkeyDetectorInput::FlagsChanged {
-            now: t,
-            key: HotkeyPhysicalKey::RightOption,
-            modifiers: mods(false, true, false, false, false),
-        };
-        let release = |t| HotkeyDetectorInput::FlagsChanged {
-            now: t,
-            key: HotkeyPhysicalKey::RightOption,
-            modifiers: mods(false, false, false, false, false),
-        };
-
-        assert_eq!(detector.feed(press(base), config), None);
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(300)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(press(base + Duration::from_millis(350)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(400)), config),
-            None
-        );
-
-        // The long press cleared the pair; the next quick pair still works.
-        assert_eq!(
-            detector.feed(press(base + Duration::from_millis(900)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(950)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(press(base + Duration::from_millis(1000)), config),
-            None
-        );
-        assert_eq!(
-            detector.feed(release(base + Duration::from_millis(1050)), config),
-            Some(HotkeyEvent::ToggleAssistive)
-        );
-    }
-
-    #[test]
-    /// Disabled binding still surfaces DoubleTapBlocked with BindingDisabled reason.
-    fn detector_reports_disabled_option_double_tap() {
-        let mut detector = HotkeyDetector::default();
-        let config = test_config(
-            ShortcutBinding::HoldFn,
-            ShortcutBinding::Disabled,
-            ShortcutBinding::DoubleRightOption,
-        );
-        let base = Instant::now();
-
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base,
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, true, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(1),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(100),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, true, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(101),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, false, false),
-                },
-                config,
-            ),
-            Some(HotkeyEvent::DoubleTapBlocked {
-                gesture: DoubleTapGesture::LeftOption,
-                reason: DoubleTapBlockReason::BindingDisabled,
-            })
-        );
-    }
-
-    #[test]
-    /// Diagnostic lines use stable gesture= and reason= tokens for log scraping.
-    fn blocked_double_tap_diagnostic_line_uses_stable_reason_tokens() {
-        assert_eq!(
-            blocked_double_tap_diagnostic_line(
-                DoubleTapGesture::LeftOption,
-                DoubleTapBlockReason::BindingDisabled,
-            ),
-            "blocked_double_tap gesture=left_option reason=binding_disabled"
-        );
-        assert_eq!(
-            blocked_double_tap_diagnostic_line(
-                DoubleTapGesture::RightOption,
-                DoubleTapBlockReason::ModifierComboActive,
-            ),
-            "blocked_double_tap gesture=right_option reason=modifier_combo_active"
-        );
+    /// Diagnostic lines use a stable reason= token for log scraping.
+    fn arm_ignored_diagnostic_line_uses_a_stable_reason_token() {
         assert_eq!(
             arm_ignored_diagnostic_line("wrong_arm_modifier"),
             "arm_ignored reason=wrong_arm_modifier"
         );
-        assert_eq!(
-            DoubleTapBlockReason::BindingDisabled.reason_token(),
-            "binding_disabled"
-        );
-        assert_eq!(
-            DoubleTapBlockReason::ModifierComboActive.reason_token(),
-            "modifier_combo_active"
-        );
     }
 
-    /// Capture INFO records while driving blocked left/right double-tap and
-    /// wrong-arm paths. Detector is the single owner of the stable line.
+    /// Capture INFO records while driving an Option double-tap and the
+    /// wrong-arm path: Option logs nothing, the wrong arm logs once. Detector
+    /// is the single owner of the stable line.
     #[test]
-    fn blocked_and_ignored_diagnostics_emit_exactly_one_info_each() {
+    fn option_logs_nothing_and_a_wrong_arm_logs_once() {
         use std::io::Write;
         use std::sync::{Arc, Mutex};
 
@@ -2522,19 +1911,15 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let mut detector = HotkeyDetector::default();
-            let config = test_config(
-                ShortcutBinding::HoldFn,
-                ShortcutBinding::Disabled, // left binding disabled → blocked_double_tap
-                ShortcutBinding::DoubleRightOption,
-            );
+            let config = fn_hold_config();
             let base = Instant::now();
 
-            // Full left Option double-tap while binding disabled → blocked INFO once.
+            // Full left Option double-tap with Command held: no event, no line.
             let _ = detector.feed(
                 HotkeyDetectorInput::FlagsChanged {
                     now: base,
                     key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, true, false, false, false),
+                    modifiers: mods(false, true, false, true, false),
                 },
                 config,
             );
@@ -2542,7 +1927,7 @@ mod tests {
                 HotkeyDetectorInput::FlagsChanged {
                     now: base + Duration::from_millis(1),
                     key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, false, false),
+                    modifiers: mods(false, false, false, true, false),
                 },
                 config,
             );
@@ -2550,7 +1935,7 @@ mod tests {
                 HotkeyDetectorInput::FlagsChanged {
                     now: base + Duration::from_millis(100),
                     key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, true, false, false, false),
+                    modifiers: mods(false, true, false, true, false),
                 },
                 config,
             );
@@ -2558,23 +1943,14 @@ mod tests {
                 HotkeyDetectorInput::FlagsChanged {
                     now: base + Duration::from_millis(101),
                     key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, false, false),
+                    modifiers: mods(false, false, false, true, false),
                 },
                 config,
             );
-            assert!(
-                matches!(
-                    blocked,
-                    Some(HotkeyEvent::DoubleTapBlocked {
-                        gesture: DoubleTapGesture::LeftOption,
-                        reason: DoubleTapBlockReason::BindingDisabled,
-                    })
-                ),
-                "expected blocked left double-tap, got {blocked:?}"
-            );
+            assert_eq!(blocked, None, "Option starts nothing");
 
             // Wrong arm: default arm is Shift; hold Fn + Cmd → arm_ignored INFO once.
-            let hold_fn_config = fn_hold_double_option_config();
+            let hold_fn_config = fn_hold_config();
             let _ = detector.feed(
                 HotkeyDetectorInput::FlagsChanged {
                     now: base + Duration::from_millis(400),
@@ -2594,73 +1970,16 @@ mod tests {
         });
 
         let captured = String::from_utf8_lossy(&buf.0.lock().unwrap()).to_string();
-        let blocked_count = captured
-            .matches("blocked_double_tap gesture=left_option reason=binding_disabled")
-            .count();
         let arm_count = captured
             .matches("arm_ignored reason=wrong_arm_modifier")
             .count();
-        assert_eq!(
-            blocked_count, 1,
-            "exactly one blocked_double_tap INFO expected, got {blocked_count} in:\n{captured}"
+        assert!(
+            !captured.contains("double_tap"),
+            "Option must log no double-tap line, got:\n{captured}"
         );
         assert_eq!(
             arm_count, 1,
             "exactly one arm_ignored INFO expected, got {arm_count} in:\n{captured}"
-        );
-    }
-
-    #[test]
-    /// Active modifier combo blocks Option double-tap with ModifierComboActive.
-    fn detector_reports_modifier_blocked_option_double_tap() {
-        let (mut detector, config, base) = fn_hold_double_option_detector();
-
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base,
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, true, false, true, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(1),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, true, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(100),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, true, false, true, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(101),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, true, false),
-                },
-                config,
-            ),
-            Some(HotkeyEvent::DoubleTapBlocked {
-                gesture: DoubleTapGesture::LeftOption,
-                reason: DoubleTapBlockReason::ModifierComboActive,
-            })
         );
     }
 
@@ -2767,7 +2086,7 @@ mod tests {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
             ShortcutBinding::HoldFn,
-            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::Disabled,
             ShortcutBinding::HoldCtrlCmd,
         );
         let base = Instant::now();
@@ -2806,114 +2125,6 @@ mod tests {
                 config,
             ),
             None
-        );
-    }
-
-    #[test]
-    /// After an Option combo with another key, double-tap state resets cleanly.
-    fn detector_resets_combo_flags_after_option_combo() {
-        let (mut detector, config, base) = fn_hold_double_option_detector();
-
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base,
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, true, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(1),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(40),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, true, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::KeyDown {
-                    now: base + Duration::from_millis(45),
-                    key: HotkeyPhysicalKey::Other,
-                    modifiers: mods(false, true, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(50),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(120),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, true, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(121),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(170),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, true, false, false, false),
-                },
-                config,
-            ),
-            None
-        );
-        assert_eq!(
-            detector.feed(
-                HotkeyDetectorInput::FlagsChanged {
-                    now: base + Duration::from_millis(171),
-                    key: HotkeyPhysicalKey::LeftOption,
-                    modifiers: mods(false, false, false, false, false),
-                },
-                config,
-            ),
-            Some(HotkeyEvent::ToggleNormal)
         );
     }
 
@@ -3025,7 +2236,7 @@ mod tests {
 
     #[test]
     fn ctrl_digit_opens_channel_and_fn_digit_does_not_when_ctrl_selected() {
-        let config = fn_hold_double_option_config();
+        let config = fn_hold_config();
         assert_eq!(config.channel_modifier, ChannelModifier::Ctrl);
         let now = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -3070,7 +2281,7 @@ mod tests {
 
     #[test]
     fn fn_digit_opens_channel_when_fn_selected_and_ctrl_digit_does_not() {
-        let mut config = fn_hold_double_option_config();
+        let mut config = fn_hold_config();
         config.channel_modifier = ChannelModifier::Fn;
         let now = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -3105,7 +2316,7 @@ mod tests {
 
     #[test]
     fn cmd_digit_never_opens_a_channel_under_any_configuration() {
-        let base = fn_hold_double_option_config();
+        let base = fn_hold_config();
         let now = Instant::now();
         for modifier in [ChannelModifier::Ctrl, ChannelModifier::Fn] {
             let mut config = base;
@@ -3143,7 +2354,7 @@ mod tests {
 
     #[test]
     fn fn_tap_below_threshold_toggles_dictation_only_when_enabled() {
-        let mut config = fn_hold_double_option_config();
+        let mut config = fn_hold_config();
         let base = Instant::now();
         let mut held = HotkeyDetector::default();
         assert_eq!(
@@ -3190,7 +2401,7 @@ mod tests {
 
     #[test]
     fn fn_hold_past_threshold_stays_hold_to_talk_with_tap_enabled() {
-        let mut config = fn_hold_double_option_config();
+        let mut config = fn_hold_config();
         config.fn_tap_toggles_dictation = true;
         let base = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -3221,7 +2432,7 @@ mod tests {
     /// is Ctrl. Fn+6 is never a channel chord and Ctrl+6 always is.
     #[test]
     fn resolved_ctrl_channel_beside_fn_recording_keeps_each_key_to_one_role() {
-        let mut config = fn_hold_double_option_config();
+        let mut config = fn_hold_config();
         config.fn_tap_toggles_dictation = true;
         let keys = crate::config::RecordingKeys::from_bindings(
             [
@@ -3265,7 +2476,7 @@ mod tests {
     /// a channel, with either modifier.
     #[test]
     fn no_digit_chord_opens_a_channel_when_both_keys_record() {
-        let mut config = fn_hold_double_option_config();
+        let mut config = fn_hold_config();
         config.channel_modifier = ChannelModifier::Off;
         let base = Instant::now();
         for modifiers in [
@@ -3295,7 +2506,7 @@ mod tests {
 
     #[test]
     fn middle_button_press_release_mirrors_fn_hold_semantics_when_enabled() {
-        let mut config = fn_hold_double_option_config();
+        let mut config = fn_hold_config();
         config.middle_mouse_acts_as_fn = true;
         let base = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -3318,7 +2529,7 @@ mod tests {
 
     #[test]
     fn middle_button_is_inert_when_the_option_is_off() {
-        let config = fn_hold_double_option_config();
+        let config = fn_hold_config();
         assert!(!config.middle_mouse_acts_as_fn);
         let base = Instant::now();
         let mut detector = HotkeyDetector::default();
@@ -3348,7 +2559,7 @@ mod tests {
 
     /// Fn hold dictation, with the middle button as Fn and the chooser on.
     fn middle_gesture_config(acts_as_fn: bool) -> HotkeyRuntimeConfig {
-        let mut config = fn_hold_double_option_config();
+        let mut config = fn_hold_config();
         config.middle_mouse_acts_as_fn = acts_as_fn;
         config.middle_mouse_agent_gesture = true;
         config
@@ -3580,23 +2791,9 @@ mod tests {
                 ),
                 (1_000, HotkeyPhysicalKey::Other, none),
             ],
-            ShortcutBinding::DoubleCtrl
-            | ShortcutBinding::DoubleLeftOption
-            | ShortcutBinding::DoubleRightOption => {
-                let (key, down) = match gesture {
-                    ShortcutBinding::DoubleCtrl => (
-                        HotkeyPhysicalKey::LeftControl,
-                        mods(true, false, false, false, false),
-                    ),
-                    ShortcutBinding::DoubleLeftOption => (
-                        HotkeyPhysicalKey::LeftOption,
-                        mods(false, true, false, false, false),
-                    ),
-                    _ => (
-                        HotkeyPhysicalKey::RightOption,
-                        mods(false, true, false, false, false),
-                    ),
-                };
+            ShortcutBinding::DoubleCtrl => {
+                let key = HotkeyPhysicalKey::LeftControl;
+                let down = mods(true, false, false, false, false);
                 vec![
                     (0, key, down),
                     (40, key, none),
@@ -3650,15 +2847,13 @@ mod tests {
             .collect()
     }
 
-    const ROUTABLE_GESTURES: [ShortcutBinding; 8] = [
+    const ROUTABLE_GESTURES: [ShortcutBinding; 6] = [
         ShortcutBinding::HoldFn,
         ShortcutBinding::HoldCtrl,
         ShortcutBinding::HoldCtrlAlt,
         ShortcutBinding::HoldCtrlShift,
         ShortcutBinding::HoldCtrlCmd,
         ShortcutBinding::DoubleCtrl,
-        ShortcutBinding::DoubleLeftOption,
-        ShortcutBinding::DoubleRightOption,
     ];
 
     /// P2-007 (linked: hotkeys-dead-binding-cells): `mode_binding_reachable`
@@ -3708,8 +2903,6 @@ mod tests {
                 (WorkMode::Dictation, ShortcutBinding::HoldCtrlShift),
                 (WorkMode::Dictation, ShortcutBinding::HoldCtrlCmd),
                 (WorkMode::Dictation, ShortcutBinding::DoubleCtrl),
-                (WorkMode::Formatting, ShortcutBinding::DoubleLeftOption),
-                (WorkMode::Assistive, ShortcutBinding::DoubleRightOption),
             ],
             "documented matrix in docs/HOTKEYS_CONTRACT.md"
         );
@@ -3722,58 +2915,22 @@ mod tests {
         }
     }
 
-    /// The audited reproduction: Dictation and Formatting both on double-tap
-    /// left Option. The gesture starts Formatting only; Dictation is dead.
-    /// The defaults route each gesture to its own mode, and double-tap Ctrl
-    /// dictation silences the Option toggles (the precedence Settings reports).
+    /// The defaults dictate on an Fn hold and start nothing else: Formatting
+    /// and the agent have no gesture (founder decision 2026-10-26), so they
+    /// start from the menu bar or the overlay.
     #[test]
-    fn duplicate_left_option_starts_formatting_only_and_defaults_route_each_mode() {
-        let duplicate = test_config(
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
-        assert_eq!(
-            started_modes(&perform_gesture(
-                duplicate,
-                ShortcutBinding::DoubleLeftOption
-            )),
-            vec![WorkMode::Formatting]
-        );
-        assert!(!mode_binding_reachable(
-            WorkMode::Dictation,
-            ShortcutBinding::DoubleLeftOption
-        ));
-
-        let defaults = fn_hold_double_option_config();
-        for (gesture, mode) in [
-            (ShortcutBinding::HoldFn, WorkMode::Dictation),
-            (ShortcutBinding::DoubleLeftOption, WorkMode::Formatting),
-            (ShortcutBinding::DoubleRightOption, WorkMode::Assistive),
-        ] {
+    fn defaults_dictate_on_fn_hold_and_start_nothing_else() {
+        let defaults = fn_hold_config();
+        for gesture in ROUTABLE_GESTURES {
+            let expected = if gesture == ShortcutBinding::HoldFn {
+                vec![WorkMode::Dictation]
+            } else {
+                Vec::new()
+            };
             assert_eq!(
                 started_modes(&perform_gesture(defaults, gesture)),
-                vec![mode],
-                "default {gesture:?}"
-            );
-        }
-
-        let double_ctrl = test_config(
-            ShortcutBinding::DoubleCtrl,
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        );
-        assert_eq!(
-            started_modes(&perform_gesture(double_ctrl, ShortcutBinding::DoubleCtrl)),
-            vec![WorkMode::Dictation]
-        );
-        for gesture in [
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
-        ] {
-            assert!(
-                started_modes(&perform_gesture(double_ctrl, gesture)).is_empty(),
-                "double-tap Ctrl dictation must silence {gesture:?}"
+                expected,
+                "default config, {gesture:?}"
             );
         }
     }

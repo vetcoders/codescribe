@@ -949,12 +949,14 @@ struct LLMLaneModel {
       && discoveryFailed && other.discoveryFailed
   }
 
-  var availabilityTint: Color {
-    guard credentialAccessResolved, credentialAccessError == nil else {
-      return CSColor.secondaryInk
-    }
-    return runtime.available ? CSColor.secondaryInk : CSColor.terracottaText
+  /// Unavailable is the only state the lane can prove on its own; everything
+  /// else stays neutral until a probe answers.
+  var availabilityTone: CsMcpRowTone {
+    guard credentialAccessResolved, credentialAccessError == nil else { return .neutral }
+    return runtime.available ? .neutral : .bad
   }
+
+  var availabilityTint: Color { availabilityTone.dotColor }
 
   var discoveryDescription: String {
     guard credentialAccessResolved else { return String(localized: "Checking provider access…") }
@@ -3663,7 +3665,7 @@ final class SettingsViewModel: ObservableObject {
     provider.apiKeySet
       || (provider.wire == "responses" && provider.accountSignedIn)
       || !provider.keyRequired
-      ? CSColor.secondaryInk : CSColor.terracottaText
+      ? CSColor.secondaryInk : CSColor.dangerLight
   }
 
   /// Bridge rows take the bare slug; the picker id carries the `custom:` prefix (§D 17:55Z).

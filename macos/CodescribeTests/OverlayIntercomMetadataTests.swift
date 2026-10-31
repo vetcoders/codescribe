@@ -7,6 +7,27 @@ import XCTest
 
 @MainActor
 final class OverlayIntercomMetadataTests: XCTestCase {
+  override class func setUp() {
+    super.setUp()
+    // Vision's first request loads Apple's OCR model. Keep that fixture
+    // initialization outside the per-scenario render budget; the suite still
+    // includes its cost and every capture retains the same OCR assertions.
+    do {
+      let context = try XCTUnwrap(
+        CGContext(
+          data: nil, width: 32, height: 32, bitsPerComponent: 8, bytesPerRow: 0,
+          space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+      let image = try XCTUnwrap(context.makeImage())
+      let request = VNRecognizeTextRequest()
+      request.recognitionLevel = .accurate
+      request.usesLanguageCorrection = false
+      try VNImageRequestHandler(cgImage: image).perform([request])
+    } catch {
+      XCTFail("Vision OCR fixture initialization failed: \(error)")
+    }
+  }
+
   func testOneMetadataLineUnlocksContextAndReturnsSpaceToPreview() throws {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["3"], scale: scale)
@@ -17,24 +38,74 @@ final class OverlayIntercomMetadataTests: XCTestCase {
       let contextHeight = header + metadata + 6
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: contextHeight - 0.5), .header)
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: contextHeight), .context)
-      let firstPreviewHeight = contextHeight + 3 * body + metadata + 12
+      // The lightweight preview needs one prose line and its route. Input
+      // remains a later tier with the complete message renderer's own budget.
+      let previewHeight =
+        body + metadata
+        + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
+        + OverlayIntercomWidgetLayout.compactPreviewSpacing
+      let firstPreviewHeight = contextHeight + previewHeight
       XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: firstPreviewHeight - 0.5))
       let preview = try XCTUnwrap(
         metrics.compactPreviewLayout(width: width, cardHeight: firstPreviewHeight))
-      XCTAssertEqual(preview.height, 3 * body + metadata + 12, accuracy: 0.01)
+      XCTAssertEqual(preview.height, previewHeight, accuracy: 0.01)
+      XCTAssertFalse(preview.showsComposer, "The first readable message must precede its input")
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: firstPreviewHeight), .preview)
     }
   }
 
   func testRenderedMetadataIsOneLineWithoutExecutionCoordinates() throws {
-    for scale in [CGFloat(0.8), 1, 1.6] {
-      for scenario in ["known", "unknown", "long", "foreign-lease"] {
-        try renderMetadata(scale: scale, scenario: scenario)
-      }
-    }
+    try renderMetadata(scale: 1, scenario: "known")
+  }
+
+  // Each native OCR capture keeps its own ten-second budget and failure
+  // attribution. The same twelve cases previously shared one test budget.
+  func testKnownMetadataAtSmallScale() throws {
+    try renderMetadata(scale: 0.8, scenario: "known")
+  }
+
+  func testKnownMetadataAtLargeScale() throws {
+    try renderMetadata(scale: 1.6, scenario: "known")
+  }
+
+  func testUnknownMetadataAtSmallScale() throws {
+    try renderMetadata(scale: 0.8, scenario: "unknown")
+  }
+
+  func testUnknownMetadataAtNormalScale() throws {
+    try renderMetadata(scale: 1, scenario: "unknown")
+  }
+
+  func testUnknownMetadataAtLargeScale() throws {
+    try renderMetadata(scale: 1.6, scenario: "unknown")
+  }
+
+  func testLongMetadataAtSmallScale() throws {
+    try renderMetadata(scale: 0.8, scenario: "long")
+  }
+
+  func testLongMetadataAtNormalScale() throws {
+    try renderMetadata(scale: 1, scenario: "long")
+  }
+
+  func testLongMetadataAtLargeScale() throws {
+    try renderMetadata(scale: 1.6, scenario: "long")
+  }
+
+  func testForeignLeaseMetadataAtSmallScale() throws {
+    try renderMetadata(scale: 0.8, scenario: "foreign-lease")
+  }
+
+  func testForeignLeaseMetadataAtNormalScale() throws {
+    try renderMetadata(scale: 1, scenario: "foreign-lease")
+  }
+
+  func testForeignLeaseMetadataAtLargeScale() throws {
+    try renderMetadata(scale: 1.6, scenario: "foreign-lease")
   }
 
   private func renderMetadata(scale: CGFloat, scenario: String) throws {
+    let context = "scenario=\(scenario), scale=\(scale)"
     let identity = AgentPlaybackIdentity(
       provider: "codex", session: "metadata", bus: "/fixture/bus")
     let owner = try XCTUnwrap(
@@ -82,7 +153,11 @@ final class OverlayIntercomMetadataTests: XCTestCase {
       .environment(\.csTextScale, scale)
       .environment(\.colorScheme, .dark)
       .symbolEffectsRemoved()
-      .transaction { $0.disablesAnimations = true }
+      // OCR measures the settled metadata, not the card's spring entrance.
+      .transaction {
+        $0.disablesAnimations = true
+        $0.animation = nil
+      }
       .background(OverlayAppearancePalette.dark.desktopBackground.color))
     host.sizingOptions = []
     host.frame = CGRect(x: 0, y: 0, width: width, height: height)
@@ -110,11 +185,11 @@ final class OverlayIntercomMetadataTests: XCTestCase {
     try VNImageRequestHandler(cgImage: cgImage).perform([request])
     let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
     let metadata = lines.filter { $0.localizedCaseInsensitiveContains("codex") }
-    XCTAssertEqual(metadata.count, 1, "One physical metadata row: \(lines)")
+    XCTAssertEqual(metadata.count, 1, "\(context): One physical metadata row: \(lines)")
     if scenario == "known" || scenario == "long" {
       XCTAssertTrue(
         metadata.first?.localizedCaseInsensitiveContains("codescribe") == true,
-        "Keep the declared repository at the end: \(lines)")
+        "\(context): Keep the declared repository at the end: \(lines)")
     }
     let text = lines.joined(separator: " ")
     XCTAssertFalse(text.localizedCaseInsensitiveContains("Frame"), text)

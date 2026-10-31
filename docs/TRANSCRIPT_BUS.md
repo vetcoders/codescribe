@@ -1,5 +1,294 @@
 # Clean Transcript Bus
 
+## Implementation baseline and paired-host target
+
+The source baseline for this comparison is
+`97d6b9af080dfd3d6d91e7445dc1b10b10bbf01f`. The paired-host column records the
+chosen product contract, **not an implemented or installed capability**.
+
+| Surface               | Present in the source baseline                                                                                                                  | Chosen paired-host target                                                                                                                                                                                 |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Composer Sync         | Local composer membership and edit epochs share future input. Existing text and attachments remain each owner's private baseline.               | Reuse that same local mechanism for composers whose recipients are on SSH hosts. No second draft store or cross-host keystroke stream.                                                                    |
+| Send                  | Each exact recipient has a frozen payload, reply and edit revisions; the helper validates its current owner before publication.                 | Retain an original message ID and a result per logical recipient. A lost remote receipt must not replay successful recipients.                                                                            |
+| SSH mailbox           | The managed helper reads, ACKs and watches the remote mailbox. The native queue relay runs on the machine owning the agent's thread.            | Explicitly pair a home seat and an SSH guest seat of the same native agent. Preserve one execution identity and make both stations visible.                                                               |
+| Conversation history  | The UI reads local journals. Remote queue receipts are transport evidence, not a local copy of remote conversation history.                     | Both paired views converge on the same eligible sent messages, replies and attachments, including already-ACKed history. Replicas never enqueue a task.                                                   |
+| Guest reception       | Ordinary missing reception policy defaults to enabled; a journal may contain broadcast rows its recipient skipped.                              | Persist visited-host channel 0 reception OFF before publishing guest reachability. Temporary opt-in expires; it never retroactively releases skipped history.                                             |
+| Attachments           | Local pointers carry source paths, sizes and hashes. Remote file overrides are refused; a pointer does not transfer bytes.                      | Transfer explicitly sent attachment bytes after release, verify size/hash and allocate a safe path in the receiving host's own store.                                                                     |
+| Unavailable recipient | The exact-owner guard rejects a rebound or absent listener and retains the draft. The UI can append raw helper stderr to its localized message. | Show a known unavailable recipient before Send and a short localized reason after a race, while retaining draft, reply and attachments. Publication uncertainty remains distinct from definite rejection. |
+
+Composer Sync identifies an exact logical owner by provider and native session;
+names and channel numbers are labels. Two host-qualified seats of that same
+owner are one execution recipient. Different agents remain distinct recipients,
+even if their messages contain identical text. Joining a local Sync group starts
+an edit epoch without copying earlier words or files into another composer's
+draft. A remote recipient's composer is still a local editor on the user's Mac.
+
+The planned path reuses the existing Send transaction:
+
+```mermaid
+flowchart LR
+  Input[Local typing, paste or composer microphone] --> Drafts[Existing local composer drafts and Sync]
+  Drafts --> Send[Send or eligible hold release]
+  Send --> Frozen[Immutable payload and result per logical recipient]
+  Frozen --> Route{Explicit selected destination}
+  Route --> Local[Managed publisher on local host]
+  Route --> SSH[SSH to managed publisher on selected host]
+  Local --> Original[Canonical original publication]
+  SSH --> Original
+  Original --> Native[One native delivery to the exact agent]
+  Original --> History[Paired history projections]
+```
+
+This diagram describes the **target**. In the baseline, composer Sync and the
+remote mailbox relay exist separately; paired history, station admission and
+retry-safe cross-host Send are not certified by their existence.
+
+Each host writes through its own canonical Rust publication owner. An agent's
+reply originates on its own machine; transport asks the receiving host's owner
+to admit a projection instead of writing foreign JSON files. Source-qualified
+message identity, frozen content revision, recipient identity and reply
+association survive transport. The canonical writer must make original Send
+and replica import idempotent, including recovery after append-before-ACK.
+Conflicting content under the same original ID is a refusal, not a new revision.
+Text equality and timestamp windows never identify a replicated message.
+
+History visibility, native execution, read ACK and audio playback are separate
+receipts. A projection supplies none of the other three. A copied broadcast
+cannot become a new local broadcast or wake unrelated agents. Export eligibility
+comes from the original recipient/release evidence; today's policy is not proof
+that a historical row was eligible. Without that evidence, expose the missing
+history boundary rather than exporting the row. During disconnection, show the
+pending state and prove convergence after reconnect.
+
+Spoken participant membership is also separate from local composer Sync.
+The baseline shares physical microphone capture while opening separate channel
+recognition sessions and archives. The chosen Voice direction is one shared
+recognition stream with capture-clock membership intervals, retained until its
+last participant leaves. The first participant is its initiator; hardware and
+occurrence authority remain with the existing recording controller and acoustic
+ledger. Leaving and rejoining must exclude speech from the participant's gap.
+The shared-stream implementation belongs to the Voice path; SSH consumes its
+eligible committed per-recipient messages and does not open a recorder, cut WAVs
+or reinterpret the transcript. This is a chosen direction, not a measurement of
+CPU savings or a claim that shared recognition already works.
+
+Acceptance requires two genuine host views, one native execution per original
+message and logical recipient, no pre-Send draft transfer, readable sent
+attachments, and explicit reconnect/rotation/rebind/partial-publication cases.
+Source tests, an SSH connection or a signed bundle alone do not prove this path.
+Keyboard gestures and destination admission remain owned by
+[the hotkey contract](HOTKEYS_CONTRACT.md) and
+[the delivery route contract](DELIVERY_ROUTE.md).
+
+## Station history and Frozen Send wire contract
+
+The Rust source interface is `presentation::dual_host_projection`; all requests
+still enter `bus append-event --bus ABSOLUTE_BUS` and the existing private
+generation writer. This section defines the interface for the helper and UI.
+Source construction alone does not certify integration, execution or installed
+two-host behavior.
+
+### Frozen Send
+
+Before calling the helper, the existing local Send transaction retains one
+24-character lowercase hexadecimal `message_id` per exact logical owner and
+immutable publication payload. Pass it as `--message-id ID`. Retain the original
+text bytes, selected positive `final_revision`, RFC 3339 `emitted_at`, chosen
+recipient, sender, reply reference, hold deadline, attachments and Sync
+co-addresses. No retry allocates a new timestamp, deadline, ID or payload. Two
+stations of one owner collapse to one execution target. A multi-recipient Send
+retains each owner's ID and result independently inside that same transaction;
+retrying an uncertain recipient cannot republish a successful recipient.
+
+The helper publishes the existing `codescribe.agent-user-message.v1` /
+`agent_user_message` event with `source: typed`, `source_event_id == message_id`
+and exactly one frozen recipient. It may include positive `final_revision`
+(otherwise 1) and `history_reply_to`, a source-qualified message reference
+defined below. Neither field authorizes transcript claims. Existing native
+reply context (`user_reply_to`) retains its original delivery meaning.
+
+Canonical original publication idempotency is `(provider, exact provider_session_id, lease_id, message_id)`. Under the ordinary descriptor lock
+and generation OS lease the writer decodes retained complete events, compares
+the entire frozen JSON value, and returns the first event's original durable
+receipt. A different payload under that key, multiple existing originals, an
+incomplete chunk or corrupt retained stream refuses without appending a new
+event. Object-key ordering is immaterial; text bytes and all values matter.
+Daily storage rotation does not change logical offsets or stream identity.
+Reconciliation fsyncs the retained descriptor before acknowledging a recovered
+receipt, including crash-after-append-before-ACK. This is a correctness path
+that scans retained history; its latency on large journals requires integrator
+measurement. There is no Python seen-ID authority or second append writer.
+
+Helper stdout has schema `codescribe.bus-send-result.v1`. The closed wire fields
+are `schema`, `state`, `message_id`, `recipients`, and, for failures, `reason`.
+Keep detailed diagnostics on stderr. `message_id` is the retained original ID,
+or null only when allocation never happened. Each `recipients` element carries
+the exact `provider`, `provider_session_id`, `lease_id`, selected `channel`,
+`audience`, `bus`, its `state`, its retained `message_id`, and either a durable
+`source` receipt for `published` or its typed `reason`. Existing successful
+`kind: message_published`, `source`, `sources`, `skipped`, `broadcast` and hold
+receipt fields remain available; new state/schema fields supplement them.
+
+| `state`     | `reason`                                                                                                                                      | Meaning                                                                           |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `published` | absent                                                                                                                                        | All named published recipients have durable original source receipts.             |
+| `rejected`  | `invalid_binding`, `incomplete_binding`, `stale_lease`, `not_listening`, `transport_unavailable`, `attachment_unavailable`, `invalid_request` | Definite refusal for the named recipient before publication was attempted.        |
+| `uncertain` | `publication_uncertain`                                                                                                                       | Publication may have happened. Reconcile the retained ID; never blind-retry Send. |
+
+The Rust `SendFailureReason` enum pins these spellings and derives the failure
+state. Aggregate results preserve recipient results: a mix of published and
+failed/uncertain recipients has aggregate state `uncertain` and reason
+`publication_uncertain`, retaining each known result. A malformed,
+unknown or missing result is an unclassified failure, never proof of rejection.
+The UI retains draft, attachments and reply context and uses localized copy.
+
+### Trusted pairing receipt
+
+DH1's explicit pairing operation creates a private regular file
+`<absolute bus>.station-pair.json` on each host. It is local admission state,
+never part of an incoming projection. It has schema `codescribe.station-pair.v1`
+and these required fields:
+
+| Field                            | Contract                                                                                                                                                                                                        |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pair_id`                        | Shared opaque 24-lowercase-hex pairing identity.                                                                                                                                                                |
+| `home_host_id`                   | One of the two host IDs; identifies the existing native thread's home.                                                                                                                                          |
+| `owner`                          | Exactly `provider`, `provider_session_id`, `lease_id`. Provider is lowercase, native session is exact, lease is the first 32 hex digits of SHA-256 of `provider + NUL + session`.                               |
+| `bridge_root`, `local_bus`       | Canonical absolute local paths, chosen by local admission.                                                                                                                                                      |
+| `local`, `peer`                  | Each has `host_id` (32 lowercase hex), `generation_id` (canonical nonnil UUID stream ID), `channel` (`1`–`9`).                                                                                                  |
+| `transitions`                    | At most 64 records with `host_id`, `from`, `to`, `receipt_id`. Each names a canonical old-to-new stream receipt for one paired host; chains must reach that host's current generation, without cycles or forks. |
+| `guest_broadcast_off_receipt_id` | 24-lowercase-hex receipt for the guest's durably acknowledged initial OFF admission.                                                                                                                            |
+
+The private bridge root contains `host-instance.json` with schema
+`codescribe.host-instance.v1` and durable opaque `host_id`, allocated once by
+local admission. Host aliases and display names never generate this ID. SSH
+host-key authentication and explicit pair admission bind the peer identity.
+The helper verifies the guest OFF receipt before publishing reachability and
+must not synthesize that receipt from a missing/default policy.
+
+Rust reads the pairing, host and current audience-binding files as bounded,
+owner-private regular files, with canonical paths and no symlink following.
+The current binding must still match the pair's exact owner, local bus and
+channel; the local generation must match the canonical manifest. Pairing file
+installation/replacement and generation transitions take that bus's existing
+generation lease, and binding mutations use the existing binding lock. The
+helper holds the binding read lock across publication. Canonical history import
+also takes that existing read lock before the generation lease, preserving the
+current binding writer's lock order (binding, then generation). No imported
+envelope can choose a trusted receipt path, host identity or current owner.
+
+Ordinary daily segment rotation leaves `stream_id` unchanged. A true stream
+replacement needs the explicit transition receipt before historical catch-up.
+Retaining an old generation in history does not permit its ACK against the new
+generation. Pair detach/rebind, watcher alias deduplication, transport and policy
+expiry remain helper responsibilities.
+
+### Immutable history projection
+
+Schema `codescribe.history-projection.v1`, kind `history_projection`, is a closed
+envelope. Unknown fields at every typed level refuse. Its required fields are
+`schema`, `kind`, `pair_id`, `projection`, `owner`, `source_receipt`, `message`.
+`source_receipt` has exactly `stream_id`, `stream_dev`, `stream_inode`, `offset`,
+`length` from the original canonical append; it is provenance, never an ACK.
+Its stream ID must equal the message's original generation.
+
+`projection: source` freezes a local original into an informational snapshot;
+`projection: replica` imports the peer's already frozen snapshot. Both are
+non-executable rows. Transport exports only `source` snapshots, flips only
+`projection` to `replica`, and never exports replicas or unrelated journal rows.
+The same pair ID and exact owner survive both directions. There is no second
+Send, sealed acoustic occurrence, native wake, read ACK, delivery-control action
+or broadcast inside either projection. Python normalizers/followers must exclude
+the outer schema before delivery admission; Swift unwraps it only in that exact
+paired conversation. Its source receipt links the raw original and the snapshot
+to one history entry; neither view keeps a second text/time merge rule for these
+messages. These downstream seams require DH1/DH2 and DH3 verification.
+
+The `message` object has exactly these fields (nullable fields may be null):
+
+| Field            | Frozen value                                                                                                                                                                                                                                    |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `origin`         | `source_host_id`, `source_generation_id`, `message_id`; immutable source-qualified key.                                                                                                                                                         |
+| `final_revision` | Positive final content revision, including eligible held edits.                                                                                                                                                                                 |
+| `order`          | `counter`, `source_host_id`, `message_id`; stable Lamport ordering tuple.                                                                                                                                                                       |
+| `kind`           | `typed`, `voice`, or `agent_reply`; an informational label, never executable inner schema.                                                                                                                                                      |
+| `emitted_at`     | Original RFC 3339 timestamp. It does not define merge identity/order.                                                                                                                                                                           |
+| `sender`         | `name`, nullable `channel`, nullable `owner`. Agent replies retain their exact logical owner; Founder messages have null owner. Channel is null only for a channel-less original agent reply; today's binding never supplies a historical slot. |
+| `recipient`      | The exact paired logical owner.                                                                                                                                                                                                                 |
+| `text`           | Nonblank UTF-8, at most 64 KiB. Equal text with different IDs stays distinct.                                                                                                                                                                   |
+| `reply_to`       | Null or another source-qualified `origin` reference.                                                                                                                                                                                            |
+| `attachments`    | At most 64 descriptors: `name`, `media_type`, `bytes`, `sha256`, `source_path`, nullable `capture`.                                                                                                                                             |
+| `eligibility`    | `broadcast` boolean and nullable `release_control_id`.                                                                                                                                                                                          |
+
+A projection is at most 256 KiB serialized before the existing generation
+encoder. Each attachment is 1 byte–50 MiB, with a lowercase 64-hex SHA-256.
+Descriptors contain no file bytes or receiving path capability. `source_path`
+is provenance only; transfer allocates a managed local destination after Send
+and verifies bytes/hash separately. Raw PCM/WAV fields, arbitrary nested events,
+capture coordinates, transcript authority and delivery flags are unknown fields
+and refuse. Merely naming `kind: voice` creates no transcript truth.
+
+For Voice, source freezing joins the original capture's canonical
+`codescribe.capture-attachment.v1` stages to exact
+`codescribe.capture-attachment-commit.v1` receipts. The capture epoch, session,
+historical recipient inventory and audience must match the sealed original.
+Uncommitted, foreign-owner or other-epoch stages never contribute descriptors.
+An eligible committed descriptor cannot be omitted from the snapshot. Its
+`capture` retains `stage_id`, `capture_epoch`, `source_sequence` and
+`attached_at_sample` (the stage's original `sample_start`) as attachment
+provenance, without asserting new transcript or acoustic authority. The
+canonical primary commit may reside in another local bus. The generation owner
+takes that bus's existing lease without waiting, verifies its active descriptor
+and fsyncs it before observing the immutable commit prefix. A busy primary bus
+refuses the snapshot without waiting while the source lease is held; retry uses
+the same frozen identity. No snapshot is acknowledged against an unsynchronized
+foreign commit. The observer never appends there or opens a descriptor's
+`source_path`. Ordinary typed attachments have null `capture`.
+
+For a first source snapshot, supply `order.counter: 0`; the writer locates the
+exact original receipt in its own decoded stream, validates sender, recipient,
+text, final revision, reply and selected attachment descriptors, then assigns
+`max(observed counters) + 1` once. Retries may carry zero or the frozen returned
+counter and recover that original receipt. A reply's parent must already be
+frozen locally before source publication. Both readers sort by the same
+`(counter, source_host_id, message_id)` tuple. Replica imports preserve the
+counter and advance the next local source counter; known reply edges must
+increase it. An out-of-order replica whose parent is missing retains its exact
+reference until the parent arrives. A contradictory edge refuses without cursor
+advance. No wall-clock or text/time-window deduplication participates.
+
+Source freezing admits only original typed messages, agent replies or canonical
+controller-published channel seals. Channel voice retains an explicit original
+message ID when present; a whole-channel message retains the existing
+`channel-message + NUL + capture-session` SHA-256 identity (first 24 hex digits);
+it never derives identity from words. Drafts, observations, controls and earlier
+projections cannot be source originals. Held revisions apply only before the
+original deadline or first release; withdrawal exports no words. Broadcast
+freezing requires the original admitted recipient list to contain that owner,
+never today's reception policy. Missing historical proof refuses backfill.
+An old native reply ID resolves only against one exact retained paired snapshot;
+an explicit `history_reply_to` must agree with that original ID. An unresolved
+or ambiguous reply is an unavailable-history boundary; do not guess a host from
+a label or silently erase its native reply association.
+
+Import idempotency keys exact owner plus `origin`, with `final_revision` and the
+entire snapshot frozen. Same key with different revision, payload, receipt or
+order refuses without overwrite or a new append. The existing generation
+writer lock contains validation, complete-stream reconciliation, encoding,
+append and fsync. The returned object has `source` (the local snapshot append
+receipt) and `projection` (the frozen envelope). Persist the transport cursor
+only after that durable receipt; losing it requires original-ID reconciliation.
+This return value does not attest native execution or remote history visibility.
+
+The designated integrators author regression cases at `append_agent_event`, `append_projection`,
+`append_original`, and `scan_durable_events`: duplicate/conflicting originals
+and frames; equal words under different IDs; forged transcript fields; pair,
+owner and host mismatch; oversize/unknown data; holds/withdrawals and skipped
+broadcasts; source snapshot retries; lost ACK; chunk boundaries; daily rotation;
+explicit generation transition; reply ordering/cycles; and one native execution
+with two histories. Source workers author no tests or fixtures and execute no
+gates beyond their declared static checkpoint checks.
+
 ## Held delivery
 
 Agent-channel messages (1–9 and broadcast channel 0) use
@@ -433,7 +722,10 @@ contains:
 - additive `lifecycle_terminal` and typed `delivery` on evidence projections.
   Revision rows use `false` and `unattempted`. The in-process `session_ended`
   projection uses `true` and the controller's disposition (`unattempted`,
-  `composer_pending`, `sink_accepted`, or `retained`). Its text-free persisted
+  `composer_pending`, `sink_accepted`, `retained`, `copied_to_clipboard`,
+  `deferred_insert_armed`, or `ended_without_voice`: an assistive take that
+  ended after 30 s without voice, sent nowhere, which the overlay never
+  auto-sends). Its text-free persisted
   lifecycle row remains `codescribe.transcript.v1` and does not carry these two
   fields. Reading that row is not proof of composer admission.
 
@@ -1353,10 +1645,16 @@ not rewritten.
 An open channel session also appends `codescribe.channel-session.v1` (`kind: channel_session`). `state: open` with `loud: true` means the microphone is
 live. `state: sealed` with `reason: silence` means
 `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed after the capture's measured
-Silero speech-end edge. Text arrivals do not start or reset this clock. While
-speech is measured active, or no complete speech-start/end pair is available,
-there is no automatic silence deadline; manual hang-up remains available. `0`
-disables that cap. `state: sealed` with `reason: hangup` means Fn+digit was
+Silero speech-end edge, or the session measured no speech edge at all for
+30 s after it opened (time while an agent reply plays into it does not
+count). The words so far are delivered and the session ends as
+a hang-up does: its capture is released and nothing reopens it, so the next
+message is the next Fn+digit (one press, one message; Founder decision
+2026-10-26, which replaces the reopen half of voice seal `cc6c8248`). Text
+arrivals do not start or reset these clocks. While speech is measured
+active, or the speech-start/end pair after heard voice is incomplete, there
+is no automatic silence deadline; manual hang-up remains available. `0`
+disables both. `state: sealed` with `reason: hangup` means Fn+digit was
 pressed again and nothing reopens the session. `state: sealed` with
 `reason: orphan` means the process that opened the session ended without
 sealing it (quit or crash); the next controller start writes it for each
@@ -1380,7 +1678,7 @@ The helper admits playback only after the existing capture interlock proves
 idle, and stops its own player when a take starts. An open channel does not
 block a reply by itself: the app publishes its measured speech phase in
 `runtime/channel-speech-<digit>.json`. A `fresh` session (no speech since it
-opened, e.g. the reopen after a silence seal) admits any reply after 1 s.
+opened, e.g. a channel opened to answer a reply) admits any reply after 1 s.
 A `quiet` session (speech, then silence, inside the same take) admits only
 the reply of the agent bound to that channel: a pause in a message to one
 agent is not room for another, which waits for that take to seal. Quiet is
@@ -1435,6 +1733,40 @@ bytes, through the generation and chunk readers. A private derived receipt at
 owner; it contains no reply text and is not a transcript archive. Stream
 replacement, missing source, incomplete chunks and foreign ownership refuse
 playback. Existing `voices.json` profiles and the synthesis lane stay authoritative.
+
+The helper's xAI speech is sent in a bare language code, never `auto`:
+`CS_SAY_LANGUAGE`, `pl` when unset, cut to its first part (`pl-PL` and
+`pl_PL` are `pl`) and accepted only as `pl` or `en`; any other value speaks
+`pl` with one warning. With `auto`, xAI takes a sentence that opens with a
+short Polish word (W, U, A, I) for English and spells it ("W nocy" read as
+"double-u nocy"), and a long reply goes out one sentence per request; xAI
+also reads `pl-PL` or `polish` like `auto`. The speech cache key includes the
+language, so recordings made with `auto` are never replayed. The helper does
+not read the app's settings; the app sends its configured speech language
+the same way (`docs/STT_CONTRACT.md`, `tts_language`).
+
+A voice gets words for listening, not the characters written for the screen
+(`spoken_text`, applied once in `speak_published_reply` for `--say`, Play and
+automatic playback, on both vendors). The published reply, its receipts and
+the overlay keep the written text; only the synthesis request and the speech
+cache key use the spoken one. The rules are fixed, not a model:
+
+| Written                                                                             | Spoken                                                          |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `hania → as:` opening a message                                                     | `Hania:`                                                        |
+| `0.17.0 → 0.18.0`, `2/4`, `basia/2`, `12:51–12:53`                                  | `0.17.0 na 0.18.0`, `2 z 4`, `basia, kanał 2`, `12:51 do 12:53` |
+| a path or file (`~/x/raport-20261026.md`, `core/llm/speech.rs`, `bus-demux.py:120`) | its last name (`raport`, `speech`, `bus demux`)                 |
+| `runtime/receipts`, `sent_to`, `--takeover`                                         | `runtime receipts`, `sent to`, `takeover`                       |
+| a commit or lease hash (7–64 hex with a digit), `+g…` build suffix, URL             | nothing                                                         |
+| `11:53:17Z`                                                                         | local time without seconds (`12:53` in winter in Poland)        |
+| backticks, `*`, list marks, fence lines, `∪`, `§`, `<name>`                         | dropped or said as a word                                       |
+
+A line break becomes a sentence end. A text the rules leave unchanged is sent
+byte for byte, so plain sentences keep their cached recordings; a text with
+nothing left to say is spoken as written. Words follow the speech language
+(`na`/`to`, `z`/`of`, `kanał`/`channel`). Agents still write to the founder
+in plain words: the rules are a safety net for text that was written to be
+read, such as a channel message played with Play.
 
 A fresh ticket is required for each deliberate Play. Ticket reuse is refused.
 The existing stable `runtime/playback.lock` serializes all speakers, including
@@ -1512,7 +1844,8 @@ constantly and has no path-identity role therefore lives in
 `core/config/loader.rs` is its only resolver; Swift receives it as
 `CodescribeConfig.churnDir()`. It holds:
 
-- `logs/`: `codescribe.log` (Rust tracing) and `diagnostic.log` (Swift);
+- `logs/`: `codescribe.log` (Rust tracing; the app rolls it at 200 MB and
+  keeps `.1` to `.4`) and `diagnostic.log` (Swift);
 - `overlay-delivery-cursor/` and the earlier `overlay-delivery-cursor.v1.json`;
 - `overlay-read-state.v1.json`.
 
@@ -1524,9 +1857,13 @@ paths), `takes/`, `transcriptions/`, and every `agent-bridge/runtime/` file that
 `bus-demux` or the plugins read or write (followers, wake ledgers, reply
 playback, playback mutes, broadcast policy, channel speech, the ack cursor).
 
-Every app and CLI process moves entries left by an earlier build once, inside
-the logging initialization and before the log sink opens
-(`core/config/churn.rs`). Each entry is one same-volume rename that refuses an
+The app moves entries left by an earlier build once per start, inside the
+logging initialization and before the log sink opens
+(`core/config/churn.rs`). The CLI moves nothing and creates no log folder: it
+only appends to `logs/codescribe.log` when the app's folder exists.
+`bus-demux` starts the CLI for every bus publication, and a CLI that created
+the new folder first would leave both locations present for good. Each entry
+is one same-volume rename that refuses an
 existing destination: nothing is copied, deleted or replaced. An entry that
 exists at both locations, or on another volume, is left untouched and logged as
 an error on every start until it is resolved by hand. The moved entries are not
@@ -1610,8 +1947,17 @@ ACK and native queue path. Agent replies retain the exact delivery association;
 written input never passes through acoustic finality or microphone ownership.
 Publication uncertainty is reported without automatic replay.
 
-Synchronized composers freeze their selected exact owners alongside the text
-and reply references. Each private typed send passes the other owners as
+Sync links future input, retaining each exact owner's existing private text
+and attachment pointers. Native edits carry their actual UTF-16 ranges;
+unknown edit provenance stays private and begins a new sharing epoch.
+Joining or leaving a group never copies earlier text into another composer.
+Each send freezes the selected exact owners, each owner's complete payload
+and reply reference. Later edits do not recall that frozen send; only the
+retirement/rebinding of an exact recipient cancels its copy. Surviving recipients
+remain selected even if another member's retirement dissolves the group.
+Successful unchanged payloads clear independently;
+failed or newer drafts remain available to retry. Each private typed send
+passes only other selected owners receiving the identical complete payload as
 `--also-sent-to JSON` (`channel`, `provider`, `provider_session_id`, `lease_id`).
 Under the same binding lock, the canonical publisher resolves their names from
 matching current bindings and omits self, duplicates and unavailable or rebound
@@ -1634,15 +1980,216 @@ not atomic: a write failure can leave earlier recipients delivered, so errors
 must not trigger automatic retry. No audio capture or agent identity is invented.
 
 Conversational deliveries expose `addressed_to` from the original source address.
-For channel zero it reads `0 (all audience)`, even when a private copy carries
-one agent's name in `audience` and one recipient in `recipients`. Codex's native
-queue includes the same explicit `ADDRESSED TO: 0 (all audience)` line; mailbox
-reads, MCP reads and watch notifications retain the label. The queue header's
-channel identifies the receiving mailbox, not the original address. A private
-message keeps its target channel/name. A named utterance without a channel keeps
-its named audience; a missing address is reported as unknown, never inferred
-from mentions in the text. This projection changes neither routing nor delivery
-identity, recipients, ACK state or the original message text.
+For channel zero it names the publisher's frozen list when the copy carries one:
+`0 (sent to: as, hania)`, with the same list under `sent_to` as `{name, channel}`
+entries in mailbox reads, MCP reads and watch notifications. Every channel-zero
+publisher writes that list into every copy: a channel take as `recipients` beside
+`audience: "*"`, a peer `--send --to 0` and a typed `--send-text --channel 0` as
+`target.recipients`. The list is the admitted set at sending (owners with channel
+zero `off` are not on it; an owner on it can still skip the copy when its policy
+changed before delivery), so it says who the message was sent to, not who read
+it. The copy's own `recipients` and `peer_to` stay its delivery key, never the
+address. A stamped empty list reads `0 (sent to: nobody)` with `sent_to: []`:
+every bound agent had channel zero off, and the copy reached this mailbox only
+for its own skip record. A channel-zero copy without the stamp reads
+`0 (all audience)` and has no `sent_to`: its reach is unknown, and no reader
+derives one from bindings or other agents' policies. `sent_to` carries the
+publisher's names verbatim, like `recipients` and `target`; only the prose
+label is sanitized and bounded (nine names, each cut to the queue-metadata
+alphabet). Codex's native queue includes the same explicit `ADDRESSED TO:`
+line. The queue header's channel identifies the receiving
+mailbox, not the original address. A private message keeps its target
+channel/name. A named utterance without a channel keeps its named audience; a
+missing address is reported as unknown, never inferred from mentions in the
+text. This projection changes neither routing nor delivery identity,
+recipients, ACK state or the original message text.
+
+## Receipts
+
+Agents can read what the overlay already shows: who a message was delivered
+to, who read it, who skipped it, whether it was withdrawn, and whether the
+user heard it. Every such fact is one private file under
+`runtime/receipts/<message_id>/`, written once by the process that produces
+the fact and never rewritten, replaced or removed by any other process:
+
+| File                           | Writer                                                                                                              | Content                                                                                                                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` (the backfill, for history)                                            | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet` (`null` only from the backfill), `at`, `sent_to` when the copy carries the publisher's list |
+| `<delivery_id>.read.json`      | `cs-bus --ack`                                                                                                      | the same identity fields and `read_at`                                                                                                                                                 |
+| `<delivery_id>.skipped.json`   | the follower, instead of `delivered`, when channel zero is `off`                                                    | the same identity fields, `policy: off`, `at`                                                                                                                                          |
+| `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy                                                                | `control_id`, `at`                                                                                                                                                                     |
+| `playback.<ticket>.json`       | the reply player, at the ticket's first terminal state                                                              | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at`                                                                                                                   |
+| `sent.json`                    | the helper publisher of a channel-zero text (typed `--send-text --channel 0`, peer `--send --to 0`), at publication | `sent_to` as admitted at sending, `bus` (the sender's bus for a peer text, null for typed text), `at`                                                                                  |
+
+Every file carries `schema: codescribe.message-receipt.v1`, `kind` and
+`message_id`; none carries message text or WAV paths. The identity fields
+(`provider`, `provider_session_id`, `lease_id`) name the mailbox that
+produced the fact; they stay in the private files and are not part of the
+`--receipts` projection. The key is `delivery_id`, not the lease: after a channel handover the next session
+acknowledges the delivery the previous lease received, and that is one
+recipient in two files, not two recipients. Only copies of a message leave
+receipts: typed, peer and channel-take copies carry a 24-hex `message_id`;
+a plain dictation seal has none and leaves no receipt. Drafts leave none.
+
+The state of a delivery is its farthest existing file: `delivered → read`;
+`skipped` stands alone and is final (turning channel zero back on does not
+deliver the skipped copy); `withdrawn` is a separate fact about a held copy
+that never reached `pending`. A follower restart re-offering the same copy,
+or a second `--ack`, finds the first file and changes nothing: `read` never
+falls back to `delivered`. `--ack` writes the `read` file before the ACK
+marker: the marker ends the delivery's pending life and a repeated `--ack`
+is filtered by it, so a crash between the two leaves the half that the next
+`--ack` completes, never a marker without its `read`. `wake` records the broadcast policy as it stood
+at delivery (`on`, or `quiet` under the moon or the legacy quiet membership),
+the same answer the follower gave the native wake; whether the copy wakes
+now is read from the current policy, not from this file. The moon is not a
+message state.
+
+`spoken` is a fact per message, taken from the playback files, not from the
+`spoken` field of the `agent_reply` row (which stays `false` after a later
+Play) and not from the conversation that happened to play it: a playback of a
+channel-0 text lands in the player's own conversation. One ticket is one
+file; a later terminal publish of the same ticket (the failure path after a
+refusal) changes nothing. The ACK marker under `acknowledgments/<lease_id>/`
+and the skip marker under `broadcast-skipped/<lease_id>/` now also carry
+`message_id`; their shape is otherwise unchanged and the app keeps reading
+them.
+
+`receipt_state(root, message_id)` composes the directory into one state:
+`{message_id, sent_to, recipients: [{delivery_id, name, channel, state: delivered|read|skipped|no_receipt, wake, delivered_at, at}], denominator, withdrawn: [{delivery_id, control_id, at}], spoken: {state, reason, spoken, at, playback_ticket} | null}`. Agents appear by name and channel only; no provider,
+session or lease leaves the files through this projection.
+
+The helper owns the contract of the denominator: the formula below and
+the model directories that pin it. `sent_to` comes from `sent.json` when
+the publisher wrote one, so it does not depend on any reader having been
+alive; without that file (messages before this helper generation, and
+channel takes, whose list the app stamps into `recipients` outside the
+helper) it is the stamp the recipients' files carried, or null when none
+did. Every member of `sent_to` without any file is listed as
+`{name, channel, state: no_receipt}`: the copy was sent and no reader has
+recorded it yet, or the reader predates this generation. `denominator` is
+the number of agents on `sent_to` plus every agent delivered to or read
+outside that list, minus every agent whose copy was skipped (one agent by
+name and channel, however many deliveries reached it); `no_receipt` counts,
+`skipped` is shown but never counted. The list is frozen at publication
+and a skip is recorded at delivery, so a member of `sent_to` can turn out
+skipped: the skip wins, the entry stays `skipped`, and the count does not
+wait for a read that cannot come. The overlay and agents read
+`denominator` and the states; neither derives the count a second time from
+the roster or from policies. `sent.json` proves nothing about the caller:
+it does not open `--receipts` authorization, so an agent on the list with
+no file of its own cannot read the receipts of that message, as before.
+`spoken` is the completed playback when one exists, else the latest
+terminal one. Files whose name and content disagree, foreign schemas and
+foreign message ids are ignored, never repaired.
+
+**One contract, two implementations.** This is a deliberate exception to
+the one-owner rule: the overlay cannot call the helper, so the same
+formula is computed twice, once by `receipt_state` in the helper and once
+by the overlay's composer (`OverlayReceiptState.compose`, the one state
+machine its projection keeps). Both are pinned to the same model
+directories under `scripts/tests/fixtures/receipts/<case>/`, each with its
+exact `expected.json`, and both test suites read those cases. Every new
+state or rule goes to the model directories first, then to both
+implementations; a change that passes in one implementation but not the
+other is not done. The overlay computes only the formula from the files:
+no roster, no policies, no reach of its own.
+
+```bash
+cs-bus --receipts MESSAGE_ID --provider P --session S [--bus PATH] [--bridge-home DIR]
+```
+
+prints that state as one JSON line (`kind: receipts`) and exits 0. The caller
+must hold a copy of the message or be its author: a receipt file for this
+lease (or provider/session), a pending or held envelope with that
+`message_id` in this lease's mailbox, this lease's name and bound channel on
+the frozen `sent_to` list, or ownership of `runtime/reply-sources/<message_id>.json`.
+Anyone else gets `{"kind": "receipts_refused", "message_id", "reason"}` and
+exit 3, the same answer whether or not the message exists. `--receipts` never
+reads the bus or prints message text; names in its JSON are the agents' raw
+names, like `sent_to`.
+
+Receipts exist from the helper generation that writes them: followers started
+earlier write `delivered` only after they reattach, and messages acknowledged
+before that have no `read` file unless the backfill below gave them one.
+Like `acknowledgments/`, `broadcast-skipped/`, `reply-playback/` and
+`reply-sources/`, `runtime/receipts/` has no retention sweeper; all marker
+directories share that limitation.
+
+### Backfill
+
+The overlay reads `runtime/receipts/` only and never falls back to the
+older markers, so history from before receipts keeps its read count by
+being rewritten into the same files, once:
+
+```bash
+cs-bus --backfill-receipts [--dry-run] [--bridge-home DIR]
+```
+
+takes no `--provider/--session` (it works on the whole bridge home, not on
+one mailbox), combines with no other command, and prints one JSON line
+`{"kind": "receipts_backfill", "written": {"delivered", "read", "skipped", "playback", "sent"}, "existing", "unmapped", "mapped_by_bus", "failed", "dry_run"}`, exit 0,
+or exit 3 when `failed > 0` (a receipt that could not be written, for
+example under an unwritable `runtime/receipts/`; a refused run never looks
+like "nothing to do"). It is the
+operator's one-time step after installing this helper; it is not run by
+`make install-bus` or by a follower. Sources are read and never changed,
+moved or removed; nothing is written outside `runtime/receipts/`:
+
+| Source                                                                                                                                                             | Receipt                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| a terminal row with a `message_id` in a reader's journal `runtime/followers/<lease_id>.events.jsonl` (that copy entered that mailbox)                              | `<delivery_id>.delivered.json` with `wake: null` and `at` = the copy's `emitted_at`                                                       |
+| a copy still in `pending` of `leases/<lease_id>.json` (delivered, never acknowledged), read after the journals                                                     | the same `delivered` file; when the journal already named the delivery, write-once keeps the journal's file                               |
+| `acknowledgments/<lease_id>/<delivery_id>.json` (`message_id` on the marker, or inside its `envelope` for markers older than that field)                           | `<delivery_id>.read.json` with the marker's `read_at`, its mtime when the marker has none                                                 |
+| `broadcast-skipped/<lease_id>/<delivery_id>.json` (`message_id` on the marker; a marker older than that field is tied to its copy through the bus it names, below) | `<delivery_id>.skipped.json` (`policy: off`)                                                                                              |
+| `runtime/reply-playback/<reply_id>.<ticket>.json` in a terminal state (`spoken`, `failed`, `refused`, `stopped`)                                                   | `playback.<ticket>.json`; a ticket still `waiting` or `playing` is left for the player, `.lock` and `.stop.json` siblings are not markers |
+| the frozen `target.recipients` stamp on a journal row or an ACK envelope                                                                                           | `sent.json` with the copy's `emitted_at`; `bus: null`, the publisher's lane is not reconstructed                                          |
+
+`wake: null` is the one value that means "history from before receipts":
+the delivery is a fact (the row is in the reader's own journal), its wake
+was never recorded and is not reconstructed. The runtime always writes
+`on` or `quiet`; `receipt_state` passes `null` through as that value and
+nothing else. The mailbox is the second source because of a gap in the
+first: a copy delivered under the quiet policy (the moon) leaves no row in
+the journal (the follower publishes a row only under `on`, while the
+runtime of this generation writes `delivered` with `wake: quiet` for it),
+so an unread quiet delivery is found only in `pending`; one that was
+acknowledged is found through its ACK marker. In both sources `at` is the
+copy's own `emitted_at`, the time it was published, not the moment it
+entered the mailbox. A copy in neither (and without an ACK marker) gets no
+`delivered` file and stays `no_receipt`. Only the copies the runtime
+receipts are sources: a terminal kind with a `message_id`; a plain
+dictation seal is passed over and a draft is not a delivery. Name and
+channel come from `leases/<lease_id>.json`
+and the copy's frozen `recipients` entry, as `receipt_recipient` resolves
+them at runtime; the names are the agents' raw names.
+
+A skip marker written before markers carried `message_id` names only its
+`delivery_id`, its lease and the `bus` its reader refused to read from.
+The backfill reads that bus (its whole generation chain) once per lease
+with the reader's default chain (the normalizer, admission by the frozen
+`recipients`, `consider` under the lease's name, without `--hear-all` or
+fuzzy name routing, so a copy that reached a reader only through those
+leaves its marker unmapped) and computes each copy's delivery id with
+`delivery_identity`, the one function `SessionLease.enrich` stamps it
+with. A marker whose delivery id is exactly one copy's takes that copy's
+`message_id` and gets the same `skipped` file a marker with the field
+gets; `mapped_by_bus` counts these. Text and time are never compared.
+
+Nothing is guessed. A source that cannot be tied to a `message_id` (the
+oldest ACK shape without an envelope, an envelope without `message_id`, a
+dictation seal behind an ACK marker, a temporary `.tmp` file, an unreadable
+JSON or lease file, a `pending` entry or `message` row without a usable
+`message_id`, `delivery_id` or `emitted_at`, an incomplete last journal
+row, a playback file of another schema, a skip marker without `message_id`
+whose bus is gone, whose generation chain is over 256 MiB, or which
+holds no copy, or more than one message, under that delivery id) is counted as
+`unmapped` and left alone; `unmapped` is information, not an error, and
+the exit code stays 0. Idempotence is the write-once rule itself, not a
+register of what was done: a second run finds every file, writes nothing,
+and counts them as `existing`; `--dry-run` reports the same counts without
+creating a file or directory, so it cannot detect a write that would fail.
+The command never prints message text.
 
 ## Open-channel co-audience
 

@@ -82,7 +82,7 @@ struct WhisperDownloadView: View {
           .disabled(store.cancelling)
       } else if !store.status.available {
         if let error = store.error {
-          Text(error).font(SettingsScale.helper).foregroundStyle(CSColor.terracottaText)
+          Text(error).font(SettingsScale.helper).foregroundStyle(CSColor.dangerLight)
             .fixedSize(horizontal: false, vertical: true)
         } else if store.interruption == .cancelled {
           Text(

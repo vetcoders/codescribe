@@ -232,8 +232,15 @@ check, not proof of server-side permissions.
 `core/llm/speech.rs` is independent of the disabled CSM engine. It requests
 24 kHz mono PCM16, decodes signed samples, splits text at vendor character
 caps, and caches audio under `~/.codescribe/cache/tts/<sha256>.pcm`. The hash
-covers vendor, model, voice, speed, text and PCM rate; files are atomically
-published with owner-only permissions. No credentials or text enter filenames.
+covers vendor, model, voice, speed, text and PCM rate, and for xAI the
+language; files are atomically published with owner-only permissions. No
+credentials or text enter filenames. xAI requests carry the configured speech
+language (`speech.language`, `WHISPER_LANGUAGE`) as a bare code through
+`tts_language`, never `auto`: transcription may detect, synthesis may not,
+so `auto` speaks `pl` (`DEFAULT_TTS_LANGUAGE`) and logs that once. With
+`auto`, xAI spells a sentence that opens with a short Polish word ("W nocy"
+read as "double-u nocy"); keying the cache by the language also retires
+those recordings. OpenAI speech has no language parameter and keeps its keys.
 `SPEECH_TTS_*` options are defined in `ENV_REGISTRY.toml`. xAI accepts speed
 0.7–1.5; OpenAI accepts 0.25–4.0. xAI's default response is raw audio; its JSON
 base64 envelope is also supported. The UI labels the voice as AI-generated.
@@ -530,11 +537,11 @@ frozen in the recording snapshot; explicit file actions remain separate.
 
 ### 3.1 Hotkeys (start/stop recording)
 
-| Front entry                     | Binding (your settings)             | Bridge / OS                      | Controller                                                       | Backend                                      |
-| ------------------------------- | ----------------------------------- | -------------------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
-| Hold Fn (dictation)             | `mode_bindings.dictation = hold_fn` | `CodescribeHotkeys` + CGEventTap | `RecordingController::handle_hotkey_event` → `handle_hold_event` | recorder + streaming session + `core/stt::*` |
-| Double Left Option (formatting) | `formatting = double_left_option`   | same                             | hold/toggle + force AI format path                               | STT same, then `core/llm` formatting         |
-| Double Right Option (assistive) | `assistive = double_right_option`   | same                             | assistive session                                                | STT same, then agent lane                    |
+| Front entry                               | Binding (your settings)              | Bridge / OS                                    | Controller                                                       | Backend                                      |
+| ----------------------------------------- | ------------------------------------ | ---------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
+| Hold Fn (dictation)                       | `mode_bindings.dictation = hold_fn`  | `CodescribeHotkeys` + CGEventTap               | `RecordingController::handle_hotkey_event` → `handle_hold_event` | recorder + streaming session + `core/stt::*` |
+| Menu bar Start transcription (formatting) | no gesture (`formatting = disabled`) | `CodescribeHotkeys::start_recording`           | toggle + force AI format path                                    | STT same, then `core/llm` formatting         |
+| Start in Agent mode (assistive)           | no gesture (`assistive = disabled`)  | `CodescribeHotkeys::start_assistive_recording` | assistive session                                                | STT same, then agent lane                    |
 
 **Explicit Stop** first retains real PCM for the fixed 1.5-second capture grace,
 then closes that subscriber's feed. Automatic silence, handoff and cleanup do

@@ -1,16 +1,16 @@
 # Recording Modes
 
-Codescribe exposes **three work modes**. Each mode has **one shortcut binding** you can customize (or disable) in **Settings → Hotkeys**.
+Codescribe exposes **three work modes**. Dictation has **one shortcut binding** you can customize (or disable) in **Settings → Hotkeys**. Formatting and Assistive have no shortcut: Option types characters, and the right Option double-tap used to start the Agent on its own. Both start from the menu bar or the overlay, and the menu bar's **Start in Agent mode** switch decides which one.
 
 ---
 
 ## Mode Comparison
 
-| Mode                  | Default Shortcut          | Auto‑Paste | AI       | Best For                                  |
-| --------------------- | ------------------------- | ---------- | -------- | ----------------------------------------- |
-| **Dictation**         | Hold `Fn/Globe`           | ON         | Optional | Fast dictation into any app               |
-| **Formatting**        | Double‑tap `Left Option`  | ON         | Always   | Cleanup/polish of dictated text           |
-| **Assistive (Agent)** | Double‑tap `Right Option` | OFF        | Always   | Questions, transformations, selected text |
+| Mode                  | Default Shortcut                                | Auto‑Paste | AI       | Best For                                  |
+| --------------------- | ----------------------------------------------- | ---------- | -------- | ----------------------------------------- |
+| **Dictation**         | Hold `Fn/Globe`                                 | ON         | Optional | Fast dictation into any app               |
+| **Formatting**        | Menu bar **Start transcription** or the overlay | ON         | Always   | Cleanup/polish of dictated text           |
+| **Assistive (Agent)** | Menu bar with **Start in Agent mode** on        | OFF        | Always   | Questions, transformations, selected text |
 
 Notes:
 
@@ -38,16 +38,15 @@ Notes:
 
 ---
 
-## 2) Formatting (Double‑Tap Left Option)
+## 2) Formatting (menu bar or overlay)
 
 **Hands‑free dictation with an AI formatting pass.**
 
 ### How to Use
 
-1. Double‑tap `Left Option` to start
+1. Choose **Start transcription** in the menu bar (or start from the overlay)
 2. Speak normally
-3. Pause to auto‑send an utterance (silence boundary)
-4. Double‑tap `Left Option` again to stop the session
+3. Choose **Stop transcription** (or **Stop** in the overlay) to stop and deliver
 
 ### Behavior
 
@@ -57,17 +56,18 @@ Notes:
 
 ---
 
-## 3) Assistive (Agent) (Double‑Tap Right Option)
+## 3) Assistive (Agent) (menu bar)
 
-**Voice chat overlay with an AI assistant.**
+**Voice chat with an AI assistant.**
 
 ### How to Use
 
 1. (Optional) Select text in the frontmost app
-2. Double‑tap `Right Option` to start
+2. In the menu bar, turn on **Start in Agent mode** and choose **Start transcription in Agent mode**
 3. Speak your request
-4. Pause to auto‑send an utterance (silence boundary)
-5. Double‑tap `Right Option` again to stop the session
+4. Choose **Stop transcription in Agent mode** to stop and send it to the Agent
+
+If you say nothing for 30 seconds, the take ends on its own and sends nothing. Its text stays in the take archive, and you can still send it with **To Agent**.
 
 ### Behavior
 
@@ -90,8 +90,7 @@ Open **Settings → Hotkeys**:
   - Hold `Ctrl+Command`
   - Double‑tap `Ctrl`
   - Disabled
-- **Formatting** supports: Double‑tap `Left Option` or Disabled
-- **Assistive** supports: Double‑tap `Right Option` or Disabled
+- **Formatting** and **Assistive** have no gesture: their rows say where they start
 
 Use the built‑in conflict detector if macOS already uses the same shortcut.
 

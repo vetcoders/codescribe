@@ -6,6 +6,8 @@ import XCTest
 
 @MainActor
 final class ThreadRailNativeTests: XCTestCase {
+  /// The row's secondary ink stays selection-aware (PR 189 review) and reads
+  /// at 4.5:1 at rest: every secondary mark goes through one resolved style.
   func testNativeRowMetadataUsesSelectionAwareSecondaryStyle() throws {
     let path = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent().deletingLastPathComponent()
@@ -16,7 +18,20 @@ final class ThreadRailNativeTests: XCTestCase {
     )
     .components(separatedBy: "// MARK: - Sidebar search keys")[0]
     XCTAssertFalse(row.contains("CSColor.secondaryInk"))
-    XCTAssertEqual(row.components(separatedBy: ".foregroundStyle(.secondary)").count - 1, 4)
+    XCTAssertFalse(row.contains(".foregroundStyle(.secondary)"))
+    XCTAssertFalse(row.contains("Color.secondary"))
+    XCTAssertEqual(row.components(separatedBy: ".foregroundStyle(secondaryStyle").count - 1, 5)
+
+    XCTAssertEqual(
+      ThreadRowSecondaryInk.resolve(prominence: .standard, activeState: .key), .readable)
+    XCTAssertEqual(
+      ThreadRowSecondaryInk.resolve(prominence: .increased, activeState: .key), .system,
+      "a selected row must keep the style that inverts on the accent")
+    XCTAssertEqual(
+      ThreadRowSecondaryInk.resolve(prominence: .standard, activeState: .active), .system,
+      "a row in a background window dims with its title")
+    XCTAssertEqual(
+      ThreadRowSecondaryInk.resolve(prominence: .standard, activeState: .inactive), .system)
   }
 
   func testNativeSearchFiltersWhileTypingAndEscapeRestoresList() throws {

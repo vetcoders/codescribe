@@ -147,7 +147,6 @@ fn journal_decision(emitted: Option<&HotkeyEvent>) -> String {
             HotkeyEvent::ToggleNormal => "toggle_normal".to_string(),
             HotkeyEvent::ToggleAssistive => "toggle_assistive".to_string(),
             HotkeyEvent::AgentChannel { digit } => format!("agent_channel channel={digit}"),
-            HotkeyEvent::DoubleTapBlocked { .. } => "double_tap_blocked".to_string(),
             HotkeyEvent::ShowAgent
             | HotkeyEvent::ToggleWidget
             | HotkeyEvent::InsertHere
@@ -398,9 +397,9 @@ mod macos {
     const K_CG_SCROLL_WHEEL_EVENT_MOMENTUM_PHASE: CGEventField = 123;
 
     // macOS virtual keycodes for Option keys
-    /// Left Option — the formatting-mode double-tap side.
+    /// Left Option.
     const K_VK_OPTION: i64 = 58; // Left Option
-    /// Right Option — the assistive-mode double-tap side.
+    /// Right Option.
     const K_VK_RIGHT_OPTION: i64 = 61; // Right Option
     // macOS virtual keycodes for Control keys
     /// Left Control.
@@ -423,9 +422,6 @@ mod macos {
     const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
     /// An active tap can consume the configured channel chord.
     const K_CG_EVENT_TAP_OPTION_DEFAULT: u32 = 0;
-    /// `kCGEventSourceStateHIDSystemState`: what the hardware did, regardless
-    /// of which tap was allowed to see it.
-    const K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE: i32 = 1;
 
     // Callback type
     /// Signature CoreGraphics expects for an event tap callback.
@@ -460,10 +456,6 @@ mod macos {
         fn CGEventGetTimestamp(event: CGEventRef) -> u64;
         /// Read one integer field of an event (here: the virtual keycode).
         fn CGEventGetIntegerValueField(event: CGEventRef, field: CGEventField) -> i64;
-        /// Seconds since the HID system last saw an event of `event_type`,
-        /// whether or not this tap received it (secure keyboard entry hides
-        /// key events from taps but not from the HID state).
-        fn CGEventSourceSecondsSinceLastEventType(state_id: i32, event_type: CGEventType) -> f64;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -1108,24 +1100,6 @@ mod macos {
                     modifiers.cmd,
                     modifiers.fn_key
                 );
-
-                // Tell the detector when the hardware last typed a key, so an
-                // Option chord whose letter never reached this tap is still
-                // typing and not half of a double-tap.
-                // SAFETY: pure query of the HID system state; no pointers.
-                let key_down_age = unsafe {
-                    CGEventSourceSecondsSinceLastEventType(
-                        K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE,
-                        K_CG_EVENT_KEY_DOWN,
-                    )
-                };
-                if key_down_age.is_finite()
-                    && key_down_age >= 0.0
-                    && let Some(at) =
-                        Instant::now().checked_sub(Duration::from_secs_f64(key_down_age))
-                {
-                    state.detector.observe_hid_key_down(at);
-                }
 
                 HotkeyDetectorInput::FlagsChanged {
                     now,
@@ -1797,14 +1771,16 @@ mod input_journal_tests {
                 "hotkey_input kind=key_down key=digit_6 keycode=22 t_ns=42 fn=1 ctrl=0 option=0 shift=0 cmd=0 decision=agent_channel channel=6"
             )
         );
-        let option_tap = HotkeyDetectorInput::FlagsChanged {
+        // Ctrl is not admitted while Fn is the channel modifier; its release is
+        // journaled only when it completed a double-tap.
+        let ctrl_tap = HotkeyDetectorInput::FlagsChanged {
             now: Instant::now(),
-            key: HotkeyPhysicalKey::LeftOption,
+            key: HotkeyPhysicalKey::LeftControl,
             modifiers: Default::default(),
         };
-        assert_eq!(record(option_tap, 58, false, None).line(), None);
+        assert_eq!(record(ctrl_tap, 59, false, None).line(), None);
         assert!(
-            record(option_tap, 58, false, Some(HotkeyEvent::ToggleNormal))
+            record(ctrl_tap, 59, false, Some(HotkeyEvent::ToggleRaw))
                 .line()
                 .is_some(),
             "a modifier change that produced a gesture is journaled"

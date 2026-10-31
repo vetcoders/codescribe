@@ -64,11 +64,6 @@ enum CSPalette {
 
   // Surfaces — warm ink in dark, warm paper in light.
   static let ink = adaptive(light: NSColor(hex: 0xF7F5F0), dark: NSColor(hex: 0x090A0D))
-  static let glassBase = adaptive(
-    light: NSColor(hex: 0xFFFFFF, alpha: 0.78),
-    dark: NSColor(hex: 0x12141A, alpha: 0.84)
-  )
-  static let glassUnder = adaptive(light: NSColor(hex: 0xEDEAE3), dark: NSColor(hex: 0x0B0C10))
   /// The app sheet: the overlay canvas colour, shared by every window's content
   /// area outside its sidebar so Settings, the Agent window, the wizard, the
   /// tray menu and the overlay read as one surface (Maciej, ch1 2026-10-15
@@ -88,20 +83,19 @@ enum CSPalette {
       light: NSColor(hex: preference.current(dark: false).hex),
       dark: NSColor(hex: preference.current(dark: true).hex))
   }
-  static let warmInk = adaptive(light: NSColor(hex: 0xF8F3EC), dark: NSColor(hex: 0x15110E))
-  static let warmDeep = adaptive(light: NSColor(hex: 0xE9E5DD), dark: NSColor(hex: 0x0D1012))
 
   // Text — warm near-black on paper, warm off-white on ink. The "Alt" rung is
   // always the fainter one: closer to the page in whichever mode is active.
   static let textHigh = adaptive(light: NSColor(hex: 0x1D1B17), dark: NSColor(hex: 0xF4F2EC))
   static let textBody = adaptive(light: NSColor(hex: 0x2B2924), dark: NSColor(hex: 0xE9E7E0))
-  static let textBodyAlt = adaptive(light: NSColor(hex: 0x363430), dark: NSColor(hex: 0xDFE2DB))
   /// The paper rung clears 4.5:1 on the real light surfaces, not only on
   /// `ink`: the sheet, a card or chip on it, a bubble, and the measured glass
   /// sheet (#DFDDD9, 2026-10-20), including every selectable sheet shade.
   /// Travertine's chip is the darkest light surface.
   static let textMuted = adaptive(light: NSColor(hex: 0x4B4D46), dark: NSColor(hex: 0xA0A39D))
-  static let textMutedAlt = adaptive(light: NSColor(hex: 0x84877E), dark: NSColor(hex: 0x82857F))
+  /// The faint rungs are decoration only, never text: rules, separators and
+  /// hairlines that clear 3:1. Text uses the three warm rungs above —
+  /// textHigh, textBody, textMuted (Founder, 2026-10-26).
   static let textFaint = adaptive(light: NSColor(hex: 0x9DA094), dark: NSColor(hex: 0x6F7268))
   static let textFaintAlt = adaptive(light: NSColor(hex: 0xB2B5A9), dark: NSColor(hex: 0x5D6058))
 
@@ -176,8 +170,6 @@ enum CSPalette {
 enum CSColor {
   // Surfaces
   static let ink = Color(nsColor: CSPalette.ink)  // page base
-  static let glassBase = Color(nsColor: CSPalette.glassBase)  // app window material tint
-  static let glassUnder = Color(nsColor: CSPalette.glassUnder)
   /// Content area of every window outside its sidebar; see `CSPalette.sheet`.
   static var sheet: Color { Color(nsColor: CSPalette.sheet) }
 
@@ -242,6 +234,7 @@ enum CSColor {
   // Status — olive / green
   static let olive = Color(nsColor: CSPalette.olive)  // healthy base
   static let oliveLight = Color(nsColor: CSPalette.oliveLight)  // idle / granted / success dot
+  static let oliveStatus = Color(nsColor: CSPalette.oliveStatus)  // healthy status words and fills
   static let eyebrowOlive = Color(nsColor: CSPalette.eyebrowOlive)  // section eyebrows
 
   // Reasoning — amber
@@ -257,33 +250,31 @@ enum CSColor {
   // Text
   static let textHigh = Color(nsColor: CSPalette.textHigh)  // headlines
   static let textBody = Color(nsColor: CSPalette.textBody)
-  static let textBodyAlt = Color(nsColor: CSPalette.textBodyAlt)
   static let textMuted = Color(nsColor: CSPalette.textMuted)
-  static let textMutedAlt = Color(nsColor: CSPalette.textMutedAlt)
-  static let textFaint = Color(nsColor: CSPalette.textFaint)  // mono meta
-  static let textFaintAlt = Color(nsColor: CSPalette.textFaintAlt)  // timestamps
-
-  /// Warm wash gradient shared by Settings detail and overlay/tray previews so
-  /// those surfaces cannot drift apart. Follows the system appearance.
-  static let windowWash = LinearGradient(
-    stops: [
-      .init(color: Color(nsColor: CSPalette.warmInk), location: 0.0),
-      .init(color: Color(nsColor: CSPalette.glassUnder), location: 0.55),
-      .init(color: Color(nsColor: CSPalette.warmDeep), location: 1.0),
-    ],
-    startPoint: .topLeading,
-    endPoint: .bottomTrailing
-  )
+  static let textFaint = Color(nsColor: CSPalette.textFaint)  // decoration only, never text
+  static let textFaintAlt = Color(nsColor: CSPalette.textFaintAlt)  // decoration only, never text
 }
 
 enum CSRadius {
   static let chip: CGFloat = 8
-  static let input: CGFloat = 9
+  static let input: CGFloat = 8
   static let card: CGFloat = 12
-  static let composer: CGFloat = 13
-  static let tray: CGFloat = 14
-  static let pill: CGFloat = 20
+  static let composer: CGFloat = 12
   static let window: CGFloat = 22
+}
+
+/// Ink veils: `Color.primary` at one of four strengths, from the faintest
+/// surface tint to a control's border (Founder, 2026-10-26). Surfaces pick a
+/// level; they do not invent an alpha.
+enum CSAlpha {
+  /// A barely raised surface: a bubble or a quiet well.
+  static let subtle: Double = 0.03
+  /// A filled control or chip at rest.
+  static let fill: Double = 0.05
+  /// A hairline rule or a hovered fill.
+  static let line: Double = 0.08
+  /// A control's border.
+  static let stroke: Double = 0.12
 }
 
 /// Layout rhythm. Screens were inventing 6/7/8/11/12/14/15/20/28/44 independently.

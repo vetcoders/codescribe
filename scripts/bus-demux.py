@@ -79,8 +79,9 @@ CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
 #: lifecycle boundaries can invoke the coverage-refused delivery net.
 PUBLICATION_SCHEMA = "codescribe.transcript-publication.v1"
 #: Clean lifecycle terminal. For the flush net it is the hang-up boundary:
-#: a channel closed by a second digit / Fn press is not reopened, so no
-#: later channel-session row would ever release its refused take.
+#: a channel closed by a second digit / Fn press is not reopened (since
+#: 2026-10-26 neither is one closed by silence), so no later
+#: channel-session row would ever release its refused take.
 SESSION_ENDED = "session_ended"
 TERMINAL_SEAL = "record_ledger_terminal_seal"
 DIRECT_TERMINAL = "apply_direct_transcript_terminal"
@@ -626,8 +627,8 @@ def installation_idle(
                                     channel, emitted if isinstance(emitted, str) else None
                                 )
                             else:
-                                # The controller reopens a channel before the
-                                # predecessor's tail publishes its seal (20:23:35
+                                # A new open of the same channel can precede the
+                                # predecessor's tail seal (20:23:35
                                 # open b868b9ec, 20:23:36 sealed 896f2cea). That
                                 # close names only its own session, as in
                                 # _consume_channel_row; ending the successor let
@@ -1256,6 +1257,61 @@ def channel_message_phase_identity(event: dict[str, Any]) -> str:
                       event.get("reducer_revision"), event.get("reducer_action")))
 
 
+def delivery_phase_identity(payload: dict[str, Any]) -> Any:
+    """The source-event phase one delivery is keyed by.
+
+    Terminal evidence projects once per document entry and a channel take is
+    one message across its revisions, so after a restart a later row is the
+    same delivery phase, not another command: both are keyed by the reducer
+    phase the normalizer uses. Everything else is keyed by its own
+    `source_event_id`, kept intact for provenance.
+    """
+    session = str(payload.get("session_id") or "")
+    if (payload.get("message_id") == channel_message_identity(session)
+            and channel_of_session(session) is not None):
+        return channel_message_phase_identity(payload)
+    if (
+        payload.get("producer_schema") == EVIDENCE_SCHEMA
+        and payload.get("reducer_action") in TERMINAL_PUBLICATIONS
+        and payload.get("status") == SEALED
+    ):
+        return terminal_seal_identity(payload)
+    return payload.get("source_event_id")
+
+
+def delivery_identity(lease_id: str, payload: dict[str, Any]) -> str:
+    """One delivery: one lease owner, one source-event phase, one copy.
+
+    The runtime stamps it in `SessionLease.enrich`; the receipts backfill
+    recomputes it from a reader's own bus to tie a skip marker written
+    before `message_id` to the copy it refused. Both call this and nothing
+    else computes it. The rail name namespaces native bridge output away
+    from a manual rail while the lease lock refuses a second native owner.
+    """
+    return _identity(("native_bus_demux", lease_id, delivery_phase_identity(payload),
+                      payload.get("kind"), payload.get("audience")))
+
+
+def channel_event_admitted(event: dict[str, Any], *, provider: str, provider_session_id: str,
+                           lease_id: str, bus: str) -> bool:
+    """Whether a bus row is this lease owner's own copy.
+
+    A row with frozen `recipients` names its owners; a channel session's row
+    names one owner at the top level; a row with neither is unaddressed and
+    admitted to every reader of that bus. `SessionLease.admits_channel_event`
+    and the receipts backfill ask the same question of the same fields.
+    """
+    frozen = event.get("recipients")
+    expected = {"provider": provider, "provider_session_id": provider_session_id,
+                "lease_id": lease_id, "bus": bus}
+    if isinstance(frozen, list):
+        return any(isinstance(owner, dict) and all(owner.get(key) == value
+                   for key, value in expected.items()) for owner in frozen)
+    if channel_of_session(str(event.get("session_id") or "")) is not None:
+        return all(event.get(key) == value for key, value in expected.items())
+    return frozen is None
+
+
 def capture_sample_rate(event: dict[str, Any]) -> int | None:
     """Read the ledger's capture clock; VAD and TTS rates are different clocks."""
     coverage = event.get("seal_coverage")
@@ -1305,9 +1361,9 @@ class EvidenceNormalizer:
     controller's closing seal; its drafts alone settle silently.
     """
 
-    #: Unsealed channel sessions retained for the flush net. The quiet
-    #: contract reopens a channel within seconds of every real utterance, so
-    #: anything beyond a handful of sessions is an abandoned bus replay.
+    #: Unsealed channel sessions retained for the flush net. A channel session
+    #: ends with its utterance (silence or a hang-up seals it), so anything
+    #: beyond a handful of unsealed sessions is an abandoned bus replay.
     MAX_TRACKED_SESSIONS = 16
 
     def __init__(self) -> None:
@@ -1602,7 +1658,7 @@ class EvidenceNormalizer:
         if previous is not None and previous != identity:
             return
         self._channel_open_times[session] = identity
-        # Capture reopen can precede its predecessor's retained decoder tail.
+        # A new capture can open before its predecessor's retained decoder tail.
         # Only that predecessor's named close/session-ended (including an
         # explicit orphan receipt) owns its delivery boundary. A newer open
         # cannot settle or flush another capture's unfinished document.
@@ -3941,8 +3997,13 @@ class SessionLease:
         retained = self.held.get(delivery_id)
         if retained is not None:
             payload.update(retained)
-        if delivery_broadcast_policy(self.root, payload) == "off":
+        policy = delivery_broadcast_policy(self.root, payload)
+        if policy == "off":
             record_broadcast_skipped(self.root, payload)
+            if payload.get("kind") in TERMINAL_KINDS:
+                # Skipped instead of delivered, and final: switching channel
+                # zero back on later does not deliver this copy.
+                record_message_receipt(self.root, payload, "skipped", name=self.name, policy="off")
             if self.held.pop(delivery_id, None) is not None:
                 self.persist(active=True)
             return False
@@ -3990,6 +4051,11 @@ class SessionLease:
         self.pending[delivery_id] = payload
         self.persist(active=True)
         if payload.get("kind") in TERMINAL_KINDS:
+            # `wake` is the policy as it stood at delivery (the same answer
+            # deliver() uses for the native wake); whether the copy wakes now
+            # is read from the current policy, not from this file.
+            record_message_receipt(self.root, payload, "delivered", name=self.name,
+                                   wake="quiet" if policy == "quiet" else "on")
             lifecycle_message_received(self.root, self.lease_id)
         return True
 
@@ -4056,6 +4122,7 @@ class SessionLease:
             del self.held[payload["delivery_id"]]
             self.persist(active=True)
             self._record_hold_withdrawal(receipt)
+            record_withdrawn_receipt(self.root, payload, control_id, receipt["emitted_at"])
             return []
         payload["hold_released"] = True
         payload.setdefault("hold_controls", []).append(control_id)
@@ -4187,15 +4254,9 @@ class SessionLease:
         self.persist(active=True)
 
     def admits_channel_event(self, event: dict[str, Any]) -> bool:
-        frozen = event.get("recipients")
-        expected = {"provider": self.provider, "provider_session_id": self.provider_session_id,
-                    "lease_id": self.lease_id, "bus": self.bus}
-        if isinstance(frozen, list):
-            return any(isinstance(owner, dict) and all(owner.get(key) == value
-                       for key, value in expected.items()) for owner in frozen)
-        if channel_of_session(str(event.get("session_id") or "")) is not None:
-            return all(event.get(key) == value for key, value in expected.items())
-        return frozen is None
+        return channel_event_admitted(
+            event, provider=self.provider, provider_session_id=self.provider_session_id,
+            lease_id=self.lease_id, bus=self.bus)
 
     def enrich(self, payload: dict[str, Any]) -> None:
         payload["lease_id"] = self.lease_id
@@ -4211,29 +4272,9 @@ class SessionLease:
             "provider": self.provider,
             "provider_session_id": self.provider_session_id,
         }
-        # Terminal evidence projects once per document entry. After restart,
-        # a later row is the same delivery phase, not another command. Keep
-        # source_event_id intact for provenance while keying that delivery by
-        # the same reducer phase used by EvidenceNormalizer.
-        phase_id = payload.get("source_event_id")
-        if (payload.get("message_id") == channel_message_identity(str(payload.get("session_id") or ""))
-                and channel_of_session(str(payload.get("session_id") or "")) is not None):
-            phase_id = channel_message_phase_identity(payload)
-        elif (
-            payload.get("producer_schema") == EVIDENCE_SCHEMA
-            and payload.get("reducer_action") in TERMINAL_PUBLICATIONS
-            and payload.get("status") == SEALED
-        ):
-            phase_id = terminal_seal_identity(payload)
-        payload["delivery_id"] = _identity(
-            (
-                "native_bus_demux",
-                self.lease_id,
-                phase_id,
-                payload.get("kind"),
-                payload.get("audience"),
-            )
-        )
+        # One owner computes the delivery identity (`delivery_identity`): the
+        # backfill recomputes it from the bus with the same function.
+        payload["delivery_id"] = delivery_identity(self.lease_id, payload)
 
     def attach_receipt(self) -> dict[str, Any]:
         names = sorted(
@@ -4561,20 +4602,57 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
                 "nothing acknowledged"
             )
     for delivery_id in unread:
+        payload = next(payload for payload in pending if payload.get("delivery_id") == delivery_id)
+        message_id = receipt_message_id(payload)
+        # The read receipt first: the marker ends this delivery's pending life
+        # (a repeated --ack is filtered by delivery_acknowledged), so a crash
+        # between the two must leave the retryable half, not the final one.
+        record_message_receipt(args.bridge_home, payload, "read", name=state.get("name"))
         atomic_json(
             args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
             {"lease_id": lease_id, "delivery_id": delivery_id,
              "provider": args.provider.casefold(), "provider_session_id": args.session,
              "read_at": utc_now(),
              "bus": state["bus"],
-             "envelope": receipt_envelope(next(payload for payload in pending
-                                if payload.get("delivery_id") == delivery_id), state["bus"])},
+             # The message this delivery is a copy of, so the marker and the
+             # receipts directory name the same fact.
+             **({"message_id": message_id} if message_id else {}),
+             "envelope": receipt_envelope(payload, state["bus"])},
         )
     for delivery_id in delivery_ids:
         withdrawn = withdraw_acknowledged_queue(args.bridge_home, lease_id, delivery_id, retry=True)
         emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id,
               "native_queue_settled": withdrawn})
     return 0
+
+
+def broadcast_reach(payload: dict[str, Any]) -> list[dict[str, str]] | None:
+    """Who a channel-zero publication was sent to, frozen by its publisher.
+
+    Three publishers stamp that list at sending: a channel take writes the
+    admitted owners into every copy (`audience: "*"` beside `recipients`),
+    and both text lanes write `target.recipients`. A copy without either stamp
+    has an unknown reach (None); the reader never derives one from bindings or
+    from other agents' broadcast policies. A stamped empty list is a fact of
+    its own: every bound agent had channel zero off, so the text was admitted
+    to nobody (the copy still reached this mailbox for its own skip record).
+    An owner on the list can still skip the copy at delivery when channel zero
+    is off, so the list says "sent to", not "read by". Entries are the
+    publisher's raw names, like `recipients`; prose built from them goes
+    through `queue_metadata` (see `delivery_address_label`).
+    """
+    target = payload.get("target")
+    rows: Any = None
+    if isinstance(target, dict) and target.get("mode") == "broadcast":
+        rows = target.get("recipients")
+    elif payload.get("audience") == "*":
+        rows = payload.get("recipients")
+    if not isinstance(rows, list):
+        return None
+    return [{"name": row["name"], "channel": row["channel"]}
+            for row in rows if isinstance(row, dict)
+            and isinstance(row.get("name"), str) and row["name"]
+            and isinstance(row.get("channel"), str) and row["channel"]]
 
 
 def delivery_address_label(payload: dict[str, Any]) -> str:
@@ -4584,8 +4662,16 @@ def delivery_address_label(payload: dict[str, Any]) -> str:
     peer_to = payload.get("peer_to")
     if channel == "0":
         # A peer broadcast names each copy's recipient in `peer_to` for routing;
-        # its address is still channel 0 (is_broadcast_delivery agrees).
-        return "0 (all audience)"
+        # its address is still channel 0 (is_broadcast_delivery agrees). The
+        # publisher's frozen list, when the copy carries one, says who it was
+        # sent to; names come from peers' own attach, so they are bounded.
+        reach = broadcast_reach(payload)
+        if reach is None:
+            return "0 (all audience)"
+        if not reach:
+            return "0 (sent to: nobody)"
+        names = ", ".join(queue_metadata(row["name"], 48, peer_controlled=True) for row in reach[:9])
+        return f"0 (sent to: {names})"
     if isinstance(peer_to, str) and peer_to and peer_to not in ("0", "*"):
         return f"{channel} ({peer_to})" if channel is not None else f"{peer_to} (named audience)"
     if isinstance(channel, str) and len(channel) == 1 and channel in "123456789":
@@ -4698,12 +4784,15 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments", "user_reply_to",
         "co_audience", "co_audience_basis", "also_sent_to", "also_sent_to_basis",
     )
-    envelope = {**{key: payload[key] for key in fields if key in payload},
-                "addressed_to": delivery_address_label(payload)}
+    view = {**{key: payload[key] for key in fields if key in payload},
+            "addressed_to": delivery_address_label(payload)}
+    reach = broadcast_reach(payload)
+    if reach is not None:
+        view["sent_to"] = reach
     also_sent_to = also_sent_to_queue_label(payload)
     if also_sent_to is not None:
-        envelope["also_sent_to_label"] = also_sent_to
-    return envelope
+        view["also_sent_to_label"] = also_sent_to
+    return view
 
 
 class MailboxReadError(ValueError):
@@ -6674,6 +6763,179 @@ class _PCMStreamFeed:
                 self.thread.join()
 
 
+# The language xAI speech is sent in. xAI honours only a bare two-letter code:
+# with `auto` it takes a sentence opening with a short Polish word ("W", "U",
+# "A", "I") for English and spells it ("W nocy" read as "double-u nocy"), and
+# `pl-PL`, `pl_PL` or `polish` are accepted but read like `auto` (measured
+# 2026-10-26: 30 of 168 wrong with `auto`, 0 of 168 with `pl`). The app sends
+# the configured speech language the same way (`core/llm/speech.rs`,
+# `tts_language`); both accept the languages the app knows, `pl` and `en`.
+DEFAULT_TTS_LANGUAGE = "pl"
+TTS_LANGUAGES = ("pl", "en")
+
+
+def tts_language(environ: Any = None) -> str:
+    """The bare code xAI speech is sent in: `CS_SAY_LANGUAGE`, else `pl`.
+
+    The helper does not read the app's settings, so the language is its own
+    variable. A region or variant is cut to the first part (`pl-PL` and
+    `pl_PL` are `pl`), case is ignored, and anything that is not `pl` or
+    `en` afterwards (`auto`, `polish`, `xx`) speaks `pl` with one warning.
+    """
+    raw = str((os.environ if environ is None else environ).get("CS_SAY_LANGUAGE") or "").strip()
+    if not raw:
+        return DEFAULT_TTS_LANGUAGE
+    code = re.split(r"[-_]", raw, maxsplit=1)[0].lower()
+    if code in TTS_LANGUAGES:
+        return code
+    sys.stderr.write(f"bus-demux: CS_SAY_LANGUAGE {raw!r} is not pl or en; speaking {DEFAULT_TTS_LANGUAGE}\n")
+    return DEFAULT_TTS_LANGUAGE
+
+
+# What a voice says of a message written for the screen. Founder, 2026-10-26:
+# paths, slashes, underscores and version numbers were read out as English
+# characters. Only the speaker gets this text; the published reply, its
+# receipts and the screen keep the original. The rules are deterministic, so
+# the same message always sounds the same and costs nothing to prepare.
+SPOKEN_WORDS = {
+    "pl": {"arrow": "na", "of": "z", "channel": "kanał", "range": "do", "union": "i",
+           "section": "paragraf", "approx": "około"},
+    "en": {"arrow": "to", "of": "of", "channel": "channel", "range": "to", "union": "and",
+           "section": "section", "approx": "about"},
+}
+SPOKEN_FILE_SUFFIXES = ("py", "rs", "swift", "md", "json", "jsonl", "toml", "sh", "txt", "yml",
+                        "yaml", "plist", "xcstrings", "wav", "log", "html", "js", "ts", "csv",
+                        "command")
+_SPOKEN_PATH_CHARS = r"[^\s/,;()\[\]„”“\"'<>]"
+_SPOKEN_LIST_MARK = re.compile(r"^\s*(?:[-*•]+|#{1,6})\s+")
+# "hania → as:" or "as (kanał 1) → Monika, Basia:" opening a message.
+_SPOKEN_HEADER = re.compile(
+    r"^(?P<name>[^\W\d_][\w-]*)(?:\s*\([^)\n]*\))?\s*(?:→|->|=>)\s*[^:\n]{1,80}:\s*")
+_SPOKEN_URL = re.compile(r"\bhttps?://\S+")
+_SPOKEN_BUILD_SUFFIX = re.compile(r"\b(\d+\.\d+\.\d+)\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*")
+_SPOKEN_ROOTED_PATH = re.compile(
+    rf"(?<![\w.~/-])(?:~|\.{{1,2}})?/{_SPOKEN_PATH_CHARS}+(?:/{_SPOKEN_PATH_CHARS}*)*")
+_SPOKEN_LONG_PATH = re.compile(r"(?<![\w.~/-])(?:[\w.@+-]+/){2,}[\w.@+:–-]*")
+# A file name, alone or after one folder ("scripts/bus-demux.py:5350–5352").
+_SPOKEN_FILE = re.compile(
+    r"(?<![\w.~/-])(?:[\w.@+-]+/)?[\w-]+(?:\.[\w-]+)*?\.(?:" + "|".join(SPOKEN_FILE_SUFFIXES)
+    + r")(?::\d+(?:[–-]\d+)?)?(?![\w/])")
+_SPOKEN_FRACTION = re.compile(r"(?<![\w./])(\d+)/(\d+)(?![\w/])")
+_SPOKEN_NAME_CHANNEL = re.compile(r"(?<![\w./])([^\W\d_][\w-]*)/(\d)(?![\w/])")
+_SPOKEN_SHORT_PATH = re.compile(r"(?<![\w./~-])([\w.@+-]+)/([\w.@+-]+)(?![\w/])")
+# A commit, blob or lease id: 7 to 64 hex characters with a digit and a letter,
+# optionally cut short with an ellipsis.
+_SPOKEN_HASH = re.compile(
+    r"(?<![\w-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}(?:…|\.\.\.)?(?![\w-])")
+_SPOKEN_UTC_CLOCK = re.compile(r"(?<![\w:.])(\d{1,2}):(\d{2})(?::\d{2})?Z(?!\w)")
+_SPOKEN_SECONDS = re.compile(r"(?<![\w:.])(\d{1,2}):(\d{2}):\d{2}(?![\w:])")
+_SPOKEN_RANGE = re.compile(r"(?<=\d)\s*[–—]\s*(?=\d)")
+_SPOKEN_ARROW = re.compile(r"\s*(?:→|->|=>)\s*")
+_SPOKEN_FLAG = re.compile(r"(?<![\w-])--(?=[A-Za-z])")
+_SPOKEN_INNER_UNDERSCORE = re.compile(r"(?<=[^\W_])_+(?=[^\W_])")
+_SPOKEN_EDGE_UNDERSCORE = re.compile(r"(?<![^\W_])_+|_+(?![^\W_])")
+_SPOKEN_ANGLE_NAME = re.compile(r"<([\w-]+)>")
+
+
+def _spoken_name(path: str) -> str:
+    """The last name of a path or file as words: no folders, extension, line or separators.
+
+    Long numbers inside the name (dates such as 20261025) are dropped; a
+    listener cannot use them and they take several seconds to say.
+    """
+    parts = [part for part in path.split("/") if part not in ("", "~", ".", "..")]
+    name = re.sub(r":\d+(?:[–-]\d+)?$", "", parts[-1] if parts else "")
+    stem, dot, suffix = name.rpartition(".")
+    if dot and stem and suffix.lower() in SPOKEN_FILE_SUFFIXES:
+        name = stem
+    words = [word for word in re.split(r"[-_.:\s]+", name)
+             if word and not (word.isdigit() and len(word) >= 5)]
+    return " ".join(words)
+
+
+def _spoken_path(match: re.Match[str]) -> str:
+    text = match.group(0)
+    tail = text[-1] if text[-1] in ".:" else ""
+    return _spoken_name(text.rstrip(".:")) + tail
+
+
+def spoken_text(
+    text: str,
+    language: str = DEFAULT_TTS_LANGUAGE,
+    *,
+    now: datetime.datetime | None = None,
+    zone: datetime.tzinfo | None = None,
+) -> str:
+    """The words a voice should say for `text`, which stays as written everywhere else.
+
+    A message header ("hania → as:") becomes the author's name; arrows,
+    fractions ("2/4"), bus names ("basia/2") and ranges become words; a path
+    or file becomes its last name; commit and lease hashes, build suffixes,
+    flag dashes, underscores, backticks and list marks are dropped; a UTC
+    clock ("11:53:17Z") becomes the local time (`zone`, default the system's)
+    without seconds. A line break becomes a sentence end. A text the rules do
+    not change, or one with nothing left to say, is returned as written.
+    """
+    words = SPOKEN_WORDS.get(language, SPOKEN_WORDS[DEFAULT_TTS_LANGUAGE])
+    lines = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            continue
+        line = _SPOKEN_LIST_MARK.sub("", line).strip()
+        if line:
+            lines.append(line)
+    # A line break is a pause: every line but the last ends as a sentence.
+    spoken = " ".join(line if index == len(lines) - 1 or line[-1] in ".!?…:;," else line + "."
+                      for index, line in enumerate(lines))
+    spoken = _SPOKEN_HEADER.sub(
+        lambda match: match.group("name")[:1].upper() + match.group("name")[1:] + ": ", spoken)
+    spoken = _SPOKEN_URL.sub("", spoken)
+    spoken = _SPOKEN_BUILD_SUFFIX.sub(r"\1", spoken)
+    spoken = _SPOKEN_ROOTED_PATH.sub(_spoken_path, spoken)
+    spoken = _SPOKEN_LONG_PATH.sub(_spoken_path, spoken)
+    spoken = _SPOKEN_FILE.sub(lambda match: _spoken_name(match.group(0)), spoken)
+    spoken = _SPOKEN_FRACTION.sub(rf"\1 {words['of']} \2", spoken)
+    spoken = _SPOKEN_NAME_CHANNEL.sub(rf"\1, {words['channel']} \2", spoken)
+    spoken = _SPOKEN_SHORT_PATH.sub(r"\1 \2", spoken)
+    spoken = _SPOKEN_HASH.sub("", spoken)
+    moment = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(datetime.timezone.utc)
+
+    def local_clock(match: re.Match[str]) -> str:
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if hour > 23 or minute > 59:
+            return match.group(0)
+        local = moment.replace(hour=hour, minute=minute, second=0, microsecond=0).astimezone(zone)
+        return f"{local.hour}:{local.minute:02d}"
+
+    spoken = _SPOKEN_UTC_CLOCK.sub(local_clock, spoken)
+    spoken = _SPOKEN_SECONDS.sub(r"\1:\2", spoken)
+    spoken = _SPOKEN_RANGE.sub(f" {words['range']} ", spoken)
+    spoken = _SPOKEN_ARROW.sub(f" {words['arrow']} ", spoken)
+    spoken = _SPOKEN_FLAG.sub("", spoken)
+    spoken = _SPOKEN_INNER_UNDERSCORE.sub(" ", spoken)
+    spoken = _SPOKEN_EDGE_UNDERSCORE.sub("", spoken)
+    spoken = _SPOKEN_ANGLE_NAME.sub(r"\1", spoken)
+    spoken = spoken.replace("`", "").replace("*", "")
+    spoken = spoken.replace("∪", f" {words['union']} ").replace("≈", f" {words['approx']} ")
+    spoken = re.sub(r"§\s*", f"{words['section']} ", spoken)
+    # What the removals leave behind: empty brackets, stacked punctuation and
+    # spaces before a mark.
+    spoken = re.sub(r"\([\s,;:]*\)", "", spoken)
+    spoken = re.sub(r"\(\s*[,;]\s*", "(", spoken)
+    spoken = re.sub(r"\s*[,;]\s*\)", ")", spoken)
+    spoken = re.sub(r"[ \t]{2,}", " ", spoken)
+    spoken = re.sub(r"\s+([,.;:!?…)”\]])", r"\1", spoken)
+    spoken = re.sub(r"([(„“\[])\s+", r"\1", spoken)
+    spoken = re.sub(r",(?:\s*,)+", ",", spoken)
+    spoken = re.sub(r"[,;:]\s*([.!?…])", r"\1", spoken)
+    spoken = re.sub(r"^[\s,;:.]+", "", spoken).strip()
+    # Nothing to say for listening, or nothing but spacing changed: the text
+    # goes as written, so a plain sentence keeps its cached recording.
+    if not any(character.isalpha() for character in spoken) or spoken.split() == text.split():
+        return text
+    return spoken
+
+
 def _speak_xai(
     text: str,
     voice: str,
@@ -6685,6 +6947,8 @@ def _speak_xai(
 ) -> tuple[bool, str | None, str | None]:
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import urllib.request
+
+    language = tts_language()
 
     def synthesize(chunk: str = text, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
         try:
@@ -6701,7 +6965,7 @@ def _speak_xai(
             {
                 "text": chunk,
                 "voice_id": voice,
-                "language": "auto",
+                "language": language,
                 "output_format": {"codec": "pcm", "sample_rate": 24000},
                 "speed": speed,
             }
@@ -6717,7 +6981,9 @@ def _speak_xai(
         )
         return _tts_exchange(request, on_pcm) if on_pcm is not None else _tts_exchange(request)
 
-    fields = {"provider": "xai", "voice": voice, "speed": float(speed), "language": "auto", "text": text}
+    # The cache key carries the language, so recordings made with `auto` are
+    # never served for a request in `pl`.
+    fields = {"provider": "xai", "voice": voice, "speed": float(speed), "language": language, "text": text}
     if len(text) >= 40:
         stream = SpeechPCMStream(speech_sentence_chunks(text), lambda chunk, emit_pcm: _cached_speech(
             playback_root, {**fields, "text": chunk}, lambda: synthesize(chunk, emit_pcm),
@@ -6970,7 +7236,7 @@ def channel_quiet_for_playback(
     """An open channel admits a reply after measured quiet.
 
     ``fresh`` is a session whose voice detector has reported no speech since
-    it opened (the reopen after a silence seal); ``unmeasured`` is a broken
+    it opened (e.g. one opened to answer a reply); ``unmeasured`` is a broken
     edge chain and never counts as quiet. ``quiet`` follows speech inside the
     take and admits only the agent that channel addresses: a pause in a
     message to one agent is not room for another (Monika, 2026-10-23 06:58,
@@ -7003,7 +7269,7 @@ def channel_keeps_playback(runtime: Path, playing_into: set[str]) -> Callable[[s
 
     Our own voice cannot open speech in the app (its channel feed is dropped
     while the reply plays), so a channel that was open when the reply started
-    may seal and reopen under it. A channel opened during the reply is a Fn
+    may seal under it. A channel opened during the reply is a Fn
     press, and measured speech on any channel is a person: both stop it.
     """
     def kept(channel: str, session_id: str) -> bool:
@@ -7754,6 +8020,710 @@ def delivery_broadcast_policy(root: Path, payload: dict[str, Any]) -> str:
         root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
 
 
+MESSAGE_RECEIPT_SCHEMA = "codescribe.message-receipt.v1"
+#: Per-delivery receipt facts, from nearest to farthest; `skipped` stands alone.
+MESSAGE_RECEIPT_STATES = ("delivered", "read", "skipped")
+PLAYBACK_TERMINAL_STATES = ("spoken", "failed", "refused", "stopped")
+
+
+def receipts_directory(root: Path, message_id: str) -> Path:
+    return root / "runtime" / "receipts" / message_id
+
+
+def receipt_message_id(payload: dict[str, Any]) -> str | None:
+    """The message a delivery is a copy of, when the envelope names one.
+
+    Typed, peer and channel-take copies carry a 24-hex `message_id`; a plain
+    dictation seal has none and leaves no receipt.
+    """
+    identity = payload.get("message_id")
+    if isinstance(identity, str) and re.fullmatch(r"[0-9a-f]{24}", identity):
+        return identity
+    return None
+
+
+def write_receipt_once(path: Path, payload: dict[str, Any]) -> bool:
+    """One file is one fact: the first writer wins and nobody rewrites it.
+
+    The content is staged in a private temporary file and linked under its
+    final name, so a reader never sees a half-written receipt and two writers
+    racing on the same fact (a follower restart, a handover) leave exactly
+    the first content. An existing file is left as it is: nothing here ever
+    unlinks or replaces a receipt.
+    """
+    encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        pass
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        try:
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError as error:
+            # The receipt exists; only its directory entry's durability
+            # barrier failed. Say that, not "not written".
+            sys.stderr.write(f"bus-demux: receipt directory not synced: {error}\n")
+        return True
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def bound_channel_of_lease(root: Path, lease_id: str) -> str | None:
+    """The digit currently bound to this lease, read without taking the lock."""
+    state = read_json(root / AUDIENCE_BINDING_FILENAME) or {}
+    bindings = state.get("bindings") if state.get("schema") == AUDIENCE_BINDING_SCHEMA else None
+    if not isinstance(bindings, dict):
+        return None
+    for channel, binding in bindings.items():
+        owner, refusal = binding_identity(str(channel), binding)
+        if refusal is None and owner["lease_id"] == lease_id:
+            return owner["channel"]
+    return None
+
+
+def receipt_recipient(root: Path, payload: dict[str, Any], name: str | None) -> dict[str, Any]:
+    """Who this copy's mailbox belongs to: the lease's name and its channel.
+
+    The channel comes from the copy's frozen recipient entry for this lease
+    when the publisher wrote one, otherwise from the lease's current binding.
+    Names are the agents' own, bounded only when rendered as prose.
+    """
+    lease_id = payload.get("lease_id")
+    channel = None
+    for row in payload.get("recipients") or []:
+        if (isinstance(row, dict) and row.get("lease_id") == lease_id
+                and isinstance(row.get("channel"), str) and row["channel"]):
+            channel = row["channel"]
+            name = name or row.get("name") or row.get("audience")
+            break
+    if channel is None and isinstance(lease_id, str):
+        channel = bound_channel_of_lease(root, lease_id)
+    if not name:
+        audience = payload.get("audience")
+        name = audience if isinstance(audience, str) and audience not in ("", "*") else None
+    return {"name": name, "channel": channel, "lease_id": lease_id,
+            "provider": payload.get("provider"), "provider_session_id": payload.get("provider_session_id"),
+            "bus": payload.get("bus")}
+
+
+def record_message_receipt(root: Path, payload: dict[str, Any], state: str, *,
+                           name: str | None, wake: str | None = "on",
+                           policy: str | None = None, at: str | None = None) -> Path | None:
+    """Write the one file that says this copy was delivered, read or skipped.
+
+    `delivered` is written by the follower when the copy enters `pending`,
+    with `wake` as the policy stood at that moment; `read` by `--ack`;
+    `skipped` by the follower instead of `delivered` when channel zero is
+    off. Each is written once under `runtime/receipts/<message_id>/`; a
+    later writer of the same fact changes nothing, and the path comes back
+    only when this call wrote the file. Deliveries without a `message_id`
+    (plain dictation seals) leave no receipt. `at` is the fact's own time
+    (now when omitted) and `wake=None` is the one value the backfill of
+    markers older than receipts writes: the delivery is known, its wake is
+    not; the runtime always knows its wake.
+    """
+    if state not in MESSAGE_RECEIPT_STATES:
+        raise ValueError(f"unknown receipt state {state!r}")
+    if state == "delivered" and wake not in ("on", "quiet", None):
+        raise ValueError(f"unknown wake {wake!r}")
+    message_id = receipt_message_id(payload)
+    delivery_id = payload.get("delivery_id")
+    if message_id is None or not isinstance(delivery_id, str) or not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
+        return None
+    stamp = utc_now() if at is None else at
+    row: dict[str, Any] = {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": state,
+                           "message_id": message_id, "delivery_id": delivery_id,
+                           **receipt_recipient(root, payload, name),
+                           ("read_at" if state == "read" else "at"): stamp}
+    if state == "delivered":
+        row["wake"] = wake
+    if state == "skipped":
+        row["policy"] = policy or "off"
+    reach = broadcast_reach(payload)
+    if reach is not None:
+        row["sent_to"] = reach
+    path = receipts_directory(root, message_id) / f"{delivery_id}.{state}.json"
+    try:
+        written = write_receipt_once(path, row)
+    except OSError as error:
+        # The delivery itself is already persisted or acknowledged; a receipt
+        # that could not be written is reported, never allowed to undo that.
+        sys.stderr.write(f"bus-demux: {state} receipt not written: {error}\n")
+        return None
+    return path if written else None
+
+
+def record_sent_receipt(root: Path, message_id: str, sent_to: list[dict[str, str]], *,
+                        bus: str | None, at: str | None) -> Path | None:
+    """The publisher's own record of who a channel-zero text was sent to.
+
+    Written once at publication, so `receipt_state` knows the admitted list
+    even when no recipient's reader was alive to leave a `delivered` file.
+    Only the two helper publishers write it (typed Founder text and a peer
+    `--send --to 0`); a channel take's list is stamped by the app and is
+    read from the recipients' files instead.
+    """
+    if not re.fullmatch(r"[0-9a-f]{24}", message_id):
+        return None
+    path = receipts_directory(root, message_id) / "sent.json"
+    try:
+        written = write_receipt_once(path, {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": "sent",
+                                            "message_id": message_id,
+                                            "sent_to": [{"name": row["name"], "channel": row["channel"]}
+                                                        for row in sent_to],
+                                            "bus": bus, "at": at})
+    except OSError as error:
+        sys.stderr.write(f"bus-demux: sent receipt not written: {error}\n")
+        return None
+    return path if written else None
+
+
+def record_withdrawn_receipt(root: Path, payload: dict[str, Any], control_id: str,
+                             at: str) -> Path | None:
+    message_id = receipt_message_id(payload)
+    delivery_id = payload.get("delivery_id")
+    if message_id is None or not isinstance(delivery_id, str) or not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
+        return None
+    path = receipts_directory(root, message_id) / f"withdrawn.{delivery_id}.json"
+    try:
+        write_receipt_once(path, {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": "withdrawn",
+                                  "message_id": message_id, "delivery_id": delivery_id,
+                                  "lease_id": payload.get("lease_id"), "control_id": control_id, "at": at})
+    except OSError as error:
+        sys.stderr.write(f"bus-demux: withdrawn receipt not written: {error}\n")
+        return None
+    return path
+
+
+def record_playback_receipt(root: Path, reply: dict[str, Any], ticket: str, state: str,
+                            *, reason: str | None, at: str) -> Path | None:
+    """One ticket, one file, written at the first terminal state of that playback.
+
+    The reply's own `spoken` field on the bus stays `false` after playback
+    and the playback event lands in whichever conversation played it, so the
+    per-message answer to "did the user hear it" lives here, keyed by the
+    reply id (the `message_id` of a peer text).
+    """
+    if state not in PLAYBACK_TERMINAL_STATES:
+        return None
+    identity = reply.get("reply_id")
+    if (not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{24}", identity)
+            or not re.fullmatch(r"[0-9a-f]{24}", ticket)):
+        return None
+    path = receipts_directory(root, identity) / f"playback.{ticket}.json"
+    try:
+        written = write_receipt_once(path, {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": "playback",
+                                            "message_id": identity, "playback_ticket": ticket,
+                                            "state": state, "reason": reason, "spoken": state == "spoken",
+                                            "provider": reply.get("provider"),
+                                            "provider_session_id": reply.get("provider_session_id"),
+                                            "lease_id": reply.get("lease_id"), "at": at})
+    except OSError as error:
+        sys.stderr.write(f"bus-demux: playback receipt not written: {error}\n")
+        return None
+    return path if written else None
+
+
+def read_receipt(path: Path) -> dict[str, Any] | None:
+    try:
+        metadata = path.lstat()
+        if not S_ISREG(metadata.st_mode) or metadata.st_size > 1 << 20:
+            return None
+        row = read_reply_json(path, 1 << 20)
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return row if row.get("schema") == MESSAGE_RECEIPT_SCHEMA else None
+
+
+def receipt_state(root: Path, message_id: str) -> dict[str, Any]:
+    """Compose the receipt files of one message into its current state.
+
+    Per delivery the state is the farthest existing file (`read` over
+    `delivered`; `skipped` on its own), keyed by `delivery_id`, so one agent
+    whose channel changed hands between delivery and reading is one
+    recipient. `sent_to` comes from the publisher's `sent.json`, else from the
+    stamp the recipients' files carried. A member of `sent_to` with no file
+    at all is listed as `no_receipt`. `denominator` is the one count the
+    overlay and agents read: the members of `sent_to` plus every agent that
+    was delivered to or read outside that list, minus every agent whose copy
+    was skipped; `skipped` is shown, never counted, even for a member of the
+    list. `spoken` is the playback that completed, else the latest
+    terminal playback, else None. Message text is never read, and the
+    projection names agents by name and channel only: the provider/session
+    pair (a mailbox capability) and the lease hash stay in the files.
+    """
+    directory = receipts_directory(root, message_id)
+    deliveries: dict[str, dict[str, dict[str, Any]]] = {}
+    withdrawn: list[dict[str, Any]] = []
+    playbacks: list[dict[str, Any]] = []
+    sent_to: list[dict[str, str]] | None = None
+    published: list[dict[str, str]] | None = None
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError:
+        entries = []
+
+    def reach(value: Any) -> list[dict[str, str]]:
+        return [{"name": item["name"], "channel": item["channel"]}
+                for item in value if isinstance(item, dict)
+                and isinstance(item.get("name"), str) and isinstance(item.get("channel"), str)]
+
+    for path in entries:
+        if path.name.startswith(".") or not path.name.endswith(".json"):
+            continue
+        row = read_receipt(path)
+        if row is None or row.get("message_id") != message_id:
+            continue
+        kind, stem = row.get("kind"), path.name[:-5]
+        if kind in MESSAGE_RECEIPT_STATES and stem == f"{row.get('delivery_id')}.{kind}":
+            deliveries.setdefault(row["delivery_id"], {})[kind] = row
+            if sent_to is None and isinstance(row.get("sent_to"), list):
+                sent_to = reach(row["sent_to"])
+        elif kind == "sent" and stem == "sent" and isinstance(row.get("sent_to"), list):
+            published = reach(row["sent_to"])
+        elif kind == "withdrawn" and stem == f"withdrawn.{row.get('delivery_id')}":
+            withdrawn.append({"delivery_id": row["delivery_id"], "control_id": row.get("control_id"),
+                              "at": row.get("at")})
+        elif kind == "playback" and stem == f"playback.{row.get('playback_ticket')}":
+            playbacks.append({"state": row.get("state"), "reason": row.get("reason"),
+                              "spoken": row.get("spoken") is True, "at": row.get("at"),
+                              "playback_ticket": row["playback_ticket"]})
+    recipients = []
+    for delivery_id, rows in deliveries.items():
+        if "read" in rows:
+            state, row = "read", rows["read"]
+        elif "delivered" in rows:
+            state, row = "delivered", rows["delivered"]
+        else:
+            state, row = "skipped", rows["skipped"]
+        delivered = rows.get("delivered")
+        # Name and channel from the farthest file, completed from the others:
+        # a reader that acknowledged under a lease bound later may not have
+        # known its digit when it wrote `read`.
+        others = [rows[kind] for kind in MESSAGE_RECEIPT_STATES if kind in rows]
+        recipients.append({
+            "delivery_id": delivery_id,
+            "name": row.get("name") or next((r["name"] for r in others if r.get("name")), None),
+            "channel": row.get("channel") or next((r["channel"] for r in others if r.get("channel")), None),
+            "state": state,
+            "wake": delivered.get("wake") if delivered else None,
+            "delivered_at": delivered.get("at") if delivered else None,
+            "at": row.get("read_at") if state == "read" else row.get("at"),
+        })
+    recipients.sort(key=lambda item: (str(item["at"] or ""), item["delivery_id"]))
+    if published is not None:
+        sent_to = published
+    # The denominator: everyone on the admitted list, plus anyone delivered to
+    # or read outside it (a list frozen by the app, an older helper), minus
+    # everyone whose copy was skipped. A recipient is one agent by name and
+    # channel, however many deliveries reached it. The list is frozen at
+    # publication and a skip happens at delivery, so a member can be both on
+    # the list and skipped: the skip wins (QC, 2026-10-26), the entry stays
+    # as skipped, and the count does not wait for a read that cannot come.
+    # A member without any file is counted and listed as no_receipt.
+    def agent(item: dict[str, Any]) -> tuple[Any, Any]:
+        return (item["name"], item["channel"]) if item["name"] else (item["delivery_id"], None)
+
+    listed = [(item["name"], item["channel"]) for item in sent_to or []]
+    reached = {agent(item) for item in recipients if item["state"] in ("delivered", "read")}
+    skipped = {agent(item) for item in recipients if item["state"] == "skipped"}
+    for name, channel in listed:
+        if (name, channel) not in reached and not any(
+                item["name"] == name and item["channel"] == channel for item in recipients):
+            recipients.append({"delivery_id": None, "name": name, "channel": channel,
+                               "state": "no_receipt", "wake": None, "delivered_at": None, "at": None})
+    denominator = len((set(listed) | reached) - skipped)
+    withdrawn.sort(key=lambda item: (str(item["at"] or ""), item["delivery_id"]))
+    playbacks.sort(key=lambda item: (str(item["at"] or ""), item["playback_ticket"]))
+    spoken = next((item for item in playbacks if item["spoken"]), playbacks[-1] if playbacks else None)
+    return {"message_id": message_id, "sent_to": sent_to, "recipients": recipients,
+            "denominator": denominator, "withdrawn": withdrawn, "spoken": spoken}
+
+
+def receipts_authorized(root: Path, args: argparse.Namespace, message_id: str) -> bool:
+    """Only an agent holding a copy, or the message's author, reads its receipts.
+
+    A copy is proven by a receipt file for this lease, a pending or held
+    envelope with this `message_id` in this lease's mailbox, or this lease's
+    name and channel on the frozen `sent_to` list. Authorship is proven by
+    the private `runtime/reply-sources/<message_id>.json` owner.
+    """
+    provider, session = args.provider.casefold(), args.session
+    lease_id = lease_identifier(provider, session)
+    source = read_json(root / "runtime" / "reply-sources" / f"{message_id}.json") or {}
+    if (source.get("schema") == REPLY_SOURCE_SCHEMA and source.get("reply_id") == message_id
+            and source.get("lease_id") == lease_id and source.get("provider") == provider
+            and source.get("provider_session_id") == session):
+        return True
+    state = read_json(root / "leases" / f"{lease_id}.json") or {}
+    if (state.get("schema") == LEASE_SCHEMA and state.get("lease_id") == lease_id
+            and state.get("provider") == provider and state.get("provider_session_id") == session):
+        rows = [*(state.get("pending") or []), *((state.get("held") or {}).values()
+                                                  if isinstance(state.get("held"), dict) else [])]
+        if any(isinstance(row, dict) and row.get("message_id") == message_id
+               and row.get("lease_id") == lease_id for row in rows):
+            return True
+        name = state.get("name")
+    else:
+        name = None
+    channel = bound_channel_of_lease(root, lease_id)
+    directory = receipts_directory(root, message_id)
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError:
+        return False
+    for path in entries:
+        row = read_receipt(path) if path.name.endswith(".json") and not path.name.startswith(".") else None
+        if row is None or row.get("message_id") != message_id or row.get("kind") not in MESSAGE_RECEIPT_STATES:
+            continue
+        if row.get("lease_id") == lease_id or (
+                row.get("provider") == provider and row.get("provider_session_id") == session):
+            return True
+        if name and channel and any(isinstance(item, dict) and item.get("name") == name
+                                    and item.get("channel") == channel
+                                    for item in row.get("sent_to") or []):
+            return True
+    return False
+
+
+def receipts_command(args: argparse.Namespace) -> int:
+    """`cs-bus --receipts MESSAGE_ID`: one JSON line of state, never the text."""
+    message_id = args.receipts
+    if not receipts_authorized(args.bridge_home, args, message_id):
+        emit({"kind": "receipts_refused", "message_id": message_id,
+              "reason": "this provider session holds no copy of the message and is not its author"})
+        return 3
+    emit({"kind": "receipts", **receipt_state(args.bridge_home, message_id)})
+    return 0
+
+
+RECEIPT_BACKFILL_KINDS = ("delivered", "read", "skipped", "playback", "sent")
+
+
+def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """Give the markers older than receipts their receipt files, once.
+
+    The overlay reads `runtime/receipts/` only, so history from before this
+    helper generation keeps its read count by being rewritten into the same
+    files through the same write-once functions the runtime uses. Sources
+    are read, never changed: a reader's journal (`kind: message` rows are
+    deliveries to that mailbox) becomes `delivered` with `wake: null`, the
+    one value that says "before receipts" (the delivery is known, its wake
+    is not); an ACK marker becomes `read` with the marker's `read_at` (its
+    mtime when the marker has none); a skip marker becomes `skipped`; a
+    terminal playback ticket becomes `playback`; a frozen `target.recipients`
+    stamp becomes `sent.json` (its publisher's lane is not reconstructed:
+    `bus: null`). A skip marker older than `message_id` is tied to its copy
+    through the bus it names, by the delivery id the runtime stamps
+    (`reader_copies_in_bus`); `mapped_by_bus` counts those. Nothing is
+    guessed: a source that cannot be
+    tied to a `message_id` (an envelope without one, a dictation seal, a
+    temporary or unreadable file, a skip marker whose delivery matches no
+    copy or more than one message) is counted as `unmapped` and left alone.
+    Running again finds the files and writes nothing; `existing` counts
+    them. A file that could not be written (an unwritable receipts
+    directory) is counted as `failed`, so a refused run never reads as
+    "nothing to do". A copy delivered under the quiet policy left no row in
+    its reader's journal (rows are published only under `on`), so the
+    mailbox itself is the second source: a copy still in `pending` of
+    `leases/<lease_id>.json` was delivered and never acknowledged and
+    becomes `delivered` with `wake: null` too; the journal is read first and
+    write-once keeps its file when both name one delivery. In both the `at`
+    is the copy's own `emitted_at`, not the moment of delivery. Message text
+    is never printed and `at` is never invented.
+    """
+    counts = dict.fromkeys(RECEIPT_BACKFILL_KINDS, 0)
+    existing = unmapped = failed = mapped_by_bus = 0
+    plans: dict[Path, tuple[str, Any]] = {}
+    names: dict[str, str | None] = {}
+
+    def lease_name(lease_id: str) -> str | None:
+        if lease_id not in names:
+            state = read_json(root / "leases" / f"{lease_id}.json") or {}
+            names[lease_id] = state["name"] if isinstance(state.get("name"), str) else None
+        return names[lease_id]
+
+    def plan(path: Path, kind: str, write: Any) -> None:
+        plans.setdefault(path, (kind, write))
+
+    def entries(directory: Path) -> list[Path]:
+        try:
+            with os.scandir(directory) as listing:
+                found = [entry for entry in listing if entry.is_file(follow_symlinks=False)]
+        except OSError:
+            return []
+        return [Path(entry.path) for entry in sorted(found, key=lambda entry: entry.name)]
+
+    def lease_directories(directory: Path) -> list[Path]:
+        try:
+            with os.scandir(directory) as listing:
+                found = [entry for entry in listing
+                         if entry.is_dir(follow_symlinks=False) and re.fullmatch(r"[0-9a-f]{32}", entry.name)]
+        except OSError:
+            return []
+        return [Path(entry.path) for entry in sorted(found, key=lambda entry: entry.name)]
+
+    def marker(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+        """The JSON of one regular marker file and its mtime as a stamp."""
+        try:
+            metadata = path.lstat()
+            if not S_ISREG(metadata.st_mode) or metadata.st_size > 1 << 20:
+                return None, None
+            row = read_reply_json(path, 1 << 20)
+        except (OSError, ValueError, UnicodeError):
+            return None, None
+        return row, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(metadata.st_mtime))
+
+    def stamp(value: Any) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    def plan_sent(payload: dict[str, Any], message_id: str) -> None:
+        reach = broadcast_reach(payload)
+        if reach is not None:
+            plan(receipts_directory(root, message_id) / "sent.json", "sent",
+                 lambda: record_sent_receipt(root, message_id, reach, bus=None,
+                                             at=stamp(payload.get("emitted_at"))))
+
+    def plan_delivered(copy: dict[str, Any], lease_id: str) -> bool:
+        """Plan `delivered` for one copy as a reader held it; False when it cannot be tied.
+
+        Only the copies the runtime receipts count: a terminal kind with a
+        `message_id`. A plain dictation seal is not a receipt source and is
+        passed over; a draft is not a delivery.
+        """
+        kind = copy.get("kind")
+        if kind not in TERMINAL_KINDS or (kind == "seal" and receipt_message_id(copy) is None):
+            return True
+        delivery_id, message_id = copy.get("delivery_id"), receipt_message_id(copy)
+        at = stamp(copy.get("emitted_at"))
+        if (message_id is None or at is None or not isinstance(delivery_id, str)
+                or not re.fullmatch(r"[0-9a-f]{24}", delivery_id)):
+            return False
+        payload = {**copy, "lease_id": lease_id}
+        plan(receipts_directory(root, message_id) / f"{delivery_id}.delivered.json", "delivered",
+             lambda: record_message_receipt(root, payload, "delivered", name=lease_name(lease_id),
+                                            wake=None, at=at))
+        plan_sent(payload, message_id)
+        return True
+
+    # Readers' journals: every terminal row was a delivery to that mailbox.
+    for path in entries(root / "runtime" / "followers"):
+        if not path.name.endswith(".events.jsonl"):
+            continue
+        lease_id = path.name[: -len(".events.jsonl")]
+        if not re.fullmatch(r"[0-9a-f]{32}", lease_id):
+            continue
+        try:
+            for raw in replay(path):
+                try:
+                    row = json.loads(raw)
+                except ValueError:
+                    unmapped += 1
+                    continue
+                if isinstance(row, dict) and not plan_delivered(row, lease_id):
+                    unmapped += 1
+        except (OSError, ValueError, UnicodeError):
+            # An incomplete last row: what was read stays planned, the rest is unknown.
+            unmapped += 1
+
+    # Mailboxes: a copy still pending was delivered and never acknowledged;
+    # under the quiet policy this is the only trace of that delivery.
+    for path in entries(root / "leases"):
+        lease_id = path.name[:-5] if path.name.endswith(".json") else ""
+        if not re.fullmatch(r"[0-9a-f]{32}", lease_id):
+            continue
+        try:
+            metadata = path.lstat()
+            state = read_reply_json(path, 16 << 20) if S_ISREG(metadata.st_mode) else None
+        except (OSError, ValueError, UnicodeError):
+            state = None
+        if state is None or state.get("lease_id") != lease_id or not isinstance(state.get("pending"), list):
+            unmapped += 1
+            continue
+        for entry in state["pending"]:
+            if not isinstance(entry, dict) or not plan_delivered(entry, lease_id):
+                unmapped += 1
+
+    # ACK markers: the reader read this copy.
+    for directory in lease_directories(root / "acknowledgments"):
+        lease_id = directory.name
+        for path in entries(directory):
+            row, modified = marker(path)
+            delivery_id = path.name[:-5] if path.name.endswith(".json") else ""
+            envelope = row.get("envelope") if row else None
+            payload = dict(envelope) if isinstance(envelope, dict) else {}
+            message_id = (receipt_message_id(row) or receipt_message_id(payload)) if row else None
+            if (row is None or message_id is None or not re.fullmatch(r"[0-9a-f]{24}", delivery_id)
+                    or row.get("delivery_id") != delivery_id or row.get("lease_id") != lease_id):
+                unmapped += 1
+                continue
+            for key in ("provider", "provider_session_id", "bus"):
+                if key in row:
+                    payload[key] = row[key]
+            payload.update(message_id=message_id, delivery_id=delivery_id, lease_id=lease_id)
+            plan(receipts_directory(root, message_id) / f"{delivery_id}.read.json", "read",
+                 lambda payload=payload, lease_id=lease_id, at=stamp(row.get("read_at")) or modified:
+                 record_message_receipt(root, payload, "read", name=lease_name(lease_id), at=at))
+            plan_sent(payload, message_id)
+
+    # Skip markers: channel zero was off, the copy was skipped instead of delivered.
+    def plan_skipped(row: dict[str, Any], modified: str | None, lease_id: str,
+                     delivery_id: str, message_id: str) -> None:
+        payload = {**row, "message_id": message_id, "delivery_id": delivery_id, "lease_id": lease_id}
+        plan(receipts_directory(root, message_id) / f"{delivery_id}.skipped.json", "skipped",
+             lambda payload=payload, lease_id=lease_id, at=stamp(row.get("emitted_at")) or modified:
+             record_message_receipt(root, payload, "skipped", name=lease_name(lease_id),
+                                    policy=stamp(row.get("policy")) or "off", at=at))
+
+    # A marker older than `message_id` names only its delivery and the bus
+    # it refused to read from. The copy is found again in that bus by the
+    # delivery id the runtime stamps (`delivery_identity`), one bus pass per
+    # lease, never by text or time; a delivery that matches no copy or more
+    # than one message stays unmapped.
+    legacy: dict[tuple[str, str], list[tuple[dict[str, Any], str | None, str]]] = {}
+    for directory in lease_directories(root / "broadcast-skipped"):
+        lease_id = directory.name
+        for path in entries(directory):
+            row, modified = marker(path)
+            delivery_id = path.name[:-5] if path.name.endswith(".json") else ""
+            if (row is None or not re.fullmatch(r"[0-9a-f]{24}", delivery_id)
+                    or row.get("delivery_id") != delivery_id or row.get("lease_id") != lease_id):
+                unmapped += 1
+                continue
+            message_id = receipt_message_id(row)
+            if message_id is not None:
+                plan_skipped(row, modified, lease_id, delivery_id, message_id)
+            elif isinstance(row.get("bus"), str) and row["bus"]:
+                legacy.setdefault((row["bus"], lease_id), []).append((row, modified, delivery_id))
+            else:
+                unmapped += 1
+    for (bus, lease_id), markers in sorted(legacy.items()):
+        first = markers[0][0]
+        copies = reader_copies_in_bus(
+            Path(bus), provider=str(first.get("provider") or ""),
+            provider_session_id=str(first.get("provider_session_id") or ""), lease_id=lease_id,
+            name=lease_name(lease_id), wanted={delivery_id for _, _, delivery_id in markers})
+        for row, modified, delivery_id in markers:
+            found = copies.get(delivery_id) or set()
+            if len(found) != 1:
+                unmapped += 1
+                continue
+            mapped_by_bus += 1
+            plan_skipped(row, modified, lease_id, delivery_id, next(iter(found)))
+
+    # Playback tickets: only a terminal state is a fact about hearing.
+    for path in entries(root / "runtime" / "reply-playback"):
+        if path.name.endswith(".lock") or path.name.endswith(".stop.json"):
+            continue
+        match = re.fullmatch(r"([0-9a-f]{24})\.([0-9a-f]{24})\.json", path.name)
+        row, modified = marker(path) if match else (None, None)
+        if (match is None or row is None or row.get("schema") != REPLY_CONTROL_SCHEMA
+                or row.get("reply_id") != match[1] or row.get("playback_ticket") != match[2]):
+            unmapped += 1
+            continue
+        state = row.get("state")
+        if state not in PLAYBACK_TERMINAL_STATES:
+            continue
+        plan(receipts_directory(root, match[1]) / f"playback.{match[2]}.json", "playback",
+             lambda row=row, ticket=match[2], state=state, at=stamp(row.get("emitted_at")) or modified:
+             record_playback_receipt(root, row, ticket, state, reason=stamp(row.get("reason")), at=at))
+
+    for path, (kind, write) in plans.items():
+        if dry_run:
+            if path.exists():
+                existing += 1
+            else:
+                counts[kind] += 1
+        elif write() is not None:
+            counts[kind] += 1
+        elif path.exists():
+            existing += 1
+        else:
+            failed += 1
+    return {"kind": "receipts_backfill", "written": counts, "existing": existing,
+            "unmapped": unmapped, "mapped_by_bus": mapped_by_bus, "failed": failed, "dry_run": dry_run}
+
+
+BACKFILL_BUS_CAP = 256 << 20
+
+
+def reader_copies_in_bus(bus: Path, *, provider: str, provider_session_id: str, lease_id: str,
+                         name: str | None, wanted: set[str]) -> dict[str, set[str]]:
+    """The `message_id` of every copy in `bus` that this reader would have
+    queued under one of the `wanted` delivery ids.
+
+    One linear pass through the reader's own bus with the reader's own chain:
+    the normalizer that turns rows into events, the admission by frozen
+    recipients, `consider` under the lease's bound name (drafts included, so
+    a revision's delivery is found as well as the seal's) and
+    `delivery_identity`. Nothing is derived from text or time, so a marker
+    maps only when its delivery id is exactly a copy's. The chain is the
+    reader's default one: a lease that ran with `--hear-all` or received a
+    copy through fuzzy name routing is not replayed that way, so such a
+    marker stays unmapped (lower recall, never a wrong file). A bus that
+    cannot be read whole (missing, its generation chain over the cap, a row
+    refused by the normalizer) yields what was found before that point and
+    nothing after it.
+    """
+    found: dict[str, set[str]] = {}
+    try:
+        if not S_ISREG(bus.lstat().st_mode) or generation_metadata(bus).st_size > BACKFILL_BUS_CAP:
+            return found
+    except (OSError, ValueError):
+        return found
+    normalizer = EvidenceNormalizer()
+    coordinates = {"provider": provider.casefold(), "provider_session_id": provider_session_id,
+                   "lease_id": lease_id, "bus": str(bus)}
+    try:
+        for raw in replay(bus):
+            for event in normalized_revision_events(raw, normalizer, None):
+                if event.get("schema") == DELIVERY_CONTROL_SCHEMA:
+                    continue
+                if not channel_event_admitted(event, **coordinates):
+                    continue
+                payload = consider(event, name=name, hear_all=False, drafts=True, debug=False)
+                if payload is None:
+                    continue
+                message_id = receipt_message_id(payload)
+                if message_id is None:
+                    continue
+                delivery_id = delivery_identity(lease_id, payload)
+                if delivery_id in wanted:
+                    found.setdefault(delivery_id, set()).add(message_id)
+    except (OSError, ValueError, UnicodeError):
+        pass
+    return found
+
+
+def backfill_receipts_command(args: argparse.Namespace) -> int:
+    """`cs-bus --backfill-receipts [--dry-run]`: one JSON line of counts.
+
+    Exit 0, or 3 when a receipt could not be written (`failed > 0`);
+    `unmapped` is information and never changes the exit code.
+    """
+    result = backfill_receipts(args.bridge_home, dry_run=args.dry_run)
+    emit(result)
+    return 3 if result["failed"] else 0
+
+
 def broadcast_skip_path(root: Path, lease_id: str, delivery_id: str) -> Path:
     return root / "broadcast-skipped" / lease_id / f"{delivery_id}.json"
 
@@ -7784,8 +8754,10 @@ def record_broadcast_skipped(root: Path, payload: dict[str, Any]) -> None:
                 recorded = row
                 break
         if recorded is None:
+            message_id = receipt_message_id(payload)
             recorded = {"schema": BROADCAST_POLICY_SCHEMA, "kind": "broadcast_skipped",
                         **{key: payload[key] for key in ("delivery_id", "lease_id", "provider", "provider_session_id", "bus")},
+                        **({"message_id": message_id} if message_id else {}),
                         "origin_channel": "0", "policy": "off", "emitted_at": utc_now()}
             stream.write(json.dumps(recorded, ensure_ascii=False, sort_keys=True) + "\n")
             stream.flush()
@@ -8000,6 +8972,11 @@ class ReplyPlaybackControl:
             # replace the original stopped/refused reason with join status.
             ticket["synthesis_join"] = self.synthesis_join
         atomic_json(self.path, ticket)
+        # The first terminal state of this ticket is the per-message answer
+        # to "was it heard"; a later terminal publish of the same ticket (the
+        # failure path after a refusal) changes nothing there.
+        record_playback_receipt(self.root, self.reply, self.ticket, state,
+                                reason=reason, at=event["emitted_at"])
         emit(event)
 
     def close(self) -> None:
@@ -8015,7 +8992,10 @@ def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, 
             spoken, error, reason = False, "playback stopped", "stopped"
         else:
             speaker = _speak_openai if reply["tts_vendor"] == "openai" else _speak_xai
-            spoken, error, reason = speaker(reply["text"], reply["voice"], reply["speed"],
+            # The reply, its receipts and the screen keep the written text;
+            # the voice and the speech cache get the words for listening.
+            words = spoken_text(reply["text"], tts_language())
+            spoken, error, reason = speaker(words, reply["voice"], reply["speed"],
                                             playback_root=args.bridge_home, bus=bus_path(), control=control)
             if control.stopped() and not spoken:
                 error, reason = "playback stopped", "stopped"
@@ -8481,6 +9461,16 @@ def send_text_command(args: argparse.Namespace) -> int:
                 if hold_seconds else {})
         receipts = []
         recipient_receipts = []
+        policies = {owner["lease_id"]: agent_broadcast_policy(
+            root, owner["provider"], owner["provider_session_id"], Path(owner["bus"])) for owner in owners}
+        # Channel zero: every copy carries the list of owners it was sent to,
+        # the same stamp a peer broadcast writes, so a reader tells "sent to
+        # as and hania" from "sent to everyone" without consulting bindings.
+        # Owners with channel zero off still get their copy (their reader
+        # records the skip) but are not on the list.
+        sent_to = ([{"name": owner["audience"], "channel": owner["channel"]}
+                    for owner in owners if policies[owner["lease_id"]] != "off"]
+                   if broadcast else None)
         for owner in owners:
             event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
                      **owner, **hold, "message_id": identity, "source_event_id": identity,
@@ -8495,6 +9485,7 @@ def send_text_command(args: argparse.Namespace) -> int:
                 event["attachments"] = attachments
             if broadcast:
                 event["origin_channel"] = "0"
+                event["target"] = {"mode": "broadcast", "channel": "0", "recipients": list(sent_to)}
             try:
                 receipt = publish_reply_event(Path(owner["bus"]), event, bridge_root=root)
                 if (any(type(receipt.get(key)) is not int or receipt[key] < 0
@@ -8506,7 +9497,11 @@ def send_text_command(args: argparse.Namespace) -> int:
                 raise UserTextPublicationUncertain("Some recipients may already have received this message; check receipts before resending.") from error
             receipts.append(receipt)
             recipient_receipts.append({**owner, **hold, "source": receipt,
-                "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], Path(owner["bus"]))})
+                "broadcast": policies[owner["lease_id"]]})
+    if broadcast:
+        # The publisher's own record of the admitted list: receipt_state reads
+        # it even when no recipient's reader was alive to leave a file.
+        record_sent_receipt(root, identity, sent_to, bus=None, at=emitted_at)
     emit({"kind": "message_published", **hold, "message_id": identity, "source": receipts[0], "sources": receipts,
           "recipients": recipient_receipts, "skipped": skipped})
     return 0
@@ -8799,6 +9794,8 @@ def send_peer_command(args: argparse.Namespace) -> int:
                                "follower_live": bool(live_follower_pid(root, owner_lease)),
                                "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], bus),
                                "source": receipt})
+    if target == "0":
+        record_sent_receipt(root, identity, audience_at_send, bus=lease.get("bus"), at=utc_now())
     emit({"kind": "peer_message_published", "message_id": identity,
           "origin_channel": "0" if target == "0" else deliveries[0]["channel"],
           "sender": sender_name, "target": addressed, "recipients": deliveries})
@@ -10045,6 +11042,9 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
                 "co_audience", "co_audience_basis", "also_sent_to", "also_sent_to_basis"):
         if key in payload:
             line[key] = payload[key]
+    reach = broadcast_reach(payload)
+    if reach is not None:
+        line["sent_to"] = reach
     also_sent_to = also_sent_to_queue_label(payload)
     if also_sent_to is not None:
         line["also_sent_to_label"] = also_sent_to
@@ -10544,6 +11544,15 @@ def main() -> int:
     playback = parser.add_mutually_exclusive_group()
     playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
     playback.add_argument("--stop-reply", metavar="REPLY_ID", help="request stop from that reply's real player")
+    parser.add_argument("--receipts", metavar="MESSAGE_ID",
+                        help="print who a message was delivered to, who read or skipped it and whether "
+                        "it was spoken; requires --provider/--session holding a copy or authoring it")
+    parser.add_argument("--backfill-receipts", action="store_true",
+                        help="write receipt files once for markers older than receipts (readers' journals, "
+                        "ACK and skip markers, terminal playback tickets) across the whole bridge home; "
+                        "idempotent, sources untouched, counts as one JSON line")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --backfill-receipts: report the counts without writing")
     mute = parser.add_mutually_exclusive_group()
     mute.add_argument("--mute-agent", action="store_true", help="mute automatic replies for this provider session and bus")
     mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
@@ -10673,6 +11682,17 @@ def main() -> int:
             return 3
     if args.extensions_directory:
         parser.error("--extensions-directory requires --install-junie-extension")
+    if args.backfill_receipts or args.dry_run:
+        allowed = {"backfill_receipts", "dry_run", "bridge_home", "entrypoint"}
+        if not args.backfill_receipts or any(value != parser.get_default(key) for key, value in vars(args).items()
+                                             if key not in allowed):
+            parser.error("--backfill-receipts combines only with --dry-run and --bridge-home")
+        args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
+        try:
+            return backfill_receipts_command(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: receipts backfill refused: {error}\n")
+            return 3
     if args.mute_all or args.unmute_all:
         allowed = {"mute_all", "unmute_all", "bridge_home", "entrypoint"}
         if any(value != parser.get_default(key) for key, value in vars(args).items()
@@ -10803,6 +11823,22 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.receipts:
+        if not args.provider or not re.fullmatch(r"[0-9a-f]{24}", args.receipts):
+            parser.error("--receipts requires --provider/--session and a message id")
+        if any((args.say is not None, args.ack, args.attach, args.detach, args.channel is not None,
+                args.status, args.watch, args.follow, args.once, args.from_start, args.from_file,
+                args.read_pending, args.read_delivery, args.retry_wakeup, args.all, args.become,
+                args.active_names, args.lease, args.send_text, args.send is not None,
+                args.to is not None, args.reply_to, args.play_reply, args.stop_reply,
+                args.playback_ticket, args.until_event, args.max_wait is not None,
+                args.archive_agent is not None, args.mute_agent, args.unmute_agent)):
+            parser.error("--receipts combines with no other command")
+        try:
+            return receipts_command(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: receipts refused: {error}\n")
+            return 3
     if args.until_event or args.max_wait is not None:
         if (not args.watch or not args.until_event or not args.provider
                 or any((args.once, args.from_start, args.from_file, args.human, args.full,

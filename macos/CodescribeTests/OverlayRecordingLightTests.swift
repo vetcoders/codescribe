@@ -89,7 +89,8 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertEqual(Set(lights.map(\.name)).count, lights.count)
     XCTAssertEqual(Set(lights.map(\.colorName)).count, lights.count)
     XCTAssertEqual(
-      Set(lights.map { "\(ObjectIdentifier($0.nsColor))|\($0.pulses)" }).count, lights.count,
+      Set(lights.map { "\(ObjectIdentifier($0.nsColor))|\($0.pulses)|\($0.spins)" }).count,
+      lights.count,
       "two states would render identically")
     for light in lights {
       XCTAssertFalse(light.meaning.isEmpty)
@@ -106,7 +107,8 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertTrue(OverlayRecordingLight.processing.nsColor === CSPalette.modeProcessing)
     XCTAssertTrue(OverlayRecordingLight.agent.nsColor === CSPalette.assistive)
     XCTAssertTrue(OverlayRecordingLight.silence.nsColor === CSPalette.indicatorSilence)
-    XCTAssertEqual(OverlayRecordingLight.allCases.filter(\.pulses), [.handsFree, .processing])
+    XCTAssertEqual(OverlayRecordingLight.allCases.filter(\.pulses), [.handsFree])
+    XCTAssertEqual(OverlayRecordingLight.allCases.filter(\.spins), [.processing])
   }
 
   func testLightGrowsWithTheOverlayTextScale() {
@@ -124,6 +126,25 @@ final class OverlayRecordingLightTests: XCTestCase {
       let opacity = OverlayRecordingLight.pulseOpacity(at: Double(step) / 100)
       XCTAssertGreaterThanOrEqual(opacity, 0.45 - 1e-9)
       XCTAssertLessThanOrEqual(opacity, 1 + 1e-9)
+    }
+  }
+
+  /// Transcribing is told from the recording red by shape: an open arc that
+  /// turns once every 1.2 s, read from the same clock as the pulse.
+  func testProcessingArcTurnsOncePerPeriod() {
+    XCTAssertEqual(OverlayRecordingLight.rotationPeriod, 1.2, accuracy: 1e-12)
+    XCTAssertGreaterThanOrEqual(OverlayRecordingLight.arcFraction, 0.25)
+    XCTAssertLessThanOrEqual(OverlayRecordingLight.arcFraction, 1.0 / 3.0)
+    XCTAssertEqual(OverlayRecordingLight.arcRotation(at: 0), 0, accuracy: 1e-9)
+    XCTAssertEqual(OverlayRecordingLight.arcRotation(at: 0.6), .pi, accuracy: 1e-9)
+    XCTAssertEqual(OverlayRecordingLight.arcRotation(at: 0.3), .pi / 2, accuracy: 1e-9)
+    XCTAssertEqual(
+      OverlayRecordingLight.arcRotation(at: 1000.3),
+      OverlayRecordingLight.arcRotation(at: 1000.3 + 1.2), accuracy: 1e-6)
+    for step in 0..<240 {
+      let rotation = OverlayRecordingLight.arcRotation(at: Double(step) / 100)
+      XCTAssertGreaterThanOrEqual(rotation, 0)
+      XCTAssertLessThan(rotation, 2 * .pi)
     }
   }
 
@@ -459,6 +480,8 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertTrue(header.contains("recordingLight: state.recordingLight, animates: overlayVisible"))
     XCTAssertTrue(source.contains("recordingLight?.pulses == true && animates && !reduceMotion"))
     XCTAssertTrue(source.contains("OverlayRecordingLight.pulseOpacity(at:"))
+    XCTAssertTrue(source.contains("recordingLight?.spins == true"))
+    XCTAssertTrue(source.contains("OverlayRecordingLight.arcRotation("))
     XCTAssertTrue(source.contains(".accessibilityValue(recordingStatusValue)"))
     for light in OverlayRecordingLight.allCases {
       var intents: [OverlayIntent] = []

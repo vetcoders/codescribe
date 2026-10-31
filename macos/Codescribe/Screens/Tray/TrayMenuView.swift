@@ -107,7 +107,7 @@ struct TrayMenuView: View {
       TrayRow(
         icon: .agent,
         title: String(localized: "Agent"),
-        titleColor: viewModel.agentAvailable ? CSColor.textBody : CSColor.textFaint,
+        titleColor: viewModel.agentAvailable ? CSColor.textBody : CSColor.textMuted,
         titleWeight: .semibold,
         shortcut: "⌥⌥",
         shortcutColor: TrayRow.primaryShortcutColor,
@@ -137,7 +137,7 @@ struct TrayMenuView: View {
           .padding(.top, 2)
       }
     }
-    .animation(.easeOut(duration: 0.18), value: viewModel.copyStatus)
+    .animation(.easeOut(duration: CSMotion.Tempo.hover), value: viewModel.copyStatus)
   }
 
   // MARK: - History (nested disclosure → copy a recent transcript)
@@ -247,7 +247,7 @@ struct TrayMenuView: View {
       icon: .send,
       title: String(localized: "Auto Paste"),
       shortcut: viewModel.pasteMode.visibleName,
-      shortcutColor: viewModel.pasteMode == .off ? CSColor.textFaintAlt : CSColor.oliveLight,
+      shortcutColor: viewModel.pasteMode == .off ? CSColor.textMuted : CSColor.oliveLight,
       scale: .child
     ) { viewModel.setPasteMode(viewModel.pasteMode.next) }
     .accessibilityLabel("Auto Paste")
@@ -264,7 +264,7 @@ struct TrayMenuView: View {
       title: String(localized: "Auto Format"),
       shortcut: viewModel.autoFormatLevel.visibleName,
       shortcutColor: viewModel.autoFormatLevel == .off
-        ? CSColor.textFaintAlt : CSColor.oliveLight,
+        ? CSColor.textMuted : CSColor.oliveLight,
       scale: .child
     ) { viewModel.setAutoFormatLevel(viewModel.autoFormatLevel.next) }
     .accessibilityLabel("Auto Format")
@@ -284,7 +284,7 @@ struct TrayMenuView: View {
         comment: "Tray row: size of the recording dot drawn next to the mouse cursor"),
       shortcut: viewModel.holdBadgeOption.visibleName,
       shortcutColor: viewModel.holdBadgeOption == .off
-        ? CSColor.textFaintAlt : CSColor.oliveLight,
+        ? CSColor.textMuted : CSColor.oliveLight,
       scale: .child
     ) { viewModel.setHoldBadgeOption(viewModel.holdBadgeOption.next) }
     .accessibilityLabel("Cursor indicator")
@@ -311,7 +311,7 @@ struct TrayMenuView: View {
         : String(
           localized: "tray.keycap.off", defaultValue: "Off",
           comment: "Tray keycap, a few letters wide: this toggle is disabled"),
-      shortcutColor: isOn ? onColor : CSColor.textFaintAlt,
+      shortcutColor: isOn ? onColor : CSColor.textMuted,
       scale: .child
     ) { set(!isOn) }
   }
@@ -405,13 +405,13 @@ struct TrayMenuView: View {
 // MARK: - Notes action result banner
 
 /// Transient confirmation row for the Notes actions. Olive check on success,
-/// terracotta cross on failure — a permission-free, always-visible replacement
+/// danger cross on failure — a permission-free, always-visible replacement
 /// for the OS notification that an accessory app can't guarantee.
 private struct TrayNoteStatusRow: View {
   let status: TrayActionStatus
 
   private var isSuccess: Bool { status.kind == .success }
-  private var tint: Color { isSuccess ? CSColor.oliveLight : CSColor.terracottaText }
+  private var tint: Color { isSuccess ? CSColor.oliveLight : CSColor.dangerLight }
 
   var body: some View {
     HStack(spacing: 6) {
@@ -439,7 +439,7 @@ private struct TrayNoteStatusRow: View {
     let vm = TrayViewModel(engine: MockTrayEngine(recording: false), isRecording: false)
     TrayMenuView(viewModel: vm, trayStatus: .preview())
       .padding(CSSpace.previewInset)
-      .background(CSColor.windowWash)
+      .background(CSColor.sheet)
       .onAppear { FontLoader.register() }
   }
 
@@ -450,7 +450,7 @@ private struct TrayNoteStatusRow: View {
       trayStatus: .preview(kind: .listening, tone: .active)
     )
     .padding(CSSpace.previewInset)
-    .background(CSColor.windowWash)
+    .background(CSColor.sheet)
     .onAppear { FontLoader.register() }
   }
 #endif

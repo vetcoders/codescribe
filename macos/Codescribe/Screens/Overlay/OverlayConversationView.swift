@@ -174,6 +174,10 @@ struct OverlayConversationView: View {
   var onReply: ((OverlayConversationMessage) -> Void)? = nil
   var draftSyncChoices: [OverlayComposerSyncChoice] = []
   var draftSyncNames: [String] = []
+  var draftSyncArmed: Bool = false
+  var draftSyncEnabled: Bool = false
+  var onActivateDraftSync: (() -> Void)? = nil
+  var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
   var onToggleDraftSync: ((String) -> Void)? = nil
   var onStopDraftSync: (() -> Void)? = nil
   @State private var replyNavigationID: String?
@@ -290,7 +294,7 @@ struct OverlayConversationView: View {
               .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
-          .animation(.easeOut(duration: 0.18), value: followsLatest)
+          .animation(.easeOut(duration: CSMotion.Tempo.hover), value: followsLatest)
         }
         .overlay(alignment: .top) {
           VStack(spacing: 0) {
@@ -413,7 +417,13 @@ struct OverlayConversationView: View {
           onRetryCaptureAttachments: onRetryCaptureAttachments,
           onNavigateReply: { navigateToReply(replySelection?.messageID) },
           draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
+          draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
+          onActivateDraftSync: onActivateDraftSync,
+          onProseEdit: onProseEdit,
           onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync)
+        // A reused native coordinator must never redirect an old owner's
+        // proposal or undo history into a different conversation's binding.
+        .id([conversation.id, conversation.owner?.id ?? ""])
         if let sendError { composerError(sendError) }
         if let playbackError {
           composerError(playbackError)
@@ -686,11 +696,20 @@ struct OverlayConversationView: View {
   }
 
   /// The follower's receipt for a broadcast it skipped: the agent was off
-  /// channel 0 when this delivery reached it.
+  /// channel 0 when this delivery reached it. Shown, never counted as unread.
   static var skippedBroadcastText: String {
     String(
       localized: "Skipped: off channel 0",
       comment: "Agent row receipt: a broadcast skipped because the agent is off channel 0")
+  }
+
+  /// An agent on the publisher's admitted list with no copy and no receipt
+  /// file at all: its reader was not running, or predates receipts. It was
+  /// sent to, so it counts, unlike a skipped one.
+  static var noReceiptText: String {
+    String(
+      localized: "No receipt",
+      comment: "Agent row receipt: on the admitted list, but no reader recorded the copy")
   }
 
   private func submit() {
@@ -763,15 +782,23 @@ struct OverlayConversationView: View {
       Text("Held")
         .font(.system(size: 10 * textScale))
         .foregroundStyle(palette.mutedText.color)
-    } else if message.showsDeliveryReceipts && !message.recipients.isEmpty {
-      if message.recipients.count > 1 {
-        let readCount = message.recipients.filter { $0.acknowledged }.count
+    } else if message.showsDeliveryReceipts
+      && (!message.recipients.isEmpty || !(message.sentTo ?? []).isEmpty)
+    {
+      // X/Y by the receipts contract (`OverlayConversationMessage.readReceipt`):
+      // Y is the admitted list plus anyone reached outside it, minus the
+      // skipped; a listed agent without any file is "No receipt" and counts.
+      let receipt = message.readReceipt
+      if message.recipients.count > 1 || receipt.denominator > 1 || !receipt.unreceipted.isEmpty {
         Menu {
           ForEach(message.recipients, id: \.owner.id) { recipient in
             Text(verbatim: "\(recipient.owner.name) · \(Self.receiptStatusText(for: recipient))")
           }
+          ForEach(receipt.unreceipted, id: \.self) { reach in
+            Text(verbatim: "\(reach.name) · \(Self.noReceiptText)")
+          }
         } label: {
-          Text("Read \(readCount)/\(message.recipients.count)")
+          Text("Read \(receipt.read)/\(receipt.denominator)")
             .font(.system(size: 10 * textScale))
             .lineLimit(1)
         }
@@ -908,10 +935,10 @@ struct OverlayConversationView: View {
     .padding(12)
     .background(
       palette.primaryText.color.opacity(0.06),
-      in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+      in: RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
     )
     .overlay {
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(
           message.kind == .user ? CSColor.terracotta.opacity(0.65) : palette.border.color,
           lineWidth: 1 / max(displayScale, 1)

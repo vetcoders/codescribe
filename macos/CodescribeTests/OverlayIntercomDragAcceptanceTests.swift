@@ -127,6 +127,13 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     let stored = rig.store.load()
     let desktop = rig.controller.desktop
     let root = rig.card.contentView
+    // Cross the outer display boundary deliberately instead of depending on
+    // whichever header location a preceding native fixture left behind.
+    let outerDisplay = try XCTUnwrap(NSScreen.screens.min {
+      $0.visibleFrame.minX < $1.visibleFrame.minX
+    }).visibleFrame
+    rig.card.setFrameOrigin(
+      CGPoint(x: outerDisplay.minX + 10, y: outerDisplay.midY - rig.card.frame.height / 2))
     let initial = rig.card.frame
     for tick in 1...30 {
       rig.card.setFrameOrigin(
@@ -165,7 +172,13 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     XCTAssertTrue(rig.controller.presentation.expanded.contains(rig.identity))
     Rig.apply([rig.conversation], to: rig.state)
     clock.advance(by: 5)
-    XCTAssertTrue(rig.controller.presentation.expanded.isEmpty)
+    XCTAssertTrue(
+      rig.controller.presentation.expanded.isEmpty,
+      "Return held: recording=\(rig.state.recording), warming=\(rig.state.warmingUp), "
+        + "transcribing=\(rig.state.transcribing), voice=\(rig.state.channelAudioCaptureActive), "
+        + "pending=\(rig.state.pendingTextMessages.count), modal=\(NSApp.modalWindow != nil), "
+        + "mouse=\(NSEvent.pressedMouseButtons), scheduled=\(clock.outstanding), "
+        + "menu=\(String(describing: Mirror(reflecting: rig.controller).descendant("menuTracking")))")
     rig.verifyTruth()
   }
 

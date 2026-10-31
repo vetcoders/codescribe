@@ -641,6 +641,6 @@ extension Array {
   #Preview("Waveform — active") {
     WaveformView(active: true)
       .padding(40)
-      .background(CSColor.glassUnder)
+      .background(CSColor.sheet)
   }
 #endif

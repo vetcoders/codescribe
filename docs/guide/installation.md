@@ -125,7 +125,7 @@ Codescribe stores configuration in:
 │   └── assistive.txt    # Assistive mode prompt
 ├── transcriptions/   # Saved transcripts
 └── data.noindex/     # Constantly rewritten data, kept out of Spotlight
-    └── logs/         # Debug logs (codescribe.log, diagnostic.log)
+    └── logs/         # Debug logs (codescribe.log rolled at 200 MB into .1–.4, diagnostic.log)
 ```
 
 Create default config:

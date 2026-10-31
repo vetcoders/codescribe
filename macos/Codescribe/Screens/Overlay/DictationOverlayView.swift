@@ -141,7 +141,7 @@ struct OverlayRecordingControls: View {
 
   func activateRecordingControl() {
     guard !recordingDisabled else { return }
-    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+    withAnimation(reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.hover)) {
       if canFinish { finishRecording() } else { onIntent(.startRecording) }
     }
   }
@@ -161,7 +161,20 @@ struct OverlayRecordingControls: View {
   private var recordingButton: some View {
     Button(action: activateRecordingControl) {
       Group {
-        if recordingLight?.pulses == true && animates && !reduceMotion {
+        if recordingLight?.spins == true {
+          if animates && !reduceMotion {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+              recordingGlyph.overlay {
+                processingArc(
+                  rotation: OverlayRecordingLight.arcRotation(
+                    at: timeline.date.timeIntervalSinceReferenceDate))
+              }
+            }
+          } else {
+            // Still motion: the open arc keeps the shape that tells it from red.
+            recordingGlyph.overlay { processingArc(rotation: 0) }
+          }
+        } else if recordingLight?.pulses == true && animates && !reduceMotion {
           TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
             recordingGlyph.opacity(
               OverlayRecordingLight.pulseOpacity(at: timeline.date.timeIntervalSinceReferenceDate))
@@ -176,7 +189,9 @@ struct OverlayRecordingControls: View {
     .buttonStyle(.plain)
     .disabled(recordingDisabled)
     .opacity(recordingDisabled ? 0.45 : 1)
-    .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: recordingSymbol)
+    .animation(
+      reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.hover), value: recordingSymbol
+    )
     .csFocusOutline()
     .modifier(
       OverlayHeaderControlChrome(
@@ -203,6 +218,22 @@ struct OverlayRecordingControls: View {
   private var recordingGlyph: some View {
     OverlayMicrophoneGlyph(symbol: recordingSymbol, tint: recordingTint)
   }
+
+  /// Thin open arc over the light's circle, drawn while the take transcribes.
+  private func processingArc(rotation: Double) -> some View {
+    Circle()
+      .inset(by: Self.processingArcWidth / 2)
+      .trim(from: 0, to: OverlayRecordingLight.arcFraction)
+      .stroke(
+        recordingTint,
+        style: StrokeStyle(lineWidth: Self.processingArcWidth, lineCap: .round)
+      )
+      .rotationEffect(.radians(rotation))
+      .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
+      .accessibilityHidden(true)
+  }
+
+  static let processingArcWidth: CGFloat = 1.5
 
   private var previewButton: some View {
     Button(action: togglePreview) {
@@ -275,6 +306,16 @@ struct OverlayHeaderControlFramesPreferenceKey: PreferenceKey {
 }
 
 struct OverlayDrawerFramePreferenceKey: PreferenceKey {
+  static let defaultValue = CGRect.zero
+  static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+    let frame = nextValue()
+    if !frame.isEmpty { value = frame }
+  }
+}
+
+/// The conversation's laid-out frame, in the canvas coordinate space. It keeps
+/// the split width while the cell around it folds.
+struct OverlayConversationFramePreferenceKey: PreferenceKey {
   static let defaultValue = CGRect.zero
   static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
     let frame = nextValue()
@@ -483,6 +524,21 @@ struct DictationOverlayView: View {
           geometry.size.width
             - (columnShown ? drawerWidth : 0) - (railShown ? railWidth : 0)
             - transcriptActionsWidth)
+        // The conversation keeps its split width while its cell folds or
+        // unfolds: the pane slide animates a clip, never a reflow. Laying the
+        // text out at the folding cell's width wrapped it one character per
+        // line in the edge column, and a stalled frame kept it there
+        // (Founder, 2026-10-26). The width follows the window, the preferred
+        // drawer width, a drag of the divider and the text scale, never the slide.
+        let splitDrawerWidth = OverlayAgentDrawerLayout.drawerWidth(
+          textScale: textScale,
+          preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
+          windowWidth: geometry.size.width)
+        let conversationContentWidth = max(
+          0,
+          geometry.size.width
+            - (columnShown ? splitDrawerWidth : 0) - (railShown ? railWidth : 0)
+            - transcriptActionsWidth)
         let canvasHidden = canvasWidth < 1 || conversationFolded
         // The conversation toggle has a reserved row, clear of message text.
         let conversationControlsHeight: CGFloat = columnShown ? 30 * textScale : 0
@@ -563,20 +619,35 @@ struct DictationOverlayView: View {
                 },
                 draftSyncChoices: state.draftSyncChoices(for: conversation),
                 draftSyncNames: state.draftSyncNames(for: conversation.id),
+                draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
+                draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
+                onActivateDraftSync: { state.activateDraftSync(for: conversation.id) },
+                onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
                 onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
                 onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
               )
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
               .accessibilityHidden(state.isCollapsed)
+              .frame(width: conversationContentWidth, alignment: .leading)
+              .background {
+                GeometryReader { body in
+                  Color.clear.preference(
+                    key: OverlayConversationFramePreferenceKey.self,
+                    value: body.frame(in: .named("overlay-canvas")))
+                }
+                .allowsHitTesting(false)
+              }
             }
           }
           .opacity(canvasHidden ? 0 : 1)
           .allowsHitTesting(!canvasHidden)
           .accessibilityHidden(canvasHidden)
           // Keep the conversation and its reveal edge in the same cell. Its
-          // control stays usable when the conversation itself is folded.
-          .frame(width: canvasWidth, height: geometry.size.height)
+          // control stays usable when the conversation itself is folded. The
+          // cell clips the split-width conversation while it slides.
+          .frame(width: canvasWidth, height: geometry.size.height, alignment: .leading)
+          .clipped()
           .overlay(alignment: .topLeading) {
             if columnShown {
               conversationEdgeControls(canvasShown: !canvasHidden)
@@ -610,10 +681,20 @@ struct DictationOverlayView: View {
         // flips on the first geometry pass and would animate the transcript
         // from its intrinsic width for 240 ms (OverlayChromeV3Tests, 900 wide).
         // A corner button's choice slides the panes the same way.
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: columnShown)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: railShown)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: transcriptActionsShown)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: state.agentsLayout)
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: columnShown
+        )
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: railShown
+        )
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter),
+          value: transcriptActionsShown
+        )
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter),
+          value: state.agentsLayout
+        )
         .onAppear { state.setAgentDrawerDocked(docked) }
         .onChange(of: docked) { _, docked in
           state.setAgentDrawerDocked(docked)
@@ -787,6 +868,11 @@ struct DictationOverlayView: View {
     .padding(.horizontal, 8)
     .padding(.bottom, 16)
     .frame(width: width)
+    // The list lays out at its new width at once and only the column's frame
+    // slides over it, anchored to the window edge: a row never re-wraps its
+    // title and preview inside a half-way frame (Founder, 2026-10-26).
+    .animation(nil, value: width)
+    .frame(width: width, alignment: .trailing)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()
     .background { OverlayMenuCursorRegion() }
@@ -1009,10 +1095,12 @@ struct DictationOverlayView: View {
         .contentShape(Circle().inset(by: -7.5))
     }
     .buttonStyle(.plain)
-    .onHover {
-      closeDotHovered = $0
+    .background {
+      OverlayMenuCursorRegion { closeDotHovered = $0 }
     }
-    .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: closeDotHovered)
+    .animation(
+      reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered
+    )
     .focusable(false)
     .modifier(
       OverlayHeaderControlChrome(
@@ -1708,7 +1796,7 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
     content()
       .frame(width: width, height: height)
       .padding(CSSpace.previewInset)
-      .background(CSColor.windowWash)
+      .background(CSColor.sheet)
   }
 
   @MainActor

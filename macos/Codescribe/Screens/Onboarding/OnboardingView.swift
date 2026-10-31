@@ -69,7 +69,8 @@ struct OnboardingView: View {
         .id(model.stepIndex)
         .csAutohidingScrollers()
       }
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.stepIndex)
+      .animation(
+        reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: model.stepIndex)
       footer
     }
   }

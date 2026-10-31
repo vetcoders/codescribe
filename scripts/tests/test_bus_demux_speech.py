@@ -228,7 +228,7 @@ class SpeechCacheTests(unittest.TestCase):
             self.assertEqual(DEMUX._speak_xai("hello", "leo", 1.0), (True, None, None))
         self.assertEqual(self.opener.open.call_count, 1)
         key = DEMUX.speech_cache_key({"provider": "xai", "voice": "leo", "speed": 1.0,
-                                      "language": "auto", "text": "hello"})
+                                      "language": DEMUX.DEFAULT_TTS_LANGUAGE, "text": "hello"})
         self.assertEqual(self.cached(), [f"{key}.json", f"{key}.wav"])
         directory = DEMUX.bridge_home() / "speech"
         sidecar = json.loads((directory / f"{key}.json").read_text())
@@ -246,7 +246,7 @@ class SpeechCacheTests(unittest.TestCase):
                 text = f"kept after {reason}"
                 self.assertEqual(DEMUX._speak_xai(text, "leo", 1.0), (False, "refused", reason))
                 key = DEMUX.speech_cache_key({"provider": "xai", "voice": "leo", "speed": 1.0,
-                                              "language": "auto", "text": text})
+                                              "language": DEMUX.DEFAULT_TTS_LANGUAGE, "text": text})
                 self.assertIn(f"{key}.wav", self.cached())
                 self.assertIn(f"{key}.json", self.cached())
         calls = self.opener.open.call_count
@@ -357,7 +357,7 @@ class SayReplyTests(unittest.TestCase):
         lease.close()
         return receipt
 
-    def say(self, *extra, speaker=(True, None, None)):
+    def say(self, *extra, speaker=(True, None, None), text="Zrobione."):
         argv = [
             "bus-demux.py",
             "--bus",
@@ -367,7 +367,7 @@ class SayReplyTests(unittest.TestCase):
             "--provider",
             "claude-code",
             "--say",
-            "Zrobione.",
+            text,
             *extra,
         ]
         out = io.StringIO()
@@ -390,6 +390,19 @@ class SayReplyTests(unittest.TestCase):
         # The resolved name selects the profile, exactly as an explicit one.
         spoken.assert_called_once_with(
             "Zrobione.", "rex", 1.1, playback_root=self.home, bus=self.bus, control=ANY
+        )
+
+    def test_voice_gets_spoken_words_while_the_reply_keeps_the_written_text(self):
+        self.attach_lease("session-a", "filip")
+        written = "filip → as: gotowe, commit 0786cc92 w scripts/bus-demux.py:120."
+        code, reply, spoken = self.say("--session", "session-a", text=written)
+        self.assertEqual(code, 0)
+        self.assertEqual(reply["text"], written)
+        rows = [json.loads(line) for line in self.bus.read_text().splitlines()]
+        self.assertEqual(rows[0]["text"], written)
+        spoken.assert_called_once_with(
+            "Filip: gotowe, commit w bus demux.", "rex", 1.1,
+            playback_root=self.home, bus=self.bus, control=ANY,
         )
 
     def mute(self, session, muted=True, bus=None):
@@ -2132,6 +2145,168 @@ class StreamingSpeechTests(unittest.TestCase):
         self.assertEqual((code, terminal['state']), (5, 'failed'))
         self.assertFalse(terminal['spoken'])
         self.assertEqual(len(audio), 1)
+
+
+
+class TtsLanguageTests(unittest.TestCase):
+    """xAI speech is sent in a bare language code, never `auto`, and keyed by it."""
+
+    setUp = SpeechTransportTests.setUp
+    cached = SpeechCacheTests.cached
+
+    def environment(self, value=None):
+        changes = {} if value is None else {"CS_SAY_LANGUAGE": value}
+        scoped = patch.dict(os.environ, changes)
+        scoped.start()
+        self.addCleanup(scoped.stop)
+        if value is None:
+            os.environ.pop("CS_SAY_LANGUAGE", None)
+
+    def sent_language(self):
+        request = self.opener.open.call_args.args[0]
+        return json.loads(request.data)["language"]
+
+    def test_the_code_is_cut_to_its_first_part_and_only_pl_or_en_pass(self):
+        for raw, code, warned in (
+            (None, "pl", False), ("", "pl", False), ("pl", "pl", False), ("PL", "pl", False),
+            ("pl-PL", "pl", False), ("pl_PL", "pl", False), ("en", "en", False), ("en-GB", "en", False),
+            ("auto", "pl", True), ("polish", "pl", True), ("xx", "pl", True),
+        ):
+            with self.subTest(raw=raw):
+                environ = {} if raw is None else {"CS_SAY_LANGUAGE": raw}
+                error = io.StringIO()
+                with contextlib.redirect_stderr(error):
+                    self.assertEqual(DEMUX.tts_language(environ), code)
+                self.assertEqual("CS_SAY_LANGUAGE" in error.getvalue(), warned)
+        self.assertEqual(DEMUX.DEFAULT_TTS_LANGUAGE, "pl")
+
+    def test_the_request_carries_the_language_and_never_auto(self):
+        for raw, code in ((None, "pl"), ("pl-PL", "pl"), ("en", "en")):
+            with self.subTest(raw=raw):
+                self.environment(raw)
+                self.opener.open.reset_mock()
+                self.assertEqual(DEMUX._speak_xai(f"W nocy było cicho ({raw}).", "eve", 1.25),
+                                 (True, None, None))
+                self.assertEqual(self.sent_language(), code)
+                key = DEMUX.speech_cache_key({"provider": "xai", "voice": "eve", "speed": 1.25,
+                                              "language": code, "text": f"W nocy było cicho ({raw})."})
+                self.assertIn(f"{key}.wav", self.cached())
+
+    def test_a_recording_made_with_auto_is_not_served_after_the_change(self):
+        self.environment()
+        text = "W nocy było cicho."
+        legacy = {"provider": "xai", "voice": "eve", "speed": 1.25, "language": "auto", "text": text}
+        DEMUX._cached_speech(None, legacy, lambda: (b"\x01\x00", None, None))
+        self.assertIn(f"{DEMUX.speech_cache_key(legacy)}.wav", self.cached())
+        self.assertEqual(DEMUX._speak_xai(text, "eve", 1.25), (True, None, None))
+        self.assertEqual(self.opener.open.call_count, 1, "the auto recording is a different key")
+        self.assertEqual(self.sent_language(), "pl")
+        self.assertEqual(DEMUX._speak_xai(text, "eve", 1.25), (True, None, None))
+        self.assertEqual(self.opener.open.call_count, 1, "the pl recording is reused")
+
+    def test_long_text_sends_every_sentence_in_the_language(self):
+        # Bounded on purpose: the streaming path loops on `read1()`, and the
+        # transport mock of `setUp` never returns an empty read, so this test
+        # replaces the exchange with a finite one and drains the stream itself.
+        self.environment()
+        text = ("W nocy było cicho i nikt nie pisał na kanale zero. "
+                "U nas jest cicho, bramka na Sztudio skończyła się dobrze. "
+                "A co dalej, to powie nam Monika po odsłuchu.")
+        self.assertEqual(len(DEMUX.speech_sentence_chunks(text)), 3)
+        languages = []
+
+        def exchange(request, on_pcm=None):
+            if len(languages) >= 10:
+                raise AssertionError("more requests than sentences")
+            languages.append(json.loads(request.data)["language"])
+            return b"\x01\x00", None, None
+
+        def play(stream, **_):
+            stream.start()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                kind, value = stream.queue.get(timeout=5)
+                if kind == "done":
+                    return value
+            stream.cancelled.set()
+            raise AssertionError("the sentence stream did not finish")
+
+        with patch.object(DEMUX, "_tts_exchange", side_effect=exchange), \
+                patch.object(DEMUX, "_play_pcm_24k", side_effect=play):
+            self.assertEqual(DEMUX._speak_xai(text, "eve", 1.25), (True, None, None))
+        self.assertEqual(len(languages), 3, "one request per sentence")
+        self.assertEqual(set(languages), {"pl"})
+        self.opener.open.assert_not_called()
+
+
+class SpokenTextTests(unittest.TestCase):
+    """Words for listening; examples are sentences the bus voice really spoke."""
+
+    NOW = datetime.datetime(2026, 10, 26, 12, 0, tzinfo=datetime.timezone.utc)
+    ZONE = datetime.timezone(datetime.timedelta(hours=1))
+
+    def spoken(self, text, language="pl"):
+        return DEMUX.spoken_text(text, language, now=self.NOW, zone=self.ZONE)
+
+    def test_each_rule_on_a_real_sentence(self):
+        cases = [
+            ("hania → as: Zgoda na dopisanie Readera do Modify.",
+             "Hania: Zgoda na dopisanie Readera do Modify."),
+            ("as (kanał 1) → Monika, Basia: W2-03 przyjęte.", "As: W2-03 przyjęte."),
+            ("Helper przeszedł z 0.17.0 → 0.18.0 bez przerwy.",
+             "Helper przeszedł z 0.17.0 na 0.18.0 bez przerwy."),
+            ("Na Silverze zwykłe tbflow cf44b428 daje aktualną paczkę.",
+             "Na Silverze zwykłe tbflow daje aktualną paczkę."),
+            ("Mają wspólne message_id z odpowiedziami (668ee033…, 20c567f4…), które leżą w kanale.",
+             "Mają wspólne message id z odpowiedziami, które leżą w kanale."),
+            ("basia: przepięta na 0.18.0+gb2e9b3a7, ten sam lease.",
+             "basia: przepięta na 0.18.0, ten sam lease."),
+            ("Paczka ~/Downloads/codescribe-precedent-20261025.md czeka na odczyt.",
+             "Paczka codescribe precedent czeka na odczyt."),
+            ("Zmiana jest w core/llm/speech.rs i w testach.", "Zmiana jest w speech i w testach."),
+            ("Nagrania są w katalogu ~/AI_artifacts/w2-03-samples/.",
+             "Nagrania są w katalogu w2 03 samples."),
+            ("Sprawdziłam to w bus-demux.py:5350–5352 i w scripts/bus-demux.py.",
+             "Sprawdziłam to w bus demux i w bus demux."),
+            ("Kopia ma sent_to = [as/1, basia/2], czyli 2/4 odbiorców.",
+             "Kopia ma sent to = [as, kanał 1, basia, kanał 2], czyli 2 z 4 odbiorców."),
+            ("Pokwitowania trafiają do runtime/receipts od razu.",
+             "Pokwitowania trafiają do runtime receipts od razu."),
+            ("Nowa sesja przejmie kanał przez --takeover.", "Nowa sesja przejmie kanał przez takeover."),
+            ("Monika dała zgodę o 11:53:17Z, a bramka szła 12:51–12:53.",
+             "Monika dała zgodę o 12:53, a bramka szła 12:51 do 12:53."),
+            ("Odpowiedzi z 23:35:10Z i 23:37:07Z.", "Odpowiedzi z 0:35 i 0:37."),
+            ("Kanał 1 skończył o 05:14:56.", "Kanał 1 skończył o 05:14."),
+            ("Wynik:\n- cargo 18/18\n- `make check` zielone", "Wynik: cargo 18 z 18. make check zielone"),
+            ("Komenda:\n```\nmake check\n```\nGotowe.", "Komenda: make check. Gotowe."),
+            ("Y = sent_to ∪ odbiorcy, zob. §5 i <lease>.",
+             "Y = sent to i odbiorcy, zob. paragraf 5 i lease."),
+        ]
+        for written, expected in cases:
+            with self.subTest(written=written):
+                self.assertEqual(self.spoken(written), expected)
+
+    def test_english_uses_english_words(self):
+        self.assertEqual(self.spoken("as → nela: moved 0.17.0 → 0.18.0, 2/4 done.", "en"),
+                         "As: moved 0.17.0 to 0.18.0, 2 of 4 done.")
+
+    def test_plain_text_is_returned_exactly_as_written(self):
+        # Unchanged text keeps its speech cache key, so nothing is synthesized again.
+        for written in ("W nocy było cicho, a rano wszystko działało jak trzeba.", "Zrobione",
+                        "Wiadomość agenta.\n", "Tak.  Dwie spacje zostają."):
+            with self.subTest(written=written):
+                self.assertEqual(self.spoken(written), written)
+
+    def test_text_with_nothing_left_to_say_is_spoken_as_written(self):
+        for written in ("0786cc92", "   ", ""):
+            with self.subTest(written=written):
+                self.assertEqual(self.spoken(written), written)
+
+    def test_long_unbroken_tokens_stay_linear(self):
+        started = time.monotonic()
+        result = self.spoken(("a." * 50_000) + " " + ("ab1" * 50_000) + " " + ("x_" * 50_000))
+        self.assertLess(time.monotonic() - started, 5.0)
+        self.assertTrue(result)
 
 
 if __name__ == "__main__":

@@ -60,7 +60,7 @@ struct LLMLanesSection: View {
         LLMLaneEditor(model: model, lane: lane)
         if lane != LLMLane.allCases.last {
           Rectangle()
-            .fill(Color.primary.opacity(0.12))
+            .fill(Color.primary.opacity(CSAlpha.stroke))
             .frame(height: 1)
         }
       }
@@ -109,7 +109,7 @@ private struct LLMLaneEditor: View {
     case "fresh": return CSColor.olive
     case "cached": return CSColor.amberLight
     case "no_key", "loading": return CSColor.secondaryInk
-    default: return CSColor.terracottaText
+    default: return CSColor.dangerLight
     }
   }
 
@@ -357,30 +357,30 @@ private struct LLMLaneEditor: View {
   private func formattingProbeResult(_ probe: CsFormattingProbe) -> some View {
     let seconds = { (ms: UInt64) in String(format: "%.1f s", Double(ms) / 1000) }
     let verdict: String
-    let color: Color
+    let tone: CsMcpRowTone
     switch probe.status {
     case "applied":
       verdict = String(localized: "Formatted", comment: "Formatting test verdict")
-      color = CSColor.oliveLight
+      tone = .good
     case "unchanged":
       verdict = String(localized: "Answered, text unchanged", comment: "Formatting test verdict")
-      color = CSColor.oliveLight
+      tone = .good
     case "skipped":
       verdict = String(
         localized: "Not sent: formatting is off or runs on the Agent",
         comment: "Formatting test verdict")
-      color = .secondary
+      tone = .neutral
     case "timed_out":
       verdict = String(localized: "No answer in time", comment: "Formatting test verdict")
-      color = CSColor.amberLight
+      tone = .warn
     default:
       verdict = String(localized: "Formatting failed", comment: "Formatting test verdict")
-      color = CSColor.terracottaText
+      tone = .bad
     }
     let level = probe.reasoning ?? String(localized: "not sent", comment: "Reasoning field absent")
     return VStack(alignment: .leading, spacing: CSSpace.xs) {
       HStack(spacing: CSSpace.sm) {
-        Circle().fill(color.opacity(0.85)).frame(width: 7, height: 7)
+        StatusToneGlyph(tone: tone)
         Text(verdict)
         Text(
           "\(seconds(probe.elapsedMs)) / \(seconds(probe.deadlineMs)) · \(probe.model) · reasoning \(level)"
@@ -391,7 +391,7 @@ private struct LLMLaneEditor: View {
       if let message = Self.formattingFailureMessage(probe) {
         Text(message)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
       }
       let checked = Date(timeIntervalSince1970: Double(probe.checkedAtUnixMs) / 1000)
@@ -478,7 +478,7 @@ private struct LLMLaneEditor: View {
       if !failureShownOnAgent, let details = laneModel.discoveryErrorDetails {
         DisclosureGroup("Error details") {
           Text(details)
-            .font(CSFont.mono(10.5))
+            .font(CSFont.mono(11))
             .foregroundStyle(CSColor.secondaryInk)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)

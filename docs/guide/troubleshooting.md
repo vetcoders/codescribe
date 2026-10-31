@@ -208,7 +208,7 @@ Common issues and solutions for codescribe.
 
 1. Verify provider settings in **Settings → AI & Prompts** (Formatting AI / Assistive AI)
 2. If you're using **Dictation** mode: set **Settings → Creator → Formatting level** to anything but Off
-3. If you want AI every time: use **Formatting** (double‑tap `Left Option`) or **Assistive (Agent)** (double‑tap `Right Option`)
+3. If you want AI every time: use **Formatting** (menu bar **Start transcription**) or **Assistive (Agent)** (menu bar, **Start in Agent mode** on)
 
 ---
 
@@ -254,6 +254,11 @@ tail -f ~/.codescribe/data.noindex/logs/codescribe.log
 # Verbose mode (run in foreground)
 codescribe -v
 ```
+
+The app rolls `codescribe.log` at 200 MB and keeps four earlier files
+(`codescribe.log.1`, the newest, to `codescribe.log.4`), so the logs stay
+under about 1 GB. Search an older period with
+`grep PATTERN ~/.codescribe/data.noindex/logs/codescribe.log*`.
 
 ### Important log messages
 

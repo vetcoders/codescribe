@@ -37,7 +37,8 @@ pub const TRANSCRIPT_BUS_FILENAME: &str = "transcript-events.jsonl";
 pub enum TranscriptMode {
     /// Plain dictation or formatting; the downstream action is paste/format.
     Dictation,
-    /// Right Option / composer Agent voice input; the downstream action is send.
+    /// Agent voice input (menu bar, overlay or composer); the downstream
+    /// action is send.
     Agent,
     /// Hold-based Chat/Selection assistance; downstream action is Agent delivery.
     Assistive,
@@ -790,6 +791,10 @@ pub enum TranscriptDelivery {
     /// The stop path finished without any sink taking the text. It stays
     /// recoverable in the overlay and the session archive.
     Retained,
+    /// The assistive take ended after 30 s without voice, so the stop path
+    /// chose no destination. The text stays in the take archive; nothing may
+    /// send it on its own, and an explicit send still can.
+    EndedWithoutVoice,
     /// The text was copied to the clipboard without posting a paste.
     CopiedToClipboard,
     /// The text is armed for a later explicit insert, not pasted yet.
@@ -943,8 +948,9 @@ struct TranscriptBusWriter {
     /// channel close reads this marker instead when the take opted out.
     direct_terminal: Option<DirectPublicationCapability>,
     /// Documents whose start row already reached a channel bus. Quiet delivery
-    /// contract (Founder seal cc6c8248): between that start row and the
-    /// terminal seal, channel revisions stay in-process.
+    /// contract (Founder seal cc6c8248; only its reopen half was replaced on
+    /// 2026-10-26): between that start row and the terminal seal, channel
+    /// revisions stay in-process.
     announced_documents: HashSet<u64>,
 }
 
@@ -1302,11 +1308,19 @@ fn append_capture_attachment(
 /// External agent messages and delivery controls use the same private journal.
 /// PCM transcript authority remains reducer-only.
 pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<serde_json::Value> {
+    if event["schema"] == super::dual_host_projection::HISTORY_PROJECTION_SCHEMA {
+        return super::dual_host_projection::append_projection(path, event);
+    }
     if event["schema"] == "codescribe.capture-attachment.v1" {
         return append_capture_attachment(path, event);
     }
     let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid agent event");
-    if !path.is_absolute() || !event.is_object() {
+    if !path.is_absolute()
+        || !event.is_object()
+        || ["projection", "pair_id", "source_receipt"]
+            .iter()
+            .any(|key| event.get(*key).is_some())
+    {
         return Err(invalid());
     }
     let text_field = |key: &str| event[key].as_str().filter(|value| !value.trim().is_empty());
@@ -1411,6 +1425,16 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
                     .is_some_and(|text| text.len() > 64 * 1024)
                 || event["source"] != "typed"
                 || event["source_event_id"] != event["message_id"]
+                || event
+                    .get("final_revision")
+                    .is_some_and(|revision| revision.as_u64().is_none_or(|n| n == 0))
+                || event.get("history_reply_to").is_some_and(|reference| {
+                    !reference.is_null()
+                        && !serde_json::from_value::<super::dual_host_projection::MessageReference>(
+                            reference.clone(),
+                        )
+                        .is_ok_and(|reference| reference.valid())
+                })
                 || recipients.len() != 1
                 || [
                     "provider",
@@ -1513,6 +1537,15 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
             }
         }
         _ => return Err(invalid()),
+    }
+    if event["schema"] == "codescribe.agent-user-message.v1" {
+        if chrono::DateTime::parse_from_rfc3339(text_field("emitted_at").ok_or_else(invalid)?)
+            .is_err()
+            || serde_json::to_vec(event).map_err(io::Error::other)?.len() > 16 << 20
+        {
+            return Err(invalid());
+        }
+        return super::dual_host_projection::append_original(path, event);
     }
     let encoded = super::transcript_bus_maintenance::generation::encode(event)?;
     if encoded.len() > 24 << 20 {
@@ -1852,10 +1885,11 @@ impl TranscriptBus {
         } else {
             self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false)
         };
-        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29): a channel
-        // bus carries one start row per document, the terminal seal, manual
-        // edits and coverage verdicts. Intermediate revisions stay in-process;
-        // they still project to the HUD and in-process consumers below.
+        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29; only its
+        // reopen half was replaced on 2026-10-26): a channel bus carries one
+        // start row per document, the terminal seal, manual edits and coverage
+        // verdicts. Intermediate revisions stay in-process; they still project
+        // to the HUD and in-process consumers below.
         let channel_quiet = self.session.audience.is_some();
         let is_terminal_seal = matches!(
             &revision.action,
@@ -2108,9 +2142,10 @@ impl TranscriptBus {
         } else {
             self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false)
         };
-        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29): identical
-        // for the direct lane — one start row per document, the terminal row,
-        // intermediate revisions in-process only.
+        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29; only its
+        // reopen half was replaced on 2026-10-26): identical for the direct
+        // lane — one start row per document, the terminal row, intermediate
+        // revisions in-process only.
         let channel_quiet = self.session.audience.is_some();
         let mut emitted = Vec::new();
         let mut persisted = Vec::new();
@@ -4346,8 +4381,9 @@ mod tests {
         assert!(!broken.exists());
     }
 
-    /// Quiet delivery contract (Founder seal cc6c8248): between one start row
-    /// per document and the terminal seal, channel revisions stay off disk.
+    /// Quiet delivery contract (Founder seal cc6c8248; only its reopen half was
+    /// replaced on 2026-10-26): between one start row per document and the
+    /// terminal seal, channel revisions stay off disk.
     #[test]
     fn channel_bus_carries_only_document_starts_and_the_terminal_seal() {
         let dir = tempfile::tempdir().unwrap();

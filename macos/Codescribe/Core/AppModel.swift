@@ -799,7 +799,7 @@ final class OverlayController: ObservableObject {
   /// chat window). The overlay's job is done — fade it out immediately instead
   /// of lingering over the conversation it just fed.
   func hideForAgentHandoff() {
-    fadeOut(duration: 0.18) { true }
+    fadeOut(duration: CSMotion.Tempo.hover) { true }
   }
 
   /// The pin let go of a resting panel (Unpin, then `pinReleaseDelaySeconds`).

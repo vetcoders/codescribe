@@ -944,14 +944,25 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     func scrollViews(_ root: NSView) -> [NSScrollView] {
       (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
     }
+    // The count comes from the receipts directory alone: the follower
+    // writes `<delivery_id>.read.json`, then the app's `agent-ack` row
+    // paints the row ahead of the next listing and never counts.
+    let directory = try XCTUnwrap(
+      bus.receiptDirectories().first, "the channel take has a receipts directory")
+    var files: [(name: String, row: [String: Any])] = []
     for readCount in 0...4 {
       if readCount > 0 {
         let prior = try lenaConversation(bus).messages[0]
-        var ack = recipients[readCount - 1]
-        ack.merge([
-          "schema": "codescribe.agent-ack.v1",
-          "delivery_id": try XCTUnwrap(prior.recipients[readCount - 1].deliveryID),
+        let delivery = try XCTUnwrap(prior.recipients[readCount - 1].deliveryID)
+        var read = recipients[readCount - 1]
+        read.merge([
+          "schema": OverlayReceiptState.schema, "kind": "read", "message_id": directory,
+          "delivery_id": delivery, "read_at": "2026-10-26T04:19:00Z",
         ]) { _, new in new }
+        files.append((name: "\(delivery).read.json", row: read))
+        bus.observeReceipts(files, messageID: directory)
+        var ack = recipients[readCount - 1]
+        ack.merge(["schema": "codescribe.agent-ack.v1", "delivery_id": delivery]) { _, new in new }
         bus.consume(ack)
       }
       for channel in ["0", "2"] {
@@ -982,7 +993,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
             tree.first {
               $0.accessibilityRole() == .menuButton && $0.accessibilityLabel() == expected
             },
-            "channel=\(channel) scale=\(scale): native menu missing; roles=\(tree.map { $0.accessibilityRole()?.rawValue ?? "" })"
+            "channel=\(channel) scale=\(scale): native menu missing; menus=\(tree.filter { $0.accessibilityRole() == .menuButton }.map { $0.accessibilityLabel() ?? "" })"
           )
           XCTAssertEqual(control.accessibilityLabel(), expected)
           let frame = control.accessibilityFrame()

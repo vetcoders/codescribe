@@ -4882,16 +4882,6 @@
         }
       }
     },
-    "Choose the composers that share this draft. Send delivers to the linked agents." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wybierz kompozytory współdzielące szkic. Wysłanie dostarczy wiadomość połączonym agentom."
-          }
-        }
-      }
-    },
     "Choose the horizontal strip or floating vertical agent pills." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -7272,6 +7262,17 @@
         }
       }
     },
+    "Dictate with %@." : {
+      "comment" : "Setup step; the argument is the dictation shortcut, e.g. Hold ⌃ (Ctrl)",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dyktujesz skrótem %@."
+          }
+        }
+      }
+    },
     "Dictate, or talk to an AI agent." : {
       "comment" : "Operating lane choice detail",
       "localizations" : {
@@ -7312,6 +7313,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dźwięk z dyktowania opuści ten Mac i trafi do skonfigurowanego dostawcy rozpoznawania mowy w chmurze."
+          }
+        }
+      }
+    },
+    "Dictation has no shortcut." : {
+      "comment" : "Setup step: the dictation shortcut was turned off in Settings",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dyktowanie nie ma skrótu."
           }
         }
       }
@@ -7565,17 +7577,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gotowe!"
-          }
-        }
-      }
-    },
-    "Double-tap left Option: dictation with formatting. Double-tap right Option: talk to the Agent. Tap again to stop." : {
-      "comment" : "Hotkey preset detail; left and right Option activate different modes",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dwa razy lewy Option: dyktowanie z formatowaniem. Dwa razy prawy Option: rozmowa z Agentem. Naciśnij ponownie, aby zakończyć."
           }
         }
       }
@@ -8672,6 +8673,18 @@
         }
       }
     },
+    "Formatting was not applied" : {
+      "comment" : "Notice when the transcript is retained after formatting fails",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie nie zostało zastosowane"
+          }
+        }
+      }
+    },
     "Free motion" : {
       "comment" : "Overlay placement mode: the user drags freely",
       "localizations" : {
@@ -8954,17 +8967,6 @@
         }
       }
     },
-    "Hands-off (toggle)" : {
-      "comment" : "Hotkey preset name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bez przytrzymywania"
-          }
-        }
-      }
-    },
     "Hang up the channel first, then remove the agent from the list" : {
       "comment" : "Drawer cross on an agent whose microphone channel is open",
       "localizations" : {
@@ -9074,13 +9076,13 @@
         }
       }
     },
-    "Hold Fn/Globe while you speak. Release to stop." : {
-      "comment" : "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard",
+    "Hold Fn to dictate." : {
+      "comment" : "Setup step; Fn is the key cap on a Mac keyboard",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Przytrzymaj Fn/Globe podczas mówienia. Puść, aby zakończyć."
+            "value" : "Przytrzymaj Fn, żeby dyktować."
           }
         }
       }
@@ -9091,17 +9093,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Przytrzymanie przed wysłaniem do Codescribe Bus"
-          }
-        }
-      }
-    },
-    "Hold to talk" : {
-      "comment" : "Hotkey preset name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przytrzymaj, żeby mówić"
           }
         }
       }
@@ -9206,17 +9197,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Hugging Face · %@ · %@"
-          }
-        }
-      }
-    },
-    "Hybrid (both)" : {
-      "comment" : "Hotkey preset name: hold and toggle",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oba sposoby"
           }
         }
       }
@@ -9575,6 +9555,16 @@
     "JetBrains Mono — meta 11" : {
       "shouldTranslate" : false
     },
+    "Join channel 0" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Dołącz do kanału 0"
+          }
+        }
+      }
+    },
     "Jump to current" : {
       "localizations" : {
         "pl" : {
@@ -9915,6 +9905,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uczyć słownik z poprawek?"
+          }
+        }
+      }
+    },
+    "Leave channel 0" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Opuść kanał 0"
           }
         }
       }
@@ -12043,6 +12043,17 @@
         }
       }
     },
+    "No receipt" : {
+      "comment" : "Agent row receipt: on the admitted list, but no reader recorded the copy",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez pokwitowania"
+          }
+        }
+      }
+    },
     "No recorded word slots for this take." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -13470,22 +13481,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wklejaj po dyktowaniu"
-          }
-        }
-      }
-    },
-    "Paste files, images, or long text to attach a local copy." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Paste files, images, or long text to attach a local copy."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wklej plik, obraz lub dłuższy tekst, aby załączyć lokalną kopię."
           }
         }
       }
@@ -16837,12 +16832,12 @@
         }
       }
     },
-    "Share typing and pasted attachments with this composer" : {
+    "Share future typing and pasted attachments with this composer" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Współdziel wpisywany tekst i wklejane załączniki z tym kompozytorem"
+            "value" : "Udostępniaj temu polu dalszy tekst i wklejane załączniki"
           }
         }
       }
@@ -17996,6 +17991,17 @@
         }
       }
     },
+    "Start Formatting and the Agent from the menu bar." : {
+      "comment" : "Setup step: Formatting and the Agent have no keyboard shortcut",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie i Agenta włączysz z menu na pasku."
+          }
+        }
+      }
+    },
     "Start dictation" : {
       "localizations" : {
         "pl" : {
@@ -18612,12 +18618,42 @@
         }
       }
     },
+    "Sync armed" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Oczekiwanie na drugie pole"
+          }
+        }
+      }
+    },
     "Sync draft" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Synchronizuj szkic"
+          }
+        }
+      }
+    },
+    "Sync linked" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Synchronizacja włączona"
+          }
+        }
+      }
+    },
+    "Sync off" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Synchronizacja wyłączona"
           }
         }
       }
@@ -19588,12 +19624,12 @@
         }
       }
     },
-    "This composer has a different draft or a pending delivery." : {
+    "This composer has a pending delivery or recording attachments." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Ten kompozytor ma inny szkic lub oczekuje na zakończenie wysyłania."
+            "value" : "To pole ma oczekującą wiadomość lub załączniki do nagrania."
           }
         }
       }
@@ -20186,6 +20222,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dostosuj skróty"
+          }
+        }
+      }
+    },
+    "Turn off do not disturb" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wyłącz „Nie przeszkadzać”"
           }
         }
       }
@@ -21504,7 +21550,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Skróty możesz później zmienić w Ustawienia › Skróty."
+            "value" : "Skróty zmienisz w Ustawieniach › Skróty."
           }
         }
       }
@@ -21597,17 +21643,6 @@
         }
       }
     },
-    "Your custom shortcuts stay as they are unless you pick a preset." : {
-      "comment" : "Setup step footnote; tells the user rerunning the wizard will not overwrite shortcuts they customized",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Twoje własne skróty zostają bez zmian, chyba że wybierzesz jedną z metod."
-          }
-        }
-      }
-    },
     "Your keys are stored in the macOS Keychain; live transcription through Libraxis uses a short-lived session token." : {
       "localizations" : {
         "pl" : {
@@ -21645,6 +21680,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mówisz bardzo cicho i mikrofon może gubić słowa. Przysuń się bliżej albo uruchom kalibrację mikrofonu."
+          }
+        }
+      }
+    },
+    "Your transcript is retained without the requested formatting." : {
+      "comment" : "Notice that the retained transcript does not use the requested formatting",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja została zachowana bez wybranego formatowania."
           }
         }
       }
@@ -22557,6 +22604,18 @@
         }
       }
     },
+    "formatting not applied" : {
+      "comment" : "Status of a transcript delivered without the requested formatting",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "formatowanie niezastosowane"
+          }
+        }
+      }
+    },
     "formatting…" : {
       "localizations" : {
         "pl" : {
@@ -22646,78 +22705,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Naciśnij dwukrotnie klawisz Control"
-          }
-        }
-      }
-    },
-    "hotkeys.binding.doubleLeftOption" : {
-      "comment" : "Gesture option: tap the left Option key twice",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "2× Left ⌥ (Option)"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "2× lewy ⌥ (Option)"
-          }
-        }
-      }
-    },
-    "hotkeys.binding.doubleLeftOption.spoken" : {
-      "comment" : "VoiceOver reading of a gesture option",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Tap the left Option key twice"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Naciśnij dwukrotnie lewy klawisz Option"
-          }
-        }
-      }
-    },
-    "hotkeys.binding.doubleRightOption" : {
-      "comment" : "Gesture option: tap the right Option key twice",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "2× Right ⌥ (Option)"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "2× prawy ⌥ (Option)"
-          }
-        }
-      }
-    },
-    "hotkeys.binding.doubleRightOption.spoken" : {
-      "comment" : "VoiceOver reading of a gesture option",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Tap the right Option key twice"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Naciśnij dwukrotnie prawy klawisz Option"
           }
         }
       }
@@ -22938,6 +22925,24 @@
         }
       }
     },
+    "hotkeys.mode.agent.noShortcut" : {
+      "comment" : "Shortcuts screen: replaces the gesture picker for the Agent; the quoted name is a menu bar item",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Start the Agent from the menu bar (“Start in Agent mode”). The keyboard shortcut is turned off."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agenta uruchomisz z menu na pasku („Start w trybie Agenta”). Skrót klawiaturowy jest wyłączony."
+          }
+        }
+      }
+    },
     "hotkeys.mode.dictation" : {
       "comment" : "Work mode name on the Shortcuts screen",
       "extractionState" : "extracted_with_value",
@@ -22988,6 +22993,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dyktowanie z formatowaniem AI"
+          }
+        }
+      }
+    },
+    "hotkeys.mode.formatting.noShortcut" : {
+      "comment" : "Shortcuts screen: replaces the gesture picker for Formatting",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Start Formatting from the menu bar or the overlay. The keyboard shortcut is turned off."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowanie uruchomisz z menu na pasku lub z nakładki. Skrót klawiaturowy jest wyłączony."
           }
         }
       }
@@ -24810,38 +24833,38 @@
         }
       }
     },
-    "settings.shortcuts.conflict.doubleCtrlBlocksLeftOption" : {
-      "comment" : "Shortcuts screen: blocking conflict between two gestures",
+    "settings.shortcuts.conflict.agentHasNoShortcut" : {
+      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Dictation uses 2× Ctrl, so the left Option gesture cannot start a take."
+            "value" : "This gesture starts only Dictation. The Agent has no shortcut: start it from the menu bar."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dyktowanie używa 2× Ctrl, więc gest lewego Option nie uruchomi nagrania."
+            "value" : "Ten gest uruchamia tylko Dyktowanie. Agent nie ma skrótu: włączysz go z menu na pasku."
           }
         }
       }
     },
-    "settings.shortcuts.conflict.doubleCtrlBlocksRightOption" : {
-      "comment" : "Shortcuts screen: blocking conflict between two gestures",
+    "settings.shortcuts.conflict.formattingHasNoShortcut" : {
+      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Dictation uses 2× Ctrl, so the right Option gesture cannot start a take."
+            "value" : "This gesture starts only Dictation. Formatting has no shortcut: start it from the menu bar."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dyktowanie używa 2× Ctrl, więc gest prawego Option nie uruchomi nagrania."
+            "value" : "Ten gest uruchamia tylko Dyktowanie. Formatowanie nie ma skrótu: włączysz je z menu na pasku."
           }
         }
       }
@@ -24860,114 +24883,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ten gest jest już zajęty przez skrót systemowy macOS."
-          }
-        }
-      }
-    },
-    "settings.shortcuts.conflict.onlyAgentNotDictation" : {
-      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "2× Right ⌥ starts only the Agent, so Dictation would never start. Dictation starts with a hold or 2× Ctrl."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "2× prawy ⌥ uruchamia tylko Agenta, więc Dyktowanie nigdy by nie ruszyło. Dyktowanie uruchamia przytrzymanie albo 2× Ctrl."
-          }
-        }
-      }
-    },
-    "settings.shortcuts.conflict.onlyAgentNotFormatting" : {
-      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "2× Right ⌥ starts only the Agent, so Formatting would never start. Formatting starts with 2× Left ⌥."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "2× prawy ⌥ uruchamia tylko Agenta, więc Formatowanie nigdy by nie ruszyło. Formatowanie uruchamia 2× lewy ⌥."
-          }
-        }
-      }
-    },
-    "settings.shortcuts.conflict.onlyDictationNotAgent" : {
-      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "This gesture starts only Dictation, so the Agent would never start. The Agent starts with 2× Right ⌥."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ten gest uruchamia tylko Dyktowanie, więc Agent nigdy by nie ruszył. Agenta uruchamia 2× prawy ⌥."
-          }
-        }
-      }
-    },
-    "settings.shortcuts.conflict.onlyDictationNotFormatting" : {
-      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "This gesture starts only Dictation, so Formatting would never start. Formatting starts with 2× Left ⌥."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ten gest uruchamia tylko Dyktowanie, więc Formatowanie nigdy by nie ruszyło. Formatowanie uruchamia 2× lewy ⌥."
-          }
-        }
-      }
-    },
-    "settings.shortcuts.conflict.onlyFormattingNotAgent" : {
-      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "2× Left ⌥ starts only Formatting, so the Agent would never start. The Agent starts with 2× Right ⌥."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "2× lewy ⌥ uruchamia tylko Formatowanie, więc Agent nigdy by nie ruszył. Agenta uruchamia 2× prawy ⌥."
-          }
-        }
-      }
-    },
-    "settings.shortcuts.conflict.onlyFormattingNotDictation" : {
-      "comment" : "Shortcuts screen: blocking conflict, the gesture is not available for this mode",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "2× Left ⌥ starts only Formatting, so Dictation would never start. Dictation starts with a hold or 2× Ctrl."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "2× lewy ⌥ uruchamia tylko Formatowanie, więc Dyktowanie nigdy by nie ruszyło. Dyktowanie uruchamia przytrzymanie albo 2× Ctrl."
           }
         }
       }

@@ -126,7 +126,7 @@ struct CreatorPanel: View {
             )
           )
           .font(.caption)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("settings-max-agent-unavailable")
         }
@@ -219,7 +219,7 @@ struct CreatorPanel: View {
       if let error = model.creatorAgentBridgeError {
         Text(error)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .textSelection(.enabled)
       }
     }
@@ -674,7 +674,7 @@ private struct InterfaceLanguageRow: View {
       if let notice = model.interfaceLanguageNotice {
         Text(notice)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-interface-language-notice")
       }
@@ -764,7 +764,7 @@ private struct SheetShadeRows: View {
 /// One compact line inside the shared permissions group: status badge, name,
 /// and — only while something is missing — the repair action. The five rows
 /// share a single bordered card (Founder brief, round 4, 2026-10-10); the
-/// per-row olive/terracotta wash lives on in the badge and the action link.
+/// per-row olive/danger wash lives on in the badge; the action link keeps the accent.
 private struct PermissionChecklistRow: View {
   let kind: PermissionKind
   let state: PermissionState
@@ -783,13 +783,13 @@ private struct PermissionChecklistRow: View {
       // A granted row says it with the badge; the status stays for VoiceOver.
       VStack(alignment: .leading, spacing: 2) {
         Text(kind.displayName)
-          .font(CSFont.ui(13.5, .medium))
+          .font(CSFont.ui(14, .medium))
           .foregroundStyle(Color.primary)
           .accessibilityValue(state.label)
         if let note {
           Text(note)
             .font(.caption)
-            .foregroundStyle(CSColor.terracottaText)
+            .foregroundStyle(CSColor.dangerLight)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -831,12 +831,12 @@ private struct PermissionChecklistRow: View {
   @ViewBuilder
   private var statusBadge: some View {
     ZStack {
-      Circle().fill((granted ? CSColor.olive : CSColor.terracottaText).opacity(0.2))
+      Circle().fill((granted ? CSColor.olive : CSColor.dangerLight).opacity(0.2))
       CSIconView(
         icon: granted ? .success : .warning,
         size: 11,
         weight: .semibold,
-        color: granted ? CSColor.oliveLight : CSColor.terracottaText
+        color: granted ? CSColor.oliveLight : CSColor.dangerLight
       )
     }
     .frame(width: 20, height: 20)
@@ -872,11 +872,11 @@ private struct QuickStartCard: View {
       .padding(.vertical, 16)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .fill(Color.primary.opacity(hovered ? 0.1 : 0.05))
+          .fill(Color.primary.opacity(hovered ? CSAlpha.line : CSAlpha.fill))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
       .contentShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     }

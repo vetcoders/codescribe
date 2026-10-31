@@ -8,6 +8,94 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private typealias Layout = OverlayIntercomWidgetLayout
 
   @MainActor
+  func testMainHeaderAndExpandedArrowDoNotOwnResizeHitTargets() throws {
+    let suite = "CodescribeTests.chrome-hit.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let state = OverlayState()
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "chrome-fixture",
+        "lease_id": String(repeating: "c", count: 32), "channel": "3", "name": "Agent",
+      ]))
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "3", name: "Agent", owner: owner, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    state.applyChannelRoster([
+      .init(
+        channel: "3", audience: "Agent", provider: owner.provider,
+        providerSessionId: owner.providerSessionID, open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    let controller = OverlayIntercomWidgetController(
+      state: state, textScale: TextScaleController(key: suite),
+      desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+    defer { controller.invalidate() }
+    let identity = OverlayIntercomCardIdentity(digit: "3", conversation: conversation)
+    for header in [true, false] {
+      let height: CGFloat = header ? Layout.controlHeight(scale: 1) : 400
+      let content: AnyView =
+        header
+        ? AnyView(controller.offscreenHeader(width: 500))
+        : AnyView(
+          controller.offscreenCard(identity, width: 500, height: height, scale: 1, expanded: true))
+      let host = NSHostingView(
+        rootView: content.environment(\.csTextScale, 1).symbolEffectsRemoved()
+          .transaction {
+            $0.animation = nil
+            $0.disablesAnimations = true
+          })
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 500, height: height)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.06))
+      host.layoutSubtreeIfNeeded()
+      let top = host.isFlipped ? host.bounds.minY + 7 : host.bounds.maxY - 7
+      let bottom = host.isFlipped ? host.bounds.maxY - 7 : host.bounds.minY + 7
+      func resizeViews(_ view: NSView) -> [NSView] {
+        let own =
+          String(describing: type(of: view)).contains("OverlayIntercomResizeView") ? [view] : []
+        return own + view.subviews.flatMap { resizeViews($0) }
+      }
+      let nativeHandles = resizeViews(host)
+      print(
+        "chrome-hit-witness header=\(header) bounds=\(host.bounds) handles=\(nativeHandles.map { $0.convert($0.bounds, to: host) })"
+      )
+      func resizeAt(_ x: CGFloat, _ y: CGFloat) -> Bool {
+        let target = host.hitTest(host.convert(NSPoint(x: x, y: y), to: host.superview))
+        return target.map { String(describing: type(of: $0)).contains("OverlayIntercomResizeView") }
+          ?? false
+      }
+      XCTAssertFalse(resizeAt(493, top), "Main header and expanded arrow never resize")
+      for x in [CGFloat(7), 493] {
+        XCTAssertEqual(resizeAt(x, bottom), !header, "Only the card retains bottom resize targets")
+      }
+      if !header {
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .mouseMoved, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1,
+            clickCount: 0, pressure: 0))
+        for handle in nativeHandles { handle.mouseEntered(with: event) }
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let image = NSImage(size: host.bounds.size)
+        image.addRepresentation(bitmap)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Rounded-card-native-corner-ink"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+      }
+    }
+    XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
+  }
+
+  @MainActor
   func testFourDotHeaderAtCompactAndWideWidthsWithoutPresentingWindows() throws {
     XCTAssertNotNil(
       NSImage(systemSymbolName: "circle.grid.2x2.fill", accessibilityDescription: nil))
@@ -67,16 +155,18 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertEqual(presentation.expanded, [cards[1]])
   }
 
-  func testTwoAndThreeRowCardsReserveAgentInformationBeforePreview() throws {
+  func testMetadataGetsOneReadableLineBeforePreview() throws {
     for scale in [CGFloat(0.8), 1, 1.6, 2] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
       let width = max(metrics.actionsWidth, 400 * scale)
       let row = Layout.controlHeight(scale: scale)
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: row), .header)
-      for height in [2 * row, 3 * row] {
-        XCTAssertEqual(metrics.cardContent(width: width, cardHeight: height), .context)
-        XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: height))
-      }
+      let metadataLine = ceil(
+        NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
+      let metadataHeight = row + metadataLine + 6
+      XCTAssertEqual(metrics.cardContent(width: width, cardHeight: metadataHeight), .context)
+      XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: metadataHeight))
+      XCTAssertNotNil(metrics.compactPreviewLayout(width: width, cardHeight: 3 * row))
       let later = try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 8 * row))
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: 8 * row), .preview)
       XCTAssertGreaterThan(later.height, 3 * row)
@@ -90,17 +180,25 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   func testComposerAppearsAtReadableSizeAndSurvivesFurtherGrowth() throws {
     for scale in [CGFloat(0.8), 1, 1.6, 2] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
-      let size = Layout.compactComposerBaseSize
       let factor = max(1, scale)
-      let width = size.width * factor
-      let height = size.height * factor
+      // A narrow card exposes input once readable message content also fits;
+      // the former fixed 320pt width must not hide the same editor.
+      let width: CGFloat = 220 * factor
       XCTAssertFalse(
-        try XCTUnwrap(metrics.compactPreviewLayout(width: width - 1, cardHeight: height * 2))
-          .showsComposer, "A tall but narrow card retains the preview")
+        try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 220 * factor))
+          .showsComposer, "The former admission height is too early for the complete input")
+      let height = CGFloat(
+        try XCTUnwrap(
+          (100...2000).first {
+            metrics.compactPreviewLayout(width: width, cardHeight: CGFloat($0))?.showsComposer
+              == true
+          }))
       for growth in [CGFloat(1), 1.5, 2, 4] {
         XCTAssertTrue(
-          try XCTUnwrap(metrics.compactPreviewLayout(width: width * growth, cardHeight: height * growth))
-            .showsComposer, "Growing the card must never withdraw its input (scale=\(scale))")
+          try XCTUnwrap(
+            metrics.compactPreviewLayout(width: width * growth, cardHeight: height * growth)
+          )
+          .showsComposer, "Growing the card must never withdraw its input (scale=\(scale))")
       }
     }
   }
@@ -171,7 +269,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private func reviewProductionCardPhases(dark: Bool) throws {
     func render(
       channel: String, text: String?, height: CGFloat, dark: Bool,
-      expanded: Bool = false, hover: Bool = false, longDraft: Bool = false
+      expanded: Bool = false, hover: Bool = false, longDraft: Bool = false,
+      supplementaryDraft: Bool = false
     ) throws
       -> Data
     {
@@ -230,9 +329,26 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           workspace: "/fixture/codescribe",
           frame: .init(session: "codescribe", paneID: 11))
       ])
-      let retainedDraft =
+      var retainedDraft =
         longDraft
         ? "Preserved draft " + String(repeating: "Shared text stays intact. ", count: 20) : ""
+      let attachmentStore = ConversationAttachmentPointer.configDirectory
+        .appendingPathComponent("attachments", isDirectory: true)
+      let attachmentURL = attachmentStore.appendingPathComponent(
+        "review-attachment-\(UUID().uuidString).txt")
+      if supplementaryDraft {
+        try FileManager.default.createDirectory(
+          at: attachmentStore, withIntermediateDirectories: true)
+        try Data("Local review attachment".utf8).write(to: attachmentURL)
+        retainedDraft = ConversationDraft.compose(
+          text: "Review draft", attachments: [attachmentURL.path])
+        XCTAssertEqual(ConversationDraft.split(retainedDraft).attachments.count, 1)
+        state.conversationReplies[conversation.id] = OverlayUserReplyReference(
+          row: [
+            "message_id": "fixture-parent", "author": "Agent", "text": "Context for this reply",
+          ])
+      }
+      defer { if supplementaryDraft { try? FileManager.default.removeItem(at: attachmentURL) } }
       state.conversationDrafts[conversation.id] = retainedDraft
       state.publishConversationText = { _, _, _, _ in XCTFail("Mounting a preview must not send") }
       let keyWindow = NSApp.keyWindow
@@ -277,7 +393,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       image.addRepresentation(bitmap)
       let attachment = XCTAttachment(image: image)
       attachment.name =
-        "Compact-\(channel)-\(Int(height))-\(dark ? "dark" : "light")-\(text == nil ? "empty" : "message")-\(expanded ? "open" : hover ? "hover" : "card")-\(longDraft ? "long-draft" : "idle")"
+        "Compact-\(channel)-\(Int(height))-\(dark ? "dark" : "light")-\(text == nil ? "empty" : "message")-\(expanded ? "open" : hover ? "hover" : "card")-\(supplementaryDraft ? "reply-attachment" : longDraft ? "long-draft" : "idle")"
       attachment.lifetime = .keepAlways
       add(attachment)
       var header = Data()
@@ -301,11 +417,13 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         pendingViews.append(contentsOf: view.subviews)
       }
       if !expanded {
+        let measured = IntercomContentMetrics(names: ["Agent"], digits: [channel], scale: 1)
+          .compactPreviewLayout(width: 360, cardHeight: height)
         XCTAssertEqual(
-          editors.count, hover || height < 220 ? 0 : 1,
-          "Hover stays read-only; a 360pt card reveals one shared composer from 220pt height")
+          editors.count, !hover && measured?.showsComposer == true ? 1 : 0,
+          "The mounted native editor must match admission of the entire composer")
         for editor in editors {
-          XCTAssertEqual(editor.string, retainedDraft)
+          XCTAssertEqual(editor.string, ConversationDraft.split(retainedDraft).text)
           XCTAssertLessThanOrEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 28.5)
         }
       }
@@ -331,7 +449,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     do {
       // Native control hover and backdrop compositing can change between hosts.
       // Preserve both review images rather than treating a pixel count as proof
-      // of absent content. The phase policy above pins the metadata-only range.
+      // of absent content. The phase policy above pins the early input range.
       for height in [CGFloat(30), 60, 90] {
         _ = try render(channel: "3", text: nil, height: height, dark: dark)
         _ = try render(channel: "3", text: richMessage, height: height, dark: dark)
@@ -341,6 +459,21 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         _ = try render(channel: "3", text: richMessage, height: height, dark: dark)
       }
       _ = try render(channel: "3", text: richMessage, height: 220, dark: dark, longDraft: true)
+      let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["3"], scale: 1)
+      let firstInputHeight = try XCTUnwrap(
+        (100...700).first {
+          metrics.compactPreviewLayout(width: 360, cardHeight: CGFloat($0))?.showsComposer == true
+        })
+      for height in [firstInputHeight - 1, firstInputHeight, firstInputHeight + 80] {
+        _ = try render(
+          channel: "3", text: "First readable line.\n\nSecond readable line.",
+          height: CGFloat(height), dark: dark)
+      }
+      for height in [firstInputHeight, firstInputHeight + 80] {
+        _ = try render(
+          channel: "3", text: "First readable line.\n\nSecond readable line.",
+          height: CGFloat(height), dark: dark, supplementaryDraft: true)
+      }
       _ = try render(channel: "3", text: richMessage, height: 240, dark: dark, hover: true)
       _ = try render(channel: "3", text: richMessage, height: 360, dark: dark, expanded: true)
       let three = try render(channel: "3", text: nil, height: 30, dark: dark)
@@ -358,7 +491,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           let minimum = metrics.minimumWidth(paging: paging)
           XCTAssertTrue(metrics.content(width: minimum, paging: paging).showsCount)
           XCTAssertEqual(metrics.audioWidth, 2 * Layout.controlHeight(scale: scale) + 6)
-          let controls = metrics.groupWidth + metrics.audioWidth + metrics.countWidth
+          let controls =
+            metrics.groupWidth + metrics.audioWidth + metrics.countWidth
             + 2 * IntercomHeaderContent(showsCount: true).horizontalInset
             + IntercomHeaderMetrics.spacerMinimum
             + CGFloat(paging ? 5 : 3) * IntercomHeaderMetrics.spacing
@@ -374,7 +508,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       let empty = IntercomHeaderMetrics(agentCount: 1, scale: scale)
       let busy = IntercomHeaderMetrics(agentCount: 25, scale: scale)
       XCTAssertGreaterThan(busy.countWidth, empty.countWidth)
-      XCTAssertGreaterThan(busy.width(showsCount: true, paging: false),
+      XCTAssertGreaterThan(
+        busy.width(showsCount: true, paging: false),
         empty.width(showsCount: true, paging: false))
       XCTAssertGreaterThan(busy.minimumWidth(paging: true), busy.minimumWidth(paging: false))
       XCTAssertTrue(busy.content(width: 2000, paging: false).showsCount)
@@ -568,7 +703,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       for height in [metrics.iconSide, 2 * metrics.iconSide, 500] {
         XCTAssertEqual(metrics.tier(width: width, cardHeight: height), .name)
       }
-      XCTAssertEqual(metrics.tier(width: metrics.actionsWidth, cardHeight: metrics.iconSide), .actions)
+      XCTAssertEqual(
+        metrics.tier(width: metrics.actionsWidth, cardHeight: metrics.iconSide), .actions)
       XCTAssertEqual(metrics.tier(width: metrics.iconSide, cardHeight: 500), .icon)
     }
   }

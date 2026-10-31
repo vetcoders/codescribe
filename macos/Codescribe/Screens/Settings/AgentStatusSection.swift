@@ -69,7 +69,7 @@ struct AgentStatusSection: View {
             .padding(.leading, 20)
         }
         if !summary.notes.isEmpty {
-          Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+          Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
             .padding(.vertical, SettingsScale.rowGap)
           VStack(alignment: .leading, spacing: CSSpace.xs) {
             // Says how to read the list, so a warning under "Configuration
@@ -92,7 +92,7 @@ struct AgentStatusSection: View {
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
       .padding(.top, SettingsScale.headerGap)
       .accessibilityIdentifier("settings-diagnostics-summary")
@@ -397,7 +397,7 @@ struct AgentStatusSection: View {
   // MARK: Shared chrome
 
   private var rowDivider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 
   /// Bordered list container shared by the compact sections.
@@ -406,7 +406,7 @@ struct AgentStatusSection: View {
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
   }
 
@@ -462,14 +462,29 @@ struct AgentStatusSection: View {
   }
 }
 
-// MARK: - Status mark (dot + word, tooltip, VoiceOver)
+// MARK: - Status glyph and mark (glyph + word, tooltip, VoiceOver)
+
+/// The glyph is the whole status signal: a thin check, a warning, an error
+/// mark or an empty circle in the tone's colour; the line beside it stays
+/// quiet `secondaryInk` (Founder, 2026-10-26, replacing the coloured dot of
+/// 2026-10-18). Hidden from VoiceOver: the row that carries it says the state.
+struct StatusToneGlyph: View {
+  let tone: CsMcpRowTone
+  var size: CGFloat = 10
+
+  var body: some View {
+    CSIconView(icon: tone.statusIcon, size: size, weight: .semibold, color: tone.dotColor)
+      .frame(width: size + 2, height: size + 2)
+      .accessibilityHidden(true)
+  }
+}
 
 struct StatusToneMark: View {
   let tone: CsMcpRowTone
 
   var body: some View {
     HStack(spacing: CSSpace.xxs) {
-      Circle().fill(tone.dotColor).frame(width: 7, height: 7)
+      StatusToneGlyph(tone: tone)
       Text(tone.label)
         .font(SettingsScale.statusBadge)
         .foregroundStyle(CSColor.secondaryInk)
@@ -528,11 +543,11 @@ private struct CapabilityMatrixRow: View {
         .padding(.horizontal, CSSpace.xs)
         .padding(.vertical, 2)
         .background(
-          RoundedRectangle(cornerRadius: 5, style: .continuous)
+          RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
             .fill(tierColor.opacity(0.12))
         )
         .overlay(
-          RoundedRectangle(cornerRadius: 5, style: .continuous)
+          RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
             .strokeBorder(tierColor.opacity(0.28), lineWidth: 1)
         )
         .frame(width: 100, alignment: .leading)
@@ -565,7 +580,7 @@ private struct CapabilityMatrixRow: View {
     switch row.tier.lowercased() {
     case "native": return CSColor.oliveLight
     case "enhanced": return CSColor.amberLight
-    case "unavailable": return CSColor.terracottaText
+    case "unavailable": return CSColor.dangerLight
     default: return CSColor.secondaryInk
     }
   }
@@ -574,12 +589,13 @@ private struct CapabilityMatrixRow: View {
 // MARK: - Tone → color and glyph
 
 extension CsMcpRowTone {
-  /// Map the UI-agnostic core tone onto concrete brand tokens.
+  /// Map the UI-agnostic core tone onto concrete brand tokens; this is the
+  /// colour of the tone's glyph (`statusIcon`).
   var dotColor: Color {
     switch self {
     case .good: return CSColor.oliveLight
     case .warn: return CSColor.amberLight
-    case .bad: return CSColor.terracottaText
+    case .bad: return CSColor.dangerLight
     case .neutral: return CSColor.secondaryInk
     }
   }

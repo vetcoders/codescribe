@@ -40,7 +40,7 @@ struct DictationWhisperModelTab: View {
         if let error = model.whisperDownloadStore.error {
           Text(error)
             .font(SettingsScale.helper)
-            .foregroundStyle(CSColor.terracottaText)
+            .foregroundStyle(CSColor.dangerLight)
             .fixedSize(horizontal: false, vertical: true)
         }
         SettingsControlRow(
@@ -192,7 +192,7 @@ struct DictationWhisperModelTab: View {
         // font; monospace stays for technical values on this pane
         // (Founder brief, round 13, 2026-10-10).
         Text(localWhisperRuntimeLabel)
-          .font(CSFont.ui(11.5, .semibold))
+          .font(CSFont.ui(12, .semibold))
           .foregroundStyle(localWhisperRuntimeColor)
         Button("Recheck", action: model.recheckLocalWhisperRuntime)
           .buttonStyle(.bordered)
@@ -291,7 +291,7 @@ struct DictationWhisperModelTab: View {
                 .foregroundStyle(Color.primary)
               Spacer(minLength: CSSpace.sm)
               Text(Self.reasonTag(entry.element.reason))
-                .font(CSFont.ui(11.5, .medium))
+                .font(CSFont.ui(12, .medium))
                 .foregroundStyle(CSColor.amberLight)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
@@ -322,13 +322,13 @@ struct DictationWhisperModelTab: View {
       }
       Spacer(minLength: CSSpace.sm)
       if removable {
-        SettingsChipButton("Remove", tint: CSColor.terracottaText) {
+        SettingsChipButton("Remove", tint: CSColor.dangerLight) {
           remove(directory)
         }
       } else {
         // Disabled, not hidden: the line must still show that removal is the
         // action it would otherwise offer, and say why it cannot.
-        SettingsChipButton("Remove", tint: CSColor.terracottaText, enabled: false) {}
+        SettingsChipButton("Remove", tint: CSColor.dangerLight, enabled: false) {}
           .help("The selected model cannot be removed.")
           .accessibilityHint("The selected model cannot be removed.")
       }
@@ -430,7 +430,7 @@ struct DictationWhisperModelTab: View {
   ) -> some View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
       Text(title)
-        .font(CSFont.ui(11.5, .semibold))
+        .font(CSFont.ui(12, .semibold))
         .foregroundStyle(CSColor.secondaryInk)
         .accessibilityAddTraits(.isHeader)
       content()
@@ -446,7 +446,7 @@ struct DictationWhisperModelTab: View {
         .font(CSFont.ui(11))
         .foregroundStyle(CSColor.secondaryInk)
       Text(verbatim: value)
-        .font(CSFont.mono(10.5))
+        .font(CSFont.mono(11))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
@@ -468,7 +468,7 @@ struct DictationWhisperModelTab: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 
   // MARK: - Copy (pure, tested)

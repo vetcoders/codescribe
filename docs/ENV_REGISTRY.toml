@@ -95,7 +95,7 @@ default = "5"
 type = "u64"
 reload = "hot"
 category = "audio"
-description = "Hands-free delivery boundary: seconds of silence after heard voice before the open agent-channel utterance seals, delivers, and the channel reopens on the same binding. Default 5 per the Founder's 2026-09-29 voice decision (seal cc6c8248, closes A.5.3); a channel that heard no voice stays open. 0 disables the threshold; utterance silence inside the session is a different knob."
+description = "Hands-free delivery boundary: seconds of silence after heard voice before the open agent-channel utterance seals, delivers, and ends the channel session; nothing reopens it (one press, one message: Founder decision 2026-10-26, replacing the reopen half of seal cc6c8248). Default 5. A channel that hears no voice ends 30 s after it opened. 0 disables both; utterance silence inside the session is a different knob."
 
 [vars.CODESCRIBE_AGENT_SEND_HOLD_SEC]
 default = "10"
@@ -464,7 +464,7 @@ default = "auto"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
+description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture. Also the language of the app's xAI spoken replies; auto speaks pl there."
 
 [vars.WHISPER_ADAPTIVE_BUFFER]
 default = "false"
@@ -1832,6 +1832,13 @@ type = "string"
 reload = "restart"
 category = "agent"
 description = "TTS vendor for the cs-say system voice: xai or openai; --tts-vendor wins. Read at helper invocation."
+
+[vars.CS_SAY_LANGUAGE]
+default = "pl"
+type = "string"
+reload = "restart"
+category = "agent"
+description = "Language of every xAI reply the helper speaks (cs-say, --play-reply). Cut to its first part (pl-PL is pl) and accepted as pl or en; anything else, auto included, speaks pl with a warning. Read at synthesis."
 
 [vars.LLM_ANTHROPIC_OAUTH_CLIENT_ID]
 default = ""

@@ -45,7 +45,7 @@ struct InterfaceLanguageStepView: View {
         .fixedSize(horizontal: false, vertical: true)
       }
       if let error = model.lastError {
-        Text(error).font(.callout).foregroundStyle(CSColor.terracottaText)
+        Text(error).font(.callout).foregroundStyle(CSColor.dangerLight)
           .accessibilityIdentifier("onboarding-interface-language-error")
       }
     }
@@ -200,32 +200,30 @@ struct LanguageStepView: View {
   }
 }
 
-// MARK: - Hotkey mode (recording-trigger preset)
+// MARK: - Hotkeys (how recording starts)
 
+/// How recording starts. One description instead of presets: Formatting and
+/// the Agent start from the menu bar, and the step writes no binding.
 struct HotkeyModeStepView: View {
   @ObservedObject var model: OnboardingViewModel
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      VStack(spacing: 10) {
-        ForEach(HotkeyModeChoice.allCases, id: \.self) { mode in
-          OnboardingChoiceCard(
-            title: mode.label(locale: model.interfaceLocale),
-            subtitle: mode.summary(locale: model.interfaceLocale),
-            isSelected: model.hotkeyMode == mode
-          ) { model.selectHotkeyMode(mode) }
+      OnboardingCard {
+        VStack(alignment: .leading, spacing: 6) {
+          Text(model.dictationStartLine)
+            .font(.body.weight(.semibold))
+          Text(
+            String(
+              localized: LocalizedStringResource(
+                "Start Formatting and the Agent from the menu bar.",
+                locale: model.interfaceLocale,
+                comment: "Setup step: Formatting and the Agent have no keyboard shortcut"))
+          )
+          .font(.callout)
+          .foregroundStyle(CSColor.secondaryInk)
+          .fixedSize(horizontal: false, vertical: true)
         }
-      }
-
-      if model.hotkeyBindingsAreCustom {
-        OnboardingStepNote(
-          text: String(
-            localized: LocalizedStringResource(
-              "Your custom shortcuts stay as they are unless you pick a preset.",
-              locale: model.interfaceLocale,
-              comment:
-                "Setup step footnote; tells the user rerunning the wizard will not overwrite shortcuts they customized"
-            )))
       }
 
       OnboardingStepNote(
@@ -268,7 +266,7 @@ struct AgenticReadinessStepView: View {
                       "\(client.displayName) needs setup", locale: model.interfaceLocale,
                       comment: "Status below an agent client card; %@ is Codex or Claude Code"))
                 )
-                .font(CSFont.mono(10.5, .medium))
+                .font(CSFont.mono(11, .medium))
                 .foregroundStyle(CSColor.terracottaLight)
                 Spacer(minLength: 0)
                 Button(
@@ -291,7 +289,7 @@ struct AgenticReadinessStepView: View {
 
             if model.agentClientShowsError(client), let error = model.agentBridgeError {
               Text(error)
-                .font(CSFont.mono(10.5, .medium))
+                .font(CSFont.mono(11, .medium))
                 .foregroundStyle(CSColor.terracottaLight)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 12)
@@ -307,7 +305,7 @@ struct AgenticReadinessStepView: View {
               "Ready to go ✓", locale: model.interfaceLocale,
               comment: "Agent setup status below the client cards"))
         )
-        .font(CSFont.mono(10.5, .semibold))
+        .font(CSFont.mono(11, .semibold))
         .foregroundStyle(CSColor.oliveLight)
       } else if model.agentReadinessPending {
         Text(
@@ -316,7 +314,7 @@ struct AgenticReadinessStepView: View {
               "Checking provider access…", locale: model.interfaceLocale,
               comment: "Setup Agent readiness while the provider snapshot is loading"))
         )
-        .font(CSFont.mono(10.5, .medium))
+        .font(CSFont.mono(11, .medium))
         .foregroundStyle(CSColor.secondaryInk)
       } else if model.agentNeedsGlobalSetup {
         HStack(spacing: 10) {
@@ -326,7 +324,7 @@ struct AgenticReadinessStepView: View {
                 "Agent needs setup", locale: model.interfaceLocale,
                 comment: "Global provider or native readiness problem, not a client installation"))
           )
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
           .foregroundStyle(CSColor.terracottaLight)
           Spacer(minLength: 0)
           Button(
@@ -344,7 +342,7 @@ struct AgenticReadinessStepView: View {
 
       if model.agentBridgeErrorClient == nil, let error = model.agentBridgeError {
         Text(error)
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
           .foregroundStyle(CSColor.terracottaLight)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -532,7 +530,9 @@ struct LocalModelStepView: View {
             localized: LocalizedStringResource(
               "Local transcription needs this model. Install it to finish setup, or choose a cloud engine in Settings.",
               locale: model.interfaceLocale,
-              comment: "Explain the current local-model requirement without attributing an engine choice to the user"))
+              comment:
+                "Explain the current local-model requirement without attributing an engine choice to the user"
+            ))
         )
         .font(.callout)
         .foregroundStyle(CSColor.secondaryInk)
@@ -612,7 +612,7 @@ struct ApiKeyStepView: View {
         }
       } label: {
         Text(model.selectedProvider?.displayName ?? model.selectedProviderId)
-          .font(CSFont.ui(12.5, .semibold))
+          .font(CSFont.ui(13, .semibold))
           .foregroundStyle(.primary)
       }
       .menuStyle(.borderlessButton)
@@ -637,7 +637,7 @@ struct ApiKeyStepView: View {
               "Agent account", locale: model.interfaceLocale,
               comment: "Setup provider account row label"))
         )
-        .font(CSFont.ui(13.5, .semibold))
+        .font(CSFont.ui(14, .semibold))
         .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
         Text(model.selectedProviderAccountStatus)
@@ -669,7 +669,7 @@ struct ApiKeyStepView: View {
               "API key", locale: model.interfaceLocale,
               comment: "Setup provider API key row label"))
         )
-        .font(CSFont.ui(13.5, .semibold))
+        .font(CSFont.ui(14, .semibold))
         .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
         Text(model.selectedProviderKeyStatus)
@@ -951,7 +951,9 @@ struct DoneStepView: View {
               localized: LocalizedStringResource(
                 "Local transcription needs this model. Install it to finish setup, or choose a cloud engine in Settings.",
                 locale: model.interfaceLocale,
-                comment: "Explain the current local-model requirement without attributing an engine choice to the user"))
+                comment:
+                  "Explain the current local-model requirement without attributing an engine choice to the user"
+              ))
           )
           .font(.callout)
           .foregroundStyle(CSColor.secondaryInk)

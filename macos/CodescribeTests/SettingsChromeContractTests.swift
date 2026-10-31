@@ -317,16 +317,17 @@ final class SettingsChromeContractTests: XCTestCase {
     }
 
     let view = try XCTUnwrap(settingsSources()["SettingsView.swift"])
-    XCTAssertTrue(view.contains("Circle().fill(health.level.color).frame(width: 6, height: 6)"))
+    XCTAssertTrue(view.contains("StatusToneGlyph(tone: health.level.tone)"))
+    XCTAssertFalse(view.contains("Circle().fill(health.level"))
     XCTAssertTrue(view.contains("if let message = health.message {"))
     // A status sentence speaks in the system face; mono is for time, versions,
-    // shortcuts, code and eyebrows (Founder, 2026-10-18). The dot carries the
-    // level, the sentence is quiet secondary text (Monika, 2026-10-18).
+    // shortcuts, code and eyebrows (Founder, 2026-10-18). The glyph carries
+    // the level, the sentence is quiet secondary text (Founder, 2026-10-26).
     XCTAssertTrue(
       view.contains(
         "Text(message)\n        .font(.caption)\n        .foregroundStyle(CSColor.secondaryInk)"))
-    // Narrowest sidebar minus the footer padding, the status dot and its gap.
-    let slot: CGFloat = 196 - 2 * 16 - 6 - 8
+    // Narrowest sidebar minus the footer padding, the status glyph and its gap.
+    let slot: CGFloat = 196 - 2 * 16 - 12 - 8
     XCTAssertEqual(states.first?.level, .healthy)
     let healthy = try XCTUnwrap(messages.first)
     let face = NSFont.preferredFont(forTextStyle: .caption1)
@@ -1484,10 +1485,12 @@ final class SettingsChromeContractTests: XCTestCase {
       "Pełne porównanie · %1$lld → %2$lld znaków")
   }
 
-  func testAvailabilityTintsUseSolidTerracotta() throws {
+  func testAvailabilityTintsUseDangerLight() throws {
     let model = try XCTUnwrap(settingsSources()["SettingsViewModel.swift"])
     XCTAssertEqual(
-      model.components(separatedBy: "? CSColor.oliveLight : CSColor.terracottaText").count, 3)
+      model.components(separatedBy: "? CSColor.secondaryInk : CSColor.dangerLight").count, 2)
+    XCTAssertTrue(model.contains("return runtime.available ? .neutral : .bad"))
+    XCTAssertTrue(model.contains("var availabilityTint: Color { availabilityTone.dotColor }"))
     XCTAssertTrue(
       model.contains(
         "static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive)"))
@@ -1672,8 +1675,6 @@ final class SettingsChromeContractTests: XCTestCase {
       "One-time purchase": "Zakup jednorazowy",
       "No active license": "Bez aktywnej licencji",
       "Basic mode": "Tryb podstawowy",
-      "Your custom shortcuts stay as they are unless you pick a preset.":
-        "Twoje własne skróty zostają bez zmian, chyba że wybierzesz jedną z metod.",
       // Kept on purpose: the markers switch's accessibility label (UI-33).
       "Add markers to text": "Dodawaj znaczniki do tekstu",
     ]
@@ -1685,6 +1686,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Basic mode stays free. A license unlocks Agent mode.",
       "No transcription in this app session",
       "Browse corrections and dictionary rules.",
+      // W2-09: onboarding presets are gone; Settings › Shortcuts is the only editor.
+      "Your custom shortcuts stay as they are unless you pick a preset.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }

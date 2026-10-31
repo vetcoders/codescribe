@@ -1831,7 +1831,8 @@ final class OverlayState {
           guard self.agentPanelFocusStates[channel]?.requestID == state.requestID,
             self.agentPanelFocusStates[channel]?.phase == .activating
           else { return }
-          let bindingMatches = self.canFocusAgentPanel(state.owner)
+          let bindingMatches =
+            self.canFocusAgentPanel(state.owner)
             && self.channelPlaybackAgents[channel]?.frame == binding?.frame
             && self.channelPlaybackAgents[channel]?.terminal == binding?.terminal
           let succeeded = activated && bindingMatches
@@ -2692,10 +2693,13 @@ final class OverlayState {
       }
   }
 
-  /// Bring one newly admitted reply's owner into the existing surface.
-  /// History, a repeated id, playback or ACK of a known id, and an owner that
-  /// is not unique stay where the user already is. Channel number, display
-  /// name and reply text are not identity.
+  /// Bring the owner of one newly admitted message to the Founder into the
+  /// existing surface. Only an agent's reply on its own channel or a message
+  /// to her inbox moves the selection; a message between agents and anything
+  /// on channel 0 never does and stays unread where it lies (Founder decision
+  /// 2026-10-26). History, a repeated id, playback or ACK of a known id, and
+  /// an owner that is not unique stay where the user already is. Channel
+  /// number, display name and reply text are not identity.
   private func followNewlyReceivedReply(preservingControllerFocus: Bool) {
     let current = Set(conversations.flatMap(\.replyIDs))
     let fresh = replyInventoryBaselined ? current.subtracting(observedReplyIDs) : []
@@ -2707,9 +2711,21 @@ final class OverlayState {
     // here, so the horizon ending later cannot select that owner.
     guard !establishingInventory, !fresh.isEmpty, !preservingControllerFocus,
       !activeCaptureOwnsPresentation,
-      !composerRetainsAutomaticReplyFocus,
-      let conversation = ownedConversation(forNewReplies: fresh)
+      !composerRetainsAutomaticReplyFocus
     else { return }
+    let addressed = repliesAddressedToFounder(among: fresh)
+    guard !addressed.isEmpty else { return }
+    guard let conversation = ownedConversation(forNewReplies: addressed) else {
+      traceUnownedAdmission(addressed)
+      return
+    }
+    let note = [
+      "reply=\(addressed.sorted().joined(separator: ","))",
+      "owner=\(Self.traceOwner(conversation.owner))",
+      "source=\(traceSources(of: addressed))",
+      "from=\(traceSelectedChannel) to=\(conversation.channel)",
+    ].joined(separator: " ")
+    OverlayPresentationTrace.shared.record(.conversationAutoSelected, note: note)
     if selectedConversationID == conversation.id {
       if isCollapsed && expandedByDefault { expandAgentSurface(cause: .automatic) }
     } else {
@@ -2722,10 +2738,80 @@ final class OverlayState {
     freshReplyPresentationRequested = true
   }
 
-  /// The reader places a causal broadcast reply on channel 0 and on its
-  /// private owner. Focus follows the private owner id (provider, session,
-  /// lease). Channel 0 is not a second owner, and two owners in one snapshot
-  /// are not a guess.
+  /// Fresh replies the Founder is the reader of: an agent's reply on its own
+  /// channel (no peer destination) or a message to her inbox (channel 10).
+  /// A peer message to channel 1–9 and any reply that sits in channel 0 are
+  /// left out and traced as skipped; they were already added to the observed
+  /// inventory, so a later poll cannot admit them again.
+  private func repliesAddressedToFounder(among fresh: Set<String>) -> Set<String> {
+    let onChannelZero = Set(conversations.filter { $0.channel == "0" }.flatMap(\.replyIDs))
+    var addressed = Set<String>()
+    for id in fresh.sorted() {
+      let message = freshReply(id)
+      let source = message?.sourceChannel
+      let reason: String
+      if onChannelZero.contains(id) {
+        reason = "channel-0"
+      } else if source == nil || source == "10" {
+        addressed.insert(id)
+        continue
+      } else {
+        reason = "agent-to-agent"
+      }
+      let note = [
+        "reply=\(id)",
+        "owner=\(Self.traceOwner(message?.owner))",
+        "source=\(source ?? "-")",
+        "reason=\(reason) stays=\(traceSelectedChannel)",
+      ].joined(separator: " ")
+      OverlayPresentationTrace.shared.record(.conversationAutoSkipped, note: note)
+    }
+    return addressed
+  }
+
+  /// Replies to the Founder without one owning conversation stay where the
+  /// user is: two authors are ambiguous, and an author without its own
+  /// conversation has no owner here.
+  private func traceUnownedAdmission(_ ids: Set<String>) {
+    let authors = Set(ids.compactMap { freshReply($0)?.owner?.id })
+    let reason = authors.count > 1 ? "ambiguous_owner" : "no_owner"
+    let owners = Set(ids.map { Self.traceOwner(freshReply($0)?.owner) }).sorted()
+    let note = [
+      "reply=\(ids.sorted().joined(separator: ","))",
+      "owner=\(owners.joined(separator: ","))",
+      "source=\(traceSources(of: ids))",
+      "reason=\(reason) stays=\(traceSelectedChannel)",
+    ].joined(separator: " ")
+    OverlayPresentationTrace.shared.record(.conversationAutoSkipped, note: note)
+  }
+
+  private func freshReply(_ id: String) -> OverlayConversationMessage? {
+    for conversation in conversations {
+      if let message = conversation.messages.first(where: { $0.kind == .reply && $0.id == id }) {
+        return message
+      }
+    }
+    return nil
+  }
+
+  /// Owner ids join their parts with NUL; the trace line needs printable
+  /// text, and eight characters of the session and the lease suffice.
+  private static func traceOwner(_ owner: OverlayConversationOwner?) -> String {
+    guard let owner else { return "-" }
+    return "\(owner.provider):\(owner.providerSessionID.prefix(8)):\(owner.leaseID.prefix(8))"
+  }
+
+  private func traceSources(of ids: Set<String>) -> String {
+    Set(ids.map { freshReply($0)?.sourceChannel ?? "-" }).sorted().joined(separator: ",")
+  }
+
+  private var traceSelectedChannel: String {
+    conversations.first { $0.id == selectedConversationID }?.channel ?? "-"
+  }
+
+  /// Focus follows the private owner id (provider, session, lease) of the
+  /// replies addressed to the Founder. Channel 0 is not an owner, and two
+  /// owners in one snapshot are not a guess.
   private func ownedConversation(forNewReplies fresh: Set<String>) -> OverlayConversation? {
     var match: OverlayConversation?
     for conversation in conversations {
@@ -2747,10 +2833,32 @@ final class OverlayState {
     return match
   }
 
-  var conversationDrafts: [String: String] = [:]
-  /// Linked composers resolve to one entry in conversationDrafts, never mirrored copies.
+  var conversationDrafts: [String: String] = [:] {
+    didSet {
+      for id in Set(oldValue.keys).union(conversationDrafts.keys) {
+        if !OverlayComposerProseEdit.identical(oldValue[id] ?? "", conversationDrafts[id] ?? "") {
+          conversationDraftRevisions[id] = UUID()
+          conversationDraftReceipts.removeValue(forKey: id)
+        }
+      }
+    }
+  }
+  /// Groups own only membership/epoch metadata; the dictionary is keyed by exact owner.
   var conversationDraftGroups: [OverlayDraftSyncGroup] = []
-  var conversationReplies: [String: OverlayUserReplyReference] = [:]
+  var armedDraftSyncConversationID: String?
+  @ObservationIgnored var conversationDraftRevisions: [String: UUID] = [:]
+  @ObservationIgnored var conversationReplyRevisions: [String: UUID] = [:]
+  @ObservationIgnored var conversationDraftReceipts: [String: OverlayComposerDraftPublication] = [:]
+  var conversationReplies: [String: OverlayUserReplyReference] = [:] {
+    didSet {
+      for id in Set(oldValue.keys).union(conversationReplies.keys) {
+        if oldValue[id] != conversationReplies[id] {
+          conversationReplyRevisions[id] = UUID()
+          conversationDraftReceipts.removeValue(forKey: id)
+        }
+      }
+    }
+  }
   var draftCapture = OverlayDraftCapture()
   struct CaptureAttachmentDraft {
     var target: OverlayCaptureAttachmentTarget?
@@ -2784,6 +2892,14 @@ final class OverlayState {
       }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
+    // A retired Sync member may already have lost its group. Revalidate at
+    // the routing boundary so that a stale callback cannot send it singly.
+    if conversation.channel != "0" {
+      guard draftSyncConversations.contains(where: {
+        $0.id == conversation.id && $0.owner?.id == conversation.owner?.id
+          && $0.channel == conversation.channel && $0.owner?.channel == conversation.owner?.channel
+      }) else { return }
+    }
     if hasSynchronizedDraft(conversation.id) {
       await sendSynchronizedDraft(from: conversation)
       return
@@ -2821,49 +2937,92 @@ final class OverlayState {
     }
   }
 
-  /// Freeze exact owners and reply references. Retry only recipients missing a receipt.
+  private func draftPublication(for conversation: OverlayConversation)
+    -> OverlayComposerDraftPublication?
+  {
+    guard let owner = conversation.owner else { return nil }
+    return OverlayComposerDraftPublication(
+      id: conversation.id, owner: owner, payload: conversationDraft(for: conversation.id),
+      reply: conversationReplies[conversation.id],
+      draftRevision: conversationDraftRevisions[conversation.id],
+      replyRevision: conversationReplyRevisions[conversation.id])
+  }
+
+  private func draftPublicationIsCurrent(_ publication: OverlayComposerDraftPublication) -> Bool {
+    guard let conversation = draftSyncConversations.first(where: { $0.id == publication.id }),
+      let current = draftPublication(for: conversation)
+    else { return false }
+    return current == publication
+  }
+
+  private func draftPublicationOwnerIsCurrent(_ publication: OverlayComposerDraftPublication) -> Bool {
+    draftSyncConversations.contains {
+      $0.id == publication.id && $0.owner?.id == publication.owner.id
+        && $0.channel == publication.owner.channel && $0.owner?.channel == publication.owner.channel
+    }
+  }
+
+  /// Freeze each exact owner's own payload and reply. A late receipt may clear
+  /// only that same edit generation; a changed draft, including ABA, survives.
   private func sendSynchronizedDraft(from conversation: OverlayConversation) async {
+    reconcileDraftSyncOwners()
     guard let index = draftGroupIndex(for: conversation.id) else { return }
     let group = conversationDraftGroups[index]
-    let draft = conversationDrafts[group.id] ?? ""
-    guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      pendingTextMessages.isDisjoint(with: group.members)
+    guard group.participants[conversation.id]?.owns(conversation) == true,
+      pendingTextMessages.isDisjoint(with: group.members),
+      pendingCaptureAttachmentSends.isDisjoint(with: group.members),
+      !group.members.contains(where: { captureAttachmentDrafts[$0] != nil })
     else { return }
     let recipients = draftSyncConversations.filter { group.members.contains($0.id) }
-    guard Set(recipients.map(\.id)) == group.members else { return }
-    let selectedOwners = recipients.compactMap(\.owner)
-    let pending = recipients.filter { !group.sent.contains($0.id) }.map {
-      (conversation: $0, reply: conversationReplies[$0.id])
+    guard Set(recipients.map(\.id)) == group.members,
+      recipients.allSatisfy({ group.participants[$0.id]?.owns($0) == true })
+    else { return }
+    let frozen = recipients.compactMap { draftPublication(for: $0) }.filter {
+      !$0.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+    let pending = frozen.filter { conversationDraftReceipts[$0.id] != $0 }
     guard !pending.isEmpty else { return }
     pendingTextMessages.formUnion(group.members)
     defer { pendingTextMessages.subtract(group.members) }
-    for recipient in pending { textMessageErrors.removeValue(forKey: recipient.conversation.id) }
+    for recipient in pending { textMessageErrors.removeValue(forKey: recipient.id) }
     for recipient in pending {
-      let id = recipient.conversation.id
+      // Send authorized the frozen payload. Subsequent editing does not recall
+      // it; only retirement/rebinding can cancel this exact recipient. A group
+      // dissolving after another owner retires cannot cancel a surviving owner.
+      guard draftPublicationOwnerIsCurrent(recipient) else { continue }
+      let id = recipient.id
       do {
-        let alsoSentTo = selectedOwners.filter {
-          $0.id != recipient.conversation.owner?.id
-        }
+        let alsoSentTo = frozen.filter {
+          $0.id != id && OverlayComposerProseEdit.identical($0.payload, recipient.payload)
+            && draftPublicationOwnerIsCurrent($0)
+        }.map(\.owner)
         try await publishConversationText(
-          recipient.conversation.owner, draft, recipient.reply, alsoSentTo)
-        if let current = conversationDraftGroups.firstIndex(where: { $0.id == group.id }),
-          conversationDraftGroups[current].revision == group.revision,
-          conversationDrafts[group.id] == draft
-        {
-          conversationDraftGroups[current].sent.insert(id)
-          if conversationReplies[id] == recipient.reply { conversationReplies.removeValue(forKey: id) }
+          recipient.owner, recipient.payload, recipient.reply, alsoSentTo)
+        // Membership can retire while the publication is in flight. Its
+        // receipt still belongs to an unchanged, still-current exact owner.
+        if draftPublicationIsCurrent(recipient) {
+          conversationDraftReceipts[id] = recipient
         }
       } catch {
-        textMessageErrors[id] = error.userFacingMessage
+        if draftPublicationOwnerIsCurrent(recipient) {
+          textMessageErrors[id] = error.userFacingMessage
+        }
       }
     }
-    if let current = conversationDraftGroups.firstIndex(where: { $0.id == group.id }),
-      conversationDraftGroups[current].revision == group.revision,
-      conversationDraftGroups[current].members.isSubset(of: conversationDraftGroups[current].sent),
-      conversationDrafts[group.id] == draft
-    {
-      setConversationDraft("", for: conversation.id)
+    var cleared = false
+    for recipient in frozen {
+      guard conversationDraftReceipts[recipient.id] == recipient,
+        draftPublicationIsCurrent(recipient)
+      else { continue }
+      conversationDrafts[recipient.id] = ""
+      conversationReplies.removeValue(forKey: recipient.id)
+      textMessageErrors.removeValue(forKey: recipient.id)
+      cleared = true
+    }
+    // A partial send leaves failed/newer drafts intact. All subsequent input
+    // starts at the resulting prose ends, while Sync membership stays enabled.
+    if cleared, let current = conversationDraftGroups.firstIndex(where: { $0.id == group.id }) {
+      resetDraftSyncEpoch(at: current)
     }
   }
 
@@ -2978,7 +3137,8 @@ final class OverlayState {
       let draft = ConversationDraft.split(conversationDraft(for: id))
       let added = staged.paths.filter { !draft.attachments.contains($0) }
       setConversationDraft(
-        ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id)
+        ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id
+      )
       captureAttachmentDrafts.removeValue(forKey: id)
       captureAttachmentErrors.removeValue(forKey: id)
       textMessageErrors[id] = String(
@@ -5175,6 +5335,35 @@ final class OverlayState {
   /// receipts, or product actions in Swift — and it may only close the capture
   /// its own identity addresses.
   func applyPresentationStatus(_ event: CsPresentationStatusEvent) {
+    if event.kind == "formatting_degraded" {
+      guard !event.terminal, let sessionID = event.sessionId,
+        sessionID == latestTranscriptProjection?.sessionId,
+        !retiredProjectionSessions.contains(sessionID)
+      else { return }
+      let headline = String(
+        localized: "Formatting was not applied",
+        comment: "Notice when the transcript is retained after formatting fails")
+      presentationStatus = OverlayPresentationStatus(
+        schema: event.schema,
+        emittedAt: event.emittedAt,
+        sessionId: sessionID,
+        kind: event.kind,
+        code: event.code,
+        statusLabel: String(
+          localized: "formatting not applied",
+          comment: "Status of a transcript delivered without the requested formatting"),
+        headline: headline,
+        message: String(
+          localized: "Your transcript is retained without the requested formatting.",
+          comment: "Notice that the retained transcript does not use the requested formatting"),
+        isError: event.isError,
+        terminal: false,
+        calibrationVersion: nil
+      )
+      onPresentationStatus?()
+      showToast(headline)
+      return
+    }
     if event.terminal, let sessionID = event.sessionId,
       draftCapture.destination(for: sessionID) != nil
     {
@@ -5574,6 +5763,11 @@ final class OverlayState {
         if projection.delivery == .copiedToClipboard {
           showFooterNotice(String(localized: "copied"))
         }
+        // An Agent take that ended without voice is archived on purpose:
+        // the opted-in auto-send never sends it. An explicit send still can.
+        if projection.delivery == .endedWithoutVoice {
+          agentAutoSendCancelled = true
+        }
       }
       if signalsFirstSuccessfulTerminal {
         onSuccessfulDictation?()
@@ -5615,10 +5809,13 @@ final class OverlayState {
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     if let destination = draftCapture.destination(for: projection.sessionId) {
       let parts = ConversationDraft.split(conversationDraft(for: destination))
-      setConversationDraft(
-        ConversationDraft.compose(
-          text: parts.text.isEmpty ? text : parts.text + "\n" + text,
-          attachments: parts.attachments), for: destination)
+      let appended = parts.text.isEmpty ? text : "\n" + text
+      applyConversationProseEdit(
+        OverlayComposerProseEdit(
+          before: parts.text, after: parts.text + appended,
+          replacements: [OverlayComposerTextReplacement(
+            range: NSRange(location: parts.text.utf16.count, length: 0), replacement: appended)]),
+        for: destination)
       admittedComposerSessions.insert(projection.sessionId)
       retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
       return
