@@ -21,14 +21,25 @@ from types import SimpleNamespace
 #: 30 min, and any call after 1e8 ms. OMP 18.10.3 applies no client-side MCP
 #: deadline unless `timeout`/`OMP_MCP_TIMEOUT_MS` is set; its window matches
 #: Claude Code's because the hook, not the wait, is the idle wakeup there too.
+#: Antigravity (`agy`) and Agent Client Protocol hosts (`acp`) have no measured
+#: tool-call deadline, so they take the shortest window here, Codex's.
 #: A window that ends with an explicit idle receipt keeps server and client
 #: agreeing on which wait is pending.
-WAIT_SECONDS = {"claude-code": 900, "junie": 150, "omp": 900, "codex": 60}
+WAIT_SECONDS = {"claude-code": 900, "junie": 150, "omp": 900, "codex": 60, "agy": 60, "acp": 60}
 
 #: Hosts whose idle wakeup is a hook process holding the lease's wake lock:
 #: Claude Code through its asyncRewake Stop hook, OMP through the bundled
 #: extension running `cs-bus --omp-wake`. Junie has no idle wakeup.
 NATIVE_WAKE_PROVIDERS = frozenset({"claude-code", "omp"})
+
+#: How an idle conversation of each provider learns about a new delivery.
+#: `stop_hook` and `omp_extension` hold the wake lock above; `codex_queue` is
+#: the follower submitting to Codex's own queue. `mcp_wait` and
+#: `watch_until_event` wake nobody: a model turn must be listening, through
+#: codescribe_wait or a background `cs-bus --watch --until-event` task.
+WAKEUP_MODE = {"claude-code": "stop_hook", "omp": "omp_extension", "codex": "codex_queue",
+               "junie": "mcp_wait", "agy": "watch_until_event", "acp": "watch_until_event"}
+NATIVE_WAKEUP_MODES = frozenset({"stop_hook", "omp_extension", "codex_queue"})
 
 #: Claude Code's asyncRewake hook wakes the model on exit code 2, which is
 #: also argparse's usage-error code. The wake therefore exits WAKE_EXIT and the
@@ -201,6 +212,56 @@ def announcer(demux, root, lease_id):
     return announce
 
 
+def connection_identities(demux, root, provider, session, result):
+    """The three separate identities of one connection, as fields of `result`.
+
+    `mailbox_owner` is who the deliveries belong to; `local_queue_target` is
+    the provider queue on this Mac a follower submits to, if any;
+    `events_target` is the process that observes the bus and how an idle
+    conversation would be woken. `native_wake_armed` is true only while a
+    native wake path is live now; a provider without one says so with
+    `wakeup_supported: false` and the way to listen instead.
+    """
+    lease_id = result.get("lease_id") or demux.lease_identifier(provider, session)
+    mode = WAKEUP_MODE[provider]
+    if "follower_alive" in result:
+        pid = result.get("follower_pid") if result.get("follower_alive") else None
+    else:
+        pid = demux.live_follower_pid(root, lease_id)
+    listener = result.get("listener") if isinstance(result.get("listener"), dict) else {}
+    until_event_alive = listener.get("until_event_alive")
+    if until_event_alive is None:
+        until_event_alive = lock_held(demux.until_event_lock_path(root, lease_id))
+    queue_supported = mode == "codex_queue"
+    if mode in ("stop_hook", "omp_extension"):
+        armed = wake_armed(root, lease_id)
+    elif queue_supported:
+        armed = result.get("wakeup") == "codex-queue" and pid is not None
+    else:
+        armed = False
+    identities = {
+        "mailbox_owner": {"provider": provider, "provider_session_id": session, "lease_id": lease_id,
+                          "channel": result.get("channel"),
+                          "name": result.get("name") or result.get("audience")},
+        "local_queue_target": {"rail": "codex_queue" if queue_supported else None,
+                               "queue_path": str(root / "wakeups" / lease_id) if queue_supported else None,
+                               "supported": queue_supported},
+        "events_target": {"follower_pid": pid, "follower_alive": pid is not None, "wakeup_mode": mode,
+                          "until_event_alive": bool(until_event_alive)},
+        "wakeup_supported": mode in NATIVE_WAKEUP_MODES,
+        "native_wake_armed": armed,
+    }
+    if mode == "watch_until_event":
+        identities["wakeup_instructions"] = (
+            f"{provider} has no native wakeup: keep a turn listening with codescribe_wait, or run "
+            f"`cs-bus --watch --until-event --provider {provider} --session {session}` as a background "
+            "task; it ends on the next message.")
+    elif mode == "mcp_wait":
+        identities["wakeup_instructions"] = (
+            f"{provider} has no idle wakeup: keep a turn listening with codescribe_wait.")
+    return identities
+
+
 def bound_channel(demux, root, provider, session):
     bindings = (demux.read_json(root / demux.AUDIENCE_BINDING_FILENAME) or {}).get("bindings")
     if isinstance(bindings, dict):
@@ -253,6 +314,17 @@ def scalar_lines(result, skip=()):
     return out
 
 
+def wake_summary(result):
+    """One sentence on how this conversation is woken, from the identity fields."""
+    events = result.get("events_target")
+    if not isinstance(events, dict):
+        return ""
+    mode = events.get("wakeup_mode")
+    if result.get("wakeup_supported"):
+        return f"Wakeup mode {mode}; native wake armed: {'yes' if result.get('native_wake_armed') else 'no'}. "
+    return f"Wakeup mode {mode}, no native wakeup. {result.get('wakeup_instructions') or ''} "
+
+
 def describe(result):
     """Prose for the conversation. Until 2026-10-12 every tool answered with
     json.dumps(result): the Founder watched envelopes scroll through the agent's
@@ -284,7 +356,8 @@ def describe(result):
                 f"Lease {result.get('lease_id')}, follower pid {result.get('follower_pid')} ({follower}), "
                 f"cursor {result.get('cursor')}, resumed {result.get('resumed')}, wakeup {result.get('wakeup')}, "
                 f"voice {voice.get('voice')} via {voice.get('provider')} ({result.get('voice_source')}). "
-                "State: attached_unverified until a fresh take is read and answered.")
+                + wake_summary(result)
+                + "State: attached_unverified until a fresh take is read and answered.")
     if kind == "acknowledged":
         settled = result.get("native_queue_settled")
         tail = "" if settled is None else f"; native queue settled: {'yes' if settled else 'no'}"
@@ -302,7 +375,8 @@ def describe(result):
                 f"backlog {result.get('backlog')}, cursor {result.get('cursor')}, wakeup {result.get('wakeup')}"
                 + (f", native wake armed: {'yes' if result.get('native_wake_armed') else 'no'}"
                    if "native_wake_armed" in result else "")
-                + (f", problem: {result['follower_problem']}" if result.get("follower_problem") else "") + ".")
+                + (f", problem: {result['follower_problem']}" if result.get("follower_problem") else "") + ". "
+                + wake_summary(result)).rstrip()
     if kind == "detach_receipt":
         released = ", ".join(str(c) for c in result.get("released_channels") or []) or "none"
         unacked = result.get("unacked_delivery_ids") or []
@@ -745,10 +819,13 @@ class Mailbox:
         previous = self.provider, self.owner
         self.provider, self.owner = provider, session
         try:
-            return self.run(flags)
+            result = self.run(flags)
         except Exception:
             self.provider, self.owner = previous
             raise
+        if isinstance(result, dict) and result.get("kind") == "attach_receipt":
+            result.update(connection_identities(self.demux, self.root, provider, session, result))
+        return result
 
     def read(self):
         result = self.run(["--read-pending", "--read-limit", "1"])
@@ -800,7 +877,11 @@ class Mailbox:
                         rearm = ("Call codescribe_wait again to keep this listening turn open, or end the turn: "
                                  f"the Codescribe {'Stop hook' if self.provider == 'claude-code' else 'OMP extension'} "
                                  "wakes this conversation on the next message."
-                                 if self.provider in NATIVE_WAKE_PROVIDERS else "Call codescribe_wait again to keep listening.")
+                                 if self.provider in NATIVE_WAKE_PROVIDERS else
+                                 "Call codescribe_wait again to keep listening, or run `cs-bus --watch --until-event "
+                                 f"--provider {self.provider} --session {self.owner}` as a background task."
+                                 if WAKEUP_MODE[self.provider] == "watch_until_event" else
+                                 "Call codescribe_wait again to keep listening.")
                         return {"kind": "wait_idle", "provider": self.provider, "provider_session_id": self.owner,
                                 "waited_seconds": round(time.monotonic() - started), "read_delivery_ids": [],
                                 "acknowledged": False,
@@ -821,8 +902,8 @@ class Mailbox:
 
     def status(self):
         result = self.run(["--status"])
-        if self.provider in NATIVE_WAKE_PROVIDERS:
-            result["native_wake_armed"] = wake_armed(self.root, self.demux.lease_identifier(self.provider, self.owner))
+        if isinstance(result, dict) and result.get("kind") == "status":
+            result.update(connection_identities(self.demux, self.root, self.provider, self.owner, result))
         return result
 
     def call(self, name, values, cancel):

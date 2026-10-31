@@ -780,6 +780,34 @@ class MCPProtocolTests(MailboxFixture):
         self.assertTrue(self.response(14)["result"]["isError"])
         self.assert_not_acknowledged()
 
+    def test_connect_and_status_separate_three_identities(self):
+        self.start_server()
+        connect = self.connect()
+        status = self.tool(11, "status")
+        mode = MCP.WAKEUP_MODE[self.PROVIDER]
+        native = mode in MCP.NATIVE_WAKEUP_MODES
+        for receipt in (connect, status):
+            with self.subTest(kind=receipt["kind"]):
+                self.assertEqual(receipt["mailbox_owner"], {
+                    "provider": self.PROVIDER, "provider_session_id": self.session,
+                    # The helper stores the name it was given in its canonical form.
+                    "lease_id": self.lease, "channel": "3", "name": "roman"})
+                queue_target = receipt["local_queue_target"]
+                self.assertEqual(queue_target["supported"], mode == "codex_queue")
+                if not queue_target["supported"]:
+                    self.assertEqual((queue_target["rail"], queue_target["queue_path"]), (None, None))
+                events = receipt["events_target"]
+                self.assertEqual(events["wakeup_mode"], mode)
+                self.assertEqual(events["follower_alive"], events["follower_pid"] is not None)
+                self.assertIs(receipt["wakeup_supported"], native)
+                self.assertIsInstance(receipt["native_wake_armed"], bool)
+                if not native:
+                    self.assertFalse(receipt["native_wake_armed"])
+                    self.assertIn("codescribe_wait", receipt["wakeup_instructions"])
+        self.assertEqual(status["events_target"]["follower_pid"],
+                         status["follower_pid"] if status["follower_alive"] else None)
+        self.assert_not_acknowledged()
+
     def test_new_connection_reports_global_mute_before_any_voice_attempt(self):
         self.start_server(override_bus=False)
         global_path = self.root / "runtime/playback-mutes/global.json"
@@ -1556,6 +1584,11 @@ class PluginContractTests(unittest.TestCase):
         connect = next(tool for tool in MCP.TOOLS if tool["name"] == "codescribe_connect")
         self.assertEqual(connect["inputSchema"]["properties"]["provider"]["enum"], sorted(MCP.WAIT_SECONDS))
         self.assertEqual(MCP.NATIVE_WAKE_PROVIDERS, {"claude-code", "omp"})
+        self.assertLessEqual({"agy", "acp"}, set(MCP.WAIT_SECONDS))
+        # Every provider declares how it is woken; none is left to a default.
+        self.assertEqual(set(MCP.WAKEUP_MODE), set(MCP.WAIT_SECONDS))
+        self.assertEqual({p for p, mode in MCP.WAKEUP_MODE.items() if mode in ("stop_hook", "omp_extension")},
+                         MCP.NATIVE_WAKE_PROVIDERS)
 
     def test_omp_extension_runs_the_wake_from_the_managed_helper_path(self):
         # OMP loads `hooks/pre/*.ts` from a marketplace plugin as extension modules;
@@ -1579,6 +1612,37 @@ class OmpMailboxTests(MailboxTests):
 
 class OmpProtocolTests(MCPProtocolTests):
     PROVIDER = "omp"
+
+
+class AgyMailboxTests(MailboxTests):
+    PROVIDER = "agy"
+
+
+class AgyProtocolTests(MCPProtocolTests):
+    PROVIDER = "agy"
+
+    def test_agy_connects_without_claiming_a_native_wake(self):
+        self.start_server()
+        connect = self.connect()
+        self.assertEqual(connect["mailbox_owner"]["provider"], "agy")
+        self.assertEqual(connect["mailbox_owner"]["lease_id"], DEMUX.lease_identifier("agy", self.session))
+        self.assertEqual(connect["local_queue_target"], {"rail": None, "queue_path": None, "supported": False})
+        self.assertEqual(connect["events_target"]["wakeup_mode"], "watch_until_event")
+        self.assertIs(connect["wakeup_supported"], False)
+        self.assertIs(connect["native_wake_armed"], False)
+        self.assertIn(f"cs-bus --watch --until-event --provider agy --session {self.session}",
+                      connect["wakeup_instructions"])
+        status = self.tool(11, "status")
+        self.assertIs(status["native_wake_armed"], False)
+        self.assertIs(status["events_target"]["until_event_alive"], False)
+        idle = self.tool(12, "wait", {"timeout_seconds": 1})
+        self.assertEqual(idle["kind"], "wait_idle")
+        self.assertIn("--watch --until-event --provider agy", idle["instructions"])
+        self.assert_not_acknowledged()
+
+
+class AcpProtocolTests(MCPProtocolTests):
+    PROVIDER = "acp"
 
 
 class OmpWakeTests(MailboxFixture):
