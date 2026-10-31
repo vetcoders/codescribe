@@ -222,6 +222,9 @@ async fn run_process(
     let mut completion = None;
     let mut terminal_error = None;
     let mut pending_permissions: Vec<Value> = Vec::new();
+    let mut pending_frame = None;
+    let mut observed_status = None;
+    let mut exit_drain_deadline = None;
     loop {
         tokio::select! {
             biased;
@@ -245,7 +248,40 @@ async fn run_process(
                 }
                 None => break,
             },
-            result = read_frame(&mut stdout, &mut line) => match result {
+            status = child.wait(), if exit_drain_deadline.is_none() => {
+                let reason = match status {
+                    Ok(status) => {
+                        observed_status = Some(status);
+                        "owned ACP process exited".to_string()
+                    }
+                    Err(error) => format!(
+                        "ACP process exit monitor failed: {}",
+                        redact_diagnostic(&error.to_string())
+                    ),
+                };
+                terminal_error = Some(AcpError::ProcessExited(reason));
+                // A descendant may keep stdout/stderr open after its parent
+                // exits. End that group now instead of waiting for pipe EOF.
+                process_group.kill();
+                // Preserve complete final frames already in the pipe, without
+                // letting descendants or receiver backpressure hold us alive.
+                // Only the prompt owner may certify a clean response.
+                exit_drain_deadline = Some(tokio::time::Instant::now() + CANCEL_TIMEOUT);
+            },
+            _ = async {
+                if let Some(deadline) = exit_drain_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                }
+            }, if exit_drain_deadline.is_some() => break,
+            permit = frames.reserve(), if pending_frame.is_some() => match permit {
+                Ok(permit) => {
+                    if let Some(frame) = pending_frame.take() {
+                        permit.send(Ok(frame));
+                    }
+                }
+                Err(_) => break,
+            },
+            result = read_frame(&mut stdout, &mut line), if pending_frame.is_none() => match result {
                 Ok(Some(frame)) => {
                     if frame["method"].as_str() == Some("session/request_permission")
                         && let Some(id) = frame.get("id")
@@ -256,14 +292,20 @@ async fn run_process(
                         }
                         pending_permissions.push(id.clone());
                     }
-                    if frames.send(Ok(frame)).await.is_err() { break; }
+                    // Reserve capacity in the outer select so a full inbound
+                    // queue never suspends owned-child exit/cancel monitoring.
+                    pending_frame = Some(frame);
                 }
                 Ok(None) => {
-                    terminal_error = Some(AcpError::ProcessExited("ACP stdout reached EOF".into()));
+                    terminal_error.get_or_insert_with(|| {
+                        AcpError::ProcessExited("ACP stdout reached EOF".into())
+                    });
                     break;
                 }
                 Err(error) => {
-                    terminal_error = Some(error);
+                    // An incomplete final frame after the observed exit must
+                    // not hide the owned process status and stderr diagnosis.
+                    terminal_error.get_or_insert(error);
                     break;
                 }
             },
@@ -300,11 +342,15 @@ async fn run_process(
     // Dedicated group ownership includes descendants holding stdout/stderr,
     // even after the agent parent has already exited.
     process_group.kill();
-    let status = match child.try_wait() {
-        Ok(Some(status)) => Some(status),
-        _ => {
-            let _ = child.start_kill();
-            child.wait().await.ok()
+    let status = if let Some(status) = observed_status {
+        Some(status)
+    } else {
+        match child.try_wait() {
+            Ok(Some(status)) => Some(status),
+            _ => {
+                let _ = child.start_kill();
+                child.wait().await.ok()
+            }
         }
     };
     if tokio::time::timeout(CANCEL_TIMEOUT, &mut stderr_task)
@@ -330,7 +376,10 @@ async fn run_process(
             }
             other => other,
         };
-        let _ = frames.send(Err(error)).await;
+        // A stalled consumer must not retain the reaped process actor forever.
+        // If the queue stays full, closing it still gives recv a dirty terminal;
+        // an error is never replaced with a synthetic clean prompt result.
+        let _ = tokio::time::timeout(CANCEL_TIMEOUT, frames.send(Err(error))).await;
     }
     if let Some(ack) = completion {
         let _ = ack.send(());
