@@ -13,6 +13,8 @@ fn missing_authorities_are_not_repaired_into_hosts() {
         "https:////proxy.example/v1/messages",
         "https:/proxy.example/v1/messages",
         "https:proxy.example/v1/messages",
+        "https:proxy.example/path://other.example",
+        "https:/proxy.example/path://other.example",
         "http:/localhost:8080",
         "https://",
         "http://",
