@@ -3928,7 +3928,14 @@ mod settings_snapshot_tests {
         let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
         let config = CodescribeConfig::new();
         assert_eq!(config.service_key_accounts(), ["GITHUB_TOKEN"]);
-        assert_eq!(config.available_providers().len(), 4);
+        let providers = config.available_providers();
+        assert_eq!(providers.len(), 5);
+        let google = providers
+            .iter()
+            .find(|provider| provider.id == "google-gemini")
+            .expect("Google is discoverable through the native provider catalog");
+        assert_eq!(google.wire, "google-generate-content");
+        assert_eq!(google.api_key_account, "LLM_GOOGLE_API_KEY");
         assert!(
             config
                 .available_providers()
