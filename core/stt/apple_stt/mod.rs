@@ -97,9 +97,7 @@ pub(super) fn configure_bridge_process_group(command: &mut Command) {
 pub(super) fn child_has_exited_without_reap(
     child: &std::process::Child,
 ) -> std::io::Result<bool> {
-    let Ok(pid) = libc::id_t::try_from(child.id()) else {
-        return Ok(false);
-    };
+    let pid: libc::id_t = child.id();
     // SAFETY: `info` is zero-initialized on the stack. `waitid` with
     // `WEXITED | WNOHANG | WNOWAIT` only inspects the child's exit state
     // without reaping the zombie or releasing its PID in the kernel.
