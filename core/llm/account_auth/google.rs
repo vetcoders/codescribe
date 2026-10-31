@@ -68,7 +68,11 @@ fn google_api_key_for_account(account: &str) -> Option<String> {
 
 fn stored_api_key(account: &str, lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
     lookup(account).or_else(|| {
-        if account == GOOGLE_API_KEY_ACCOUNT { None } else { lookup(GOOGLE_API_KEY_ACCOUNT) }
+        if account == GOOGLE_API_KEY_ACCOUNT {
+            None
+        } else {
+            lookup(GOOGLE_API_KEY_ACCOUNT)
+        }
     })
 }
 

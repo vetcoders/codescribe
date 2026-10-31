@@ -4816,7 +4816,93 @@ mod captured_startup_tests {
     use serial_test::serial;
 
     #[test]
+    #[serial]
+    fn public_google_preflight_accepts_vendor_env_and_global_custom_fallback() {
+        use crate::test_isolation::EnvGuard;
+        let _keys = [
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "LLM_GOOGLE_API_KEY",
+            "LLM_GOOGLE_ACCOUNT_TOKENS",
+        ]
+        .map(EnvGuard::remove);
+        let _bundle = super::super::keychain::test_support::install_bundle(&[]);
+        for name in ["GEMINI_API_KEY", "GOOGLE_API_KEY"] {
+            let _key = EnvGuard::set(name, "public-fixture-key");
+            let mut input = CapturedRuntimeInputs::defaults_at("/fixture/public-google".into(), 0);
+            input.user_settings.llm_assistive_provider = Some("google-gemini".into());
+            input.user_settings.llm_assistive_model = Some("gemini-fixture".into());
+            input.credentials.insert(
+                account_auth::GOOGLE_API_KEY_ACCOUNT.into(),
+                CapturedLaneCredential {
+                    api_key: Some("public-fixture-key".into()),
+                    signed_in: false,
+                },
+            );
+            let snapshot = Config::runtime_snapshot_from_captured(input);
+            let _probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
+            assert!(
+                snapshot
+                    .llm_lanes()
+                    .assistive()
+                    .request_unavailable_reason()
+                    .is_none(),
+                "{name}"
+            );
+        }
+        let _global = super::super::keychain::test_support::install_bundle(&[(
+            account_auth::GOOGLE_API_KEY_ACCOUNT,
+            "global-fixture",
+        )]);
+        let mut input = CapturedRuntimeInputs::defaults_at("/fixture/custom-google".into(), 0);
+        let row = crate::llm::provider::CustomProvider::new(
+            "Public Google global key",
+            WireFamily::GoogleGenerateContent,
+            "https://example.invalid/v1beta",
+        )
+        .unwrap();
+        input.user_settings.llm_assistive_provider = Some(format!("custom:{}", row.id));
+        input.user_settings.llm_assistive_model = Some("gemini-fixture".into());
+        input.credentials.insert(
+            row.key_account(),
+            CapturedLaneCredential {
+                api_key: Some("global-fixture".into()),
+                signed_in: false,
+            },
+        );
+        input.user_settings.add_custom_provider(row).unwrap();
+        let snapshot = Config::runtime_snapshot_from_captured(input);
+        let _probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
+        assert!(
+            snapshot
+                .llm_lanes()
+                .assistive()
+                .request_unavailable_reason()
+                .is_none()
+        );
+        let _empty = super::super::keychain::test_support::install_bundle(&[]);
+        assert!(
+            snapshot
+                .llm_lanes()
+                .assistive()
+                .request_unavailable_reason()
+                .is_some(),
+            "removed key cannot leave a ready cached lane"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn google_custom_lane_needs_credentials_and_cca_needs_account() {
+        use crate::test_isolation::EnvGuard;
+        let _keys = [
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "LLM_GOOGLE_API_KEY",
+            "LLM_GOOGLE_ACCOUNT_TOKENS",
+        ]
+        .map(EnvGuard::remove);
+        let _bundle = super::super::keychain::test_support::install_bundle(&[]);
         for (endpoint, key, signed_in, ready) in [
             ("https://example.invalid/v1beta", None, false, false),
             (

@@ -99,7 +99,10 @@ pub struct ProviderWireMessage {
 
 impl ProviderWireMessage {
     pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(self.version == 1, "Unsupported provider wire metadata version");
+        anyhow::ensure!(
+            self.version == 1,
+            "Unsupported provider wire metadata version"
+        );
         anyhow::ensure!(
             uuid::Uuid::parse_str(&self.occurrence_id).is_ok_and(|id| !id.is_nil())
                 && (1..=2).contains(&self.segment_count)
@@ -108,11 +111,15 @@ impl ProviderWireMessage {
             "Invalid provider wire occurrence or segment"
         );
         if let Some(response) = &self.response {
-            let digest = |value: &str| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
+            let digest =
+                |value: &str| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
             anyhow::ensure!(
-                !response.wire.is_empty() && response.wire.len() <= 128
-                    && !response.model.is_empty() && response.model.len() <= 1024
-                    && digest(&response.provider_id) && digest(&response.context_digest),
+                !response.wire.is_empty()
+                    && response.wire.len() <= 128
+                    && !response.model.is_empty()
+                    && response.model.len() <= 1024
+                    && digest(&response.provider_id)
+                    && digest(&response.context_digest),
                 "Invalid provider wire identity"
             );
         }
@@ -133,11 +140,17 @@ impl std::fmt::Debug for MessageMetadata {
 }
 
 impl MessageMetadata {
-    pub fn from_stored(value: serde_json::Value) -> Self { Self(value) }
-    pub fn as_stored(&self) -> &serde_json::Value { &self.0 }
+    pub fn from_stored(value: serde_json::Value) -> Self {
+        Self(value)
+    }
+    pub fn as_stored(&self) -> &serde_json::Value {
+        &self.0
+    }
 
     pub fn provider_wire(&self) -> anyhow::Result<Option<ProviderWireMessage>> {
-        let Some(value) = self.0.get("provider_wire") else { return Ok(None); };
+        let Some(value) = self.0.get("provider_wire") else {
+            return Ok(None);
+        };
         anyhow::ensure!(
             serde_json::to_vec(value)?.len() <= 16 * 1024 * 1024,
             "Provider wire metadata exceeds the size limit"

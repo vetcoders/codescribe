@@ -867,16 +867,15 @@ impl RuntimeLlmLane {
     /// Whether a request can be sent under the credential truth that exists
     /// now, rather than only under the truth observed when this lane was sealed.
     pub fn request_available(&self) -> bool {
-        if self.acp.is_none()
-            && self.provider.wire == WireFamily::GoogleGenerateContent
-        {
+        if self.acp.is_none() && self.provider.wire == WireFamily::GoogleGenerateContent {
             let account = self.credential.account_auth();
             if crate::llm::vendors::google::is_cloud_code_assist(&self.provider.endpoint) {
                 return account;
             }
-            return account || crate::llm::account_auth::google::google_api_key_available(
-                self.credential.key_account(),
-            );
+            return account
+                || crate::llm::account_auth::google::google_api_key_available(
+                    self.credential.key_account(),
+                );
         }
         self.acp.is_some()
             || self.credential.account_auth()

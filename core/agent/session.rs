@@ -654,20 +654,26 @@ impl AgentSession {
             let assistant_text = assistant_text.trim().to_string();
             let mut response_metadata = self.provider.take_completed_response_metadata();
             let wire_enabled = response_metadata.is_some();
-            let segment_count = u8::from(!assistant_text.is_empty()) + u8::from(!ready_calls.is_empty());
-            anyhow::ensure!(!wire_enabled || segment_count > 0,
-                "Clean provider metadata has no canonical Assistant occurrence");
+            let segment_count =
+                u8::from(!assistant_text.is_empty()) + u8::from(!ready_calls.is_empty());
+            anyhow::ensure!(
+                !wire_enabled || segment_count > 0,
+                "Clean provider metadata has no canonical Assistant occurrence"
+            );
             let occurrence_id = uuid::Uuid::new_v4().to_string();
             let mut segment_index = 0u8;
             let mut next_metadata = || -> Result<Option<super::MessageMetadata>> {
-                if !wire_enabled { return Ok(None); }
-                let metadata = super::MessageMetadata::for_provider_wire(super::ProviderWireMessage {
-                    version: 1,
-                    occurrence_id: occurrence_id.clone(),
-                    segment_index,
-                    segment_count,
-                    response: response_metadata.take(),
-                })?;
+                if !wire_enabled {
+                    return Ok(None);
+                }
+                let metadata =
+                    super::MessageMetadata::for_provider_wire(super::ProviderWireMessage {
+                        version: 1,
+                        occurrence_id: occurrence_id.clone(),
+                        segment_index,
+                        segment_count,
+                        response: response_metadata.take(),
+                    })?;
                 segment_index += 1;
                 Ok(Some(metadata))
             };

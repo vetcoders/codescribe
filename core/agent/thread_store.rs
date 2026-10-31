@@ -147,7 +147,10 @@ impl From<&Message> for ThreadMessage {
             role: role_to_string(message.role).to_string(),
             content,
             timestamp: message.timestamp.unwrap_or_else(Utc::now),
-            metadata: message.metadata.as_ref().map(|metadata| metadata.as_stored().clone()),
+            metadata: message
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.as_stored().clone()),
         }
     }
 }
@@ -167,7 +170,10 @@ impl ThreadMessage {
         if let Some(metadata) = &message.metadata
             && metadata.provider_wire()?.is_some()
         {
-            anyhow::ensure!(role == Role::Assistant, "Provider wire state belongs to an Assistant occurrence");
+            anyhow::ensure!(
+                role == Role::Assistant,
+                "Provider wire state belongs to an Assistant occurrence"
+            );
         }
         Ok(message)
     }
@@ -186,7 +192,10 @@ impl ThreadMessage {
             role: role_from_string(&self.role),
             content,
             timestamp: Some(self.timestamp),
-            metadata: self.metadata.clone().map(super::MessageMetadata::from_stored),
+            metadata: self
+                .metadata
+                .clone()
+                .map(super::MessageMetadata::from_stored),
         }
     }
 }
@@ -1693,6 +1702,7 @@ mod tests {
                 },
             ],
             timestamp: Some(Utc::now()),
+            metadata: None,
         };
 
         let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());

@@ -18,8 +18,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use codescribe_core::agent::{
-    AgentEvent, AgentProvider, ContentBlock, Message, ProviderResponseMetadata, Role, StreamOptions,
-    ToolDefinition,
+    AgentEvent, AgentProvider, ContentBlock, Message, ProviderResponseMetadata, Role,
+    StreamOptions, ToolDefinition,
 };
 use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane};
 use codescribe_core::llm::account_auth::{
@@ -142,20 +142,38 @@ impl AgentProvider for GoogleProvider {
         options: &StreamOptions,
     ) -> Result<mpsc::Receiver<AgentEvent>> {
         let turn_guard = self.turn_lock.clone().lock_owned().await;
-        ensure!(self.completed_response.lock().unwrap_or_else(|poison| poison.into_inner()).is_none(),
-            "The canonical session has not consumed the previous Google response metadata");
+        ensure!(
+            self.completed_response
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .is_none(),
+            "The canonical session has not consumed the previous Google response metadata"
+        );
         let model = if options.model.trim().is_empty() {
             &self.default_model
         } else {
             &options.model
         };
-        ensure!(!model.is_empty() && model.len() <= 1024, "Invalid Google model identity");
+        ensure!(
+            !model.is_empty() && model.len() <= 1024,
+            "Invalid Google model identity"
+        );
         // Endpoint/account identity is private routing provenance, not a key.
-        let provider_id = format!("{:x}", Sha256::digest(format!("{}|{}", self.endpoint,
-            self.credential_account.as_deref().unwrap_or(google::API_KEY_ACCOUNT)).as_bytes()));
+        let provider_id = hex::encode(Sha256::digest(
+            format!(
+                "{}|{}",
+                self.endpoint,
+                self.credential_account
+                    .as_deref()
+                    .unwrap_or(google::API_KEY_ACCOUNT)
+            )
+            .as_bytes(),
+        ));
         let retained = restore_turns(messages, model, &provider_id)?;
-        ensure!(retained.len() < MAX_RETAINED_TURNS,
-            "Google signed history reached its retention limit; start a new conversation");
+        ensure!(
+            retained.len() < MAX_RETAINED_TURNS,
+            "Google signed history reached its retention limit; start a new conversation"
+        );
         let body = build_request(messages, tools, options, &retained)?;
         let (endpoint, body) = google::prepare_request(&self.endpoint, model, body, true)
             .map_err(|error| anyhow!(error))?;
@@ -185,7 +203,13 @@ impl AgentProvider for GoogleProvider {
                 .run_stream(endpoint, body, credential, pending, &tx)
                 .await;
             if let Err(error) = result {
-                drop(transport.completed_response.lock().unwrap_or_else(|poison| poison.into_inner()).take());
+                drop(
+                    transport
+                        .completed_response
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .take(),
+                );
                 let _ = tx
                     .send(AgentEvent::ResponseDone {
                         response_id: None,
@@ -201,7 +225,10 @@ impl AgentProvider for GoogleProvider {
     }
 
     fn take_completed_response_metadata(&self) -> Option<ProviderResponseMetadata> {
-        self.completed_response.lock().unwrap_or_else(|poison| poison.into_inner()).take()
+        self.completed_response
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
     }
 
     async fn restore_response_chain(&self, _id: Option<String>) {
@@ -209,7 +236,12 @@ impl AgentProvider for GoogleProvider {
         // settle, then discard only ephemeral state; canonical history rolls
         // back with the owning AgentSession's message vector.
         let _turn = self.turn_lock.lock().await;
-        drop(self.completed_response.lock().unwrap_or_else(|poison| poison.into_inner()).take());
+        drop(
+            self.completed_response
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take(),
+        );
     }
 
     fn build_tool_result(
@@ -240,8 +272,10 @@ fn hash_message(digest: &mut Sha256, message: &Message) -> Result<()> {
 
 fn history_digest(messages: &[Message]) -> Result<String> {
     let mut digest = Sha256::new();
-    for message in messages { hash_message(&mut digest, message)?; }
-    Ok(format!("{:x}", digest.finalize()))
+    for message in messages {
+        hash_message(&mut digest, message)?;
+    }
+    Ok(hex::encode(digest.finalize()))
 }
 
 fn assistant_segments(text: &str, calls: &[Call]) -> Vec<Vec<ContentBlock>> {
@@ -250,9 +284,16 @@ fn assistant_segments(text: &str, calls: &[Call]) -> Vec<Vec<ContentBlock>> {
         segments.push(vec![ContentBlock::Text(text.trim().to_string())]);
     }
     if !calls.is_empty() {
-        segments.push(calls.iter().map(|call| ContentBlock::ToolUse {
-            id: call.id.clone(), name: call.name.clone(), input: call.arguments.clone(),
-        }).collect());
+        segments.push(
+            calls
+                .iter()
+                .map(|call| ContentBlock::ToolUse {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    input: call.arguments.clone(),
+                })
+                .collect(),
+        );
     }
     segments
 }
@@ -260,52 +301,97 @@ fn assistant_segments(text: &str, calls: &[Call]) -> Vec<Vec<ContentBlock>> {
 /// Validate a payload before either committing it or replaying it. Occurrence
 /// UUIDs establish identity; content comparisons below only check integrity.
 fn decode_payload(payload: &GoogleTurnPayload) -> Result<(String, Vec<Call>)> {
-    ensure!(payload.parts.len() <= MAX_TURN_PARTS
-        && serde_json::to_vec(&payload.parts)?.len() <= MAX_TURN_PART_BYTES,
-        "Google signed parts exceed their bounds");
+    ensure!(
+        payload.parts.len() <= MAX_TURN_PARTS
+            && serde_json::to_vec(&payload.parts)?.len() <= MAX_TURN_PART_BYTES,
+        "Google signed parts exceed their bounds"
+    );
     let mut filter = PlanningFilter::default();
     let mut visible = String::new();
     let mut calls = Vec::new();
     let mut ids = HashSet::new();
     let mut wire_ids = HashSet::new();
     for part in &payload.parts {
-        let object = part.as_object().ok_or_else(|| anyhow!("Malformed Google stored part"))?;
-        ensure!(object.keys().all(|key| matches!(key.as_str(), "text" | "thought" | "thoughtSignature" | "functionCall"))
-            && part.get("text").is_none_or(Value::is_string)
-            && part.get("thought").is_none_or(Value::is_boolean)
-            && part.get("thoughtSignature").is_none_or(Value::is_string)
-            && !(part.get("text").is_some() && part.get("functionCall").is_some()),
-            "Unsupported Google stored part schema");
+        let object = part
+            .as_object()
+            .ok_or_else(|| anyhow!("Malformed Google stored part"))?;
+        ensure!(
+            object.keys().all(|key| matches!(
+                key.as_str(),
+                "text" | "thought" | "thoughtSignature" | "functionCall"
+            )) && part.get("text").is_none_or(Value::is_string)
+                && part.get("thought").is_none_or(Value::is_boolean)
+                && part.get("thoughtSignature").is_none_or(Value::is_string)
+                && !(part.get("text").is_some() && part.get("functionCall").is_some()),
+            "Unsupported Google stored part schema"
+        );
         if let Some(text) = part.get("text").and_then(Value::as_str)
             && part.get("thought").and_then(Value::as_bool) != Some(true)
             && let Some(text) = filter.push(text)
-        { visible.push_str(&text); }
+        {
+            visible.push_str(&text);
+        }
         if let Some(raw) = part.get("functionCall") {
-            let call = raw.as_object().ok_or_else(|| anyhow!("Malformed Google stored call"))?;
-            ensure!(call.keys().all(|key| matches!(key.as_str(), "name" | "args" | "id")),
-                "Unsupported Google stored function call schema");
-            let name = raw.get("name").and_then(Value::as_str)
+            let call = raw
+                .as_object()
+                .ok_or_else(|| anyhow!("Malformed Google stored call"))?;
+            ensure!(
+                call.keys()
+                    .all(|key| matches!(key.as_str(), "name" | "args" | "id")),
+                "Unsupported Google stored function call schema"
+            );
+            let name = raw
+                .get("name")
+                .and_then(Value::as_str)
                 .filter(|name| !name.is_empty() && name.len() <= 1024)
                 .ok_or_else(|| anyhow!("Malformed Google stored tool name"))?;
             let arguments = raw.get("args").cloned().unwrap_or_else(|| json!({}));
-            ensure!(arguments.is_object(), "Malformed Google stored tool arguments");
-            let id = payload.call_ids.get(calls.len()).ok_or_else(|| anyhow!("Missing Google native call identity"))?;
-            ensure!(id.strip_prefix("google_").is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|id| !id.is_nil()))
-                && ids.insert(id.clone()), "Invalid or duplicate Google native call identity");
+            ensure!(
+                arguments.is_object(),
+                "Malformed Google stored tool arguments"
+            );
+            let id = payload
+                .call_ids
+                .get(calls.len())
+                .ok_or_else(|| anyhow!("Missing Google native call identity"))?;
+            ensure!(
+                id.strip_prefix("google_")
+                    .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|id| !id.is_nil()))
+                    && ids.insert(id.clone()),
+                "Invalid or duplicate Google native call identity"
+            );
             let wire_id = match raw.get("id") {
-                Some(Value::String(id)) if !id.is_empty() && id.len() <= 1024 && wire_ids.insert(id.clone()) => Some(id.clone()),
+                Some(Value::String(id))
+                    if !id.is_empty() && id.len() <= 1024 && wire_ids.insert(id.clone()) =>
+                {
+                    Some(id.clone())
+                }
                 None => None,
                 _ => bail!("Invalid or duplicate Google wire call identity"),
             };
-            calls.push(Call {id: id.clone(), name: name.to_string(), arguments, wire_id});
+            calls.push(Call {
+                id: id.clone(),
+                name: name.to_string(),
+                arguments,
+                wire_id,
+            });
         }
     }
-    ensure!(calls.len() == payload.call_ids.len(), "Orphan Google native call identity");
-    if let Some(text) = filter.finish() { visible.push_str(&text); }
+    ensure!(
+        calls.len() == payload.call_ids.len(),
+        "Orphan Google native call identity"
+    );
+    if let Some(text) = filter.finish() {
+        visible.push_str(&text);
+    }
     Ok((visible, calls))
 }
 
-fn restore_turns(messages: &[Message], model: &str, provider_id: &str) -> Result<Vec<RetainedTurn>> {
+fn restore_turns(
+    messages: &[Message],
+    model: &str,
+    provider_id: &str,
+) -> Result<Vec<RetainedTurn>> {
     let mut turns = Vec::new();
     let mut groups = HashSet::new();
     let mut native_calls = HashSet::new();
@@ -313,45 +399,85 @@ fn restore_turns(messages: &[Message], model: &str, provider_id: &str) -> Result
     let mut total_bytes = 0usize;
     let mut index = 0usize;
     while index < messages.len() {
-        let metadata = messages[index].metadata.as_ref()
-            .map(|metadata| metadata.provider_wire()).transpose()?.flatten();
+        let metadata = messages[index]
+            .metadata
+            .as_ref()
+            .map(|metadata| metadata.provider_wire())
+            .transpose()?
+            .flatten();
         let Some(first) = metadata else {
-            ensure!(messages[index].role != Role::Assistant,
-                "Google history has no original signed parts; start a new conversation");
+            ensure!(
+                messages[index].role != Role::Assistant,
+                "Google history has no original signed parts; start a new conversation"
+            );
             hash_message(&mut digest, &messages[index])?;
             index += 1;
             continue;
         };
-        ensure!(messages[index].role == Role::Assistant && first.segment_index == 0
-            && groups.insert(first.occurrence_id.clone()), "Orphan or duplicate Google response occurrence");
+        ensure!(
+            messages[index].role == Role::Assistant
+                && first.segment_index == 0
+                && groups.insert(first.occurrence_id.clone()),
+            "Orphan or duplicate Google response occurrence"
+        );
         let count = usize::from(first.segment_count);
-        let response = first.response.as_ref().ok_or_else(|| anyhow!("Missing Google wire response"))?;
-        ensure!(response.wire == "google-generate-content" && response.model == model
-            && response.provider_id == provider_id
-            && response.context_digest == format!("{:x}", digest.clone().finalize()),
-            "Google history provider, model or context does not match its signed response");
+        let response = first
+            .response
+            .as_ref()
+            .ok_or_else(|| anyhow!("Missing Google wire response"))?;
+        ensure!(
+            response.wire == "google-generate-content"
+                && response.model == model
+                && response.provider_id == provider_id
+                && response.context_digest == hex::encode(digest.clone().finalize()),
+            "Google history provider, model or context does not match its signed response"
+        );
         let metadata_bytes = serde_json::to_vec(response)?.len();
         total_bytes = total_bytes.saturating_add(metadata_bytes);
-        ensure!(turns.len() < MAX_RETAINED_TURNS && total_bytes <= MAX_RETAINED_HISTORY_BYTES,
-            "Google signed history exceeds its bounds");
+        ensure!(
+            turns.len() < MAX_RETAINED_TURNS && total_bytes <= MAX_RETAINED_HISTORY_BYTES,
+            "Google signed history exceeds its bounds"
+        );
         let payload: GoogleTurnPayload = serde_json::from_value(response.payload.clone())
             .map_err(|_| anyhow!("Malformed Google signed payload"))?;
         let (visible, calls) = decode_payload(&payload)?;
         let expected = assistant_segments(&visible, &calls);
-        ensure!(expected.len() == count && index + count <= messages.len(), "Invalid Google response segment count");
+        ensure!(
+            expected.len() == count && index + count <= messages.len(),
+            "Invalid Google response segment count"
+        );
         for offset in 0..count {
             let message = &messages[index + offset];
-            let segment = message.metadata.as_ref().map(|metadata| metadata.provider_wire())
-                .transpose()?.flatten().ok_or_else(|| anyhow!("Missing Google response segment"))?;
-            ensure!(message.role == Role::Assistant && segment.occurrence_id == first.occurrence_id
-                && segment.segment_count == first.segment_count && usize::from(segment.segment_index) == offset
-                && message.content == expected[offset], "Google response occurrence does not match canonical content");
+            let segment = message
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.provider_wire())
+                .transpose()?
+                .flatten()
+                .ok_or_else(|| anyhow!("Missing Google response segment"))?;
+            ensure!(
+                message.role == Role::Assistant
+                    && segment.occurrence_id == first.occurrence_id
+                    && segment.segment_count == first.segment_count
+                    && usize::from(segment.segment_index) == offset
+                    && message.content == expected[offset],
+                "Google response occurrence does not match canonical content"
+            );
             hash_message(&mut digest, message)?;
         }
         for call in &calls {
-            ensure!(native_calls.insert(call.id.clone()), "Google call identity belongs to more than one occurrence");
+            ensure!(
+                native_calls.insert(call.id.clone()),
+                "Google call identity belongs to more than one occurrence"
+            );
         }
-        turns.push(RetainedTurn {prefix_len: index, message_count: count, parts: payload.parts, calls, metadata_bytes});
+        turns.push(RetainedTurn {
+            prefix_len: index,
+            message_count: count,
+            parts: payload.parts,
+            calls,
+            metadata_bytes,
+        });
         index += count;
     }
     Ok(turns)
@@ -377,9 +503,14 @@ fn build_request(
     let mut index = 0;
     while index < messages.len() {
         if let Some(turn) = retained.iter().find(|turn| turn.prefix_len == index) {
-            ensure!(pending_calls.is_empty(), "Google model turn precedes outstanding tool results");
+            ensure!(
+                pending_calls.is_empty(),
+                "Google model turn precedes outstanding tool results"
+            );
             contents.push(json!({"role":"model","parts":turn.parts}));
-            for call in &turn.calls { pending_calls.insert(call.id.as_str(), call); }
+            for call in &turn.calls {
+                pending_calls.insert(call.id.as_str(), call);
+            }
             index += turn.message_count;
             continue;
         }
@@ -392,7 +523,10 @@ fn build_request(
         for block in &message.content {
             match block {
                 ContentBlock::Text(text) => {
-                    ensure!(pending_calls.is_empty(), "Google conversation text precedes outstanding tool results");
+                    ensure!(
+                        pending_calls.is_empty(),
+                        "Google conversation text precedes outstanding tool results"
+                    );
                     parts.push(json!({"text":text}));
                 }
                 ContentBlock::Image { data, media_type } => {
@@ -415,10 +549,13 @@ fn build_request(
                     content,
                     is_error,
                 } => {
-                    ensure!(message.role == Role::User && answered.insert(tool_use_id.as_str()),
-                        "Duplicate or non-user Google tool result");
-                    let call = pending_calls.remove(tool_use_id.as_str()).ok_or_else(||
-                        anyhow!("Google tool result has no preceding outstanding model call"))?;
+                    ensure!(
+                        message.role == Role::User && answered.insert(tool_use_id.as_str()),
+                        "Duplicate or non-user Google tool result"
+                    );
+                    let call = pending_calls.remove(tool_use_id.as_str()).ok_or_else(|| {
+                        anyhow!("Google tool result has no preceding outstanding model call")
+                    })?;
                     let mut response = json!({"name":call.name,"response":{"result":tool_result_text(content),"is_error":is_error}});
                     if let Some(id) = &call.wire_id {
                         response["id"] = json!(id);
@@ -458,7 +595,10 @@ fn build_request(
         }
         index += 1;
     }
-    ensure!(pending_calls.is_empty(), "Google history has incomplete tool results");
+    ensure!(
+        pending_calls.is_empty(),
+        "Google history has incomplete tool results"
+    );
     let mut body = json!({"contents":contents});
     if !system.is_empty() {
         body["systemInstruction"] = json!({"parts":system});
@@ -599,8 +739,11 @@ impl GoogleProvider {
             call_ids: state.calls.iter().map(|call| call.id.clone()).collect(),
         };
         let (visible, calls) = decode_payload(&payload)?;
-        ensure!(assistant_segments(&visible, &calls) == assistant_segments(&state.visible, &state.calls),
-            "Google completed wire state does not match its canonical response");
+        ensure!(
+            assistant_segments(&visible, &calls)
+                == assistant_segments(&state.visible, &state.calls),
+            "Google completed wire state does not match its canonical response"
+        );
         let metadata = ProviderResponseMetadata {
             wire: "google-generate-content".into(),
             provider_id: turn.provider_id,
@@ -608,11 +751,18 @@ impl GoogleProvider {
             context_digest: turn.context_digest,
             payload: serde_json::to_value(payload)?,
         };
-        ensure!(turn.history_bytes.saturating_add(serde_json::to_vec(&metadata)?.len()) <= MAX_RETAINED_HISTORY_BYTES,
-            "Google signed history reached its retention limit; start a new conversation");
+        ensure!(
+            turn.history_bytes
+                .saturating_add(serde_json::to_vec(&metadata)?.len())
+                <= MAX_RETAINED_HISTORY_BYTES,
+            "Google signed history reached its retention limit; start a new conversation"
+        );
         // One clean response handoff, not provider-owned conversation history.
         // AgentSession takes this only after accepting the terminal and EOF.
-        *self.completed_response.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(metadata);
+        *self
+            .completed_response
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some(metadata);
         tx.send(AgentEvent::TextDone(state.visible))
             .await
             .map_err(|_| anyhow!("Google receiver closed"))?;
@@ -927,7 +1077,6 @@ impl PlanningFilter {
 mod tests {
     use super::*;
     use codescribe_core::agent::{ToolExecutionPolicy, ToolOrigin, ToolRegistry, ToolRisk};
-    use mockito::Matcher;
 
     fn timing() -> RuntimeAiRequestTiming {
         codescribe_core::config::Config::runtime_snapshot_from_captured(
@@ -945,7 +1094,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn real_session_lazy_mcp_preserves_every_signed_part_and_rejects_restore() {
+    async fn real_session_lazy_mcp_restores_thread_and_rejects_tampering() {
         use codescribe_core::agent::{AgentSession, ToolResultContent};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let mut server = mockito::Server::new_async().await;
@@ -1024,19 +1173,111 @@ mod tests {
         for mock in [first, second, third] {
             mock.assert_async().await;
         }
+        use codescribe_core::agent::thread_store::{Thread, ThreadMessage, ThreadStore};
+        let root = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(root.path().join("threads")).unwrap();
+        let now = chrono::Utc::now();
+        let thread = Thread {
+            id: ThreadStore::generate_id(),
+            created_at: now,
+            updated_at: now,
+            title: "fixture".into(),
+            title_is_custom: false,
+            title_is_generated: false,
+            mode: "assistive".into(),
+            tags: Vec::new(),
+            notes: Vec::new(),
+            messages: session.messages().iter().map(ThreadMessage::from).collect(),
+            summary: None,
+            total_tokens: None,
+            provider: "google-gemini".into(),
+            model: "gemini-test".into(),
+        };
+        store.save_thread(&thread).unwrap();
+        assert!(
+            std::fs::read_to_string(store.thread_file_path(&thread.id).unwrap())
+                .unwrap()
+                .contains("empty-distinct")
+        );
+        for include_details in [false, true] {
+            assert!(
+                !codescribe_core::agent::thread_export::thread_to_markdown(
+                    &thread,
+                    include_details
+                )
+                .contains("empty-distinct")
+            );
+        }
+        assert!(!format!("{thread:?}").contains("empty-distinct"));
+        let restored_messages = store
+            .load_thread(&thread.id)
+            .unwrap()
+            .messages
+            .iter()
+            .map(ThreadMessage::try_to_message)
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let fourth = server.mock("POST", path)
+            .match_request(|request| {
+                let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                body["contents"].as_array().unwrap().len() == 7
+                    && body["contents"][1]["parts"][1]["thoughtSignature"] == "empty-distinct"
+                    && body["contents"][6]["parts"][0]["text"] == "again"
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(json!({"candidates":[{"content":{"parts":[{"text":"second answer"}]},"finishReason":"STOP"}]})))
+            .create_async().await;
         let restored = GoogleProvider::from_configuration(
-            endpoint,
+            endpoint.clone(),
             "gemini-test".into(),
             "fixture-key".into(),
             &timing(),
         )
         .unwrap();
-        assert!(
-            restored
-                .stream(session.messages(), &[], &StreamOptions::default())
-                .await
-                .is_err()
-        );
+        let (tx, _rx) = mpsc::channel(128);
+        let mut resumed = AgentSession::new(Box::new(restored), Arc::new(ToolRegistry::new()), tx);
+        resumed.restore_messages(restored_messages);
+        resumed
+            .send("again".into(), Vec::new(), &StreamOptions::default())
+            .await
+            .unwrap();
+        fourth.assert_async().await;
+        assert!(!format!("{:?}", resumed.messages()).contains("empty-distinct"));
+        for mutation in ["version", "context", "call", "missing"] {
+            let mut messages = resumed.messages().to_vec();
+            let message = messages
+                .iter_mut()
+                .find(|message| message.role == Role::Assistant)
+                .unwrap();
+            let mut raw = message.metadata.as_ref().unwrap().as_stored().clone();
+            match mutation {
+                "version" => raw["provider_wire"]["version"] = json!(2),
+                "context" => {
+                    raw["provider_wire"]["response"]["context_digest"] = json!("0".repeat(64))
+                }
+                "call" => {
+                    raw["provider_wire"]["response"]["payload"]["parts"][2]["functionCall"]["args"]
+                        ["query"] = json!("tampered")
+                }
+                _ => {}
+            }
+            message.metadata = (mutation != "missing")
+                .then(|| codescribe_core::agent::MessageMetadata::from_stored(raw));
+            let provider = GoogleProvider::from_configuration(
+                endpoint.clone(),
+                "gemini-test".into(),
+                "fixture-key".into(),
+                &timing(),
+            )
+            .unwrap();
+            assert!(
+                provider
+                    .stream(&messages, &[], &StreamOptions::default())
+                    .await
+                    .is_err(),
+                "mutation={mutation}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1110,24 +1351,34 @@ mod tests {
     /// step, so signatures cannot pass by testing only a serialization helper.
     #[tokio::test]
     async fn google_provider_signed_tool_roundtrip_cca_and_parallel_responses() {
+        use codescribe_core::agent::{AgentSession, AgentUiEvent, ToolResultContent};
         let mut server = mockito::Server::new_async().await;
+        let path = "/v1internal:streamGenerateContent?alt=sse";
         let parts = json!([
             {"thought":true,"text":"Sprawdzę","thoughtSignature":"sig_thought"},
+            {"text":"Zobaczę."},
             {"functionCall":{"name":"mcp_search_tools","args":{"query":"repo"}},"thoughtSignature":"sig_abc123"},
-            {"functionCall":{"name":"call_mcp_tool","id":"wire-call","args":{"tool":"read"}},"thoughtSignature":"sig_parallel"}
+            {"functionCall":{"name":"call_mcp_tool","id":"wire-call","args":{"server":"local","tool":"read","arguments":{"path":"fixture.txt"}}},"thoughtSignature":"sig_parallel"}
         ]);
-        let response =
-            json!({"response":{"candidates":[{"content":{"parts":parts},"finishReason":"STOP"}]}});
-        let first = server
-            .mock("POST", "/v1internal:streamGenerateContent?alt=sse")
-            .match_header("x-goog-api-key", "fixture-key")
-            .match_body(Matcher::PartialJson(
-                json!({"model":"gemini-test","project":"p"}),
-            ))
-            .with_header("content-type", "text/event-stream")
-            .with_body(sse(response))
-            .create_async()
-            .await;
+        let first = server.mock("POST",path).match_header("x-goog-api-key","fixture-key")
+            .match_request(|request| {
+                let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                body["request"]["contents"].as_array().unwrap().len() == 1 && body["project"] == "p"
+            })
+            .with_header("content-type","text/event-stream")
+            .with_body(sse(json!({"response":{"candidates":[{"content":{"parts":parts},"finishReason":"STOP"}]}})))
+            .create_async().await;
+        let expected = parts.clone();
+        let second = server.mock("POST",path).match_request(move |request| {
+            let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+            let contents = &body["request"]["contents"];
+            contents.as_array().unwrap().len() == 3 && contents[1]["parts"] == expected
+                && contents[2]["parts"].as_array().unwrap().len() == 2
+                && contents[2]["parts"][0]["functionResponse"]["name"] == "mcp_search_tools"
+                && contents[2]["parts"][1]["functionResponse"]["id"] == "wire-call"
+        }).with_header("content-type","text/event-stream")
+            .with_body(sse(json!({"response":{"candidates":[{"content":{"parts":[{"text":"Gotowe 🐾"}]},"finishReason":"STOP"}]}})))
+            .create_async().await;
         let provider = GoogleProvider::from_configuration(
             format!("{}/v1internal?project=p", server.url()),
             "gemini-test".into(),
@@ -1135,64 +1386,29 @@ mod tests {
             &timing(),
         )
         .unwrap();
-        let mut messages = vec![user("Szukaj")];
-        let first_events = events(&provider, &messages, &[]).await;
-        assert!(
-            first_events.iter().any(
-                |event| matches!(event, AgentEvent::ReasoningDelta(text) if text == "Sprawdzę")
-            )
-        );
-        let calls = first_events
-            .iter()
-            .filter_map(|event| match event {
-                AgentEvent::ToolCallReady {
-                    id,
-                    name,
-                    arguments,
-                } => Some((id.clone(), name.clone(), arguments.clone())),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(calls.len(), 2, "{first_events:?}");
-        messages.push(Message::new(
-            Role::Assistant,
-            calls
-                .iter()
-                .map(|(id, name, input)| ContentBlock::ToolUse {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                })
-                .collect(),
-        ));
-        for (id, _, _) in &calls {
-            messages.push(provider.build_tool_result(
-                id,
-                vec![ContentBlock::Text("found".into())],
-                false,
-            ));
+        let retained_handle = provider.clone();
+        let mut tools = ToolRegistry::new();
+        tools.register_with_policy(ToolDefinition {name:"mcp__local__read".into(),description:"read fixture repository".into(),input_schema:json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})}, Box::new(|_| Box::pin(async {vec![ToolResultContent::Text("found".into())]})), ToolExecutionPolicy {origin:ToolOrigin::Mcp {server:"local".into(),upstream_tool:"read".into()},risk:ToolRisk::ReadOnly,requires_approval:false},None).unwrap();
+        let (tx, mut rx) = mpsc::channel(128);
+        let mut session = AgentSession::new(Box::new(provider), Arc::new(tools), tx);
+        session
+            .send("Szukaj".into(), Vec::new(), &StreamOptions::default())
+            .await
+            .unwrap();
+        let mut reasoning = false;
+        let mut done = false;
+        while let Ok(event) = rx.try_recv() {
+            reasoning |= matches!(&event,AgentUiEvent::ReasoningDelta(text) if text=="Sprawdzę");
+            done |= matches!(&event,AgentUiEvent::TextDone(text) if text=="Gotowe 🐾");
+            assert!(!format!("{event:?}").contains("sig_parallel"));
         }
-        let expected = json!({"request":{"contents":[
-            {"role":"user","parts":[{"text":"Szukaj"}]},
-            {"role":"model","parts":parts},
-            {"role":"user","parts":[{"functionResponse":{"name":"mcp_search_tools","response":{"result":"found","is_error":false}}},{"functionResponse":{"name":"call_mcp_tool","id":"wire-call","response":{"result":"found","is_error":false}}}]}
-        ]}});
-        let second = server.mock("POST", "/v1internal:streamGenerateContent?alt=sse").match_body(Matcher::PartialJson(expected))
-            .with_header("content-type","text/event-stream")
-            .with_body(sse(json!({"response":{"candidates":[{"content":{"parts":[{"text":"Gotowe 🐾"}]},"finishReason":"STOP"}]}}))).create_async().await;
-        let second_events = events(&provider, &messages, &[]).await;
-        assert!(
-            second_events
-                .iter()
-                .any(|event| matches!(event,AgentEvent::TextDone(text) if text == "Gotowe 🐾")),
-            "{second_events:?}"
-        );
+        assert!(reasoning && done);
         first.assert_async().await;
         second.assert_async().await;
-        let mut rolled_back = vec![user("Different thread")];
-        rolled_back.extend(messages[1..].iter().cloned());
+        let mut rolled_back = session.messages().to_vec();
+        rolled_back[0] = user("Different thread");
         assert!(
-            provider
+            retained_handle
                 .stream(&rolled_back, &[], &StreamOptions::default())
                 .await
                 .is_err(),
