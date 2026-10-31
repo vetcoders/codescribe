@@ -8,7 +8,6 @@ All requests are refused before AX application lookup (pid=-1, press=False).
 
 import argparse
 from contextlib import contextmanager
-import errno
 import json
 import os
 from pathlib import Path
@@ -33,9 +32,11 @@ def wait_for(predicate, process, description, timeout=5):
 
 
 @contextmanager
-def mailbox():
+def mailbox(seed=None):
     with tempfile.TemporaryDirectory(prefix="codescribe-ax-cleanup-") as root:
         directory = Path(root)
+        if seed is not None:
+            seed(directory)
         with tempfile.TemporaryFile() as diagnostics:
             process = subprocess.Popen(
                 [str(PROBE), str(directory)],
@@ -142,36 +143,51 @@ class NativeAXCleanupTests(unittest.TestCase):
             refused_request(directory, process)
             refused_request(directory, process)
 
-    def test_requester_unlinks_open_request_before_sidecar_cleanup(self):
-        with mailbox() as (directory, process):
-            request_id = str(uuid.uuid4())
-            path = directory / f"{request_id}.request.json"
-            os.mkfifo(path, 0o600)
-            writer = None
+    def test_requester_unlinks_enumerated_requests_before_sidecar_cleanup(self):
+        request_ids = [str(uuid.uuid4()) for _ in range(512)]
 
-            def connect_writer():
-                nonlocal writer
+        def seed(directory):
+            # Everything exists before launch. The first response witnesses
+            # that contentsOfDirectory returned its array of all these URLs.
+            for request_id in request_ids:
+                (directory / f"{request_id}.request.json").write_text(json.dumps({
+                    "requestID": request_id,
+                    "pid": -1,
+                    "identifier": "not-an-admitted-control",
+                    "press": False,
+                }))
+
+        with mailbox(seed) as (directory, process):
+            wait_for(
+                lambda: any(directory.glob("*.response.json")),
+                process,
+                "first response from the pre-enumerated batch",
+            )
+            removed = []
+            for request_id in request_ids:
+                if (directory / f"{request_id}.response.json").exists():
+                    continue
                 try:
-                    writer = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
-                    return True
-                except OSError as error:
-                    if error.errno != errno.ENXIO:
-                        raise
-                    return False
-
-            try:
-                # A writer opens only after the real sidecar opened its reader.
-                # The unlink therefore happens after enumeration/open, before
-                # EOF releases Data(contentsOf:) and the top-level cleanup.
-                wait_for(connect_writer, process, "sidecar FIFO reader")
-                path.unlink()
-                os.write(writer, b"{")
-            finally:
-                if writer is not None:
-                    os.close(writer)
-            assert_refusal(directory, process, request_id)
-            self.assertFalse(path.exists())
-            # A response alone precedes cleanup and cannot prove survival.
+                    (directory / f"{request_id}.request.json").unlink()
+                    removed.append(request_id)
+                except FileNotFoundError:
+                    # The sidecar already completed this request; it is not
+                    # evidence of a requester-side removal and is not counted.
+                    continue
+            self.assertTrue(
+                removed,
+                "INSTRUMENT: sidecar exhausted the batch before requester removal; "
+                "the cleanup race was not exercised",
+            )
+            print(f"enumerated_batch={len(request_ids)} requester_removed={len(removed)}")
+            wait_for(
+                lambda: len(list(directory.glob("*.response.json"))) == len(request_ids),
+                process,
+                "responses for the enumerated batch including removed requests",
+            )
+            assert_refusal(directory, process, removed[0])
+            # A response precedes cleanup. A later request proves the sidecar
+            # survived cleanup and returned to its outer mailbox loop.
             refused_request(directory, process)
 
 
