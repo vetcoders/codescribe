@@ -62,6 +62,100 @@ pub struct ImageAsset {
     pub size_bytes: u64,
 }
 
+/// Wire state for one completed response, handed to the canonical session.
+/// Opaque provider parts never become display content or a second history.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderResponseMetadata {
+    pub wire: String,
+    pub provider_id: String,
+    pub model: String,
+    pub context_digest: String,
+    pub payload: serde_json::Value,
+}
+
+impl std::fmt::Debug for ProviderResponseMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderResponseMetadata")
+            .field("wire", &self.wire)
+            .field("model", &self.model)
+            .field("payload", &"[PRIVATE WIRE STATE]")
+            .finish()
+    }
+}
+
+/// One canonical Assistant occurrence's membership in a provider response.
+/// The first segment owns the parts; later segments only reference its UUID.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderWireMessage {
+    pub version: u32,
+    pub occurrence_id: String,
+    pub segment_index: u8,
+    pub segment_count: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<ProviderResponseMetadata>,
+}
+
+impl ProviderWireMessage {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.version == 1, "Unsupported provider wire metadata version");
+        anyhow::ensure!(
+            uuid::Uuid::parse_str(&self.occurrence_id).is_ok_and(|id| !id.is_nil())
+                && (1..=2).contains(&self.segment_count)
+                && self.segment_index < self.segment_count
+                && self.response.is_some() == (self.segment_index == 0),
+            "Invalid provider wire occurrence or segment"
+        );
+        if let Some(response) = &self.response {
+            let digest = |value: &str| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
+            anyhow::ensure!(
+                !response.wire.is_empty() && response.wire.len() <= 128
+                    && !response.model.is_empty() && response.model.len() <= 1024
+                    && digest(&response.provider_id) && digest(&response.context_digest),
+                "Invalid provider wire identity"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Non-display message metadata. Storage keeps unrelated namespaces intact;
+/// Debug deliberately omits all values, including signed thought payloads.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MessageMetadata(serde_json::Value);
+
+impl std::fmt::Debug for MessageMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MessageMetadata([PRIVATE])")
+    }
+}
+
+impl MessageMetadata {
+    pub fn from_stored(value: serde_json::Value) -> Self { Self(value) }
+    pub fn as_stored(&self) -> &serde_json::Value { &self.0 }
+
+    pub fn provider_wire(&self) -> anyhow::Result<Option<ProviderWireMessage>> {
+        let Some(value) = self.0.get("provider_wire") else { return Ok(None); };
+        anyhow::ensure!(
+            serde_json::to_vec(value)?.len() <= 16 * 1024 * 1024,
+            "Provider wire metadata exceeds the size limit"
+        );
+        let wire: ProviderWireMessage = serde_json::from_value(value.clone())
+            .map_err(|_| anyhow::anyhow!("Malformed provider wire metadata"))?;
+        wire.validate()?;
+        Ok(Some(wire))
+    }
+
+    pub fn for_provider_wire(wire: ProviderWireMessage) -> anyhow::Result<Self> {
+        wire.validate()?;
+        let metadata = Self(serde_json::json!({"provider_wire": wire}));
+        let _ = metadata.provider_wire()?;
+        Ok(metadata)
+    }
+}
+
 /// Canonical message used by the agent session regardless of provider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
@@ -71,6 +165,9 @@ pub struct Message {
     pub content: Vec<ContentBlock>,
     /// Creation time; `None` for messages restored without one.
     pub timestamp: Option<DateTime<Utc>>,
+    /// Private wire/occurrence state, never rendered as a content block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<MessageMetadata>,
 }
 
 impl Message {
@@ -80,6 +177,7 @@ impl Message {
             role,
             content,
             timestamp: Some(Utc::now()),
+            metadata: None,
         }
     }
 }

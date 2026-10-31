@@ -92,4 +92,7 @@ pub use thread_delivery::{
 };
 pub use thread_index::{ThreadFilter, ThreadIndex, ThreadIndexData, ThreadSummary};
 pub use thread_store::{Thread, ThreadMessage, ThreadNote, ThreadStore, TokenUsage};
-pub use types::{ContentBlock, ImageAsset, Message, Role};
+pub use types::{
+    ContentBlock, ImageAsset, Message, MessageMetadata, ProviderResponseMetadata,
+    ProviderWireMessage, Role,
+};

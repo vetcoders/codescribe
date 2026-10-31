@@ -869,9 +869,14 @@ impl RuntimeLlmLane {
     pub fn request_available(&self) -> bool {
         if self.acp.is_none()
             && self.provider.wire == WireFamily::GoogleGenerateContent
-            && crate::llm::vendors::google::is_cloud_code_assist(&self.provider.endpoint)
         {
-            return self.credential.account_auth();
+            let account = self.credential.account_auth();
+            if crate::llm::vendors::google::is_cloud_code_assist(&self.provider.endpoint) {
+                return account;
+            }
+            return account || crate::llm::account_auth::google::google_api_key_available(
+                self.credential.key_account(),
+            );
         }
         self.acp.is_some()
             || self.credential.account_auth()

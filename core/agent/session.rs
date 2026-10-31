@@ -229,6 +229,9 @@ impl AgentSession {
                 clean_terminal,
                 "Max startup provider ended without a clean terminal"
             );
+            // A disposable context acknowledgement is not an authoritative
+            // local message occurrence and must not retain a wire handoff.
+            drop(self.provider.take_completed_response_metadata());
             Ok(self.provider.response_chain_id().await.is_some())
         })
         .await
@@ -424,6 +427,7 @@ impl AgentSession {
             role: Role::User,
             content: user_content,
             timestamp: Some(Utc::now()),
+            metadata: None,
         });
 
         for iteration in 0..self.max_iterations {
@@ -619,18 +623,6 @@ impl AgentSession {
                 );
             }
 
-            let assistant_text = assistant_text.trim().to_string();
-            if !assistant_text.is_empty() {
-                self.messages.push(Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::Text(assistant_text.clone())],
-                    timestamp: Some(Utc::now()),
-                });
-                if !text_done_seen {
-                    send_ui_event(&self.ui_tx, AgentUiEvent::TextDone(assistant_text)).await;
-                }
-            }
-
             let mut ready_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
             for call_id in tool_call_order {
                 let Some(call) = pending_calls.remove(&call_id) else {
@@ -659,6 +651,38 @@ impl AgentSession {
                 }
             }
 
+            let assistant_text = assistant_text.trim().to_string();
+            let mut response_metadata = self.provider.take_completed_response_metadata();
+            let wire_enabled = response_metadata.is_some();
+            let segment_count = u8::from(!assistant_text.is_empty()) + u8::from(!ready_calls.is_empty());
+            anyhow::ensure!(!wire_enabled || segment_count > 0,
+                "Clean provider metadata has no canonical Assistant occurrence");
+            let occurrence_id = uuid::Uuid::new_v4().to_string();
+            let mut segment_index = 0u8;
+            let mut next_metadata = || -> Result<Option<super::MessageMetadata>> {
+                if !wire_enabled { return Ok(None); }
+                let metadata = super::MessageMetadata::for_provider_wire(super::ProviderWireMessage {
+                    version: 1,
+                    occurrence_id: occurrence_id.clone(),
+                    segment_index,
+                    segment_count,
+                    response: response_metadata.take(),
+                })?;
+                segment_index += 1;
+                Ok(Some(metadata))
+            };
+            if !assistant_text.is_empty() {
+                self.messages.push(Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text(assistant_text.clone())],
+                    timestamp: Some(Utc::now()),
+                    metadata: next_metadata()?,
+                });
+                if !text_done_seen {
+                    send_ui_event(&self.ui_tx, AgentUiEvent::TextDone(assistant_text)).await;
+                }
+            }
+
             if ready_calls.is_empty() {
                 // Startup retrieval seeds only the first completed turn; later
                 // turns reach the index through search_threads, not a stale copy.
@@ -679,6 +703,7 @@ impl AgentSession {
                 role: Role::Assistant,
                 content: tool_use_blocks,
                 timestamp: Some(Utc::now()),
+                metadata: next_metadata()?,
             });
 
             // The provider stream for this round has already ended: its
