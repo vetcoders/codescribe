@@ -26,6 +26,9 @@ struct Composer: View {
   /// intrinsic size.
   @Environment(\.csTextScale) private var textScale
   @Environment(\.openWindow) private var openWindow
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// A refused long Fn points here: hint line plus a lit microphone.
+  @State private var microphoneHint = ComposerMicrophoneHintState()
   @State private var fieldHeight = ComposerTextLayout.minimumHeight(
     fontSize: ComposerControlMetrics.textSize)
   @State private var previewAttachment: PendingAttachment?
@@ -66,69 +69,80 @@ struct Composer: View {
 
       liveAgentCapture
 
-      HStack(alignment: .bottom, spacing: ComposerControlMetrics.spacing) {
-        // Attach images (NSOpenPanel → staged chips → vision FFI on send).
-        Button(action: pickAttachments) {
-          CSIconView(
-            icon: .attach,
-            size: ComposerControlMetrics.glyphSize,
-            color: store.pendingAttachments.isEmpty ? CSColor.textTertiary : CSColor.chromeAccent
-          )
-          .frame(
-            width: ComposerControlMetrics.hitTargetSize,
-            height: ComposerControlMetrics.hitTargetSize
-          )
-        }
-        .csFocusRing()
-        .help("Attach an image (PNG, JPEG, GIF, WebP)")
-        .accessibilityLabel(Text("Attach an image (PNG, JPEG, GIF, WebP)"))
-
+      VStack(alignment: .leading, spacing: ComposerControlMetrics.spacing) {
         ComposerTextView(
           text: $store.draft,
           height: $fieldHeight,
           textScale: textScale,
           isFocused: $fieldFocused,
           history: store.selectedThreadID.map { store.composerHistory(in: $0) } ?? [],
-          onSend: { store.send(origin: .enter) }
+          onSend: { store.send(origin: .enter) },
+          onMicrophoneRedirect: { microphoneHint.show(reduceMotion: reduceMotion) }
         )
+        .frame(maxWidth: .infinity)
         .frame(height: fieldHeight)
         .accessibilityIdentifier(ComposerAccessibility.textViewIdentifier)
 
-        micButton
-
-        Button(action: performPrimaryAction) {
-          ZStack {
-            Image(systemName: primaryAction.systemImage)
-              .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
-              .foregroundStyle(primaryAction.isSend ? CSColor.terracottaText : CSColor.chromeAccent)
-            if primaryAction == .stopping {
-              ProgressView()
-                .controlSize(.small)
-                .scaleEffect(0.5)
-                .tint(CSColor.chromeAccent)
-            }
+        HStack(spacing: ComposerControlMetrics.spacing) {
+          // Attach images (NSOpenPanel → staged chips → vision FFI on send).
+          Button(action: pickAttachments) {
+            CSIconView(
+              icon: .attach,
+              size: ComposerControlMetrics.glyphSize
+            )
+            .frame(
+              width: ComposerControlMetrics.hitTargetSize,
+              height: ComposerControlMetrics.hitTargetSize
+            )
           }
-          .frame(
-            width: ComposerControlMetrics.hitTargetSize,
-            height: ComposerControlMetrics.hitTargetSize
+          .conversationActionHover(
+            restingColor: store.pendingAttachments.isEmpty
+              ? CSColor.textTertiary.opacity(ComposerControlMetrics.restingActionOpacity)
+              : CSColor.chromeAccent,
+            hoverColor: store.pendingAttachments.isEmpty ? Color.primary : CSColor.chromeAccent
           )
+          .help("Attach")
+          .accessibilityLabel(Text("Attach an image (PNG, JPEG, GIF, WebP)"))
+
+          Spacer(minLength: 0)
+
+          micButton
+
+          Button(action: performPrimaryAction) {
+            ZStack {
+              Image(systemName: primaryAction.systemImage)
+                .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
+              if primaryAction == .stopping {
+                ProgressView()
+                  .controlSize(.small)
+                  .scaleEffect(0.5)
+                  .tint(CSColor.chromeAccent)
+              }
+            }
+            .frame(
+              width: ComposerControlMetrics.hitTargetSize,
+              height: ComposerControlMetrics.hitTargetSize
+            )
+          }
+          .conversationActionHover(
+            restingColor: primaryAction.isSend
+              ? CSColor.textTertiary.opacity(ComposerControlMetrics.restingActionOpacity)
+              : CSColor.chromeAccent,
+            hoverColor: primaryAction.isSend ? Color.primary : CSColor.chromeAccent
+          )
+          .disabled(!primaryActionEnabled)
+          .help(primaryAction.accessibilityLabel)
+          .accessibilityIdentifier(ComposerActionAccessibility.identifier)
+          .accessibilityLabel(Text(primaryAction.accessibilityLabel))
         }
-        .csFocusRing()
-        .disabled(
-          !primaryAction.isEnabled || (primaryAction == .stop && !store.canStopSelectedTurn)
-        )
-        .opacity(primaryAction == .stopping ? 0.72 : 1)
-        .help(primaryAction.accessibilityLabel)
-        .accessibilityIdentifier(ComposerActionAccessibility.identifier)
-        .accessibilityLabel(Text(primaryAction.accessibilityLabel))
       }
       .buttonStyle(.plain)
       .padding(.horizontal, ComposerControlMetrics.horizontalPadding)
       .padding(.vertical, ComposerControlMetrics.verticalPadding)
-      .modifier(OverlayControlGlass())
+      .modifier(OverlayControlGlass(cornerRadius: CSRadius.composer))
       .overlay {
         if isDragging {
-          RoundedRectangle(cornerRadius: 20)
+          RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
             .strokeBorder(CSColor.chromeAccent, lineWidth: 1.5)
             .allowsHitTesting(false)
         }
@@ -138,13 +152,20 @@ struct Composer: View {
       // hit-testable mid-drag (isDragging) so typing/clicks pass through
       // the rest of the time.
       .overlay(dropCatcher)
-      .animation(.easeOut(duration: 0.12), value: isDragging)
+      .animation(.easeOut(duration: CSMotion.Tempo.hover), value: isDragging)
 
       if let notice = store.unsentDictationNotice {
         Text(verbatim: notice)
           .font(CSFont.ui(11, .medium))
           .foregroundStyle(CSColor.amberLight)
           .accessibilityIdentifier("composer.dictation.not-sent")
+      }
+      if microphoneHint.visible {
+        Text(verbatim: ComposerCaretOwnership.microphoneHint)
+          .font(CSFont.ui(11, .medium))
+          .foregroundStyle(CSColor.chromeAccent)
+          .transition(.opacity)
+          .accessibilityIdentifier("composer.microphone-hint")
       }
       dictationFeedback
       recoveryDocuments
@@ -218,7 +239,7 @@ struct Composer: View {
           .buttonStyle(.borderless)
         }
         .padding(8)
-        .background(Color.primary.opacity(0.04))
+        .background(Color.primary.opacity(CSAlpha.subtle))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer))
         .accessibilityIdentifier("composer.recovery.inspect." + document.id)
       }
@@ -232,13 +253,17 @@ struct Composer: View {
     )
   }
 
+  private var primaryActionEnabled: Bool {
+    primaryAction.isEnabled && (primaryAction != .stop || store.canStopSelectedTurn)
+  }
+
   @ViewBuilder
   private var agenticGate: some View {
     if let message = store.agenticBlockMessage {
       HStack(spacing: 9) {
         CSIconView(icon: .warning, size: 11, color: CSColor.amberLight)
         Text(message)
-          .font(CSFont.ui(11.5, .medium))
+          .font(CSFont.ui(12, .medium))
           .foregroundStyle(Color.primary)
         Spacer(minLength: 8)
         Button("Enter license") {
@@ -246,12 +271,12 @@ struct Composer: View {
           openWindow.presentSettings()
         }
         .csFocusRing()
-        .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(CSColor.chromeAccent)
+        .font(CSFont.mono(11, .semibold))
+        .foregroundStyle(Color.primary)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 8)
-      .background(Color.primary.opacity(0.04))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
@@ -287,7 +312,7 @@ struct Composer: View {
       paletteList {
         if entries.isEmpty {
           Text("No matches")
-            .font(CSFont.ui(11.5, .regular))
+            .font(CSFont.ui(12, .regular))
             .foregroundStyle(CSColor.textTertiary)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -317,7 +342,7 @@ struct Composer: View {
       }
     }
     .frame(maxHeight: 190)
-    .background(Color.primary.opacity(0.05))
+    .background(Color.primary.opacity(CSAlpha.fill))
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
@@ -335,7 +360,7 @@ struct Composer: View {
       HStack(spacing: 8) {
         VStack(alignment: .leading, spacing: 1) {
           Text(title)
-            .font(CSFont.mono(11.5, .semibold))
+            .font(CSFont.mono(12, .semibold))
             .foregroundStyle(Color.primary)
           if let subtitle, !subtitle.isEmpty {
             Text(subtitle)
@@ -413,13 +438,13 @@ struct Composer: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.primary.opacity(0.04))
+        .background(Color.primary.opacity(CSAlpha.subtle))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
         .accessibilityIdentifier("agent-live-capture")
     }
   }
 
-  /// The composer mic starts/stops the same Agent route as Right Option. The
+  /// The composer mic starts/stops the same Agent route as the menu bar. The
   /// ripple follows the shared controller lifecycle; live words render above
   /// the field from the overlay reducer (the overlay window stays closed).
   private var micButton: some View {
@@ -430,14 +455,19 @@ struct Composer: View {
           height: ComposerControlMetrics.hitTargetSize
         )
         .contentShape(Rectangle())
-        .opacity(micState == .blocked ? 0.35 : micState == .preparing ? 0.68 : 1)
     }
-    .csFocusRing()
+    .conversationActionHover(
+      restingColor: microphoneHint.visible ? CSColor.chromeAccent : CSColor.textTertiary,
+      hoverColor: microphoneHint.visible ? CSColor.chromeAccent : Color.primary,
+      restingOpacity: micState == .recording || microphoneHint.visible
+        ? 1 : ComposerControlMetrics.restingActionOpacity
+    )
+    .scaleEffect(microphoneHint.visible && !reduceMotion ? 1.18 : 1)
     .disabled(!micState.isEnabled)
     .help(micState.accessibilityLabel)
     .accessibilityIdentifier(ComposerAccessibility.micIdentifier)
     .accessibilityLabel(Text(micState.accessibilityLabel))
-    .animation(.easeOut(duration: 0.15), value: store.dictationPhase)
+    .animation(.easeOut(duration: CSMotion.Tempo.hover), value: store.dictationPhase)
   }
 
   /// One shared recorder ⇒ the live-capture affordances belong to exactly one
@@ -476,9 +506,9 @@ struct Composer: View {
   private var dictationFeedback: some View {
     if case .failed(let message) = store.dictationPhase {
       HStack(spacing: 6) {
-        CSIconView(icon: .error, size: 10.5)
+        CSIconView(icon: .error, size: 11)
         Text(message)
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
       }
       .foregroundStyle(CSColor.amberLight)
       .padding(.leading, 2)
@@ -513,7 +543,7 @@ struct Composer: View {
               HStack(spacing: 6) {
                 CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
                 Text(attachment.name)
-                  .font(CSFont.mono(10.5, .medium))
+                  .font(CSFont.mono(11, .medium))
                   .foregroundStyle(Color.primary)
                   .lineLimit(1)
                   .truncationMode(.middle)
@@ -530,12 +560,12 @@ struct Composer: View {
           }
           .padding(.horizontal, 9)
           .padding(.vertical, 5)
-          .background(Color.primary.opacity(0.05))
+          .background(Color.primary.opacity(CSAlpha.fill))
           .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-              .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+            Capsule(style: .continuous)
+              .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
           )
-          .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+          .clipShape(Capsule(style: .continuous))
         }
       }
       .padding(.horizontal, 2)
@@ -768,6 +798,39 @@ enum ComposerControlMetrics {
   static let spacing: CGFloat = 8
   static let horizontalPadding: CGFloat = 12
   static let verticalPadding: CGFloat = 8
+  static let restingActionOpacity = 0.75
+  static let conversationEditorMaximumHeight: CGFloat = 112
+
+  // Inline agent cards share the stacked editor and toolbar, with less chrome.
+  static let intercomGlyphSize: CGFloat = 14
+  static let intercomSpacing: CGFloat = 4
+  static let intercomHorizontalPadding: CGFloat = 8
+  static let intercomVerticalPadding: CGFloat = 4
+  static let intercomMinimumHeight = intercomComposerHeight(editorHeight: hitTargetSize, scale: 1)
+
+  /// Reserve a bounded supplementary region even before reply/attachment content
+  /// arrives. Pasting must not raise admission and unmount the active editor.
+  static func intercomSupplementaryHeight(scale: CGFloat) -> CGFloat {
+    let line = ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 11 * scale)))
+    return 3 * line + 4 + 30 + intercomSpacing
+  }
+
+  /// Full compact body and its bounded supplementary region; external
+  /// conversation insets are additional. The editor cap retains a full line.
+  static func intercomComposerHeight(editorHeight: CGFloat, scale: CGFloat) -> CGFloat {
+    let minimumEditorHeight = ComposerTextLayout.minimumHeight(fontSize: textSize * scale)
+    return max(minimumEditorHeight, editorHeight) + hitTargetSize
+      + intercomSpacing + 2 * intercomVerticalPadding
+      + intercomSupplementaryHeight(scale: scale) + intercomSpacing
+  }
+
+  /// The editor and toolbar occupy separate rows. Budget all three controls,
+  /// including the leading spacer's gap, and a six-em prose viewport at scale.
+  static func intercomComposerMinimumWidth(scale: CGFloat) -> CGFloat {
+    let toolbarWidth = 3 * hitTargetSize + 3 * intercomSpacing
+    let editorWidth = 6 * textSize * scale
+    return max(toolbarWidth, editorWidth) + 2 * intercomHorizontalPadding
+  }
 }
 
 enum ComposerActionAccessibility {

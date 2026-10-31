@@ -7,12 +7,14 @@ import SwiftUI
 // of CSColor adapts without a call-site change. Brand and semantic hues
 // (terracotta, assistive violet, olive, amber) are appearance-fixed — they
 // carry app-owned mode, state, and brand meaning, not chrome meaning.
-// Decorative controls use the operator's macOS accent instead.
+// Interactive chrome follows the user's macOS accent through one role,
+// `chromeAccent`; terracotta stays the dictation and recording colour
+// (Founder, 2026-10-24: actions are not terracotta).
 // Window chrome (canvas, code wells, control fills) is the system semantic
 // NSColor directly — one owner, no per-surface appearance wrappers.
 // Assistive violet = voice routed to the agent. Olive/green = healthy status.
 // Amber = reasoning/format meta.
-// Never hardcode a replacement for the system accent: the operator owns it.
+// Never hardcode a replacement for the system accent: the user owns it.
 
 extension Color {
   init(hex: UInt32, alpha: Double = 1.0) {
@@ -52,21 +54,19 @@ enum CSPalette {
   static let terracottaTintBars = NSColor(hex: 0xE6A98F)
   static let assistive = NSColor(hex: 0x9B72F2)
   static let olive = NSColor(hex: 0x5F6B3E)
-  static let indicatorRecording = NSColor(hex: 0xFF3B30)
+  /// The recording red is the pointer dot's, from the core palette
+  /// (`IndicatorPalette`), opaque; the lamp and the menu-bar dot never keep a
+  /// red of their own.
+  static let indicatorRecording = IndicatorPalette.opaqueColor(.recording)
   /// Capture is live but nothing reaches speaking level. Founder intent
   /// s04-027 (2026-09-25): the indicator is yellow while you are not speaking.
   static let indicatorSilence = NSColor(hex: 0xFFCC00)
-  /// Agent mode between phrases: the pointer dot's white.
-  static let indicatorAgentQuiet = NSColor(white: 0.97, alpha: 1)
+  /// Agent mode between phrases: the pointer dot's white, from the core palette.
+  static let indicatorAgentQuiet = IndicatorPalette.opaqueColor(.agentQuiet)
   static let danger = NSColor(hex: 0xD84A4A)
 
   // Surfaces — warm ink in dark, warm paper in light.
   static let ink = adaptive(light: NSColor(hex: 0xF7F5F0), dark: NSColor(hex: 0x090A0D))
-  static let glassBase = adaptive(
-    light: NSColor(hex: 0xFFFFFF, alpha: 0.78),
-    dark: NSColor(hex: 0x12141A, alpha: 0.84)
-  )
-  static let glassUnder = adaptive(light: NSColor(hex: 0xEDEAE3), dark: NSColor(hex: 0x0B0C10))
   /// The app sheet: the overlay canvas colour, shared by every window's content
   /// area outside its sidebar so Settings, the Agent window, the wizard, the
   /// tray menu and the overlay read as one surface (Maciej, ch1 2026-10-15
@@ -86,20 +86,19 @@ enum CSPalette {
       light: NSColor(hex: preference.current(dark: false).hex),
       dark: NSColor(hex: preference.current(dark: true).hex))
   }
-  static let warmInk = adaptive(light: NSColor(hex: 0xF8F3EC), dark: NSColor(hex: 0x15110E))
-  static let warmDeep = adaptive(light: NSColor(hex: 0xE9E5DD), dark: NSColor(hex: 0x0D1012))
 
   // Text — warm near-black on paper, warm off-white on ink. The "Alt" rung is
   // always the fainter one: closer to the page in whichever mode is active.
   static let textHigh = adaptive(light: NSColor(hex: 0x1D1B17), dark: NSColor(hex: 0xF4F2EC))
   static let textBody = adaptive(light: NSColor(hex: 0x2B2924), dark: NSColor(hex: 0xE9E7E0))
-  static let textBodyAlt = adaptive(light: NSColor(hex: 0x363430), dark: NSColor(hex: 0xDFE2DB))
   /// The paper rung clears 4.5:1 on the real light surfaces, not only on
   /// `ink`: the sheet, a card or chip on it, a bubble, and the measured glass
   /// sheet (#DFDDD9, 2026-10-20), including every selectable sheet shade.
   /// Travertine's chip is the darkest light surface.
   static let textMuted = adaptive(light: NSColor(hex: 0x4B4D46), dark: NSColor(hex: 0xA0A39D))
-  static let textMutedAlt = adaptive(light: NSColor(hex: 0x84877E), dark: NSColor(hex: 0x82857F))
+  /// The faint rungs are decoration only, never text: rules, separators and
+  /// hairlines that clear 3:1. Text uses the three warm rungs above —
+  /// textHigh, textBody, textMuted (Founder, 2026-10-26).
   static let textFaint = adaptive(light: NSColor(hex: 0x9DA094), dark: NSColor(hex: 0x6F7268))
   static let textFaintAlt = adaptive(light: NSColor(hex: 0xB2B5A9), dark: NSColor(hex: 0x5D6058))
 
@@ -108,19 +107,25 @@ enum CSPalette {
   // The paper rungs are sized for the darkest light surface a label meets: a
   // chip on a travertine card, the glass sheet measured at #DFDDD9, or the
   // label's own 12 % tint on any selectable card or glass.
-  static let terracottaLight = adaptive(light: NSColor(hex: 0x75351E), dark: NSColor(hex: 0xE9B79F))
+  // The terracotta rungs are the brand hue with only its lightness moved in
+  // OKLCH (C 0.13, H 39°): brick, never the brown that blending with black
+  // used to give (Founder, 2026-10-26).
+  static let terracottaLight = adaptive(light: NSColor(hex: 0x862C08), dark: NSColor(hex: 0xE9B79F))
   static let assistiveLight = adaptive(light: NSColor(hex: 0x522EA2), dark: NSColor(hex: 0xC9B7FF))
   static let oliveLight = adaptive(light: NSColor(hex: 0x404D2C), dark: NSColor(hex: 0x9DB178))
-  static let eyebrowOlive = adaptive(light: NSColor(hex: 0x66744A), dark: NSColor(hex: 0x7F8C5E))
+  /// Section eyebrows sit on sheets, cards, chips and glass, never on their
+  /// own tint; both rungs clear 4.5:1 on the darkest of those surfaces (a chip
+  /// on a travertine card, a chip on a warm-carbon card).
+  static let eyebrowOlive = adaptive(light: NSColor(hex: 0x464F33), dark: NSColor(hex: 0x9BA77C))
   static let amber = adaptive(light: NSColor(hex: 0x9A7B1E), dark: NSColor(hex: 0xD6B24E))
   static let modeProcessing = adaptive(light: NSColor(hex: 0xB96A24), dark: NSColor(hex: 0xF28C45))
   static let dangerLight = adaptive(light: NSColor(hex: 0x8C1D17), dark: NSColor(hex: 0xFFAAA5))
   /// Terracotta drawn as a word or an essential glyph (an error line, a
   /// destructive icon, a failed status). The brand hue reads 2.57:1 on a light
-  /// card, so paper takes the label rung; ink keeps a saturated brand hue,
-  /// lifted to clear 4.5:1 on its own 12 % tint over warm carbon. This is not
-  /// `terracottaLight` (pale #E9B79F on ink).
-  static let terracottaText = adaptive(light: NSColor(hex: 0x75351E), dark: NSColor(hex: 0xE58D6F))
+  /// card, so paper takes the brick rung; ink keeps the brand hue at full
+  /// chroma, lifted to clear 4.5:1 on its own 12 % tint over a warm-carbon
+  /// card. This is not `terracottaLight` (pale #E9B79F on ink).
+  static let terracottaText = adaptive(light: NSColor(hex: 0x862C08), dark: NSColor(hex: 0xE88464))
   /// Secondary text: the system label ink at a strength that clears 4.5:1 on
   /// the app sheet, its cards, chips and bubbles. `secondaryLabelColor` (50 %)
   /// measured 3.82:1 for Settings helper text on a card (2026-10-24); the app
@@ -148,15 +153,31 @@ enum CSPalette {
   static let panelEdge = adaptive(
     light: NSColor(hex: 0x5F5A52, alpha: 0.20), dark: NSColor(hex: 0xF3F0EA, alpha: 0.16))
 
-  /// Primary-action wash: the operator's accent on paper; on ink the same
-  /// accent lifted halfway to white. A translucent accent wash alone paints
-  /// the same mid-tone on both appearances, which reads as a highlight on
-  /// paper but sinks into dark glass. The lift is the dark-mode raise, the way
-  /// `surfaceRaised` lifts with a white veil. Callers own the wash alpha.
+  /// The one chrome accent shared by selection, focus and interactive
+  /// controls: the user's macOS accent. Actions read as clickable through
+  /// their shape (small bordered buttons), not through a brand hue; with the
+  /// Graphite accent they stay grey by the user's choice.
+  static let chromeAccent = NSColor.controlAccentColor
+
+  /// The brand hue as a colour of state, not of action: the setup progress
+  /// bar, the mark of a selected choice and the icon of a wizard step (Founder,
+  /// 2026-10-26). Actions keep their neutral bordered shape (2026-10-24) and
+  /// the chrome accent keeps focus, switches and sliders. Each rung clears 3:1
+  /// as a mark on every bare sheet shade of its appearance (travertine holds
+  /// the paper rung at 3.02); on its own selection wash the paper rung reads
+  /// 2.65–3.46 and stays the Founder's hex, the selection also carried by the
+  /// wash, the edge and the filled glyph. The paper rung is the brand hue
+  /// with its lightness lowered in OKLCH, the ink rung the brand terracotta.
+  static let brandAccent = adaptive(light: NSColor(hex: 0xBA5C3C), dark: NSColor(hex: 0xD97757))
+
+  /// Primary-action wash: the chrome accent on paper; on ink the same accent
+  /// lifted halfway to white. A translucent accent wash alone paints the same
+  /// mid-tone on both appearances, which reads as a highlight on paper but
+  /// sinks into dark glass. Callers own the wash alpha.
   static let accentWash = NSColor(name: nil) { appearance in
-    var accent = NSColor.controlAccentColor
+    var accent = chromeAccent
     appearance.performAsCurrentDrawingAppearance {
-      accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? accent
+      accent = chromeAccent.usingColorSpace(.sRGB) ?? accent
     }
     guard appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua else { return accent }
     return accent.blended(withFraction: 0.5, of: .white) ?? accent
@@ -166,8 +187,6 @@ enum CSPalette {
 enum CSColor {
   // Surfaces
   static let ink = Color(nsColor: CSPalette.ink)  // page base
-  static let glassBase = Color(nsColor: CSPalette.glassBase)  // app window material tint
-  static let glassUnder = Color(nsColor: CSPalette.glassUnder)
   /// Content area of every window outside its sidebar; see `CSPalette.sheet`.
   static var sheet: Color { Color(nsColor: CSPalette.sheet) }
 
@@ -224,20 +243,26 @@ enum CSColor {
   static let indicatorRecording = Color(nsColor: CSPalette.indicatorRecording)
   static let indicatorAgentQuiet = Color(nsColor: CSPalette.indicatorAgentQuiet)
 
-  // UI chrome — selection, focus, and interactive controls follow macOS.
-  static var chromeAccent: Color { Color(nsColor: .controlAccentColor) }
+  // UI chrome — focus and interactive controls follow macOS.
+  static let chromeAccent = Color(nsColor: CSPalette.chromeAccent)
+  /// Progress, a selected choice's mark and a step's icon wear the brand hue;
+  /// a selected row sits on `brandAccent` at `CSAlpha.selectionWash` with a
+  /// `CSAlpha.selectionStroke` edge. See `CSPalette.brandAccent`.
+  static let brandAccent = Color(nsColor: CSPalette.brandAccent)
   /// The one primary action's fill tint (apply the wash alpha at the call site).
   static let accentWash = Color(nsColor: CSPalette.accentWash)
 
   // Status — olive / green
   static let olive = Color(nsColor: CSPalette.olive)  // healthy base
   static let oliveLight = Color(nsColor: CSPalette.oliveLight)  // idle / granted / success dot
+  static let oliveStatus = Color(nsColor: CSPalette.oliveStatus)  // healthy status words and fills
   static let eyebrowOlive = Color(nsColor: CSPalette.eyebrowOlive)  // section eyebrows
 
   // Reasoning — amber
   static let amber = Color(nsColor: CSPalette.amber)
-  /// Amber as a word (a warning, a pending state): the label rung that clears
-  /// 4.5:1 on paper, where the base amber reads 3.31:1 on a card.
+  /// Amber marks an actionable warning, never reassurance, an informational
+  /// tag or a normal first-run state. The label rung clears 4.5:1 on paper,
+  /// where the base amber reads 3.31:1 on a card.
   static let amberLight = Color(nsColor: CSPalette.amberLight)
 
   // Destructive actions — reserved for explicit danger-zone controls
@@ -247,33 +272,35 @@ enum CSColor {
   // Text
   static let textHigh = Color(nsColor: CSPalette.textHigh)  // headlines
   static let textBody = Color(nsColor: CSPalette.textBody)
-  static let textBodyAlt = Color(nsColor: CSPalette.textBodyAlt)
   static let textMuted = Color(nsColor: CSPalette.textMuted)
-  static let textMutedAlt = Color(nsColor: CSPalette.textMutedAlt)
-  static let textFaint = Color(nsColor: CSPalette.textFaint)  // mono meta
-  static let textFaintAlt = Color(nsColor: CSPalette.textFaintAlt)  // timestamps
-
-  /// Warm wash gradient shared by Settings detail and overlay/tray previews so
-  /// those surfaces cannot drift apart. Follows the system appearance.
-  static let windowWash = LinearGradient(
-    stops: [
-      .init(color: Color(nsColor: CSPalette.warmInk), location: 0.0),
-      .init(color: Color(nsColor: CSPalette.glassUnder), location: 0.55),
-      .init(color: Color(nsColor: CSPalette.warmDeep), location: 1.0),
-    ],
-    startPoint: .topLeading,
-    endPoint: .bottomTrailing
-  )
+  static let textFaint = Color(nsColor: CSPalette.textFaint)  // decoration only, never text
+  static let textFaintAlt = Color(nsColor: CSPalette.textFaintAlt)  // decoration only, never text
 }
 
 enum CSRadius {
   static let chip: CGFloat = 8
-  static let input: CGFloat = 9
+  static let input: CGFloat = 8
   static let card: CGFloat = 12
-  static let composer: CGFloat = 13
-  static let tray: CGFloat = 14
-  static let pill: CGFloat = 20
+  static let composer: CGFloat = 12
   static let window: CGFloat = 22
+}
+
+/// Ink veils: `Color.primary` at one of four strengths, from the faintest
+/// surface tint to a control's border (Founder, 2026-10-26). Surfaces pick a
+/// level; they do not invent an alpha.
+enum CSAlpha {
+  /// A barely raised surface: a bubble or a quiet well.
+  static let subtle: Double = 0.03
+  /// A filled control or chip at rest.
+  static let fill: Double = 0.05
+  /// A hairline rule or a hovered fill.
+  static let line: Double = 0.08
+  /// A control's border.
+  static let stroke: Double = 0.12
+  /// A selected choice row: its wash and its one-point edge, both in
+  /// `CSColor.brandAccent` (Founder, 2026-10-26: 12–13 % plus about 45 %).
+  static let selectionWash: Double = 0.13
+  static let selectionStroke: Double = 0.45
 }
 
 /// Layout rhythm. Screens were inventing 6/7/8/11/12/14/15/20/28/44 independently.

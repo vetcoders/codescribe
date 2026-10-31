@@ -151,7 +151,7 @@ final class ChatRenderCostTests: XCTestCase {
       if case .paragraph(let body) = block {
         _ = MarkdownText.inlineAttributed(
           body, fontSize: 14, baseFont: CSFont.ui(14),
-          baseColor: CSColor.textBodyAlt
+          baseColor: CSColor.textBody
         )
         materialized += 1
       }

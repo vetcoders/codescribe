@@ -1439,7 +1439,10 @@ status_line="$(python3 "$DEMUX" --bus "$BUS" --bridge-home "$COAL_HOME" \
 python3 - "$status_line" <<'PY'
 import json, sys
 o = json.loads(sys.argv[1])
-assert o["attached"] is True, o
+assert o["lease_recorded"] is True, o
+assert o["channel_bound"] is False, o
+assert o["follower_verified"] is False, o
+assert o["attached"] is False, o
 assert o["pending_file"] == 2, o
 assert o["backlog"] == 2, o
 assert o["unacked_seals"] == 1, o

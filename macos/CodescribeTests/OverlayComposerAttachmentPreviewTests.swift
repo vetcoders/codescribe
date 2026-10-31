@@ -155,6 +155,60 @@ final class OverlayComposerAttachmentPreviewTests: XCTestCase {
     XCTAssertFalse(previewButton.contains("onRemove"))
   }
 
+  func testPreviewKeepsCloseAndActionsVisibleInCompactWindow() throws {
+    let path = try pastedImage()
+    let attachment = MessageAttachment(
+      name: "Pasted screenshot of an expanded Intercom conversation.png",
+      url: URL(fileURLWithPath: path))
+    for height in [CGFloat(420), 600] {
+      let host = NSHostingView(
+        rootView: AttachmentPreviewSheet(attachment: attachment)
+          .environment(\.colorScheme, .dark).background(Color.black))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 520, height: height)
+      let window = NSWindow(
+        contentRect: NSRect(x: -10000, y: -10000, width: 520, height: height),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let image = NSImage(size: host.bounds.size)
+      image.addRepresentation(bitmap)
+      let attachment = XCTAttachment(image: image)
+      attachment.name = "Attachment preview height \(Int(height))"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+      // Hidden hosts do not publish SwiftUI button AX metadata on this SDK.
+      // Measure the actual header/footer ink; this is a visual layout test,
+      // not a claim that a click or Escape dismissed a presented sheet.
+      func lightInk(in rect: NSRect) -> Int {
+        let scaleX = CGFloat(bitmap.pixelsWide) / host.bounds.width
+        let scaleY = CGFloat(bitmap.pixelsHigh) / host.bounds.height
+        var count = 0
+        for y in Int(rect.minY * scaleY)..<Int(rect.maxY * scaleY) {
+          for x in Int(rect.minX * scaleX)..<Int(rect.maxX * scaleX) {
+            guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+            if min(color.redComponent, color.greenComponent, color.blueComponent) > 0.6 {
+              count += 1
+            }
+          }
+        }
+        return count
+      }
+      XCTAssertGreaterThan(
+        lightInk(in: NSRect(x: 420, y: 10, width: 82, height: 60)), 30,
+        "Close must paint inside the header at height \(height)")
+      XCTAssertGreaterThan(
+        lightInk(in: NSRect(x: 18, y: height - 45, width: 300, height: 35)), 100,
+        "File actions must paint inside the footer at height \(height)")
+    }
+  }
+
   // MARK: - Preview sheet corners
 
   func testPreviewSheetKeepsTheImageClearOfTheCardCornerArc() throws {

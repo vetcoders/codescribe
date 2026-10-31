@@ -26,6 +26,32 @@ struct OverlayIntercomInstance: Codable, Equatable, Identifiable, Sendable {
   /// pill remains the explicit road to show it again.
   var minimized: Bool
   var closed: Bool
+  /// A saved window-opening intent, not an archive or liveness projection.
+  /// Only explicit reopen of an already archived exact owner records this.
+  var historyOpening: HistoryOpening? = nil
+
+  struct HistoryOpening: Codable, Equatable, Sendable {
+    let ownerID: String
+    let conversationID: String
+    let digit: String
+  }
+
+  var explicitlyOpenedHistory: Bool {
+    historyOpening == HistoryOpening(
+      ownerID: ownerID, conversationID: conversationID, digit: digit)
+  }
+
+  mutating func recordHistoryOpening(archivedOwners: Set<OverlayConversationOwner>) {
+    historyOpening = archivedOwners.contains {
+      $0.id == ownerID && $0.channel == digit
+    } ? HistoryOpening(ownerID: ownerID, conversationID: conversationID, digit: digit) : nil
+  }
+
+  var isHumanInbox: Bool {
+    digit == "10" && conversationID == "10" && ownerID.isEmpty
+  }
+  var displayDigit: String { isHumanInbox ? "" : digit }
+  var displayTitle: String { isHumanInbox ? name : "\(digit) · \(name)" }
 
   var frame: CGRect {
     get { CGRect(x: x, y: y, width: width, height: height) }
@@ -56,9 +82,8 @@ struct OverlayIntercomInstance: Codable, Equatable, Identifiable, Sendable {
 
   /// The card identity this instance presents, for the shared conversation
   /// lookups. Placeholder identities (no owner) are never persisted — except
-  /// the broadcast channel "0", whose conversation legitimately has no owner
-  /// and can never rebind to another agent (Maciej, 2026-10-23: fiszki must
-  /// take channel 0 too).
+  /// the broadcast channel "0" and the human inbox, which have no agent owner.
+  /// Neither can rebind to an agent by name or channel reuse.
   func matches(_ conversation: OverlayConversation) -> Bool {
     conversationID == conversation.id && ownerID == (conversation.owner?.id ?? "")
       && digit == conversation.channel
@@ -80,15 +105,13 @@ struct OverlayIntercomDesktopState: Codable, Equatable, Sendable {
   func openInstance(for identity: OverlayIntercomCardIdentity) -> OverlayIntercomInstance? {
     instances.first {
       !$0.closed && $0.conversationID == identity.conversationID
-        && $0.ownerID == (identity.ownerID ?? "")
+        && $0.ownerID == (identity.ownerID ?? "") && $0.digit == identity.digit
     }
   }
 
-  /// The group's rows: every agent except one standing in its own window.
-  /// Such an agent leaves the stack instead of greying in it; its window is
-  /// its one place, and closing the window hands the row back (Maciej,
-  /// 2026-10-23 17:48Z, on the collapsed ghost: "likwidować, chować… jak ty
-  /// myślisz"; leaving the stack is my answer, 17:49Z).
+  /// An open fiszka owns this conversation's visible placement. Detaching
+  /// removes its group row; docking restores it in the existing roster order
+  /// (Founder decision, 2026-10-25). Mini still counts as detached.
   func groupRows(of identities: [OverlayIntercomCardIdentity]) -> [OverlayIntercomCardIdentity] {
     identities.filter { openInstance(for: $0) == nil }
   }
@@ -99,6 +122,41 @@ struct OverlayIntercomDesktopState: Codable, Equatable, Sendable {
     } else {
       instances.append(instance)
     }
+  }
+
+  /// Archiving retires open windows of the exact lease, without deleting
+  /// geometry, messages or drafts. A later explicit history reopen is separate.
+  @discardableResult
+  mutating func closeArchivedInstances(owners: Set<OverlayConversationOwner>) -> Bool {
+    var changed = false
+    for index in instances.indices
+    where !instances[index].closed && !instances[index].explicitlyOpenedHistory {
+      if owners.contains(where: {
+        $0.id == instances[index].ownerID && $0.channel == instances[index].digit
+      }) {
+        instances[index].closed = true
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  /// A positive current-owner projection supersedes an older history-opening
+  /// intent. Absence alone may be startup hydration and clears nothing.
+  @discardableResult
+  mutating func clearHistoryOpenings(for identities: [OverlayIntercomCardIdentity]) -> Bool {
+    var changed = false
+    for index in instances.indices where instances[index].historyOpening != nil {
+      let instance = instances[index]
+      if !instance.explicitlyOpenedHistory || identities.contains(where: {
+        $0.conversationID == instance.conversationID && $0.ownerID == instance.ownerID
+          && $0.digit == instance.digit
+      }) {
+        instances[index].historyOpening = nil
+        changed = true
+      }
+    }
+    return changed
   }
 
   mutating func remove(_ id: UUID) {
@@ -144,9 +202,10 @@ final class OverlayIntercomDesktopStore {
     else { return OverlayIntercomDesktopState() }
     // A persisted instance without its exact conversation identity cannot be
     // presented or safely rebound; drop it rather than guess an owner. The
-    // broadcast channel "0" is the one identity that owns no agent: it stays.
+    // broadcast channel and the exact human inbox own no agent: both stay.
     state.instances.removeAll {
-      $0.conversationID.isEmpty || ($0.ownerID.isEmpty && $0.digit != "0")
+      $0.conversationID.isEmpty
+        || ($0.ownerID.isEmpty && $0.digit != "0" && !$0.isHumanInbox)
     }
     return state
   }

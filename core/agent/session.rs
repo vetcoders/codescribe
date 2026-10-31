@@ -21,6 +21,7 @@ use chrono::Utc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info, warn};
 
+use super::mcp_projection::{MCP_CALL_TOOL_NAME, MCP_SEARCH_TOOL_NAME, McpCallResolution};
 use super::redaction;
 use super::tool_output::ToolOutputStore;
 use super::{
@@ -417,7 +418,7 @@ impl AgentSession {
                 self.provider.name()
             );
 
-            let tool_definitions = self.tools.definitions();
+            let tool_definitions = self.tools.wire_definitions();
             let mut event_rx = self
                 .stream_with_retry(&tool_definitions, options)
                 .await
@@ -622,96 +623,173 @@ impl AgentSession {
                 timestamp: Some(Utc::now()),
             });
 
-            for (call_id, tool_name, arguments) in ready_calls {
-                let (decision, decided_targets) = self.tools.decide_with_targets(
-                    &tool_name,
-                    &arguments,
-                    &call_id,
-                    &self.execution_session_id,
-                    &self.execution_thread_id,
-                );
-                let (authorization_error, approved_by_user, audit_decision) = match decision {
-                    ToolDecision::Allow => (None, false, "allowed"),
-                    ToolDecision::Deny(reason) => (Some(reason), false, "denied"),
-                    ToolDecision::RequireApproval(request) => {
-                        let request = *request;
-                        let approval = self
-                            .approval_handler
-                            .as_ref()
-                            .map(|handler| handler(request.clone()));
-                        send_ui_event(
-                            &self.ui_tx,
-                            AgentUiEvent::ToolApprovalRequested(request.clone()),
-                        )
-                        .await;
-                        match approval {
-                            Some(approval) => {
-                                match tokio::time::timeout(self.approval_timeout, approval).await {
-                                    Ok(true) => (None, true, "approved_once"),
-                                    Ok(false) => (
-                                        Some("Tool call rejected by the user".to_string()),
-                                        false,
-                                        "rejected",
-                                    ),
-                                    Err(_) => (
-                                        Some("Tool approval timed out".to_string()),
-                                        false,
-                                        "timeout",
-                                    ),
-                                }
-                            }
-                            None => (
-                                Some(
-                                    "Tool requires approval, but no approval UI is connected"
-                                        .to_string(),
-                                ),
-                                false,
-                                "denied",
-                            ),
-                        }
-                    }
-                };
-
-                // Consent covers the targets the gate resolved, not whatever the
-                // handler would resolve now: a symlink re-pointed during the
-                // approval wait must not inherit the earlier verdict.
-                let (authorization_error, audit_decision) = match authorization_error {
-                    None => {
-                        match self
-                            .tools
-                            .confirm_targets(&tool_name, &arguments, &decided_targets)
-                        {
-                            Ok(()) => (None, audit_decision),
-                            Err(error) => (Some(error.to_string()), "target_changed"),
-                        }
-                    }
-                    denied => (denied, audit_decision),
-                };
-
+            for (call_id, raw_tool_name, raw_arguments) in ready_calls {
                 let dispatch_started = Instant::now();
-                let tool_outputs = if let Some(reason) = authorization_error {
-                    vec![ToolResultContent::Error(reason)]
-                } else {
+                let (tool_name, approved_by_user, audit_decision, tool_outputs) = if raw_tool_name
+                    == MCP_SEARCH_TOOL_NAME
+                {
                     send_ui_event(
                         &self.ui_tx,
                         AgentUiEvent::ToolExecuting {
-                            name: tool_name.clone(),
+                            name: raw_tool_name.clone(),
                             id: call_id.clone(),
                         },
                     )
                     .await;
-                    match self
-                        .tools
-                        .dispatch_in_thread(&tool_name, arguments, &self.execution_thread_id)
-                        .await
-                    {
-                        Ok(outputs) => outputs,
-                        Err(error) => {
-                            warn!(
-                                "Tool '{}' execution failed for call {}: {}",
-                                tool_name, call_id, error
+                    let outputs = self.tools.search_mcp_tools(&raw_arguments);
+                    (raw_tool_name, false, "allowed", outputs)
+                } else {
+                    let resolved_call = if raw_tool_name == MCP_CALL_TOOL_NAME {
+                        match self.tools.resolve_mcp_call(&raw_arguments) {
+                            McpCallResolution::Resolved {
+                                canonical_name,
+                                arguments,
+                            } => Ok((canonical_name, arguments)),
+                            McpCallResolution::Help {
+                                canonical_name,
+                                documentation,
+                            } => {
+                                send_ui_event(
+                                    &self.ui_tx,
+                                    AgentUiEvent::ToolExecuting {
+                                        name: canonical_name.clone(),
+                                        id: call_id.clone(),
+                                    },
+                                )
+                                .await;
+                                Err((
+                                    canonical_name,
+                                    "help",
+                                    vec![ToolResultContent::Text(documentation)],
+                                ))
+                            }
+                            McpCallResolution::Invalid {
+                                canonical_name,
+                                error,
+                            } => Err((
+                                canonical_name.unwrap_or(raw_tool_name),
+                                "invalid_arguments",
+                                vec![ToolResultContent::Error(error)],
+                            )),
+                        }
+                    } else {
+                        let resolved_name = self
+                            .tools
+                            .resolve_tool_name(&raw_tool_name)
+                            .unwrap_or(raw_tool_name);
+                        Ok((resolved_name, raw_arguments))
+                    };
+
+                    match resolved_call {
+                        Err((name, decision_label, outputs)) => {
+                            (name, false, decision_label, outputs)
+                        }
+                        Ok((tool_name, arguments)) => {
+                            let (decision, decided_targets) = self.tools.decide_with_targets(
+                                &tool_name,
+                                &arguments,
+                                &call_id,
+                                &self.execution_session_id,
+                                &self.execution_thread_id,
                             );
-                            vec![ToolResultContent::Error(error.to_string())]
+                            let (authorization_error, approved_by_user, audit_decision) =
+                                match decision {
+                                    ToolDecision::Allow => (None, false, "allowed"),
+                                    ToolDecision::Deny(reason) => (Some(reason), false, "denied"),
+                                    ToolDecision::RequireApproval(request) => {
+                                        let request = *request;
+                                        let approval = self
+                                            .approval_handler
+                                            .as_ref()
+                                            .map(|handler| handler(request.clone()));
+                                        send_ui_event(
+                                            &self.ui_tx,
+                                            AgentUiEvent::ToolApprovalRequested(request.clone()),
+                                        )
+                                        .await;
+                                        match approval {
+                                                Some(approval) => match tokio::time::timeout(
+                                                    self.approval_timeout,
+                                                    approval,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(true) => (None, true, "approved_once"),
+                                                    Ok(false) => (
+                                                        Some(
+                                                            "Tool call rejected by the user"
+                                                                .to_string(),
+                                                        ),
+                                                        false,
+                                                        "rejected",
+                                                    ),
+                                                    Err(_) => (
+                                                        Some(
+                                                            "Tool approval timed out".to_string(),
+                                                        ),
+                                                        false,
+                                                        "timeout",
+                                                    ),
+                                                },
+                                                None => (
+                                                    Some(
+                                                        "Tool requires approval, but no approval UI is connected"
+                                                            .to_string(),
+                                                    ),
+                                                    false,
+                                                    "denied",
+                                                ),
+                                            }
+                                    }
+                                };
+
+                            // Consent covers the targets the gate resolved, not whatever the
+                            // handler would resolve now: a symlink re-pointed during the
+                            // approval wait must not inherit the earlier verdict.
+                            let (authorization_error, audit_decision) = match authorization_error {
+                                None => match self.tools.confirm_targets(
+                                    &tool_name,
+                                    &arguments,
+                                    &decided_targets,
+                                ) {
+                                    Ok(()) => (None, audit_decision),
+                                    Err(error) => (Some(error.to_string()), "target_changed"),
+                                },
+                                denied => (denied, audit_decision),
+                            };
+
+                            let tool_outputs = if let Some(reason) = authorization_error {
+                                vec![ToolResultContent::Error(reason)]
+                            } else {
+                                send_ui_event(
+                                    &self.ui_tx,
+                                    AgentUiEvent::ToolExecuting {
+                                        name: tool_name.clone(),
+                                        id: call_id.clone(),
+                                    },
+                                )
+                                .await;
+                                match self
+                                    .tools
+                                    .dispatch_in_thread(
+                                        &tool_name,
+                                        arguments,
+                                        &self.execution_thread_id,
+                                    )
+                                    .await
+                                {
+                                    Ok(outputs) => outputs,
+                                    Err(error) => {
+                                        warn!(
+                                            "Tool '{}' execution failed for call {}: {}",
+                                            tool_name, call_id, error
+                                        );
+                                        vec![ToolResultContent::Error(error.to_string())]
+                                    }
+                                }
+                            };
+
+                            (tool_name, approved_by_user, audit_decision, tool_outputs)
                         }
                     }
                 };
@@ -728,15 +806,23 @@ impl AgentSession {
                 // tools the server segment of the public name is surfaced.
                 let dispatch_ms = dispatch_started.elapsed().as_millis();
                 let policy = self.tools.policy(&tool_name);
-                let origin = policy
-                    .map(|policy| match &policy.origin {
-                        ToolOrigin::Native => "native".to_string(),
-                        ToolOrigin::Mcp { server, .. } => format!("mcp:{server}"),
-                    })
-                    .unwrap_or_else(|| "unregistered".to_string());
-                let risk = policy
-                    .map(|policy| policy.risk.as_str())
-                    .unwrap_or("unknown");
+                let origin = if tool_name == MCP_SEARCH_TOOL_NAME {
+                    "mcp:catalog".to_string()
+                } else {
+                    policy
+                        .map(|policy| match &policy.origin {
+                            ToolOrigin::Native => "native".to_string(),
+                            ToolOrigin::Mcp { server, .. } => format!("mcp:{server}"),
+                        })
+                        .unwrap_or_else(|| "unregistered".to_string())
+                };
+                let risk = if tool_name == MCP_SEARCH_TOOL_NAME {
+                    "read_only"
+                } else {
+                    policy
+                        .map(|policy| policy.risk.as_str())
+                        .unwrap_or("unknown")
+                };
                 info!(
                     call_id = %call_id,
                     thread_id = %self.execution_thread_id,
@@ -2666,6 +2752,233 @@ mod tests {
                 .iter()
                 .all(|event| !matches!(event, AgentUiEvent::Done)),
             "non-transient failure should not emit Done: {ui_events:?}"
+        );
+    }
+
+    /// Lazy MCP projection end-to-end: the provider receives `wire_definitions()`
+    /// (native tools + `mcp_search_tools` + `call_mcp_tool`), `mcp_search_tools`
+    /// returns full JSON schemas on demand, and `call_mcp_tool` routes through
+    /// the target MCP tool's exact permission gate and handler.
+    #[tokio::test]
+    async fn mcp_lazy_gateway_searches_schemas_and_gates_calls_on_target_mcp_tool() {
+        struct ToolRecordingProvider {
+            scripted: Mutex<VecDeque<Vec<AgentEvent>>>,
+            seen_tools: Arc<Mutex<Vec<Vec<String>>>>,
+            seen_messages: Arc<Mutex<Vec<Vec<Message>>>>,
+        }
+
+        #[async_trait]
+        impl AgentProvider for ToolRecordingProvider {
+            async fn stream(
+                &self,
+                messages: &[Message],
+                tools: &[ToolDefinition],
+                _options: &StreamOptions,
+            ) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
+                self.seen_tools
+                    .lock()
+                    .expect("tools lock")
+                    .push(tools.iter().map(|t| t.name.clone()).collect());
+                self.seen_messages
+                    .lock()
+                    .expect("messages lock")
+                    .push(messages.to_vec());
+                let events = self
+                    .scripted
+                    .lock()
+                    .expect("script lock")
+                    .pop_front()
+                    .unwrap_or_default();
+                let (tx, rx) = mpsc::channel(16);
+                for event in events {
+                    tx.send(event).await.expect("send event");
+                }
+                Ok(rx)
+            }
+
+            fn build_tool_result(
+                &self,
+                call_id: &str,
+                content: Vec<ContentBlock>,
+                is_error: bool,
+            ) -> Message {
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: call_id.to_string(),
+                        content,
+                        is_error,
+                    }],
+                )
+            }
+
+            fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
+                ContentBlock::Image {
+                    data: data.to_vec(),
+                    media_type: media_type.to_string(),
+                }
+            }
+
+            fn name(&self) -> &str {
+                "tool-recording-provider"
+            }
+        }
+
+        let mut registry = ToolRegistry::new();
+        registry
+            .register_native(
+                ToolDefinition {
+                    name: "read_file".to_string(),
+                    description: "Read local file".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_| Box::pin(async { Vec::new() })),
+                ToolRisk::ReadOnly,
+            )
+            .expect("register native");
+
+        let dispatched_args = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let dispatched_clone = Arc::clone(&dispatched_args);
+        registry
+            .register_with_policy(
+                ToolDefinition {
+                    name: "mcp__desktop-commander__write_file".to_string(),
+                    description: "[MCP:desktop-commander] Write file content".to_string(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string" },
+                            "content": { "type": "string" }
+                        },
+                        "required": ["path", "content"]
+                    }),
+                },
+                Box::new(move |input| {
+                    let dispatched_clone = Arc::clone(&dispatched_clone);
+                    Box::pin(async move {
+                        dispatched_clone.lock().expect("args lock").push(input);
+                        vec![ToolResultContent::Text("written ok".to_string())]
+                    })
+                }),
+                ToolExecutionPolicy {
+                    origin: ToolOrigin::Mcp {
+                        server: "desktop-commander".to_string(),
+                        upstream_tool: "write_file".to_string(),
+                    },
+                    risk: ToolRisk::Mutating,
+                    requires_approval: true,
+                },
+                None,
+            )
+            .expect("register mcp tool");
+
+        let seen_tools = Arc::new(Mutex::new(Vec::new()));
+        let seen_messages = Arc::new(Mutex::new(Vec::new()));
+        let provider = ToolRecordingProvider {
+            scripted: Mutex::new(VecDeque::from(vec![
+                // Round 1: search schema
+                vec![
+                    AgentEvent::ToolCallReady {
+                        id: "call_search".to_string(),
+                        name: "mcp_search_tools".to_string(),
+                        arguments: json!({ "query": "write_file" }),
+                    },
+                    AgentEvent::ResponseDone {
+                        response_id: Some("r1".to_string()),
+                        clean: true,
+                    },
+                ],
+                // Round 2: invalid call_mcp_tool (missing required `content`) -> self-corrects without approval
+                vec![
+                    AgentEvent::ToolCallReady {
+                        id: "call_bad".to_string(),
+                        name: "call_mcp_tool".to_string(),
+                        arguments: json!({
+                            "server": "desktop-commander",
+                            "tool": "write_file",
+                            "arguments": { "path": "/tmp/a.txt" }
+                        }),
+                    },
+                    AgentEvent::ResponseDone {
+                        response_id: Some("r2".to_string()),
+                        clean: true,
+                    },
+                ],
+                // Round 3: valid call_mcp_tool -> triggers approval for `mcp__desktop-commander__write_file` and dispatches
+                vec![
+                    AgentEvent::ToolCallReady {
+                        id: "call_good".to_string(),
+                        name: "call_mcp_tool".to_string(),
+                        arguments: json!({
+                            "server": "desktop-commander",
+                            "tool": "write_file",
+                            "arguments": { "path": "/tmp/a.txt", "content": "hello" }
+                        }),
+                    },
+                    AgentEvent::ResponseDone {
+                        response_id: Some("r3".to_string()),
+                        clean: true,
+                    },
+                ],
+                // Round 4: final answer
+                vec![
+                    AgentEvent::TextDone("Done via lazy MCP".to_string()),
+                    AgentEvent::ResponseDone {
+                        response_id: Some("r4".to_string()),
+                        clean: true,
+                    },
+                ],
+            ])),
+            seen_tools: Arc::clone(&seen_tools),
+            seen_messages: Arc::clone(&seen_messages),
+        };
+
+        let approved_tools = Arc::new(Mutex::new(Vec::<String>::new()));
+        let approved_clone = Arc::clone(&approved_tools);
+        let approval_handler: super::ToolApprovalHandler = Arc::new(move |req| {
+            approved_clone.lock().expect("lock").push(req.tool.clone());
+            Box::pin(async { true })
+        });
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(64);
+        let drain = tokio::spawn(async move { while ui_rx.recv().await.is_some() {} });
+
+        let mut session = AgentSession::new(Box::new(provider), Arc::new(registry), ui_tx)
+            .with_tool_approval("thread-lazy-mcp", approval_handler);
+        session
+            .send(
+                "write via mcp".to_string(),
+                Vec::new(),
+                &StreamOptions::default(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        drop(session);
+        drain.await.expect("drain ui");
+
+        // 1. Wire definitions never included `mcp__desktop-commander__write_file` directly.
+        let tools_per_round = seen_tools.lock().expect("tools lock");
+        assert_eq!(
+            tools_per_round[0],
+            vec![
+                "read_file".to_string(),
+                "mcp_search_tools".to_string(),
+                "call_mcp_tool".to_string()
+            ]
+        );
+
+        // 2. Approval was requested ONLY once (for the valid Round 3 call), and bound to
+        //    the real MCP tool name (`mcp__desktop-commander__write_file`), not `call_mcp_tool`.
+        assert_eq!(
+            *approved_tools.lock().expect("approved lock"),
+            vec!["mcp__desktop-commander__write_file".to_string()]
+        );
+
+        // 3. Handler received the unwrapped inner arguments.
+        assert_eq!(
+            *dispatched_args.lock().expect("args lock"),
+            vec![json!({ "path": "/tmp/a.txt", "content": "hello" })]
         );
     }
 }

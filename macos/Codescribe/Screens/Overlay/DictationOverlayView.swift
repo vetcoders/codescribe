@@ -109,16 +109,14 @@ struct OverlayRecordingControls: View {
   }
   var previewAccessibilityLabel: String {
     switch presentationMode {
-    case .mini: String(localized: "Expand to compact widget")
-    case .midi: String(localized: "Expand transcript")
+    case .mini, .midi: String(localized: "Expand transcript")
     case .expanded: String(localized: "Collapse widget")
     }
   }
   /// Expanding the widget is always an explicit click.
   var previewSymbol: String {
     switch presentationMode {
-    case .mini: OverlayControlSymbols.miniToMidi
-    case .midi: OverlayControlSymbols.midiToTranscript
+    case .mini, .midi: OverlayControlSymbols.midiToTranscript
     case .expanded: OverlayControlSymbols.returnToMini
     }
   }
@@ -143,7 +141,7 @@ struct OverlayRecordingControls: View {
 
   func activateRecordingControl() {
     guard !recordingDisabled else { return }
-    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+    withAnimation(reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.hover)) {
       if canFinish { finishRecording() } else { onIntent(.startRecording) }
     }
   }
@@ -163,7 +161,20 @@ struct OverlayRecordingControls: View {
   private var recordingButton: some View {
     Button(action: activateRecordingControl) {
       Group {
-        if recordingLight?.pulses == true && animates && !reduceMotion {
+        if recordingLight?.spins == true {
+          if animates && !reduceMotion {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+              recordingGlyph.overlay {
+                processingArc(
+                  rotation: OverlayRecordingLight.arcRotation(
+                    at: timeline.date.timeIntervalSinceReferenceDate))
+              }
+            }
+          } else {
+            // Still motion: the open arc keeps the shape that tells it from red.
+            recordingGlyph.overlay { processingArc(rotation: 0) }
+          }
+        } else if recordingLight?.pulses == true && animates && !reduceMotion {
           TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
             recordingGlyph.opacity(
               OverlayRecordingLight.pulseOpacity(at: timeline.date.timeIntervalSinceReferenceDate))
@@ -178,7 +189,9 @@ struct OverlayRecordingControls: View {
     .buttonStyle(.plain)
     .disabled(recordingDisabled)
     .opacity(recordingDisabled ? 0.45 : 1)
-    .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: recordingSymbol)
+    .animation(
+      reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.hover), value: recordingSymbol
+    )
     .csFocusOutline()
     .modifier(
       OverlayHeaderControlChrome(
@@ -206,6 +219,22 @@ struct OverlayRecordingControls: View {
     OverlayMicrophoneGlyph(symbol: recordingSymbol, tint: recordingTint)
   }
 
+  /// Thin open arc over the light's circle, drawn while the take transcribes.
+  private func processingArc(rotation: Double) -> some View {
+    Circle()
+      .inset(by: Self.processingArcWidth / 2)
+      .trim(from: 0, to: OverlayRecordingLight.arcFraction)
+      .stroke(
+        recordingTint,
+        style: StrokeStyle(lineWidth: Self.processingArcWidth, lineCap: .round)
+      )
+      .rotationEffect(.radians(rotation))
+      .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
+      .accessibilityHidden(true)
+  }
+
+  static let processingArcWidth: CGFloat = 1.5
+
   private var previewButton: some View {
     Button(action: togglePreview) {
       Image(systemName: previewSymbol)
@@ -222,12 +251,12 @@ struct OverlayRecordingControls: View {
     .contextMenu {
       if let onPresentationSelect {
         Picker(
-          "Live preview",
+          "Widget size",
           selection: Binding(get: { presentationMode }, set: { onPresentationSelect($0) })
         ) {
           Text("Collapse widget").tag(OverlayPresentationMode.mini)
           Text("Compact").tag(OverlayPresentationMode.midi)
-          Text("Transcription").tag(OverlayPresentationMode.expanded)
+          Text("Expanded").tag(OverlayPresentationMode.expanded)
         }
         .pickerStyle(.inline)
         .accessibilityIdentifier("overlay-presentation-picker")
@@ -277,6 +306,16 @@ struct OverlayHeaderControlFramesPreferenceKey: PreferenceKey {
 }
 
 struct OverlayDrawerFramePreferenceKey: PreferenceKey {
+  static let defaultValue = CGRect.zero
+  static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+    let frame = nextValue()
+    if !frame.isEmpty { value = frame }
+  }
+}
+
+/// The conversation's laid-out frame, in the canvas coordinate space. It keeps
+/// the split width while the cell around it folds.
+struct OverlayConversationFramePreferenceKey: PreferenceKey {
   static let defaultValue = CGRect.zero
   static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
     let frame = nextValue()
@@ -485,6 +524,21 @@ struct DictationOverlayView: View {
           geometry.size.width
             - (columnShown ? drawerWidth : 0) - (railShown ? railWidth : 0)
             - transcriptActionsWidth)
+        // The conversation keeps its split width while its cell folds or
+        // unfolds: the pane slide animates a clip, never a reflow. Laying the
+        // text out at the folding cell's width wrapped it one character per
+        // line in the edge column, and a stalled frame kept it there
+        // (Founder, 2026-10-26). The width follows the window, the preferred
+        // drawer width, a drag of the divider and the text scale, never the slide.
+        let splitDrawerWidth = OverlayAgentDrawerLayout.drawerWidth(
+          textScale: textScale,
+          preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
+          windowWidth: geometry.size.width)
+        let conversationContentWidth = max(
+          0,
+          geometry.size.width
+            - (columnShown ? splitDrawerWidth : 0) - (railShown ? railWidth : 0)
+            - transcriptActionsWidth)
         let canvasHidden = canvasWidth < 1 || conversationFolded
         // The conversation toggle has a reserved row, clear of message text.
         let conversationControlsHeight: CGFloat = columnShown ? 30 * textScale : 0
@@ -502,6 +556,7 @@ struct DictationOverlayView: View {
               .allowsHitTesting(transcriptVisible)
               .accessibilityHidden(!transcriptVisible)
             if agentsSurface, let conversation = state.selectedConversation {
+              let resolvedTarget = state.resolvedComposerTarget(viewing: conversation)
               OverlayConversationView(
                 conversation: conversation, palette: palette,
                 topInset: headerHeight + 8 + conversationControlsHeight, bottomInset: 20,
@@ -514,13 +569,27 @@ struct DictationOverlayView: View {
                 isPresented: !state.isCollapsed,
                 isCovered: canvasHidden,
                 draft: Binding(
-                  get: { state.conversationDrafts[conversation.id] ?? "" },
-                  set: { state.conversationDrafts[conversation.id] = $0 }),
-                sending: state.pendingTextMessages.contains(conversation.id),
-                sendError: state.textMessageErrors[conversation.id]
-                  ?? (state.draftCapture.errorConversationID == conversation.id
-                    ? state.draftCapture.error : nil),
-                onSend: { Task { await state.sendConversationText(conversation) } },
+                  get: { resolvedTarget.map { state.conversationDraft(for: $0.id) } ?? "" },
+                  set: { value in
+                    guard let target = resolvedTarget, state.composerTargetIsAvailable(target)
+                    else { return }
+                    state.setConversationDraft(value, for: target.id)
+                  }),
+                sending: resolvedTarget.map { state.pendingTextMessages.contains($0.id) } ?? false,
+                sendError: resolvedTarget.flatMap { target in
+                  state.draftSyncSendError(for: target.id)
+                    ?? (state.draftCapture.errorConversationID == target.id
+                      ? state.draftCapture.error : nil)
+                },
+                onSend: {
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
+                  Task {
+                    guard state.composerTargetIsAvailable(target) else { return }
+                    await state.sendConversationText(target)
+                  }
+                },
                 microphoneOpen: state.conversationMicrophoneOpen(conversation),
                 microphoneEnabled: state.canToggleConversationMicrophone(conversation)
                   && !state.pendingChannelToggles.contains(conversation.channel),
@@ -537,44 +606,142 @@ struct DictationOverlayView: View {
                 },
                 focusAgentPanelHint: conversation.owner.flatMap { state.agentPanelFocusHelp($0) },
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
-                hidesNavigation: columnShown,
+                navigationActions: conversationHeaderActions(conversation),
+                navigationIndicators: conversationHeaderIndicators(conversation),
+                composerConversation: resolvedTarget,
+                composerAvailable: resolvedTarget != nil,
+                composerMicrophoneOpen: resolvedTarget.map { state.conversationMicrophoneOpen($0) },
+                composerRouting: AnyView(composerRouting(viewing: conversation)),
+                onPrepareHeldEdit: { message in
+                  state.prepareHeldComposerEdit(heldComposerTarget(message, viewing: conversation))
+                },
+                onReturnHeldText: { message, text, revision in
+                  state.returnHeldComposerText(
+                    text, to: heldComposerTarget(message, viewing: conversation), revision: revision
+                  )
+                },
+                onNavigateComposerReply: resolvedTarget?.id == conversation.id
+                  ? nil
+                  : {
+                    guard let target = resolvedTarget, state.composerTargetIsAvailable(target),
+                      let messageID = state.conversationReplies[target.id]?.messageID
+                    else { return }
+                    state.navigateToConversationMessage(target, messageID: messageID)
+                  },
+                conversationNavigationRequest: state.conversationNavigationRequest,
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
                 onComposerTypingActivity: { state.noteComposerTypingActivity() },
-                replySelection: state.conversationReplies[conversation.id],
-                onClearReply: { state.conversationReplies.removeValue(forKey: conversation.id) },
-                draftMicrophoneRecording: state.draftCapture.conversationID == conversation.id,
-                draftMicrophoneBusy: state.draftMicrophoneBusy(in: conversation),
+                replySelection: resolvedTarget.flatMap { state.conversationReplies[$0.id] },
+                onClearReply: {
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
+                  state.conversationReplies.removeValue(forKey: target.id)
+                },
+                draftMicrophoneRecording: resolvedTarget.map {
+                  state.draftCapture.conversationID == $0.id
+                } ?? false,
+                draftMicrophoneBusy: resolvedTarget.map { state.draftMicrophoneBusy(in: $0) }
+                  ?? true,
                 onToggleDraftMicrophone: {
-                  Task { await state.toggleDraftMicrophone(in: conversation) }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
+                  Task {
+                    guard state.composerTargetIsAvailable(target) else { return }
+                    await state.toggleDraftMicrophone(in: target)
+                  }
                 },
-                onStageCaptureAttachments: {
-                  state.stageConversationAttachments($0, in: conversation)
+                onStageCaptureAttachments: { paths in
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return false
+                  }
+                  return state.stageConversationAttachments(paths, in: target)
                 },
-                pendingCaptureAttachments: state.captureAttachmentDrafts[conversation.id]?.paths
-                  ?? [],
-                onRemoveCaptureAttachment: {
-                  state.removeCaptureAttachment($0, in: conversation.id)
+                pendingCaptureAttachments: resolvedTarget.flatMap {
+                  state.captureAttachmentDrafts[$0.id]?.paths
+                } ?? [],
+                onRemoveCaptureAttachment: { path in
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
+                  state.removeCaptureAttachment(path, in: target.id)
                 },
-                captureAttachmentError: state.captureAttachmentErrors[conversation.id],
+                captureAttachmentError: resolvedTarget.flatMap {
+                  state.captureAttachmentErrors[$0.id]
+                },
                 onRetryCaptureAttachments: {
-                  Task { await state.retryCaptureAttachments(in: conversation.id) }
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
+                  Task {
+                    guard state.composerTargetIsAvailable(target) else { return }
+                    await state.retryCaptureAttachments(in: target.id)
+                  }
                 },
                 onReply: { message in
+                  state.chooseComposerTarget(conversation)
                   state.conversationReplies[conversation.id] = OverlayUserReplyReference(
                     message: message)
+                },
+                draftSyncChoices: resolvedTarget.map { state.draftSyncChoices(for: $0) } ?? [],
+                draftSyncNames: resolvedTarget.map { state.draftSyncNames(for: $0.id) } ?? [],
+                draftSyncArmed: resolvedTarget.map {
+                  state.armedDraftSyncConversationID == $0.id
+                } ?? false,
+                draftSyncEnabled: resolvedTarget.map { state.canActivateDraftSync(for: $0.id) }
+                  ?? false,
+                onActivateDraftSync: {
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
+                  state.activateDraftSync(for: target.id)
+                },
+                onProseEdit: { edit in
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
+                  state.applyConversationProseEdit(edit, for: target.id)
+                },
+                onToggleDraftSync: { id in
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
+                  state.toggleDraftSync(from: target.id, with: id)
+                },
+                onStopDraftSync: {
+                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
+                    return
+                  }
+                  state.stopDraftSync(for: target.id)
                 }
               )
+              .onAppear { state.initializeComposerTarget(conversation) }
+              .onChange(of: conversation.id) { _, _ in
+                state.initializeComposerTarget(conversation)
+              }
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
               .accessibilityHidden(state.isCollapsed)
+              .frame(width: conversationContentWidth, alignment: .leading)
+              .background {
+                GeometryReader { body in
+                  Color.clear.preference(
+                    key: OverlayConversationFramePreferenceKey.self,
+                    value: body.frame(in: .named("overlay-canvas")))
+                }
+                .allowsHitTesting(false)
+              }
             }
           }
           .opacity(canvasHidden ? 0 : 1)
           .allowsHitTesting(!canvasHidden)
           .accessibilityHidden(canvasHidden)
           // Keep the conversation and its reveal edge in the same cell. Its
-          // control stays usable when the conversation itself is folded.
-          .frame(width: canvasWidth, height: geometry.size.height)
+          // control stays usable when the conversation itself is folded. The
+          // cell clips the split-width conversation while it slides.
+          .frame(width: canvasWidth, height: geometry.size.height, alignment: .leading)
+          .clipped()
           .overlay(alignment: .topLeading) {
             if columnShown {
               conversationEdgeControls(canvasShown: !canvasHidden)
@@ -608,10 +775,20 @@ struct DictationOverlayView: View {
         // flips on the first geometry pass and would animate the transcript
         // from its intrinsic width for 240 ms (OverlayChromeV3Tests, 900 wide).
         // A corner button's choice slides the panes the same way.
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: columnShown)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: railShown)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: transcriptActionsShown)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: state.agentsLayout)
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: columnShown
+        )
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: railShown
+        )
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter),
+          value: transcriptActionsShown
+        )
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter),
+          value: state.agentsLayout
+        )
         .onAppear { state.setAgentDrawerDocked(docked) }
         .onChange(of: docked) { _, docked in
           state.setAgentDrawerDocked(docked)
@@ -743,8 +920,9 @@ struct DictationOverlayView: View {
   }
 
   /// Trailing transcript actions. This is the only mount of the rail, so each
-  /// command has one control. Seven visible slots float over the transcript
-  /// surface, with the rest reachable by scrolling and no extra sidebar fill.
+  /// available command has one control. The column uses the height under the
+  /// header. A short window scrolls the overflow; a tall window does not stop
+  /// at the seven-control floor.
   private func transcriptActionsColumn<Rail: View>(
     maximumHeight: CGFloat, width: CGFloat, rail: Rail
   ) -> some View {
@@ -755,7 +933,7 @@ struct DictationOverlayView: View {
 
     return
       rail
-      .frame(height: min(availableHeight, OverlayTranscriptActionsLayout.viewportHeight))
+      .frame(height: availableHeight)
       .padding(.top, headerHeight + OverlayTranscriptActionsLayout.columnTopGap)
       .padding(.bottom, OverlayTranscriptActionsLayout.columnBottomPadding)
       // Keep the complete action buttons outside the native resize band.
@@ -784,6 +962,11 @@ struct DictationOverlayView: View {
     .padding(.horizontal, 8)
     .padding(.bottom, 16)
     .frame(width: width)
+    // The list lays out at its new width at once and only the column's frame
+    // slides over it, anchored to the window edge: a row never re-wraps its
+    // title and preview inside a half-way frame (Founder, 2026-10-26).
+    .animation(nil, value: width)
+    .frame(width: width, alignment: .trailing)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()
     .background { OverlayMenuCursorRegion() }
@@ -835,8 +1018,8 @@ struct DictationOverlayView: View {
       onFoldList: { state.foldAgentList() })
   }
 
-  /// A width drawn on the edge is the split's. Drawn across the window, it
-  /// chooses the agents view and keeps the remembered width for the way back.
+  /// Preserve the existing explicit divider gesture: crossing the conversation
+  /// floor folds that pane, while ordinary window resizing keeps the split.
   private func commitAgentDrawerWidth(_ preferred: CGFloat, windowWidth: CGFloat) {
     guard
       let width = OverlayAgentDrawerLayout.rememberedWidth(
@@ -859,8 +1042,8 @@ struct DictationOverlayView: View {
     .padding(.top, headerHeight + 8)
     .padding(.bottom, 16)
     // The native panel owns the outer resize band before SwiftUI hit testing.
-    // Keep the entire numbered button outside it, including at small scales.
-    .padding(.trailing, OverlayResizeHit.band)
+    // Equal insets keep the buttons centered in the rail and outside that band.
+    .padding(.horizontal, OverlayResizeHit.band)
     .frame(width: width)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()
@@ -1006,10 +1189,12 @@ struct DictationOverlayView: View {
         .contentShape(Circle().inset(by: -7.5))
     }
     .buttonStyle(.plain)
-    .onHover {
-      closeDotHovered = $0
+    .background {
+      OverlayMenuCursorRegion { closeDotHovered = $0 }
     }
-    .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: closeDotHovered)
+    .animation(
+      reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered
+    )
     .focusable(false)
     .modifier(
       OverlayHeaderControlChrome(
@@ -1039,7 +1224,10 @@ struct DictationOverlayView: View {
     // gap across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
     // Every use below is mini's: one mini in both layouts.
     let mapEnabled = state.channelMapInMini
-    let horizontalMap = density == .midi && channelMap != nil
+    let horizontalMap = density == .midi && state.channelMapInHeader && channelMap != nil
+    // The vertical layout's stacked counter is the visible way to the Intercom
+    // group, so it keeps the brand's side in compact and expanded as in mini.
+    let leadingCounter = mini || state.channelMapCounterStacked
     return HStack(spacing: mini ? (mapEnabled ? DictationOverlayWindow.miniRowSpacing : 6) : 10) {
       // The shared lockup, with the close button in the brand dot's place.
       // Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini. Its
@@ -1061,7 +1249,7 @@ struct DictationOverlayView: View {
             identifier: mini
               ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
         }
-        if mini, let map = channelMap {
+        if leadingCounter, let map = channelMap {
           refreshingChordModifier(map)
         }
       }
@@ -1098,7 +1286,7 @@ struct DictationOverlayView: View {
         HStack(spacing: 0) {
           sessionTimer
             .allowsHitTesting(false)
-          if density == .midi, let map = channelMap {
+          if density == .midi, state.channelMapInHeader, let map = channelMap {
             refreshingChordModifier(map)
           }
         }
@@ -1172,12 +1360,13 @@ struct DictationOverlayView: View {
   /// selects its conversation through the roster, as a rail pill does; the
   /// counter switches mini to compact, or returns a narrowed compact strip to
   /// its natural width (spec §13.4). Wide named chips have separate audio and
-  /// panel controls. The vertical layout keeps mini's counter, as stacked
-  /// cards that open the Intercom group, and has no chips in compact.
+  /// panel controls. The vertical layout has no chips: its counter, as stacked
+  /// cards that open the Intercom group, stays in every form, so widening the
+  /// overlay never removes the way to the group.
   /// Internal so tests can drive the header's same values.
   var channelMap: OverlayChannelMapView? {
-    let mini = state.presentationMode == .mini
-    guard mini ? state.channelMapInMini : state.channelMapInHeader else { return nil }
+    let counterOnly = state.presentationMode == .mini || state.channelMapCounterStacked
+    guard counterOnly ? state.channelMapInMini : state.channelMapInHeader else { return nil }
     let roster = channelStatusView
     let model = roster.channelMapModel
     guard !model.chips.isEmpty else { return nil }
@@ -1207,7 +1396,7 @@ struct DictationOverlayView: View {
         focusFailed: focusState?.isFailed == true)
     }
     return OverlayChannelMapView(
-      model: model, placement: mini ? .mini : .strip,
+      model: model, placement: counterOnly ? .mini : .strip,
       modifier: state.agentChannelModifier, palette: palette,
       textScale: textScale, animates: overlayVisible,
       onSelectChannel: { roster.selectChannelConversation($0) },
@@ -1243,8 +1432,102 @@ struct DictationOverlayView: View {
 
   /// Internal so a test can assert that two body passes share one search model.
   var channelStatusView: OverlayChannelStatusView {
-    OverlayChannelStatusView.intercomRoster(
+    var roster = OverlayChannelStatusView.intercomRoster(
       state: state, palette: palette, animates: overlayVisible)
+    roster.onWriteConversation = { conversation in
+      state.chooseComposerTarget(conversation)
+      state.chooseConversation(conversation.id)
+    }
+    return roster
+  }
+
+  private func heldComposerTarget(
+    _ message: OverlayConversationMessage, viewing conversation: OverlayConversation
+  ) -> OverlayConversation {
+    message.sourceChannel == "0"
+      ? OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+      : conversation
+  }
+
+  private func composerRouting(viewing conversation: OverlayConversation) -> some View {
+    let target = state.composerTarget
+    let selected = state.resolvedComposerTarget(viewing: conversation)
+    let choices = state.availableComposerRecipients
+    let openChannels = state.channelHudStates.filter { $0.value.open }.keys.sorted()
+    let openChannelTitles = openChannels.map { digit in
+      if digit == "0" { return String(localized: "0 · All") }
+      if let row = state.visibleChannelRows.first(where: { $0.channel == digit }) {
+        return "\(digit) · \(row.agent)"
+      }
+      return digit
+    }
+    return VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 6) {
+        Text("To:")
+        Menu {
+          ForEach(choices) { choice in
+            Button(choice.displayTitle) { state.chooseComposerTarget(choice) }
+          }
+        } label: {
+          Text(verbatim: selected?.displayTitle ?? target?.title ?? "—")
+            .lineLimit(1).truncationMode(.middle)
+        }
+        .accessibilityIdentifier("overlay-composer-recipient")
+        if conversation.owner != nil || conversation.channel == "0",
+          selected?.id != conversation.id || selected?.owner?.id != conversation.owner?.id
+        {
+          Button {
+            state.chooseComposerTarget(conversation)
+          } label: {
+            Text("Write to \(conversation.displayTitle)")
+          }
+          .buttonStyle(.plain)
+        }
+        Spacer(minLength: 0)
+      }
+      if target != nil && selected == nil {
+        Text("Recipient unavailable")
+          .accessibilityIdentifier("overlay-composer-recipient-unavailable")
+      }
+      HStack(spacing: 4) {
+        Image(systemName: "waveform.badge.mic")
+        if openChannels.isEmpty {
+          Text("Voice channels closed")
+        } else {
+          Text("Voice channels:")
+          Text(verbatim: openChannelTitles.joined(separator: ", "))
+            .lineLimit(1).truncationMode(.middle)
+        }
+      }
+    }
+    .font(.system(size: 11 * textScale, weight: .medium))
+    .foregroundStyle(palette.mutedText.color)
+  }
+
+  /// A digit may be reused; roster actions belong only to the exact live lease.
+  private func conversationHeaderChannel(_ conversation: OverlayConversation)
+    -> OverlayChannelDelivery?
+  {
+    guard let owner = conversation.owner else { return nil }
+    return channelStatusView.channels.first { channel in
+      guard channel.channel == conversation.channel, let identity = channel.broadcastIdentity else {
+        return false
+      }
+      return identity.provider == owner.provider && identity.session == owner.providerSessionID
+        && identity.leaseID == owner.leaseID
+    }
+  }
+
+  private func conversationHeaderActions(_ conversation: OverlayConversation) -> AnyView? {
+    conversationHeaderChannel(conversation).map {
+      AnyView(channelStatusView.compactAgentActions(for: $0))
+    }
+  }
+
+  private func conversationHeaderIndicators(_ conversation: OverlayConversation) -> AnyView? {
+    conversationHeaderChannel(conversation).map {
+      AnyView(channelStatusView.compactReceptionIndicators(for: $0))
+    }
   }
 
   private var transcriptPreviewHelp: String {
@@ -1602,8 +1885,8 @@ struct DictationOverlayView: View {
   }
 }
 
-/// Only reports the hosting window's visibility; it owns no capture state.
-private struct OverlayRenderVisibility: NSViewRepresentable {
+/// Only reports the hosting window/view visibility; it owns no capture state.
+struct OverlayRenderVisibility: NSViewRepresentable {
   let onHidden: () -> Void
   let onChange: (Bool) -> Void
 
@@ -1629,6 +1912,8 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
     var onHidden: (() -> Void)?
     var onChange: ((Bool) -> Void)?
 
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     override func viewDidMoveToWindow() {
       super.viewDidMoveToWindow()
       NotificationCenter.default.removeObserver(self)
@@ -1637,6 +1922,16 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
           self, selector: #selector(visibilityChanged(_:)),
           name: NSWindow.didChangeOcclusionStateNotification, object: window)
       }
+      publishVisibility()
+    }
+
+    override func viewDidHide() {
+      super.viewDidHide()
+      publishVisibility()
+    }
+
+    override func viewDidUnhide() {
+      super.viewDidUnhide()
       publishVisibility()
     }
 
@@ -1652,7 +1947,9 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
         // Occlusion during a frame morph suppresses painting, but does not
         // dismiss the widget or cancel the hover that is growing it.
         if window?.isVisible != true { onHidden?() }
-        onChange?(window?.isVisible == true && window?.occlusionState.contains(.visible) == true)
+        onChange?(
+          window?.isVisible == true && window?.occlusionState.contains(.visible) == true
+            && !isHiddenOrHasHiddenAncestor)
       }
     }
   }
@@ -1691,7 +1988,7 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
     content()
       .frame(width: width, height: height)
       .padding(CSSpace.previewInset)
-      .background(CSColor.windowWash)
+      .background(CSColor.sheet)
   }
 
   @MainActor

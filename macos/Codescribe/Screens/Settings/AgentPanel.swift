@@ -60,7 +60,7 @@ struct LLMLanesSection: View {
         LLMLaneEditor(model: model, lane: lane)
         if lane != LLMLane.allCases.last {
           Rectangle()
-            .fill(Color.primary.opacity(0.12))
+            .fill(Color.primary.opacity(CSAlpha.stroke))
             .frame(height: 1)
         }
       }
@@ -109,7 +109,7 @@ private struct LLMLaneEditor: View {
     case "fresh": return CSColor.olive
     case "cached": return CSColor.amberLight
     case "no_key", "loading": return CSColor.secondaryInk
-    default: return CSColor.terracottaText
+    default: return CSColor.dangerLight
     }
   }
 
@@ -137,9 +137,13 @@ private struct LLMLaneEditor: View {
           title: String(
             localized: "Formatting engine",
             comment: "Settings row: Apple on this Mac or the cloud provider formats the text"),
-          subtitle: String(
-            localized: "Apple on your Mac first; this provider steps in when Apple fails.",
-            comment: "Formatting engine row explanation"),
+          subtitle: model.settings.formatOnDevice
+            ? String(
+              localized: "Apple on your Mac first; this provider steps in when Apple fails.",
+              comment: "Formatting engine row explanation")
+            : String(
+              localized: "This provider formats Correction and Smart.",
+              comment: "Formatting engine row explanation when the cloud provider is selected"),
           inset: 10
         ) {
           Picker(
@@ -325,14 +329,16 @@ private struct LLMLaneEditor: View {
     ) {
       VStack(alignment: .leading, spacing: CSSpace.sm) {
         HStack(spacing: CSSpace.sm) {
+          // A made-up sentence, never a real take: the placeholder shows on
+          // every screenshot and screen share (Founder smoke, 2026-10-26, A7).
           TextField(
             String(
-              localized: "tak jeśli nie stosuje się zaleceń dokumentacji…",
-              comment: "Formatting test placeholder: a raw unpunctuated transcript"),
+              localized: "e.g. meet at nine tomorrow then send me the notes",
+              comment: "Formatting test placeholder: a neutral raw unpunctuated transcript"),
             text: $probeSample, axis: .vertical
           )
           .lineLimit(1...4)
-          .settingsInputChrome(isFocused: false)
+          .settingsInputChrome(isFocused: false, prose: true)
           .accessibilityLabel("Formatting test text")
           Button {
             model.testFormatting(sample: probeSample)
@@ -357,30 +363,30 @@ private struct LLMLaneEditor: View {
   private func formattingProbeResult(_ probe: CsFormattingProbe) -> some View {
     let seconds = { (ms: UInt64) in String(format: "%.1f s", Double(ms) / 1000) }
     let verdict: String
-    let color: Color
+    let tone: CsMcpRowTone
     switch probe.status {
     case "applied":
       verdict = String(localized: "Formatted", comment: "Formatting test verdict")
-      color = .green
+      tone = .good
     case "unchanged":
       verdict = String(localized: "Answered, text unchanged", comment: "Formatting test verdict")
-      color = .green
+      tone = .good
     case "skipped":
       verdict = String(
         localized: "Not sent: formatting is off or runs on the Agent",
         comment: "Formatting test verdict")
-      color = .secondary
+      tone = .neutral
     case "timed_out":
       verdict = String(localized: "No answer in time", comment: "Formatting test verdict")
-      color = .orange
+      tone = .warn
     default:
-      verdict = String(localized: "Failed; see the log", comment: "Formatting test verdict")
-      color = .red
+      verdict = String(localized: "Formatting failed", comment: "Formatting test verdict")
+      tone = .bad
     }
     let level = probe.reasoning ?? String(localized: "not sent", comment: "Reasoning field absent")
     return VStack(alignment: .leading, spacing: CSSpace.xs) {
       HStack(spacing: CSSpace.sm) {
-        Circle().fill(color.opacity(0.85)).frame(width: 7, height: 7)
+        StatusToneGlyph(tone: tone)
         Text(verdict)
         Text(
           "\(seconds(probe.elapsedMs)) / \(seconds(probe.deadlineMs)) · \(probe.model) · reasoning \(level)"
@@ -388,7 +394,25 @@ private struct LLMLaneEditor: View {
         .foregroundStyle(CSColor.secondaryInk)
       }
       .font(SettingsScale.helper)
-      if !probe.output.isEmpty, probe.status != "skipped" {
+      if let message = Self.formattingFailureMessage(probe) {
+        Text(message)
+          .font(SettingsScale.helper)
+          .foregroundStyle(CSColor.dangerLight)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      let checked = Date(timeIntervalSince1970: Double(probe.checkedAtUnixMs) / 1000)
+      Text("Tested: \(checked.formatted(date: .abbreviated, time: .standard))")
+        .font(SettingsScale.helper)
+        .foregroundStyle(CSColor.secondaryInk)
+      if let host = probe.endpointHost {
+        let credential = probe.credentialSource == "account"
+          ? String(localized: "saved account") : String(localized: "API key or key-free endpoint")
+        Text("Configured cloud route: \(probe.provider) · \(host) · \(credential)")
+          .font(SettingsScale.helper)
+          .foregroundStyle(CSColor.secondaryInk)
+          .textSelection(.enabled)
+      }
+      if !probe.output.isEmpty, probe.status == "applied" || probe.status == "unchanged" {
         Text(probe.output)
           .font(SettingsScale.helper)
           .textSelection(.enabled)
@@ -397,6 +421,38 @@ private struct LLMLaneEditor: View {
     }
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("formatting-test-result")
+  }
+
+  /// Only fixed diagnostic buckets cross the bridge. Never render a raw
+  /// provider error: it can contain a bearer, prompt or transcript.
+  static func formattingFailureMessage(_ probe: CsFormattingProbe) -> String? {
+    guard probe.status == "failed" || probe.status == "timed_out" else { return nil }
+    switch probe.failureCode {
+    case "unavailable":
+      return String(localized: "Formatting is unavailable. Check the provider, model and account settings.")
+    case "account_authentication":
+      return String(localized: "Account access failed. Check your connection and account settings, then repeat the test.")
+    case "timeout":
+      return String(localized: "The request exceeded the formatting deadline. Check the connection or choose a faster model.")
+    case "transport":
+      return String(localized: "The provider could not be reached. Check the connection and provider address.")
+    case "http":
+      switch probe.httpStatus {
+      case 401:
+        return String(localized: "Authentication rejected. Sign in again or replace the API key.")
+      case 403:
+        return String(localized: "Access denied. Check account permissions and model access.")
+      case 402, 429:
+        return String(localized: "Usage limit reached. Check billing and rate limits.")
+      default:
+        if let status = probe.httpStatus {
+          return String(localized: "Provider request failed (HTTP \(Int(status))). Check the model and provider settings.")
+        }
+        return String(localized: "The provider rejected the request. Check the model and provider settings.")
+      }
+    default:
+      return String(localized: "The provider returned no usable formatting result. Check the model and repeat the test.")
+    }
   }
 
   /// The model-list state for this lane: where the list came from, a refresh,
@@ -428,7 +484,7 @@ private struct LLMLaneEditor: View {
       if !failureShownOnAgent, let details = laneModel.discoveryErrorDetails {
         DisclosureGroup("Error details") {
           Text(details)
-            .font(CSFont.mono(10.5))
+            .font(CSFont.mono(11))
             .foregroundStyle(CSColor.secondaryInk)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)

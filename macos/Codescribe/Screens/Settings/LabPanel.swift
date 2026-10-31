@@ -11,7 +11,7 @@ struct LabPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       SettingsPageHeader(
-        String(localized: "Voice Lab"),
+        SettingsSection.lab.title,
         blurb: labMode
           ? String(
             localized: "Lab mode is on. Overlay follows the tray toggle — Lab does not steal it.")
@@ -75,8 +75,8 @@ struct LabPanel: View {
       Button("Open Voice Lab") {
         Task { await VoiceLabRuntime.shared.openConsole() }
       }
-      .font(CSFont.ui(11, .semibold))
-      .foregroundStyle(CSColor.chromeAccent)
+      .font(SettingsScale.controlLabel)
+      .csLink()
 
       recognitionParameters
 

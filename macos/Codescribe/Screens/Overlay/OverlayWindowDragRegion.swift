@@ -96,16 +96,39 @@ final class OverlayMenuCursorRegionView: NSView {
 
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
+    let rect = bounds.intersection(visibleRect)
+    // View updates do not imply a new pointer region. Replacing an unchanged
+    // area makes AppKit queue needless exit/entry events and cursor resets.
+    if let hoverArea, hoverArea.rect == rect { return }
     if let hoverArea { removeTrackingArea(hoverArea) }
+    hoverArea = nil
+    guard !rect.isEmpty else {
+      setHovered(false)
+      return
+    }
     let area = NSTrackingArea(
-      rect: bounds.intersection(visibleRect), options: [.mouseEnteredAndExited, .activeAlways],
+      rect: rect, options: [.mouseEnteredAndExited, .activeAlways],
       owner: self, userInfo: nil)
     addTrackingArea(area)
     hoverArea = area
   }
 
-  override func mouseEntered(with event: NSEvent) { updateHover(at: event.locationInWindow) }
-  override func mouseExited(with event: NSEvent) { setHovered(false) }
+  /// Both native callbacks enter here with their original source identity.
+  /// A late exit from a retired area must not clear a newer hover entry.
+  func handleHoverEvent(at point: NSPoint?, from area: NSTrackingArea?, in sourceWindow: NSWindow?)
+  {
+    if let area, area !== hoverArea { return }
+    if let sourceWindow, sourceWindow !== window { return }
+    updateHover(at: point)
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    handleHoverEvent(at: event.locationInWindow, from: event.trackingArea, in: event.window)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    handleHoverEvent(at: nil, from: event.trackingArea, in: event.window)
+  }
 
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 

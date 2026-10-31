@@ -34,6 +34,48 @@ Equivalent non-secret config shape:
 
 Do not put `token`, `Authorization`, or bearer values in `mcp.json`.
 
+## OAuth connectors
+
+A server that answers `401` with a `WWW-Authenticate: Bearer resource_metadata="…"` challenge (for example `https://hq.mega.dev/mcp`) is
+authorized with the MCP OAuth flow instead of a pasted token. The entry carries
+`auth_type: "oauth"`; `auth_ref` names the Keychain account holding the grant:
+
+```json
+{
+  "mcpServers": {
+    "mega-challenge": {
+      "transport": "streamable_http",
+      "url": "https://hq.mega.dev/mcp",
+      "auth_type": "oauth",
+      "auth_ref": "MCP_OAUTH_MEGA_CHALLENGE_CREDENTIAL",
+      "enabled": true
+    }
+  }
+}
+```
+
+Sign in once from a terminal; the command opens the browser and waits for the
+loopback redirect:
+
+```bash
+cargo run -p codescribe-core --example mcp_oauth_login -- \
+    --name mega-challenge --url https://hq.mega.dev/mcp
+```
+
+`--discover-only` runs just the challenge and metadata discovery (nothing is
+registered or written); `--no-open` prints the URL; `--client-id` supplies a
+pre-registered client for servers without dynamic registration.
+
+The flow is RFC 9728 protected-resource discovery, RFC 8414 / OIDC
+authorization-server metadata, RFC 7591 dynamic registration of a public
+loopback client, authorization code with PKCE `S256`, and the RFC 8707
+`resource` indicator. The access and refresh tokens live in the Keychain as one
+JSON credential; `mcp.json` never holds them. Access tokens are refreshed a
+minute before expiry, and a `401` to a token believed valid triggers exactly one
+forced refresh. A grant the server rejects on refresh (`invalid_grant`) reports
+that a new sign-in is required. All OAuth endpoints must be HTTPS and redirects
+are never followed.
+
 ## Status and permissions
 
 Use **Test** to run the real `initialize` and `tools/list` exchange. The row

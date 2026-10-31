@@ -87,6 +87,85 @@ final class OverlayHeaderChromeTests: XCTestCase {
     withExtendedLifetime(detached) {}
   }
 
+  func testScrollableMessageHintKeepsFocusAndRejectsAnEarlierOwnersExit() async throws {
+    let parent = NSPanel(
+      contentRect: NSRect(x: 300, y: 500, width: 400, height: 100),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let control = NSView(frame: NSRect(x: 300, y: 12, width: 80, height: 50))
+    parent.contentView?.addSubview(control)
+    BackgroundTestWindow.present(parent)
+    let first = OverlayHintAnchor()
+    first.view = control
+    let second = OverlayHintAnchor()
+    second.view = control
+    defer {
+      first.hide()
+      second.hide()
+      parent.orderOut(nil)
+    }
+    let responder = parent.firstResponder
+    first.show(
+      "Full message", palette: .dark, leading: true,
+      content: AnyView(ScrollView { Text(String(repeating: "Message paragraph\n", count: 50)) }),
+      size: CGSize(width: 380, height: 280), interactive: true)
+    let hint = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
+    XCTAssertFalse(hint.ignoresMouseEvents, "the full message accepts pointer scrolling")
+    XCTAssertFalse(hint.canBecomeKey, "hover cannot take the composer's keyboard")
+    XCTAssertTrue(parent.firstResponder === responder)
+    XCTAssertEqual(hint.alphaValue, parent.alphaValue, "the preview follows its owner's visibility")
+
+    func previewRegion(in view: NSView) -> OverlayMenuCursorRegionView? {
+      if let region = view as? OverlayMenuCursorRegionView, region.bounds.width > 300 {
+        return region
+      }
+      return view.subviews.lazy.compactMap { previewRegion(in: $0) }.first
+    }
+    let root = try XCTUnwrap(hint.contentView)
+    root.layoutSubtreeIfNeeded()
+    let region = try XCTUnwrap(previewRegion(in: root))
+    region.updateTrackingAreas()
+    XCTAssertTrue(region.trackingAreas.contains { $0.options.contains(.activeAlways) })
+
+    first.hide(allowPointerRetention: true)
+    region.updateHover(
+      at: region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil))
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertTrue(first.isPresented, "the pointer can move from the row into its message")
+
+    region.updateHover(at: NSPoint(x: -10_000, y: -10_000))
+    second.show("Next control", palette: .dark)
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertEqual(OverlayHintPanel.shared.presentedTitle, "Next control")
+    XCTAssertTrue(hint.ignoresMouseEvents, "ordinary hints remain click-through")
+    XCTAssertFalse(hint.hasShadow)
+    first.hide()
+    XCTAssertTrue(second.isPresented, "an old row cannot dismiss its successor")
+  }
+
+  func testScrollableMessageHintDismissesAfterLeavingBothTargets() async throws {
+    let parent = NSPanel(
+      contentRect: NSRect(x: 300, y: 500, width: 400, height: 100),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let control = NSView(frame: NSRect(x: 300, y: 12, width: 80, height: 50))
+    parent.contentView?.addSubview(control)
+    BackgroundTestWindow.present(parent)
+    let owner = OverlayHintAnchor()
+    owner.view = control
+    defer {
+      owner.hide()
+      parent.orderOut(nil)
+    }
+    owner.show(
+      "Full message", palette: .dark,
+      content: AnyView(Text("Message")), size: CGSize(width: 380, height: 280),
+      interactive: true)
+    owner.hide(allowPointerRetention: true)
+    XCTAssertTrue(owner.isPresented, "the row-to-preview gap has a short grace period")
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertFalse(owner.isPresented)
+    XCTAssertNil(OverlayHintPanel.shared.presentedTitle)
+  }
+
   func testAccentsShareOneHoverHue() {
     for palette in [OverlayAppearancePalette.light, .dark] {
       let hover = OverlayHeaderAccent.transcription.color(in: palette)
@@ -94,7 +173,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       XCTAssertEqual(OverlayHeaderAccent.state.color(in: palette), hover)
       XCTAssertNotEqual(hover, palette.successStatus.color)
       XCTAssertNotEqual(hover, palette.agentAccent.color)
-      XCTAssertEqual(hover, Color(nsColor: .controlAccentColor))
+      XCTAssertEqual(hover, CSColor.chromeAccent)
     }
   }
 
@@ -642,10 +721,10 @@ final class OverlayHeaderChromeTests: XCTestCase {
   }
 
   private func headerSystemAccent(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
-    var color = NSColor.controlAccentColor
+    var color = CSPalette.chromeAccent
     NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)?
       .performAsCurrentDrawingAppearance {
-        color = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .controlAccentColor
+        color = CSPalette.chromeAccent.usingColorSpace(.sRGB) ?? CSPalette.chromeAccent
       }
     let hex =
       UInt32((color.redComponent * 255).rounded()) << 16

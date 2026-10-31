@@ -170,6 +170,16 @@ struct AgentPlaybackBinding: Equatable, Sendable {
   var repositoryName: String? = nil
   var workspace: String? = nil
   var frame: AgentFrameBinding? = nil
+  var terminal: AgentTerminalBinding? = nil
+
+  /// Only coordinates supplied by this exact lease. No machine name is inferred.
+  var location: String? {
+    if let frame { return "Frame · \(frame.session) · \(frame.paneID)" }
+    if let terminal {
+      return [terminal.host, terminal.tty].compactMap { $0 }.joined(separator: " · ")
+    }
+    return workspace
+  }
 
   var descriptor: String {
     let provider =
@@ -247,7 +257,8 @@ struct AgentBroadcastPolicy: Equatable, Hashable, Sendable {
         localized: "Channel 0: broadcasts reach this agent — click to leave",
         comment: "Agent row mark: member of channel 0; the mark is a one-click switch")
       : String(
-        localized: "Off channel 0: broadcasts are skipped, direct messages still arrive — click to join",
+        localized:
+          "Off channel 0: broadcasts are skipped, direct messages still arrive — click to join",
         comment: "Agent row mark: not a member of channel 0; the mark is a one-click switch")
   }
 
@@ -256,7 +267,8 @@ struct AgentBroadcastPolicy: Equatable, Hashable, Sendable {
   var quietHelp: String {
     moon
       ? String(
-        localized: "Do not disturb: nothing wakes the agent, every message waits in its mailbox — click to clear",
+        localized:
+          "Do not disturb: nothing wakes the agent, every message waits in its mailbox — click to clear",
         comment: "Agent row mark: the moon is lit; the mark is a one-click switch")
       : String(
         localized: "Messages wake the agent — click for do not disturb",
@@ -405,7 +417,8 @@ extension RealAgentBridgeInstaller {
           workspace: (row["workspace"] as? String).flatMap {
             $0.hasPrefix("/") && $0.count <= 4096 ? $0 : nil
           },
-          frame: (row["frame"] as? [String: Any]).flatMap(AgentFrameBinding.init(row:)))
+          frame: (row["frame"] as? [String: Any]).flatMap(AgentFrameBinding.init(row:)),
+          terminal: (row["terminal"] as? [String: Any]).flatMap(AgentTerminalBinding.init(row:)))
       }
       return result
     }.value
@@ -655,6 +668,7 @@ extension RealAgentBridgeInstaller {
   static func sendBusText(
     owner: OverlayConversationOwner?, text: String, holdSeconds: UInt32? = nil,
     userReplyTo: OverlayUserReplyReference? = nil,
+    alsoSentTo: [OverlayConversationOwner] = [],
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async throws {
     let executable = installer.commandURL("cs-bus")
@@ -672,7 +686,8 @@ extension RealAgentBridgeInstaller {
     let hold = holdSeconds ?? CodescribeConfig().loadSettings().agentSendHoldSec
     try await Task.detached(priority: .userInitiated) {
       var arguments = try busTextArguments(
-        holdSeconds: hold, owner: owner, root: root, userReplyTo: userReplyTo)
+        holdSeconds: hold, owner: owner, root: root, userReplyTo: userReplyTo,
+        alsoSentTo: alsoSentTo)
       for path in message.paths { arguments += ["--attach-file", path] }
       let process = Process()
       let input = Pipe()
@@ -769,15 +784,19 @@ extension RealAgentBridgeInstaller {
           .trimmingCharacters(in: .whitespacesAndNewlines)
           .components(separatedBy: "\n").last?
           .replacingOccurrences(of: "cs-bus: ", with: "") ?? ""
+        // The helper's refusal names the actual cause (stale epoch, closed
+        // capture, unreadable file); a bare generic sentence left the person
+        // guessing (Maciej, 2026-10-28). Show both.
+        let sentence = String(
+          localized:
+            "Files could not be attached to this live capture. Keep them in your draft and try again."
+        )
         throw NSError(
           domain: "Codescribe.BusAttachment", code: Int(process.terminationStatus),
           userInfo: [
             NSLocalizedDescriptionKey: refusal.isEmpty
-              ? String(
-                localized:
-                  "Files could not be attached to this live capture. Keep them in your draft and try again."
-              )
-              : refusal
+              ? sentence : sentence + " (" + String(refusal.prefix(200)) + ")",
+            NSDebugDescriptionErrorKey: refusal,
           ])
       }
     }.value
@@ -785,7 +804,8 @@ extension RealAgentBridgeInstaller {
 
   static func busTextArguments(
     holdSeconds: UInt32, owner: OverlayConversationOwner?, root: URL,
-    userReplyTo: OverlayUserReplyReference? = nil
+    userReplyTo: OverlayUserReplyReference? = nil,
+    alsoSentTo: [OverlayConversationOwner] = []
   ) throws -> [String] {
     // The owner block stays right behind --send-text; the hold is a trailing
     // option, so existing publisher receipts keep their argument prefix.
@@ -795,6 +815,16 @@ extension RealAgentBridgeInstaller {
     if let userReplyTo {
       let encoded = try JSONEncoder().encode(userReplyTo)
       arguments += ["--user-reply-to", String(decoding: encoded, as: UTF8.self)]
+    }
+    if owner != nil, !alsoSentTo.isEmpty {
+      let peers = alsoSentTo.map {
+        [
+          "channel": $0.channel, "provider": $0.provider,
+          "provider_session_id": $0.providerSessionID, "lease_id": $0.leaseID,
+        ]
+      }
+      let encoded = try JSONSerialization.data(withJSONObject: peers, options: [.sortedKeys])
+      arguments += ["--also-sent-to", String(decoding: encoded, as: UTF8.self)]
     }
     return arguments
   }
@@ -1317,25 +1347,45 @@ extension RealAgentBridgeInstaller {
     }.value
   }
 
-  /// Brings the terminal host application that owns the `vc-frame` pane to the front.
+  /// Activates the exact host once and confirms that it receives key events.
   @MainActor
   static func activateAgentTerminalHost(
     hostPID: Int32?,
     hostBundleID: String?
-  ) -> Bool {
-    if let hostPID, hostPID > 0,
-      let app = NSRunningApplication(processIdentifier: hostPID),
-      !app.isTerminated,
-      app.activate()
-    {
+  ) async -> Bool {
+    let trimmedBundleID = hostBundleID?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let bundleID = trimmedBundleID.flatMap { $0.isEmpty ? nil : $0 }
+    let app: NSRunningApplication
+    if let hostPID {
+      guard hostPID > 0,
+        let candidate = NSRunningApplication(processIdentifier: hostPID),
+        !candidate.isTerminated,
+        bundleID == nil || candidate.bundleIdentifier == bundleID
+      else { return false }
+      // A vc-terminal process can itself be the registered foreground app.
+      // Its executable's name does not identify a separate parent GUI.
+      app = candidate
+    } else {
+      guard let bundleID, !bundleID.isEmpty else { return false }
+      let matches = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        .filter { !$0.isTerminated }
+      guard matches.count == 1, let candidate = matches.first else { return false }
+      app = candidate
+    }
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
       return true
     }
-    if let hostBundleID = hostBundleID?.trimmingCharacters(in: .whitespacesAndNewlines),
-      !hostBundleID.isEmpty
-    {
-      let matches = NSRunningApplication.runningApplications(withBundleIdentifier: hostBundleID)
-        .filter { !$0.isTerminated }
-      if let app = matches.first, app.activate() {
+    guard app.activate() else { return false }
+    // NSRunningApplication's changing properties refresh across main-run-loop
+    // turns. Yield within this one request; never spin or repeatedly activate.
+    for _ in 0..<20 {
+      do {
+        try await Task.sleep(for: .milliseconds(50))
+      } catch {
+        return false
+      }
+      guard !app.isTerminated else { return false }
+      if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
         return true
       }
     }

@@ -4,6 +4,72 @@ enum IntercomContentTier: String, Codable, CaseIterable, Sendable {
   case icon, name, actions
 }
 
+/// Content revealed inside the existing group card, independently of whether
+/// its full conversation window has been opened. These are presentation gates;
+/// drafts, messages and commands remain owned by the shared conversation.
+enum IntercomCardContent: Equatable, Sendable {
+  case header, context, preview
+}
+
+/// Room for the shared rich message renderer after agent identity/context.
+struct IntercomCompactPreviewLayout: Equatable {
+  let height: CGFloat
+  let showsComposer: Bool
+  let composerEditorHeightLimit: CGFloat
+}
+
+struct IntercomHeaderContent: Equatable {
+  let showsCount: Bool
+  var horizontalInset: CGFloat { 6 }
+}
+
+/// The header's actual children, measured independently of agent-row chrome.
+/// Audio, mailbox and dock hit regions never yield to optional text.
+struct IntercomHeaderMetrics: Equatable {
+  static let spacing: CGFloat = 8
+  static let spacerMinimum: CGFloat = 4
+  let groupWidth: CGFloat
+  let controlHeight: CGFloat
+  let audioWidth: CGFloat
+  let countWidth: CGFloat
+  let pagingControlWidth: CGFloat
+
+  init(agentCount: Int, scale: CGFloat) {
+    let mono = CSFont.nsMono(10 * scale)
+    func textWidth(_ text: String, font: NSFont) -> CGFloat {
+      ceil((text as NSString).size(withAttributes: [.font: font]).width)
+    }
+    controlHeight = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+    groupWidth = controlHeight
+    // Two diameter hit squares. The flat pair pins glyphs inward with a 2pt
+    // gap; this slot still budgets the previous 6pt so header width holds.
+    audioWidth = 2 * controlHeight + 6
+    countWidth = textWidth(agentCount.formatted(), font: mono)
+    pagingControlWidth = 16 * max(1, scale)
+  }
+
+  func width(showsCount: Bool, paging: Bool) -> CGFloat {
+    let content = IntercomHeaderContent(showsCount: showsCount)
+    // One four-dot menu and audio; optional count and two pagers.
+    let children = 2 + (showsCount ? 2 : 0) + (paging ? 2 : 0)
+    return ceil(
+      groupWidth + audioWidth + 2 * content.horizontalInset
+        + CGFloat(children - 1) * Self.spacing
+        + (showsCount ? countWidth + Self.spacerMinimum : 0)
+        + (paging ? 2 * pagingControlWidth : 0))
+  }
+
+  func minimumWidth(paging: Bool) -> CGFloat {
+    // The header keeps its agent count alongside the menu and audio controls.
+    width(showsCount: true, paging: paging)
+  }
+
+  func content(width: CGFloat, paging: Bool) -> IntercomHeaderContent {
+    return IntercomHeaderContent(
+      showsCount: width >= self.width(showsCount: true, paging: paging))
+  }
+}
+
 /// What a one-line row shows beside its digit, dot and name, counted from its
 /// right edge as on the agents list (Maciej, 2026-10-23 seal: in a narrow row
 /// the microphone comes first, then the speaker that mutes an agent talking
@@ -33,11 +99,6 @@ struct IntercomContentMetrics: Equatable {
   let actionsWidth: CGFloat
   let nameFontSize: CGFloat
   let digitFontSize: CGFloat
-  var stackedActionsWidth: CGFloat {
-    max(
-      minimumNameWidth,
-      3 * OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11) + 9)
-  }
 
   init(names: [String], digits: [String], scale: CGFloat) {
     nameFontSize = 11 * scale
@@ -75,8 +136,17 @@ struct IntercomContentMetrics: Equatable {
       slots: min(3, max(0, Int((free / slot).rounded(.down)))), marks: false)
   }
 
+  /// Align execution context with the name, after the grip, digit and status.
+  func nameLeadingInset(width: CGFloat, digit: String) -> CGFloat {
+    let scale = nameFontSize / 11
+    let digitWidth = (digit as NSString).size(withAttributes: [.font: CSFont.nsMono(digitFontSize)])
+      .width
+    return 24 * max(1, scale) + 3 + digitWidth + 6 + 12 * scale + 6
+      + (rowControls(width: width).marks ? marksWidth : 0)
+  }
+
   func tier(width: CGFloat, cardHeight: CGFloat) -> IntercomContentTier {
-    if width >= actionsWidth || (width >= stackedActionsWidth && cardHeight >= 2 * iconSide) {
+    if width >= actionsWidth {
       return .actions
     }
     if width >= minimumNameWidth { return .name }
@@ -88,27 +158,88 @@ struct IntercomContentMetrics: Equatable {
     return width < minimumNameWidth ? min(iconSide, available) : width
   }
 
-  /// A card stretches with the gesture, from one row up to its share of the
-  /// screen, and its content stands in the middle of the larger tile (Maciej,
+  func cardContent(width: CGFloat, cardHeight: CGFloat) -> IntercomCardContent {
+    let scale = nameFontSize / 11
+    if compactPreviewLayout(width: width, cardHeight: cardHeight) != nil { return .preview }
+    guard tier(width: width, cardHeight: cardHeight) != .icon else { return .header }
+    // Metadata gets a full-width line of its own, outside the name's hit area.
+    if cardHeight >= OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      + OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
+    {
+      return .context
+    }
+    return .header
+  }
+
+  /// A short preview precedes the input. Mounting the complete conversation
+  /// also needs its route, footer, bubble/list insets and readable message text;
+  /// a bare line left above the editor cannot accommodate that renderer.
+  func compactPreviewLayout(width: CGFloat, cardHeight: CGFloat) -> IntercomCompactPreviewLayout? {
+    guard tier(width: width, cardHeight: cardHeight) != .icon else { return nil }
+    let scale = nameFontSize / 11
+    let font = NSFont.systemFont(ofSize: 13 * scale)
+    let readableWidth = ("Message preview" as NSString).size(withAttributes: [.font: font]).width
+    guard width - 24 >= readableWidth else { return nil }
+    let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
+    let contextFont = NSFont.systemFont(ofSize: 10 * scale)
+    let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
+    let available =
+      cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      - OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
+    let minimum =
+      lineHeight + metadataLine
+      + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
+      + OverlayIntercomWidgetLayout.compactPreviewSpacing
+    guard available >= minimum else { return nil }
+    let editorHeightLimit = 28 * scale
+    // The shared composer owns the stacked editor/action-row measurements.
+    // Only ConversationView's external insets belong to this admission gate.
+    let composerHeight =
+      ComposerControlMetrics.intercomComposerHeight(
+        editorHeight: editorHeightLimit, scale: scale) + 6 + 8
+    let composerWidth = ComposerControlMetrics.intercomComposerMinimumWidth(scale: scale) + 2 * 12
+    // The full renderer caps its bubbles more narrowly than the passive preview.
+    // Preserve a readable text measure inside the bubble's own 12pt padding too.
+    let readableConversationWidth =
+      OverlayConversationView.bubbleCap(
+        contentWidth: width, textScale: scale) - 2 * 12
+    return IntercomCompactPreviewLayout(
+      height: available,
+      showsComposer: width >= composerWidth
+        && readableConversationWidth >= readableWidth
+        && available >= OverlayIntercomWidgetLayout.minimumReadableConversationHeight(scale: scale)
+          + composerHeight,
+      composerEditorHeightLimit: editorHeightLimit)
+  }
+
+  /// A card stretches with the gesture, from one row up to the space below the
+  /// header, revealing context, the shared conversation and then its composer (Maciej,
   /// 2026-10-23: the stretched tiles of Codex's tiers "to było w sumie fajne",
-  /// while the one-or-two-row snap that replaced them "nie robi nic"). Stacked
-  /// controls appear once the card holds two rows.
+  /// while the one-or-two-row snap that replaced them "nie robi nic"). The
+  /// controls remain beside the name and yield slots as the width shrinks.
   func fittedCardHeight(_ requested: CGFloat, count: Int, available: CGFloat) -> CGFloat {
     guard count > 0 else { return iconSide }
+    // The whole roster shares the display budget. Growing one row must not
+    // push its siblings off screen or page away rows that fit when compact.
     let maximum =
       (available - OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11))
-      / CGFloat(count) - OverlayIntercomWidgetLayout.gap
+      / CGFloat(count)
+      - OverlayIntercomWidgetLayout.gap
     return max(iconSide, min(requested, maximum))
   }
 
   func resizedGroupFrame(
     _ frame: CGRect, delta: CGSize, edge: OverlayIntercomWidgetLayout.ResizeEdge,
-    count: Int, visibleFrame: CGRect
+    count: Int, visibleFrame: CGRect, minimumWidth: CGFloat = 0
   ) -> CGRect {
+    var minimum = minimumGroupSize(count: count)
+    minimum.width = max(minimum.width, minimumWidth)
     var result = OverlayIntercomWidgetLayout.resizedFrame(
-      frame, delta: delta, edge: edge, minimum: minimumGroupSize(count: count),
+      frame, delta: delta, edge: edge, minimum: minimum,
       visibleFrame: visibleFrame)
-    let width = fittedWidth(result.width, available: visibleFrame.width)
+    let width = max(
+      min(minimumWidth, visibleFrame.width),
+      fittedWidth(result.width, available: visibleFrame.width))
     if !edge.anchorsLeft { result.origin.x = result.maxX - width }
     result.size.width = width
     return result
@@ -124,12 +255,29 @@ struct IntercomContentMetrics: Equatable {
 
 /// Geometry only. Each card owns a native window; desktop gaps never intercept clicks.
 enum OverlayIntercomWidgetLayout {
+  static let compactPreviewVerticalPadding: CGFloat = 4
+  static let compactPreviewSpacing: CGFloat = 5
   static let headerHeight: CGFloat = 30
   static let rowHeight: CGFloat = 30
   /// Tight enough that the stack reads as one list, not a column of buttons.
   static let gap: CGFloat = 4
 
   static func controlHeight(scale: CGFloat) -> CGFloat { rowHeight * max(1, scale) }
+
+  static func contextStripHeight(scale: CGFloat) -> CGFloat {
+    ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 10 * scale))) + 6
+  }
+
+  /// OverlayConversationView.messageBubble: route + two prose lines + footer,
+  /// 5pt between its three sections and 12pt padding on either edge. The list
+  /// adds 8pt top/bottom, 12pt before its 1pt bottom anchor. Optional taller content
+  /// still scrolls; this is the same reading budget used by the input gate.
+  static func minimumReadableConversationHeight(scale: CGFloat) -> CGFloat {
+    let layout = NSLayoutManager()
+    let body = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 13 * scale)))
+    let metadata = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
+    return 2 * body + 2 * metadata + 2 * 5 + 2 * 12 + 2 * 8 + 12 + 1
+  }
 
   /// One corner for the header, every row and a mini fiszka. A radius of half
   /// the row turned a two-line card into a stadium (Maciej, 2026-10-23:
@@ -144,10 +292,16 @@ enum OverlayIntercomWidgetLayout {
   /// Full-size controls remain reachable on short displays by paging only the
   /// visible native capsules, rather than shrinking names or covering desktop gaps.
   static func visibleRange(
-    count: Int, offset: Int, visibleHeight: CGFloat, scale: CGFloat
+    count: Int, offset: Int, visibleHeight: CGFloat, scale: CGFloat,
+    cardHeight: CGFloat? = nil
   ) -> Range<Int> {
-    let row = controlHeight(scale: scale)
-    let capacity = max(1, Int(max(0, visibleHeight - row) / (row + gap)))
+    let header = controlHeight(scale: scale)
+    let row = cardHeight ?? header
+    // Dividing the shared height among rows can round a fitting roster just
+    // below an integer. Do not page away its last row for floating-point dust.
+    let capacity = max(
+      1, Int((max(0, visibleHeight - header) / (max(header, row) + gap) + 0.000_001).rounded(.down))
+    )
     let shown = min(max(0, count), capacity)
     let start = min(max(0, offset), max(0, count - shown))
     return start..<(start + shown)
@@ -175,13 +329,27 @@ enum OverlayIntercomWidgetLayout {
     var result = frame
     result.size.width = min(frame.width, visibleFrame.width)
     result.size.height = min(controlHeight(scale: scale), visibleFrame.height)
+    let bodyHeight = CGFloat(max(0, count)) * ((cardHeight ?? result.height) + gap)
+    let stackHeight = min(visibleFrame.height, result.height + bodyHeight)
     result.origin.x = min(max(frame.minX, visibleFrame.minX), visibleFrame.maxX - result.width)
-    let totalHeight = min(
-      result.height + CGFloat(count) * ((cardHeight ?? controlHeight(scale: scale)) + gap),
-      visibleFrame.height)
     result.origin.y = min(
-      max(frame.minY, visibleFrame.minY + totalHeight - result.height),
+      max(frame.minY, visibleFrame.minY + stackHeight - result.height),
       visibleFrame.maxY - result.height)
+    return result
+  }
+
+  /// An explicit detached-window drag keeps its grab strip reachable.
+  /// Group placement, expansion and resizing constrain their entire frames.
+  static func movedFrame(
+    _ frame: CGRect, visibleFrame: CGRect, headerHeight: CGFloat
+  ) -> CGRect {
+    var result = frame
+    let gripHeight = min(max(0, headerHeight), frame.height, visibleFrame.height)
+    result.origin.x = min(
+      max(frame.minX, visibleFrame.minX), max(visibleFrame.minX, visibleFrame.maxX - frame.width))
+    result.origin.y = min(
+      max(frame.minY, visibleFrame.minY + gripHeight - frame.height),
+      visibleFrame.maxY - frame.height)
     return result
   }
 
@@ -227,10 +395,10 @@ enum OverlayIntercomWidgetLayout {
   }
 
   enum ResizeEdge: Equatable {
-    case left, right, top, bottom, bottomLeft, bottomRight
+    case left, right, top, bottom, bottomLeft, bottomRight, topRight
 
     /// The left edge stays put while this edge moves.
-    var anchorsLeft: Bool { self == .right || self == .bottomRight }
+    var anchorsLeft: Bool { self == .right || self == .bottomRight || self == .topRight }
     /// The edge changes the height, not only the width.
     var resizesHeight: Bool { self != .left && self != .right }
   }
@@ -240,12 +408,19 @@ enum OverlayIntercomWidgetLayout {
   ) -> CGRect {
     let minWidth = min(minimum.width, visibleFrame.width)
     let minHeight = min(minimum.height, visibleFrame.height)
+    // A saved frame may belong to a larger or removed display. Recover it
+    // before applying the gesture, preserving the opposite edge whenever it
+    // is already reachable on this display.
+    let frame = cardFrame(
+      below: frame,
+      size: CGSize(width: max(frame.width, minWidth), height: max(frame.height, minHeight)),
+      visibleFrame: visibleFrame)
     var result = frame
     switch edge {
     case .left, .bottomLeft:
       result.origin.x = min(max(frame.minX + delta.width, visibleFrame.minX), frame.maxX - minWidth)
       result.size.width = frame.maxX - result.minX
-    case .right, .bottomRight:
+    case .right, .bottomRight, .topRight:
       result.size.width = min(
         max(frame.width + delta.width, minWidth), visibleFrame.maxX - frame.minX)
     case .top, .bottom:
@@ -256,7 +431,7 @@ enum OverlayIntercomWidgetLayout {
       result.origin.y = min(
         max(frame.minY + delta.height, visibleFrame.minY), frame.maxY - minHeight)
       result.size.height = frame.maxY - result.minY
-    case .top:
+    case .top, .topRight:
       result.size.height = min(
         max(frame.height + delta.height, minHeight), visibleFrame.maxY - frame.minY)
     case .left, .right:
@@ -274,7 +449,7 @@ enum OverlayIntercomWidgetLayout {
     guard let index, count > 0, (0..<count).contains(index) else { return 1 }
     switch edge {
     case .bottom, .bottomLeft, .bottomRight: return CGFloat(count) / CGFloat(index + 1)
-    case .top: return CGFloat(count) / CGFloat(count - index)
+    case .top, .topRight: return CGFloat(count) / CGFloat(count - index)
     case .left, .right: return 1
     }
   }
@@ -293,6 +468,18 @@ struct OverlayIntercomCardIdentity: Hashable {
     conversationID = conversation?.id
     ownerID = conversation?.owner?.id
     self.name = name ?? conversation.map { OverlayChannelMapChip.displayName($0.name) } ?? digit
+  }
+
+  var isHumanInbox: Bool {
+    digit == "10" && conversationID == "10" && ownerID == nil
+  }
+  var displayDigit: String { isHumanInbox ? "" : digit }
+
+  /// Only the two canonical mailboxes may present without an agent owner.
+  /// A known digit with a fabricated conversation ID is still a placeholder.
+  var canExpand: Bool {
+    guard conversationID != nil else { return false }
+    return ownerID != nil || isHumanInbox || (digit == "0" && conversationID == "0")
   }
 
   static func == (lhs: Self, rhs: Self) -> Bool {
@@ -328,11 +515,15 @@ struct OverlayIntercomPresentation: Equatable {
   var expanded: Set<OverlayIntercomCardIdentity> = []
   var folded = false
 
+  func frontOrder(_ identities: [OverlayIntercomCardIdentity]) -> [OverlayIntercomCardIdentity] {
+    identities.filter { !expanded.contains($0) } + identities.filter { expanded.contains($0) }
+  }
+
   /// One conversation opens inside the group at a time. A second place for
   /// the same or another agent is a durable detached instance, not a second
   /// group expansion.
   mutating func expand(_ identity: OverlayIntercomCardIdentity) {
-    guard identity.conversationID != nil, identity.ownerID != nil else { return }
+    guard identity.canExpand else { return }
     expanded = [identity]
   }
 

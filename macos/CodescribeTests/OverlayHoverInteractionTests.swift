@@ -26,7 +26,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
   func testExplicitCollapseStaysCollapsedUnderPointer() {
     let state = OverlayState()
     state.setPointerHovering(true)
-    for mode in [OverlayPresentationMode.midi, .expanded, .mini] {
+    for mode in [OverlayPresentationMode.expanded, .mini, .expanded] {
       state.toggleCollapsed()
       for inside in [true, false, true] { state.setPointerHovering(inside) }
       XCTAssertEqual(state.presentationMode, mode)

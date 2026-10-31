@@ -160,7 +160,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       String(localized: "Panel not found in Frame"))
   }
 
-  func testFocusResultReceiptFoldsExpandedOverlayAndActivatesTerminalHostOnce() throws {
+  func testFocusResultReceiptFoldsExpandedOverlayAndActivatesTerminalHostOnce() async throws {
     let state = OverlayState.previewFormatted()
     let owner = makeOwner()
     armRoster(on: state, owner: owner)
@@ -202,6 +202,8 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     )
     state.applyConversationSnapshot(snapshot)
 
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .activating)
+    for _ in 0..<30 { await Task.yield() }
     let focusState = try XCTUnwrap(state.agentPanelFocusStates[owner.channel])
     XCTAssertEqual(focusState.phase, .succeeded)
     XCTAssertEqual(focusState.statusText, String(localized: "Focused in Frame"))
@@ -215,6 +217,104 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     state.applyConversationSnapshot(snapshot)
     XCTAssertEqual(activations.count, 1)
     XCTAssertEqual(state.presentationMode, .expanded)
+  }
+
+  func testPaneReceiptWaitsForHostConfirmationAndDeduplicatesWhileWaiting() async throws {
+    let state = OverlayState.previewFormatted()
+    let owner = makeOwner()
+    armRoster(on: state, owner: owner)
+    state.setPresentationMode(.expanded)
+    state.requestAgentPanelFocusCommand = { _ in }
+    var confirmation: CheckedContinuation<Bool, Never>?
+    var calls = 0
+    state.activateTerminalHost = { _, _ in
+      calls += 1
+      return await withCheckedContinuation { confirmation = $0 }
+    }
+    state.focusAgentPanel(owner)
+    let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
+    let snapshot = focusSnapshot(owner: owner, requestID: requestID)
+    state.applyConversationSnapshot(snapshot)
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .activating)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    state.applyConversationSnapshot(snapshot)
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertEqual(calls, 1)
+    let pending = try XCTUnwrap(confirmation)
+    pending.resume(returning: true)
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .succeeded)
+    XCTAssertNotEqual(state.presentationMode, .expanded)
+  }
+
+  func testHostActivationFailureKeepsConversationOpen() async throws {
+    let state = OverlayState.previewFormatted()
+    let owner = makeOwner()
+    armRoster(on: state, owner: owner)
+    state.setPresentationMode(.expanded)
+    state.requestAgentPanelFocusCommand = { _ in }
+    state.activateTerminalHost = { _, _ in false }
+    state.focusAgentPanel(owner)
+    let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
+    state.applyConversationSnapshot(focusSnapshot(owner: owner, requestID: requestID))
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .failed)
+    XCTAssertEqual(state.presentationMode, .expanded)
+  }
+
+  func testLateHostConfirmationCannotOverwriteTimeout() async throws {
+    let state = OverlayState.previewFormatted()
+    let owner = makeOwner()
+    armRoster(on: state, owner: owner)
+    state.setPresentationMode(.expanded)
+    state.panelFocusTimeoutDuration = .milliseconds(20)
+    state.requestAgentPanelFocusCommand = { _ in }
+    var confirmation: CheckedContinuation<Bool, Never>?
+    state.activateTerminalHost = { _, _ in
+      await withCheckedContinuation { confirmation = $0 }
+    }
+    state.focusAgentPanel(owner)
+    let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
+    state.applyConversationSnapshot(focusSnapshot(owner: owner, requestID: requestID))
+    for _ in 0..<30 { await Task.yield() }
+    let pending = try XCTUnwrap(confirmation)
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .failed)
+    pending.resume(returning: true)
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .failed)
+    XCTAssertEqual(state.presentationMode, .expanded)
+  }
+
+  func testReceiptFromDifferentOwnerCannotActivateHost() throws {
+    let state = OverlayState.previewFormatted()
+    let owner = makeOwner()
+    armRoster(on: state, owner: owner)
+    state.requestAgentPanelFocusCommand = { _ in }
+    state.activateTerminalHost = { _, _ in
+      XCTFail("Wrong owner cannot activate")
+      return false
+    }
+    state.focusAgentPanel(owner)
+    let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
+    state.applyConversationSnapshot(
+      focusSnapshot(
+        owner: makeOwner(provider: "codex"), requestID: requestID))
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .requesting)
+  }
+
+  private func focusSnapshot(owner: OverlayConversationOwner, requestID: String)
+    -> OverlayChannelDeliverySnapshot
+  {
+    let result = OverlayPanelFocusResult(
+      requestID: requestID, provider: owner.provider, providerSessionID: owner.providerSessionID,
+      leaseID: owner.leaseID, status: "focused", exitCode: 0, elapsedMs: 1,
+      emittedAt: "2026-10-25T20:00:00Z",
+      frame: AgentFrameBinding(
+        session: "fixture", paneID: 42,
+        hostBundleID: "io.vetcoders.vibecrafted", hostPID: 54321))
+    return .init(deliveries: [], conversations: [], panelFocusResults: [requestID: result])
   }
 
   func testReaderConsumesPanelFocusResultFromChannelBusAndReportsFailureReasons() async throws {
@@ -282,7 +382,9 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     try line.write(to: channelBus, atomically: true, encoding: .utf8)
 
     let sharedBus = tempRoot.appendingPathComponent("transcript-bus.jsonl")
-    let reader = OverlayChannelDeliveryReader(root: tempRoot, sharedBus: sharedBus)
+    let reader = OverlayChannelDeliveryReader(
+      root: tempRoot, cacheRoot: tempRoot.appendingPathComponent("data.noindex", isDirectory: true),
+      sharedBus: sharedBus)
     let snapshot = try await reader.readSnapshot()
     let parsed = try XCTUnwrap(snapshot.panelFocusResults[requestID])
     XCTAssertEqual(parsed.status, "pane_missing")
@@ -345,15 +447,16 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     XCTAssertEqual(event["bus"] as? String, "/tmp/channel-5.jsonl")
   }
 
-  func testPanelFocusButtonUsesOverlayHeaderTooltipChrome() throws {
+  func testCompactActionMenuKeepsFocusResultInProductTooltip() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
       .appendingPathComponent("Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    XCTAssertTrue(source.contains(".overlayFastHint("))
+    XCTAssertTrue(source.contains("focusState?.statusText ?? String(localized: \"Agent actions\")"))
     XCTAssertTrue(
-      source.contains("OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)")
-    )
+      source.contains(".accessibilityValue(Text(verbatim: focusState?.statusText ?? \"\"))"))
     XCTAssertFalse(source.contains(".help(focusHelp)"))
   }
 
@@ -970,7 +1073,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     XCTAssertTrue(withoutVcFrame.showsPanelFocusButton(for: row))
   }
 
-  func testTerminalReceiptActivatesTheTerminalAppNotFrame() throws {
+  func testTerminalReceiptActivatesTheTerminalAppNotFrame() async throws {
     let state = OverlayState.previewFormatted()
     let owner = makeOwner()
     armRoster(
@@ -1014,6 +1117,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     state.applyConversationSnapshot(
       OverlayChannelDeliverySnapshot(
         deliveries: [], conversations: [], panelFocusResults: [requestID: result]))
+    for _ in 0..<30 { await Task.yield() }
     let focusState = try XCTUnwrap(state.agentPanelFocusStates[owner.channel])
     XCTAssertEqual(focusState.phase, .succeeded)
     XCTAssertEqual(focusState.statusText, String(localized: "Terminal tab shown"))

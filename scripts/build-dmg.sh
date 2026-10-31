@@ -32,6 +32,7 @@ EMBED_WHISPER_EXPLICIT=0
 DMG_SUFFIX=""
 RECEIPT=""
 RECEIPT_RUN=""
+BUILD_CHANNEL="${CODESCRIBE_BUILD_CHANNEL:-stable}"
 
 usage() {
   cat <<EOF
@@ -75,6 +76,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+case "$BUILD_CHANNEL" in
+  stable|nightly) ;;
+  *) echo "ERROR: CODESCRIBE_BUILD_CHANNEL must be stable or nightly" >&2; exit 2;;
+esac
+
 # A caller must allocate a fresh private receipt path for each invocation.
 if [[ -n "$RECEIPT" || -n "$RECEIPT_RUN" ]]; then
   if [[ "$RECEIPT" != /* || ! "$RECEIPT_RUN" =~ ^[a-zA-Z0-9._-]+$ || -e "$RECEIPT" || -L "$RECEIPT" || "$NO_EMBED" -eq 1 ]]; then
@@ -95,6 +101,11 @@ fi
 # so operators can tell slim vs fat artifacts apart on disk.
 if [[ "$EMBED_WHISPER" -eq 1 && -z "$DMG_SUFFIX" ]]; then
   DMG_SUFFIX="_full"
+fi
+
+# Nightly artifacts occupy a distinct download path and never replace stable bytes.
+if [[ "$BUILD_CHANNEL" == nightly ]]; then
+  DMG_SUFFIX="_nightly${DMG_SUFFIX}"
 fi
 
 # Provenance slug: UTC build date + HEAD short SHA, so every DMG names the
@@ -131,7 +142,7 @@ fi
 BUILD_ENV+=(CODESCRIBE_BUNDLE_EMBEDDER="$BUNDLE_EMBEDDER")
 # Every DMG is an install artifact: build-app.sh stamps
 # LSMultipleInstancesProhibited into its Info.plist before signing it.
-BUILD_ENV+=(CODESCRIBE_INSTALL_LANE=1)
+BUILD_ENV+=(CODESCRIBE_INSTALL_LANE=1 CODESCRIBE_BUILD_CHANNEL="$BUILD_CHANNEL")
 
 echo "=== Build DMG ==="
 echo "App: $APP_NAME"
@@ -177,6 +188,12 @@ if [[ "$SIGN" -eq 1 ]]; then
   codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null
 fi
 
+if [[ "$NOTARIZE" -eq 1 ]]; then
+  # Staple the app before copying it into the image. A later staple of APP_PATH
+  # cannot add the app ticket to the already-created read-only DMG payload.
+  NOTARY_PROFILE="$NOTARY_PROFILE" "$ROOT_DIR/scripts/notarize.sh" --app "$APP_PATH"
+fi
+
 echo "Creating DMG..."
 rm -f "$DMG_PATH"
 TMP_DMG="$(mktemp -d)/dmg"
@@ -187,7 +204,7 @@ hdiutil create -volname "$DISPLAY_NAME" -srcfolder "$TMP_DMG" -ov -format UDZO "
 
 if [[ "$SIGN" -eq 1 ]]; then
   echo "Codesigning DMG..."
-  codesign --force --sign "$IDENTITY" "$DMG_PATH" || true
+  codesign --force --sign "$IDENTITY" "$DMG_PATH"
 fi
 
 echo "DMG ready: $DMG_PATH"

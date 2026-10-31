@@ -104,47 +104,36 @@ struct OverlayHeaderMenu: View {
     )
     .help("New recordings open with the transcript. Turn off to show only the recording bar.")
     .accessibilityIdentifier("overlay-expanded-by-default")
-    // The intervals are a plain submenu with a checkmark on the chosen one.
-    // 70e88208 tried a palette picker to keep a hover-like tint (Maciej,
-    // 2026-10-19), but a palette in a macOS menu draws images only, so the plain
-    // Text intervals rendered as an empty row carrying just a checkmark. Maciej
-    // chose the plain checkmark submenu over repairing it (decyzja Macieja,
-    // 2026-10-20). The menu's own title names the current interval (Lena,
-    // release 0.17.2).
+    // Native menu states draw the selected interval's checkmark. A Label's
+    // decorative image is not the menu item's selected state.
     Menu {
       ForEach(Self.autoFoldIntervals, id: \.self) { seconds in
-        Button {
-          state.setAutoFoldSeconds(seconds)
-        } label: {
-          // Int, not UInt32: the catalog key is "%lld s", a UInt32 would extract "%u s".
-          autoFoldChoice("\(Int(seconds)) s", selected: state.autoFoldSeconds == seconds)
-        }
+        Toggle(
+          "\(Int(seconds)) s",
+          isOn: Binding(
+            get: { state.autoFoldSeconds == seconds },
+            set: { if $0 { state.setAutoFoldSeconds(seconds) } })
+        )
         .accessibilityIdentifier("overlay-auto-fold-\(seconds)")
       }
-      Button {
-        state.setAutoFoldSeconds(0)
-      } label: {
-        autoFoldChoice("Never", selected: state.autoFoldSeconds == 0)
-      }
+      Toggle(
+        "Never",
+        isOn: Binding(
+          get: { state.autoFoldSeconds == 0 },
+          set: { if $0 { state.setAutoFoldSeconds(0) } })
+      )
       .accessibilityIdentifier("overlay-auto-fold-never")
     } label: {
-      Text("Auto fold after… \(currentAutoFoldTitle)")
+      currentAutoFoldTitle
     }
   }
 
   private static let autoFoldIntervals: [UInt32] = [5, 10, 30, 60]
 
   private var currentAutoFoldTitle: Text {
-    state.autoFoldSeconds == 0 ? Text("Never") : Text("\(Int(state.autoFoldSeconds)) s")
-  }
-
-  @ViewBuilder
-  private func autoFoldChoice(_ title: LocalizedStringKey, selected: Bool) -> some View {
-    if selected {
-      Label(title, systemImage: "checkmark")
-    } else {
-      Text(title)
-    }
+    state.autoFoldSeconds == 0
+      ? Text("Auto-fold: Never")
+      : Text("Auto-fold: \(Int(state.autoFoldSeconds)) s of inactivity")
   }
 
   private func menuImage(for anchor: OverlayAnchor) -> String {
@@ -173,7 +162,7 @@ struct OverlayPinButton: View {
     } label: {
       OverlayMicrophoneGlyph(
         symbol: pinned ? OverlayControlSymbols.pinned : OverlayControlSymbols.pin,
-        tint: pinned ? Color(nsColor: .controlAccentColor) : palette.mutedText.color,
+        tint: pinned ? CSColor.chromeAccent : palette.mutedText.color,
         plateOpacity: 0
       )
       .contentShape(Circle())

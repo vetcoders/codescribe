@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -56,6 +56,10 @@ fn lock_path(path: &Path) -> PathBuf {
 pub struct Lease(File);
 impl Lease {
     pub fn acquire(path: &Path) -> io::Result<Self> {
+        Self::acquire_with(path, libc::LOCK_EX)
+    }
+
+    fn acquire_with(path: &Path, operation: libc::c_int) -> io::Result<Self> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -63,7 +67,7 @@ impl Lease {
             .write(true)
             .mode(0o600)
             .open(lock_path(path))?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        if unsafe { libc::flock(file.as_raw_fd(), operation) } != 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(Self(file))
@@ -631,13 +635,81 @@ pub fn append(path: &Path, shared: &Arc<Mutex<File>>, bytes: &[u8]) -> io::Resul
 }
 
 /// A durable append receipt uses the logical stream clock, across rollover.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BusAppendReceipt {
     pub stream_id: String,
     pub stream_dev: u64,
     pub stream_inode: u64,
     pub offset: u64,
     pub length: u64,
+}
+
+/// Inspect complete logical events and their original physical coordinates.
+/// Call inside append_durable_many_with's prepare closure or the durable
+/// observer below: both pin the stream under its existing OS generation lease.
+pub(crate) fn scan_durable_events(
+    path: &Path,
+    mut visit: impl FnMut(&Value, &BusAppendReceipt) -> io::Result<()>,
+) -> io::Result<()> {
+    // Fail before Reader::open could attempt lease-taking remount recovery.
+    let manifest = view(path)?.ok_or_else(invalid)?;
+    let mut reader = BufReader::new(Reader::open(path)?);
+    let mut decoder = Decoder::default();
+    let mut offset = 0u64;
+    let mut start = 0u64;
+    loop {
+        let mut line = Vec::new();
+        let width = (&mut reader)
+            .take((1 << 20) + 1)
+            .read_until(b'\n', &mut line)?;
+        if width == 0 {
+            break;
+        }
+        if width > 1 << 20 || line.last() != Some(&b'\n') {
+            return Err(invalid());
+        }
+        offset = offset.checked_add(width as u64).ok_or_else(invalid)?;
+        let value = serde_json::from_slice(&line).map_err(|_| invalid())?;
+        for event in decoder.push(value)? {
+            visit(
+                &event,
+                &BusAppendReceipt {
+                    stream_id: manifest.stream_id.clone(),
+                    stream_dev: manifest.stream_dev,
+                    stream_inode: manifest.stream_inode,
+                    offset: start,
+                    length: offset - start,
+                },
+            )?;
+            start = offset;
+        }
+    }
+    if decoder.incomplete() {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+/// Observe another journal's immutable commit prefix without waiting while a
+/// caller holds its own generation lease. Synchronize the observed authority
+/// before the caller may freeze a dependent snapshot in its local journal.
+pub(crate) fn observe_durable_events(
+    path: &Path,
+    visit: impl FnMut(&Value, &BusAppendReceipt) -> io::Result<()>,
+) -> io::Result<()> {
+    let _lease = Lease::acquire_with(path, libc::LOCK_EX | libc::LOCK_NB)?;
+    let manifest = view(path)?.ok_or_else(invalid)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    if !same_descriptor(&file, &manifest.active) {
+        return Err(invalid());
+    }
+    file.sync_all()?;
+    scan_durable_events(path, visit)
 }
 
 /// Reply text must reach the same private journal authority before speech.
@@ -688,6 +760,9 @@ where
     let mut receipts = Vec::new();
     for (((path, _), file), batch) in destinations.iter().zip(files.iter_mut()).zip(batches) {
         let Some(bytes) = batch else {
+            // A recovered row may have survived a crash before fsync. Its ACK
+            // has the same durability obligation as a newly appended row.
+            file.sync_all()?;
             receipts.push(None);
             continue;
         };
@@ -1093,13 +1168,25 @@ pub struct Decoder {
     length: usize,
     pending: Vec<u8>,
     header: Value,
+    discard_initial_fragment: bool,
 }
 impl Decoder {
+    /// A bounded tail may start inside an older storage document. Consume
+    /// that one contiguous fragment without admitting any of its content.
+    /// Every document beginning inside the window retains strict decoding.
+    pub fn from_tail_boundary() -> Self {
+        Self {
+            discard_initial_fragment: true,
+            ..Self::default()
+        }
+    }
+
     pub fn incomplete(&self) -> bool {
         self.parts != 0
     }
     pub fn push(&mut self, value: Value) -> io::Result<Vec<Value>> {
         if value["schema"] != CHUNK_SCHEMA {
+            self.discard_initial_fragment = false;
             if self.incomplete() {
                 return Err(invalid());
             }
@@ -1111,6 +1198,19 @@ impl Decoder {
         let length = value["length"].as_u64().ok_or_else(invalid)? as usize;
         if length > DECODE_LIMIT || parts == 0 || parts != length.div_ceil(CHUNK_BYTES) as u64 {
             return Err(invalid());
+        }
+        if self.discard_initial_fragment && self.parts == 0 {
+            if part == 0 {
+                self.discard_initial_fragment = false;
+            } else if part < parts {
+                self.id = id.into();
+                self.parts = parts;
+                self.next = part;
+                self.length = length;
+                self.header = value["event"].clone();
+            } else {
+                return Err(invalid());
+            }
         }
         if part == 0 {
             if self.incomplete() {
@@ -1136,6 +1236,17 @@ impl Decoder {
             .map_err(|_| invalid())?;
         if payload.len() > CHUNK_BYTES || self.pending.len() + payload.len() > length {
             return Err(invalid());
+        }
+        if self.discard_initial_fragment {
+            let expected = (length - part as usize * CHUNK_BYTES).min(CHUNK_BYTES);
+            if payload.len() != expected {
+                return Err(invalid());
+            }
+            self.next += 1;
+            if self.next == parts {
+                *self = Self::default();
+            }
+            return Ok(Vec::new());
         }
         self.pending.extend_from_slice(&payload);
         self.next += 1;
@@ -2080,6 +2191,69 @@ mod integrator_generation_acceptance {
         cursor.read_to_end(&mut actual).unwrap();
         assert_eq!(actual, [old[31..].to_vec(), b"later\n".to_vec()].concat());
         assert_eq!(fs::read(&manifest.segments[0].path).unwrap(), old);
+    }
+
+    #[test]
+    fn tail_decoder_discards_one_leading_fragment_but_preserves_integrity_checks() {
+        let value = serde_json::json!({
+            "schema":"codescribe.transcript-evidence.v1", "session_id":"chunks",
+            "rendered_text":"x".repeat(600_000)
+        });
+        let wire = encode(&value).expect("tail decoder regression fixture must be valid");
+        let rows: Vec<Value> = wire
+            .split(|b| *b == b'\n')
+            .filter(|r| !r.is_empty())
+            .map(|r| {
+                serde_json::from_slice(r).expect("tail decoder regression fixture must be valid")
+            })
+            .collect();
+        assert!(Decoder::default().push(rows[2].clone()).is_err());
+        let mut tail = Decoder::from_tail_boundary();
+        for row in &rows[2..] {
+            assert!(
+                tail.push(row.clone())
+                    .expect("tail decoder regression fixture must be valid")
+                    .is_empty()
+            );
+        }
+        assert!(!tail.incomplete());
+        let complete = serde_json::json!({"schema":"synthetic.complete.v1", "value":1});
+        assert_eq!(
+            tail.push(complete.clone())
+                .expect("tail decoder regression fixture must be valid"),
+            vec![complete]
+        );
+        // A missing part in the discarded prefix still refuses the stream.
+        let mut gap = Decoder::from_tail_boundary();
+        gap.push(rows[2].clone())
+            .expect("tail decoder regression fixture must be valid");
+        assert!(gap.push(rows[4].clone()).is_err());
+        // Starting at part zero never discards or bypasses the document hash.
+        let mut full = Decoder::from_tail_boundary();
+        let mut output = Vec::new();
+        for row in &rows {
+            output.extend(
+                full.push(row.clone())
+                    .expect("tail decoder regression fixture must be valid"),
+            );
+        }
+        assert_eq!(output, vec![value]);
+        let mut corrupt = Decoder::from_tail_boundary();
+        for row in &rows[..rows.len() - 1] {
+            corrupt
+                .push(row.clone())
+                .expect("tail decoder regression fixture must be valid");
+        }
+        let mut last = rows
+            .last()
+            .expect("tail decoder regression fixture must be valid")
+            .clone();
+        last["payload"] = base64::engine::general_purpose::STANDARD
+            .encode(b"corrupt")
+            .into();
+        assert!(corrupt.push(last).is_err());
+        // A later continuation cannot start a second discarded fragment.
+        assert!(tail.push(rows[2].clone()).is_err());
     }
 
     #[test]

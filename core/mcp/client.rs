@@ -88,6 +88,26 @@ impl std::fmt::Display for McpClientError {
 
 impl std::error::Error for McpClientError {}
 
+/// The remote server answered `401`. Typed so the connector can tell an auth
+/// rejection (refresh once, never retry blindly) from an outage worth retrying;
+/// the message keeps the shape the Settings row has always shown.
+#[derive(Debug)]
+struct RemoteUnauthorized {
+    endpoint: String,
+}
+
+impl std::fmt::Display for RemoteUnauthorized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Remote MCP connector '{}' returned HTTP 401",
+            self.endpoint
+        )
+    }
+}
+
+impl std::error::Error for RemoteUnauthorized {}
+
 /// Total attempts for a remote exchange, including the first. Bounded so a
 /// dead connector surfaces as an error instead of retrying indefinitely.
 const REMOTE_RECONNECT_ATTEMPTS: usize = 3;
@@ -176,9 +196,24 @@ pub struct McpServerConfig {
     /// serialized into mcp.json.
     #[serde(default)]
     pub auth_ref: Option<String>,
+    /// How `auth_ref` is used. `None` / `"bearer"`: the Keychain entry is a
+    /// static bearer token. `"oauth"`: it is an OAuth credential written by
+    /// [`crate::mcp::oauth`], refreshed before use.
+    #[serde(default)]
+    pub auth_type: Option<String>,
 }
 
+/// `auth_type` value selecting the OAuth flow.
+pub const AUTH_TYPE_OAUTH: &str = "oauth";
+
 impl McpServerConfig {
+    /// Whether this server authorizes through the MCP OAuth flow.
+    pub fn uses_oauth(&self) -> bool {
+        self.auth_type
+            .as_deref()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case(AUTH_TYPE_OAUTH))
+    }
+
     /// Per-request timeout: the configured value, else [`DEFAULT_TIMEOUT`].
     fn timeout(&self) -> Duration {
         self.timeout_seconds
@@ -416,6 +451,17 @@ impl McpClient {
         result
     }
 
+    /// Stored OAuth bearer for this server, refreshed first when it is due.
+    /// Without a stored credential the error says to sign in, not "HTTP 401".
+    async fn oauth_bearer(&self, force_refresh: bool) -> Result<String> {
+        let account = self
+            .config
+            .auth_ref
+            .as_deref()
+            .context("OAuth connector has no auth_ref naming its Keychain credential")?;
+        crate::mcp::oauth::bearer_for_account(account, force_refresh).await
+    }
+
     /// Remote calls are isolated from the agent session. A transient connector
     /// failure retries with bounded exponential backoff; exhausting retries
     /// returns a typed connector error to the tool/UI without killing the
@@ -426,13 +472,37 @@ impl McpClient {
         Fut: std::future::Future<Output = Result<T>>,
     {
         let mut last_error = None;
+        // OAuth: the first attempt uses the stored token (refreshed if due); a
+        // 401 to it earns exactly one forced refresh, never a retry storm.
+        let mut force_refresh = false;
+        let mut refreshed_after_401 = false;
         for attempt in 0..REMOTE_RECONNECT_ATTEMPTS {
-            let connection =
-                RemoteConnection::connect(&self.config, self.timeout, self.initialize_timeout)?;
+            let oauth_bearer = if self.config.uses_oauth() {
+                Some(self.oauth_bearer(force_refresh).await?)
+            } else {
+                None
+            };
+            force_refresh = false;
+            let connection = RemoteConnection::connect(
+                &self.config,
+                oauth_bearer,
+                self.timeout,
+                self.initialize_timeout,
+            )?;
             match operation(connection).await {
                 Ok(value) => return Ok(value),
                 Err(error) => {
                     if error.downcast_ref::<McpClientError>().is_some() {
+                        return Err(error);
+                    }
+                    if error.downcast_ref::<RemoteUnauthorized>().is_some() {
+                        // Retrying an auth rejection with the same credential
+                        // cannot succeed.
+                        if self.config.uses_oauth() && !refreshed_after_401 {
+                            refreshed_after_401 = true;
+                            force_refresh = true;
+                            continue;
+                        }
                         return Err(error);
                     }
                     warn!(
@@ -483,6 +553,7 @@ impl RemoteConnection {
     /// so a misconfigured endpoint cannot put a secret on the wire.
     fn connect(
         config: &McpServerConfig,
+        oauth_bearer: Option<String>,
         response_timeout: Duration,
         initialize_timeout: Duration,
     ) -> Result<Self> {
@@ -501,6 +572,17 @@ impl RemoteConnection {
             bail!("Remote MCP credentials must be stored in Keychain, not in the endpoint URL");
         }
         let bearer_token = match config.auth_ref.as_deref() {
+            Some(_) if oauth_bearer.is_some() => {
+                // The same https-only rule as a static bearer: an OAuth access
+                // token must not cross plaintext http either.
+                if parsed.scheme() != "https" {
+                    bail!(
+                        "Remote MCP endpoint with OAuth must use https — refusing to send the \
+                         access token over plaintext http"
+                    );
+                }
+                oauth_bearer
+            }
             Some(account) => {
                 // A Keychain secret must never leave the machine in cleartext:
                 // plain http would put the bearer on the wire (review P2-17).
@@ -632,6 +714,12 @@ impl RemoteConnection {
             self.session_id = Some(session_id.to_string());
         }
         // Error bodies are never read; even an endless 503 costs no body buffer.
+        if status.as_u16() == 401 {
+            return Err(RemoteUnauthorized {
+                endpoint: self.endpoint.clone(),
+            }
+            .into());
+        }
         if !status.is_success() {
             bail!(
                 "Remote MCP connector '{}' returned HTTP {}",
@@ -1387,6 +1475,7 @@ mod tests {
             timeout_seconds: Some(5),
             url: None,
             auth_ref: None,
+            auth_type: None,
         }
     }
 
@@ -1469,6 +1558,7 @@ mod tests {
             timeout_seconds: Some(2),
             url: Some(format!("{}/mcp", server.url())),
             auth_ref: None,
+            auth_type: None,
         });
         let probe = client.probe().await.expect("remote MCP probe");
         assert_eq!(
@@ -1495,6 +1585,7 @@ mod tests {
             timeout_seconds: Some(2),
             url: Some("http://mcp.example.invalid/mcp".to_string()),
             auth_ref: Some("codescribe-test-account".to_string()),
+            auth_type: None,
         });
         let error = client
             .probe()
@@ -1583,6 +1674,7 @@ mod tests {
             timeout_seconds: Some(2),
             url: Some(endpoint),
             auth_ref: None,
+            auth_type: None,
         });
         let tools = client
             .list_tools()
@@ -1678,6 +1770,7 @@ mod tests {
             timeout_seconds: Some(2),
             url: None,
             auth_ref: None,
+            auth_type: None,
         };
         let client = McpClient::new(config);
 

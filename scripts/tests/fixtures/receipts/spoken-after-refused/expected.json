@@ -1,0 +1,29 @@
+{
+  "denominator": 1,
+  "message_id": "0123456789abcdef00000005",
+  "recipients": [
+    {
+      "at": "2026-10-26T04:00:01Z",
+      "channel": "3",
+      "delivered_at": "2026-10-26T04:00:01Z",
+      "delivery_id": "111111111111111111111111",
+      "name": "lena",
+      "state": "delivered",
+      "wake": "on"
+    }
+  ],
+  "sent_to": [
+    {
+      "channel": "3",
+      "name": "lena"
+    }
+  ],
+  "spoken": {
+    "at": "2026-10-26T04:01:00Z",
+    "playback_ticket": "ffffffffffffffffffffffff",
+    "reason": null,
+    "spoken": true,
+    "state": "spoken"
+  },
+  "withdrawn": []
+}

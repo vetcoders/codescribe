@@ -25,7 +25,7 @@ struct ProvidersPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        String(localized: "Providers"),
+        SettingsSection.keys.title,
         blurb: String(
           localized: "Connect accounts or add API keys. Models are chosen under Agent › AI models.",
           comment: "Providers panel blurb; `AI models` is the Agent tab title")
@@ -42,7 +42,7 @@ struct ProvidersPanel: View {
           : String(localized: "Provider access is unavailable. No credential status has been confirmed."))
           .font(SettingsScale.helper)
           .padding(.top, SettingsScale.sectionGap)
-        Text(error).font(CSFont.mono(10.5)).textSelection(.enabled)
+        Text(error).font(CSFont.mono(11)).textSelection(.enabled)
       }
       HStack(spacing: CSSpace.md) {
         // The status slot beside the chip carries the progress line, so the
@@ -142,7 +142,7 @@ struct ProviderAccessStatusSlot: View {
 
   private var receipt: String {
     guard let checkedAt else { return "" }
-    let time = checkedAt.formatted(date: .omitted, time: .standard)
+    let time = checkedAt.formatted(date: .omitted, time: .shortened)
     return String(localized: "Checked at \(time)")
   }
 
@@ -172,10 +172,10 @@ struct LaneResetNotice: View {
 
   var body: some View {
     HStack(spacing: CSSpace.sm) {
-      Circle().fill(CSColor.amberLight).frame(width: 7, height: 7)
+      StatusToneGlyph(tone: .warn)
       Text(text)
         .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.amberLight)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(2)
     }
     .accessibilityIdentifier("lane-reset-notice")
@@ -338,7 +338,7 @@ struct ProviderCard: View {
         SettingsChipButton("Edit", tint: CSColor.secondaryInk) { onEdit?() }
           .accessibilityLabel("Edit custom provider \(provider.displayName)")
         SettingsChipButton(action: { confirmRemove = true }) {
-          CSIconView(icon: .delete, size: 12, weight: .semibold, color: CSColor.terracottaText)
+          CSIconView(icon: .delete, size: 12, weight: .semibold, color: CSColor.dangerLight)
             .frame(width: 10, height: 18)
         }
         .accessibilityLabel("Remove custom provider \(provider.displayName)")
@@ -353,8 +353,8 @@ struct ProviderCard: View {
       .foregroundStyle(CSColor.secondaryInk)
       .padding(.horizontal, CSSpace.xs)
       .padding(.vertical, 2)
-      .background(Capsule().fill(Color.primary.opacity(0.1)))
-      .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+      .background(Capsule().fill(Color.primary.opacity(CSAlpha.line)))
+      .overlay(Capsule().strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1))
       .accessibilityLabel("\(wireLabel) wire")
       .fixedSize(horizontal: true, vertical: false)
   }
@@ -450,7 +450,7 @@ struct CustomProviderForm: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text(isEdit ? "Edit custom provider." : "Add custom provider.")
+      Text(isEdit ? "Edit custom provider" : "Add custom provider")
         .font(CSFont.ui(20, .bold))
         .tracking(-0.3)
         .foregroundStyle(Color.primary)
@@ -485,7 +485,7 @@ struct CustomProviderForm: View {
         if let endpointError {
           Text(endpointError)
             .font(CSFont.ui(11, .medium))
-            .foregroundStyle(CSColor.terracottaText)
+            .foregroundStyle(CSColor.dangerLight)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("custom-provider-endpoint-error")
         }
@@ -501,7 +501,7 @@ struct CustomProviderForm: View {
       if let error {
         Text(error)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("custom-provider-form-error")
       }
@@ -512,10 +512,8 @@ struct CustomProviderForm: View {
       }
       HStack(spacing: 10) {
         Spacer()
-        Button("Cancel") { dismiss() }
-          .disabled(saving)
+        SettingsSaveButton(title: "Cancel", enabled: !saving) { dismiss() }
           .keyboardShortcut(.cancelAction)
-          .csFocusRing()
         SettingsSaveButton(
           title: isEdit ? "Save changes" : "Add provider", enabled: canSave, action: save
         )
@@ -541,7 +539,7 @@ struct CustomProviderForm: View {
   ) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       Text(title)
-        .font(CSFont.ui(10.5, .semibold))
+        .font(CSFont.ui(11, .semibold))
         .foregroundStyle(CSColor.secondaryInk)
       control()
     }
@@ -608,7 +606,7 @@ struct SpeechToTextSection: View {
       // the same truth as Dictation › Cloud & privacy.
       Text("Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription.")
         .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.amberLight)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.top, SettingsScale.headerGap)
       VStack(spacing: CSSpace.sm) {
@@ -724,7 +722,7 @@ struct SttLaneCard: View {
           }
           if DeveloperSurface.isEnabled() {
             Text(Self.accepts(for: lane))
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.mono(11, .medium))
               .fixedSize(horizontal: false, vertical: true)
           }
           SettingsDetailRow(

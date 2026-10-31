@@ -317,6 +317,7 @@ enum OverlayAgentPanelFocusTarget: Equatable, Sendable {
 struct OverlayAgentPanelFocusState: Equatable, Sendable {
   enum Phase: Equatable, Sendable {
     case requesting
+    case activating
     case succeeded
     case failed
   }
@@ -330,7 +331,7 @@ struct OverlayAgentPanelFocusState: Equatable, Sendable {
   /// different one when the follower's knowledge moved meanwhile.
   var target: OverlayAgentPanelFocusTarget = .frame
 
-  var isRequesting: Bool { phase == .requesting }
+  var isRequesting: Bool { phase == .requesting || phase == .activating }
   var isSucceeded: Bool { phase == .succeeded }
   var isFailed: Bool { phase == .failed }
 }
@@ -787,18 +788,18 @@ final class OverlayState {
   /// form it folds to, the drawer it closed and when the window lands.
   @ObservationIgnored private var automaticFoldInFlight:
     (mode: OverlayPresentationMode, agentMonitor: Bool, landsAt: TimeInterval)?
-  /// Presentation changes come from explicit controls; pointer motion never morphs the window.
+  /// The preview control opens dictation directly from either compact layout.
+  /// Folding leaves capture, transcript and conversation drafts untouched.
   func toggleCollapsed() {
     switch presentationMode {
-    case .mini: setPresentationMode(.midi)
-    case .midi: setPresentationMode(.expanded)
+    case .mini, .midi: showTranscription()
     case .expanded: setPresentationMode(.mini)
     }
   }
 
   /// The header is an upward switch (header-click cut, 2026-10-17): mini opens
   /// midi, and from there every click alternates midi <-> expanded. The header
-  /// never folds back to mini; the rotating preview control keeps that exit.
+  /// never folds back to mini; the preview control keeps that exit.
   func advancePresentationFromHeader() {
     switch presentationMode {
     case .mini: setPresentationMode(.midi)
@@ -882,6 +883,13 @@ final class OverlayState {
     autoHideAwaitingCollapse = nil
     guard generation == captureGeneration else { return }
     restartAutoHideCountdown()
+  }
+
+  /// Native input belongs to the existing idle clock. A key received while an
+  /// automatic fold is still moving restores the same expanded surface first.
+  func noteOverlayInputActivity() {
+    undoAutomaticFoldInFlight()
+    noteAutoCollapseActivity()
   }
 
   /// Fresh transcript, presentation activity or the end of an interaction.
@@ -1212,8 +1220,12 @@ final class OverlayState {
   private var isPointerHovering = false
   private let nowProvider: () -> TimeInterval
   private let autoSendEnabled: () -> Bool
+  /// `interaction.agent_auto_send_delay_sec`: how long an armed Agent take
+  /// waits before it sends.
+  private let autoSendDelay: () -> TimeInterval
   private let micAccessProvider: () -> Bool
-  /// Terminal countdown for non-Agent outcomes and opted-in Agent delivery.
+  /// Terminal countdown for non-Agent outcomes. An armed Agent take waits
+  /// `autoSendDelay` instead, which defaults to the same 5 s.
   static let autoHideDelaySeconds: TimeInterval = 5
   /// Unpinning a resting overlay lets it go, never at the click itself: the
   /// panel the pin held stays this long, so a mistaken click can be undone.
@@ -1238,6 +1250,9 @@ final class OverlayState {
   init(
     nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     autoSendEnabled: @escaping () -> Bool = { CodescribeConfig().loadSettings().agentAutoSend },
+    autoSendDelay: @escaping () -> TimeInterval = {
+      TimeInterval(CodescribeConfig().loadSettings().agentAutoSendDelaySec)
+    },
     micAccessProvider: @escaping () -> Bool = { micPermissionGranted() || requestMicPermission() },
     autoCollapseScheduler: @escaping OverlayAutoCollapse.Scheduler = OverlayAutoCollapse
       .liveScheduler
@@ -1247,6 +1262,7 @@ final class OverlayState {
     listener = DictationListener(continuation: channel.continuation)
     self.nowProvider = nowProvider
     self.autoSendEnabled = autoSendEnabled
+    self.autoSendDelay = autoSendDelay
     self.micAccessProvider = micAccessProvider
     autoCollapse = OverlayAutoCollapse(now: nowProvider, schedule: autoCollapseScheduler)
     eventTask = Task { @MainActor [weak self, eventStream] in
@@ -1268,17 +1284,21 @@ final class OverlayState {
     engine?.setListener(listener)
     if engine is ControllerDictationEngine {
       let root = OverlayChannelDeliveryReader.productionRoot()
-      restoreReadState(root: root)
+      let cacheRoot = URL(fileURLWithPath: CodescribeConfig().churnDir(), isDirectory: true)
+      restoreReadState(cacheRoot: cacheRoot)
       restoreAgentsLayout(defaults: .standard)
       observeChannelDelivery(
         using: OverlayChannelDeliveryReader(
-          root: root, sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
+          root: root, cacheRoot: cacheRoot,
+          sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
     }
   }
 
   private(set) var channelDelivery: [OverlayChannelDelivery] = []
   private(set) var channelStatusUnavailable = false
-  private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
+  private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:] {
+    didSet { refreshCurrentMicrophoneOwners() }
+  }
   private(set) var channelRosterNames: [String: String] = [:]
   @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
   var channelMapEnabled: Bool { channelMapPreference.enabled }
@@ -1326,8 +1346,26 @@ final class OverlayState {
   /// opening keeps the list instead of following into the conversation
   /// (Maciej, 2026-10-17: broadcast to two agents is two clicks in a row).
   @ObservationIgnored private var agentListHeldOpens: Set<String> = []
-  private(set) var conversations: [OverlayConversation] = []
-  private(set) var archivedAgentOwners: Set<OverlayConversationOwner> = []
+  private(set) var conversations: [OverlayConversation] = [] {
+    didSet { refreshCurrentMicrophoneOwners() }
+  }
+  private(set) var archivedAgentOwners: Set<OverlayConversationOwner> = [] {
+    didSet { refreshCurrentMicrophoneOwners() }
+  }
+  // Microphone controls observe membership, not the messages of every agent.
+  // This is derived only from the reader's inventory and controller roster.
+  private var currentMicrophoneOwners: [String: OverlayConversationOwner] = [:]
+
+  private func refreshCurrentMicrophoneOwners() {
+    let current = OverlayChannelStatusView.currentConversations(
+      conversations: conversations, archivedOwners: archivedAgentOwners, hudStates: channelHudStates
+    )
+    var owners: [String: OverlayConversationOwner] = [:]
+    for conversation in current {
+      if let owner = conversation.owner { owners[conversation.id] = owner }
+    }
+    if owners != currentMicrophoneOwners { currentMicrophoneOwners = owners }
+  }
   private(set) var pendingAgentArchives: Set<OverlayConversationOwner> = []
   private(set) var agentArchiveError: String?
   @ObservationIgnored private var agentArchiveRevision: UInt64 = 0
@@ -1336,6 +1374,91 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
+  /// A composer destination is pinned to its owner, never to a reusable digit.
+  struct ComposerTarget: Equatable {
+    let id: String
+    let channel: String
+    let ownerID: String?
+    let title: String
+
+    init(_ conversation: OverlayConversation) {
+      id = conversation.id
+      channel = conversation.channel
+      ownerID = conversation.owner?.id
+      title = conversation.displayTitle
+    }
+  }
+  private(set) var composerTarget: ComposerTarget?
+  private(set) var composerTargetRevision = UUID()
+
+  /// The same current owners that text publication accepts, plus broadcast.
+  var availableComposerRecipients: [OverlayConversation] {
+    let broadcast = conversations.filter { $0.id == "0" && $0.channel == "0" && $0.owner == nil }
+    return broadcast + draftSyncConversations
+  }
+
+  struct ConversationNavigationRequest: Equatable {
+    let conversationID: String
+    let messageID: String
+    let revision: UUID
+  }
+  private(set) var conversationNavigationRequest: ConversationNavigationRequest?
+
+  func navigateToConversationMessage(_ conversation: OverlayConversation, messageID: String) {
+    guard
+      conversations.contains(where: {
+        $0.id == conversation.id && $0.channel == conversation.channel
+          && $0.owner?.id == conversation.owner?.id
+      })
+    else { return }
+    selectConversation(conversation.id)
+    conversationNavigationRequest = ConversationNavigationRequest(
+      conversationID: conversation.id, messageID: messageID, revision: UUID())
+  }
+
+  func chooseComposerTarget(_ conversation: OverlayConversation) {
+    guard conversation.owner != nil || conversation.channel == "0" else { return }
+    composerTarget = ComposerTarget(conversation)
+    composerTargetRevision = UUID()
+  }
+
+  /// Select at the click, before withdrawal can suspend.
+  func prepareHeldComposerEdit(_ target: OverlayConversation) -> UUID {
+    chooseComposerTarget(target)
+    return composerTargetRevision
+  }
+
+  /// Append to the frozen draft even if its owner retired. A later explicit
+  /// selection wins, including when the user switched away and back again.
+  func returnHeldComposerText(_ text: String, to target: OverlayConversation, revision: UUID)
+    -> Bool
+  {
+    let old = conversationDraft(for: target.id)
+    setConversationDraft(old.isEmpty ? text : old + "\n\n" + text, for: target.id)
+    return composerTargetRevision == revision && composerTargetIsAvailable(target)
+      && composerTarget?.id == target.id && composerTarget?.ownerID == target.owner?.id
+      && composerTarget?.channel == target.channel
+  }
+
+  func initializeComposerTarget(_ conversation: OverlayConversation) {
+    if composerTarget == nil { chooseComposerTarget(conversation) }
+  }
+
+  func composerTargetIsAvailable(_ target: OverlayConversation) -> Bool {
+    availableComposerRecipients.contains {
+      $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.owner?.id
+    }
+  }
+
+  func resolvedComposerTarget(viewing conversation: OverlayConversation) -> OverlayConversation? {
+    guard let target = composerTarget else {
+      return composerTargetIsAvailable(conversation) ? conversation : nil
+    }
+    return availableComposerRecipients.first {
+      $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.ownerID
+    }
+  }
+
   /// Folding hides the roster but retains which canvas will unfold.
   private(set) var windowContentSurface: OverlayContentSurface = .transcription
   /// Whether the current frame can host the roster column. Width never
@@ -1450,7 +1573,7 @@ final class OverlayState {
         replyID: replyID, ticket: ticket, provider: provider,
         session: session, busPath: busPath, stop: stop)
     }
-  /// Reply ids the user has read. Durable when `restoreReadState(root:)` ran:
+  /// Reply ids the user has read. Durable when `restoreReadState(cacheRoot:)` ran:
   /// history survives a launch, so its read marks survive with it.
   private var viewedReplyIDs: Set<String> = []
   @ObservationIgnored private var readStateRoot: URL?
@@ -1589,9 +1712,9 @@ final class OverlayState {
     @MainActor (OverlayAgentPanelFocusRequest) async throws -> Void = { request in
       try await RealAgentBridgeInstaller.publishAgentPanelFocus(request)
     }
-  @ObservationIgnored var activateTerminalHost: @MainActor (Int32?, String?) -> Bool = {
+  @ObservationIgnored var activateTerminalHost: @MainActor (Int32?, String?) async -> Bool = {
     hostPID, hostBundleID in
-    RealAgentBridgeInstaller.activateAgentTerminalHost(
+    await RealAgentBridgeInstaller.activateAgentTerminalHost(
       hostPID: hostPID, hostBundleID: hostBundleID)
   }
   /// Opens a Codex thread link (`codex://threads/<id>`); tests replace it.
@@ -1685,7 +1808,7 @@ final class OverlayState {
         return
       }
       guard self.agentPanelFocusStates[owner.channel]?.requestID == request.requestID,
-        self.agentPanelFocusStates[owner.channel]?.phase == .requesting
+        self.agentPanelFocusStates[owner.channel]?.isRequesting == true
       else { return }
       self.agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
         requestID: request.requestID,
@@ -1749,42 +1872,80 @@ final class OverlayState {
     guard !results.isEmpty, !agentPanelFocusStates.isEmpty else { return }
     var changed = false
     for (channel, state) in agentPanelFocusStates {
-      guard state.phase == .requesting, let result = results[state.requestID] else { continue }
+      guard state.phase == .requesting, let result = results[state.requestID],
+        result.requestID == state.requestID,
+        result.provider == state.owner.provider,
+        result.providerSessionID == state.owner.providerSessionID,
+        result.leaseID == state.owner.leaseID
+      else { continue }
       changed = true
       // The receipt names where the follower aimed; an older follower names
       // nothing and only ever aimed at Frame.
       let target = Self.panelFocusTarget(of: result) ?? state.target
       if result.isSuccess {
-        agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
-          requestID: state.requestID,
-          owner: state.owner,
-          phase: .succeeded,
-          statusText: target.succeededText,
-          updatedAt: Date(),
-          target: target
-        )
-        foldAfterAgentPanelFocus()
         let hostPID: Int32?
         let hostBundleID: String
+        let binding = channelPlaybackAgents[channel]
         if result.frame == nil, let terminalBundleID = result.terminal?.hostBundleID {
           hostPID = nil
           hostBundleID = terminalBundleID
         } else {
-          let fallbackFrame = channelPlaybackAgents[channel]?.frame
-          hostPID = result.frame?.hostPID ?? fallbackFrame?.hostPID
+          hostPID = result.frame?.hostPID ?? binding?.frame?.hostPID
           hostBundleID =
-            result.frame?.hostBundleID ?? fallbackFrame?.hostBundleID ?? "io.vetcoders.vibecrafted"
+            result.frame?.hostBundleID ?? binding?.frame?.hostBundleID ?? "io.vetcoders.vibecrafted"
         }
-        _ = activateTerminalHost(hostPID, hostBundleID)
-        let requestID = state.requestID
+        // Consume the pane receipt once. While activation is being observed,
+        // another snapshot cannot dispatch the same request a second time.
+        agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+          requestID: state.requestID,
+          owner: state.owner,
+          phase: .activating,
+          statusText: target.requestingText,
+          updatedAt: Date(),
+          target: target
+        )
         Task { @MainActor [weak self] in
-          guard let self else { return }
+          guard let self,
+            self.agentPanelFocusStates[channel]?.requestID == state.requestID,
+            self.agentPanelFocusStates[channel]?.phase == .activating
+          else { return }
+          guard self.canFocusAgentPanel(state.owner),
+            self.channelPlaybackAgents[channel]?.frame == binding?.frame,
+            self.channelPlaybackAgents[channel]?.terminal == binding?.terminal
+          else {
+            self.agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+              requestID: state.requestID, owner: state.owner, phase: .failed,
+              statusText: target.failureText, updatedAt: Date(), target: target)
+            self.onChannelPresentationChanged?()
+            return
+          }
+          let activated = await self.activateTerminalHost(hostPID, hostBundleID)
+          // A timeout, retry or replacement owner wins over a late completion.
+          guard self.agentPanelFocusStates[channel]?.requestID == state.requestID,
+            self.agentPanelFocusStates[channel]?.phase == .activating
+          else { return }
+          let bindingMatches =
+            self.canFocusAgentPanel(state.owner)
+            && self.channelPlaybackAgents[channel]?.frame == binding?.frame
+            && self.channelPlaybackAgents[channel]?.terminal == binding?.terminal
+          let succeeded = activated && bindingMatches
+          self.agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+            requestID: state.requestID,
+            owner: state.owner,
+            phase: succeeded ? .succeeded : .failed,
+            statusText: succeeded ? target.succeededText : target.failureText,
+            updatedAt: Date(),
+            target: target
+          )
+          if succeeded { self.foldAfterAgentPanelFocus() }
+          self.onChannelPresentationChanged?()
+          guard succeeded else { return }
           do {
             try await Task.sleep(for: self.panelFocusSuccessHoldDuration)
           } catch {
             return
           }
-          if self.agentPanelFocusStates[channel]?.requestID == requestID,
+          if self.agentPanelFocusStates[channel]?.requestID == state.requestID,
             self.agentPanelFocusStates[channel]?.phase == .succeeded
           {
             self.agentPanelFocusStates.removeValue(forKey: channel)
@@ -1890,9 +2051,27 @@ final class OverlayState {
     return descriptors
   }
 
+  /// The existing lease reader supplies this projection. Equality avoids an
+  /// Observation invalidation for every unchanged poll.
+  func applyBoundAgents(_ bindings: [String: AgentPlaybackBinding]) {
+    if channelPlaybackAgents != bindings { channelPlaybackAgents = bindings }
+  }
+
+  func conversationAgentBinding(_ conversation: OverlayConversation) -> AgentPlaybackBinding? {
+    guard let owner = conversation.owner else { return nil }
+    return channelPlaybackAgents.values.first {
+      $0.identity.provider == owner.provider
+        && $0.identity.session == owner.providerSessionID
+        && $0.identity.leaseID == owner.leaseID
+    }
+  }
+
   func conversationAgentDescriptor(_ conversation: OverlayConversation) -> String? {
-    guard let identity = playbackIdentity(for: conversation) else { return nil }
-    return channelPlaybackAgents.values.first { $0.identity == identity }?.descriptor
+    conversationAgentBinding(conversation)?.descriptor
+  }
+
+  func conversationAgentLocation(_ conversation: OverlayConversation) -> String? {
+    conversationAgentBinding(conversation)?.location
   }
 
   /// Effective mute per channel: the global block wins over the agent's own
@@ -1938,16 +2117,11 @@ final class OverlayState {
       return !channelStatusUnavailable && channelHudStates["0"] != nil
     }
     guard !channelStatusUnavailable, let owner = conversation.owner,
-      conversations.contains(where: { $0.id == conversation.id && $0.owner?.id == owner.id }),
-      !archivedAgentOwners.contains(where: { $0.id == owner.id && $0.channel == owner.channel }),
       OverlayChannelStatusView.toggleDigit(for: conversation.channel) != nil,
-      let hud = channelHudStates[conversation.channel], hud.provider == owner.provider,
-      hud.providerSessionID == owner.providerSessionID
+      let current = currentMicrophoneOwners[conversation.id]
     else { return false }
-    return conversations.filter {
-      $0.channel == conversation.channel && $0.owner?.provider == owner.provider
-        && $0.owner?.providerSessionID == owner.providerSessionID
-    }.count == 1
+    return current.id == owner.id && current.channel == owner.channel
+      && current.channel == conversation.channel
   }
 
   func conversationMicrophoneOpen(_ conversation: OverlayConversation) -> Bool {
@@ -2054,7 +2228,7 @@ final class OverlayState {
     // even when the value is equal, and the open conversation reads its
     // playback mute, so an unchanged poll re-evaluated it twice a second
     // (UI-88, hania on Silver 23 X: 37% of a core at rest, 16% in mini).
-    if channelPlaybackAgents != bound { channelPlaybackAgents = bound }
+    applyBoundAgents(bound)
     // A reception change during this poll makes its receipts older than the
     // change's read-back; the next poll paints them instead.
     if broadcastLedger.admitsPoll(startedAt: broadcastRevision),
@@ -2280,7 +2454,8 @@ final class OverlayState {
       conversations: conversations, archivedOwners: archivedAgentOwners,
       hudStates: channelHudStates)
     return OverlayChannelStatusView.rosterOrder(
-      current: current, channels: visibleChannelRows.filter { $0.channel != "0" })
+      current: current, channels: visibleChannelRows.filter { $0.channel != "0" }
+    ).filter { !$0.isHumanInbox }
   }
 
   private var agentListOnScreen: Bool {
@@ -2473,9 +2648,9 @@ final class OverlayState {
 
   /// Read marks live next to the delivery cursor, whose projections restore
   /// the history. Call before the first conversation snapshot.
-  func restoreReadState(root: URL) {
-    readStateRoot = root
-    if let stored = OverlayReadStateStore.load(root: root) {
+  func restoreReadState(cacheRoot: URL) {
+    readStateRoot = cacheRoot
+    if let stored = OverlayReadStateStore.load(cacheRoot: cacheRoot) {
       viewedReplyIDs.formUnion(stored)
       readStateNeedsAdoption = false
     } else {
@@ -2504,13 +2679,14 @@ final class OverlayState {
   private func persistReadState() {
     guard let readStateRoot else { return }
     do {
-      try OverlayReadStateStore.save(root: readStateRoot, readReplyIDs: viewedReplyIDs)
+      try OverlayReadStateStore.save(cacheRoot: readStateRoot, readReplyIDs: viewedReplyIDs)
     } catch {
       NSLog("codescribe: overlay read state not saved: \(error)")
     }
   }
 
   func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot, now: Date = Date()) {
+    defer { reconcileDraftSyncOwners() }
     let playbackWasActive = selectedReplyPlaybackActive
     if archivedAgentOwners != snapshot.archivedOwners {
       archivedAgentOwners = snapshot.archivedOwners
@@ -2522,6 +2698,7 @@ final class OverlayState {
     let projected = snapshot.conversations.map { $0.projectingDelivery(at: now) }
     activeCaptureAttachmentSessions = snapshot.activeCaptureAttachmentSessions
     resolveWaitingCaptureAttachments(in: projected)
+    recoverClosedCaptureAttachments(in: projected)
     guard conversations != projected else {
       // The first snapshot can already match the stored inventory, including
       // an empty one. That snapshot is still the baseline, so the next genuine
@@ -2597,20 +2774,25 @@ final class OverlayState {
     return composerTypingDeadline - nowProvider() > 0
   }
 
-  /// The Founder is writing to an agent: the composer is active, keys fell
-  /// within the typing horizon, or a draft waits unsent. An idle restart must
-  /// not quit the app under it (Maciej, 2026-10-23).
+  /// Restart uses AppKit's current keyboard recipient. Retained editor
+  /// ownership also holds automatic collapse after window blur, but cannot
+  /// prove that the Founder is still writing in that window. Recent typing
+  /// and every unsent draft remain protected (Maciej, 2026-10-23).
   var founderComposing: Bool {
-    composerRetainsAutomaticReplyFocus
+    OverlayConversationComposer.hasFocusedEditor()
+      || (composerTypingDeadline.map { $0 - nowProvider() > 0 } ?? false)
       || conversationDrafts.values.contains {
         !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       }
   }
 
-  /// Bring one newly admitted reply's owner into the existing surface.
-  /// History, a repeated id, playback or ACK of a known id, and an owner that
-  /// is not unique stay where the user already is. Channel number, display
-  /// name and reply text are not identity.
+  /// Bring the owner of one newly admitted message to the Founder into the
+  /// existing surface. Only an agent's reply on its own channel or a message
+  /// to her inbox moves the selection; a message between agents and anything
+  /// on channel 0 never does and stays unread where it lies (Founder decision
+  /// 2026-10-26). History, a repeated id, playback or ACK of a known id, and
+  /// an owner that is not unique stay where the user already is. Channel
+  /// number, display name and reply text are not identity.
   private func followNewlyReceivedReply(preservingControllerFocus: Bool) {
     let current = Set(conversations.flatMap(\.replyIDs))
     let fresh = replyInventoryBaselined ? current.subtracting(observedReplyIDs) : []
@@ -2622,9 +2804,21 @@ final class OverlayState {
     // here, so the horizon ending later cannot select that owner.
     guard !establishingInventory, !fresh.isEmpty, !preservingControllerFocus,
       !activeCaptureOwnsPresentation,
-      !composerRetainsAutomaticReplyFocus,
-      let conversation = ownedConversation(forNewReplies: fresh)
+      !composerRetainsAutomaticReplyFocus
     else { return }
+    let addressed = repliesAddressedToFounder(among: fresh)
+    guard !addressed.isEmpty else { return }
+    guard let conversation = ownedConversation(forNewReplies: addressed) else {
+      traceUnownedAdmission(addressed)
+      return
+    }
+    let note = [
+      "reply=\(addressed.sorted().joined(separator: ","))",
+      "owner=\(Self.traceOwner(conversation.owner))",
+      "source=\(traceSources(of: addressed))",
+      "from=\(traceSelectedChannel) to=\(conversation.channel)",
+    ].joined(separator: " ")
+    OverlayPresentationTrace.shared.record(.conversationAutoSelected, note: note)
     if selectedConversationID == conversation.id {
       if isCollapsed && expandedByDefault { expandAgentSurface(cause: .automatic) }
     } else {
@@ -2637,10 +2831,80 @@ final class OverlayState {
     freshReplyPresentationRequested = true
   }
 
-  /// The reader places a causal broadcast reply on channel 0 and on its
-  /// private owner. Focus follows the private owner id (provider, session,
-  /// lease). Channel 0 is not a second owner, and two owners in one snapshot
-  /// are not a guess.
+  /// Fresh replies the Founder is the reader of: an agent's reply on its own
+  /// channel (no peer destination) or a message to her inbox (channel 10).
+  /// A peer message to channel 1–9 and any reply that sits in channel 0 are
+  /// left out and traced as skipped; they were already added to the observed
+  /// inventory, so a later poll cannot admit them again.
+  private func repliesAddressedToFounder(among fresh: Set<String>) -> Set<String> {
+    let onChannelZero = Set(conversations.filter { $0.channel == "0" }.flatMap(\.replyIDs))
+    var addressed = Set<String>()
+    for id in fresh.sorted() {
+      let message = freshReply(id)
+      let source = message?.sourceChannel
+      let reason: String
+      if onChannelZero.contains(id) {
+        reason = "channel-0"
+      } else if source == nil || source == "10" {
+        addressed.insert(id)
+        continue
+      } else {
+        reason = "agent-to-agent"
+      }
+      let note = [
+        "reply=\(id)",
+        "owner=\(Self.traceOwner(message?.owner))",
+        "source=\(source ?? "-")",
+        "reason=\(reason) stays=\(traceSelectedChannel)",
+      ].joined(separator: " ")
+      OverlayPresentationTrace.shared.record(.conversationAutoSkipped, note: note)
+    }
+    return addressed
+  }
+
+  /// Replies to the Founder without one owning conversation stay where the
+  /// user is: two authors are ambiguous, and an author without its own
+  /// conversation has no owner here.
+  private func traceUnownedAdmission(_ ids: Set<String>) {
+    let authors = Set(ids.compactMap { freshReply($0)?.owner?.id })
+    let reason = authors.count > 1 ? "ambiguous_owner" : "no_owner"
+    let owners = Set(ids.map { Self.traceOwner(freshReply($0)?.owner) }).sorted()
+    let note = [
+      "reply=\(ids.sorted().joined(separator: ","))",
+      "owner=\(owners.joined(separator: ","))",
+      "source=\(traceSources(of: ids))",
+      "reason=\(reason) stays=\(traceSelectedChannel)",
+    ].joined(separator: " ")
+    OverlayPresentationTrace.shared.record(.conversationAutoSkipped, note: note)
+  }
+
+  private func freshReply(_ id: String) -> OverlayConversationMessage? {
+    for conversation in conversations {
+      if let message = conversation.messages.first(where: { $0.kind == .reply && $0.id == id }) {
+        return message
+      }
+    }
+    return nil
+  }
+
+  /// Owner ids join their parts with NUL; the trace line needs printable
+  /// text, and eight characters of the session and the lease suffice.
+  private static func traceOwner(_ owner: OverlayConversationOwner?) -> String {
+    guard let owner else { return "-" }
+    return "\(owner.provider):\(owner.providerSessionID.prefix(8)):\(owner.leaseID.prefix(8))"
+  }
+
+  private func traceSources(of ids: Set<String>) -> String {
+    Set(ids.map { freshReply($0)?.sourceChannel ?? "-" }).sorted().joined(separator: ",")
+  }
+
+  private var traceSelectedChannel: String {
+    conversations.first { $0.id == selectedConversationID }?.channel ?? "-"
+  }
+
+  /// Focus follows the private owner id (provider, session, lease) of the
+  /// replies addressed to the Founder. Channel 0 is not an owner, and two
+  /// owners in one snapshot are not a guess.
   private func ownedConversation(forNewReplies fresh: Set<String>) -> OverlayConversation? {
     var match: OverlayConversation?
     for conversation in conversations {
@@ -2662,8 +2926,32 @@ final class OverlayState {
     return match
   }
 
-  var conversationDrafts: [String: String] = [:]
-  var conversationReplies: [String: OverlayUserReplyReference] = [:]
+  var conversationDrafts: [String: String] = [:] {
+    didSet {
+      for id in Set(oldValue.keys).union(conversationDrafts.keys) {
+        if !OverlayComposerProseEdit.identical(oldValue[id] ?? "", conversationDrafts[id] ?? "") {
+          conversationDraftRevisions[id] = UUID()
+          conversationDraftReceipts.removeValue(forKey: id)
+        }
+      }
+    }
+  }
+  /// Groups own only membership/epoch metadata; the dictionary is keyed by exact owner.
+  var conversationDraftGroups: [OverlayDraftSyncGroup] = []
+  var armedDraftSyncConversationID: String?
+  @ObservationIgnored var conversationDraftRevisions: [String: UUID] = [:]
+  @ObservationIgnored var conversationReplyRevisions: [String: UUID] = [:]
+  @ObservationIgnored var conversationDraftReceipts: [String: OverlayComposerDraftPublication] = [:]
+  var conversationReplies: [String: OverlayUserReplyReference] = [:] {
+    didSet {
+      for id in Set(oldValue.keys).union(conversationReplies.keys) {
+        if oldValue[id] != conversationReplies[id] {
+          conversationReplyRevisions[id] = UUID()
+          conversationDraftReceipts.removeValue(forKey: id)
+        }
+      }
+    }
+  }
   var draftCapture = OverlayDraftCapture()
   struct CaptureAttachmentDraft {
     var target: OverlayCaptureAttachmentTarget?
@@ -2680,23 +2968,45 @@ final class OverlayState {
     @MainActor ([String], OverlayCaptureAttachmentTarget) async throws -> Void = { paths, target in
       try await RealAgentBridgeInstaller.stageCaptureAttachments(paths: paths, target: target)
     }
-  @ObservationIgnored private var pendingDraftProjections: [String: CsTranscriptProjectionEvent] =
-    [:]
+  @ObservationIgnored private(set) var pendingDraftProjections:
+    [String: CsTranscriptProjectionEvent] = [:]
   @ObservationIgnored private var otherComposerOwnsCapture: (() -> Bool)?
   private(set) var pendingTextMessages: Set<String> = []
   private(set) var textMessageErrors: [String: String] = [:]
   private(set) var conversationFocusRevision: UInt64 = 0
   @ObservationIgnored var publishConversationText:
-    @MainActor (OverlayConversationOwner?, String, OverlayUserReplyReference?) async throws -> Void =
+    @MainActor (
+      OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
+    ) async throws -> Void =
       {
-        owner, text, reply in
-        try await RealAgentBridgeInstaller.sendBusText(owner: owner, text: text, userReplyTo: reply)
+        owner, text, reply, alsoSentTo in
+        try await RealAgentBridgeInstaller.sendBusText(
+          owner: owner, text: text, userReplyTo: reply, alsoSentTo: alsoSentTo)
       }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
+    // A retired Sync member may already have lost its group. Revalidate at
+    // the routing boundary so that a stale callback cannot send it singly.
+    if conversation.channel != "0" {
+      guard
+        draftSyncConversations.contains(where: {
+          $0.id == conversation.id && $0.owner?.id == conversation.owner?.id
+            && $0.channel == conversation.channel
+            && $0.owner?.channel == conversation.owner?.channel
+        })
+      else { return }
+    }
+    if hasSynchronizedDraft(conversation.id) {
+      await sendSynchronizedDraft(from: conversation)
+      return
+    }
+    let draft = conversationDraft(for: conversation.id)
+    let hasWaitingCaptureAttachments =
+      captureAttachmentDrafts[conversation.id]?.target == nil
+      && !(captureAttachmentDrafts[conversation.id]?.paths.isEmpty ?? true)
+      && !pendingCaptureAttachmentSends.contains(conversation.id)
     guard conversation.owner != nil || conversation.channel == "0",
-      let draft = conversationDrafts[conversation.id],
-      !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasWaitingCaptureAttachments,
       !pendingTextMessages.contains(conversation.id)
     else { return }
     pendingTextMessages.insert(conversation.id)
@@ -2713,17 +3023,109 @@ final class OverlayState {
       adopted.isEmpty
       ? draft
       : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
+    guard !outgoing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     do {
-      try await publishConversationText(conversation.owner, outgoing, reply)
+      try await publishConversationText(conversation.owner, outgoing, reply, [])
       // A newer draft belongs to the Founder, even if publication finishes late.
-      if conversationDrafts[conversation.id] == draft {
-        conversationDrafts[conversation.id] = ""
+      if conversationDraft(for: conversation.id) == draft {
+        setConversationDraft("", for: conversation.id)
         if conversationReplies[conversation.id] == reply {
           conversationReplies.removeValue(forKey: conversation.id)
         }
       }
     } catch {
       textMessageErrors[conversation.id] = error.userFacingMessage
+    }
+  }
+
+  private func draftPublication(for conversation: OverlayConversation)
+    -> OverlayComposerDraftPublication?
+  {
+    guard let owner = conversation.owner else { return nil }
+    return OverlayComposerDraftPublication(
+      id: conversation.id, owner: owner, payload: conversationDraft(for: conversation.id),
+      reply: conversationReplies[conversation.id],
+      draftRevision: conversationDraftRevisions[conversation.id],
+      replyRevision: conversationReplyRevisions[conversation.id])
+  }
+
+  private func draftPublicationIsCurrent(_ publication: OverlayComposerDraftPublication) -> Bool {
+    guard let conversation = draftSyncConversations.first(where: { $0.id == publication.id }),
+      let current = draftPublication(for: conversation)
+    else { return false }
+    return current == publication
+  }
+
+  private func draftPublicationOwnerIsCurrent(_ publication: OverlayComposerDraftPublication)
+    -> Bool
+  {
+    draftSyncConversations.contains {
+      $0.id == publication.id && $0.owner?.id == publication.owner.id
+        && $0.channel == publication.owner.channel && $0.owner?.channel == publication.owner.channel
+    }
+  }
+
+  /// Freeze each exact owner's own payload and reply. A late receipt may clear
+  /// only that same edit generation; a changed draft, including ABA, survives.
+  private func sendSynchronizedDraft(from conversation: OverlayConversation) async {
+    reconcileDraftSyncOwners()
+    guard let index = draftGroupIndex(for: conversation.id) else { return }
+    let group = conversationDraftGroups[index]
+    guard group.participants[conversation.id]?.owns(conversation) == true,
+      pendingTextMessages.isDisjoint(with: group.members),
+      pendingCaptureAttachmentSends.isDisjoint(with: group.members),
+      !group.members.contains(where: { captureAttachmentDrafts[$0] != nil })
+    else { return }
+    let recipients = draftSyncConversations.filter { group.members.contains($0.id) }
+    guard Set(recipients.map(\.id)) == group.members,
+      recipients.allSatisfy({ group.participants[$0.id]?.owns($0) == true })
+    else { return }
+    let frozen = recipients.compactMap { draftPublication(for: $0) }.filter {
+      !$0.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    let pending = frozen.filter { conversationDraftReceipts[$0.id] != $0 }
+    guard !pending.isEmpty else { return }
+    pendingTextMessages.formUnion(group.members)
+    defer { pendingTextMessages.subtract(group.members) }
+    for recipient in pending { textMessageErrors.removeValue(forKey: recipient.id) }
+    for recipient in pending {
+      // Send authorized the frozen payload. Subsequent editing does not recall
+      // it; only retirement/rebinding can cancel this exact recipient. A group
+      // dissolving after another owner retires cannot cancel a surviving owner.
+      guard draftPublicationOwnerIsCurrent(recipient) else { continue }
+      let id = recipient.id
+      do {
+        let alsoSentTo = frozen.filter {
+          $0.id != id && OverlayComposerProseEdit.identical($0.payload, recipient.payload)
+            && draftPublicationOwnerIsCurrent($0)
+        }.map(\.owner)
+        try await publishConversationText(
+          recipient.owner, recipient.payload, recipient.reply, alsoSentTo)
+        // Membership can retire while the publication is in flight. Its
+        // receipt still belongs to an unchanged, still-current exact owner.
+        if draftPublicationIsCurrent(recipient) {
+          conversationDraftReceipts[id] = recipient
+        }
+      } catch {
+        if draftPublicationOwnerIsCurrent(recipient) {
+          textMessageErrors[id] = error.userFacingMessage
+        }
+      }
+    }
+    var cleared = false
+    for recipient in frozen {
+      guard conversationDraftReceipts[recipient.id] == recipient,
+        draftPublicationIsCurrent(recipient)
+      else { continue }
+      conversationDrafts[recipient.id] = ""
+      conversationReplies.removeValue(forKey: recipient.id)
+      textMessageErrors.removeValue(forKey: recipient.id)
+      cleared = true
+    }
+    // A partial send leaves failed/newer drafts intact. All subsequent input
+    // starts at the resulting prose ends, while Sync membership stays enabled.
+    if cleared, let current = conversationDraftGroups.firstIndex(where: { $0.id == group.id }) {
+      resetDraftSyncEpoch(at: current)
     }
   }
 
@@ -2734,9 +3136,13 @@ final class OverlayState {
       pendingDraftProjections.removeAll()
       for projection in waiting { admitComposerDelivery(projection, affectsCurrentCapture: false) }
     }
+    // The take's audience is frozen at its request: only conversations linked
+    // while the words are spoken may receive them (Roman's pre-join leak).
+    let audience = draftGroupIndex(for: conversation.id).map { conversationDraftGroups[$0].members }
     await draftCapture.toggle(
       conversationID: conversation.id,
-      busy: audioCaptureActive || otherComposerOwnsCapture?() == true)
+      busy: audioCaptureActive || otherComposerOwnsCapture?() == true,
+      audience: audience ?? [conversation.id])
   }
 
   func draftMicrophoneBusy(in conversation: OverlayConversation) -> Bool {
@@ -2749,6 +3155,8 @@ final class OverlayState {
   /// paths. Ordinary draft dictation keeps its attachments for manual Send.
   func stageConversationAttachments(_ paths: [String], in conversation: OverlayConversation) -> Bool
   {
+    // Sync is an explicit manual draft destination, including pasted files.
+    guard !hasSynchronizedDraft(conversation.id) else { return false }
     guard !draftCapture.hasRequest else { return false }
     let existing = captureAttachmentDrafts[conversation.id]
     let target =
@@ -2793,14 +3201,19 @@ final class OverlayState {
     for (id, original) in captureAttachmentDrafts where original.target == nil {
       guard let conversation = projected.first(where: { $0.id == id }),
         let session = captureSessionForPaste(in: conversation, at: original.pastedAt),
-        original.captureSessionID == nil || original.captureSessionID == session.id,
+        original.captureSessionID == nil
+          || OverlayChannelDelivery.Bus.channelSessionID(of: original.captureSessionID ?? "")
+            == OverlayChannelDelivery.Bus.channelSessionID(of: session.id),
         let target = conversation.messages.reversed().compactMap(\.activeCaptureAttachmentTarget)
           .first(where: {
-            $0.captureSessionID == session.id && $0.recipientIDs.sorted() == session.recipientIDs
+            ($0.captureSessionID == session.id
+              || OverlayChannelDelivery.Bus.channelSessionID(of: $0.captureSessionID)
+                == OverlayChannelDelivery.Bus.channelSessionID(of: session.id))
+              && $0.recipientIDs.sorted() == session.recipientIDs
           })
       else { continue }
       var resolved = original
-      resolved.captureSessionID = session.id
+      resolved.captureSessionID = target.captureSessionID
       resolved.target = target
       captureAttachmentDrafts[id] = resolved
       captureAttachmentErrors.removeValue(forKey: id)
@@ -2820,6 +3233,39 @@ final class OverlayState {
     return staged.paths
   }
 
+  /// A refused attachment cannot follow a closed take or its successor.
+  /// Return its files to the existing manual draft so Send stays an explicit
+  /// choice, instead of capturing every later paste in an unretryable target.
+  private func recoverClosedCaptureAttachments(in projected: [OverlayConversation]) {
+    for (id, staged) in captureAttachmentDrafts {
+      guard captureAttachmentErrors[id] != nil,
+        !pendingCaptureAttachmentSends.contains(id),
+        let target = staged.target,
+        let conversation = projected.first(where: { $0.id == id }),
+        conversation.messages.contains(where: {
+          $0.captureSessionID == target.captureSessionID && $0.captureState == .finished
+        })
+      else { continue }
+      returnCaptureAttachmentsToDraft(in: id)
+    }
+  }
+
+  /// Hand one staging's files back to the conversation's manual draft. Send
+  /// stays an explicit choice; the info line tells the Founder where they went.
+  private func returnCaptureAttachmentsToDraft(in id: String) {
+    guard let staged = captureAttachmentDrafts[id] else { return }
+    let draft = ConversationDraft.split(conversationDraft(for: id))
+    let added = staged.paths.filter { !draft.attachments.contains($0) }
+    setConversationDraft(
+      ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id
+    )
+    captureAttachmentDrafts.removeValue(forKey: id)
+    captureAttachmentErrors.removeValue(forKey: id)
+    textMessageErrors[id] = String(
+      localized:
+        "The recording ended. Files are in this conversation's draft; send them when ready.")
+  }
+
   func sendCaptureAttachments(in conversationID: String) async {
     guard let staged = captureAttachmentDrafts[conversationID], !staged.paths.isEmpty,
       !pendingCaptureAttachmentSends.contains(conversationID)
@@ -2834,6 +3280,7 @@ final class OverlayState {
     var succeeded = false
     defer {
       pendingCaptureAttachmentSends.remove(conversationID)
+      recoverClosedCaptureAttachments(in: conversations)
       if succeeded, captureAttachmentDrafts[conversationID]?.paths.isEmpty == false {
         Task { await sendCaptureAttachments(in: conversationID) }
       }
@@ -2846,7 +3293,17 @@ final class OverlayState {
         captureAttachmentDrafts[conversationID] = current.paths.isEmpty ? nil : current
       }
     } catch {
-      captureAttachmentErrors[conversationID] = error.userFacingMessage
+      // The helper revalidates under the bus append lock, so its refusal is
+      // the authority that this frozen target is gone. A take that never
+      // seals keeps projecting `.receiving`, so waiting for a `.finished`
+      // row would strand the files behind a retry that cannot succeed
+      // (Maciej, 2026-10-28: "to dołączanie nadal nie działa").
+      let refusal = (error as NSError).userInfo[NSDebugDescriptionErrorKey] as? String
+      if refusal?.contains("capture attachment refused") == true {
+        returnCaptureAttachmentsToDraft(in: conversationID)
+      } else {
+        captureAttachmentErrors[conversationID] = error.userFacingMessage
+      }
     }
   }
 
@@ -4622,12 +5079,13 @@ final class OverlayState {
       return
     }
     cancelAutoHide()
+    let terminalDelay = agentSessionArmed ? autoSendDelay() : OverlayState.autoHideDelaySeconds
     let delay =
       pinReleaseArmed
       ? OverlayState.pinReleaseDelaySeconds
       : presentationMode == .expanded
-        ? max(OverlayState.autoHideDelaySeconds, selectedReplyReadingSeconds ?? 0)
-        : OverlayState.autoHideDelaySeconds
+        ? max(terminalDelay, selectedReplyReadingSeconds ?? 0)
+        : terminalDelay
     autoHideDeadline = nowProvider() + delay
     scheduleAutoHideWake(after: delay, generation: captureGeneration)
   }
@@ -5007,6 +5465,35 @@ final class OverlayState {
   /// receipts, or product actions in Swift — and it may only close the capture
   /// its own identity addresses.
   func applyPresentationStatus(_ event: CsPresentationStatusEvent) {
+    if event.kind == "formatting_degraded" {
+      guard !event.terminal, let sessionID = event.sessionId,
+        sessionID == latestTranscriptProjection?.sessionId,
+        !retiredProjectionSessions.contains(sessionID)
+      else { return }
+      let headline = String(
+        localized: "Formatting was not applied",
+        comment: "Notice when the transcript is retained after formatting fails")
+      presentationStatus = OverlayPresentationStatus(
+        schema: event.schema,
+        emittedAt: event.emittedAt,
+        sessionId: sessionID,
+        kind: event.kind,
+        code: event.code,
+        statusLabel: String(
+          localized: "formatting not applied",
+          comment: "Status of a transcript delivered without the requested formatting"),
+        headline: headline,
+        message: String(
+          localized: "Your transcript is retained without the requested formatting.",
+          comment: "Notice that the retained transcript does not use the requested formatting"),
+        isError: event.isError,
+        terminal: false,
+        calibrationVersion: nil
+      )
+      onPresentationStatus?()
+      showToast(headline)
+      return
+    }
     if event.terminal, let sessionID = event.sessionId,
       draftCapture.destination(for: sessionID) != nil
     {
@@ -5406,6 +5893,11 @@ final class OverlayState {
         if projection.delivery == .copiedToClipboard {
           showFooterNotice(String(localized: "copied"))
         }
+        // An Agent take that ended without voice is archived on purpose:
+        // the opted-in auto-send never sends it. An explicit send still can.
+        if projection.delivery == .endedWithoutVoice {
+          agentAutoSendCancelled = true
+        }
       }
       if signalsFirstSuccessfulTerminal {
         onSuccessfulDictation?()
@@ -5446,10 +5938,28 @@ final class OverlayState {
     let text = projection.deliveryText ?? projection.renderedText
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     if let destination = draftCapture.destination(for: projection.sessionId) {
-      let parts = ConversationDraft.split(conversationDrafts[destination] ?? "")
-      conversationDrafts[destination] = ConversationDraft.compose(
-        text: parts.text.isEmpty ? text : parts.text + "\n" + text,
-        attachments: parts.attachments)
+      let parts = ConversationDraft.split(conversationDraft(for: destination))
+      let appended = parts.text.isEmpty ? text : "\n" + text
+      let linked = draftGroupIndex(for: destination).map { conversationDraftGroups[$0].members }
+      let audience = draftCapture.audience(for: projection.sessionId)
+      guard linked.map({ $0.isSubset(of: audience) }) ?? true else {
+        // Someone joined after these words were spoken. They stay private to
+        // the destination; the changed prose starts a fresh shared epoch.
+        setConversationDraft(
+          ConversationDraft.compose(text: parts.text + appended, attachments: parts.attachments),
+          for: destination)
+        admittedComposerSessions.insert(projection.sessionId)
+        retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
+        return
+      }
+      applyConversationProseEdit(
+        OverlayComposerProseEdit(
+          before: parts.text, after: parts.text + appended,
+          replacements: [
+            OverlayComposerTextReplacement(
+              range: NSRange(location: parts.text.utf16.count, length: 0), replacement: appended)
+          ]),
+        for: destination)
       admittedComposerSessions.insert(projection.sessionId)
       retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
       return

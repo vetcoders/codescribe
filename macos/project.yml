@@ -2,7 +2,7 @@ name: Codescribe
 options:
   bundleIdPrefix: com.vetcoders
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.0"
   # Localization: English is the source/development language. Every other
   # language lives only as a column in the String Catalogs under
   # Codescribe/Resources/Localization — see docs/LOCALIZATION.md.

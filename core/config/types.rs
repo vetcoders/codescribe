@@ -556,24 +556,29 @@ pub struct ModeBinding {
 
 /// Whether the hotkey detector can start `mode` from `binding`.
 ///
-/// Disabled binds nothing. Holds and double-tap Ctrl dictate; the two Option
-/// gestures belong to Formatting and Assistive respectively.
+/// Disabled binds nothing. Holds start only Dictation: the controller has no
+/// hold that formats or talks to the agent. Double-tap Ctrl starts whichever
+/// mode it is bound to. The two Option double-taps are opt-in gestures for
+/// Formatting and the Agent; Option also types characters, so they never
+/// dictate. One gesture still keeps one mode: two modes on the same gesture is
+/// a conflict the shortcut registry refuses.
 pub fn mode_binding_reachable(mode: WorkMode, binding: ShortcutBinding) -> bool {
     match binding {
-        ShortcutBinding::Disabled => true,
+        ShortcutBinding::Disabled | ShortcutBinding::DoubleCtrl => true,
         ShortcutBinding::HoldFn
         | ShortcutBinding::HoldCtrl
         | ShortcutBinding::HoldCtrlAlt
         | ShortcutBinding::HoldCtrlShift
-        | ShortcutBinding::HoldCtrlCmd
-        | ShortcutBinding::DoubleCtrl => mode == WorkMode::Dictation,
-        ShortcutBinding::DoubleLeftOption => mode == WorkMode::Formatting,
-        ShortcutBinding::DoubleRightOption => mode == WorkMode::Assistive,
+        | ShortcutBinding::HoldCtrlCmd => mode == WorkMode::Dictation,
+        ShortcutBinding::DoubleLeftOption | ShortcutBinding::DoubleRightOption => {
+            mode != WorkMode::Dictation
+        }
     }
 }
 
-/// Factory-default gesture for each work mode: Fn-hold dictates, double-tap
-/// left Option formats, double-tap right Option talks to the agent.
+/// Factory-default gesture for each work mode: Fn-hold dictates; Formatting
+/// and the agent have no gesture until the user opts into one, so an upgrade
+/// never arms an Option double-tap by surprise.
 pub fn default_mode_bindings() -> Vec<ModeBinding> {
     vec![
         ModeBinding {
@@ -582,11 +587,11 @@ pub fn default_mode_bindings() -> Vec<ModeBinding> {
         },
         ModeBinding {
             mode: WorkMode::Formatting,
-            binding: ShortcutBinding::DoubleLeftOption,
+            binding: ShortcutBinding::Disabled,
         },
         ModeBinding {
             mode: WorkMode::Assistive,
-            binding: ShortcutBinding::DoubleRightOption,
+            binding: ShortcutBinding::Disabled,
         },
     ]
 }
@@ -917,6 +922,14 @@ pub struct Config {
     #[serde(default = "default_double_tap_interval_ms")]
     pub double_tap_interval_ms: u64,
 
+    /// Longest Option press (ms) that still counts as an Option tap.
+    #[serde(default = "default_tap_max_ms")]
+    pub tap_max_ms: u64,
+
+    /// After a typed key, Option taps count for nothing for this long (ms).
+    #[serde(default = "default_typing_quiet_ms")]
+    pub typing_quiet_ms: u64,
+
     /// Silence duration (seconds) before sending a toggle utterance
     #[serde(default = "default_toggle_silence_sec")]
     pub toggle_silence_sec: f32,
@@ -1143,6 +1156,15 @@ pub struct Config {
     /// Send an untouched Agent transcript after the terminal countdown.
     #[serde(default)]
     pub agent_auto_send: bool,
+    /// Length of that countdown, in seconds.
+    #[serde(default = "default_agent_auto_send_delay_sec")]
+    pub agent_auto_send_delay_sec: u64,
+    /// A built-in Agent take that hears no voice for this long ends.
+    #[serde(default = "default_agent_take_voiceless_end_sec")]
+    pub agent_take_voiceless_end_sec: u64,
+    /// Voice conversation with a Codescribe Bus agent (Fn+digit channels).
+    #[serde(default)]
+    pub agent_channel: super::agent_channel::AgentChannelConfig,
     // ===== Debugging =====
     /// Whether to dump raw audio files to logs/audio directory
     #[serde(default = "default_dump_audio_logs")]
@@ -1157,6 +1179,8 @@ impl std::fmt::Debug for Config {
             .field("hold_arm_modifier", &self.hold_arm_modifier)
             .field("hold_start_delay_ms", &self.hold_start_delay_ms)
             .field("double_tap_interval_ms", &self.double_tap_interval_ms)
+            .field("tap_max_ms", &self.tap_max_ms)
+            .field("typing_quiet_ms", &self.typing_quiet_ms)
             .field("toggle_silence_sec", &self.toggle_silence_sec)
             .field(
                 "whisper_context_window_sec",
@@ -1230,6 +1254,12 @@ impl std::fmt::Debug for Config {
             .field("start_at_login", &self.start_at_login)
             .field("agent_enter_sends", &self.agent_enter_sends)
             .field("agent_auto_send", &self.agent_auto_send)
+            .field("agent_auto_send_delay_sec", &self.agent_auto_send_delay_sec)
+            .field(
+                "agent_take_voiceless_end_sec",
+                &self.agent_take_voiceless_end_sec,
+            )
+            .field("agent_channel", &self.agent_channel)
             .field("dump_audio_logs", &self.dump_audio_logs)
             .finish()
     }
@@ -1244,6 +1274,8 @@ impl Default for Config {
             hold_arm_modifier: HoldArmModifier::default(),
             hold_start_delay_ms: default_hold_start_delay_ms(),
             double_tap_interval_ms: default_double_tap_interval_ms(),
+            tap_max_ms: default_tap_max_ms(),
+            typing_quiet_ms: default_typing_quiet_ms(),
             toggle_silence_sec: default_toggle_silence_sec(),
             whisper_context_window_sec: default_whisper_context_window_sec(),
             whisper_adaptive_buffer: false,
@@ -1296,6 +1328,9 @@ impl Default for Config {
             start_at_login: false,
             agent_enter_sends: default_agent_enter_sends(),
             agent_auto_send: false,
+            agent_auto_send_delay_sec: default_agent_auto_send_delay_sec(),
+            agent_take_voiceless_end_sec: default_agent_take_voiceless_end_sec(),
+            agent_channel: super::agent_channel::AgentChannelConfig::default(),
             dump_audio_logs: default_dump_audio_logs(),
         }
     }
@@ -1312,6 +1347,20 @@ impl Config {
 
         // Clamp toggle silence to a reasonable range
         self.toggle_silence_sec = self.toggle_silence_sec.clamp(0.5, 30.0);
+        {
+            use super::agent_channel::{
+                AGENT_AUTO_SEND_DELAY_RANGE, AGENT_TAKE_VOICELESS_END_RANGE,
+            };
+            self.agent_auto_send_delay_sec = self.agent_auto_send_delay_sec.clamp(
+                *AGENT_AUTO_SEND_DELAY_RANGE.start(),
+                *AGENT_AUTO_SEND_DELAY_RANGE.end(),
+            );
+            self.agent_take_voiceless_end_sec = self.agent_take_voiceless_end_sec.clamp(
+                *AGENT_TAKE_VOICELESS_END_RANGE.start(),
+                *AGENT_TAKE_VOICELESS_END_RANGE.end(),
+            );
+        }
+        self.agent_channel.sanitize();
         self.whisper_context_window_sec =
             normalize_whisper_context_window_sec(self.whisper_context_window_sec);
         self.light_plus_sentence_pause_sec =
@@ -1320,6 +1369,8 @@ impl Config {
 
         // Clamp double-tap interval to safe bounds
         self.double_tap_interval_ms = self.double_tap_interval_ms.clamp(100, 450);
+        self.tap_max_ms = self.tap_max_ms.clamp(120, 300);
+        self.typing_quiet_ms = self.typing_quiet_ms.min(1000);
 
         // Validate badge size
         if ![4, 8, 12].contains(&self.hold_badge_size) {
@@ -1495,10 +1546,8 @@ mod tests {
 mod recording_keys_tests {
     use super::*;
 
-    const DEFAULT_REST: [ShortcutBinding; 2] = [
-        ShortcutBinding::DoubleLeftOption,
-        ShortcutBinding::DoubleRightOption,
-    ];
+    const DEFAULT_REST: [ShortcutBinding; 2] =
+        [ShortcutBinding::Disabled, ShortcutBinding::Disabled];
 
     fn keys(dictation: ShortcutBinding, fn_tap: bool) -> RecordingKeys {
         RecordingKeys::from_bindings([dictation, DEFAULT_REST[0], DEFAULT_REST[1]], fn_tap)

@@ -6,6 +6,7 @@
 
 pub mod agent_ack;
 pub mod cli_transcript_lane;
+pub mod dual_host_projection;
 pub mod emitter;
 pub mod status_projection;
 pub mod transcript_bus;

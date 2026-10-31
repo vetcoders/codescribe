@@ -6,6 +6,145 @@ import XCTest
 
 @MainActor
 final class OverlayMenuCursorTests: XCTestCase {
+  func testContentBoundaryLayoutChurnDoesNotRearmCursorWrites() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    let content = OverlayContentContainer(hosting: NSView())
+    panel.contentView = content
+    panel.setPresentationMode(.expanded)
+    defer { panel.close() }
+    content.updateTrackingAreas()
+    let boundary = try XCTUnwrap(content.trackingAreas.first)
+    let saved = NSCursor.current
+    defer { saved.set() }
+    let point = NSPoint(x: 5, y: 200)
+    XCTAssertTrue(panel.refreshCursor(at: point))
+    var writes = 0
+    for _ in 0..<100 {
+      content.updateTrackingAreas()
+      if panel.refreshCursor(at: point) { writes += 1 }
+    }
+    XCTAssertEqual(content.trackingAreas.count, 1)
+    XCTAssertTrue(content.trackingAreas.first === boundary)
+    XCTAssertEqual(writes, 0)
+    panel.setContentSize(NSSize(width: 500, height: 300))
+    content.updateTrackingAreas()
+    XCTAssertTrue(content.trackingAreas.first === boundary)
+    XCTAssertTrue(boundary.options.contains(.inVisibleRect))
+    XCTAssertEqual(content.visibleRect.size, NSSize(width: 500, height: 300))
+    XCTAssertFalse(panel.isVisible)
+  }
+
+  func testContentBoundaryIgnoresForeignEventsButRearmsRealExitAndEntry() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    let foreign = OverlayIntercomPanel()
+    let content = OverlayContentContainer(hosting: NSView())
+    panel.contentView = content
+    panel.setPresentationMode(.expanded)
+    defer {
+      panel.close()
+      foreign.close()
+    }
+    content.updateTrackingAreas()
+    let boundary = try XCTUnwrap(content.trackingAreas.first)
+    let stale = NSTrackingArea(
+      rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+      owner: content, userInfo: nil)
+    let saved = NSCursor.current
+    defer { saved.set() }
+    let point = NSPoint(x: 5, y: 200)
+    XCTAssertTrue(panel.refreshCursor(at: point))
+    content.invalidateCursorOwnership(from: stale, in: panel)
+    XCTAssertFalse(panel.refreshCursor(at: point))
+    content.invalidateCursorOwnership(from: boundary, in: foreign)
+    XCTAssertFalse(panel.refreshCursor(at: point))
+    content.invalidateCursorOwnership(from: boundary, in: panel)
+    XCTAssertTrue(panel.refreshCursor(at: point), "Actual boundary exit relinquishes ownership")
+    XCTAssertFalse(panel.refreshCursor(at: point))
+    content.invalidateCursorOwnership(from: boundary, in: panel)
+    XCTAssertTrue(panel.refreshCursor(at: point), "Actual re-entry establishes ownership again")
+    XCTAssertFalse(panel.isVisible)
+  }
+
+  func testRetiredTrackingAreaExitCannotClearANewerNativeHoverEntry() throws {
+    let panel = OverlayIntercomPanel()
+    let foreign = OverlayIntercomPanel()
+    panel.setFrame(NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
+    let region = OverlayMenuCursorRegionView(frame: NSRect(x: 0, y: 0, width: 80, height: 30))
+    panel.contentView = region
+    defer {
+      panel.close()
+      foreign.close()
+    }
+    region.updateTrackingAreas()
+    let retired = try XCTUnwrap(region.trackingAreas.first)
+    region.setFrameSize(NSSize(width: 60, height: 30))
+    region.updateTrackingAreas()
+    let current = try XCTUnwrap(region.trackingAreas.first)
+    XCTAssertFalse(retired === current)
+    var changes: [Bool] = []
+    region.onHover = { changes.append($0) }
+    region.handleHoverEvent(at: NSPoint(x: 10, y: 10), from: current, in: panel)
+    XCTAssertTrue(region.hovered)
+    region.handleHoverEvent(at: nil, from: retired, in: panel)
+    XCTAssertTrue(region.hovered)
+    region.handleHoverEvent(at: nil, from: current, in: foreign)
+    XCTAssertTrue(region.hovered)
+    XCTAssertEqual(changes, [true])
+    region.handleHoverEvent(at: nil, from: current, in: panel)
+    XCTAssertFalse(region.hovered)
+    XCTAssertEqual(changes, [true, false])
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertFalse(foreign.isVisible)
+  }
+
+  func testUnchangedIntercomHoverGeometryKeepsOneTrackingArea() throws {
+    let panel = OverlayIntercomPanel()
+    panel.setFrame(NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
+    let region = OverlayMenuCursorRegionView(frame: NSRect(x: 0, y: 0, width: 80, height: 30))
+    panel.contentView = region
+    defer { panel.close() }
+    region.updateTrackingAreas()
+    let original = try XCTUnwrap(region.trackingAreas.first)
+    var retained = true
+    for _ in 0..<200 {
+      region.updateTrackingAreas()
+      XCTAssertEqual(region.trackingAreas.count, 1)
+      retained = retained && region.trackingAreas.first === original
+    }
+    XCTAssertTrue(retained)
+    region.setFrameSize(NSSize(width: 60, height: 30))
+    region.updateTrackingAreas()
+    XCTAssertEqual(region.trackingAreas.count, 1)
+    XCTAssertFalse(region.trackingAreas.first === original)
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertFalse(panel.isKeyWindow)
+  }
+
+  func testNativeIntercomHoverClearsWhenItsRegionLeavesTheWindow() {
+    let panel = OverlayIntercomPanel()
+    panel.setFrame(NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
+    let region = OverlayMenuCursorRegionView(frame: NSRect(x: 0, y: 0, width: 80, height: 30))
+    var changes: [Bool] = []
+    region.onHover = { changes.append($0) }
+    panel.contentView = region
+    defer { panel.close() }
+    region.updateHover(at: NSPoint(x: 10, y: 10))
+    region.updateHover(at: NSPoint(x: 15, y: 10))
+    XCTAssertTrue(region.hovered)
+    XCTAssertEqual(changes, [true])
+    panel.contentView = NSView()
+    XCTAssertFalse(region.hovered)
+    XCTAssertEqual(changes, [true, false])
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertFalse(panel.isKeyWindow)
+  }
+
   func testInteriorDecisionBudgetAcrossTenThousandMoves() {
     let bounds = NSRect(x: 0, y: 0, width: 600, height: 500)
     var state = OverlayCursorState()
@@ -176,6 +315,60 @@ final class OverlayMenuCursorTests: XCTestCase {
     XCTAssertFalse(state.update(zone: .menu, cursor: nil))
   }
 
+  private struct DividerIdentityWitness: View {
+    var tick: Int
+
+    var body: some View {
+      HStack(spacing: 0) {
+        Text(String(tick)).frame(width: 700, height: 400)
+        Rectangle().frame(width: 10, height: 400)
+          .background { OverlayMenuCursorRegion(cursor: .resizeLeftRight) }
+        Color.clear.frame(width: 290, height: 400)
+      }
+      .frame(width: 1000, height: 500)
+    }
+  }
+
+  func testHostedSidebarDividerUpdatesKeepCursorAndRegionIdentity() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 1000, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let host = NSHostingView(rootView: DividerIdentityWitness(tick: 0))
+    panel.contentView = host
+    host.layoutSubtreeIfNeeded()
+    let region = try XCTUnwrap(
+      panel.menuCursorRegions.allObjects.first as? OverlayMenuCursorRegionView)
+    let originalFrame = panel.frame
+    let regionFrame = region.frame
+    let saved = NSCursor.current
+    defer {
+      panel.close()
+      saved.set()
+    }
+    let point = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+    XCTAssertTrue(panel.refreshCursor(at: point))
+    var retainedCursors: [NSCursor] = [region.cursor]
+    var writes = 0
+    for tick in 1...100 {
+      host.rootView = DividerIdentityWitness(tick: tick)
+      host.layoutSubtreeIfNeeded()
+      let mounted = try XCTUnwrap(
+        panel.menuCursorRegions.allObjects.first as? OverlayMenuCursorRegionView)
+      retainedCursors.append(mounted.cursor)
+      XCTAssertTrue(mounted === region, "an ordinary root update must preserve the divider")
+      XCTAssertEqual(mounted.frame, regionFrame)
+      XCTAssertEqual(panel.frame, originalFrame)
+      if panel.refreshCursor(at: point) { writes += 1 }
+    }
+    let cursorIDs = Set(retainedCursors.map(ObjectIdentifier.init))
+    print(
+      "divider-identity-witness updates=100 retained=\(retainedCursors.count) cursorIDs=\(cursorIDs.count) regionIDs=1 writesAfterInitial=\(writes) presented=\(panel.isVisible)"
+    )
+    XCTAssertEqual(cursorIDs.count, 1)
+    XCTAssertEqual(writes, 0)
+    XCTAssertFalse(panel.isVisible, "the fixture never presents a window on the shared desktop")
+  }
+
   func testSidebarDividerCursorWinsInsideDrawerAndYieldsWhenRemoved() {
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 0, y: 0, width: 1000, height: 500),
@@ -266,6 +459,12 @@ final class OverlayMenuCursorTests: XCTestCase {
     defer { saved.set() }
     for control in controls {
       let point = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil)
+      // Each probe arrives from text that set the I-beam outside the panel's
+      // ownership. Nested regions share a centre (the close dot's own region
+      // and its header chrome's): without this reset, the second probe at the
+      // same point is an unchanged decision the panel correctly skips, and
+      // the hash table's order decides whether the test fails.
+      panel.invalidateCursorOwnership()
       NSCursor.iBeam.set()
       XCTAssertTrue(panel.refreshCursor(at: point), "Mounted control at \(point)")
       XCTAssertEqual(NSCursor.current, .arrow)

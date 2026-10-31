@@ -357,6 +357,9 @@ pub enum CsTranscriptDelivery {
     SinkAccepted,
     /// No sink took the text; it stays recoverable.
     Retained,
+    /// The assistive take ended without voice; no destination was chosen and
+    /// nothing may send the text on its own.
+    EndedWithoutVoice,
     /// The text was copied to the clipboard without posting a paste.
     CopiedToClipboard,
     /// The text is armed for a later explicit insert, not pasted yet.
@@ -495,6 +498,7 @@ impl CsTranscriptDelivery {
             TranscriptDelivery::ComposerPending => Self::ComposerPending,
             TranscriptDelivery::SinkAccepted => Self::SinkAccepted,
             TranscriptDelivery::Retained => Self::Retained,
+            TranscriptDelivery::EndedWithoutVoice => Self::EndedWithoutVoice,
             TranscriptDelivery::CopiedToClipboard => Self::CopiedToClipboard,
             TranscriptDelivery::DeferredInsertArmed => Self::DeferredInsertArmed,
         }
@@ -573,6 +577,7 @@ impl CsPresentationStatusEvent {
             PresentationStatusKind::AdmissionRefused => "admission_refused",
             PresentationStatusKind::CalibrationSucceeded => "calibration_succeeded",
             PresentationStatusKind::CalibrationFailed => "calibration_failed",
+            PresentationStatusKind::FormattingDegraded => "formatting_degraded",
         };
         Self {
             schema: event.schema.clone(),

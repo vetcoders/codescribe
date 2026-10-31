@@ -622,7 +622,12 @@ struct MockSettingsEngine: SettingsEngine {
       deadlineMs: 30_000,
       provider: "mtplx-local",
       model: settings.llmFormattingModel ?? "",
-      reasoning: settings.llmFormattingReasoning
+      reasoning: settings.llmFormattingReasoning,
+      failureCode: nil,
+      httpStatus: nil,
+      endpointHost: "127.0.0.1",
+      credentialSource: "api_key_or_key_optional",
+      checkedAtUnixMs: 1_700_000_000_000
     )
   }
 
@@ -1003,6 +1008,8 @@ extension CsSettings {
     holdArmModifier: "shift",
     holdStartDelayMs: 250,
     doubleTapIntervalMs: 320,
+    tapMaxMs: 220,
+    typingQuietMs: 300,
     toggleSilenceSec: 1.5,
     whisperContextWindowSec: 8,
     whisperAdaptiveBuffer: false,
@@ -1057,6 +1064,14 @@ extension CsSettings {
     agentEnterSends: true,
     agentAutoSend: false,
     agentSendHoldSec: 10,
+    agentAutoSendDelaySec: 5,
+    agentTakeVoicelessEndSec: 30,
+    agentChannelSessionPolicy: "continuous",
+    agentChannelSendPauseSec: 5,
+    agentChannelSendPauseSource: "settings",
+    agentChannelVoicelessCloseSec: 0,
+    agentChannelSegmentFinish: "light_plus",
+    agentChannelFormatWaitSec: 3,
     dumpAudioLogs: false,
     // Contract §C: lane = provider ref + model; no endpoint fields on CsSettings.
     llmFormattingProvider: "openai-responses",

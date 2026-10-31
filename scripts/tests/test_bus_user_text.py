@@ -17,6 +17,61 @@ sys.modules[SPEC.name] = DEMUX
 SPEC.loader.exec_module(DEMUX)
 
 class UserTextTests(unittest.TestCase):
+    def test_sync_context_survives_publication_read_and_watch_without_routing_or_text_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            owners = []
+            for channel, name in [("2", "lena"), ("5", "tomek"), ("7", "igor")]:
+                bus = root / f"bus-{channel}.jsonl"
+                lid = DEMUX.lease_identifier("codex", name)
+                DEMUX.write_channel_binding(root, channel, name, "codex", name, str(bus))
+                DEMUX.atomic_json(root / "leases" / f"{lid}.json", {
+                    "schema": DEMUX.LEASE_SCHEMA, "provider": "codex", "provider_session_id": name,
+                    "lease_id": lid, "bus": str(bus)})
+                owners.append({"channel": channel, "provider": "codex",
+                               "provider_session_id": name, "lease_id": lid})
+            target, peer, stale = owners
+            stale = {**stale, "provider_session_id": "replaced-owner"}
+            args = argparse.Namespace(bridge_home=root, channel="2", bus=root / "bus-2.jsonl",
+                lease=target["lease_id"], provider="codex", session="lena",
+                also_sent_to=json.dumps([target, peer, peer, stale]))
+            receipt = {"stream_id": "fixture", "stream_dev": 1, "stream_inode": 2,
+                       "offset": 0, "length": 12}
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit"), \
+                 patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"Unchanged user text"))):
+                self.assertEqual(DEMUX.send_text_command(args), 0)
+            self.assertEqual(publish.call_count, 1, "Metadata must not create a second route")
+            event = publish.call_args.args[1]
+            self.assertEqual(event["recipients"][0]["lease_id"], target["lease_id"])
+            self.assertEqual(len(event["recipients"]), 1)
+            self.assertEqual(event["also_sent_to_basis"], "sync_selection")
+            self.assertEqual([m["lease_id"] for m in event["also_sent_to"]], [peer["lease_id"]])
+            payload = DEMUX.consider(event, name="lena", hear_all=False, drafts=False, debug=False)
+            payload.update(delivery_id="b" * 24, lease_id=target["lease_id"],
+                           provider="codex", provider_session_id="lena")
+            for projection in (payload, DEMUX.conversation_envelope(payload),
+                               DEMUX.watch_line(payload, target["lease_id"])):
+                self.assertEqual(projection["text"], "Unchanged user text")
+                self.assertEqual(projection["also_sent_to"], event["also_sent_to"])
+                self.assertEqual(projection["also_sent_to_basis"], "sync_selection")
+            self.assertIsNone(DEMUX.consider(event, name="tomek", hear_all=False,
+                                            drafts=False, debug=False))
+
+    def test_invalid_sync_metadata_is_refused_before_resolving_any_peer(self):
+        target = {"provider": "codex", "provider_session_id": "target", "lease_id": "a" * 32}
+        valid = {"channel": "5", "provider": "codex", "provider_session_id": "peer",
+                 "lease_id": "b" * 32}
+        cases = ["not JSON", "null", "{}", json.dumps([valid] * 9),
+                 json.dumps([{**valid, "channel": "0"}]),
+                 json.dumps([{**valid, "provider_session_id": "peer\nspoof"}]),
+                 json.dumps([{**valid, "name": "caller-chosen"}])]
+        with tempfile.TemporaryDirectory() as directory:
+            for raw in cases:
+                with self.subTest(raw=raw), self.assertRaises(ValueError):
+                    DEMUX.sync_selection_owners(raw, {}, Path(directory), target)
+
     def test_five_equal_messages_keep_distinct_delivery_ids_without_pcm(self):
         with tempfile.TemporaryDirectory() as directory:
             with closing(DEMUX.SessionLease(root=Path(directory), provider="codex", provider_session_id="agent-a",
@@ -66,6 +121,11 @@ class UserTextTests(unittest.TestCase):
                 for event in events:
                     self.assertEqual(event["origin_channel"], "0")
                     self.assertEqual(event["sender"], {"name": "founder", "channel": "10"})
+                    # Every copy carries the whole admitted list, its own
+                    # recipients stay the single delivery coordinate.
+                    self.assertEqual(event["target"], {"mode": "broadcast", "channel": "0", "recipients": [
+                        {"name": "nina", "channel": "2"}, {"name": "igor", "channel": "7"}]})
+                    self.assertEqual(len(event["recipients"]), 1)
                     payload = DEMUX.consider(event, name=event["audience"], hear_all=False, drafts=False, debug=False)
                     self.assertEqual(payload["channel"], "0")
                     self.assertTrue(payload["state_change_allowed"])
@@ -75,7 +135,8 @@ class UserTextTests(unittest.TestCase):
                     self.assertEqual(payload["audience"], event["audience"])
                     view = DEMUX.conversation_envelope(payload)
                     self.assertEqual(view["sender"]["channel"], "10")
-                    self.assertEqual(view["addressed_to"], "0 (all audience)")
+                    self.assertEqual(view["addressed_to"], "0 (sent to: nina, igor)")
+                    self.assertEqual(view["sent_to"], event["target"]["recipients"])
             # igor's follower died (the shape a restarted host leaves): nina still
             # hears the words and the receipt names igor with the reason.
             with patch.object(DEMUX, "live_follower_pid", side_effect=[123, None]), \
@@ -83,8 +144,30 @@ class UserTextTests(unittest.TestCase):
                  patch.object(DEMUX, "emit") as emitted, patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
                 self.assertEqual(DEMUX.send_text_command(args), 0)
                 self.assertEqual([call.args[1]["channel"] for call in publish.call_args_list], ["2"])
+                self.assertEqual(publish.call_args_list[0].args[1]["target"]["recipients"], [{"name": "nina", "channel": "2"}])
                 self.assertEqual([(s["channel"], s["reason"]) for s in emitted.call_args.args[0]["skipped"]],
                                  [("7", "not_listening")])
+            # A direct send to one channel is no broadcast: no stamp at all.
+            direct = argparse.Namespace(bridge_home=root, channel="2", bus=root / "bus-2.jsonl",
+                                        lease=DEMUX.lease_identifier("codex", "nina"), provider="codex", session="nina")
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit"), patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                self.assertEqual(DEMUX.send_text_command(direct), 0)
+                self.assertEqual(len(publish.call_args_list), 1)
+                self.assertNotIn("target", publish.call_args_list[0].args[1])
+                self.assertNotIn("origin_channel", publish.call_args_list[0].args[1])
+            # Every bound agent has channel 0 off: the copies still land (each
+            # reader records its own skip) and carry an empty admitted list.
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "agent_broadcast_policy", return_value="off"), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit"), patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                self.assertEqual(DEMUX.send_text_command(args), 0)
+                self.assertEqual(len(publish.call_args_list), 2)
+                for call in publish.call_args_list:
+                    self.assertEqual(call.args[1]["target"]["recipients"], [])
+                    self.assertEqual(DEMUX.delivery_address_label(call.args[1]), "0 (sent to: nobody)")
             with patch.object(DEMUX, "live_follower_pid", return_value=123), \
                  patch.object(DEMUX, "publish_reply_event", side_effect=[receipt, OSError("disk")]) as publish, \
                  patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):

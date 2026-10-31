@@ -60,6 +60,13 @@ final class WaveformBarCountTests: XCTestCase {
 /// UI-88: the moving waveform runs on Core Animation, not a per-frame SwiftUI timeline.
 @MainActor
 final class WaveformMotionTests: XCTestCase {
+  /// No test window is presented over a live Founder take. The native view
+  /// still sees a deterministically visible host, as in WaveformVisibilityTests.
+  private final class VisibleHostWindow: NSWindow {
+    override var isVisible: Bool { true }
+    override var occlusionState: NSWindow.OcclusionState { [.visible] }
+  }
+
   private func configuration(
     bars count: Int = 12, transcribing: Bool = false, meter: AudioLevelMeter?,
     isVisible: Bool = true
@@ -140,7 +147,7 @@ final class WaveformMotionTests: XCTestCase {
     let meter = AudioLevelMeter()
     meter.push(rms: 0.05)
     let view = strip(meter: meter)
-    let window = NSWindow(
+    let window = VisibleHostWindow(
       contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
     window.contentView = view
     defer {
@@ -178,7 +185,7 @@ final class WaveformMotionTests: XCTestCase {
     let view = WaveformMotionView(frame: NSRect(x: 0, y: 0, width: 60, height: 22))
     view.apply(configuration(meter: meter, isVisible: false))
     XCTAssertNil(view.gainTimer)
-    let window = NSWindow(
+    let window = VisibleHostWindow(
       contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
     window.contentView = view
     defer {

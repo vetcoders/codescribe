@@ -16,7 +16,7 @@ enum PromptFile: String, CaseIterable, Identifiable {
       String(localized: "Correction", comment: "Prompt file: correction-only formatting")
     case .smart: String(localized: "Smart", comment: "Prompt file: balanced transcript editing")
     case .assistive:
-      String(localized: "Assistive", comment: "Prompt file: voice-assistant base prompt")
+      String(localized: "Agent", comment: "Prompt file: Agent and Max base prompt")
     }
   }
 

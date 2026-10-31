@@ -70,6 +70,10 @@ static CONFIG_ENV_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// later rename silently erase the earlier field.
 static CONFIG_PERSISTENCE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Name of the high-churn subfolder of the data root ([`Config::churn_dir`]).
+/// The `.noindex` suffix keeps Spotlight out of it.
+pub const CHURN_DIR_NAME: &str = "data.noindex";
+
 const AI_MAX_RETRIES_ENV: &str = "CODESCRIBE_AI_MAX_RETRIES";
 const AI_RETRY_DELAY_MS_ENV: &str = "CODESCRIBE_AI_RETRY_DELAY_MS";
 const AI_ATTEMPT_TIMEOUT_MS_ENV: &str = "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS";
@@ -1271,6 +1275,8 @@ impl Config {
         );
         env_parse!("HOLD_START_DELAY_MS", self.hold_start_delay_ms);
         env_parse!("DOUBLE_TAP_INTERVAL_MS", self.double_tap_interval_ms);
+        env_parse!("TAP_MAX_MS", self.tap_max_ms);
+        env_parse!("TYPING_QUIET_MS", self.typing_quiet_ms);
         env_parse!("TOGGLE_SILENCE_SEC", self.toggle_silence_sec);
         env_flag!("WHISPER_ADAPTIVE_BUFFER", self.whisper_adaptive_buffer);
         env_parse!(
@@ -1337,6 +1343,14 @@ impl Config {
         env_flag!("BEEP_ON_START", self.beep_on_start);
         env_flag!("AGENT_ENTER_SENDS", self.agent_enter_sends);
         env_flag!("AGENT_AUTO_SEND", self.agent_auto_send);
+        if let Ok(raw) =
+            Self::config_runtime_env_var(super::agent_channel::CHANNEL_AUTOSEAL_SECS_ENV)
+            && let Some(seconds) = super::agent_channel::parse_autoseal_override(&raw)
+        {
+            self.agent_channel.send_pause_sec = seconds;
+            self.agent_channel.send_pause_source =
+                super::agent_channel::ChannelSettingSource::EnvOverride;
+        }
         env_set!("SOUND_NAME", self.sound_name);
         env_parse!("SOUND_VOLUME", self.sound_volume);
 
@@ -1440,6 +1454,44 @@ impl Config {
         Self::remember_seeded_env_key(key);
     }
 
+    /// Voice-conversation and built-in Agent timers. `settings.json` alone
+    /// owns them; the send pause's env override is applied in `load_from_env`.
+    fn apply_agent_channel_settings(&mut self, settings: &super::settings::UserSettings) {
+        use super::agent_channel::{
+            AgentChannelConfig, ChannelSegmentFinish, ChannelSessionPolicy,
+            DEFAULT_FORMAT_WAIT_SEC, DEFAULT_SEND_PAUSE_SEC,
+        };
+        if let Some(seconds) = settings.agent_auto_send_delay_sec {
+            self.agent_auto_send_delay_sec = seconds;
+        }
+        if let Some(seconds) = settings.agent_take_voiceless_end_sec {
+            self.agent_take_voiceless_end_sec = seconds;
+        }
+        let session_policy = settings
+            .agent_channel_session_policy
+            .as_deref()
+            .and_then(ChannelSessionPolicy::parse)
+            .unwrap_or_default();
+        self.agent_channel = AgentChannelConfig {
+            session_policy,
+            send_pause_sec: settings
+                .agent_channel_send_pause_sec
+                .unwrap_or(DEFAULT_SEND_PAUSE_SEC),
+            send_pause_source: super::agent_channel::ChannelSettingSource::Settings,
+            voiceless_close_sec: settings
+                .agent_channel_voiceless_close_sec
+                .unwrap_or(session_policy.default_voiceless_close_sec()),
+            segment_finish: settings
+                .agent_channel_segment_finish
+                .as_deref()
+                .and_then(ChannelSegmentFinish::parse)
+                .unwrap_or_default(),
+            format_wait_sec: settings
+                .agent_channel_format_wait_sec
+                .unwrap_or(DEFAULT_FORMAT_WAIT_SEC),
+        };
+    }
+
     /// Apply user settings from JSON (lower priority than .env).
     /// Only applies values that are Some AND not already overridden by env vars.
     fn apply_user_settings(&mut self, settings: &super::settings::UserSettings) {
@@ -1500,6 +1552,12 @@ impl Config {
             "DOUBLE_TAP_INTERVAL_MS",
             self.double_tap_interval_ms,
             settings.double_tap_interval_ms
+        );
+        apply_copy!("TAP_MAX_MS", self.tap_max_ms, settings.tap_max_ms);
+        apply_copy!(
+            "TYPING_QUIET_MS",
+            self.typing_quiet_ms,
+            settings.typing_quiet_ms
         );
         apply_copy!(
             "TOGGLE_SILENCE_SEC",
@@ -1737,6 +1795,7 @@ impl Config {
             self.agent_auto_send,
             settings.agent_auto_send
         );
+        self.apply_agent_channel_settings(settings);
 
         // ── Voice Lab survivors (runtime env vars, not Config struct fields) ──
         if Self::config_runtime_env_var("CODESCRIBE_BUFFER_DELAY_MS").is_err()
@@ -2206,6 +2265,20 @@ impl Config {
         }
     }
 
+    /// High-churn data folder: `<data root>/data.noindex`. The data root is
+    /// [`Self::config_dir`], so `CODESCRIBE_DATA_DIR` and an embedding host's
+    /// data directory apply.
+    ///
+    /// Spotlight skips a `*.noindex` folder, also one nested inside an indexed
+    /// folder, so files rewritten constantly here are not re-imported on every
+    /// write. Only data without a path-identity role lives here; buses,
+    /// leases, bindings, archives, session audio and anything whose path is
+    /// persisted or compared stay directly under the data root. This is the
+    /// only resolver of the folder; Swift receives it through the bridge.
+    pub fn churn_dir() -> PathBuf {
+        Self::config_dir().join(CHURN_DIR_NAME)
+    }
+
     /// Get the full path to the .env file.
     pub fn env_path() -> PathBuf {
         if let Some(host) = super::runtime_host::selected() {
@@ -2255,6 +2328,24 @@ mod tests {
     use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
+
+    /// The high-churn folder follows the data root: the default root without
+    /// an override, `<override>/data.noindex` with `CODESCRIBE_DATA_DIR`.
+    #[test]
+    #[serial]
+    fn churn_dir_is_data_noindex_under_the_data_root_with_and_without_override() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let default_root = Config::config_dir();
+        assert_eq!(Config::churn_dir(), default_root.join("data.noindex"));
+        assert_eq!(CHURN_DIR_NAME, "data.noindex");
+
+        let dir = TempDir::new().unwrap();
+        set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
+        let overridden = dir.path().canonicalize().unwrap();
+        assert_eq!(Config::config_dir(), overridden);
+        assert_eq!(Config::churn_dir(), overridden.join("data.noindex"));
+        assert_ne!(Config::churn_dir(), default_root.join("data.noindex"));
+    }
 
     #[test]
     #[serial]

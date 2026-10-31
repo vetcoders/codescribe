@@ -102,6 +102,27 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
     }
   }
 
+  func testNightlyShadeSelectionPersistsThroughTheExistingPickerWithoutCoreWrites() async throws {
+    try await withPreferences { preferences, _ in
+      var engine = MockSettingsEngine()
+      var writes: [String] = []
+      engine.updateConfigObserver = { key, _ in writes.append(key) }
+      engine.updateConfigManyObserver = { writes.append(contentsOf: $0.map(\.key)) }
+      let settings = model(preferences: preferences, engine: engine)
+      let dictationLanguage = settings.settings.whisperLanguage
+      settings.selectSheetShade(.nightlyDark)
+      XCTAssertEqual(settings.sheetShadeDark, .nightlyDark)
+      XCTAssertEqual(settings.sheetShadeLight, .todayLight)
+      settings.selectSheetShade(.nightlyLight)
+      let reopened = model(preferences: preferences)
+      XCTAssertEqual(reopened.sheetShadeDark.hex, 0x070707)
+      XCTAssertEqual(reopened.sheetShadeLight.hex, 0xF0F0F0)
+      XCTAssertEqual(settings.settings.whisperLanguage, dictationLanguage)
+      XCTAssertTrue(writes.isEmpty, "Appearance remains outside core configuration")
+      XCTAssertFalse(settings.interfaceLanguageNeedsRestart)
+    }
+  }
+
   func testChoosingTheRunningLanguageAgainNeedsNoRestart() async throws {
     try await withPreferences { preferences, _ in
       let settings = model(preferences: preferences)

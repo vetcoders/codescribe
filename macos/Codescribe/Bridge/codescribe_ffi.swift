@@ -1435,6 +1435,13 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func cancelAccountLogin()
 
     /**
+     * Absolute path to the high-churn data folder (`<config dir>/data.noindex`),
+     * resolved by `Config::churn_dir`. Swift places its diagnostic log and
+     * overlay caches here instead of rebuilding the path.
+     */
+    func churnDir()  -> String
+
+    /**
      * Delete an API key from the Keychain. `account` must be a known
      * `KEYCHAIN_ACCOUNTS` entry.
      */
@@ -1918,6 +1925,19 @@ open func cancelAccountLogin()  {try! rustCall() {
             self.uniffiCloneHandle(),$0
     )
 }
+}
+
+    /**
+     * Absolute path to the high-churn data folder (`<config dir>/data.noindex`),
+     * resolved by `Config::churn_dir`. Swift places its diagnostic log and
+     * overlay caches here instead of rebuilding the path.
+     */
+open func churnDir() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_churn_dir(
+            self.uniffiCloneHandle(),$0
+    )
+})
 }
 
     /**
@@ -2923,13 +2943,14 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     /**
      * Atomically reject busy capture or close future admission for this process.
      * This never constructs a new controller and never stops an active take.
-     * Synchronous so the UI can check composing and reserve without yielding.
+     * Synchronous so Swift can check composition, reserve and terminate in one
+     * run-loop callback. Every lock in this path refuses rather than waiting.
      */
-    func reserveIdleRestart()  -> Bool
+    func reserveIdleRestart() throws  -> Bool
 
     /**
-     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
-     * Formatting=Double Left Option, Assistive=Double Right Option) and reload.
+     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
+     * Formatting and Assistive have no gesture until the user opts in) and reload.
      */
     func resetBindingsToDefaults() throws
 
@@ -3777,10 +3798,11 @@ open func rearmAfterPermissionGrant() -> Bool  {
     /**
      * Atomically reject busy capture or close future admission for this process.
      * This never constructs a new controller and never stops an active take.
-     * Synchronous so the UI can check composing and reserve without yielding.
+     * Synchronous so Swift can check composition, reserve and terminate in one
+     * run-loop callback. Every lock in this path refuses rather than waiting.
      */
-open func reserveIdleRestart() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
+open func reserveIdleRestart()throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribehotkeys_reserve_idle_restart(
             self.uniffiCloneHandle(),$0
     )
@@ -3788,8 +3810,8 @@ open func reserveIdleRestart() -> Bool  {
 }
 
     /**
-     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
-     * Formatting=Double Left Option, Assistive=Double Right Option) and reload.
+     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
+     * Formatting and Assistive have no gesture until the user opts in) and reload.
      */
 open func resetBindingsToDefaults()throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribehotkeys_reset_bindings_to_defaults(
@@ -4254,6 +4276,20 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func addServer(server: CsMcpServerInput) throws
 
     /**
+     * Block until the in-flight MCP sign-in completes, fails or times out.
+     * Swift calls this right after `start_mcp_sign_in` opened the browser.
+     * On success the credential is already in the Keychain and the server's
+     * mcp.json row flips to `auth_type: "oauth"`. On timeout the pending
+     * login is dropped, which shuts the loopback listener down.
+     */
+    func awaitMcpSignIn(name: String, timeoutSeconds: UInt64) async throws  -> CsMcpSignInResult
+
+    /**
+     * Cancel any in-flight MCP sign-in (closes the loopback listener).
+     */
+    func cancelMcpSignIn()
+
+    /**
      * Remove the durable per-tool rule so the tool inherits again.
      */
     func clearToolPermission(identity: String) throws
@@ -4308,6 +4344,15 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func setToolPermission(identity: String, level: String) throws
 
     /**
+     * Begin OAuth sign-in for a remote server: probe the 401 challenge,
+     * discover the authorization server, register a client and bind the
+     * loopback listener — everything short of the human. Returns the
+     * authorize URL for Swift to open; `await_mcp_sign_in` then blocks on
+     * the browser redirect. Nothing is stored until that completes.
+     */
+    func startMcpSignIn(name: String, endpoint: String) async throws  -> CsMcpSignInResult
+
+    /**
      * Spawn the named server, run the `initialize` + `tools/list` handshake, and
      * report its advertised identity + live tool count. Bounded by a 10s timeout.
      * A failed handshake is returned as `ok == false` with a reason, never as a
@@ -4318,6 +4363,8 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
 
     /**
      * Update the named server's spawn shape, preserving its env + unknown fields.
+     * Turning OAuth off clears the grant: the credential leaves the Keychain
+     * and `auth_type`/`auth_ref` leave mcp.json before any new bearer lands.
      */
     func updateServer(name: String, server: CsMcpServerInput) throws
 
@@ -4392,6 +4439,40 @@ open func addServer(server: CsMcpServerInput)throws   {try rustCallWithError(Ffi
     uniffi_codescribe_ffi_fn_method_codescribemcpadmin_add_server(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsMcpServerInput_lower(server),$0
+    )
+}
+}
+
+    /**
+     * Block until the in-flight MCP sign-in completes, fails or times out.
+     * Swift calls this right after `start_mcp_sign_in` opened the browser.
+     * On success the credential is already in the Keychain and the server's
+     * mcp.json row flips to `auth_type: "oauth"`. On timeout the pending
+     * login is dropped, which shuts the loopback listener down.
+     */
+open func awaitMcpSignIn(name: String, timeoutSeconds: UInt64)async throws  -> CsMcpSignInResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribemcpadmin_await_mcp_sign_in(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(name),FfiConverterUInt64.lower(timeoutSeconds)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsMcpSignInResult_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Cancel any in-flight MCP sign-in (closes the loopback listener).
+     */
+open func cancelMcpSignIn()  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_cancel_mcp_sign_in(
+            self.uniffiCloneHandle(),$0
     )
 }
 }
@@ -4515,6 +4596,30 @@ open func setToolPermission(identity: String, level: String)throws   {try rustCa
 }
 
     /**
+     * Begin OAuth sign-in for a remote server: probe the 401 challenge,
+     * discover the authorization server, register a client and bind the
+     * loopback listener — everything short of the human. Returns the
+     * authorize URL for Swift to open; `await_mcp_sign_in` then blocks on
+     * the browser redirect. Nothing is stored until that completes.
+     */
+open func startMcpSignIn(name: String, endpoint: String)async throws  -> CsMcpSignInResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribemcpadmin_start_mcp_sign_in(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(name),FfiConverterString.lower(endpoint)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsMcpSignInResult_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * Spawn the named server, run the `initialize` + `tools/list` handshake, and
      * report its advertised identity + live tool count. Bounded by a 10s timeout.
      * A failed handshake is returned as `ok == false` with a reason, never as a
@@ -4532,6 +4637,8 @@ open func testServer(name: String) -> CsMcpTestResult  {
 
     /**
      * Update the named server's spawn shape, preserving its env + unknown fields.
+     * Turning OAuth off clears the grant: the credential leaves the Keychain
+     * and `auth_type`/`auth_ref` leave mcp.json before any new bearer lands.
      */
 open func updateServer(name: String, server: CsMcpServerInput)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribemcpadmin_update_server(
@@ -6471,6 +6578,12 @@ public protocol CsAppActionListener: AnyObject, Sendable {
      */
     func onAgentGesture(input: CsAgentGestureInput)
 
+    /**
+     * A long dictation hold was refused because a Codescribe message field
+     * owns the caret. UI-only: that field points at its own microphone.
+     */
+    func onComposerDictationRedirected()
+
 }
 /**
  * Foreign callback for UI-only global commands. These actions are deliberately
@@ -6564,6 +6677,17 @@ open func onAgentGesture(input: CsAgentGestureInput)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csappactionlistener_on_agent_gesture(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsAgentGestureInput_lower(input),$0
+    )
+}
+}
+
+    /**
+     * A long dictation hold was refused because a Codescribe message field
+     * owns the caret. UI-only: that field points at its own microphone.
+     */
+open func onComposerDictationRedirected()  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csappactionlistener_on_composer_dictation_redirected(
+            self.uniffiCloneHandle(),$0
     )
 }
 }
@@ -6676,6 +6800,28 @@ fileprivate struct UniffiCallbackInterfaceCsAppActionListener {
                 }
                 return uniffiObj.onAgentGesture(
                      input: try FfiConverterTypeCsAgentGestureInput_lift(input)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onComposerDictationRedirected: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsAppActionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onComposerDictationRedirected(
                 )
             }
 
@@ -10642,6 +10788,62 @@ public func FfiConverterTypeCsDocumentVersions_lower(_ value: CsDocumentVersions
 
 
 /**
+ * The latest Option double-tap attempt. `sequence` changes on every attempt,
+ * so the tester can tell a repeated outcome from a stale one.
+ */
+public struct CsDoubleTapOutcome: Equatable, Hashable {
+    public var sequence: UInt32
+    public var kind: CsDoubleTapOutcomeKind
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sequence: UInt32, kind: CsDoubleTapOutcomeKind) {
+        self.sequence = sequence
+        self.kind = kind
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsDoubleTapOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDoubleTapOutcome: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDoubleTapOutcome {
+        return
+            try CsDoubleTapOutcome(
+                sequence: FfiConverterUInt32.read(from: &buf),
+                kind: FfiConverterTypeCsDoubleTapOutcomeKind.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsDoubleTapOutcome, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.sequence, into: &buf)
+        FfiConverterTypeCsDoubleTapOutcomeKind.write(value.kind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDoubleTapOutcome_lift(_ buf: RustBuffer) throws -> CsDoubleTapOutcome {
+    return try FfiConverterTypeCsDoubleTapOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDoubleTapOutcome_lower(_ value: CsDoubleTapOutcome) -> RustBuffer {
+    return FfiConverterTypeCsDoubleTapOutcome.lower(value)
+}
+
+
+/**
  * What a guided calibration measured and stored (levels and counts only).
  */
 public struct CsEnergyCalibrationReport: Equatable, Hashable {
@@ -10743,6 +10945,17 @@ public struct CsFormattingProbe: Equatable, Hashable {
      * The reasoning effort sent; `None` when the request carried no field.
      */
     public var reasoning: String?
+    /**
+     * Fixed diagnostic code, never a raw provider error or response body.
+     */
+    public var failureCode: String?
+    public var httpStatus: UInt16?
+    /**
+     * Configured cloud route; excludes path, query and user information.
+     */
+    public var endpointHost: String?
+    public var credentialSource: String
+    public var checkedAtUnixMs: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -10752,7 +10965,13 @@ public struct CsFormattingProbe: Equatable, Hashable {
          */deadlineMs: UInt64, provider: String, model: String,
         /**
          * The reasoning effort sent; `None` when the request carried no field.
-         */reasoning: String?) {
+         */reasoning: String?,
+        /**
+         * Fixed diagnostic code, never a raw provider error or response body.
+         */failureCode: String?, httpStatus: UInt16?,
+        /**
+         * Configured cloud route; excludes path, query and user information.
+         */endpointHost: String?, credentialSource: String, checkedAtUnixMs: UInt64) {
         self.status = status
         self.input = input
         self.output = output
@@ -10761,6 +10980,11 @@ public struct CsFormattingProbe: Equatable, Hashable {
         self.provider = provider
         self.model = model
         self.reasoning = reasoning
+        self.failureCode = failureCode
+        self.httpStatus = httpStatus
+        self.endpointHost = endpointHost
+        self.credentialSource = credentialSource
+        self.checkedAtUnixMs = checkedAtUnixMs
     }
 
 
@@ -10784,7 +11008,12 @@ public struct FfiConverterTypeCsFormattingProbe: FfiConverterRustBuffer {
                 deadlineMs: FfiConverterUInt64.read(from: &buf),
                 provider: FfiConverterString.read(from: &buf),
                 model: FfiConverterString.read(from: &buf),
-                reasoning: FfiConverterOptionString.read(from: &buf)
+                reasoning: FfiConverterOptionString.read(from: &buf),
+                failureCode: FfiConverterOptionString.read(from: &buf),
+                httpStatus: FfiConverterOptionUInt16.read(from: &buf),
+                endpointHost: FfiConverterOptionString.read(from: &buf),
+                credentialSource: FfiConverterString.read(from: &buf),
+                checkedAtUnixMs: FfiConverterUInt64.read(from: &buf)
         )
     }
 
@@ -10797,6 +11026,11 @@ public struct FfiConverterTypeCsFormattingProbe: FfiConverterRustBuffer {
         FfiConverterString.write(value.provider, into: &buf)
         FfiConverterString.write(value.model, into: &buf)
         FfiConverterOptionString.write(value.reasoning, into: &buf)
+        FfiConverterOptionString.write(value.failureCode, into: &buf)
+        FfiConverterOptionUInt16.write(value.httpStatus, into: &buf)
+        FfiConverterOptionString.write(value.endpointHost, into: &buf)
+        FfiConverterString.write(value.credentialSource, into: &buf)
+        FfiConverterUInt64.write(value.checkedAtUnixMs, into: &buf)
     }
 }
 
@@ -10939,6 +11173,78 @@ public func FfiConverterTypeCsHotkeyConflict_lift(_ buf: RustBuffer) throws -> C
 #endif
 public func FfiConverterTypeCsHotkeyConflict_lower(_ value: CsHotkeyConflict) -> RustBuffer {
     return FfiConverterTypeCsHotkeyConflict.lower(value)
+}
+
+
+/**
+ * One entry of the pointer dot's palette: the colour the dot is painted in
+ * (RGBA, 0…1) and, for a dot that needs one, the state whose colour rims it.
+ */
+public struct CsIndicatorSwatch: Equatable, Hashable {
+    public var state: CsIndicatorState
+    public var red: Double
+    public var green: Double
+    public var blue: Double
+    public var alpha: Double
+    public var rim: CsIndicatorState?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(state: CsIndicatorState, red: Double, green: Double, blue: Double, alpha: Double, rim: CsIndicatorState?) {
+        self.state = state
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.alpha = alpha
+        self.rim = rim
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsIndicatorSwatch: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsIndicatorSwatch: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsIndicatorSwatch {
+        return
+            try CsIndicatorSwatch(
+                state: FfiConverterTypeCsIndicatorState.read(from: &buf),
+                red: FfiConverterDouble.read(from: &buf),
+                green: FfiConverterDouble.read(from: &buf),
+                blue: FfiConverterDouble.read(from: &buf),
+                alpha: FfiConverterDouble.read(from: &buf),
+                rim: FfiConverterOptionTypeCsIndicatorState.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsIndicatorSwatch, into buf: inout [UInt8]) {
+        FfiConverterTypeCsIndicatorState.write(value.state, into: &buf)
+        FfiConverterDouble.write(value.red, into: &buf)
+        FfiConverterDouble.write(value.green, into: &buf)
+        FfiConverterDouble.write(value.blue, into: &buf)
+        FfiConverterDouble.write(value.alpha, into: &buf)
+        FfiConverterOptionTypeCsIndicatorState.write(value.rim, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsIndicatorSwatch_lift(_ buf: RustBuffer) throws -> CsIndicatorSwatch {
+    return try FfiConverterTypeCsIndicatorSwatch.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsIndicatorSwatch_lower(_ value: CsIndicatorSwatch) -> RustBuffer {
+    return FfiConverterTypeCsIndicatorSwatch.lower(value)
 }
 
 
@@ -11581,10 +11887,19 @@ public struct CsMcpServer: Equatable, Hashable {
     public var transport: String
     public var endpoint: String
     public var authRef: String
+    /**
+     * True when the credential behind `auth_ref` is an OAuth grant
+     * (`auth_type: "oauth"` in mcp.json), not a pasted bearer token.
+     */
+    public var oauth: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(name: String, command: String, args: [String], envKeys: [String], enabled: Bool, transport: String, endpoint: String, authRef: String) {
+    public init(name: String, command: String, args: [String], envKeys: [String], enabled: Bool, transport: String, endpoint: String, authRef: String,
+        /**
+         * True when the credential behind `auth_ref` is an OAuth grant
+         * (`auth_type: "oauth"` in mcp.json), not a pasted bearer token.
+         */oauth: Bool) {
         self.name = name
         self.command = command
         self.args = args
@@ -11593,6 +11908,7 @@ public struct CsMcpServer: Equatable, Hashable {
         self.transport = transport
         self.endpoint = endpoint
         self.authRef = authRef
+        self.oauth = oauth
     }
 
 
@@ -11616,7 +11932,8 @@ public struct FfiConverterTypeCsMcpServer: FfiConverterRustBuffer {
                 enabled: FfiConverterBool.read(from: &buf),
                 transport: FfiConverterString.read(from: &buf),
                 endpoint: FfiConverterString.read(from: &buf),
-                authRef: FfiConverterString.read(from: &buf)
+                authRef: FfiConverterString.read(from: &buf),
+                oauth: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -11629,6 +11946,7 @@ public struct FfiConverterTypeCsMcpServer: FfiConverterRustBuffer {
         FfiConverterString.write(value.transport, into: &buf)
         FfiConverterString.write(value.endpoint, into: &buf)
         FfiConverterString.write(value.authRef, into: &buf)
+        FfiConverterBool.write(value.oauth, into: &buf)
     }
 }
 
@@ -11670,6 +11988,11 @@ public struct CsMcpServerInput: Equatable, Hashable {
      * serialized into mcp.json or returned by `list_servers`.
      */
     public var token: String
+    /**
+     * The connector signs in with OAuth instead of a bearer token. The grant
+     * itself is obtained through `start_mcp_sign_in` / `await_mcp_sign_in`.
+     */
+    public var oauth: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -11683,7 +12006,11 @@ public struct CsMcpServerInput: Equatable, Hashable {
         /**
          * Write-only bearer token. It is saved straight to Keychain and never
          * serialized into mcp.json or returned by `list_servers`.
-         */token: String) {
+         */token: String,
+        /**
+         * The connector signs in with OAuth instead of a bearer token. The grant
+         * itself is obtained through `start_mcp_sign_in` / `await_mcp_sign_in`.
+         */oauth: Bool) {
         self.name = name
         self.command = command
         self.args = args
@@ -11691,6 +12018,7 @@ public struct CsMcpServerInput: Equatable, Hashable {
         self.endpoint = endpoint
         self.authRef = authRef
         self.token = token
+        self.oauth = oauth
     }
 
 
@@ -11713,7 +12041,8 @@ public struct FfiConverterTypeCsMcpServerInput: FfiConverterRustBuffer {
                 enabled: FfiConverterBool.read(from: &buf),
                 endpoint: FfiConverterString.read(from: &buf),
                 authRef: FfiConverterString.read(from: &buf),
-                token: FfiConverterString.read(from: &buf)
+                token: FfiConverterString.read(from: &buf),
+                oauth: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -11725,6 +12054,7 @@ public struct FfiConverterTypeCsMcpServerInput: FfiConverterRustBuffer {
         FfiConverterString.write(value.endpoint, into: &buf)
         FfiConverterString.write(value.authRef, into: &buf)
         FfiConverterString.write(value.token, into: &buf)
+        FfiConverterBool.write(value.oauth, into: &buf)
     }
 }
 
@@ -11741,6 +12071,94 @@ public func FfiConverterTypeCsMcpServerInput_lift(_ buf: RustBuffer) throws -> C
 #endif
 public func FfiConverterTypeCsMcpServerInput_lower(_ value: CsMcpServerInput) -> RustBuffer {
     return FfiConverterTypeCsMcpServerInput.lower(value)
+}
+
+
+/**
+ * One step of the MCP OAuth sign-in flow — the shape of
+ * `CsAccountLoginResult` for provider accounts, minus Rust-composed prose:
+ * `status` is a wire value Swift turns into a sentence it owns
+ * (LOCALIZATION_LEDGER.md §4), and `detail` carries only propagated content —
+ * an upstream error chain, or the superseding server's name. `auth_url` is
+ * present after `start_mcp_sign_in` when the UI should open a browser;
+ * `signed_in` flips once the exchange completed and the credential is in the
+ * Keychain.
+ */
+public struct CsMcpSignInResult: Equatable, Hashable {
+    public var server: String
+    /**
+     * `started` | `signed_in` | `failed` | `timeout` | `superseded` | `idle`.
+     */
+    public var status: String
+    /**
+     * Upstream content for `failed` (error chain) and `superseded` (the other
+     * server's name); empty otherwise. Never a sentence composed in Rust.
+     */
+    public var detail: String
+    public var authUrl: String?
+    public var signedIn: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(server: String,
+        /**
+         * `started` | `signed_in` | `failed` | `timeout` | `superseded` | `idle`.
+         */status: String,
+        /**
+         * Upstream content for `failed` (error chain) and `superseded` (the other
+         * server's name); empty otherwise. Never a sentence composed in Rust.
+         */detail: String, authUrl: String?, signedIn: Bool) {
+        self.server = server
+        self.status = status
+        self.detail = detail
+        self.authUrl = authUrl
+        self.signedIn = signedIn
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsMcpSignInResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsMcpSignInResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsMcpSignInResult {
+        return
+            try CsMcpSignInResult(
+                server: FfiConverterString.read(from: &buf),
+                status: FfiConverterString.read(from: &buf),
+                detail: FfiConverterString.read(from: &buf),
+                authUrl: FfiConverterOptionString.read(from: &buf),
+                signedIn: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsMcpSignInResult, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.server, into: &buf)
+        FfiConverterString.write(value.status, into: &buf)
+        FfiConverterString.write(value.detail, into: &buf)
+        FfiConverterOptionString.write(value.authUrl, into: &buf)
+        FfiConverterBool.write(value.signedIn, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpSignInResult_lift(_ buf: RustBuffer) throws -> CsMcpSignInResult {
+    return try FfiConverterTypeCsMcpSignInResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMcpSignInResult_lower(_ value: CsMcpSignInResult) -> RustBuffer {
+    return FfiConverterTypeCsMcpSignInResult.lower(value)
 }
 
 
@@ -13809,6 +14227,14 @@ public struct CsSettings: Equatable, Hashable {
     public var holdArmModifier: String
     public var holdStartDelayMs: UInt64
     public var doubleTapIntervalMs: UInt64
+    /**
+     * `TAP_MAX_MS`: longest Option press that still counts as a tap.
+     */
+    public var tapMaxMs: UInt64
+    /**
+     * `TYPING_QUIET_MS`: Option taps count for nothing this long after typing.
+     */
+    public var typingQuietMs: UInt64
     public var toggleSilenceSec: Float
     /**
      * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
@@ -13935,6 +14361,38 @@ public struct CsSettings: Equatable, Hashable {
      * Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
      */
     public var agentSendHoldSec: UInt32
+    /**
+     * Built-in Agent auto-send countdown, `1...30` seconds.
+     */
+    public var agentAutoSendDelaySec: UInt64
+    /**
+     * A built-in Agent take without voice ends after this, `10...120` seconds.
+     */
+    public var agentTakeVoicelessEndSec: UInt64
+    /**
+     * `continuous` | `end_after_message`.
+     */
+    public var agentChannelSessionPolicy: String
+    /**
+     * Effective channel send pause; `0` only from the env override (off).
+     */
+    public var agentChannelSendPauseSec: Float
+    /**
+     * `settings` | `env_override`: where that pause came from.
+     */
+    public var agentChannelSendPauseSource: String
+    /**
+     * `0` = never, else `15...600` seconds.
+     */
+    public var agentChannelVoicelessCloseSec: UInt64
+    /**
+     * `off` | `light_plus` | `formatter`.
+     */
+    public var agentChannelSegmentFinish: String
+    /**
+     * Formatter budget for one channel message, `1...10` seconds.
+     */
+    public var agentChannelFormatWaitSec: UInt64
     public var dumpAudioLogs: Bool
     /**
      * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -14000,7 +14458,13 @@ public struct CsSettings: Equatable, Hashable {
     public init(holdExclusive: Bool,
         /**
          * Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"` (W10-B).
-         */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float,
+         */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64,
+        /**
+         * `TAP_MAX_MS`: longest Option press that still counts as a tap.
+         */tapMaxMs: UInt64,
+        /**
+         * `TYPING_QUIET_MS`: Option taps count for nothing this long after typing.
+         */typingQuietMs: UInt64, toggleSilenceSec: Float,
         /**
          * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
          */whisperContextWindowSec: Float, whisperAdaptiveBuffer: Bool,
@@ -14072,7 +14536,31 @@ public struct CsSettings: Equatable, Hashable {
          */audioRetention: String, historyEnabled: Bool, quickNotesEnabled: Bool, quickNotesSaveOnly: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool,
         /**
          * Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
-         */agentSendHoldSec: UInt32, dumpAudioLogs: Bool,
+         */agentSendHoldSec: UInt32,
+        /**
+         * Built-in Agent auto-send countdown, `1...30` seconds.
+         */agentAutoSendDelaySec: UInt64,
+        /**
+         * A built-in Agent take without voice ends after this, `10...120` seconds.
+         */agentTakeVoicelessEndSec: UInt64,
+        /**
+         * `continuous` | `end_after_message`.
+         */agentChannelSessionPolicy: String,
+        /**
+         * Effective channel send pause; `0` only from the env override (off).
+         */agentChannelSendPauseSec: Float,
+        /**
+         * `settings` | `env_override`: where that pause came from.
+         */agentChannelSendPauseSource: String,
+        /**
+         * `0` = never, else `15...600` seconds.
+         */agentChannelVoicelessCloseSec: UInt64,
+        /**
+         * `off` | `light_plus` | `formatter`.
+         */agentChannelSegmentFinish: String,
+        /**
+         * Formatter budget for one channel message, `1...10` seconds.
+         */agentChannelFormatWaitSec: UInt64, dumpAudioLogs: Bool,
         /**
          * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
          */llmFormattingProvider: String?, llmFormattingModel: String?,
@@ -14116,6 +14604,8 @@ public struct CsSettings: Equatable, Hashable {
         self.holdArmModifier = holdArmModifier
         self.holdStartDelayMs = holdStartDelayMs
         self.doubleTapIntervalMs = doubleTapIntervalMs
+        self.tapMaxMs = tapMaxMs
+        self.typingQuietMs = typingQuietMs
         self.toggleSilenceSec = toggleSilenceSec
         self.whisperContextWindowSec = whisperContextWindowSec
         self.whisperAdaptiveBuffer = whisperAdaptiveBuffer
@@ -14170,6 +14660,14 @@ public struct CsSettings: Equatable, Hashable {
         self.agentEnterSends = agentEnterSends
         self.agentAutoSend = agentAutoSend
         self.agentSendHoldSec = agentSendHoldSec
+        self.agentAutoSendDelaySec = agentAutoSendDelaySec
+        self.agentTakeVoicelessEndSec = agentTakeVoicelessEndSec
+        self.agentChannelSessionPolicy = agentChannelSessionPolicy
+        self.agentChannelSendPauseSec = agentChannelSendPauseSec
+        self.agentChannelSendPauseSource = agentChannelSendPauseSource
+        self.agentChannelVoicelessCloseSec = agentChannelVoicelessCloseSec
+        self.agentChannelSegmentFinish = agentChannelSegmentFinish
+        self.agentChannelFormatWaitSec = agentChannelFormatWaitSec
         self.dumpAudioLogs = dumpAudioLogs
         self.llmFormattingProvider = llmFormattingProvider
         self.llmFormattingModel = llmFormattingModel
@@ -14210,6 +14708,8 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 holdArmModifier: FfiConverterString.read(from: &buf),
                 holdStartDelayMs: FfiConverterUInt64.read(from: &buf),
                 doubleTapIntervalMs: FfiConverterUInt64.read(from: &buf),
+                tapMaxMs: FfiConverterUInt64.read(from: &buf),
+                typingQuietMs: FfiConverterUInt64.read(from: &buf),
                 toggleSilenceSec: FfiConverterFloat.read(from: &buf),
                 whisperContextWindowSec: FfiConverterFloat.read(from: &buf),
                 whisperAdaptiveBuffer: FfiConverterBool.read(from: &buf),
@@ -14264,6 +14764,14 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 agentEnterSends: FfiConverterBool.read(from: &buf),
                 agentAutoSend: FfiConverterBool.read(from: &buf),
                 agentSendHoldSec: FfiConverterUInt32.read(from: &buf),
+                agentAutoSendDelaySec: FfiConverterUInt64.read(from: &buf),
+                agentTakeVoicelessEndSec: FfiConverterUInt64.read(from: &buf),
+                agentChannelSessionPolicy: FfiConverterString.read(from: &buf),
+                agentChannelSendPauseSec: FfiConverterFloat.read(from: &buf),
+                agentChannelSendPauseSource: FfiConverterString.read(from: &buf),
+                agentChannelVoicelessCloseSec: FfiConverterUInt64.read(from: &buf),
+                agentChannelSegmentFinish: FfiConverterString.read(from: &buf),
+                agentChannelFormatWaitSec: FfiConverterUInt64.read(from: &buf),
                 dumpAudioLogs: FfiConverterBool.read(from: &buf),
                 llmFormattingProvider: FfiConverterOptionString.read(from: &buf),
                 llmFormattingModel: FfiConverterOptionString.read(from: &buf),
@@ -14292,6 +14800,8 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterString.write(value.holdArmModifier, into: &buf)
         FfiConverterUInt64.write(value.holdStartDelayMs, into: &buf)
         FfiConverterUInt64.write(value.doubleTapIntervalMs, into: &buf)
+        FfiConverterUInt64.write(value.tapMaxMs, into: &buf)
+        FfiConverterUInt64.write(value.typingQuietMs, into: &buf)
         FfiConverterFloat.write(value.toggleSilenceSec, into: &buf)
         FfiConverterFloat.write(value.whisperContextWindowSec, into: &buf)
         FfiConverterBool.write(value.whisperAdaptiveBuffer, into: &buf)
@@ -14346,6 +14856,14 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.agentEnterSends, into: &buf)
         FfiConverterBool.write(value.agentAutoSend, into: &buf)
         FfiConverterUInt32.write(value.agentSendHoldSec, into: &buf)
+        FfiConverterUInt64.write(value.agentAutoSendDelaySec, into: &buf)
+        FfiConverterUInt64.write(value.agentTakeVoicelessEndSec, into: &buf)
+        FfiConverterString.write(value.agentChannelSessionPolicy, into: &buf)
+        FfiConverterFloat.write(value.agentChannelSendPauseSec, into: &buf)
+        FfiConverterString.write(value.agentChannelSendPauseSource, into: &buf)
+        FfiConverterUInt64.write(value.agentChannelVoicelessCloseSec, into: &buf)
+        FfiConverterString.write(value.agentChannelSegmentFinish, into: &buf)
+        FfiConverterUInt64.write(value.agentChannelFormatWaitSec, into: &buf)
         FfiConverterBool.write(value.dumpAudioLogs, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingProvider, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingModel, into: &buf)
@@ -16599,9 +17117,8 @@ public func FfiConverterTypeCsAgentGestureInput_lower(_ value: CsAgentGestureInp
 public enum CsApiKeyProbeStatus: Equatable, Hashable {
 
     /**
-     * The key authenticated. Also covers a processed-but-rejected request
-     * (most 4xx other than auth/quota): the server got far enough to prove the
-     * credential is live, even when this particular probe body was refused.
+     * The provider accepted this probe. This does not verify another model,
+     * OAuth account or a later request.
      */
     case ok
     /**
@@ -16609,8 +17126,7 @@ public enum CsApiKeyProbeStatus: Equatable, Hashable {
      */
     case invalid
     /**
-     * The key authenticates but the account cannot pay for the call
-     * (429 / 402, or an explicit quota/billing marker in the body).
+     * A usage, quota or billing limit (429 / 402 or an explicit marker).
      */
     case noQuota
     /**
@@ -16626,6 +17142,10 @@ public enum CsApiKeyProbeStatus: Equatable, Hashable {
      * to no registered provider.
      */
     case unsupported
+    /**
+     * The request was rejected without establishing credential acceptance.
+     */
+    case rejected
 
 
 
@@ -16657,6 +17177,8 @@ public struct FfiConverterTypeCsApiKeyProbeStatus: FfiConverterRustBuffer {
 
         case 6: return .unsupported
 
+        case 7: return .rejected
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -16687,6 +17209,10 @@ public struct FfiConverterTypeCsApiKeyProbeStatus: FfiConverterRustBuffer {
 
         case .unsupported:
             writeInt(&buf, Int32(6))
+
+
+        case .rejected:
+            writeInt(&buf, Int32(7))
 
         }
     }
@@ -17539,6 +18065,140 @@ public func FfiConverterTypeCsDocumentRevisionProvenance_lower(_ value: CsDocume
 }
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * What the latest Option double-tap came to, for the Settings gesture tester.
+ */
+
+public enum CsDoubleTapOutcomeKind: Equatable, Hashable {
+
+    /**
+     * Recognised; it started its mode unless the tester held it back.
+     */
+    case recognized
+    /**
+     * The second tap came after the double-tap interval.
+     */
+    case tooSlow
+    /**
+     * A press lasted longer than the longest tap.
+     */
+    case tooLong
+    /**
+     * A key was typed with Option or just before the tap.
+     */
+    case typedRecently
+    /**
+     * A click or a scroll landed during the pair.
+     */
+    case mouse
+    /**
+     * The Option events did not come from the keyboard.
+     */
+    case synthetic
+    /**
+     * Another modifier or a hold was active.
+     */
+    case modifierActive
+    /**
+     * No mode is bound to the Option side that was tapped.
+     */
+    case notAssigned
+
+
+
+}
+
+#if compiler(>=6)
+extension CsDoubleTapOutcomeKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDoubleTapOutcomeKind: FfiConverterRustBuffer {
+    typealias SwiftType = CsDoubleTapOutcomeKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDoubleTapOutcomeKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .recognized
+
+        case 2: return .tooSlow
+
+        case 3: return .tooLong
+
+        case 4: return .typedRecently
+
+        case 5: return .mouse
+
+        case 6: return .synthetic
+
+        case 7: return .modifierActive
+
+        case 8: return .notAssigned
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsDoubleTapOutcomeKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .recognized:
+            writeInt(&buf, Int32(1))
+
+
+        case .tooSlow:
+            writeInt(&buf, Int32(2))
+
+
+        case .tooLong:
+            writeInt(&buf, Int32(3))
+
+
+        case .typedRecently:
+            writeInt(&buf, Int32(4))
+
+
+        case .mouse:
+            writeInt(&buf, Int32(5))
+
+
+        case .synthetic:
+            writeInt(&buf, Int32(6))
+
+
+        case .modifierActive:
+            writeInt(&buf, Int32(7))
+
+
+        case .notAssigned:
+            writeInt(&buf, Int32(8))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDoubleTapOutcomeKind_lift(_ buf: RustBuffer) throws -> CsDoubleTapOutcomeKind {
+    return try FfiConverterTypeCsDoubleTapOutcomeKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDoubleTapOutcomeKind_lower(_ value: CsDoubleTapOutcomeKind) -> RustBuffer {
+    return FfiConverterTypeCsDoubleTapOutcomeKind.lower(value)
+}
+
+
 
 /**
  * Error surfaced across the FFI boundary. One enum for every slice:
@@ -17760,6 +18420,102 @@ public func FfiConverterTypeCsIndicatorMode_lift(_ buf: RustBuffer) throws -> Cs
 #endif
 public func FfiConverterTypeCsIndicatorMode_lower(_ value: CsIndicatorMode) -> RustBuffer {
     return FfiConverterTypeCsIndicatorMode.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * A state the pointer dot can show, as the Settings legend names it.
+ */
+
+public enum CsIndicatorState: Equatable, Hashable {
+
+    case recording
+    case wordsOwed
+    case processing
+    case agent
+    case agentQuiet
+    case refused
+
+
+
+}
+
+#if compiler(>=6)
+extension CsIndicatorState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsIndicatorState: FfiConverterRustBuffer {
+    typealias SwiftType = CsIndicatorState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsIndicatorState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .recording
+
+        case 2: return .wordsOwed
+
+        case 3: return .processing
+
+        case 4: return .agent
+
+        case 5: return .agentQuiet
+
+        case 6: return .refused
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsIndicatorState, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .recording:
+            writeInt(&buf, Int32(1))
+
+
+        case .wordsOwed:
+            writeInt(&buf, Int32(2))
+
+
+        case .processing:
+            writeInt(&buf, Int32(3))
+
+
+        case .agent:
+            writeInt(&buf, Int32(4))
+
+
+        case .agentQuiet:
+            writeInt(&buf, Int32(5))
+
+
+        case .refused:
+            writeInt(&buf, Int32(6))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsIndicatorState_lift(_ buf: RustBuffer) throws -> CsIndicatorState {
+    return try FfiConverterTypeCsIndicatorState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsIndicatorState_lower(_ value: CsIndicatorState) -> RustBuffer {
+    return FfiConverterTypeCsIndicatorState.lower(value)
 }
 
 
@@ -19124,6 +19880,11 @@ public enum CsTranscriptDelivery: Equatable, Hashable {
      */
     case retained
     /**
+     * The assistive take ended without voice; no destination was chosen and
+     * nothing may send the text on its own.
+     */
+    case endedWithoutVoice
+    /**
      * The text was copied to the clipboard without posting a paste.
      */
     case copiedToClipboard
@@ -19158,9 +19919,11 @@ public struct FfiConverterTypeCsTranscriptDelivery: FfiConverterRustBuffer {
 
         case 4: return .retained
 
-        case 5: return .copiedToClipboard
+        case 5: return .endedWithoutVoice
 
-        case 6: return .deferredInsertArmed
+        case 6: return .copiedToClipboard
+
+        case 7: return .deferredInsertArmed
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -19186,12 +19949,16 @@ public struct FfiConverterTypeCsTranscriptDelivery: FfiConverterRustBuffer {
             writeInt(&buf, Int32(4))
 
 
-        case .copiedToClipboard:
+        case .endedWithoutVoice:
             writeInt(&buf, Int32(5))
 
 
-        case .deferredInsertArmed:
+        case .copiedToClipboard:
             writeInt(&buf, Int32(6))
+
+
+        case .deferredInsertArmed:
+            writeInt(&buf, Int32(7))
 
         }
     }
@@ -19875,6 +20642,30 @@ fileprivate struct FfiConverterOptionTypeCsDocumentProvider: FfiConverterRustBuf
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCsDoubleTapOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = CsDoubleTapOutcome?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsDoubleTapOutcome.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsDoubleTapOutcome.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCsLastServingVerdict: FfiConverterRustBuffer {
     typealias SwiftType = CsLastServingVerdict?
 
@@ -20083,6 +20874,30 @@ fileprivate struct FfiConverterOptionTypeCsCoverageUnavailableReason: FfiConvert
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCsCoverageUnavailableReason.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCsIndicatorState: FfiConverterRustBuffer {
+    typealias SwiftType = CsIndicatorState?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsIndicatorState.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsIndicatorState.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -20383,6 +21198,31 @@ fileprivate struct FfiConverterSequenceTypeCsHotkeyConflict: FfiConverterRustBuf
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCsHotkeyConflict.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsIndicatorSwatch: FfiConverterRustBuffer {
+    typealias SwiftType = [CsIndicatorSwatch]
+
+    public static func write(_ value: [CsIndicatorSwatch], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsIndicatorSwatch.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsIndicatorSwatch] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsIndicatorSwatch]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsIndicatorSwatch.read(from: &buf))
         }
         return seq
     }
@@ -21194,6 +22034,26 @@ public func downloadWhisperModel(listener: CsWhisperDownloadListener?)async thro
         )
 }
 /**
+ * The pointer dot's palette in legend order, read from the core's one owner
+ * (`IndicatorState::color`). Swift draws the Settings legend and the
+ * recording lamp from it instead of keeping its own copy.
+ */
+public func indicatorPalette() -> [CsIndicatorSwatch]  {
+    return try!  FfiConverterSequenceTypeCsIndicatorSwatch.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_indicator_palette($0
+    )
+})
+}
+/**
+ * Latest Option double-tap outcome, or `None` before the first attempt.
+ */
+public func lastDoubleTapOutcome() -> CsDoubleTapOutcome?  {
+    return try!  FfiConverterOptionTypeCsDoubleTapOutcome.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_last_double_tap_outcome($0
+    )
+})
+}
+/**
  * Read the live custom lexicon as flattened `variant -> canonical` rows.
  */
 public func lexiconCustomEntries()throws  -> [CsLexiconEntry]  {
@@ -21403,6 +22263,27 @@ public func setAgentChooserCapture(active: Bool)  {try! rustCall() {
 }
 }
 /**
+ * A Codescribe message field took or released the focused caret. While it
+ * holds the caret, a long dictation hold stays idle and the field is told to
+ * point at its own microphone.
+ */
+public func setComposerCaretOwned(owned: Bool)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_set_composer_caret_owned(
+        FfiConverterBool.lower(owned),$0
+    )
+}
+}
+/**
+ * The Settings gesture tester takes (or renews) its lease, or releases it.
+ * While held, a recognised Option pair is reported but starts nothing.
+ */
+public func setGestureTestActive(active: Bool)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_set_gesture_test_active(
+        FfiConverterBool.lower(active),$0
+    )
+}
+}
+/**
  * Persist a picker selection and switch the running process to it.
  *
  * Validation happens before persistence: an unknown or unusable reference is
@@ -21543,6 +22424,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_download_whisper_model() != 26167) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_indicator_palette() != 64865) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_last_double_tap_outcome() != 16470) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_lexicon_custom_entries() != 24996) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -21598,6 +22485,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_set_agent_chooser_capture() != 16074) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_set_composer_caret_owned() != 10890) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_set_gesture_test_active() != 50579) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_set_local_whisper_model() != 36491) {
@@ -21688,6 +22581,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_cancel_account_login() != 44575) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_churn_dir() != 37576) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_clear_api_key() != 28388) {
@@ -21963,10 +22859,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_rearm_after_permission_grant() != 37275) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reserve_idle_restart() != 22857) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reserve_idle_restart() != 51863) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 64674) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 39169) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_resolve_max_tool_approval() != 6688) {
@@ -22038,6 +22934,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_add_server() != 12098) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_await_mcp_sign_in() != 28863) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_cancel_mcp_sign_in() != 3706) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_clear_tool_permission() != 37009) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -22068,10 +22970,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_set_tool_permission() != 12294) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_start_mcp_sign_in() != 12763) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_test_server() != 25786) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_update_server() != 22654) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_update_server() != 56083) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribenotes_notes_dir() != 5465) {
@@ -22201,6 +23106,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_gesture() != 52788) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_composer_dictation_redirected() != 43322) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csaudioreadlease_release() != 6902) {

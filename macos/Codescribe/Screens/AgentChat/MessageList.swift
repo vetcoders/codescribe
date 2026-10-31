@@ -377,7 +377,7 @@ struct MessageList: View {
               .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
-          .animation(.easeOut(duration: 0.18), value: pillVisible)
+          .animation(.easeOut(duration: CSMotion.Tempo.hover), value: pillVisible)
         }
       }
     }
@@ -395,7 +395,7 @@ struct MessageList: View {
   ) {
     guard action == .scrollToLiveEdge else { return }
     if animated {
-      withAnimation(.easeOut(duration: 0.25)) {
+      withAnimation(.easeOut(duration: CSMotion.Tempo.hover)) {
         proxy.scrollTo(bottomAnchor, anchor: .bottom)
       }
     } else {
@@ -504,7 +504,7 @@ private struct AgentEmptyThread: View {
         .foregroundStyle(Color.primary)
         .padding(.top, 2)
       Text(agentEmptyThreadDetail)
-        .font(CSFont.ui(12.5, .regular))
+        .font(CSFont.ui(13, .regular))
         .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -537,20 +537,20 @@ struct ShowEarlierButton: View {
           icon: .chevronRight, size: 8, weight: .semibold,
           color: CSColor.textTertiary)
         Text("Show earlier · \(hiddenCount) turns")
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(hovering ? Color.primary : CSColor.textTertiary)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 6)
-      .background(Color.primary.opacity(0.04))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+        Capsule(style: .continuous)
+          .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+      .clipShape(Capsule(style: .continuous))
       .contentShape(Rectangle())
     }
-    .csFocusRing(cornerRadius: CSRadius.pill)
+    .csFocusRing(cornerRadius: CSRadius.window)
     .onHover { hovering = $0 }
     .accessibilityLabel("Show earlier messages")
     .help("Render the previous \(window) turns")
@@ -570,19 +570,19 @@ struct JumpToCurrentButton: View {
           icon: .chevronDown, size: 9, weight: .semibold,
           color: CSColor.chromeAccent)
         Text("Current")
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(hovering ? Color.primary : CSColor.secondaryInk)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 6)
       .background(CSColor.controlFill)
       .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+        Capsule(style: .continuous)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+      .clipShape(Capsule(style: .continuous))
     }
-    .csFocusRing(cornerRadius: CSRadius.pill)
+    .csFocusRing(cornerRadius: CSRadius.window)
     .onHover { hovering = $0 }
     .accessibilityLabel("Jump to current")
     .help("Jump to the current reply")
@@ -779,19 +779,19 @@ private struct YouTurn: View {
       // Calm surface, not an alarm plate (U17): the bubble sits on the
       // shared raised surface; terracotta stays on ACCENTS only — the
       // timestamp above and this thin border.
-      .background(Color.primary.opacity(0.06))
+      .background(Color.primary.opacity(CSAlpha.fill))
       .overlay(
         UnevenRoundedRectangle(
-          topLeadingRadius: 14, bottomLeadingRadius: 14,
-          bottomTrailingRadius: 4, topTrailingRadius: 14,
+          topLeadingRadius: CSRadius.card, bottomLeadingRadius: CSRadius.card,
+          bottomTrailingRadius: 4, topTrailingRadius: CSRadius.card,
           style: .continuous
         )
         .strokeBorder(CSColor.terracotta.opacity(0.18), lineWidth: 1)
       )
       .clipShape(
         UnevenRoundedRectangle(
-          topLeadingRadius: 14, bottomLeadingRadius: 14,
-          bottomTrailingRadius: 4, topTrailingRadius: 14,
+          topLeadingRadius: CSRadius.card, bottomLeadingRadius: CSRadius.card,
+          bottomTrailingRadius: 4, topTrailingRadius: CSRadius.card,
           style: .continuous
         )
       )
@@ -834,7 +834,7 @@ private struct ContextChip: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       Button {
-        withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+        withAnimation(.easeOut(duration: CSMotion.Tempo.hover)) { expanded.toggle() }
       } label: {
         HStack(spacing: 4) {
           CSIconView(
@@ -858,7 +858,7 @@ private struct ContextChip: View {
         VStack(alignment: .leading, spacing: 5) {
           if let app {
             Text("app · \(app)")
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.mono(11, .medium))
               .foregroundStyle(CSColor.secondaryInk)
           }
           if let selection {
@@ -869,7 +869,7 @@ private struct ContextChip: View {
               if OversizedBubblePolicy.isOversized(selection) {
                 OversizedMessageBody(fullText: selection) { head in
                   Text(head)
-                    .font(CSFont.mono(10.5))
+                    .font(CSFont.mono(11))
                     .foregroundStyle(Color.primary)
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -877,7 +877,7 @@ private struct ContextChip: View {
                 }
               } else {
                 Text(selection)
-                  .font(CSFont.mono(10.5))
+                  .font(CSFont.mono(11))
                   .foregroundStyle(Color.primary)
                   .textSelection(.enabled)
                   .lineSpacing(3)
@@ -886,7 +886,7 @@ private struct ContextChip: View {
               }
             }
             .padding(8)
-            .background(Color.primary.opacity(0.05))
+            .background(Color.primary.opacity(CSAlpha.fill))
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
             .clipped()
           }
@@ -920,24 +920,24 @@ struct AttachmentChip: View {
             .resizable()
             .aspectRatio(contentMode: .fill)
             .frame(width: 18, height: 18)
-            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
         } else {
           CSIconView(icon: .photo, size: 11)
         }
         Text(attachment.name)
-          .font(CSFont.ui(10.5, .medium))
+          .font(CSFont.ui(11, .medium))
           .lineLimit(1)
           .truncationMode(.middle)
           .frame(maxWidth: 160)
       }
       .padding(.horizontal, 9)
       .padding(.vertical, 5)
-      .background(Color.primary.opacity(0.05))
+      .background(Color.primary.opacity(CSAlpha.fill))
       .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+        Capsule(style: .continuous)
+          .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+      .clipShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)
     .conversationActionHover(
@@ -993,14 +993,19 @@ struct AttachmentPreviewSheet: View {
             .font(CSFont.ui(13, .semibold))
             .foregroundStyle(Color.primary)
             .textSelection(.enabled)
+            .lineLimit(2)
+            .truncationMode(.middle)
           Text(attachment.type)
-            .font(CSFont.mono(10.5, .medium))
+            .font(CSFont.mono(11, .medium))
             .foregroundStyle(CSColor.textTertiary)
         }
         Spacer(minLength: 8)
         Button("Close") { dismiss() }
           .keyboardShortcut(.cancelAction)
+          .accessibilityIdentifier("attachment-preview-close")
       }
+      .fixedSize(horizontal: false, vertical: true)
+      .layoutPriority(1)
 
       Group {
         if let image {
@@ -1018,17 +1023,20 @@ struct AttachmentPreviewSheet: View {
               // pinned (Founder, 2026-10-18).
               .csAutohidingScrollers(.includesHorizontal)
           }
-          .frame(minHeight: 280, maxHeight: 480)
-          .background(Color.primary.opacity(0.04))
+          // The image yields before the title, Close and file actions. A
+          // 280 pt minimum pushed those controls outside small overlay sheets.
+          .frame(minHeight: 120, idealHeight: 280, maxHeight: 480)
+          .layoutPriority(-1)
+          .background(Color.primary.opacity(CSAlpha.subtle))
           .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
 
           HStack(spacing: 10) {
             Text("Zoom")
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.mono(11, .medium))
               .foregroundStyle(CSColor.textTertiary)
             Slider(value: $zoom, in: 0.5...3.0, step: 0.1)
             Text(String(format: "%.0f%%", zoom * 100))
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.mono(11, .medium))
               .foregroundStyle(CSColor.secondaryInk)
               .frame(width: 44, alignment: .trailing)
           }
@@ -1061,7 +1069,7 @@ struct AttachmentPreviewSheet: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
         Text(pathText)
-          .font(CSFont.mono(10.5))
+          .font(CSFont.mono(11))
           .foregroundStyle(Color.primary)
           .textSelection(.enabled)
           .lineLimit(3)
@@ -1069,7 +1077,7 @@ struct AttachmentPreviewSheet: View {
       }
       .padding(10)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(Color.primary.opacity(0.04))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
 
       HStack(spacing: 10) {
@@ -1101,12 +1109,15 @@ struct AttachmentPreviewSheet: View {
         }
         .disabled(!fileExists)
         .keyboardShortcut(.defaultAction)
+        .accessibilityIdentifier("attachment-preview-open")
 
         Spacer(minLength: 0)
       }
+      .fixedSize(horizontal: false, vertical: true)
+      .layoutPriority(1)
     }
     .padding(18)
-    .frame(minWidth: 520, idealWidth: 640, minHeight: 420)
+    .frame(minWidth: 520, idealWidth: 640, minHeight: 420, idealHeight: 640)
     .onAppear {
       if image == nil, let url = attachment.url, fileExists {
         image = NSImage(contentsOf: url)
@@ -1118,7 +1129,7 @@ struct AttachmentPreviewSheet: View {
     VStack(alignment: .leading, spacing: 8) {
       Text(title)
         .font(CSFont.mono(12, .semibold))
-        .foregroundStyle(CSColor.terracottaText)
+        .foregroundStyle(CSColor.dangerLight)
       Text(detail)
         .font(CSFont.mono(11))
         .foregroundStyle(CSColor.secondaryInk)
@@ -1126,10 +1137,10 @@ struct AttachmentPreviewSheet: View {
     }
     .padding(CSSpace.card)
     .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
-    .background(Color.primary.opacity(0.04))
+    .background(Color.primary.opacity(CSAlpha.subtle))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(CSColor.terracotta.opacity(0.22), lineWidth: 1)
+        .strokeBorder(CSColor.dangerLight.opacity(0.22), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }
@@ -1211,7 +1222,7 @@ private struct ToolLineRow: View {
     case .running:
       return CSColor.amberLight
     case .failed:
-      return CSColor.terracottaText
+      return CSColor.dangerLight
     case .cancelled, .unknown:
       return CSColor.textTertiary
     case .succeeded:
@@ -1228,10 +1239,11 @@ private struct ToolLineRow: View {
           if isRunning {
             PulseDot()
           }
-          (Text(verbatim: line.verbLabel).foregroundStyle(rowColor)
-            + Text(verbatim: " " + detailRun).foregroundStyle(
-              isQuiet ? CSColor.textTertiary : ChatPalette.toolBody))
-            .font(CSFont.mono(11.5, .medium))
+          let verb = Text(verbatim: line.verbLabel).foregroundStyle(rowColor)
+          let detail = Text(verbatim: " " + detailRun).foregroundStyle(
+            isQuiet ? CSColor.textTertiary : ChatPalette.toolBody)
+          Text("\(verb)\(detail)")
+            .font(CSFont.mono(12, .medium))
             .lineSpacing(4)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1288,12 +1300,12 @@ private struct ToolInspectPanel: View {
               ? String(localized: "error", comment: "Tool inspect section")
               : String(localized: "result", comment: "Tool inspect section")
           )
-          .font(CSFont.mono(9.5, .semibold))
+          .font(CSFont.mono(10, .semibold))
           .foregroundStyle(CSColor.textTertiary)
           .textCase(.uppercase)
           Text(reason)
-            .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(line.state == .failed ? CSColor.terracottaText : Color.primary)
+            .font(CSFont.mono(11, .medium))
+            .foregroundStyle(line.state == .failed ? CSColor.dangerLight : Color.primary)
             .textSelection(.enabled)
             .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)
@@ -1308,7 +1320,7 @@ private struct ToolInspectPanel: View {
       HStack(spacing: 10) {
         CopyMessageButton(text: line.technicalCopyText)
         Text("request/response bodies not on this event")
-          .font(CSFont.mono(9.5, .medium))
+          .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
           .lineLimit(1)
       }
@@ -1318,24 +1330,24 @@ private struct ToolInspectPanel: View {
     .padding(.vertical, 8)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .fill(Color.primary.opacity(0.04))
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
+        .fill(Color.primary.opacity(CSAlpha.subtle))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
+        .strokeBorder(Color.primary.opacity(CSAlpha.fill), lineWidth: 1)
     )
   }
 
   private func inspectRow(label: String, value: String) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text(label)
-        .font(CSFont.mono(9.5, .semibold))
+        .font(CSFont.mono(10, .semibold))
         .foregroundStyle(CSColor.textTertiary)
         .textCase(.uppercase)
         .frame(width: 64, alignment: .leading)
       Text(value)
-        .font(CSFont.mono(10.5, .medium))
+        .font(CSFont.mono(11, .medium))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1394,10 +1406,10 @@ private struct ToolTurn: View {
         .contentShape(Rectangle())
       }
       .disclosureGroupStyle(FlatDisclosureStyle())
-      .background(Color.primary.opacity(0.025))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
       .clipped()
@@ -1422,7 +1434,7 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
   func makeBody(configuration: Configuration) -> some View {
     VStack(alignment: .leading, spacing: 0) {
       Button {
-        withAnimation(.easeOut(duration: 0.18)) {
+        withAnimation(.easeOut(duration: CSMotion.Tempo.hover)) {
           configuration.isExpanded.toggle()
         }
       } label: {
@@ -1431,7 +1443,7 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
       .csFocusRing()
 
       if configuration.isExpanded {
-        Rectangle().fill(Color.primary.opacity(0.05)).frame(height: 1)
+        Rectangle().fill(Color.primary.opacity(CSAlpha.fill)).frame(height: 1)
         configuration.content
       }
     }
@@ -1556,19 +1568,19 @@ private struct AssistantTurn: View {
       }
       .padding(.horizontal, 15)
       .padding(.vertical, 13)
-      .background(Color.primary.opacity(0.03))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .overlay(
         UnevenRoundedRectangle(
-          topLeadingRadius: 14, bottomLeadingRadius: 4,
-          bottomTrailingRadius: 14, topTrailingRadius: 14,
+          topLeadingRadius: CSRadius.card, bottomLeadingRadius: 4,
+          bottomTrailingRadius: CSRadius.card, topTrailingRadius: CSRadius.card,
           style: .continuous
         )
-        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(
         UnevenRoundedRectangle(
-          topLeadingRadius: 14, bottomLeadingRadius: 4,
-          bottomTrailingRadius: 14, topTrailingRadius: 14,
+          topLeadingRadius: CSRadius.card, bottomLeadingRadius: 4,
+          bottomTrailingRadius: CSRadius.card, topTrailingRadius: CSRadius.card,
           style: .continuous
         )
       )
@@ -1630,7 +1642,7 @@ private struct ReasoningDisclosure: View {
             ? String(localized: "thinking...", comment: "The model is still reasoning")
             : String(localized: "reasoning summary")
         )
-        .font(CSFont.mono(10.5, .semibold))
+        .font(CSFont.mono(11, .semibold))
         .foregroundStyle(ChatPalette.thinking)
         Spacer(minLength: 0)
       }
@@ -1642,17 +1654,17 @@ private struct ReasoningDisclosure: View {
     .onChange(of: isLive) { _, live in
       if live { expanded = true }
     }
-    .background(Color.primary.opacity(0.018))
+    .background(Color.primary.opacity(CSAlpha.subtle))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.055), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(CSAlpha.fill), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }
 
   private func reasoningBody(_ content: String) -> some View {
     Text(content)
-      .font(CSFont.mono(10.5, .medium))
+      .font(CSFont.mono(11, .medium))
       .foregroundStyle(ChatPalette.thinking.opacity(0.86))
       .textSelection(.enabled)
       .lineSpacing(3)
@@ -1834,10 +1846,10 @@ private struct ReasonedChip: View {
       .padding(.vertical, 3)
       .background(CSColor.amber.opacity(0.1))
       .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
+        RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
           .strokeBorder(CSColor.amber.opacity(0.22), lineWidth: 1)
       )
-      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+      .clipShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
   }
 }
 

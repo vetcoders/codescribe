@@ -353,18 +353,18 @@ private struct AgentIntegratedChrome: ViewModifier {
         .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.secondaryInk)
         .frame(width: 24, height: 20)
         .background(
-          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+          Capsule(style: .continuous)
             .fill(isPinned ? CSColor.chromeAccent.opacity(0.16) : Color.clear)
         )
         .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+          Capsule(style: .continuous)
             .strokeBorder(
               isPinned ? CSColor.chromeAccent.opacity(0.32) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
     }
     .buttonStyle(.borderless)
-    .csFocusRing(cornerRadius: CSRadius.pill)
+    .csFocusRing(cornerRadius: CSRadius.window)
     .help(
       isPinned
         ? String(
@@ -501,7 +501,7 @@ private struct ThreadDetail: View {
         .transition(.move(edge: .trailing).combined(with: .opacity))
       }
     }
-    .animation(.easeOut(duration: 0.18), value: isContextOpen)
+    .animation(.easeOut(duration: CSMotion.Tempo.hover), value: isContextOpen)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(CSColor.sheet)
     .alert(
@@ -686,10 +686,10 @@ private struct QueuedTurnRow: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 7)
-    .background(Color.primary.opacity(0.04))
+    .background(Color.primary.opacity(CSAlpha.subtle))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     .overlay {
@@ -735,7 +735,7 @@ struct ToolApprovalCard: View {
           .foregroundStyle(CSColor.textTertiary)
       }
       Text(verbatim: "\(request.server) · \(request.tool)")
-        .font(CSFont.mono(11.5, .semibold))
+        .font(CSFont.mono(12, .semibold))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
       if !request.summary.isEmpty {
@@ -751,13 +751,13 @@ struct ToolApprovalCard: View {
       }
       if let cwd = request.cwd {
         Text(verbatim: "cwd: \(cwd)")
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
           .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
       ForEach(request.distinctPaths, id: \.self) { path in
         Text(path)
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
           .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
@@ -767,11 +767,11 @@ struct ToolApprovalCard: View {
             "Arguments",
             comment: "Heading above the argument snapshot on an agent permission card"
           )
-          .font(CSFont.ui(10.5, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(CSColor.textTertiary)
           ScrollView {
             Text(verbatim: arguments)
-              .font(CSFont.mono(10.5, .regular))
+              .font(CSFont.mono(11, .regular))
               .foregroundStyle(Color.primary)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
@@ -795,7 +795,7 @@ struct ToolApprovalCard: View {
       }
     }
     .padding(CSSpace.card)
-    .background(Color.primary.opacity(0.04))
+    .background(Color.primary.opacity(CSAlpha.subtle))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(CSColor.amber.opacity(0.35), lineWidth: 1)

@@ -35,6 +35,12 @@ struct OverlayCursorState {
   private var cursor: ObjectIdentifier?
   private var region: ObjectIdentifier?
 
+  fileprivate var diagnosticKey:
+    (
+      zone: OverlayPointerZone?, cursor: ObjectIdentifier?, region: ObjectIdentifier?
+    )
+  { (zone, cursor, region) }
+
   mutating func update(
     zone: OverlayPointerZone, cursor: ObjectIdentifier?, region: ObjectIdentifier? = nil
   ) -> Bool {
@@ -67,6 +73,9 @@ struct OverlayCursorState {
 /// and clicking its chrome do not open this gate.
 final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserMove: (() -> Void)?
+  /// Input arriving at this panel extends the existing presentation deadline.
+  /// Paints, native meter updates and pointer motion are not user input.
+  var onUserActivity: (() -> Void)?
   var onUserDragEnded: ((NSPoint) -> Void)?
   var onPresentationClick: (() -> Void)?
   var onUserResize: (() -> Void)?
@@ -78,6 +87,27 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   let menuCursorRegions = NSHashTable<NSView>.weakObjects()
   let windowDragRegions = NSHashTable<NSView>.weakObjects()
   private var cursorState = OverlayCursorState()
+
+  enum CursorInvalidationReason {
+    case boundary, mounting, orderOut
+  }
+
+  /// Aggregate evidence only. No timer, user content or cursor decisions live here.
+  private struct PointerMetrics {
+    var since = ProcessInfo.processInfo.systemUptime
+    var decisions = 0
+    var writes = 0
+    var zoneChanges = 0
+    var cursorChanges = 0
+    var regionChanges = 0
+    var boundaryResets = 0
+    var mountingResets = 0
+    var orderOutResets = 0
+    var decisionSeconds = 0.0
+    var cursorSeconds = 0.0
+    var maxCursorSeconds = 0.0
+  }
+  private var pointerMetrics = PointerMetrics()
   /// Selectable SwiftUI text that opens the keyboard gate without owning clicks.
   let selectableTextRegions = NSHashTable<NSView>.weakObjects()
   /// Grow-only expanded height for a candidate width. Nil keeps the remembered
@@ -528,29 +558,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     makeFirstResponder(nil)
   }
 
-  /// ⌘C for whatever holds the focus in this panel.
-  func performCopyChord(_ event: NSEvent) -> Bool {
-    guard isKeyWindow, event.type == .keyDown,
-      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
-      event.charactersIgnoringModifiers?.lowercased() == "c"
-    else { return false }
-    if let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:))) {
-      // The focused responder owns its copy: the transcript canvas routes
-      // through the tagged clipboard bridge in its own `copy(_:)`, and any
-      // other text view keeps the behaviour it overrides.
-      if let textView = responder as? NSTextView {
-        textView.copy(nil)
-        return true
-      }
-      return responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
-    }
-    // This panel is non-activating, so the app's Edit menu does not receive
-    // key equivalents while another app is active; the action has to be sent
-    // explicitly down the responder chain.
-    return NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
-  }
-
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if event.type == .keyDown { onUserActivity?() }
     if performCopyChord(event) { return true }
     return super.performKeyEquivalent(with: event)
   }
@@ -560,6 +569,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Native transcript and SwiftUI controls keep ordinary AppKit dispatch.
   /// The existing resize band is tracked here without a nested event loop.
   override func sendEvent(_ event: NSEvent) {
+    switch event.type {
+    case .keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+      .leftMouseUp, .rightMouseUp, .otherMouseUp, .leftMouseDragged, .rightMouseDragged,
+      .otherMouseDragged, .scrollWheel:
+      onUserActivity?()
+    default:
+      break
+    }
     // ⌘C on a selected bubble did nothing in the installed app, while the key
     // equivalent path passed in a test host that is the active app (Maciej,
     // 2026-10-19). With another app active the chord can arrive as a plain
@@ -790,16 +807,28 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   /// Invalidated by the content boundary on exit/re-entry. A cursor installed
   /// by another window must not suppress our next region entry.
-  func invalidateCursorOwnership() {
+  func invalidateCursorOwnership(reason: CursorInvalidationReason = .boundary) {
     cursorState = OverlayCursorState()
+    guard DiagnosticLog.installed != nil else { return }
+    switch reason {
+    case .boundary: pointerMetrics.boundaryResets += 1
+    case .mounting: pointerMetrics.mountingResets += 1
+    case .orderOut: pointerMetrics.orderOutResets += 1
+    }
   }
 
   override func orderOut(_ sender: Any?) {
-    invalidateCursorOwnership()
+    invalidateCursorOwnership(reason: .orderOut)
     super.orderOut(sender)
   }
 
   private func pointerDecision(at point: NSPoint) -> PointerDecision {
+    let started = DiagnosticLog.installed.map { _ in ProcessInfo.processInfo.systemUptime }
+    defer {
+      if let started {
+        pointerMetrics.decisionSeconds += ProcessInfo.processInfo.systemUptime - started
+      }
+    }
     guard let contentView else { return PointerDecision(zone: .outside) }
     var menu: OverlayMenuCursorRegionView?
     let zone = OverlayPointerZone.resolve(
@@ -836,12 +865,40 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   @discardableResult
   private func applyCursor(_ decision: PointerDecision) -> Bool {
+    let previous = cursorState.diagnosticKey
+    let cursorID = decision.cursor.map(ObjectIdentifier.init)
     let shouldSet = cursorState.update(
-      zone: decision.zone, cursor: decision.cursor.map(ObjectIdentifier.init),
-      region: decision.region)
-    guard shouldSet else { return false }
-    (decision.cursor ?? .arrow).set()
-    return true
+      zone: decision.zone, cursor: cursorID, region: decision.region)
+    let sink = DiagnosticLog.installed
+    let started = sink.map { _ in ProcessInfo.processInfo.systemUptime }
+    if shouldSet { (decision.cursor ?? .arrow).set() }
+    if let sink, let started {
+      let now = ProcessInfo.processInfo.systemUptime
+      pointerMetrics.decisions += 1
+      if previous.zone != decision.zone { pointerMetrics.zoneChanges += 1 }
+      if previous.cursor != cursorID { pointerMetrics.cursorChanges += 1 }
+      if previous.region != decision.region { pointerMetrics.regionChanges += 1 }
+      if shouldSet {
+        pointerMetrics.writes += 1
+        pointerMetrics.cursorSeconds += now - started
+        pointerMetrics.maxCursorSeconds = max(pointerMetrics.maxCursorSeconds, now - started)
+      }
+      // At most one append per two seconds of actual pointer activity. Quiet
+      // windows schedule no work, and native cursor tracking remains unchanged.
+      if now - pointerMetrics.since >= 2 {
+        let m = pointerMetrics
+        sink.append(
+          category: "overlay-pointer",
+          "window=\(windowNumber) surface=\(contentSurface.rawValue) mode=\(presentationMode) "
+            + "seconds=\(now - m.since) decisions=\(m.decisions) writes=\(m.writes) "
+            + "zoneChanges=\(m.zoneChanges) cursorChanges=\(m.cursorChanges) regionChanges=\(m.regionChanges) "
+            + "boundaryResets=\(m.boundaryResets) mountingResets=\(m.mountingResets) orderOutResets=\(m.orderOutResets) "
+            + "decisionMs=\(m.decisionSeconds * 1000) cursorMs=\(m.cursorSeconds * 1000) maxCursorMs=\(m.maxCursorSeconds * 1000)"
+        )
+        pointerMetrics = PointerMetrics()
+      }
+    }
+    return shouldSet
   }
 
   @discardableResult
@@ -1036,13 +1093,16 @@ final class OverlayContentContainer: NSView {
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    (window as? FloatingOverlayPanel)?.invalidateCursorOwnership()
+    (window as? FloatingOverlayPanel)?.invalidateCursorOwnership(reason: .mounting)
     refreshGrabPad()
   }
 
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
-    if let cursorBoundary { removeTrackingArea(cursorBoundary) }
+    // inVisibleRect follows native geometry without replacing its identity.
+    // Recreating it during layout queues artificial exits/entries that rearm
+    // the panel's cursor write even when the pointer has not left the window.
+    guard cursorBoundary == nil else { return }
     let area = NSTrackingArea(
       rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
       owner: self, userInfo: nil)
@@ -1051,10 +1111,17 @@ final class OverlayContentContainer: NSView {
   }
 
   override func mouseEntered(with event: NSEvent) {
-    (window as? FloatingOverlayPanel)?.invalidateCursorOwnership()
+    invalidateCursorOwnership(from: event.trackingArea, in: event.window)
   }
 
   override func mouseExited(with event: NSEvent) {
+    invalidateCursorOwnership(from: event.trackingArea, in: event.window)
+  }
+
+  func invalidateCursorOwnership(from area: NSTrackingArea?, in sourceWindow: NSWindow?) {
+    guard let cursorBoundary, area === cursorBoundary,
+      sourceWindow === window
+    else { return }
     (window as? FloatingOverlayPanel)?.invalidateCursorOwnership()
   }
 
@@ -1415,6 +1482,7 @@ enum DictationOverlayWindow {
       guard !OverlayController.isApplyingFrame else { return }
       state?.userDraggedOverlay()
     }
+    panel.onUserActivity = { [weak state] in state?.noteOverlayInputActivity() }
     panel.onUserDragEnded = { [weak state] origin in
       state?.recordUserDrag(at: origin)
     }
@@ -1538,7 +1606,9 @@ enum OverlayPresencePolicy: Equatable {
 
   var windowLevel: NSWindow.Level {
     switch self {
-    case .rest: .floating
+    // Pinned transcription stays above the Intercom's floating cards, without
+    // repeatedly ordering either surface to the front on content updates.
+    case .rest: NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 3)
     case .unpinned, .yield: .normal
     case .capture: .statusBar
     }
@@ -1849,5 +1919,30 @@ enum OverlayResizeHit: Sendable {
     case .top, .bottom: return .resizeUpDown
     default: return .crosshair
     }
+  }
+}
+
+extension NSPanel {
+  /// ⌘C for whatever holds the focus in this panel. Shared by every
+  /// non-activating Codescribe panel: the overlay and the Intercom cards.
+  func performCopyChord(_ event: NSEvent) -> Bool {
+    guard isKeyWindow, event.type == .keyDown,
+      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+      event.charactersIgnoringModifiers?.lowercased() == "c"
+    else { return false }
+    if let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:))) {
+      // The focused responder owns its copy: the transcript canvas routes
+      // through the tagged clipboard bridge in its own `copy(_:)`, and any
+      // other text view keeps the behaviour it overrides.
+      if let textView = responder as? NSTextView {
+        textView.copy(nil)
+        return true
+      }
+      return responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
+    }
+    // This panel is non-activating, so the app's Edit menu does not receive
+    // key equivalents while another app is active; the action has to be sent
+    // explicitly down the responder chain.
+    return NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
   }
 }

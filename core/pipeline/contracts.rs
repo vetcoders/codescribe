@@ -1051,6 +1051,30 @@ pub enum EngineEvent {
 /// that held the microphone behind an Idle tray (2026-08-12 incident).
 pub const USER_TERMINAL_WARNING_CODES: &[&str] = &["transcription_failed"];
 
+/// Warning code of a refused overlap pin. One take can raise it thousands of
+/// times, so the emitter logs the first at warning level and counts the rest
+/// by ledger reason.
+pub const OVERLAP_PIN_REFUSED: &str = "overlap_pin_refused";
+
+/// Message of an [`OVERLAP_PIN_REFUSED`] warning: the refused segment, the
+/// open occurrences it crosses, and last the ledger reason, which
+/// [`overlap_pin_refusal_reason`] reads back.
+pub fn overlap_pin_refused_message(
+    segment: (u64, u64),
+    occurrences: &str,
+    ledger_reason: &str,
+) -> String {
+    let (start, end) = segment;
+    format!("segment {start}..{end} occurrence [{occurrences}] ledger={ledger_reason}")
+}
+
+/// The ledger reason of an [`overlap_pin_refused_message`].
+pub fn overlap_pin_refusal_reason(message: &str) -> &str {
+    message
+        .rsplit_once(" ledger=")
+        .map_or("unknown", |(_, reason)| reason)
+}
+
 /// Whether a [`EngineEvent::Warning`] code is a user-terminal failure
 /// (forward to `on_error`) rather than a quality receipt (log only).
 ///
@@ -1430,6 +1454,20 @@ pub trait EventSink: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// W2-08: the emitter counts refused overlap pins by the ledger reason
+    /// the producer writes last in the message.
+    #[test]
+    fn overlap_pin_refusal_reason_reads_what_the_message_wrote() {
+        let message = overlap_pin_refused_message((10, 20), "0..32", "no_voiced_hop_in_pin");
+        assert_eq!(
+            message,
+            "segment 10..20 occurrence [0..32] ledger=no_voiced_hop_in_pin"
+        );
+        let reason = overlap_pin_refusal_reason(&message);
+        assert_eq!(reason, "no_voiced_hop_in_pin");
+        assert_eq!(overlap_pin_refusal_reason("no reason here"), "unknown");
+    }
 
     // ── TranscriptDelta roundtrip ──
 

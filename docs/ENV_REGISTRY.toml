@@ -19,7 +19,7 @@
 
 [meta]
 version = "1.2.0"
-updated = "2026-10-20"
+updated = "2026-10-24"
 
 [vars.CODESCRIBE_BIN]
 default = ""
@@ -91,11 +91,11 @@ category = "audio"
 description = "Audio input device name (empty = system default)"
 
 [vars.CODESCRIBE_CHANNEL_AUTOSEAL_SECS]
-default = "5"
-type = "u64"
-reload = "hot"
+default = ""
+type = "f32"
+reload = "restart"
 category = "audio"
-description = "Hands-free delivery boundary: seconds of silence after heard voice before the open agent-channel utterance seals, delivers, and the channel reopens on the same binding. Default 5 per the Founder's 2026-09-29 voice decision (seal cc6c8248, closes A.5.3); a channel that heard no voice stays open. 0 disables the threshold; utterance silence inside the session is a different knob."
+description = "Power-user override of settings.json agent_channel.send_pause_sec: seconds of silence after heard voice that send an agent-channel message. Unset = the setting rules (default 5.0, 1.0..=15.0 on a 0.5 grid). Read into the runtime snapshot at load, never clamped; Settings shows the pause as (env override). Under agent_channel.session_policy = continuous the session keeps listening after the send; under end_after_message the send also ends the session. 0 turns automatic sending and agent_channel.voiceless_close_sec off. Seeds send_pause_sec once when a .env is first migrated into settings.json; toggle_silence_sec (hands-free dictation) is never an input."
 
 [vars.CODESCRIBE_AGENT_SEND_HOLD_SEC]
 default = "10"
@@ -464,7 +464,7 @@ default = "auto"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
+description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture. Also the language of the app's xAI spoken replies; auto speaks pl there."
 
 [vars.WHISPER_ADAPTIVE_BUFFER]
 default = "false"
@@ -1214,6 +1214,20 @@ reload = "hot"
 category = "hotkeys"
 description = "Double-tap interval for toggle detection (ms)"
 
+[vars.TAP_MAX_MS]
+default = "220"
+type = "u64"
+reload = "hot"
+category = "hotkeys"
+description = "Longest Option press that still counts as one tap of an Option double-tap (ms, 120..=300)"
+
+[vars.TYPING_QUIET_MS]
+default = "300"
+type = "u64"
+reload = "hot"
+category = "hotkeys"
+description = "Option taps count for nothing this long after any typed key (ms, 0..=1000); keeps Option-typed characters such as Polish diacritics from pairing into a double-tap"
+
 [vars.TOGGLE_SILENCE_SEC]
 default = "5.0"
 type = "f32"
@@ -1364,7 +1378,7 @@ default = ""
 type = "string"
 reload = "restart"
 category = "storage"
-description = "Override data directory (default: ~/.codescribe)"
+description = "Override data directory (default: ~/.codescribe); high-churn data (logs, overlay caches) lives in its data.noindex subfolder, which Spotlight does not index"
 
 [vars.CODESCRIBE_TRANSCRIPT_BUS_PATH]
 default = ""
@@ -1832,6 +1846,13 @@ type = "string"
 reload = "restart"
 category = "agent"
 description = "TTS vendor for the cs-say system voice: xai or openai; --tts-vendor wins. Read at helper invocation."
+
+[vars.CS_SAY_LANGUAGE]
+default = "pl"
+type = "string"
+reload = "restart"
+category = "agent"
+description = "Language of every xAI reply the helper speaks (cs-say, --play-reply). Cut to its first part (pl-PL is pl) and accepted as pl or en; anything else, auto included, speaks pl with a warning. Read at synthesis."
 
 [vars.LLM_ANTHROPIC_OAUTH_CLIENT_ID]
 default = ""

@@ -1,9 +1,9 @@
 import SwiftUI
 
-// Creator setup panel: interface language (the per-app macOS preference the
-// setup wizard also writes), live permission checklist, editable voice/formatting
-// controls (language, formatting level) written through the core
-// router, plus quick-start cards and launchpad chips.
+// General settings page (sidebar key "Creator", PL "Ogólne"): quick-start cards,
+// interface language (the per-app macOS preference the setup wizard also
+// writes), appearance, live permission checklist and editable formatting
+// controls written through the core router. Its title row reopens the wizard.
 // Permission rows reflect LIVE AVAuthorization / AX / IOHID / CG status.
 
 struct CreatorPanel: View {
@@ -14,6 +14,9 @@ struct CreatorPanel: View {
   /// 2026-10-18: skill installs never overwrite files unannounced).
   @State private var pendingSkillInstall: CreatorAgentBridgeInstallPlan?
   @State private var showingSkillLocations = false
+  /// Opens the folded checklist while every scope is granted; a missing scope
+  /// shows the full list whatever this says.
+  @State private var showingGrantedPermissions = false
 
   private static let permissionKinds: [PermissionKind] = [
     .microphone, .accessibility, .inputMonitoring, .screenRecording, .speechRecognition,
@@ -21,125 +24,21 @@ struct CreatorPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsPageHeader(String(localized: "Get set up."))
-
+      // Headed by the sidebar name; what the page is for is the line under it.
+      SettingsPageHeader(
+        SettingsSection.creator.title,
+        blurb: String(
+          localized: "Language, appearance, permissions and formatting.",
+          comment: "General page blurb under the sidebar name: what the page holds")
+      )
       // The wizard's only entry after first run: the tray row that used to
-      // open it is gone (Founder, 2026-10-20), so the Creator offers it here.
-      // No explanation beside it: each step opens on the current value, but
-      // Continue on the shortcuts step writes that step's preset, so "your
-      // settings stay" would not be true.
-      Button(
-        String(
-          localized: "Open Setup Wizard…",
-          comment: "Creator: reopens the first-run setup wizard window")
-      ) {
-        model.onOpenSetupWizard()
+      // open it is gone (Founder, 2026-10-20), so this page offers it on its
+      // title line, on the title's baseline, instead of a row of its own.
+      .overlay(alignment: Alignment(horizontal: .trailing, vertical: .firstTextBaseline)) {
+        openWizardButton
       }
-      .buttonStyle(.bordered)
-      .controlSize(.small)
-      .accessibilityIdentifier("settings-creator-open-wizard")
-      .padding(.top, SettingsScale.headerGap)
 
-      // Groups whose cards already name themselves carry no section header;
-      // the section gap alone separates them.
-      VStack(spacing: 8) {
-        InterfaceLanguageRow(model: model)
-        RecognitionLanguageRow(selection: languageBinding)
-      }
-      .padding(.top, SettingsScale.sectionGap)
-
-      VStack(spacing: 8) {
-        AppearanceRow(model: model)
-        SheetShadeRows(model: model)
-        SettingsControlRow(
-          title: String(localized: "Intercom layout"),
-          subtitle: String(
-            localized:
-              "Classic overlay, the horizontal agent strip, or floating vertical agent pills.")
-        ) {
-          // Classic ships as the default; the two mapped layouts ship marked
-          // experimental (Maciej, 2026-10-23).
-          Picker(
-            "Intercom layout",
-            selection: Binding(
-              get: { model.overlayIntercomMode },
-              set: { model.selectOverlayIntercomMode($0) })
-          ) {
-            Text("Classic").tag(OverlayIntercomPresentationMode.classic)
-            Text("Horizontal strip (experimental)")
-              .tag(OverlayIntercomPresentationMode.horizontal)
-            Text("Floating agent pills (experimental)")
-              .tag(OverlayIntercomPresentationMode.vertical)
-          }
-          .labelsHidden()
-          .accessibilityIdentifier("settings-overlay-intercom-layout")
-        }
-      }
-      .padding(.top, SettingsScale.sectionGap)
-
-      // The checklist shows live status; the header link opens the privacy
-      // pane itself so a granted scope can still be reviewed or revoked.
-      SettingsSectionHeaderRow(String(localized: "Permissions")) {
-        Button(
-          String(
-            localized: "System Settings…",
-            comment: "Permissions header action: opens the Privacy & Security pane")
-        ) { PermissionKind.openPrivacySettings() }
-        .accessibilityIdentifier("settings-permissions-system-settings")
-      }
-      .padding(.top, SettingsScale.sectionGap)
-      VStack(spacing: 0) {
-        ForEach(Self.permissionKinds) { kind in
-          PermissionChecklistRow(
-            kind: kind,
-            state: model.permissions.state(kind),
-            note: model.permissionRepairNote(for: kind),
-            onRequested: { model.notePermissionRequested(kind) },
-            // A grant can change recording admission, not only this row.
-            onStateChanged: { model.refreshDictationReadiness() }
-          )
-          if kind != Self.permissionKinds.last {
-            // Aligned with the row text: inset + badge + the row's own spacing.
-            Divider().padding(.leading, 2 * SettingsScale.rowInsetH + 20)
-          }
-        }
-      }
-      .settingsGroupedInset(padding: 0)
-      .padding(.top, SettingsScale.headerGap)
-
-      VStack(spacing: 8) {
-        SettingsControlRow(title: String(localized: "Formatting level")) {
-          Picker("", selection: formattingLevelBinding) {
-            ForEach(FormattingPolicyOption.allCases) { policy in
-              Text(policy.visibleName).tag(policy.rawValue)
-            }
-          }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          .fixedSize()
-        }
-        if model.maxAgentUnavailable {
-          Text(
-            String(
-              localized: "Max uses the Agent model. Set up the Agent endpoint to use Max.",
-              comment: "Shown when the Max level is selected but the Agent lane is unavailable"
-            )
-          )
-          .font(.caption)
-          .foregroundStyle(CSColor.terracottaText)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .accessibilityIdentifier("settings-max-agent-unavailable")
-        }
-        if model.maxConsultationEnabled || !model.maxToolApprovals.isEmpty {
-          MaxConsultationCard(model: model)
-            .id(SettingsAnchor.maxConsultation)
-        }
-      }
-      .padding(.top, SettingsScale.sectionGap)
-
-      agentBridgeSection
-        .padding(.top, SettingsScale.sectionGap)
-
+      // The three first actions sit right under the title, not at the bottom.
       SettingsSectionLabel(String(localized: "Quick start"))
         .padding(.top, SettingsScale.sectionGap)
       HStack(spacing: 10) {
@@ -160,6 +59,110 @@ struct CreatorPanel: View {
         ) { model.performQuickStart(.tuneShortcuts) }
       }
       .padding(.top, SettingsScale.headerGap)
+
+      // Every group carries its own section title above its cards.
+      SettingsSectionLabel(String(localized: "Language"))
+        .padding(.top, SettingsScale.sectionGap)
+      VStack(spacing: 8) {
+        InterfaceLanguageRow(model: model)
+        RecognitionLanguageRow(selection: languageBinding)
+      }
+      .padding(.top, SettingsScale.headerGap)
+
+      SettingsSectionLabel(String(localized: "Appearance"))
+        .padding(.top, SettingsScale.sectionGap)
+      VStack(spacing: 8) {
+        AppearanceRow(model: model)
+        SheetShadeRows(model: model)
+        SettingsControlRow(
+          title: String(localized: "Intercom layout"),
+          subtitle: String(
+            localized:
+              "Classic overlay, the horizontal agent strip, or floating vertical agent pills. The strip and pills are experimental."
+          )
+        ) {
+          // Classic ships as the default. The subtitle keeps the experimental
+          // status of the two mapped layouts outside the short pills label.
+          Picker(
+            "Intercom layout",
+            selection: Binding(
+              get: { model.overlayIntercomMode },
+              set: { model.selectOverlayIntercomMode($0) })
+          ) {
+            Text("Classic").tag(OverlayIntercomPresentationMode.classic)
+            Text("Horizontal strip (experimental)")
+              .tag(OverlayIntercomPresentationMode.horizontal)
+            Text("Floating pills")
+              .tag(OverlayIntercomPresentationMode.vertical)
+          }
+          .labelsHidden()
+          .accessibilityIdentifier("settings-overlay-intercom-layout")
+        }
+      }
+      .padding(.top, SettingsScale.headerGap)
+
+      // The checklist shows live status; the header link opens the privacy
+      // pane itself so a granted scope can still be reviewed or revoked.
+      SettingsSectionHeaderRow(String(localized: "Permissions")) {
+        Button(
+          String(
+            localized: "System Settings…",
+            comment: "Permissions header action: opens the Privacy & Security pane")
+        ) { PermissionKind.openPrivacySettings() }
+        .accessibilityIdentifier("settings-permissions-system-settings")
+      }
+      .padding(.top, SettingsScale.sectionGap)
+      // With every scope granted the five rows fold into one verified line;
+      // a missing scope brings the full list back on its own.
+      VStack(spacing: 0) {
+        if allPermissionsGranted {
+          permissionsSummaryRow
+          if showingGrantedPermissions {
+            Divider()
+            permissionRows
+          }
+        } else {
+          permissionRows
+        }
+      }
+      .settingsGroupedInset(padding: 0)
+      .padding(.top, SettingsScale.headerGap)
+
+      VStack(spacing: 8) {
+        SettingsControlRow(
+          title: String(localized: "Formatting level"),
+          subtitle: FormattingPolicyOption(storedValue: model.settings.formattingLevel)?.summary
+        ) {
+          Picker("", selection: formattingLevelBinding) {
+            ForEach(FormattingPolicyOption.allCases) { policy in
+              Text(policy.visibleName).tag(policy.rawValue)
+            }
+          }
+          .pickerStyle(.segmented)
+          .labelsHidden()
+          .fixedSize()
+        }
+        if model.maxAgentUnavailable {
+          Text(
+            String(
+              localized: "Max uses the Agent model. Set up the Agent endpoint to use Max.",
+              comment: "Shown when the Max level is selected but the Agent lane is unavailable"
+            )
+          )
+          .font(.caption)
+          .foregroundStyle(CSColor.dangerLight)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityIdentifier("settings-max-agent-unavailable")
+        }
+        if model.maxConsultationEnabled || !model.maxToolApprovals.isEmpty {
+          MaxConsultationCard(model: model)
+            .id(SettingsAnchor.maxConsultation)
+        }
+      }
+      .padding(.top, SettingsScale.sectionGap)
+
+      agentBridgeSection
+        .padding(.top, SettingsScale.sectionGap)
     }
     .settingsPage()
     .onAppear { model.refreshCreatorAgentBridge() }
@@ -182,6 +185,77 @@ struct CreatorPanel: View {
       )
     }
     .task { await model.refreshMaxToolApprovals() }
+  }
+
+  /// A neutral action chip with its glyph before the label, like the other
+  /// Settings actions (D2: actions read through their shape, not a hue).
+  /// No explanation beside it: each step opens on the current value, but
+  /// Continue on the shortcuts step writes that step's preset, so "your
+  /// settings stay" would not be true.
+  private var openWizardButton: some View {
+    SettingsChipButton(action: { model.onOpenSetupWizard() }) {
+      HStack(spacing: 5) {
+        CSIconView(icon: .setupWizard, size: 10, weight: .semibold)
+        Text(
+          String(
+            localized: "Open Setup Wizard…",
+            comment: "General page title row: reopens the setup wizard window")
+        )
+        .font(SettingsScale.controlLabel)
+      }
+      .foregroundStyle(Color.primary)
+    }
+    .accessibilityIdentifier("settings-creator-open-wizard")
+  }
+
+  private var allPermissionsGranted: Bool {
+    Self.permissionKinds.allSatisfy { model.permissions.state($0).isGranted }
+  }
+
+  /// The folded checklist: one olive verified capsule with the count, and a
+  /// chevron that opens the granted rows for review.
+  private var permissionsSummaryRow: some View {
+    Button {
+      showingGrantedPermissions.toggle()
+    } label: {
+      HStack(spacing: SettingsScale.rowInsetH) {
+        CSIconView(
+          icon: showingGrantedPermissions ? .chevronDown : .chevronRight, size: 10,
+          weight: .semibold, color: CSColor.secondaryInk)
+        CSStatusBadge(
+          text: String(
+            localized: "All permissions granted (\(Self.permissionKinds.count))",
+            comment: "General page: the permission checklist folded while every scope is granted"
+          ),
+          mark: .verified)
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, SettingsScale.rowInsetH)
+      .padding(.vertical, 7)
+      .contentShape(Rectangle())
+    }
+    .csFocusRing()
+    .accessibilityValue(
+      showingGrantedPermissions ? String(localized: "Expanded") : String(localized: "Collapsed")
+    )
+    .accessibilityIdentifier("settings-permissions-all-granted")
+  }
+
+  @ViewBuilder private var permissionRows: some View {
+    ForEach(Self.permissionKinds) { kind in
+      PermissionChecklistRow(
+        kind: kind,
+        state: model.permissions.state(kind),
+        note: model.permissionRepairNote(for: kind),
+        onRequested: { model.notePermissionRequested(kind) },
+        // A grant can change recording admission, not only this row.
+        onStateChanged: { model.refreshDictationReadiness() }
+      )
+      if kind != Self.permissionKinds.last {
+        // Aligned with the row text: inset + badge + the row's own spacing.
+        Divider().padding(.leading, 2 * SettingsScale.rowInsetH + 20)
+      }
+    }
   }
 
   private var agentBridgeSection: some View {
@@ -219,7 +293,7 @@ struct CreatorPanel: View {
       if let error = model.creatorAgentBridgeError {
         Text(error)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .textSelection(.enabled)
       }
     }
@@ -366,6 +440,7 @@ struct CreatorPanel: View {
       ) {
         pendingSkillInstall = model.creatorAgentBridgeInstallPlan(for: client)
       }
+      .csAction()
       .disabled(model.creatorAgentBridgeInstallPlan(for: client) == nil)
       .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
       if model.creatorAgentBridgeError != nil {
@@ -674,7 +749,7 @@ private struct InterfaceLanguageRow: View {
       if let notice = model.interfaceLanguageNotice {
         Text(notice)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-interface-language-notice")
       }
@@ -721,15 +796,13 @@ private struct SheetShadeRows: View {
 
   var body: some View {
     SettingsControlRow(
-      title: String(localized: "Panel shade, dark", comment: "Settings row: sheet shade for dark"),
-      subtitle: "#\(model.sheetShadeDark.rawValue)"
+      title: String(localized: "Panel shade, dark", comment: "Settings row: sheet shade for dark")
     ) {
       shadePicker(SheetShade.darkChoices, selection: darkSelection, id: "settings-sheet-shade-dark")
     }
     SettingsControlRow(
       title: String(
-        localized: "Panel shade, light", comment: "Settings row: sheet shade for light"),
-      subtitle: "#\(model.sheetShadeLight.rawValue)"
+        localized: "Panel shade, light", comment: "Settings row: sheet shade for light")
     ) {
       shadePicker(
         SheetShade.lightChoices, selection: lightSelection, id: "settings-sheet-shade-light")
@@ -764,7 +837,7 @@ private struct SheetShadeRows: View {
 /// One compact line inside the shared permissions group: status badge, name,
 /// and — only while something is missing — the repair action. The five rows
 /// share a single bordered card (Founder brief, round 4, 2026-10-10); the
-/// per-row olive/terracotta wash lives on in the badge and the action link.
+/// per-row olive/danger wash lives on in the badge; repair actions keep neutral ink.
 private struct PermissionChecklistRow: View {
   let kind: PermissionKind
   let state: PermissionState
@@ -779,48 +852,46 @@ private struct PermissionChecklistRow: View {
 
   var body: some View {
     HStack(spacing: SettingsScale.rowInsetH) {
-      statusBadge
-      // A granted row says it with the badge; the status stays for VoiceOver.
+      // A granted row says it with the capsule, which VoiceOver reads once;
+      // a missing scope keeps its state on the name, beside the warning disc.
       VStack(alignment: .leading, spacing: 2) {
         Text(kind.displayName)
-          .font(CSFont.ui(13.5, .medium))
+          .font(CSFont.ui(14, .medium))
           .foregroundStyle(Color.primary)
-          .accessibilityValue(state.label)
+          .accessibilityValue(granted ? "" : state.label)
         if let note {
           Text(note)
             .font(.caption)
-            .foregroundStyle(CSColor.terracottaText)
+            .foregroundStyle(CSColor.dangerLight)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      if !granted {
+      if granted {
+        CSStatusBadge(text: state.label, mark: .verified)
+      } else {
+        missingMark
         let repair = kind.repair(for: state)
+        // Repair actions read through their chip shape, not through bold text
+        // (Founder D2, 2026-10-26): the same neutral chip as every other flat
+        // Settings action. The row title already names the permission, so the
+        // visible label stays generic; VoiceOver keeps the specific one.
         if repair.requestsNatively {
-          Button {
+          SettingsChipButton("Allow access", tint: CSColor.secondaryInk) {
             onRequested?()
             Task { @MainActor in
               // The return value is not a grant; the following probe is.
               _ = await kind.requestInApp()
               onStateChanged?()
             }
-          } label: {
-            Text("allow \(kind.displayName)")
-              .font(CSFont.ui(11, .semibold))
-              .foregroundStyle(CSColor.terracottaText)
           }
-          .csFocusRing()
+          .accessibilityLabel(Text("allow \(kind.displayName)"))
         }
         if repair.opensSettings {
-          Button {
+          SettingsChipButton("Open System Settings", tint: CSColor.secondaryInk) {
             onRequested?()
             kind.openSystemSettings()
-          } label: {
-            Text("open System Settings")
-              .font(CSFont.ui(11, .semibold))
-              .foregroundStyle(CSColor.terracottaText)
           }
-          .csFocusRing()
         }
       }
     }
@@ -828,16 +899,12 @@ private struct PermissionChecklistRow: View {
     .padding(.vertical, 7)
   }
 
-  @ViewBuilder
-  private var statusBadge: some View {
+  /// A missing scope keeps its warning disc beside the repair action; a
+  /// granted one wears the olive capsule the wizard shows (Founder, 2026-10-26).
+  private var missingMark: some View {
     ZStack {
-      Circle().fill((granted ? CSColor.olive : CSColor.terracottaText).opacity(0.2))
-      CSIconView(
-        icon: granted ? .success : .warning,
-        size: 11,
-        weight: .semibold,
-        color: granted ? CSColor.oliveLight : CSColor.terracottaText
-      )
+      Circle().fill(CSColor.dangerLight.opacity(0.2))
+      CSIconView(icon: .warning, size: 11, weight: .semibold, color: CSColor.dangerLight)
     }
     .frame(width: 20, height: 20)
   }
@@ -855,12 +922,17 @@ private struct QuickStartCard: View {
   let accessibilityId: String
   let action: () -> Void
 
+  private static let iconBox: CGFloat = 20
+
   @State private var hovered = false
 
   var body: some View {
     Button(action: action) {
       VStack(alignment: .leading, spacing: 0) {
+        // One fixed glyph box for every card: the mic, widget and keyboard
+        // glyphs differ in natural size, and the titles must share a line.
         CSIconView(icon: icon, size: 16, color: Color.primary)
+          .frame(width: Self.iconBox, height: Self.iconBox, alignment: .leading)
         Text(title)
           .font(CSFont.ui(13, .semibold))
           .foregroundStyle(Color.primary)
@@ -872,11 +944,11 @@ private struct QuickStartCard: View {
       .padding(.vertical, 16)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .fill(Color.primary.opacity(hovered ? 0.1 : 0.05))
+          .fill(Color.primary.opacity(hovered ? CSAlpha.line : CSAlpha.fill))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
       .contentShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     }

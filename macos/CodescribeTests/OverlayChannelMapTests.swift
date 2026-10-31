@@ -856,11 +856,11 @@ final class OverlayChannelMapTests: XCTestCase {
       "one drawing of the open-channel dot")
     let pillView = try section(
       of: pill, from: "struct OverlayChannelPill: View", to: "// MARK: Header metrics")
-    // The one symbol is the vertical counter's stacked cards, which replace
-    // the figure (Maciej, 2026-10-23); none sits on a digit.
+    // Symbols replace a figure: the stacked counter and the numberless human
+    // mailbox. Neither adds a glyph to a numbered agent's digit.
     XCTAssertEqual(
-      pillView.components(separatedBy: "Image(systemName:").count - 1, 1,
-      "no symbol on the digit or the pill beyond the stacked counter")
+      pillView.components(separatedBy: "Image(systemName:").count - 1, 2,
+      "only the stacked counter and numberless mailbox carry symbols")
     XCTAssertTrue(pillView.contains("Image(systemName: Self.stackedCardsSymbol)"))
     XCTAssertFalse(pillView.contains("mic.fill"), "the microphone glyph left the digit")
     XCTAssertFalse(pillView.contains("megaphone"), "the megaphone stays on the Agents button")
@@ -891,8 +891,15 @@ final class OverlayChannelMapTests: XCTestCase {
     let header = try section(
       of: overlay, from: "private func justifiedHeader(density: OverlayHeaderDensity)",
       to: "private var transcriptionPreviewButton")
-    XCTAssertTrue(header.contains("if density == .midi, let map = channelMap {"))
-    XCTAssertTrue(header.contains("if mini, let map = channelMap {"), "mini carries the counter")
+    XCTAssertTrue(
+      header.contains("if density == .midi, state.channelMapInHeader, let map = channelMap {"),
+      "only the horizontal strip carries the chips between the clock and the actions")
+    XCTAssertTrue(
+      header.contains("let leadingCounter = mini || state.channelMapCounterStacked"),
+      "mini and every vertical form keep the counter beside the brand")
+    XCTAssertTrue(
+      header.contains("if leadingCounter, let map = channelMap {"),
+      "the leading counter is the way to the Intercom group, not a microphone")
     XCTAssertTrue(header.contains("showsWord: !mini"), "mini drops cs")
     XCTAssertTrue(header.contains(".frame(height: OverlayHeaderDensity.rowHeight)"))
     let map = try section(

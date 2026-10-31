@@ -25,6 +25,8 @@ struct OverlayChannelPill: View {
   struct Display: Equatable {
     /// The channel digit; for the counter, the number of agents.
     let figure: String
+    /// A numberless mailbox uses a glyph in the folded rail.
+    var symbol: String? = nil
     /// The agent's name on a chip that shows it; a digit-only chip, the rail
     /// and the counter carry none.
     var name: String? = nil
@@ -42,6 +44,7 @@ struct OverlayChannelPill: View {
     /// badge, the face of a button that opens the Intercom group.
     var stacked = false
     var unread = false
+    var unreadCount = 0
     var selected = false
     var enabled = true
     /// False while the panel is hidden or occluded: no pulse keeps the render
@@ -71,6 +74,11 @@ struct OverlayChannelPill: View {
         .overlay(alignment: .topTrailing) {
           if stackedFace {
             stackedBadge
+          } else if form == .rail && display.unreadCount > 0 {
+            OverlayAgentUnreadBadge(
+              count: display.unreadCount, palette: palette, textScale: textScale
+            )
+            .offset(x: 7 * textScale, y: -5 * textScale)
           } else if display.unread {
             Circle()
               .fill(palette.processingStatus.color)
@@ -139,8 +147,12 @@ struct OverlayChannelPill: View {
       switch form {
       case .rail:
         HStack(spacing: 3) {
-          OverlayAgentStatusDot(kind: display.dot ?? .idle, palette: palette)
-          figure(display.figure, size: 12)
+          if let symbol = display.symbol {
+            Image(systemName: symbol).font(.system(size: 12 * textScale))
+          } else {
+            OverlayAgentStatusDot(kind: display.dot ?? .idle, palette: palette)
+            figure(display.figure, size: 12)
+          }
         }
         .padding(.horizontal, 6 * textScale)
       case .chip:

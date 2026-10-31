@@ -1,0 +1,12 @@
+{
+  "version": "0.18.0",
+  "build": "2536",
+  "sourceCommit": "eab87727d9dc8b2f9a1bba5cea4efab2f63d5614",
+  "sha256": "15f70f8bee9488f335bdec3b12fea719ed8cfeaca55a9ddc4e5a72c84630b176",
+  "bytes": 65219940,
+  "minimumMacOS": "26.0",
+  "publishedAt": "2026-10-25",
+  "url": "https://codescribe.vetcoders.io/rc/nightly/Codescribe_0.18.0-20261025-eab87727d.dmg",
+  "bundleVersion": "0.18.0",
+  "buildChannel": "stable"
+}

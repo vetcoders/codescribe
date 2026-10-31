@@ -14,6 +14,61 @@ final class OverlayHeldDeliveryTests: XCTestCase {
   private let messageID = String(repeating: "a", count: 24)
   private let leaseID = String(repeating: "b", count: 32)
 
+  @MainActor
+  func testHeldFooterReplacesTheNormalFooterInOneLine() throws {
+    let keyBefore = NSApp.keyWindow
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(typed())
+    let heldConversation = try XCTUnwrap(
+      bus.conversations(busPath: "", now: now).first { $0.owner != nil })
+    let held = try XCTUnwrap(heldConversation.messages.first)
+    bus.consume(control(.release))
+    let sentConversation = try XCTUnwrap(
+      bus.conversations(busPath: "", now: now).first { $0.owner != nil })
+    let sent = try XCTUnwrap(sentConversation.messages.first)
+    XCTAssertNotNil(held.holdSecondsRemaining)
+    XCTAssertNil(sent.holdSecondsRemaining)
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      for scale in [CGFloat(1), 1.4] {
+        func measure(_ message: OverlayConversationMessage, in conversation: OverlayConversation)
+          throws -> CGFloat
+        {
+          let view = OverlayConversationView(
+            conversation: conversation, palette: palette, topInset: 0, bottomInset: 0,
+            pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+            draft: .constant(""), sending: false, sendError: nil, onSend: {})
+          let host = NSHostingView(
+            rootView: view.messageBubble(message)
+              .environment(\.csTextScale, scale)
+              .frame(width: 300 * scale)
+              .fixedSize(horizontal: false, vertical: true)
+              .background(palette.desktopBackground.color)
+              .preferredColorScheme(palette.appearance == .dark ? .dark : .light))
+          host.layoutSubtreeIfNeeded()
+          let size = host.fittingSize
+          host.frame.size = size
+          host.layoutSubtreeIfNeeded()
+          let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+          host.cacheDisplay(in: host.bounds, to: bitmap)
+          let attachment = XCTAttachment(
+            image: NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: size))
+          attachment.name =
+            "footer-\(palette.appearance)-\(scale)-\(message.holdSecondsRemaining == nil ? "sent" : "hold")"
+          attachment.lifetime = .keepAlways
+          add(attachment)
+          return size.height
+        }
+        let heldHeight = try measure(held, in: heldConversation)
+        let sentHeight = try measure(sent, in: sentConversation)
+        XCTAssertGreaterThan(sentHeight, 30)
+        XCTAssertLessThanOrEqual(
+          heldHeight, sentHeight + 12 * scale + 2,
+          "hold replaces the receipt/copy row; it must not stack countdown and controls above it")
+      }
+    }
+    XCTAssertTrue(NSApp.keyWindow === keyBefore)
+  }
+
   func testTypedFounderSenderRemainsAUserMessageAcrossRestore() throws {
     var row = typed()
     row["source"] = "typed"

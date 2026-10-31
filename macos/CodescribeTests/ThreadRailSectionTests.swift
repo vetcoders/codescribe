@@ -172,7 +172,9 @@ final class ThreadRailSectionTests: XCTestCase {
     let thread = ChatThread(
       title: "<<<",
       meta: "today 11:45",
-      messages: [ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: wire)],
+      messages: [
+        ChatMessage(role: .you, timestamp: Date(timeIntervalSince1970: 1_791_729_600), text: wire)
+      ],
       updatedAt: date(2026, 7, 16, 11, 45)
     )
 
@@ -201,8 +203,13 @@ final class ThreadRailSectionTests: XCTestCase {
 
 @MainActor
 final class AccentColorTokenTests: XCTestCase {
-  func testChromeAccentResolvesToSystemAccentInLightAndDarkAppearances() throws {
-    for name in [NSAppearance.Name.aqua, .darkAqua] {
+  /// Founder, 2026-10-24: actions are not terracotta; they keep the system
+  /// accent and read as clickable through their bordered shape.
+  func testChromeAccentResolvesToSystemAccentAcrossAppearances() throws {
+    for name in [
+      NSAppearance.Name.aqua, .darkAqua, .accessibilityHighContrastAqua,
+      .accessibilityHighContrastDarkAqua,
+    ] {
       let appearance = try XCTUnwrap(NSAppearance(named: name))
       appearance.performAsCurrentDrawingAppearance {
         assertSameColor(

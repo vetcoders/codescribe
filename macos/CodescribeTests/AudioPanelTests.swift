@@ -228,7 +228,7 @@ final class AudioPanelTests: XCTestCase {
       admission: nil,
       dictationShortcut: "Hold Fn/Globe"
     )
-    XCTAssertEqual(checking.map(\.tone), [.healthy, .fallback, .fallback, .fallback])
+    XCTAssertEqual(checking.map(\.tone), [.healthy, .pending, .pending, .pending])
 
     let denied = audioReadinessSteps(
       input: .sample,
@@ -470,7 +470,7 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     XCTAssertTrue(granted.detail.contains("cal1-macbook-pro-microphone-1@48000hz"))
 
     let pending = admissionDisplayState(nil)
-    XCTAssertEqual(pending.tone, .fallback)
+    XCTAssertEqual(pending.tone, .pending)
   }
 
   func testRefreshAdmissionReadsEngineVerdict() async {
@@ -559,16 +559,21 @@ final class AcousticAdmissionPanelTests: XCTestCase {
 
     // A take in flight is lifecycle, not a blocker: the line follows the
     // recorder and offers nothing to repair.
-    let lifecycle: [(recording: Bool?, preparing: Bool, processing: Bool, title: String)] = [
-      (true, false, false, "Recording in progress"),
-      (true, true, false, "Starting recording…"),
-      (true, false, true, "Finishing recording…"),
+    typealias Lifecycle = (
+      recording: Bool?, preparing: Bool, processing: Bool,
+      title: String, tone: AudioInputDisplayTone
+    )
+    let lifecycle: [Lifecycle] = [
+      (true, false, false, "Recording in progress", .healthy),
+      (true, true, false, "Starting recording…", .pending),
+      (true, false, true, "Finishing recording…", .pending),
     ]
     for state in lifecycle {
       let live = audioReadinessSummary(
         input: .sample, microphonePermission: .denied, admission: nil,
         recording: state.recording, preparing: state.preparing, processing: state.processing)
       XCTAssertEqual(live.title, state.title)
+      XCTAssertEqual(live.tone, state.tone, "a take in flight is a process, never a warning")
       XCTAssertNil(live.detail)
       XCTAssertEqual(live.remedy, .none)
     }

@@ -93,7 +93,7 @@ gesture during the delay (an agents-list click) cancels that pending hold.
 The channel modifier never records (one key, one role, below), so a hold or
 toggle take is never a channel chord's prefix. A take on another key keeps
 running beside a channel opened from the agents list.
-The same unified overlay then shows My dictation. Channel auto-reopening shares
+The same unified overlay then shows My dictation. The channel silence poll shares
 the controller's serial transition lock with this handover. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.
 
@@ -155,7 +155,17 @@ The channel digit chord is claimed by the CoreGraphics tap: down, repeat and up
 are consumed, including an up after modifier release. Ordinary typing, other
 shortcuts and mouse events still reach the frontmost app. A successfully opened
 live channel plays **Pop**, respecting Start sound and its configured volume.
-A rejected open, a close or automatic phrase reopening does not play that cue.
+A rejected open or a close does not play that cue. A pause of
+`agent_channel.send_pause_sec` after heard voice (default 5 s; the env
+`CODESCRIBE_CHANNEL_AUTOSEAL_SECS` overrides it) delivers the message. Under
+`agent_channel.session_policy = continuous` (default) the session keeps the
+same capture subscription and delivers each following message the same way
+until the second press (hang-up). Under `end_after_message` that pause also
+releases the microphone like a hang-up, so one press carries one message.
+A session that hears no voice for `agent_channel.voiceless_close_sec` since
+its current message began ends either way (default never for continuous,
+30 s for one message; an agent reply playing into the channel does not
+count). `toggle_silence_sec` is not a channel input.
 
 Each named conversation has a written-message composer. Clicking it takes the
 existing overlay keyboard gate; opening a voice channel never steals keyboard
@@ -323,7 +333,8 @@ opened), the lane continues its bound conversation as before.
 _intent_; it does not paste into the frontmost app. `resolve_delivery_route`
 (`docs/DELIVERY_ROUTE.md`) is the only destination function:
 
-- Assistive hold → Agent composer (first-class message, never Cmd+V)
+- Assistive take (menu bar or overlay with **Start in Agent mode** on;
+  Assistive has no hold) → Agent composer (first-class message, never Cmd+V)
 - Hold Fn / Globe → Orient canvas, plus auto-paste **only** into the app
   latched at key-down — never into Codescribe itself
 - Overlay **To Agent** → Agent composer, even after the session reset
@@ -372,6 +383,26 @@ flowchart TB
 
 ---
 
+### Long Fn while a composer owns the caret
+
+The Agent composer and the Intercom bus composer each carry their own
+microphone. While one of them owns the focused caret (first responder in the
+key window, with a microphone present), a dictation hold (`HoldFn`, Raw hold
+mode) that outlives `hold_start_delay_ms` does **not** open global dictation:
+
+- the recording controller refuses the start inside the delayed hold task
+  (`hold_start_redirects_to_composer`); state stays `Idle`, no capture
+  storage lease, no overlay;
+- it broadcasts `IpcEventPayload::ComposerDictationRedirected`, which the
+  bridge forwards only to `CsAppActionListener.on_composer_dictation_redirected`;
+- the owning field shows "Use the microphone button in the message field"
+  and lights its microphone for a few seconds.
+
+Swift is the only writer of the ownership fact (`set_composer_caret_owned`,
+reported by `ComposerCaretOwnership`). Assistive holds (Chat / Selection),
+toggles and fields without a microphone keep their usual behavior. A short
+Fn tap is never refused; the gate runs only after the hold delay.
+
 ## Modes
 
 ### 1. Hold Mode (Push-to-Talk)
@@ -397,7 +428,7 @@ their document positions. The reducer renders and anchors the markers in the
 projected document; the Swift overlay only displays the resulting projection.
 
 Fn+Shift from idle is dictation, not Assistive. Voice chat is the Assistive
-work-mode binding (default: double-tap Right Option), not Hold Fn+Shift.
+work mode, started from the menu bar or the overlay, not Hold Fn+Shift.
 
 **Events:**
 
@@ -419,32 +450,62 @@ recent committed utterance; it must never create a second delivered utterance.
 
 ### 2. Toggle Mode (Hands-Free)
 
-**Trigger:** Double-tap Option key within `DOUBLE_TAP_INTERVAL_MS` (default **200ms**, range 100–450ms)
-**Behavior:** First tap starts recording, second tap toggles send/stop
-**Tap means tap:** an Option press counts as a tap only when it is shorter than
-220 ms (`TAP_MAX_MS`, the same limit the Ctrl double-tap uses) and nothing was
-typed while it was down. Typing with Option (Polish diacritics such as ś, ć, ę)
-never pairs into a double-tap: the detector drops the pair when it saw a letter
-key-down, and also when the HID system reports a key-down during the press even
-though the tap never received the letter (secure keyboard entry, another event
-tap swallowing key events). The CoreGraphics layer passes that HID timestamp
-in through `HotkeyDetector::observe_hid_key_down` on every modifier change.
-Both ends of the press are timed by the CGEvent timestamp (the hardware clock),
-not by when the tap callback ran, so a late callback cannot shrink a chord into
-a tap. Verified so far: the detector logic (unit tests) and the gates; still to
-be verified at runtime: that the HID key-down query is populated under secure
-keyboard entry, and that ordinary double-taps stay comfortable.
+**Trigger:** a double-tap gesture bound to the mode. `DoubleCtrl` may start
+any one mode. `DoubleLeftOption` and `DoubleRightOption` are **opt-in**
+gestures for Formatting or Assistive only; the defaults leave both modes on
+`disabled`, so an upgrade never arms an Option double-tap. Both taps land
+within `DOUBLE_TAP_INTERVAL_MS` (default **200 ms**, range 100–450 ms). A Ctrl
+tap is shorter than 220 ms; an Option tap is shorter than `TAP_MAX_MS` (default
+**220 ms**, range 120–300 ms). Formatting and Assistive also start from the
+UI: the menu bar's **Start transcription** starts Formatting, and with
+**Start in Agent mode** on it reads **Start transcription in Agent mode** and
+starts Assistive (`RealTrayEngine.startRecording`); the overlay starts through
+the same engine (`ControllerDictationEngine`).
+**Behavior:** The first gesture (or UI start) starts recording, the next one
+stops and sends.
+**Option guards.** Option also types characters, and on 2026-10-26 the right
+Option double-tap started the Agent on its own (BUGSLOG
+`agent-self-starts-on-option-letter-chords`, a 55-minute take). The Option
+gestures came back opt-in with guards in `HotkeyDetector::release_option`.
+One tap waits for its partner at a time and carries the first reason it
+cannot count; a pair with a reason on either tap starts nothing and emits
+`DoubleTapBlocked` with `blocked_double_tap gesture=… reason=…`:
+
+| Reason                                      | When                                                                                                                    |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `typed_recently`                            | A key was typed with Option (a chord), or any key-down came less than `TYPING_QUIET_MS` (default 300 ms) before the tap |
+| `mouse`                                     | A left click, right click or scroll landed while Option was down or a tap was pending (`PointerActivity`)               |
+| `synthetic_source`                          | The Option press or release did not come from `kCGEventSourceStateHIDSystemState` (another app posted it)               |
+| `tap_too_long`                              | A press lasted longer than `TAP_MAX_MS` (up to three times it; longer is a hold and explains nothing)                   |
+| `too_slow`                                  | The second clean tap came after the interval but within twice it                                                        |
+| `modifier_combo_active`, `binding_disabled` | Ctrl, Command or a hold was active; or no mode is bound to the tapped side                                              |
+
+Two chords in a row never log: a chord only taints the tap after it. The
+timing values are atomics re-read on every tap, so Settings changes apply
+without a restart.
 **Silence:** ENABLED – `TOGGLE_SILENCE_SEC` (default 5s) is the Apple engine lifecycle on the live
 lane (`EpochGate` in `apple_live_session.rs`): Silero watches the mic, speech opens an SFSpeech
 epoch, silence past the slider seals the span and rests the engine, the next speech edge wakes a
 fresh epoch. Recording does not stop. This is not a wav-only chunker knob and not `CODESCRIBE_VAD_*`.
+**Assistive take: ends without voice after `interaction.agent_take_voiceless_end_sec` (default 30 s,
+10–120, W2-09).** A hands-free assistive take that hears no voice for that limit ends on its own:
+the limit after the start when it never heard voice, else after the last measured speech end. Voice
+is the PCM energy and Silero VAD edges of the take's capture epoch (`SpeechClock`,
+`app/controller/speech_clock.rs`, the clock agent channels use), never recognizer output; the limit
+is frozen when the take arms. Agent playback is not silence: it restarts the limit. The end is the controller's named stop (`stop_capture_if_owned`,
+`app/controller/assistive_silence.rs`), the path a Stop click takes. It releases only the take's
+capture, so an open agent channel keeps the microphone. It sends nothing: the stop path returns
+before `resolve_delivery_route`, the disposition is `ended_without_voice`, the overlay's opt-in
+Agent auto-send stays off for that take, and the text stays in the take archive, where an explicit
+send still works. A Stop before the limit delivers as before. Dictation and Formatting toggles run
+until stopped, and `TOGGLE_SILENCE_SEC` still only closes utterance epochs.
 
-| Mode binding                  | Keys                         | Mode              |
-| ----------------------------- | ---------------------------- | ----------------- |
-| `Formatting=DoubleLeftOption` | Left Option double-tap       | Formatting        |
-| `Assistive=DoubleRightOption` | Right Option double-tap      | Assistive         |
-| `Dictation=DoubleCtrl`        | Ctrl double-tap              | Raw dictation     |
-| `Disabled`                    | no toggle for that work mode | Hold-only profile |
+| Mode binding                                    | Keys                    | Mode                |
+| ----------------------------------------------- | ----------------------- | ------------------- |
+| `<mode>=DoubleCtrl`                             | Ctrl double-tap         | that mode           |
+| `Formatting` or `Assistive`=`DoubleLeftOption`  | left Option double-tap  | that mode (opt-in)  |
+| `Formatting` or `Assistive`=`DoubleRightOption` | right Option double-tap | that mode (opt-in)  |
+| `Disabled`                                      | no gesture              | menu bar or overlay |
 
 Formatting is orthogonal to the trigger and destination. Hold, normal toggle,
 and assistive sessions all honor the session's Auto Format setting. The trigger
@@ -469,47 +530,38 @@ continue to win.
 **Events:**
 
 ```rust
-HotkeyInput { key_type: Toggle, action: Press, assistive: false } // Left Option
-HotkeyInput { key_type: Toggle, action: Press, assistive: true }  // Right Option
+HotkeyInput { key_type: Toggle, action: Press, assistive: false } // menu bar Start / overlay
+HotkeyInput { key_type: Toggle, action: Press, assistive: true }  // Start in Agent mode
 ```
 
 ### Settings picker vs routed combinations
 
-The Shortcuts tab offers one flat gesture catalog for all three modes:
-`available_bindings()` returns every `ShortcutBinding` regardless of mode
-(`bridge/src/hotkeys.rs`). The detector routes a subset of those cells, and
-that subset is one predicate, `mode_binding_reachable(mode, binding)` in
-`core/config/types.rs`, re-exported by `app/os/hotkeys/detector.rs`:
+The Shortcuts tab offers, per mode, only the gestures the detector routes to
+it: `available_bindings_for_mode(mode)` (`bridge/src/hotkeys.rs`) filters the
+closed `ShortcutBinding` set through one predicate,
+`mode_binding_reachable(mode, binding)` in `core/config/types.rs`, re-exported
+by `app/os/hotkeys/detector.rs`:
 
-| Work mode  | Routed gestures                | Routing site in `HotkeyDetector::handle_flags_changed`                                             |
-| ---------- | ------------------------------ | -------------------------------------------------------------------------------------------------- |
-| Dictation  | all five `Hold*`, `DoubleCtrl` | hold combo (`check_hold_combo`), raw toggle (`dictation == DoubleCtrl`)                            |
-| Formatting | `DoubleLeftOption` only        | normal toggle (`formatting == DoubleLeftOption`) — the only read of `mode_bindings.formatting`     |
-| Assistive  | `DoubleRightOption` only       | assistive toggle; `assistive_hold_binding` maps no hold to Assistive, so every `Hold*` is unrouted |
+| Work mode  | Routed gestures                                       | Routing site in `HotkeyDetector::handle_flags_changed`          |
+| ---------- | ----------------------------------------------------- | --------------------------------------------------------------- |
+| Dictation  | all five `Hold*`, `DoubleCtrl`                        | hold combo (`check_hold_combo`), `double_tap_event(DoubleCtrl)` |
+| Formatting | `DoubleCtrl`, `DoubleLeftOption`, `DoubleRightOption` | `double_tap_event` → `ToggleNormal`                             |
+| Assistive  | `DoubleCtrl`, `DoubleLeftOption`, `DoubleRightOption` | `double_tap_event` → `ToggleAssistive`                          |
 
-`Disabled` binds nothing and is accepted for every mode. The routed sets are
-disjoint: a gesture bound to two modes always leaves one of them unrouted.
-`reachability_predicate_matches_detector_routing_for_every_cell` (detector
-tests) binds each of the 24 mode × gesture cells alone, performs the gesture
-through `HotkeyDetector::feed` with synthetic key snapshots, and asserts that
-the predicate and the started mode agree — 8 routed cells, 16 unrouted.
-
-The routed set describes each cell **bound in isolation**. The per-cell
-predicate is not the whole routing decision: one cross-mode rule also reads the
-Dictation binding. With Dictation=`DoubleCtrl` the raw toggle wins and both
-Option toggles start nothing, so Formatting=`DoubleLeftOption` and
-Assistive=`DoubleRightOption` are routed cells that are still blocked.
-`detect_internal_conflicts` (`app/os/shortcut_registry.rs`) reports that pair
-as a blocking conflict ("Dictation is set to Double Ctrl, so Left/Right Option
-toggle is disabled."), which is the sentence the `ShortcutsSaveReceiptTests`
-assert; the precedence matrix below lists the same rows.
+Holds stay Dictation-only: the controller has no hold that formats or talks to
+the agent, so a hold bound to Formatting or Assistive would be a dead cell.
+`Disabled` binds nothing and is accepted for every mode; it is the default for
+Formatting and Assistive. Every row shows its picker; the section footer says
+that Formatting and the Agent also start from the menu bar or the overlay.
+One gesture keeps one mode: two modes on the same routed gesture is a
+blocking conflict (`duplicate_binding_message`).
 
 **Unrouted cells are refused, not persisted.** One owner, three readers:
 
 - Validation: `detect_internal_conflicts` (`app/os/shortcut_registry.rs`)
   emits a blocking conflict for every bound mode the detector does not route,
   through `unreachable_binding_message`. The sentence names the one mode the
-  gesture does start — the explicit precedence. Settings gates Save on it.
+  gesture does start, always Dictation. Settings gates Save on it.
 - Write: `set_mode_binding` (`bridge/src/hotkeys.rs`) refuses the same cells
   with the same sentence, for Settings, onboarding and any other caller, so no
   path persists a dead binding.
@@ -519,26 +571,27 @@ assert; the precedence matrix below lists the same rows.
 
 **Precedence matrix (what one physical gesture starts):**
 
-| Bound configuration                                           | Gesture         | Starts                    | Settings                                                       |
-| ------------------------------------------------------------- | --------------- | ------------------------- | -------------------------------------------------------------- |
-| Dictation=`DoubleLeftOption`, Formatting=`DoubleLeftOption`   | 2× left Option  | Formatting only           | blocking: "This gesture only starts Formatting, so Dictation…" |
-| Dictation=`DoubleCtrl`, Formatting=`DoubleLeftOption`         | 2× left Option  | nothing (raw toggle wins) | blocking: "Dictation is set to Double Ctrl, so Left Option…"   |
-| Dictation=`DoubleCtrl`, Assistive=`DoubleRightOption`         | 2× right Option | nothing (raw toggle wins) | blocking: "Dictation is set to Double Ctrl, so Right Option…"  |
-| Dictation=`Hold*`, Assistive=same `Hold*`                     | that hold       | Dictation only            | blocking: "This gesture only starts Dictation, so Assistive…"  |
-| Formatting=`HoldCtrl` (no duplicate)                          | hold Ctrl       | nothing                   | blocking: "This gesture only starts Dictation, so Formatting…" |
-| Defaults: `HoldFn` / `DoubleLeftOption` / `DoubleRightOption` | each            | its own mode              | clean                                                          |
+| Bound configuration                                          | Gesture        | Starts    | Settings                                                        |
+| ------------------------------------------------------------ | -------------- | --------- | --------------------------------------------------------------- |
+| Dictation=`HoldFn`, Formatting=`HoldFn`                      | hold Fn        | Dictation | blocking: "This gesture only starts Dictation, so Formatting…"  |
+| Dictation=`DoubleCtrl`, Assistive=`DoubleCtrl`               | Ctrl double    | Dictation | blocking: "This gesture already starts Dictation; one gesture…" |
+| Dictation=`DoubleLeftOption`                                 | left Option ×2 | nothing   | blocking: "This gesture only starts Formatting or Assistive…"   |
+| Formatting=`DoubleLeftOption`, Assistive=`DoubleRightOption` | Option ×2      | that mode | clean                                                           |
+| Defaults: `HoldFn` / `Disabled` / `Disabled`                 | hold Fn        | Dictation | clean                                                           |
 
 The macOS Fn/Globe tap note (`fn_tap_intercept_note`) is informational: it
 crosses the bridge with `blocking: false` and never blocks Save.
 
 A settings file written before this rule can still hold an unrouted cell. The
 Shortcuts tab shows it as a blocking conflict on load; choosing a routed
-gesture for that mode clears it.
+gesture (or `Disabled`) for that mode clears it.
 
-Narrowing the picker itself per mode needs a per-mode `available_bindings`
-query on the bridge (a UniFFI shape change, regenerated bindings). Until then
-the picker offers every gesture and the backend refuses the unrouted ones
-inline, before Save.
+**Option timing and the gesture tester.** While any mode is on an Option
+double-tap, Settings › Shortcuts shows three live sliders (`DOUBLE_TAP_INTERVAL_MS`,
+`TAP_MAX_MS`, `TYPING_QUIET_MS`) and a **Gesture test** row. The row renews a
+10 s lease (`set_gesture_test_active`); while it is held a recognised Option
+pair is recorded (`last_double_tap_outcome`) and held back in
+`platform::gesture_tester_filter`, so trying the gesture never starts a take.
 
 ### Capture and transcript ownership
 
@@ -551,6 +604,15 @@ before any consumer-specific action, and never opens audio or re-transcribes.
 Selection is captured in the trigger handler, never at send time. Rust remains
 the indicator/tray authority, while the transcription overlay is exclusive to
 Dictation and Formatting.
+
+The pointer dot has one palette, `IndicatorState::color` in
+`app/os/hold_badge.rs`: recording (hold and hands-free, `#FF3B30`), words still
+arriving (amber), processing (orange), Agent (purple), Agent between phrases
+(white with a purple rim) and a refused shortcut (slate). The badge paints from
+it, and the bridge hands it to Swift (`indicator_palette()`), where the
+Settings › Shortcuts legend lists every state in the colour the dot draws and
+`CSPalette.indicatorRecording` / `indicatorAgentQuiet` take their hue, opaque.
+No other surface writes its own copy of these colours.
 
 After capture completion, retained reducer text is editable in the same native
 canvas even when coverage is refused or a later document observation is
@@ -646,11 +708,11 @@ flowchart LR
     style C_VAD stroke:#36c,stroke-width:2px
 ```
 
-| Mode             | VAD Segmentation | Reason                                                             |
-| ---------------- | ---------------- | ------------------------------------------------------------------ |
-| **Hold**         | ✅ YES           | VAD segments utterances; user controls start/stop via key release. |
-| **Toggle**       | ✅ YES           | Hands-free mode uses utterance boundaries (no stop).               |
-| **Conversation** | Internal         | Moshi handles turn-taking internally.                              |
+| Mode             | VAD Segmentation | Reason                                                                                                |
+| ---------------- | ---------------- | ----------------------------------------------------------------------------------------------------- |
+| **Hold**         | ✅ YES           | VAD segments utterances; user controls start/stop via key release.                                    |
+| **Toggle**       | ✅ YES           | Hands-free mode uses utterance boundaries (no stop). An assistive take ends after 30 s without voice. |
+| **Conversation** | Internal         | Moshi handles turn-taking internally.                                                                 |
 
 ---
 
@@ -665,7 +727,9 @@ The remaining runtime env surface only tunes detector behavior:
 | ------------------------ | ------- | --------------- | -------------------- |
 | `HOLD_EXCLUSIVE`         | `false` | `true`, `false` | RESTART              |
 | `HOLD_START_DELAY_MS`    | `800`   | 0-1000          | RESTART              |
-| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450         | RESTART              |
+| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450         | HOT (next tap)       |
+| `TAP_MAX_MS`             | `220`   | 120-300         | HOT (next tap)       |
+| `TYPING_QUIET_MS`        | `300`   | 0-1000          | HOT (next tap)       |
 | `TOGGLE_SILENCE_SEC`     | `5.0`   | 0.5-30.0        | HOT (next recording) |
 
 ### VAD Configuration
@@ -728,10 +792,10 @@ sequenceDiagram
     participant Apple as SFSpeech epoch
     participant Whisper as Layer 1 Whisper
 
-    User->>CGEventTap: Double-tap Left Option
+    User->>CGEventTap: Double-tap Ctrl (Dictation=DoubleCtrl)
     CGEventTap->>HotkeyDetector: kCGEventFlagsChanged (x4)
-    HotkeyDetector->>HotkeyDetector: check_toggle_gesture()<br/>Press→Release→Press→Release < DOUBLE_TAP_INTERVAL_MS
-    HotkeyDetector->>Controller: HotkeyInput { Toggle, assistive=false }
+    HotkeyDetector->>HotkeyDetector: register_double_tap()<br/>Press→Release→Press→Release < DOUBLE_TAP_INTERVAL_MS
+    HotkeyDetector->>Controller: ToggleRaw
 
     rect rgb(200, 255, 200)
         Note over Controller: State: IDLE → REC_TOGGLE
@@ -742,14 +806,17 @@ sequenceDiagram
     end
 
     alt User double-taps again (stop)
-        User->>HotkeyDetector: Double-tap Option
-        HotkeyDetector->>Controller: ToggleNormal
+        User->>HotkeyDetector: Double-tap Ctrl
+        HotkeyDetector->>Controller: ToggleRaw
         Note over Controller: State: REC_TOGGLE → BUSY
-        Controller->>Whisper: Stop-path residual + format
+        Controller->>Whisper: Stop-path residual
         Note over Controller: State: BUSY → IDLE
     else Silence > TOGGLE_SILENCE_SEC
         Apple->>Apple: Seal open span, rest SFSpeech (Layer 1 can patch)
         Note over Controller: State stays REC_TOGGLE — mic + Silero keep watching
+    else Assistive take, no voice for 30 s
+        Controller->>Controller: Named stop, archive only (no delivery route)
+        Note over Controller: State: REC_TOGGLE → BUSY → IDLE, nothing sent
     end
 ```
 
@@ -785,17 +852,17 @@ sequenceDiagram
 
     Note over User,State: DOUBLE_TAP_INTERVAL_MS = 200
 
-    User->>Detector: Option DOWN (t=0ms)
+    User->>Detector: Ctrl DOWN (t=0ms)
     Detector->>State: first_tap_time = now()
 
-    User->>Detector: Option UP (t=50ms)
+    User->>Detector: Ctrl UP (t=50ms)
     Detector->>State: waiting_second_tap = true
 
-    User->>Detector: Option DOWN (t=180ms)
+    User->>Detector: Ctrl DOWN (t=180ms)
     Detector->>State: Check: 180ms < 200ms ✓
 
-    User->>Detector: Option UP (t=250ms)
-    Detector->>Detector: TRIGGER! ToggleNormal
+    User->>Detector: Ctrl UP (t=250ms)
+    Detector->>Detector: TRIGGER! ToggleRaw
 
     Note over Detector: Only SECOND release<br/>triggers the event
 ```
@@ -804,60 +871,56 @@ sequenceDiagram
 const DOUBLE_TAP_INTERVAL_MS: u64 = 200;
 
 // Sequence: Press → Release → Press → Release (within interval)
-// Only the SECOND release triggers ToggleNormal/ToggleAssistive
+// Only the SECOND release triggers ToggleRaw (Dictation=DoubleCtrl)
 ```
 
 ### Exclusive Mode
 
-When `HOLD_EXCLUSIVE=false` (default), modifier variants work out of the box:
+`HOLD_EXCLUSIVE` is read into the runtime config and changes nothing today:
+every hold latches Raw at key-down (`compute_hold_mode` ignores the flag), and
+the Option double-taps carry their own guards. With either value:
 
 - Shift or Command _during_ an already-started Fn hold attaches `{selection_N}`
   (default arm modifier Shift; configurable to Cmd in Settings)
 - Fn+Shift from idle stays dictation — it is not Assistive and does not front Agent
 - The unconfigured arm modifier does not attach (W10-B detector truth)
 
-Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
-
-- Option taps are ignored if Option is part of an unrelated hold combo
-- Prevents accidental toggle while trying to hold legacy Ctrl-based combos
-
 ---
 
 ## Troubleshooting
 
-| Symptom                                           | Cause                                      | Fix                                                           |
-| ------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------- |
-| Hotkeys don't work                                | Accessibility permission denied            | System Settings → Privacy → Accessibility → Enable codescribe |
-| Double-tap too sensitive                          | Interval too short                         | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
-| Recording won't stop (hold)                       | Key stuck in system                        | Release all modifiers, try again                              |
-| VAD cuts utterance too early                      | VAD defaults too conservative              | Tune constants in `core/vad/config.rs` and rebuild            |
-| Double-tap / arm “does nothing” with no UI change | Gesture blocked or arm ignored at detector | Check INFO logs for stable diagnostic lines (below)           |
+| Symptom                              | Cause                           | Fix                                                           |
+| ------------------------------------ | ------------------------------- | ------------------------------------------------------------- |
+| Hotkeys don't work                   | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable codescribe |
+| Double-tap too sensitive             | Interval too short              | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
+| Recording won't stop (hold)          | Key stuck in system             | Release all modifiers, try again                              |
+| VAD cuts utterance too early         | VAD defaults too conservative   | Tune constants in `core/vad/config.rs` and rebuild            |
+| Arm “does nothing” with no UI change | Arm ignored at detector         | Check INFO logs for the stable diagnostic line (below)        |
 
-### Blocked / ignored gesture diagnostics (INFO)
+### Ignored arm diagnostics (INFO)
 
-Every blocked double-tap and ignored arm attempt emits one **INFO** line with a
-stable `reason=` token (visibility only — routing is unchanged). Filter
-`~/.codescribe/logs/codescribe.log` (or the Diagnostics surface) for:
+An ignored arm attempt emits one **INFO** line with a stable `reason=` token
+(visibility only — routing is unchanged). Filter
+`~/.codescribe/data.noindex/logs/codescribe.log` (or the Diagnostics surface) for:
 
 ```text
-blocked_double_tap gesture=left_option|right_option reason=binding_disabled|modifier_combo_active
 arm_ignored reason=wrong_arm_modifier
 ```
 
-| Log line                                            | Meaning                                                                      |
-| --------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `blocked_double_tap … reason=binding_disabled`      | Double-tap recognized, but that Option side is not assigned to a mode        |
-| `blocked_double_tap … reason=modifier_combo_active` | Double-tap recognized while another modifier/hold combo is active            |
-| `arm_ignored reason=wrong_arm_modifier`             | Hold base is down, but the non-configured arm key (Shift vs Cmd) was pressed |
+| Log line                                | Meaning                                                                      |
+| --------------------------------------- | ---------------------------------------------------------------------------- |
+| `arm_ignored reason=wrong_arm_modifier` | Hold base is down, but the non-configured arm key (Shift vs Cmd) was pressed |
 
-If **no** such line appears when you double-tap or arm, the OS never delivered
-the key event to Codescribe (permissions / focus / hardware) — that case is
-outside the detector.
+A missing line does not prove the OS never delivered the key. The raw-input
+journal below admits Fn, the channel modifier and channel digits, plus any
+modifier change that produced a gesture; ordinary typing and a modifier change
+that started nothing leave no line by design. Only a gap that contains a
+`hotkey_tap_health event=disabled` line shows a key the tap lost.
 
 ### Raw-input journal (INFO)
 
 To see what was pressed next to what the app understood, the event tap keeps a
-raw-input journal in `~/.codescribe/logs/codescribe.log` (the single log owner;
+raw-input journal in `~/.codescribe/data.noindex/logs/codescribe.log` (the single log owner;
 no new file or setting). Each line holds the raw event and the detector's
 decision for it:
 
@@ -870,7 +933,7 @@ hotkey_input kind=journal_overflow dropped=N
 `t_ns` is the CoreGraphics event timestamp (monotonic, nanoseconds since
 boot). `decision` is `none`, `hold_down`, `hold_up`, `hold_update`,
 `attach_selection`, `toggle_raw`, `toggle_normal`, `toggle_assistive`,
-`agent_channel channel=N`, `double_tap_blocked` or `ui_command`.
+`agent_channel channel=N` or `ui_command`.
 
 **Privacy filter** (inside the tap callback, before anything is queued): Fn
 flag changes, the channel modifier's own flag changes when it is Ctrl, and

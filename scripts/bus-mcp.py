@@ -23,7 +23,7 @@ from types import SimpleNamespace
 #: Claude Code's because the hook, not the wait, is the idle wakeup there too.
 #: A window that ends with an explicit idle receipt keeps server and client
 #: agreeing on which wait is pending.
-WAIT_SECONDS = {"claude-code": 900, "junie": 150, "omp": 900}
+WAIT_SECONDS = {"claude-code": 900, "junie": 150, "omp": 900, "codex": 60}
 
 #: Hosts whose idle wakeup is a hook process holding the lease's wake lock:
 #: Claude Code through its asyncRewake Stop hook, OMP through the bundled
@@ -296,12 +296,13 @@ def describe(result):
                 + f"; reply to delivery {result.get('reply_to') or result.get('delivery_id')}.")
     if kind == "status":
         attached = "attached" if result.get("attached") else "not attached"
-        alive = "alive" if result.get("follower_alive") else "not running"
+        alive = "verified alive" if result.get("follower_alive") else "unverified"
         return (f"Connection {attached}: channel {result.get('channel')}, name {result.get('name') or result.get('audience')}, "
                 f"lease {result.get('lease_id')}, follower {alive} (pid {result.get('follower_pid')}), "
                 f"backlog {result.get('backlog')}, cursor {result.get('cursor')}, wakeup {result.get('wakeup')}"
                 + (f", native wake armed: {'yes' if result.get('native_wake_armed') else 'no'}"
-                   if "native_wake_armed" in result else "") + ".")
+                   if "native_wake_armed" in result else "")
+                + (f", problem: {result['follower_problem']}" if result.get("follower_problem") else "") + ".")
     if kind == "detach_receipt":
         released = ", ".join(str(c) for c in result.get("released_channels") or []) or "none"
         unacked = result.get("unacked_delivery_ids") or []
@@ -874,8 +875,9 @@ class Mailbox:
             return result
 
 
-def serve(demux, root, bus):
-    mailbox = Mailbox(demux, root, bus)
+def serve(demux, root, bus, *, mailbox=None, tools=None):
+    mailbox = Mailbox(demux, root, bus) if mailbox is None else mailbox
+    tools = TOOLS if tools is None else tools
     output_lock, pending_lock = threading.Lock(), threading.Lock()
     pending = {}
 
@@ -929,11 +931,12 @@ def serve(demux, root, bus):
                     continue
                 if method == "initialize":
                     send({"id": identity, "result": {"protocolVersion": params.get("protocolVersion", "2024-11-05"),
-                          "capabilities": {"tools": {}}, "serverInfo": {"name": "codescribe", "version": "1.1.0"}}})
+                          "capabilities": {"tools": {}}, "serverInfo": {"name": "codescribe", "version": "1.2.0"},
+                          "instructions": "Read complete owned deliveries, ACK exact returned IDs before work. Queue acceptance is not a started turn; speech has a separate playback receipt."}})
                 elif method == "ping":
                     send({"id": identity, "result": {}})
                 elif method == "tools/list":
-                    send({"id": identity, "result": {"tools": TOOLS}})
+                    send({"id": identity, "result": {"tools": tools}})
                 elif method == "tools/call":
                     with pending_lock:
                         if identity in pending or len(pending) >= 4:

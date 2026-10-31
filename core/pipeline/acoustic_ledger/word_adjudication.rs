@@ -59,10 +59,10 @@ use serde::{Deserialize, Serialize};
 /// has no decoder-fence completeness receipt.
 /// v30: owner projection cannot hide a new Whisper word's clipped onset or
 /// trailing fence; unprojected incomplete onsets retain visible evidence.
-/// v35: a banded complete Whisper word respells, 1:1, the fence side of an
-/// incumbent Whisper word pinned below the rights floor of its own window,
-/// when Apple or DT heard the banded spelling and not the incumbent's.
-pub const WORD_POLICY: &str = "word-adjudication/v35-window-position";
+/// v36: one capture-grid publication per physical word; later Whisper context
+/// cannot relabel or retime it. Measured provisional Apple words require a
+/// unique full-range acoustic mapping; coarse utterance labels carry speech debt.
+pub const WORD_POLICY: &str = "word-adjudication/v36-forward-publication";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,11 +80,34 @@ pub struct SourceWord {
     pub decode: Option<(u64, u64)>,
 }
 
+/// Raw decoder evidence and the disjoint interval this observation may publish.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordPublicationEvidence {
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub terminal_tail: bool,
+    pub decoded_words: Vec<SourceWord>,
+}
+
+/// Capture-hop observation at the physical join between two source pins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordBoundaryEvidence {
+    pub left: SlotTarget,
+    pub right: SlotTarget,
+    pub probe_start: u64,
+    pub probe_end: u64,
+    pub continuously_voiced: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WordEvidenceInput {
     pub producer_request: Option<crate::stt::tail_provider::TailRequestIdentity>,
     pub observation: ObservationIdentity,
     pub words: Vec<SourceWord>,
+    #[serde(default)]
+    pub publication: Option<WordPublicationEvidence>,
+    #[serde(default)]
+    pub boundary_evidence: Vec<WordBoundaryEvidence>,
     pub backend: Option<String>,
     /// Unknown is deliberate: positive confidence does not prove finality.
     pub finality: String,
@@ -725,8 +748,20 @@ impl AcousticLedger {
         {
             self.decoded_word_windows
                 .insert(observation.clone(), (start, end));
-            if let Some(span) = heard_span {
-                self.record_complete_decode_span(observation, span);
+            if let Some((mut span_start, mut span_end)) = heard_span {
+                // A Whisper window's surrounding context is not publication
+                // work for another owner or for an unowned band. Keep the
+                // full decoder fences above for acoustic/lexical context.
+                if let Some(publication) = self
+                    .word_evidence_input(observation)
+                    .and_then(|input| input.publication.as_ref())
+                {
+                    span_start = span_start
+                        .max(publication.sample_start)
+                        .max(owner.sample_start);
+                    span_end = span_end.min(publication.sample_end).min(owner.sample_end);
+                }
+                self.record_complete_decode_span(observation, (span_start, span_end));
             }
         }
     }
@@ -771,6 +806,8 @@ impl AcousticLedger {
                     decode: pin.decode_sample_start.zip(pin.decode_sample_end),
                 })
                 .collect(),
+            publication: None,
+            boundary_evidence: Vec::new(),
             backend: backend
                 .map(str::to_owned)
                 .or_else(|| provider.map(|p| p.1.clone())),
@@ -778,6 +815,144 @@ impl AcousticLedger {
             timing: provider.map_or_else(|| "capture_word_pins".into(), |p| p.3.clone()),
             trial: None,
         });
+    }
+
+    /// Attach the untouched full decode independently of selected publication pins.
+    pub(crate) fn stage_word_publication(
+        &mut self,
+        observation: &ObservationIdentity,
+        band: (u64, u64),
+        terminal_tail: bool,
+        original: &[WordPin],
+    ) {
+        let Some(input) = self
+            .word_adjudication
+            .input
+            .as_mut()
+            .filter(|input| input.observation == *observation)
+        else {
+            return;
+        };
+        input.publication = Some(WordPublicationEvidence {
+            sample_start: band.0,
+            sample_end: band.1,
+            terminal_tail,
+            decoded_words: original
+                .iter()
+                .map(|pin| SourceWord {
+                    lexical_position: None,
+                    sample_start: pin.sample_start,
+                    sample_end: pin.sample_end,
+                    original_text: (!pin.surface_rewritten).then(|| pin.text.clone()),
+                    surface: pin.text.clone(),
+                    confidence: pin.confidence,
+                    surface_rewritten: pin.surface_rewritten,
+                    decode: pin.decode_sample_start.zip(pin.decode_sample_end),
+                })
+                .collect(),
+        });
+    }
+
+    /// Stage same-capture hop observations at candidate source joins. These
+    /// facts are carried by the word input into the ordinary durable trail.
+    pub(crate) fn stage_dt_boundary_evidence(
+        &mut self,
+        observation: &ObservationIdentity,
+        energy: &crate::audio::capture_receipt::CaptureEnergyOwner,
+        captured_samples: u64,
+    ) {
+        use crate::audio::capture_receipt::ACTIVE_SPEECH_LINEAR_FLOOR;
+        let Some(input) = self.word_evidence_input(observation) else {
+            return;
+        };
+        let Some(request) = input.producer_request.as_ref() else {
+            return;
+        };
+        if observation.producer != ObservationProducer::AppleDictation
+            || !energy.identity().matches(
+                &observation.occurrence.session,
+                observation.occurrence.capture_epoch,
+            )
+            || request.range.session != observation.occurrence.session
+            || request.range.capture_epoch != observation.occurrence.capture_epoch
+            || input.words.len() != 1
+        {
+            return;
+        }
+        let pin_start = input.words[0].sample_start;
+        let pin_end = input.words[0].sample_end;
+        let Some(rate) = self.capture_rate_hz else {
+            return;
+        };
+        let resolution = u64::from(rate).div_ceil(50);
+        let Some(levels) = energy.session_hop_levels(
+            &observation.occurrence.session,
+            observation.occurrence.capture_epoch,
+        ) else {
+            return;
+        };
+        let mut sources = self
+            .slots_of(&observation.occurrence)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|source| {
+                source.producer == ObservationProducer::Whisper
+                    && source.sample_start < pin_end
+                    && pin_start < source.sample_end
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        sources.sort_by_key(|source| (source.sample_start, source.sample_end));
+        let mut evidence = Vec::new();
+        for pair in sources.windows(2) {
+            if pair[0].sample_end != pair[1].sample_start {
+                continue;
+            }
+            let boundary = pair[0].sample_end;
+            let start = boundary.saturating_sub(resolution);
+            let end = boundary.saturating_add(resolution);
+            if resolution == 0
+                || start < request.range.sample_start
+                || start < observation.occurrence.sample_start
+                || end > observation.occurrence.sample_end
+                || end > request.range.sample_end
+                || end > captured_samples
+            {
+                continue;
+            }
+            let hops = levels
+                .iter()
+                .filter(|hop| hop.sample_start < end && start < hop.sample_end)
+                .collect::<Vec<_>>();
+            let continuously_voiced = !hops.is_empty()
+                && hops.first().is_some_and(|hop| hop.sample_start <= start)
+                && hops.last().is_some_and(|hop| hop.sample_end >= end)
+                && hops
+                    .windows(2)
+                    .all(|pair| pair[0].sample_end == pair[1].sample_start)
+                && hops.iter().all(|hop| {
+                    hop.rms.is_finite()
+                        && hop.rms >= ACTIVE_SPEECH_LINEAR_FLOOR
+                        && energy.digital_zero_in(
+                            &observation.occurrence.session,
+                            observation.occurrence.capture_epoch,
+                            hop.sample_start,
+                            hop.sample_end,
+                        ) == Some(false)
+                });
+            evidence.push(WordBoundaryEvidence {
+                left: SlotTarget::from(&pair[0]),
+                right: SlotTarget::from(&pair[1]),
+                probe_start: start,
+                probe_end: end,
+                continuously_voiced,
+            });
+        }
+        if let Some(input) = self.word_adjudication.input.as_mut()
+            && input.observation == *observation
+        {
+            input.boundary_evidence = evidence;
+        }
     }
 
     pub(crate) fn bind_word_provider(
@@ -1793,6 +1968,19 @@ impl AcousticLedger {
             return Some(false);
         }
         let all_coarse = sources.iter().all(|source| self.coarse_word_source(source));
+        // Once a Whisper word has entered the document, another overlapping
+        // decode may supply context but cannot rewrite that physical word.
+        // Coarse provisional slots still need their first word refinement.
+        if self.published_whisper_sources_protected(observation, sources) {
+            self.record_word_choice(
+                observation,
+                sources,
+                outputs,
+                "published_whisper_word",
+                false,
+            );
+            return Some(false);
+        }
         let held_label = compose_label(sources);
         let candidate_label = compose_label(outputs);
         let coarse_witness = observation.producer == ObservationProducer::AppleDictation
@@ -1870,7 +2058,8 @@ impl AcousticLedger {
         // The independent witness contests a resolved physical partition,
         // not a spelling-nearest token or a provider rank. Its full original
         // decode and measured speech anchors must cover every target.
-        let independent_witness = coarse_witness || (observation.producer == ObservationProducer::AppleDictation
+        let independent_witness = self.independent_dt_partition_debt(observation, sources, outputs).is_some()
+            || coarse_witness || (observation.producer == ObservationProducer::AppleDictation
             && complete
             && candidate.acoustic_boundaries_complete
             && sources.len() == outputs.len()
@@ -1996,6 +2185,73 @@ impl AcousticLedger {
         let raw_disagrees = raw
             .zip(component.incumbent.original_text.as_deref())
             .is_some_and(|(a, b)| !label_equal(a, b));
+        // Apple remains provisional until the unique owning Whisper window
+        // returns. A complete bijection preserves every physical word while
+        // allowing this first publication to supply the Whisper labels.
+        let same_covered_word = |source: &WordSlot, output: &WordSlot| {
+            output.sample_start <= source.sample_start
+                && source.sample_end <= output.sample_end
+                && self.same_anchored_word(source, output)
+        };
+        let owned_apple_word = fresh
+            && complete
+            && candidate.acoustic_boundaries_complete
+            && observation.producer == ObservationProducer::Whisper
+            && !sources.is_empty()
+            && sources.len() == outputs.len()
+            && candidate.pins.len() == outputs.len()
+            && !negation_disagrees
+            && sources.iter().all(|source| {
+                source.producer == ObservationProducer::Apple
+                    && !self.coarse_word_source(source)
+                    && self.word_anchor_identity(source).is_some()
+                    && outputs
+                        .iter()
+                        .filter(|output| same_covered_word(source, output))
+                        .count()
+                        == 1
+            })
+            && outputs.iter().all(|output| {
+                output.producer == ObservationProducer::Whisper
+                    && output.observation == *observation
+                    && self.word_anchor_identity(output).is_some()
+                    && sources
+                        .iter()
+                        .filter(|source| same_covered_word(source, output))
+                        .count()
+                        == 1
+            })
+            && self.word_evidence_input(observation).is_some_and(|input| {
+                let Some(publication) = input.publication.as_ref() else {
+                    return false;
+                };
+                let Some(request) = input.producer_request.as_ref() else {
+                    return false;
+                };
+                input.finality == "final"
+                    && input.timing == "exact_sample_range"
+                    && request.range.session == observation.occurrence.session
+                    && request.range.capture_epoch == observation.occurrence.capture_epoch
+                    && request.range.sample_start <= publication.sample_start
+                    && publication.sample_end <= request.range.sample_end
+                    && candidate.pins.iter().all(|pin| {
+                        let midpoint =
+                            pin.sample_start + pin.sample_end.saturating_sub(pin.sample_start) / 2;
+                        let mut originals = publication.decoded_words.iter().filter(|raw| {
+                            raw.sample_start == pin.sample_start
+                                && raw.sample_end == pin.sample_end
+                                && raw.decode == pin.decode
+                                && raw.original_text == pin.original_text
+                        });
+                        publication.sample_start <= midpoint
+                            && midpoint < publication.sample_end
+                            && pin.decode
+                                == Some((request.range.sample_start, request.range.sample_end))
+                            && pin.original_text.is_some()
+                            && originals.next().is_some()
+                            && originals.next().is_none()
+                    })
+            });
         let geometry_preserves_complete_source = candidate.acoustic_boundaries_complete
             || !sources.iter().any(|source| self.complete_word_slot(source));
         // Publication band: a Whisper recognition from the edge of its decode
@@ -2116,6 +2372,7 @@ impl AcousticLedger {
                         .is_some_and(|held| heard.iter().any(|label| label_equal(label, held)))
             };
         let lexical_resolved = independent_witness
+            || owned_apple_word
             || complete_fence_authority
             || window_position_authority
             || provisional_apple
@@ -2141,6 +2398,8 @@ impl AcousticLedger {
             (false, "incomplete_source_scope")
         } else if independent_witness {
             (true, "independent_same_speech_range")
+        } else if owned_apple_word {
+            (true, "owned_whisper_apple_word")
         } else if complete_fence_authority {
             (true, "live_complete_fences")
         } else if window_position_authority {
@@ -2318,36 +2577,6 @@ impl AcousticLedger {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn next_word_trial(&mut self, stopping: bool) -> Option<WordTrial> {
-        self.next_word_trial_in(stopping, None, None)
-    }
-
-    /// An actual trial decode can adjudicate other disputed words only when
-    /// its PCM covers their complete source lineage. It is one new witness
-    /// for each physical word, never repeated votes for the same component.
-    pub(crate) fn next_word_trial_in(
-        &mut self,
-        stopping: bool,
-        coverage: Option<&OccurrenceIdentity>,
-        // Required padding and retained capture bounds. With coverage, the
-        // returned frame must supply this context. Without coverage, exclude
-        // already observed planned frames before spending a live trial.
-        context: Option<(u64, std::ops::Range<u64>)>,
-    ) -> Option<WordTrial> {
-        self.select_word_trial(stopping, coverage, context, u64::MAX, false)
-    }
-
-    pub(crate) fn next_word_trial_before_horizon(
-        &mut self,
-        stopping: bool,
-        coverage: Option<&OccurrenceIdentity>,
-        context: Option<(u64, std::ops::Range<u64>)>,
-        horizon: u64,
-    ) -> Option<WordTrial> {
-        self.select_word_trial(stopping, coverage, context, horizon, true)
-    }
-
     /// An unresolved question keeps its physical scope, with or without a trial.
     /// Later ordinary evidence must answer the same group before its witnesses
     /// or spent budgets can be replaced by narrower components.
@@ -2447,145 +2676,6 @@ impl AcousticLedger {
         });
         self.word_adjudication.components.push(grouped);
         self.word_adjudication.components.len() - 1
-    }
-
-    fn select_word_trial(
-        &mut self,
-        stopping: bool,
-        coverage: Option<&OccurrenceIdentity>,
-        context: Option<(u64, std::ops::Range<u64>)>,
-        horizon: u64,
-        fresh_decode: bool,
-    ) -> Option<WordTrial> {
-        let (index, sources) = self
-            .word_adjudication
-            .components
-            .iter()
-            .enumerate()
-            .filter_map(|(index, c)| {
-                if !c.conflict || c.owner.sample_end > horizon || self.is_sealed(&c.owner) {
-                    return None;
-                }
-                let sources = self.word_trial_sources(index, fresh_decode)?;
-                let targets = sources.iter().map(SlotTarget::from).collect::<Vec<_>>();
-                let grouped;
-                let evidence = if targets == c.targets {
-                    c
-                } else {
-                    grouped = self.component_for_sources(&c.owner, &sources);
-                    &grouped
-                };
-                if !stopping {
-                    let support = evidence.support();
-                    let complete_frames = support
-                        .iter()
-                        .filter(|h| h.family() == ObservationProducer::Whisper && h.complete)
-                        .filter_map(|h| h.decode)
-                        .collect::<BTreeSet<_>>()
-                        .len();
-                    // An early owner can have only one covering grid frame.
-                    // An incomplete Apple label must not make its second real
-                    // witness impossible to request. This spends the existing
-                    // trial budget; admission still requires fresh agreement.
-                    // A changed negation neighbour is itself a lexical dispute,
-                    // not a reason to forbid collecting its resolving evidence.
-                    // Only eligibility changes here: this witness alone still
-                    // cannot revise the held label or its physical partition.
-                    let first_banded_witness = evidence.apple.last().is_some_and(|apple| {
-                        !(apple.complete && apple.acoustic_boundaries_complete)
-                            && apple.original_text.is_some()
-                            && support.iter().any(|h| {
-                                h.family() == ObservationProducer::Whisper
-                                    && h.complete
-                                    && h.acoustic_boundaries_complete
-                                    && h.decode.is_some()
-                                    && h.q >= BAND_RIGHTS_FLOOR
-                                    && h.original_text.is_some()
-                            })
-                    });
-                    if complete_frames < 2 && !first_banded_witness {
-                        return None;
-                    }
-                }
-                if coverage.is_none() && context.is_none() {
-                    return Some((index, sources));
-                }
-                let ranges = self.word_source_ranges(&sources);
-                if let Some(coverage) = coverage
-                    && (evidence
-                        .has_decode(coverage, Some((coverage.sample_start, coverage.sample_end)))
-                        || !ranges.iter().all(|range| {
-                            range.same_capture(coverage)
-                                && self.decode_word_onset_complete(
-                                    range,
-                                    coverage.sample_start,
-                                    coverage.sample_end,
-                                    range.sample_start,
-                                )
-                                && range.sample_end <= coverage.sample_end
-                                && !self.decode_word_fence_incomplete(
-                                    range,
-                                    coverage.sample_start,
-                                    coverage.sample_end,
-                                    range.sample_start,
-                                    range.sample_end,
-                                )
-                        }))
-                {
-                    return None;
-                }
-                let context_complete = context.as_ref().is_none_or(|(padding, retained)| {
-                    let start = ranges
-                        .iter()
-                        .map(|range| range.sample_start)
-                        .min()
-                        .expect("nonempty source ranges");
-                    let end = ranges
-                        .iter()
-                        .map(|range| range.sample_end)
-                        .max()
-                        .expect("nonempty source ranges");
-                    let decode = (
-                        start.saturating_sub(*padding).max(retained.start),
-                        end.saturating_add(*padding).min(retained.end),
-                    );
-                    start >= retained.start
-                        && end <= retained.end
-                        && coverage.map_or_else(
-                            || !evidence.has_decode(&c.owner, Some(decode)),
-                            |range| range.sample_start <= decode.0 && range.sample_end >= decode.1,
-                        )
-                });
-                context_complete.then_some((index, sources))
-            })
-            .max_by_key(|(index, _)| {
-                self.word_adjudication.components[*index]
-                    .whisper
-                    .iter()
-                    .map(|h| h.q)
-                    .max()
-                    .unwrap_or(0)
-            })?;
-        let index = self.group_word_trial_component(index, &sources);
-        self.open_word_trial(index, fresh_decode)
-    }
-
-    /// Reissuing a retained decode frame cannot add evidence to this trial.
-    /// The scheduler asks before leasing PCM or submitting another native job;
-    /// admission independently enforces the same rule on returned evidence.
-    #[cfg(test)]
-    pub(crate) fn word_trial_has_decode(
-        &self,
-        trial: &WordTrial,
-        decode: &OccurrenceIdentity,
-    ) -> bool {
-        self.word_adjudication
-            .components
-            .iter()
-            .filter(|component| component.trial.as_ref() == Some(trial))
-            .any(|component| {
-                component.has_decode(decode, Some((decode.sample_start, decode.sample_end)))
-            })
     }
 
     /// Owners holding a conflict no trial has attempted: the only owners for
@@ -2802,67 +2892,6 @@ impl AcousticLedger {
             return Some("trial_target_mismatch");
         }
         None
-    }
-
-    pub(crate) fn admit_word_trial(
-        &mut self,
-        trial: &WordTrial,
-        observation: &ObservationIdentity,
-        words: &[WordPin],
-        original: &[WordPin],
-    ) -> MutationReceipt {
-        // A reserved coarse group can receive its measured child pins. It
-        // cannot pass the one-word matcher before ordinary admission has
-        // proved that partition. Keep every child inside the reserved group;
-        // context still cannot create targets or rewrite unreserved neighbors.
-        let current = self.slots_of(&trial.owner).unwrap_or(&[]);
-        let targets_pin = |word: &&WordPin| {
-            let range = OccurrenceIdentity::new(
-                &trial.owner.session,
-                trial.owner.capture_epoch,
-                word.sample_start,
-                word.sample_end,
-            );
-            current.iter().any(|slot| {
-                trial.targets.contains(&SlotTarget::from(slot))
-                    && (self.word_slot_targets_pin(slot, &range)
-                        || (self.coarse_word_source(slot)
-                            && range.is_anchored()
-                            && range.same_capture(&slot.observation.occurrence)
-                            && slot.sample_start <= range.sample_start
-                            && range.sample_end <= slot.sample_end))
-            })
-        };
-        let pins = words
-            .iter()
-            .filter(targets_pin)
-            .cloned()
-            .collect::<Vec<_>>();
-        let raw = original
-            .iter()
-            .filter(targets_pin)
-            .cloned()
-            .collect::<Vec<_>>();
-        self.stage_word_evidence(observation, &raw, None, "unknown");
-        self.word_adjudication
-            .input
-            .as_mut()
-            .expect("staged trial")
-            .trial = Some(trial.clone());
-        let refusal = self.word_trial_input_refusal(observation, &pins);
-        let receipt = self.admit_word_slots(observation, &pins);
-        let resolved = self
-            .word_adjudication
-            .choices
-            .iter()
-            .rev()
-            .find(|choice| choice.observation == *observation)
-            .is_some_and(|choice| choice.reason == "trial_confirmed");
-        self.close_word_trial(
-            trial,
-            refusal.unwrap_or(if resolved { "resolved" } else { "unresolved" }),
-        );
-        receipt
     }
 
     /// Components held for adjudication, settled or not.
@@ -3209,3 +3238,7 @@ mod boundary_group_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "historical_word_trial_fixtures.rs"]
+mod historical_word_trial_fixtures;

@@ -74,17 +74,19 @@ struct ComposerTextLayout: Equatable {
     lineHeight: CGFloat,
     minimumLines: Int = ComposerTextLayout.minimumLines,
     maximumLines: Int = ComposerTextLayout.maximumLines,
-    verticalPadding: CGFloat = ComposerTextLayout.verticalPadding
+    verticalPadding: CGFloat = ComposerTextLayout.verticalPadding,
+    maximumHeight: CGFloat? = nil
   ) -> ComposerTextLayout {
     let safeLineHeight = max(1, lineHeight)
     let safeMinimum = max(1, minimumLines)
     let safeMaximum = max(safeMinimum, maximumLines)
     let minimumHeight = safeLineHeight * CGFloat(safeMinimum) + verticalPadding
-    let maximumHeight = safeLineHeight * CGFloat(safeMaximum) + verticalPadding
+    let lineLimitHeight = safeLineHeight * CGFloat(safeMaximum) + verticalPadding
+    let viewportLimit = max(minimumHeight, min(lineLimitHeight, maximumHeight ?? lineLimitHeight))
     let measured = max(contentHeight, minimumHeight)
     return ComposerTextLayout(
-      height: min(measured, maximumHeight),
-      isVerticallyScrollable: measured > maximumHeight
+      height: min(measured, viewportLimit),
+      isVerticallyScrollable: measured > viewportLimit
     )
   }
 
@@ -117,7 +119,9 @@ struct ComposerTextLayout: Equatable {
     layoutManager.addTextContainer(container)
     storage.addLayoutManager(layoutManager)
     layoutManager.ensureLayout(for: container)
-    return ceil(layoutManager.usedRect(for: container).height + verticalPadding)
+    return ceil(
+      max(layoutManager.usedRect(for: container).maxY, layoutManager.extraLineFragmentRect.maxY)
+        + verticalPadding)
   }
 
   fileprivate static func composerFont(size: CGFloat) -> NSFont {
@@ -135,6 +139,9 @@ struct ComposerTextView: NSViewRepresentable {
   @Binding var isFocused: Bool
   let history: [String]
   let onSend: () -> Void
+  /// Present when this field has its own microphone: a long Fn while the
+  /// caret sits here is refused and this asks the field to point at it.
+  var onMicrophoneRedirect: (() -> Void)? = nil
 
   func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -169,6 +176,9 @@ struct ComposerTextView: NSViewRepresentable {
     textView.drawsBackground = false
     textView.isHorizontallyResizable = false
     textView.isVerticallyResizable = true
+    textView.minSize = .zero
+    textView.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     textView.autoresizingMask = [.width]
     textView.textContainerInset = NSSize(width: 0, height: ComposerControlMetrics.textVerticalInset)
     textView.textContainer?.lineFragmentPadding = 0
@@ -193,6 +203,7 @@ struct ComposerTextView: NSViewRepresentable {
     textView.onFocusChange = { [weak coordinator = context.coordinator] active in
       coordinator?.handleFocusChange(active)
     }
+    textView.onMicrophoneRedirect = onMicrophoneRedirect
 
     scrollView.documentView = textView
     scrollView.onContentWidthChange = {
@@ -216,6 +227,9 @@ struct ComposerTextView: NSViewRepresentable {
     textView.onFocusChange = { [weak coordinator = context.coordinator] active in
       coordinator?.handleFocusChange(active)
     }
+    let hadMicrophone = textView.onMicrophoneRedirect != nil
+    textView.onMicrophoneRedirect = onMicrophoneRedirect
+    if hadMicrophone != (onMicrophoneRedirect != nil) { textView.notifyFocusChange() }
 
     let font = ComposerTextLayout.composerFont(size: ComposerControlMetrics.textSize * textScale)
     if textView.font != font {
@@ -348,9 +362,18 @@ struct ComposerTextView: NSViewRepresentable {
         let textContainer = textView.textContainer,
         let font = textView.font
       else { return }
+      let viewport = scrollView.contentSize
+      if textView.frame.width != viewport.width {
+        textView.setFrameSize(NSSize(width: viewport.width, height: textView.frame.height))
+      }
+      textContainer.containerSize = NSSize(
+        width: max(1, viewport.width - 2 * textView.textContainerInset.width),
+        height: .greatestFiniteMagnitude)
       layoutManager.ensureLayout(for: textContainer)
       let contentHeight = ceil(
-        layoutManager.usedRect(for: textContainer).height
+        max(
+          layoutManager.usedRect(for: textContainer).maxY,
+          layoutManager.extraLineFragmentRect.maxY)
           + textView.textContainerInset.height * 2
       )
       let lineHeight = ceil(layoutManager.defaultLineHeight(for: font))
@@ -361,34 +384,44 @@ struct ComposerTextView: NSViewRepresentable {
       if scrollView.hasVerticalScroller != layout.isVerticallyScrollable {
         scrollView.hasVerticalScroller = layout.isVerticallyScrollable
       }
+      textView.minSize = NSSize(width: 0, height: viewport.height)
+      let documentSize = NSSize(
+        width: viewport.width, height: max(viewport.height, max(contentHeight, layout.height)))
+      if textView.frame.size != documentSize { textView.setFrameSize(documentSize) }
       if abs(parent.height - layout.height) > 0.5 {
         DispatchQueue.main.async { [weak self] in
           guard let self, abs(self.parent.height - layout.height) > 0.5 else { return }
           self.parent.height = layout.height
         }
       }
-      textView.scrollRangeToVisible(textView.selectedRange())
+      if contentHeight <= viewport.height {
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+      } else if textView.window?.firstResponder === textView {
+        textView.scrollRangeToVisible(textView.selectedRange())
+      }
     }
   }
 }
 
 private final class ComposerScrollView: NSScrollView {
   var onContentWidthChange: (() -> Void)?
-  private var measuredContentWidth: CGFloat = -1
+  private var measuredViewport = NSSize.zero
 
   override func layout() {
     super.layout()
-    let width = contentSize.width
-    guard abs(width - measuredContentWidth) > 0.5 else { return }
-    measuredContentWidth = width
+    let viewport = contentSize
+    guard viewport != measuredViewport else { return }
+    measuredViewport = viewport
     onContentWidthChange?()
   }
 }
 
-private final class ComposerNativeTextView: NSTextView {
+private final class ComposerNativeTextView: NSTextView, ComposerMicrophoneRedirecting {
   var placeholder = ""
   var onKeyDown: ((NSEvent) -> Bool)?
   var onFocusChange: ((Bool) -> Void)?
+  var onMicrophoneRedirect: (() -> Void)?
   private var isFirstResponderActive = false
   private var isWindowKey = false
   private var windowObservers: [NSObjectProtocol] = []
@@ -406,12 +439,16 @@ private final class ComposerNativeTextView: NSTextView {
       isWindowKey = false
       clearWindowObservers()
       onFocusChange?(false)
+      ComposerCaretOwnership.shared.report(self, focused: false)
     }
   }
 
   isolated deinit {
     clearWindowObservers()
+    ComposerCaretOwnership.shared.release(ObjectIdentifier(self))
   }
+
+  func showMicrophoneRedirect() { onMicrophoneRedirect?() }
 
   private func clearWindowObservers() {
     for observer in windowObservers {
@@ -466,6 +503,8 @@ private final class ComposerNativeTextView: NSTextView {
 
   func notifyFocusChange() {
     onFocusChange?(isFocusedInKeyWindow)
+    ComposerCaretOwnership.shared.report(
+      self, focused: isFocusedInKeyWindow && onMicrophoneRedirect != nil)
   }
 
   var isFocusedInKeyWindow: Bool {

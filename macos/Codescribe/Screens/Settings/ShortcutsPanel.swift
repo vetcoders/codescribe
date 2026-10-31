@@ -34,6 +34,9 @@ struct ShortcutsPanel: View {
       }
 
       modeSection.padding(.top, SettingsScale.sectionGap)
+      if usesOptionDoubleTap {
+        OptionDoubleTapTuning(model: model).padding(.top, SettingsScale.sectionGap)
+      }
       fnAndChannelsSection.padding(.top, SettingsScale.sectionGap)
       dictationContextSection.padding(.top, SettingsScale.sectionGap)
       extraShortcutsSection.padding(.top, SettingsScale.sectionGap)
@@ -45,10 +48,11 @@ struct ShortcutsPanel: View {
 
   // MARK: Header
 
-  /// The header states the screen's purpose by its title alone; the two save
-  /// contracts are explained next to the buttons they govern, not up here.
+  /// The header states the screen's purpose by its title alone, the sidebar
+  /// name the user clicked to get here; the two save contracts are explained
+  /// next to the buttons they govern, not up here.
   private var header: some View {
-    SettingsPageHeader(String(localized: "Shortcuts & control"))
+    SettingsPageHeader(SettingsSection.shortcuts.title)
   }
 
   // MARK: Per-mode gestures, their conflicts and their save
@@ -59,10 +63,33 @@ struct ShortcutsPanel: View {
   private var modeSection: some View {
     VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       bindingRows
+      modeFooter
       if !blockingConflicts.isEmpty { conflictList }
       saveRow
       if !informationalNotices.isEmpty { noticeList }
     }
+  }
+
+  /// Where the two opt-in modes start without a gesture. One footer for the
+  /// section, not a line per row: it holds whichever gesture is picked.
+  private var modeFooter: some View {
+    Text(
+      String(
+        localized: "settings.shortcuts.modeFooter",
+        defaultValue:
+          "Formatting and the Agent also start from the menu bar or the overlay. Their gestures are off until you pick one.",
+        comment: "Shortcuts screen: footer under the three mode gestures")
+    )
+    .font(SettingsScale.helper)
+    .foregroundStyle(CSColor.secondaryInk)
+    .fixedSize(horizontal: false, vertical: true)
+    .accessibilityIdentifier("shortcuts-mode-footer")
+  }
+
+  /// The Option timing controls show while any mode, saved or in the draft,
+  /// is on an Option double-tap.
+  private var usesOptionDoubleTap: Bool {
+    model.draftBindings.contains { $0.binding.isOptionDoubleTap }
   }
 
   private var bindingRows: some View {
@@ -96,9 +123,8 @@ struct ShortcutsPanel: View {
     .padding(.vertical, SettingsScale.rowInsetV)
   }
 
-  /// The pill shows the terse gesture (`2× Left ⌥ (Option)`); VoiceOver reads
-  /// the spelled-out form, so left and right Option stay distinguishable for a
-  /// screen reader that skips key caps.
+  /// The pill shows the terse gesture (`2× ⌃ (Ctrl)`); VoiceOver reads the
+  /// spelled-out form for a screen reader that skips key caps.
   private func bindingPicker(_ row: CsModeBinding) -> some View {
     Menu {
       ForEach(availableBindingsForMode(mode: row.mode), id: \.binding) { option in
@@ -124,11 +150,11 @@ struct ShortcutsPanel: View {
       .padding(.vertical, SettingsScale.controlInsetV)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .fill(Color.primary.opacity(0.08))
+          .fill(Color.primary.opacity(CSAlpha.line))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
     }
     .menuStyle(.borderlessButton)
@@ -158,7 +184,7 @@ struct ShortcutsPanel: View {
                 .fill(
                   model.canSaveBindings
                     ? CSColor.terracotta.opacity(0.9)
-                    : Color.primary.opacity(0.06))
+                    : Color.primary.opacity(CSAlpha.fill))
             )
         }
         .csFocusRing()
@@ -184,15 +210,15 @@ struct ShortcutsPanel: View {
   /// persisted outcome of the last save — never a guess built from the draft.
   ///
   /// The receipt is not an `else` branch. A partial save can leave the
-  /// snapped-back draft in a blocking conflict (Dictation=Double Ctrl lands,
-  /// Agent=Hold Ctrl is refused and snaps back to Double Right Option, which
-  /// Double Ctrl disables); the conflict line and the receipt then both apply,
-  /// and hiding the receipt would hide completed writes and the refusal.
+  /// snapped-back draft in a blocking conflict (one write lands, another is
+  /// refused and snaps back to a binding that now conflicts); the conflict
+  /// line and the receipt then both apply, and hiding the receipt would hide
+  /// completed writes and the refusal.
   @ViewBuilder private var saveStatus: some View {
     VStack(alignment: .leading, spacing: 6) {
       if model.hasBlockingBindingConflicts {
         statusLine(
-          color: CSColor.terracottaText,
+          color: CSColor.dangerLight,
           text: String(localized: "Resolve the conflict above to save the mode shortcuts.")
         )
       } else if model.hasPendingBindingChanges {
@@ -204,7 +230,7 @@ struct ShortcutsPanel: View {
       if let receipt = model.bindingSaveReceipt, let sentence = receipt.sentence {
         VStack(alignment: .leading, spacing: 3) {
           statusLine(
-            color: receipt.hasRejection ? CSColor.terracottaText : CSColor.oliveLight,
+            color: receipt.hasRejection ? CSColor.dangerLight : CSColor.oliveLight,
             text: sentence
           )
           if let detail = receipt.failureDetail {
@@ -224,7 +250,7 @@ struct ShortcutsPanel: View {
         .font(CSFont.mono(11, .medium))
         .foregroundStyle(color)
       Text(text)
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -285,27 +311,33 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Recording indicator"))
       VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
-        HStack(spacing: SettingsScale.rowInsetH) {
-          Text("Size of the indicator next to the cursor")
-            .font(SettingsScale.settingName)
-            .foregroundStyle(Color.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        // The picker sits under its name, as Deferred paste does: beside it,
+        // 372 pt left the name about 208 pt at the minimum window, and both
+        // "Size of the indicator next to the cursor" (241 pt) and "Rozmiar
+        // wskaźnika przy kursorze" (210 pt) wrapped.
+        Text("Size of the indicator next to the cursor")
+          .font(SettingsScale.settingName)
+          .foregroundStyle(Color.primary)
+          .fixedSize(horizontal: false, vertical: true)
 
-          Picker("Pointer indicator", selection: holdBadgeBinding) {
-            ForEach(HoldBadgeOption.allCases) { option in
-              Text(option.visibleName).tag(option)
-            }
+        Picker("Pointer indicator", selection: holdBadgeBinding) {
+          ForEach(HoldBadgeOption.allCases) { option in
+            Text(option.visibleName).tag(option)
           }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          .frame(width: 230)
         }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        // Every segment takes the widest label, here Polish "Wyłączony";
+        // four of them measure 364 pt, so the frame keeps a little slack.
+        .frame(width: 372)
         // The dots belong under the size they are sized by, at the helper rung
         // the rest of the page explains itself in (Founder review, 2026-10-18).
-        HStack(alignment: .top, spacing: SettingsScale.rowInsetH) {
-          legendItem(color: CSColor.terracotta, text: "Recording")
-          legendItem(color: CSColor.assistive, text: "Agent")
-          legendItem(color: CSColor.amber, text: "Processing")
+        // Every state the pointer dot shows, in the colour it is painted in:
+        // the list and the colours come from the core palette (S5).
+        LazyVGrid(columns: legendColumns, alignment: .leading, spacing: CSSpace.xs) {
+          ForEach(IndicatorPalette.swatches, id: \.state) { swatch in
+            legendItem(swatch)
+          }
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -534,10 +566,25 @@ struct ShortcutsPanel: View {
     )
   }
 
-  private func legendItem(color: Color, text: LocalizedStringKey) -> some View {
+  /// Three captions a row: six states read as two short rows.
+  private var legendColumns: [GridItem] {
+    Array(
+      repeating: GridItem(.flexible(), spacing: SettingsScale.rowInsetH, alignment: .topLeading),
+      count: 3)
+  }
+
+  private func legendItem(_ swatch: CsIndicatorSwatch) -> some View {
     HStack(alignment: .top, spacing: CSSpace.xs) {
-      Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
-      Text(text)
+      Circle()
+        .fill(Color(nsColor: swatch.nsColor))
+        .overlay {
+          if let rim = swatch.rimColor {
+            Circle().strokeBorder(Color(nsColor: rim), lineWidth: 1)
+          }
+        }
+        .frame(width: 7, height: 7)
+        .padding(.top, 4)
+      Text(swatch.state.legendName)
         .font(SettingsScale.helper)
         .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
@@ -566,7 +613,7 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Conflicts"))
       ForEach(Array(blockingConflicts.enumerated()), id: \.offset) { _, conflict in
-        validationRow(conflict, accent: CSColor.terracottaText, marker: "!")
+        validationRow(conflict, accent: CSColor.dangerLight, marker: "!")
       }
     }
   }
@@ -600,7 +647,7 @@ struct ShortcutsPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(Color.primary.opacity(0.04))
+        .fill(Color.primary.opacity(CSAlpha.subtle))
     )
   }
 
@@ -674,7 +721,7 @@ struct ShortcutsPanel: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 }
 
@@ -684,3 +731,187 @@ struct ShortcutsPanel: View {
       .frame(width: 720, height: 620)
   }
 #endif
+
+// MARK: Option double-tap timing and tester
+
+/// Live timing of the Option double-taps plus a row to try the gesture.
+///
+/// Each slider writes on change and the hotkey engine re-reads its atomics on
+/// the next tap, so a new value applies without a restart. The tester holds a
+/// short lease in the core while it runs: a recognised pair is reported here
+/// and starts nothing, so trying the gesture never opens a recording.
+struct OptionDoubleTapTuning: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
+      SettingsSectionLabel(
+        String(
+          localized: "settings.shortcuts.optionTiming.section",
+          defaultValue: "Option double-tap",
+          comment: "Shortcuts screen: section with the Option double-tap timing"))
+      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+        PreviewTimingSlider(
+          title: String(
+            localized: "settings.shortcuts.optionTiming.interval",
+            defaultValue: "Double-tap interval",
+            comment: "Shortcuts screen: longest gap between the two Option taps"),
+          value: $model.doubleTapIntervalSlider,
+          range: 100...450,
+          step: 10,
+          valueLabel: Self.milliseconds(model.settings.doubleTapIntervalMs)
+        )
+        PreviewTimingSlider(
+          title: String(
+            localized: "settings.shortcuts.optionTiming.tapMax",
+            defaultValue: "Longest tap",
+            comment: "Shortcuts screen: longest Option press that still counts as a tap"),
+          value: $model.tapMaxSlider,
+          range: 120...300,
+          step: 10,
+          valueLabel: Self.milliseconds(model.settings.tapMaxMs)
+        )
+        PreviewTimingSlider(
+          title: String(
+            localized: "settings.shortcuts.optionTiming.typingQuiet",
+            defaultValue: "Ignore taps while typing for",
+            comment:
+              "Shortcuts screen: Option taps right after typing count for nothing for this long"),
+          value: $model.typingQuietSlider,
+          range: 0...1000,
+          step: 50,
+          valueLabel: Self.milliseconds(model.settings.typingQuietMs)
+        )
+        GestureTestRow()
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .settingsGroupedInset()
+    }
+  }
+
+  static func milliseconds(_ value: UInt64) -> String {
+    String(
+      localized: "\(Int(value)) ms",
+      comment: "Preview timing value: a delay in milliseconds")
+  }
+}
+
+/// Try the Option double-tap without starting anything. While running it
+/// renews the core's tester lease and shows the latest outcome the detector
+/// reported; stopping, or leaving the screen, releases the lease.
+struct GestureTestRow: View {
+  @State private var running = false
+  @State private var baseline: UInt32?
+  @State private var outcome: CsDoubleTapOutcomeKind?
+
+  var body: some View {
+    HStack(alignment: .center, spacing: SettingsScale.rowInsetH) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(
+          String(
+            localized: "settings.shortcuts.gestureTest.title", defaultValue: "Gesture test",
+            comment: "Shortcuts screen: row to try the Option double-tap")
+        )
+        .font(SettingsScale.settingName)
+        .foregroundStyle(Color.primary)
+        Text(statusText)
+          .font(SettingsScale.helper)
+          .foregroundStyle(outcome == .recognized ? CSColor.oliveLight : CSColor.secondaryInk)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("shortcuts-gesture-test-outcome")
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      Button {
+        running.toggle()
+      } label: {
+        Text(
+          running
+            ? String(
+              localized: "settings.shortcuts.gestureTest.stop", defaultValue: "Stop test",
+              comment: "Shortcuts screen: stop trying the gesture")
+            : String(
+              localized: "settings.shortcuts.gestureTest.start", defaultValue: "Start test",
+              comment: "Shortcuts screen: start trying the gesture"))
+      }
+      .csFocusRing()
+    }
+    .task(id: running) {
+      guard running else {
+        setGestureTestActive(active: false)
+        return
+      }
+      baseline = lastDoubleTapOutcome()?.sequence
+      outcome = nil
+      while !Task.isCancelled {
+        setGestureTestActive(active: true)
+        if let latest = lastDoubleTapOutcome(), latest.sequence != baseline {
+          outcome = latest.kind
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+      }
+    }
+    .onDisappear {
+      running = false
+      setGestureTestActive(active: false)
+    }
+  }
+
+  private var statusText: String {
+    guard running else {
+      return String(
+        localized: "settings.shortcuts.gestureTest.idle",
+        defaultValue: "Start the test, then double-tap Option. Nothing starts while it runs.",
+        comment: "Shortcuts screen: gesture test before it runs")
+    }
+    guard let outcome else {
+      return String(
+        localized: "settings.shortcuts.gestureTest.waiting",
+        defaultValue: "Waiting for a double-tap…",
+        comment: "Shortcuts screen: gesture test is running, nothing tapped yet")
+    }
+    return outcome.testerLabel
+  }
+}
+
+extension CsDoubleTapOutcomeKind {
+  /// One word or two: what the last Option double-tap came to.
+  var testerLabel: String {
+    switch self {
+    case .recognized:
+      return String(
+        localized: "settings.shortcuts.gestureTest.recognized", defaultValue: "Recognized",
+        comment: "Gesture test outcome: the double-tap was recognized")
+    case .tooSlow:
+      return String(
+        localized: "settings.shortcuts.gestureTest.tooSlow", defaultValue: "Too slow",
+        comment: "Gesture test outcome: the second tap came too late")
+    case .tooLong:
+      return String(
+        localized: "settings.shortcuts.gestureTest.tooLong", defaultValue: "Too long",
+        comment: "Gesture test outcome: a press lasted too long to be a tap")
+    case .typedRecently:
+      return String(
+        localized: "settings.shortcuts.gestureTest.typedRecently", defaultValue: "Typing detected",
+        comment: "Gesture test outcome: a key was typed just before or with Option")
+    case .mouse:
+      return String(
+        localized: "settings.shortcuts.gestureTest.mouse", defaultValue: "Mouse",
+        comment: "Gesture test outcome: a click or scroll happened between the taps")
+    case .synthetic:
+      return String(
+        localized: "settings.shortcuts.gestureTest.synthetic", defaultValue: "Synthetic",
+        comment: "Gesture test outcome: the key events did not come from the keyboard")
+    case .modifierActive:
+      return String(
+        localized: "settings.shortcuts.gestureTest.modifierActive",
+        defaultValue: "Another key held",
+        comment: "Gesture test outcome: another modifier or a hold was active")
+    case .notAssigned:
+      return String(
+        localized: "settings.shortcuts.gestureTest.notAssigned",
+        defaultValue: "No mode on this Option",
+        comment: "Gesture test outcome: no mode is bound to the tapped Option side")
+    }
+  }
+}

@@ -22,9 +22,12 @@
 //! ([`HotkeyRuntime`], [`start_listener`], [`enable`], [`disable`],
 //! [`is_enabled`]) so callers never need a `cfg` of their own.
 
-use super::config::{get_hotkey_runtime_config, get_mode_hotkey_bindings};
+use super::config::{
+    get_hotkey_runtime_config, get_mode_hotkey_bindings, record_double_tap_outcome,
+};
 use super::detector::{
-    HotkeyDetector, HotkeyDetectorInput, HotkeyEvent, HotkeyModifierSnapshot, HotkeyPhysicalKey,
+    DoubleTapOutcome, HotkeyDetector, HotkeyDetectorInput, HotkeyEvent, HotkeyModifierSnapshot,
+    HotkeyPhysicalKey,
 };
 use crossbeam_channel::Sender;
 use std::time::{Duration, Instant};
@@ -123,6 +126,29 @@ fn tap_journal_admits(
             modifiers,
         } => claimed || super::detector::channel_chord_matches(config.channel_modifier, *modifiers),
         _ => false,
+    }
+}
+
+/// Report an Option double-tap attempt to the gesture tester, and hold back a
+/// recognised pair while the tester's lease is held so trying the gesture in
+/// Settings starts no recording.
+#[cfg(any(target_os = "macos", test))]
+fn gesture_tester_filter(
+    input: &HotkeyDetectorInput,
+    emitted: Option<HotkeyEvent>,
+    tester_active: bool,
+) -> Option<HotkeyEvent> {
+    match DoubleTapOutcome::of(input, emitted.as_ref()) {
+        Some(outcome) => {
+            record_double_tap_outcome(outcome);
+            if tester_active && outcome == DoubleTapOutcome::Recognized {
+                tracing::info!("gesture_test recognized: held back from starting a mode");
+                None
+            } else {
+                emitted
+            }
+        }
+        None => emitted,
     }
 }
 
@@ -289,7 +315,9 @@ fn drain_tap_journal(
 /// thread by a CFRunLoop.
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::super::config::{agent_gesture_capture_active, set_agent_gesture_capture};
+    use super::super::config::{
+        agent_gesture_capture_active, gesture_test_active, set_agent_gesture_capture,
+    };
     use super::super::detector::{AgentGestureInput, digit_from_virtual_keycode};
     use super::*;
     use std::ffi::c_void;
@@ -357,6 +385,8 @@ mod macos {
     const K_CG_EVENT_LEFT_MOUSE_DOWN: CGEventType = 1;
     /// The left mouse button was released.
     const K_CG_EVENT_LEFT_MOUSE_UP: CGEventType = 2;
+    /// The right mouse button went down. Seen only to break an Option tap pair.
+    const K_CG_EVENT_RIGHT_MOUSE_DOWN: CGEventType = 3;
     /// A scroll wheel or trackpad scroll. Observed only for the agent chooser.
     const K_CG_EVENT_SCROLL_WHEEL: CGEventType = 22;
 
@@ -396,11 +426,14 @@ mod macos {
     const K_CG_SCROLL_WHEEL_EVENT_POINT_DELTA_AXIS_1: CGEventField = 96;
     /// Nonzero inside a momentum tail (`kCGScrollWheelEventMomentumPhase`).
     const K_CG_SCROLL_WHEEL_EVENT_MOMENTUM_PHASE: CGEventField = 123;
+    /// Source state of the event (`kCGEventSourceStateID`): the HID system
+    /// state for the keyboard itself, another value when software posted it.
+    const K_CG_EVENT_SOURCE_STATE_ID: CGEventField = 45;
 
     // macOS virtual keycodes for Option keys
-    /// Left Option — the formatting-mode double-tap side.
+    /// Left Option — one opt-in double-tap side.
     const K_VK_OPTION: i64 = 58; // Left Option
-    /// Right Option — the assistive-mode double-tap side.
+    /// Right Option — the other opt-in double-tap side.
     const K_VK_RIGHT_OPTION: i64 = 61; // Right Option
     // macOS virtual keycodes for Control keys
     /// Left Control.
@@ -992,7 +1025,6 @@ mod macos {
                 }
                 Some(true)
             }
-            K_CG_EVENT_SCROLL_WHEEL | K_CG_EVENT_LEFT_MOUSE_DOWN => Some(false),
             _ => None,
         }
     }
@@ -1127,11 +1159,21 @@ mod macos {
                     state.detector.observe_hid_key_down(at);
                 }
 
+                // SAFETY: read-only field accessor on the callback-owned `event`.
+                let source_state =
+                    unsafe { CGEventGetIntegerValueField(event, K_CG_EVENT_SOURCE_STATE_ID) };
+
                 HotkeyDetectorInput::FlagsChanged {
                     now,
                     key,
                     modifiers,
+                    source_is_hid: source_state
+                        == i64::from(K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE),
                 }
+            }
+            K_CG_EVENT_LEFT_MOUSE_DOWN | K_CG_EVENT_RIGHT_MOUSE_DOWN | K_CG_EVENT_SCROLL_WHEEL => {
+                // Seen, never claimed: the click or scroll reaches its app.
+                HotkeyDetectorInput::PointerActivity { now }
             }
             K_CG_EVENT_OTHER_MOUSE_DOWN | K_CG_EVENT_OTHER_MOUSE_UP => {
                 // As Fn alone the click still reaches the frontmost app; with
@@ -1162,7 +1204,11 @@ mod macos {
         // Privacy filter first, on the raw event: only Fn, the channel
         // modifier and channel digits may reach the journal.
         let admitted = tap_journal_admits(&input, claimed, runtime_config);
-        let emitted = state.detector.feed(input, runtime_config);
+        let emitted = gesture_tester_filter(
+            &input,
+            state.detector.feed(input, runtime_config),
+            gesture_test_active(Instant::now()),
+        );
         // A modifier change outside the filter is kept only when it made a
         // gesture; a non-admitted key never leaves this callback.
         let modifier_gesture =
@@ -1248,9 +1294,9 @@ mod macos {
         let mut resources = EventTapResources::new(tx, control);
 
         // Key-up resets one-shot command chords so key repeat cannot emit duplicates.
-        // Other-mouse down/up observe button 2. Left click and scroll are seen
-        // only so the agent chooser can take them while it holds its lease;
-        // outside it they return untouched before any other work.
+        // Other-mouse down/up observe button 2. Left click and scroll are taken
+        // by the agent chooser while it holds its lease; outside it they, and
+        // the right click, only break an Option tap pair and pass untouched.
         let event_mask: u64 = (1 << K_CG_EVENT_FLAGS_CHANGED)
             | (1 << K_CG_EVENT_KEY_DOWN)
             | (1 << K_CG_EVENT_KEY_UP)
@@ -1258,6 +1304,7 @@ mod macos {
             | (1 << K_CG_EVENT_OTHER_MOUSE_UP)
             | (1 << K_CG_EVENT_LEFT_MOUSE_DOWN)
             | (1 << K_CG_EVENT_LEFT_MOUSE_UP)
+            | (1 << K_CG_EVENT_RIGHT_MOUSE_DOWN)
             | (1 << K_CG_EVENT_SCROLL_WHEEL);
 
         // Create the event tap
@@ -1712,6 +1759,7 @@ mod input_journal_tests {
             now: Instant::now(),
             key: HotkeyPhysicalKey::Fn,
             modifiers: with_fn(),
+            source_is_hid: true,
         };
         assert!(tap_journal_admits(&fn_down, false, config));
         let digit_with_fn = HotkeyDetectorInput::KeyDown {
@@ -1751,6 +1799,7 @@ mod input_journal_tests {
                 ctrl: true,
                 ..Default::default()
             },
+            source_is_hid: true,
         };
         assert!(!tap_journal_admits(&ctrl, false, config));
         let mut ctrl_config = config;
@@ -1764,6 +1813,7 @@ mod input_journal_tests {
             now: Instant::now(),
             key: HotkeyPhysicalKey::Fn,
             modifiers: Default::default(),
+            source_is_hid: true,
         };
         assert_eq!(
             record(fn_up, 63, true, None).line().as_deref(),
@@ -1801,6 +1851,7 @@ mod input_journal_tests {
             now: Instant::now(),
             key: HotkeyPhysicalKey::LeftOption,
             modifiers: Default::default(),
+            source_is_hid: true,
         };
         assert_eq!(record(option_tap, 58, false, None).line(), None);
         assert!(
@@ -1837,6 +1888,7 @@ mod input_journal_tests {
             now: Instant::now(),
             key: HotkeyPhysicalKey::Fn,
             modifiers: with_fn(),
+            source_is_hid: true,
         };
         journal.record(record(fn_down, 63, true, None));
         journal.record(record(fn_down, 63, true, None));
@@ -1850,5 +1902,91 @@ mod input_journal_tests {
         let dropped = std::sync::atomic::AtomicU64::new(0);
         drain_tap_journal(&rx, &dropped);
         assert!(rx.is_empty(), "the drain consumes the queue and returns");
+    }
+}
+
+#[cfg(test)]
+mod gesture_tester_filter_tests {
+    use super::super::config::last_double_tap_outcome;
+    use super::super::detector::{
+        DoubleTapBlockReason, DoubleTapGesture, DoubleTapOutcome, HotkeyDetectorInput, HotkeyEvent,
+        HotkeyModifierSnapshot, HotkeyPhysicalKey,
+    };
+    use super::*;
+
+    fn option_release() -> HotkeyDetectorInput {
+        HotkeyDetectorInput::FlagsChanged {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::LeftOption,
+            modifiers: HotkeyModifierSnapshot::default(),
+            source_is_hid: true,
+        }
+    }
+
+    /// With the tester lease held, a recognised Option pair is swallowed (no
+    /// mode starts) but its outcome is still published.
+    #[test]
+    #[serial_test::serial]
+    fn active_tester_swallows_recognised_pair_and_records_it() {
+        let before = last_double_tap_outcome().map(|(sequence, _)| sequence);
+        let out = gesture_tester_filter(&option_release(), Some(HotkeyEvent::ToggleNormal), true);
+        assert_eq!(out, None);
+        let (sequence, outcome) = last_double_tap_outcome().expect("outcome recorded");
+        assert_eq!(outcome, DoubleTapOutcome::Recognized);
+        assert_ne!(Some(sequence), before, "the sequence must advance");
+    }
+
+    /// Without the lease the pair passes through, and is still recorded.
+    #[test]
+    #[serial_test::serial]
+    fn inactive_tester_passes_recognised_pair_through() {
+        for event in [
+            HotkeyEvent::ToggleNormal,
+            HotkeyEvent::ToggleAssistive,
+            HotkeyEvent::ToggleRaw,
+        ] {
+            let out = gesture_tester_filter(&option_release(), Some(event.clone()), false);
+            assert_eq!(out, Some(event));
+            assert_eq!(
+                last_double_tap_outcome().map(|(_, outcome)| outcome),
+                Some(DoubleTapOutcome::Recognized)
+            );
+        }
+    }
+
+    /// A refusal is never swallowed: the event reaches the UI, and the tester
+    /// reads the reason from the outcome slot.
+    #[test]
+    #[serial_test::serial]
+    fn blocked_pair_passes_through_and_records_reason_even_when_active() {
+        let blocked = HotkeyEvent::DoubleTapBlocked {
+            gesture: DoubleTapGesture::LeftOption,
+            reason: DoubleTapBlockReason::Mouse,
+        };
+        let out = gesture_tester_filter(&option_release(), Some(blocked.clone()), true);
+        assert_eq!(out, Some(blocked));
+        assert_eq!(
+            last_double_tap_outcome().map(|(_, outcome)| outcome),
+            Some(DoubleTapOutcome::Blocked(DoubleTapBlockReason::Mouse))
+        );
+    }
+
+    /// Inputs that are not Option modifier changes are never filtered or recorded.
+    #[test]
+    #[serial_test::serial]
+    fn non_option_input_is_untouched_and_unrecorded() {
+        let before = last_double_tap_outcome();
+        let ctrl = HotkeyDetectorInput::FlagsChanged {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::LeftControl,
+            modifiers: HotkeyModifierSnapshot::default(),
+            source_is_hid: true,
+        };
+        assert_eq!(
+            gesture_tester_filter(&ctrl, Some(HotkeyEvent::ToggleRaw), true),
+            Some(HotkeyEvent::ToggleRaw)
+        );
+        assert_eq!(gesture_tester_filter(&option_release(), None, true), None);
+        assert_eq!(last_double_tap_outcome(), before);
     }
 }

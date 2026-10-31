@@ -166,6 +166,9 @@ pub trait CsAppActionListener: Send + Sync {
     /// Pointer input for the overlay's agent chooser. UI-only: the overlay
     /// decides what a click means and opens channels through its own path.
     fn on_agent_gesture(&self, input: CsAgentGestureInput);
+    /// A long dictation hold was refused because a Codescribe message field
+    /// owns the caret. UI-only: that field points at its own microphone.
+    fn on_composer_dictation_redirected(&self);
 }
 
 /// The pointer's input to the overlay's agent chooser.
@@ -663,6 +666,16 @@ fn forward_controller_state_to_listener(state: State, listener: Arc<dyn CsTransc
     }
 }
 
+/// The controller refused a long dictation hold while a Codescribe composer
+/// owned the caret. Only the UI-only action listener hears it; the
+/// transcription listener sees no lifecycle because none began.
+fn notify_composer_dictation_redirected(listener: Option<Arc<dyn CsAppActionListener>>) {
+    tracing::info!("Dictation hold redirected to the focused composer's microphone");
+    if let Some(listener) = listener {
+        listener.on_composer_dictation_redirected();
+    }
+}
+
 /// Translate one IPC payload into the Swift listener's callback vocabulary and
 /// keep the tray status in step.
 ///
@@ -685,6 +698,9 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             "legacy context-marker IPC telemetry is not product transcript truth"
         ),
         IpcEventPayload::AudioLevel { rms } => listener.on_audio_level(rms),
+        IpcEventPayload::ComposerDictationRedirected => {
+            notify_composer_dictation_redirected(current_app_action_listener())
+        }
         IpcEventPayload::CompactProjection { json } => {
             match serde_json::from_str::<codescribe::presentation::emitter::CompactProjection>(
                 &json,
@@ -813,6 +829,9 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             EngineEventWire::Warning { code, message } => {
                 if codescribe_core::pipeline::contracts::warning_is_user_terminal(&code) {
                     listener.on_error(format!("{code}: {message}"));
+                } else if code == codescribe_core::pipeline::contracts::OVERLAP_PIN_REFUSED {
+                    // The emitter logs a take's first refusal and their count.
+                    tracing::debug!(code, message, "engine warning (receipt, not forwarded)");
                 } else {
                     tracing::info!(code, message, "engine warning (receipt, not forwarded)");
                 }
@@ -1644,10 +1663,18 @@ impl CodescribeHotkeys {
 
     /// Atomically reject busy capture or close future admission for this process.
     /// This never constructs a new controller and never stops an active take.
-    /// Synchronous so the UI can check composing and reserve without yielding.
-    pub fn reserve_idle_restart(&self) -> bool {
-        current_controller(&shared_controller())
-            .is_some_and(|controller| controller.reserve_idle_restart())
+    /// Synchronous so Swift can check composition, reserve and terminate in one
+    /// run-loop callback. Every lock in this path refuses rather than waiting.
+    pub fn reserve_idle_restart(&self) -> Result<bool, CsError> {
+        let store = shared_controller();
+        let Ok(slot) = store.try_lock() else {
+            return Ok(false);
+        };
+        // Keep this exact controller in the slot until its decision. The core
+        // reservation takes only try-locks and never calls back into the bridge.
+        Ok(slot
+            .as_ref()
+            .is_some_and(|controller| controller.reserve_idle_restart()))
     }
 
     /// True while the shared controller is in an active recording/conversation state.
@@ -2540,6 +2567,7 @@ mod app_action_tests {
         show_agent_calls: AtomicUsize,
         toggle_widget_calls: AtomicUsize,
         agent_gestures: Mutex<Vec<CsAgentGestureInput>>,
+        composer_redirects: AtomicUsize,
     }
 
     impl CountingAppActionListener {
@@ -2548,6 +2576,7 @@ mod app_action_tests {
                 show_agent_calls: AtomicUsize::new(0),
                 toggle_widget_calls: AtomicUsize::new(0),
                 agent_gestures: Mutex::new(Vec::new()),
+                composer_redirects: AtomicUsize::new(0),
             }
         }
     }
@@ -2567,6 +2596,20 @@ mod app_action_tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(input);
         }
+        fn on_composer_dictation_redirected(&self) {
+            self.composer_redirects.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// A refused hold reaches only the UI-only listener, exactly once.
+    #[test]
+    fn composer_dictation_redirect_is_ui_only() {
+        let listener = Arc::new(CountingAppActionListener::new());
+        notify_composer_dictation_redirected(Some(listener.clone()));
+        notify_composer_dictation_redirected(None);
+        assert_eq!(listener.composer_redirects.load(Ordering::SeqCst), 1);
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(listener.toggle_widget_calls.load(Ordering::SeqCst), 0);
     }
 
     /// The chooser's input reaches the UI listener and never the recording path.
@@ -2905,6 +2948,75 @@ pub fn available_bindings_for_mode(mode: CsWorkMode) -> Vec<CsBindingOption> {
 #[uniffi::export]
 pub fn set_agent_chooser_capture(active: bool) {
     hotkeys::set_agent_gesture_capture(active);
+}
+
+/// A Codescribe message field took or released the focused caret. While it
+/// holds the caret, a long dictation hold stays idle and the field is told to
+/// point at its own microphone.
+#[uniffi::export]
+pub fn set_composer_caret_owned(owned: bool) {
+    hotkeys::set_composer_caret_owned(owned);
+}
+
+/// What the latest Option double-tap came to, for the Settings gesture tester.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsDoubleTapOutcomeKind {
+    /// Recognised; it started its mode unless the tester held it back.
+    Recognized,
+    /// The second tap came after the double-tap interval.
+    TooSlow,
+    /// A press lasted longer than the longest tap.
+    TooLong,
+    /// A key was typed with Option or just before the tap.
+    TypedRecently,
+    /// A click or a scroll landed during the pair.
+    Mouse,
+    /// The Option events did not come from the keyboard.
+    Synthetic,
+    /// Another modifier or a hold was active.
+    ModifierActive,
+    /// No mode is bound to the Option side that was tapped.
+    NotAssigned,
+}
+
+impl From<hotkeys::DoubleTapOutcome> for CsDoubleTapOutcomeKind {
+    fn from(outcome: hotkeys::DoubleTapOutcome) -> Self {
+        use hotkeys::{DoubleTapBlockReason as Reason, DoubleTapOutcome as Outcome};
+        match outcome {
+            Outcome::Recognized => Self::Recognized,
+            Outcome::Blocked(Reason::TooSlow) => Self::TooSlow,
+            Outcome::Blocked(Reason::TapTooLong) => Self::TooLong,
+            Outcome::Blocked(Reason::TypedRecently) => Self::TypedRecently,
+            Outcome::Blocked(Reason::Mouse) => Self::Mouse,
+            Outcome::Blocked(Reason::SyntheticSource) => Self::Synthetic,
+            Outcome::Blocked(Reason::ModifierComboActive) => Self::ModifierActive,
+            Outcome::Blocked(Reason::BindingDisabled) => Self::NotAssigned,
+        }
+    }
+}
+
+/// The latest Option double-tap attempt. `sequence` changes on every attempt,
+/// so the tester can tell a repeated outcome from a stale one.
+#[derive(uniffi::Record, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CsDoubleTapOutcome {
+    pub sequence: u32,
+    pub kind: CsDoubleTapOutcomeKind,
+}
+
+/// Latest Option double-tap outcome, or `None` before the first attempt.
+#[uniffi::export]
+pub fn last_double_tap_outcome() -> Option<CsDoubleTapOutcome> {
+    hotkeys::last_double_tap_outcome().map(|(sequence, outcome)| CsDoubleTapOutcome {
+        sequence,
+        kind: outcome.into(),
+    })
+}
+
+/// The Settings gesture tester takes (or renews) its lease, or releases it.
+/// While held, a recognised Option pair is reported but starts nothing.
+#[uniffi::export]
+pub fn set_gesture_test_active(active: bool) {
+    hotkeys::set_gesture_test_active(active);
 }
 
 /// Pair a mode with its binding and attach the display copy sourced from the
@@ -3327,8 +3439,8 @@ impl CodescribeHotkeys {
         Ok(())
     }
 
-    /// Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
-    /// Formatting=Double Left Option, Assistive=Double Right Option) and reload.
+    /// Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
+    /// Formatting and Assistive have no gesture until the user opts in) and reload.
     pub fn reset_bindings_to_defaults(&self) -> Result<(), CsError> {
         let mut settings = UserSettings::load();
         // `None` normalizes to `default_mode_bindings()` on the next read, so this
@@ -3397,7 +3509,7 @@ mod mode_binding_tests {
     /// RED contract for the production-log pollution observed from this test
     /// module. A child test process gives `init_logging` a fresh `Once`, a fake
     /// HOME, and a distinct test data root; initialization must not create the
-    /// production-shaped `~/.codescribe/logs/codescribe.log` sink.
+    /// production-shaped `~/.codescribe/data.noindex/logs/codescribe.log` sink.
     #[test]
     #[serial]
     fn fleet_red_test_logging_isolated() {
@@ -3407,6 +3519,7 @@ mod mode_binding_tests {
                 std::env::var_os("HOME").expect("isolated child HOME must be set"),
             )
             .join(".codescribe")
+            .join("data.noindex")
             .join("logs")
             .join("codescribe.log");
 
@@ -3505,18 +3618,53 @@ mod mode_binding_tests {
         ]
     }
 
-    /// Reachability collisions (e.g. DoubleCtrl vs DoubleLeftOption) are blocking.
+    /// Reachability refusals are blocking: a hold on Formatting never routes.
     #[test]
     fn validate_flags_internal_reachability_conflict_as_blocking() {
-        // Dictation=DoubleCtrl steals the toggle path from Formatting=DoubleLeftOption.
         let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
-            CsShortcutBinding::DoubleCtrl,
-            CsShortcutBinding::DoubleLeftOption,
+            CsShortcutBinding::HoldFn,
+            CsShortcutBinding::HoldCtrl,
             CsShortcutBinding::Disabled,
         ));
         assert!(
-            conflicts.iter().any(|c| c.blocking),
-            "a known reachability collision must surface a blocking conflict"
+            conflicts.iter().any(|c| c.blocking
+                && c.message
+                    == "This gesture only starts Dictation, so Formatting would never start from it."),
+            "a known reachability collision must surface a blocking conflict, got {conflicts:?}"
+        );
+    }
+
+    /// Double Ctrl dictation next to opt-in Option gestures is a legal profile:
+    /// none of Codescribe's own rules flags it.
+    #[test]
+    fn validate_allows_double_ctrl_dictation_with_option_gestures() {
+        let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
+            CsShortcutBinding::DoubleCtrl,
+            CsShortcutBinding::DoubleLeftOption,
+            CsShortcutBinding::DoubleRightOption,
+        ));
+        assert!(
+            !conflicts.iter().any(|c| c.blocking
+                && (c.message.starts_with("This gesture only starts")
+                    || c.message.starts_with("This gesture already starts"))),
+            "opt-in Option gestures are routed cells, got {conflicts:?}"
+        );
+    }
+
+    /// Formatting and Assistive sharing one reachable gesture is a blocking
+    /// duplicate that names Formatting as the owner.
+    #[test]
+    fn validate_blocks_duplicate_double_ctrl_naming_formatting() {
+        let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
+            CsShortcutBinding::HoldFn,
+            CsShortcutBinding::DoubleCtrl,
+            CsShortcutBinding::DoubleCtrl,
+        ));
+        assert!(
+            conflicts.iter().any(|c| c.blocking
+                && c.message
+                    == "This gesture already starts Formatting; one gesture starts one mode."),
+            "duplicate gesture must block naming Formatting, got {conflicts:?}"
         );
     }
 
@@ -3536,11 +3684,11 @@ mod mode_binding_tests {
         );
     }
 
-    /// P2-007 (linked: hotkeys-dead-binding-cells): Dictation and Formatting on
-    /// double-tap left Option is a blocking conflict that names the precedence,
-    /// in the same validation the Settings Save button is gated on.
+    /// Dictation on an Option double-tap is a blocking conflict with the
+    /// Dictation sentence, in the same validation the Settings Save button is
+    /// gated on.
     #[test]
-    fn validate_blocks_duplicate_left_option_with_formatting_precedence() {
+    fn validate_blocks_dictation_on_option_gesture() {
         let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
             CsShortcutBinding::DoubleLeftOption,
             CsShortcutBinding::DoubleLeftOption,
@@ -3550,8 +3698,8 @@ mod mode_binding_tests {
             conflicts.iter().any(|c| c.blocking
                 && c.gesture_label == "Double-tap Left Option"
                 && c.message
-                    == "This gesture only starts Formatting, so Dictation would never start from it."),
-            "duplicate left Option must block with the Formatting precedence, got {conflicts:?}"
+                    == "This gesture only starts Formatting or Assistive, so Dictation would never start from it."),
+            "Dictation on left Option must block, got {conflicts:?}"
         );
     }
 
@@ -3609,10 +3757,9 @@ mod mode_binding_tests {
             .expect("dictation binding present");
         assert_eq!(dictation.binding, CsShortcutBinding::HoldCtrlAlt);
 
-        // P2-007 (linked: hotkeys-dead-binding-cells): unrouted cells are
-        // refused by the setter and never reach disk. The audited duplicate
-        // keeps Formatting on double-tap left Option; Dictation is refused and
-        // keeps its persisted hold.
+        // Unrouted cells are refused by the setter and never reach disk.
+        // Formatting and Assistive default to Disabled; Option gestures are
+        // opt-in and only Formatting/Assistive accept them.
         let binding_of = |mode: CsWorkMode| {
             hotkeys
                 .get_mode_bindings()
@@ -3620,29 +3767,38 @@ mod mode_binding_tests {
                 .find(|b| b.mode == mode)
                 .map(|b| b.binding)
         };
+        assert_eq!(
+            binding_of(CsWorkMode::Formatting),
+            Some(CsShortcutBinding::Disabled)
+        );
+        assert_eq!(
+            binding_of(CsWorkMode::Assistive),
+            Some(CsShortcutBinding::Disabled)
+        );
         let refused = hotkeys
             .set_mode_binding(CsWorkMode::Dictation, CsShortcutBinding::DoubleLeftOption)
             .expect_err("dictation never starts from double-tap left Option");
         assert!(
-            format!("{refused:?}").contains("only starts Formatting"),
+            format!("{refused:?}").contains("only starts Formatting or Assistive"),
             "{refused:?}"
         );
         assert_eq!(
             binding_of(CsWorkMode::Dictation),
             Some(CsShortcutBinding::HoldCtrlAlt)
         );
-        assert_eq!(
-            binding_of(CsWorkMode::Formatting),
-            Some(CsShortcutBinding::DoubleLeftOption)
-        );
+        hotkeys
+            .set_mode_binding(CsWorkMode::Formatting, CsShortcutBinding::DoubleLeftOption)
+            .expect("Formatting opts in to double-tap left Option");
+        hotkeys
+            .set_mode_binding(CsWorkMode::Assistive, CsShortcutBinding::DoubleRightOption)
+            .expect("Assistive opts in to double-tap right Option");
         for (mode, binding) in [
             (CsWorkMode::Formatting, CsShortcutBinding::HoldCtrl),
             (CsWorkMode::Assistive, CsShortcutBinding::HoldCtrlCmd),
-            (CsWorkMode::Assistive, CsShortcutBinding::DoubleCtrl),
         ] {
             assert!(
                 hotkeys.set_mode_binding(mode, binding).is_err(),
-                "{mode:?} × {binding:?} must be refused"
+                "{mode:?} x {binding:?} must be refused"
             );
         }
         assert_eq!(
@@ -3652,6 +3808,13 @@ mod mode_binding_tests {
         assert_eq!(
             binding_of(CsWorkMode::Assistive),
             Some(CsShortcutBinding::DoubleRightOption)
+        );
+        hotkeys
+            .set_mode_binding(CsWorkMode::Assistive, CsShortcutBinding::DoubleCtrl)
+            .expect("double-tap Ctrl is routed for any mode");
+        assert_eq!(
+            binding_of(CsWorkMode::Assistive),
+            Some(CsShortcutBinding::DoubleCtrl)
         );
         hotkeys
             .set_mode_binding(CsWorkMode::Dictation, CsShortcutBinding::DoubleCtrl)
@@ -3671,6 +3834,13 @@ mod mode_binding_tests {
             .find(|b| b.mode == CsWorkMode::Dictation)
             .expect("dictation binding present after reset");
         assert_eq!(dictation_reset.binding, CsShortcutBinding::HoldFn);
+        for mode in [CsWorkMode::Formatting, CsWorkMode::Assistive] {
+            let reset = after_reset
+                .iter()
+                .find(|b| b.mode == mode)
+                .expect("binding present after reset");
+            assert_eq!(reset.binding, CsShortcutBinding::Disabled, "{mode:?}");
+        }
 
         // SAFETY: serialized by ENV_LOCK.
         unsafe {
@@ -3859,6 +4029,27 @@ mod preparing_compensation_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
         PREPARING_PENDING.store(false, Ordering::SeqCst);
+    }
+
+    /// Calling synchronously while this very thread owns the slot would hang
+    /// with a blocking acquisition. It must refuse without constructing a
+    /// controller, and a refused attempt must leave later idle admission open.
+    #[tokio::test]
+    #[serial]
+    async fn idle_restart_bridge_refuses_absence_and_slot_contention_then_reserves_idle() {
+        let _guard = TEST_LOCK.lock().await;
+        teardown();
+        let hotkeys = CodescribeHotkeys::default();
+        assert!(!hotkeys.reserve_idle_restart().unwrap());
+        assert!(shared_controller().lock().unwrap().is_none());
+        let (_listener, _controller) = install();
+        let store = shared_controller();
+        let held_slot = store.lock().unwrap();
+        assert!(!hotkeys.reserve_idle_restart().unwrap());
+        drop(held_slot);
+        assert!(hotkeys.reserve_idle_restart().unwrap());
+        assert!(!hotkeys.reserve_idle_restart().unwrap());
+        teardown();
     }
 
     /// A host lifecycle notification while idle must not construct the shared

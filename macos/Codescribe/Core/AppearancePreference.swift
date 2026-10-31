@@ -70,9 +70,11 @@ enum SheetShade: String, CaseIterable, Identifiable {
   case todayDark = "16161C"
   case softGraphite = "1B1B1D"
   case warmCarbon = "201F1E"
+  case nightlyDark = "070707"
   case todayLight = "F6F3EE"
   case limestone = "DED9D3"
   case travertine = "D9D3CD"
+  case nightlyLight = "F0F0F0"
 
   var id: String { rawValue }
 
@@ -80,13 +82,13 @@ enum SheetShade: String, CaseIterable, Identifiable {
 
   var isDark: Bool {
     switch self {
-    case .todayDark, .softGraphite, .warmCarbon: return true
-    case .todayLight, .limestone, .travertine: return false
+    case .todayDark, .softGraphite, .warmCarbon, .nightlyDark: return true
+    case .todayLight, .limestone, .travertine, .nightlyLight: return false
     }
   }
 
-  static let darkChoices: [SheetShade] = [.todayDark, .softGraphite, .warmCarbon]
-  static let lightChoices: [SheetShade] = [.todayLight, .limestone, .travertine]
+  static let darkChoices: [SheetShade] = [.todayDark, .softGraphite, .warmCarbon, .nightlyDark]
+  static let lightChoices: [SheetShade] = [.todayLight, .limestone, .travertine, .nightlyLight]
 
   var title: String {
     switch self {
@@ -96,6 +98,8 @@ enum SheetShade: String, CaseIterable, Identifiable {
     case .warmCarbon: return String(localized: "Warm carbon", comment: "Sheet shade, dark")
     case .limestone: return String(localized: "Limestone", comment: "Sheet shade, light")
     case .travertine: return String(localized: "Travertine", comment: "Sheet shade, light")
+    case .nightlyDark, .nightlyLight:
+      return String(localized: "Nightly", comment: "Sheet shade name, light and dark")
     }
   }
 }

@@ -316,7 +316,6 @@ final class SettingsTruthTests: XCTestCase {
     )
     for tab in SettingsTab.allCases {
       XCTAssertFalse(tab.title.isEmpty)
-      XCTAssertFalse(tab.headline.isEmpty)
       if let blurb = tab.blurb { XCTAssertFalse(blurb.isEmpty, "\(tab)") }
       XCTAssertFalse(tab.searchKeywords.isEmpty)
       XCTAssertTrue(SettingsTab.tabs(in: tab.section).contains(tab))
@@ -625,6 +624,24 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertTrue(individual.hasIndividualRule)
     XCTAssertEqual(ToolPermissionLabels.ruleCaption("tool"), "Individual rule")
     XCTAssertEqual(ToolPermissionLabels.ruleCaption("server"), "Server rule")
+
+    // Reading the clipboard asks by its built-in rule and the card says why;
+    // any other tool lifted by a built-in rule gets the plain caption.
+    let clipboard = ToolPermissionItem(
+      capability: CsToolCapability(
+        name: "read_clipboard", identity: "native:read_clipboard", origin: "native",
+        server: "", risk: "read_only", effective: "ask", ruleSource: "builtin",
+        requiresApprovalFlag: true))
+    XCTAssertFalse(clipboard.hasIndividualRule, "a built-in rule has nothing to remove")
+    XCTAssertEqual(
+      ToolPermissionLabels.ruleCaption(clipboard.ruleSource, identity: clipboard.identity),
+      "Built-in rule: the clipboard may hold passwords")
+    XCTAssertEqual(
+      ToolPermissionLabels.ruleCaption("builtin", identity: "desktop-commander:write_file"),
+      "Built-in rule")
+    XCTAssertEqual(
+      ToolPermissionLabels.ruleCaption("default", identity: "native:read_clipboard"),
+      "Category default", "a category default stays one, even for the clipboard")
   }
 
   /// P0-9 residual: permissions hierarchy groups server→tool, filters by query,
@@ -969,8 +986,6 @@ final class SettingsTruthTests: XCTestCase {
       }), permissionProbe: MockPermissionProbe())
 
     model.setWhisperAdaptiveBuffer(true)
-    model.setFormatOnDevice(true)
-    model.setFormatOnDevice(false)
     model.setSealLedgerEnabled(false)
     model.setAppleLiveEnabled(false)
     model.setSealLedgerEnabled(true)
@@ -986,8 +1001,6 @@ final class SettingsTruthTests: XCTestCase {
       writes.map(\.key),
       [
         "WHISPER_ADAPTIVE_BUFFER",
-        "CODESCRIBE_FORMAT_ON_DEVICE",
-        "CODESCRIBE_FORMAT_ON_DEVICE",
         "CODESCRIBE_SEAL_LEDGER_ENABLED",
         "CODESCRIBE_APPLE_LIVE_ENABLED",
         "CODESCRIBE_SEAL_LEDGER_ENABLED",
@@ -996,8 +1009,39 @@ final class SettingsTruthTests: XCTestCase {
         "CODESCRIBE_LEDGER_SENSITIVITY",
       ])
     XCTAssertEqual(
-      writes.map(\.value), ["1", "1", "0", "0", "0", "1", "1", "-40", "100"],
+      writes.map(\.value), ["1", "0", "0", "1", "1", "-40", "100"],
       "the ledger slider is clamped to -100...100 before it is written")
+  }
+
+  /// The visible experimental picker is a public product setting. A rejected
+  /// write must remain a visible error, rather than silently changing the UI.
+  func testPublicAppleFormatterChoicePersistsBothValuesAndReportsWriteRefusal() {
+    XCTAssertFalse(DeveloperSurface.isEnabled(), "Run this acceptance case with CS_DEVELOPER_SURFACE=0")
+    var stored = CsSettings.sample
+    stored.formatOnDevice = false
+    var writes: [(String, String)] = []
+    var denyWrite = false
+    let engine = MockSettingsEngine(
+      settingsLoader: { stored },
+      updateConfigObserver: { key, value in
+        writes.append((key, value))
+        if denyWrite { throw CsError.Config(msg: "Fixture formatter setting write refused") }
+        stored.formatOnDevice = value == "1"
+      })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    model.setFormatOnDevice(true)
+    XCTAssertTrue(model.settings.formatOnDevice)
+    XCTAssertNil(model.lastError)
+    model.setFormatOnDevice(false)
+    XCTAssertFalse(model.settings.formatOnDevice)
+    XCTAssertNil(model.lastError)
+    XCTAssertEqual(writes.map(\.0), Array(repeating: "CODESCRIBE_FORMAT_ON_DEVICE", count: 2))
+    XCTAssertEqual(writes.map(\.1), ["1", "0"])
+    denyWrite = true
+    model.setFormatOnDevice(true)
+    XCTAssertFalse(model.settings.formatOnDevice, "Rejected choice must retain the persisted state")
+    XCTAssertEqual(model.lastError, "Fixture formatter setting write refused")
+    XCTAssertEqual(writes.count, 3)
   }
 
   func testLocalWhisperDiagnosticEnvTokensMatchRuntimePolicy() {
@@ -1804,13 +1848,13 @@ final class SettingsTruthTests: XCTestCase {
       CsMcpServer(
         name: "loctree-mcp", command: "loct", args: [], envKeys: [], enabled: true,
         transport: "stdio",
-        endpoint: "", authRef: ""),
+        endpoint: "", authRef: "", oauth: false),
       CsMcpServer(
         name: "aicx-mcp", command: "aicx", args: [], envKeys: [], enabled: true, transport: "stdio",
-        endpoint: "", authRef: ""),
+        endpoint: "", authRef: "", oauth: false),
       CsMcpServer(
         name: "orphan", command: "x", args: [], envKeys: [], enabled: true, transport: "stdio",
-        endpoint: "", authRef: ""),
+        endpoint: "", authRef: "", oauth: false),
     ]
     let results = [
       "loctree-mcp": CsMcpTestResult(
@@ -2039,7 +2083,7 @@ final class SettingsTruthTests: XCTestCase {
     let admin = ScriptedMcpAdmin(servers: [
       CsMcpServer(
         name: "loctree-mcp", command: "loct", args: ["mcp"], envKeys: [], enabled: true,
-        transport: "stdio", endpoint: "", authRef: "")
+        transport: "stdio", endpoint: "", authRef: "", oauth: false)
     ])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -2053,6 +2097,21 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertNil(model.mcpTestResults["loctree-mcp"])
     XCTAssertEqual(model.mcpServers.first?.enabled, false)
     XCTAssertEqual(admin.updates, ["loctree-mcp"])
+  }
+
+  func testMcpOAuthSurvivesToggleAndCanBeChanged() {
+    let admin = ScriptedMcpAdmin(servers: [])
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+    XCTAssertNil(model.addMcpServer(
+      name: "remote", command: "", args: [], endpoint: "https://example.com/mcp", oauth: true))
+    XCTAssertEqual(model.mcpServers.first?.oauth, true)
+    model.toggleMcpServer(model.mcpServers[0])
+    XCTAssertEqual(model.mcpServers.first?.oauth, true)
+    XCTAssertNil(model.updateMcpServer(
+      model.mcpServers[0], command: "", args: [], endpoint: "https://example.com/mcp",
+      token: "", oauth: false))
+    XCTAssertEqual(model.mcpServers.first?.oauth, false)
   }
 
   /// A rejected add hands the store's refusal back to the form translated: the
@@ -2080,7 +2139,7 @@ final class SettingsTruthTests: XCTestCase {
   func testMcpEditUpdatesTheExistingServerWithoutLosingArgumentsOrState() async {
     let server = CsMcpServer(
       name: "unicode-puzzles", command: "/opt/homebrew/bin/node script.js", args: [],
-      envKeys: ["TOKEN"], enabled: false, transport: "stdio", endpoint: "", authRef: "")
+      envKeys: ["TOKEN"], enabled: false, transport: "stdio", endpoint: "", authRef: "", oauth: false)
     let admin = ScriptedMcpAdmin(servers: [server])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -2105,7 +2164,7 @@ final class SettingsTruthTests: XCTestCase {
   func testMcpEditKeepsSavedAuthenticationAndReturnsValidationFailure() {
     let server = CsMcpServer(
       name: "remote", command: "", args: [], envKeys: [], enabled: true,
-      transport: "remote", endpoint: "https://old.example/mcp", authRef: "saved-account")
+      transport: "remote", endpoint: "https://old.example/mcp", authRef: "saved-account", oauth: false)
     let admin = ScriptedMcpAdmin(servers: [server])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -2209,10 +2268,10 @@ final class SettingsTruthTests: XCTestCase {
     let admin = ScriptedMcpAdmin(servers: [
       CsMcpServer(
         name: "loctree-mcp", command: "loct", args: ["mcp"], envKeys: [], enabled: true,
-        transport: "stdio", endpoint: "", authRef: ""),
+        transport: "stdio", endpoint: "", authRef: "", oauth: false),
       CsMcpServer(
         name: "desktop-commander", command: "dc", args: [], envKeys: [], enabled: true,
-        transport: "stdio", endpoint: "", authRef: ""),
+        transport: "stdio", endpoint: "", authRef: "", oauth: false),
     ])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -2498,7 +2557,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(pane.contains("preferredColorScheme"))
     XCTAssertTrue(pane[..<scroll.lowerBound].contains("Divider()"))
     XCTAssertTrue(
-      pane[scroll.lowerBound...].contains("SettingsPageHeader(tab.headline, blurb: tab.blurb)"))
+      pane[scroll.lowerBound...].contains("SettingsPageHeader(tab.title, blurb: tab.blurb)"))
     XCTAssertTrue(pane[scroll.lowerBound...].contains(".id(model.currentTab)"))
 
     let detail = try settingsLayoutSource("SettingsView.swift")
@@ -2603,7 +2662,7 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
       CsMcpServer(
         name: input.name, command: input.command, args: input.args, envKeys: [],
         enabled: input.enabled, transport: input.endpoint.isEmpty ? "stdio" : "remote",
-        endpoint: input.endpoint, authRef: input.authRef))
+        endpoint: input.endpoint, authRef: input.authRef, oauth: input.oauth))
   }
 
   func updateServer(name: String, input: CsMcpServerInput) throws {
@@ -2614,7 +2673,7 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
       name: input.name, command: input.command, args: input.args,
       envKeys: servers[index].envKeys, enabled: input.enabled,
       transport: input.endpoint.isEmpty ? "stdio" : "remote",
-      endpoint: input.endpoint, authRef: input.authRef)
+      endpoint: input.endpoint, authRef: input.authRef, oauth: input.oauth)
   }
 
   func removeServer(name: String) throws { servers.removeAll { $0.name == name } }

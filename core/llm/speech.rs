@@ -5,7 +5,7 @@ use super::{
     provider::ProviderKind,
     vendors::{openai, xai},
 };
-use crate::config::{Config, RuntimeLlmLane, keychain};
+use crate::config::{Config, Language, RuntimeLlmLane, keychain};
 use base64::Engine as _;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -204,6 +204,31 @@ where
     resolve_with(vendor, signed_in, oauth, key).await
 }
 
+/// The language xAI speech is sent in when the configured speech language
+/// does not name one (`auto`). xAI honours only a bare two-letter code: with
+/// `auto` it takes a sentence opening with a short Polish word ("W", "U",
+/// "A", "I") for English and spells it ("W nocy" read as "double-u nocy"),
+/// and `pl-PL`, `pl_PL` or `polish` are accepted but read like `auto`
+/// (measured 2026-10-26: 30 of 168 wrong with `auto`, 0 of 168 with `pl`).
+pub const DEFAULT_TTS_LANGUAGE: &str = "pl";
+
+/// The language a speech request carries: the configured speech language
+/// (`speech.language`, the same choice that steers transcription) as its
+/// bare two-letter code. Transcription may detect; synthesis may not, so
+/// `auto` speaks [`DEFAULT_TTS_LANGUAGE`] and says so once in the log.
+pub fn tts_language(configured: Language) -> &'static str {
+    configured.whisper_hint().unwrap_or_else(|| {
+        static NOTED: std::sync::Once = std::sync::Once::new();
+        NOTED.call_once(|| {
+            tracing::warn!(
+                language = DEFAULT_TTS_LANGUAGE,
+                "speech language is auto; spoken replies use the default language"
+            );
+        });
+        DEFAULT_TTS_LANGUAGE
+    })
+}
+
 /// Settings sealed once for a synthesis; cache identity includes all audible options.
 #[derive(Clone, Debug)]
 pub struct SpeechOptions {
@@ -211,10 +236,13 @@ pub struct SpeechOptions {
     pub model: String,
     pub voice: String,
     pub speed: f32,
+    /// Bare two-letter code sent to xAI ([`tts_language`]); OpenAI speech has
+    /// no language parameter and ignores it.
+    pub language: &'static str,
 }
 impl SpeechOptions {
     /// Resolve vendor-specific defaults and validate the optional environment overrides.
-    pub fn for_vendor(vendor: ProviderKind) -> Result<Self, SpeechError> {
+    pub fn for_vendor(vendor: ProviderKind, language: Language) -> Result<Self, SpeechError> {
         pins(vendor)?;
         let read = |key, default: &str| {
             std::env::var(key)
@@ -240,6 +268,7 @@ impl SpeechOptions {
             model,
             voice,
             speed,
+            language: tts_language(language),
         };
         value.validate()?;
         Ok(value)
@@ -275,13 +304,19 @@ impl SpeechOptions {
     /// Vendor body; xAI has no model parameter.
     pub fn request_body(&self, text: &str) -> Value {
         if self.vendor == ProviderKind::XaiResponses {
-            json!({"text":text,"voice_id":self.voice,"language":"auto","output_format":{"codec":"pcm","sample_rate":SAMPLE_RATE},"speed":self.speed})
+            json!({"text":text,"voice_id":self.voice,"language":self.language,"output_format":{"codec":"pcm","sample_rate":SAMPLE_RATE},"speed":self.speed})
         } else {
             json!({"model":self.model,"input":text,"voice":self.voice,"response_format":"pcm","speed":self.speed})
         }
     }
     fn cache_key(&self, text: &str) -> String {
-        let identity = json!({"vendor":format!("{:?}",self.vendor),"model":self.model,"voice":self.voice,"speed":self.speed,"text":text,"sample_rate":SAMPLE_RATE});
+        let mut identity = json!({"vendor":format!("{:?}",self.vendor),"model":self.model,"voice":self.voice,"speed":self.speed,"text":text,"sample_rate":SAMPLE_RATE});
+        // The language is audible only where it is sent. Keying xAI audio by
+        // it also retires every recording made with `auto`, whose key had no
+        // language; OpenAI keys stay as they were.
+        if self.vendor == ProviderKind::XaiResponses {
+            identity["language"] = json!(self.language);
+        }
         hex::encode(Sha256::digest(identity.to_string().as_bytes()))
     }
 }
@@ -311,7 +346,7 @@ pub fn speech_availability() -> Option<String> {
             .map_err(|_| SpeechError::Invalid("Speech settings could not be loaded"))?;
         let lane = settings.llm_lanes().assistive();
         let vendor = lane_vendor(lane)?;
-        SpeechOptions::for_vendor(vendor)?;
+        SpeechOptions::for_vendor(vendor, settings.values().whisper_language)?;
         // Lazy: touch the Keychain only when the account alone cannot speak.
         let key_present =
             || api_key(vendor, lane.credential().request_api_key().as_deref()).is_some();
@@ -389,7 +424,7 @@ pub async fn synthesize(text: &str) -> Result<SpeechAudio, SpeechError> {
         .map_err(|_| SpeechError::Invalid("Speech settings could not be loaded"))?;
     let lane = settings.llm_lanes().assistive();
     let vendor = lane_vendor(lane)?;
-    let options = SpeechOptions::for_vendor(vendor)?;
+    let options = SpeechOptions::for_vendor(vendor, settings.values().whisper_language)?;
     let auth = resolve_vendor_auth_using(vendor, || {
         api_key(vendor, lane.credential().request_api_key().as_deref())
     })
@@ -554,6 +589,7 @@ mod rc_w1_tests {
             model: "test-model".into(),
             voice: "cedar".into(),
             speed: 1.0,
+            language: DEFAULT_TTS_LANGUAGE,
         }
     }
 

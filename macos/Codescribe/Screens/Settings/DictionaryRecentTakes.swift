@@ -181,17 +181,17 @@ struct DictionaryRecentTakes: View {
   private var freshness: some View {
     if let latest = takes.first {
       Text("Last take on this Mac: \(Self.dateLabel(latest.recordedAt))")
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .accessibilityIdentifier("dictionary-last-take")
     } else if loaded {
       Text("No take has been recorded on this Mac yet.")
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .accessibilityIdentifier("dictionary-last-take")
     } else {
       Text("Reading takes…")
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(CSColor.secondaryInk)
     }
   }
@@ -200,15 +200,15 @@ struct DictionaryRecentTakes: View {
     VStack(alignment: .leading, spacing: CSSpace.sm) {
       HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
         Text(Self.dateLabel(take.recordedAt))
-          .font(CSFont.ui(12.5, .semibold))
+          .font(CSFont.ui(13, .semibold))
         Text(take.destination)
-          .font(CSFont.ui(11.5))
+          .font(CSFont.ui(12))
           .foregroundStyle(CSColor.secondaryInk)
         Text(Self.durationLabel(take.durationSeconds))
           .font(CSFont.mono(11))
           .foregroundStyle(CSColor.secondaryInk)
         Text("\(take.wordCount) words")
-          .font(CSFont.ui(11.5))
+          .font(CSFont.ui(12))
           .foregroundStyle(CSColor.secondaryInk)
         Spacer()
         Button(String(localized: "Copy text")) {
@@ -230,37 +230,29 @@ struct DictionaryRecentTakes: View {
           .foregroundStyle(CSColor.secondaryInk)
       } else {
         Text(take.text)
-          .font(CSFont.ui(12.5))
+          .font(CSFont.ui(13))
           .lineLimit(4)
           .textSelection(.enabled)
       }
       if take.ledgerOpen {
+        // Full coverage diagnostics, including anchoredSpeechPercent, remain
+        // available in Lab; the recent-take sentence only names the outcome.
         Group {
-          if let anchored = take.anchoredSpeechPercent {
-            if openLab != nil {
-              Text(
-                "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take. Open Lab to see where."
-              )
-            } else {
-              Text(
-                "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take."
-              )
-            }
-          } else if openLab != nil {
-            Text("The ledger did not close this take. Open Lab to see where.")
+          if openLab != nil {
+            Text("This take did not finish. See Lab for details.")
           } else {
-            Text("The ledger did not close this take.")
+            Text("This take did not finish.")
           }
         }
         .font(CSFont.ui(11))
-        .foregroundStyle(CSColor.amberLight)
+        .foregroundStyle(CSColor.secondaryInk)
       }
     }
     .padding(CSSpace.md)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .fill(Color.primary.opacity(0.04))
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
+        .fill(Color.primary.opacity(CSAlpha.subtle))
     )
   }
 

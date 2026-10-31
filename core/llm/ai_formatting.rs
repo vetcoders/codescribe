@@ -565,7 +565,8 @@ struct ResponsesRequest {
     max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
-    /// `Some(false)` only on an account backend that keeps no server chain.
+    /// `Some(true)` on a key route, `Some(false)` on an account backend that
+    /// keeps no server chain, omitted only by the stateless title request.
     #[serde(skip_serializing_if = "Option::is_none")]
     store: Option<bool>,
     /// Formatting only; see [`reasoning_ladder`].
@@ -656,22 +657,145 @@ fn chained_instructions(system_prompt: &str, previous_response_id: Option<&str>)
     }
 }
 
+/// Earlier turns a take replays when no stored predecessor carries them. A
+/// bound, not a measured optimum: enough for a sentence spread over several
+/// silence-delimited fragments, without resending a long take on every one.
+const TAKE_CHAIN_REPLAY_TURNS: usize = 8;
+
+/// One take's formatter conversation (repair points 3–4 of Olga's 2026-10-22
+/// report, `2026_1022/olga-responses-chain`): fragments go one after another,
+/// each with what came before in the same take, and nothing crosses into
+/// another take or the Formatting Test.
+///
+/// A key route chains to this take's own completed predecessor
+/// (`previous_response_id`, `store: true`). The signed-in account backend keeps
+/// no responses, so it replays this take's earlier turns in `input`; a key route
+/// whose predecessor is refused or missing reseeds the same way instead of
+/// sending the fragment bare.
+#[derive(Debug, Default)]
+pub struct TakeFormatterChain {
+    turn: tokio::sync::Mutex<()>,
+    state: std::sync::Mutex<TakeChainState>,
+}
+
+#[derive(Debug, Default)]
+struct TakeChainState {
+    previous_response_id: Option<String>,
+    turns: std::collections::VecDeque<(String, String)>,
+}
+
+tokio::task_local! {
+    static TAKE_CHAIN: Arc<TakeFormatterChain>;
+}
+
+impl TakeFormatterChain {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Run one formatter call as this take's next turn: it starts after the
+    /// previous turn has finished, so it reads that turn's reply.
+    pub async fn next_turn<F: std::future::Future>(self: &Arc<Self>, call: F) -> F::Output {
+        let _turn = self.turn.lock().await;
+        TAKE_CHAIN.scope(Arc::clone(self), call).await
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, TakeChainState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn previous_response_id(&self) -> Option<String> {
+        self.state().previous_response_id.clone()
+    }
+
+    fn replay_turns(&self) -> Vec<(String, String)> {
+        self.state().turns.iter().cloned().collect()
+    }
+
+    /// A completed turn joins the replay; its id becomes the predecessor, and a
+    /// turn without one (account backend, or a reply that named none) makes the
+    /// next turn replay instead of chaining past it.
+    fn record(&self, user_message: &str, assistant_text: &str, response_id: Option<String>) {
+        let mut state = self.state();
+        state
+            .turns
+            .push_back((user_message.to_string(), assistant_text.to_string()));
+        while state.turns.len() > TAKE_CHAIN_REPLAY_TURNS {
+            state.turns.pop_front();
+        }
+        state.previous_response_id = response_id.filter(|id| !id.is_empty());
+    }
+
+    fn forget_predecessor(&self) {
+        self.state().previous_response_id = None;
+    }
+}
+
+/// The take that owns this formatting call, if any. Only the live formatter
+/// lane runs inside one; every other caller keeps the process-wide chain.
+fn take_chain(ai_mode: crate::state::conversation::AiMode) -> Option<Arc<TakeFormatterChain>> {
+    if ai_mode != crate::state::conversation::AiMode::Formatting {
+        return None;
+    }
+    TAKE_CHAIN.try_with(Arc::clone).ok()
+}
+
+/// Record a completed reply where this call's chain lives.
+fn remember_completed_turn(
+    ai_mode: crate::state::conversation::AiMode,
+    user_message: &str,
+    assistant_text: &str,
+    response_id: Option<String>,
+) {
+    if let Some(take) = take_chain(ai_mode) {
+        take.record(user_message, assistant_text, response_id);
+    } else if let Some(response_id) = response_id {
+        crate::state::conversation::set_response_id_for_mode(ai_mode, response_id);
+    }
+}
+
+/// Drop a predecessor the server refused, so the retry reseeds from the take's
+/// own turns (or, outside a take, starts unchained as before).
+fn forget_rejected_predecessor(ai_mode: crate::state::conversation::AiMode) {
+    if let Some(take) = take_chain(ai_mode) {
+        take.forget_predecessor();
+    } else {
+        crate::state::conversation::reset_conversation_for_mode(ai_mode);
+    }
+}
+
 /// Build the `input` items for a Responses request. On chained turns the
 /// system prompt rides as a leading `developer` item, because the
 /// `instructions` param is absent there (see [`chained_instructions`]) and the
 /// chain does not carry it server-side. First turns carry the prompt via
-/// `instructions` only — no duplicate developer item.
+/// `instructions` only — no duplicate developer item. Replayed turns of the
+/// same take go before the new fragment as the user/assistant pairs they were.
 fn build_responses_input(
     system_prompt: &str,
     previous_response_id: Option<&str>,
+    replay: &[(String, String)],
     user_content: Vec<InputContent>,
 ) -> Vec<InputItem> {
-    let mut input = Vec::with_capacity(2);
+    let mut input = Vec::with_capacity(2 + replay.len() * 2);
     if previous_response_id.is_some() {
         input.push(InputItem {
             role: "developer",
             content: vec![InputContent::Text {
                 text: system_prompt.to_string(),
+            }],
+        });
+    }
+    for (user, assistant) in replay {
+        input.push(InputItem {
+            role: "user",
+            content: vec![InputContent::Text { text: user.clone() }],
+        });
+        input.push(InputItem {
+            role: "assistant",
+            content: vec![InputContent::Output {
+                text: assistant.clone(),
             }],
         });
     }
@@ -695,6 +819,9 @@ struct InputItem {
 enum InputContent {
     #[serde(rename = "input_text")]
     Text { text: String },
+    /// An earlier assistant reply replayed into `input`.
+    #[serde(rename = "output_text")]
+    Output { text: String },
 }
 
 /// Anthropic Messages request format (/v1/messages)
@@ -1019,6 +1146,7 @@ pub async fn format_text_with_status_channels(
         None,
     )
     .await
+    .0
 }
 
 /// Format through the normalized policy sealed in the selected generation.
@@ -1040,6 +1168,7 @@ pub async fn format_text_with_status_for_policy(
         consultation,
     )
     .await
+    .0
 }
 
 /// Settings › Formatting › Test sample: a raw transcript as the engines hand
@@ -1062,6 +1191,75 @@ pub enum FormattingProbeStatus {
     TimedOut,
 }
 
+/// Bounded diagnostics from the existing formatter request. Never carries a
+/// bearer, provider response body, URL query, prompt or transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormattingFailure {
+    Unavailable,
+    AccountAuthentication,
+    Http(u16),
+    Timeout,
+    Transport,
+    ProviderResponse,
+}
+
+impl FormattingFailure {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::AccountAuthentication => "account_authentication",
+            Self::Http(_) => "http",
+            Self::Timeout => "timeout",
+            Self::Transport => "transport",
+            Self::ProviderResponse => "provider_response",
+        }
+    }
+
+    pub fn http_status(self) -> Option<u16> {
+        match self {
+            Self::Http(status) => Some(status),
+            _ => None,
+        }
+    }
+
+    fn from_error(error: &anyhow::Error) -> Self {
+        for cause in error.chain() {
+            if let Some(transport) = cause.downcast_ref::<reqwest::Error>() {
+                if transport.is_timeout() {
+                    return Self::Timeout;
+                }
+                if let Some(status) = transport.status() {
+                    return Self::Http(status.as_u16());
+                }
+                return Self::Transport;
+            }
+            let message = cause.to_string();
+            // Only the request owner's fixed HTTP prefix is inspected. The
+            // provider body may echo secrets or source text: never retain it.
+            if let Some(status) = message
+                .strip_prefix("HTTP ")
+                .or_else(|| message.strip_prefix("Anthropic HTTP "))
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|code| code.parse::<u16>().ok())
+                .filter(|code| (100..=599).contains(code))
+            {
+                return Self::Http(status);
+            }
+            if message.contains("account authentication failed:") {
+                return Self::AccountAuthentication;
+            }
+            if message.starts_with("SSE initial response timeout")
+                || message.starts_with("SSE inter-chunk timeout")
+                || message.starts_with("SSE stream inter-chunk timeout")
+                || message.starts_with("SSE stream deadline")
+            {
+                return Self::Timeout;
+            }
+        }
+        Self::ProviderResponse
+    }
+}
+
 /// One formatting request sent from Settings, measured.
 #[derive(Debug, Clone)]
 pub struct FormattingProbe {
@@ -1074,6 +1272,11 @@ pub struct FormattingProbe {
     pub provider: String,
     pub model: String,
     pub reasoning: Option<&'static str>,
+    pub failure: Option<FormattingFailure>,
+    /// Configured cloud route, not a claim that an on-device success used it.
+    pub endpoint_host: Option<String>,
+    pub credential_source: &'static str,
+    pub checked_at_unix_ms: u64,
 }
 
 /// Format `sample` (or [`FORMATTING_PROBE_SAMPLE`]) once, exactly as a live
@@ -1096,7 +1299,23 @@ pub async fn probe_formatting(
         .request_timing()
         .attempt_timeout();
     let ladder = reasoning_ladder(lane);
-    let measured = |status, output: String, elapsed| FormattingProbe {
+    let checked_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let account = lane.credential().account_auth();
+    let endpoint = account
+        .then(|| {
+            lane.vendor()
+                .and_then(account_auth::account_responses_route)
+        })
+        .flatten()
+        .map(|route| route.endpoint)
+        .unwrap_or_else(|| lane.endpoint().to_string());
+    let endpoint_host = reqwest::Url::parse(&endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string));
+    let measured = |status, output: String, elapsed, failure| FormattingProbe {
         status,
         input: input.clone(),
         output,
@@ -1105,6 +1324,14 @@ pub async fn probe_formatting(
         provider: lane.provider_display_name().to_string(),
         model: lane.model().to_string(),
         reasoning: ladder[reasoning_rung(lane).min(ladder.len() - 1)],
+        failure,
+        endpoint_host: endpoint_host.clone(),
+        credential_source: if account {
+            "account"
+        } else {
+            "api_key_or_key_optional"
+        },
+        checked_at_unix_ms,
     };
     // Off sends nothing and Max runs on the Agent lane: neither is this lane.
     if matches!(
@@ -1115,18 +1342,31 @@ pub async fn probe_formatting(
             FormattingProbeStatus::Skipped,
             input.clone(),
             Duration::ZERO,
+            None,
         );
     }
     let started = std::time::Instant::now();
     let reply = tokio::time::timeout(
         deadline,
-        format_text_with_status_for_policy(&input, language, runtime_settings, None),
+        format_text_with_status_channels_for_policy(
+            &input,
+            language,
+            false,
+            runtime_settings,
+            None,
+            None,
+            None,
+        ),
     )
     .await;
     let elapsed = started.elapsed();
-    let (status, output) = match reply {
-        Err(_) => (FormattingProbeStatus::TimedOut, String::new()),
-        Ok(result) => (
+    let (status, output, failure) = match reply {
+        Err(_) => (
+            FormattingProbeStatus::TimedOut,
+            String::new(),
+            Some(FormattingFailure::Timeout),
+        ),
+        Ok((result, failure)) => (
             match result.status {
                 AiFormatStatus::Applied => FormattingProbeStatus::Applied,
                 AiFormatStatus::AiNoop => FormattingProbeStatus::Unchanged,
@@ -1134,9 +1374,10 @@ pub async fn probe_formatting(
                 AiFormatStatus::Failed => FormattingProbeStatus::Failed,
             },
             result.text,
+            failure,
         ),
     };
-    measured(status, output, elapsed)
+    measured(status, output, elapsed, failure)
 }
 
 /// The single implementation every public formatting entry point funnels into.
@@ -1160,7 +1401,7 @@ async fn format_text_with_status_channels_for_policy(
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
     consultation: Option<FormattingConsultation<'_>>,
-) -> AiFormatResult {
+) -> (AiFormatResult, Option<FormattingFailure>) {
     let policy = runtime_settings.formatting_policy();
     if !assistive && policy == FormattingPolicy::Max {
         // Commands and corrections must not pass through the text-only floor,
@@ -1175,37 +1416,49 @@ async fn format_text_with_status_channels_for_policy(
             None => Err(anyhow::anyhow!("Max consultation executor unavailable")),
         };
         return match result {
-            Ok(text) => AiFormatResult {
-                text,
-                reasoning_text: None,
-                status: AiFormatStatus::Applied,
-            },
+            Ok(text) => (
+                AiFormatResult {
+                    text,
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+                None,
+            ),
             Err(error) => {
                 warn!(%error, "Max consultation did not produce an admitted answer");
-                AiFormatResult {
-                    text: text.to_string(),
-                    reasoning_text: None,
-                    status: AiFormatStatus::Failed,
-                }
+                (
+                    AiFormatResult {
+                        text: text.to_string(),
+                        reasoning_text: None,
+                        status: AiFormatStatus::Failed,
+                    },
+                    Some(FormattingFailure::ProviderResponse),
+                )
             }
         };
     }
     if !assistive && policy == FormattingPolicy::Off {
-        return AiFormatResult {
-            text: text.to_string(),
-            reasoning_text: None,
-            status: AiFormatStatus::Skipped,
-        };
+        return (
+            AiFormatResult {
+                text: text.to_string(),
+                reasoning_text: None,
+                status: AiFormatStatus::Skipped,
+            },
+            None,
+        );
     }
 
     // Skip short non-assistive texts. The controller quality gate starts at 24 chars,
     // so formatting anything shorter would create an unguarded rewrite zone.
     if should_skip_ai_formatting(text, assistive) {
-        return AiFormatResult {
-            text: text.to_string(),
-            reasoning_text: None,
-            status: AiFormatStatus::Skipped,
-        };
+        return (
+            AiFormatResult {
+                text: text.to_string(),
+                reasoning_text: None,
+                status: AiFormatStatus::Skipped,
+            },
+            None,
+        );
     }
 
     // Give the model the actual source. Whether speech repetition is an
@@ -1249,6 +1502,7 @@ async fn format_text_with_status_channels_for_policy(
     // attempt unchained instead of consuming the selected retry budget; a
     // poisoned chain would otherwise burn attempts without changing inputs.
     let mut stale_chain_retry_used = false;
+    let mut last_failure = FormattingFailure::ProviderResponse;
     let mut attempt = 0;
     while attempt <= max_retries {
         info!(
@@ -1390,6 +1644,7 @@ async fn format_text_with_status_channels_for_policy(
             // No engine produced text and no cloud lane can: every further
             // attempt would fail the same way. The caller keeps the text.
             warn!(%reason, "no formatting engine available; preserving the source text");
+            last_failure = FormattingFailure::Unavailable;
             break;
         }
         let used_on_device = on_device_output.is_some();
@@ -1409,6 +1664,7 @@ async fn format_text_with_status_channels_for_policy(
             {
                 Ok(output) => Some(output),
                 Err(e) => {
+                    last_failure = FormattingFailure::from_error(&e);
                     retryable_error = should_retry_provider_error(&e);
                     warn!(
                         "LLM {} attempt {}/{} failed: {}",
@@ -1446,6 +1702,7 @@ async fn format_text_with_status_channels_for_policy(
             {
                 Ok(Ok(output)) => Some(output),
                 Ok(Err(e)) => {
+                    last_failure = FormattingFailure::from_error(&e);
                     retryable_error = should_retry_provider_error(&e);
                     warn!(
                         "LLM {} attempt {}/{} failed: {}",
@@ -1465,6 +1722,7 @@ async fn format_text_with_status_channels_for_policy(
                     None
                 }
                 Err(_) => {
+                    last_failure = FormattingFailure::Timeout;
                     warn!(
                         "LLM {} attempt {}/{} timed out after {:?}",
                         route,
@@ -1492,11 +1750,14 @@ async fn format_text_with_status_channels_for_policy(
 
             if assistive && is_refusal {
                 warn!("AI returned refusal response, returning raw input instead");
-                return AiFormatResult {
-                    text: cleaned,
-                    reasoning_text: None,
-                    status: AiFormatStatus::Failed,
-                };
+                return (
+                    AiFormatResult {
+                        text: cleaned,
+                        reasoning_text: None,
+                        status: AiFormatStatus::Failed,
+                    },
+                    Some(FormattingFailure::ProviderResponse),
+                );
             }
 
             // Analyze result quality
@@ -1517,11 +1778,14 @@ async fn format_text_with_status_channels_for_policy(
                 // echo has no returned change to publish.
                 if formatted == cleaned {
                     warn!("Formatting mode returned AI No-op (raw echo)");
-                    return AiFormatResult {
-                        text: cleaned,
-                        reasoning_text,
-                        status: AiFormatStatus::AiNoop,
-                    };
+                    return (
+                        AiFormatResult {
+                            text: cleaned,
+                            reasoning_text,
+                            status: AiFormatStatus::AiNoop,
+                        },
+                        None,
+                    );
                 }
             }
 
@@ -1537,11 +1801,15 @@ async fn format_text_with_status_channels_for_policy(
                     } else {
                         AiFormatStatus::Applied
                     };
-                    return AiFormatResult {
-                        text: formatted,
-                        reasoning_text,
-                        status,
-                    };
+                    return (
+                        AiFormatResult {
+                            text: formatted,
+                            reasoning_text,
+                            status,
+                        },
+                        (status == AiFormatStatus::Failed)
+                            .then_some(FormattingFailure::ProviderResponse),
+                    );
                 }
             }
 
@@ -1562,11 +1830,14 @@ async fn format_text_with_status_channels_for_policy(
                 content_match,
                 raw_like
             );
-            return AiFormatResult {
-                text: formatted,
-                reasoning_text,
-                status: AiFormatStatus::Applied,
-            };
+            return (
+                AiFormatResult {
+                    text: formatted,
+                    reasoning_text,
+                    status: AiFormatStatus::Applied,
+                },
+                None,
+            );
         } else if !retryable_error {
             warn!("Provider returned deterministic empty-content error; skipping retries");
             break;
@@ -1576,11 +1847,14 @@ async fn format_text_with_status_channels_for_policy(
 
     // All providers failed
     warn!("All AI providers/retries failed, returning cleaned text");
-    AiFormatResult {
-        text: cleaned,
-        reasoning_text: None,
-        status: AiFormatStatus::Failed,
-    }
+    (
+        AiFormatResult {
+            text: cleaned,
+            reasoning_text: None,
+            status: AiFormatStatus::Failed,
+        },
+        Some(last_failure),
+    )
 }
 
 /// Perform exactly one provider attempt over the selected wire format.
@@ -1817,11 +2091,19 @@ fn responses_chain_request(
         crate::state::conversation::AiMode::Formatting
     };
     // An account backend stores nothing: each request carries its own prompt
-    // and no chain id, mirroring the Agent provider's body on that route.
+    // and no chain id, mirroring the Agent provider's body on that route. A
+    // take's own turns ride in `input` whenever no predecessor carries them.
+    let take = take_chain(ai_mode);
     let previous_response_id = if account_backend {
         None
+    } else if let Some(take) = &take {
+        take.previous_response_id()
     } else {
         crate::state::conversation::get_previous_response_id_for_mode(ai_mode)
+    };
+    let replay = match &take {
+        Some(take) if previous_response_id.is_none() => take.replay_turns(),
+        _ => Vec::new(),
     };
     let temperature = if account_backend {
         None
@@ -1833,6 +2115,7 @@ fn responses_chain_request(
         input: build_responses_input(
             system_prompt,
             previous_response_id.as_deref(),
+            &replay,
             vec![InputContent::Text {
                 text: user_message.to_string(),
             }],
@@ -1841,7 +2124,10 @@ fn responses_chain_request(
         previous_response_id: previous_response_id.clone(),
         max_output_tokens: None,
         temperature,
-        store: account_backend.then_some(false),
+        // A key route asks the server to keep the response explicitly: an
+        // omitted `store` is `true` on OpenAI but `false` on mtplx, where every
+        // chained request then came back 404 and fell back to a bare fragment.
+        store: Some(!account_backend),
         reasoning: reasoning.map(|effort| ReasoningParam { effort }),
         stream,
     };
@@ -1923,7 +2209,7 @@ async fn call_llm_endpoint(
                 "Clearing rejected previous_response_id for {:?} and retrying unchained",
                 ai_mode
             );
-            crate::state::conversation::reset_conversation_for_mode(ai_mode);
+            forget_rejected_predecessor(ai_mode);
             let (_, _, unchained) = responses_chain_request(
                 user_message,
                 system_prompt,
@@ -1961,7 +2247,12 @@ async fn call_llm_endpoint(
     }
 
     // Store response_id for this mode's conversation chain (separate streams)
-    crate::state::conversation::set_response_id_for_mode(ai_mode, responses_result.id.clone());
+    remember_completed_turn(
+        ai_mode,
+        user_message,
+        &output.assistant_text,
+        Some(responses_result.id.clone()),
+    );
     debug!(
         "Response id ({}): {}",
         if assistive { "assistive" } else { "formatting" },
@@ -2098,7 +2389,7 @@ async fn call_llm_endpoint_streaming(
                 "Clearing rejected previous_response_id for {:?} and retrying SSE unchained",
                 ai_mode
             );
-            crate::state::conversation::reset_conversation_for_mode(ai_mode);
+            forget_rejected_predecessor(ai_mode);
             let (_, _, unchained) = responses_chain_request(
                 user_message,
                 system_prompt,
@@ -2127,31 +2418,43 @@ async fn call_llm_endpoint_streaming(
         reasoning_text: streamed.reasoning_text,
     };
     if account_backend {
-        // `store: false`: the id names nothing a later request may chain to.
+        // `store: false`: the id names nothing a later request may chain to;
+        // a take keeps the turn itself and replays it.
+        remember_completed_turn(ai_mode, user_message, &output.assistant_text, None);
         debug!(
             "SSE complete on the account backend for {}; no chain id retained",
             if assistive { "assistive" } else { "formatting" }
         );
     } else if let Some(response_id) = streamed.response_id.filter(|id| !id.is_empty()) {
-        crate::state::conversation::set_response_id_for_mode(ai_mode, response_id.clone());
+        remember_completed_turn(
+            ai_mode,
+            user_message,
+            &output.assistant_text,
+            Some(response_id.clone()),
+        );
         debug!(
             "SSE complete, response_id ({}): {}",
             if assistive { "assistive" } else { "formatting" },
             response_id
         );
-    } else if let Some(prev_id) = previous_response_id.as_deref()
-        && !prev_id.is_empty()
-    {
-        warn!(
-            "SSE complete without response_id for {}; keeping previous_response_id={}",
-            if assistive { "assistive" } else { "formatting" },
-            prev_id
-        );
     } else {
-        warn!(
-            "SSE complete without response_id for {}; no previous_response_id to keep",
-            if assistive { "assistive" } else { "formatting" }
-        );
+        // A take keeps this turn and replays it next time, since no id chains
+        // past it; outside a take the previous id is kept as before.
+        remember_completed_turn(ai_mode, user_message, &output.assistant_text, None);
+        if let Some(prev_id) = previous_response_id.as_deref()
+            && !prev_id.is_empty()
+        {
+            warn!(
+                "SSE complete without response_id for {}; keeping previous_response_id={}",
+                if assistive { "assistive" } else { "formatting" },
+                prev_id
+            );
+        } else {
+            warn!(
+                "SSE complete without response_id for {}; no previous_response_id to keep",
+                if assistive { "assistive" } else { "formatting" }
+            );
+        }
     }
     Ok(output)
 }
@@ -2254,15 +2557,21 @@ mod tests {
     #[test]
     fn chained_turn_recarries_system_prompt_as_developer_input() {
         let user = vec![InputContent::Text { text: "RAW".into() }];
-        let chained = build_responses_input("SYS", Some("resp_123"), user);
+        let chained = build_responses_input("SYS", Some("resp_123"), &[], user);
         assert_eq!(chained.len(), 2);
         assert_eq!(chained[0].role, "developer");
-        let InputContent::Text { text } = &chained[0].content[0];
+        let InputContent::Text { text } = &chained[0].content[0] else {
+            panic!("the re-carried prompt is input text");
+        };
         assert_eq!(text, "SYS");
         assert_eq!(chained[1].role, "user");
 
-        let first =
-            build_responses_input("SYS", None, vec![InputContent::Text { text: "RAW".into() }]);
+        let first = build_responses_input(
+            "SYS",
+            None,
+            &[],
+            vec![InputContent::Text { text: "RAW".into() }],
+        );
         assert_eq!(
             first.len(),
             1,
@@ -3444,6 +3753,7 @@ mod tests {
         assert!(probe.elapsed < probe.deadline);
         assert_eq!(probe.reasoning, Some("none"));
         assert_eq!(probe.model, "mtplx-9b");
+        assert_eq!(probe.failure, None);
 
         let mut silent = mockito::Server::new_async().await;
         let _thinks = silent
@@ -3472,5 +3782,427 @@ mod tests {
         assert_eq!(probe.status, FormattingProbeStatus::TimedOut, "{probe:?}");
         assert_eq!(probe.input, "własny tekst do sformatowania przez model");
         assert!(probe.elapsed >= Duration::from_millis(1500));
+        assert_eq!(probe.failure, Some(FormattingFailure::Timeout));
+    }
+
+    /// Diagnostics expose a fixed classification even when an upstream error
+    /// includes credential or transcript material in its response body.
+    #[test]
+    fn formatting_failure_receipts_never_retain_provider_payloads() {
+        for status in [400, 401, 403, 404, 402, 429, 500, 503] {
+            for prefix in ["HTTP", "Anthropic HTTP"] {
+                let error = anyhow::anyhow!(
+                    "{prefix} {status} fixture bearer-secret transcript-secret?token=secret"
+                )
+                .context("selected formatting request failed");
+                let failure = FormattingFailure::from_error(&error);
+                assert_eq!(failure, FormattingFailure::Http(status));
+                assert_eq!(failure.http_status(), Some(status));
+                assert_eq!(failure.code(), "http");
+                assert!(!format!("{failure:?}").contains("secret"));
+            }
+        }
+        for (message, expected) in [
+            (
+                "account authentication failed: bearer-secret",
+                FormattingFailure::AccountAuthentication,
+            ),
+            (
+                "SSE initial response timeout: transcript-secret",
+                FormattingFailure::Timeout,
+            ),
+            ("SSE inter-chunk timeout", FormattingFailure::Timeout),
+            (
+                "SSE stream inter-chunk timeout after 30s (no data received)",
+                FormattingFailure::Timeout,
+            ),
+            ("SSE stream deadline exceeded", FormattingFailure::Timeout),
+            (
+                "unknown provider text bearer-secret",
+                FormattingFailure::ProviderResponse,
+            ),
+        ] {
+            let failure = FormattingFailure::from_error(&anyhow::anyhow!(message));
+            assert_eq!(failure, expected);
+            assert_eq!(failure.http_status(), None);
+            assert!(!format!("{failure:?}").contains("secret"));
+        }
+    }
+
+    /// Exercise the actual Settings request through the normal formatter,
+    /// rather than constructing a diagnostic result in the test.
+    #[tokio::test]
+    #[serial]
+    async fn formatting_probe_keeps_http_failure_then_clears_it_on_success() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        let _deadline = EnvGuard::set("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "3000");
+        let _retries = EnvGuard::set("CODESCRIBE_AI_MAX_RETRIES", "0");
+        let _selectors: Vec<_> = LANE_SELECTOR_ENV_KEYS
+            .iter()
+            .map(|key| EnvGuard::remove(key))
+            .collect();
+        let mut server = mockito::Server::new_async().await;
+        let rejected = server
+            .mock("POST", "/v1/responses")
+            .with_status(403)
+            .with_body(r#"{"error":{"message":"fixture bearer-secret transcript-secret"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let settings = custom_lanes_with(
+            &format!("{}/v1/responses", server.url()),
+            "receipt-fixture",
+            None,
+        );
+        crate::state::conversation::reset_conversation_for_mode(
+            crate::state::conversation::AiMode::Formatting,
+        );
+        let failed = probe_formatting(None, Some("pl"), &settings).await;
+        assert_eq!(failed.status, FormattingProbeStatus::Failed, "{failed:?}");
+        assert_eq!(failed.failure, Some(FormattingFailure::Http(403)));
+        assert_eq!(failed.endpoint_host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(failed.credential_source, "api_key_or_key_optional");
+        assert!(failed.checked_at_unix_ms > 0);
+        assert!(!format!("{failed:?}").contains("bearer-secret"));
+        assert!(!format!("{failed:?}").contains("transcript-secret"));
+        rejected.assert_async().await;
+        rejected.remove_async().await;
+        let answered = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_answer(
+                "Tak, jeśli nie stosuje się zaleceń dokumentacji.",
+            ))
+            .expect(1)
+            .create_async()
+            .await;
+        crate::state::conversation::reset_conversation_for_mode(
+            crate::state::conversation::AiMode::Formatting,
+        );
+        let success = probe_formatting(None, Some("pl"), &settings).await;
+        assert_eq!(
+            success.status,
+            FormattingProbeStatus::Applied,
+            "{success:?}"
+        );
+        assert_eq!(success.failure, None);
+        assert!(success.checked_at_unix_ms >= failed.checked_at_unix_ms);
+        answered.assert_async().await;
+    }
+
+    /// Skipping a request must never manufacture cloud acceptance or a failure.
+    #[tokio::test]
+    #[serial]
+    async fn formatting_probe_skipped_paths_send_nothing_and_have_no_failure() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        let _selectors: Vec<_> = LANE_SELECTOR_ENV_KEYS
+            .iter()
+            .map(|key| EnvGuard::remove(key))
+            .collect();
+        let mut server = mockito::Server::new_async().await;
+        let no_request = server
+            .mock("POST", "/v1/responses")
+            .expect(0)
+            .create_async()
+            .await;
+        let settings = custom_lanes_with(
+            &format!("{}/v1/responses", server.url()),
+            "skip-receipt-fixture",
+            None,
+        );
+        for policy in [FormattingPolicy::Off, FormattingPolicy::Max] {
+            let snapshot = settings.with_formatting_level(policy);
+            let probe = probe_formatting(None, None, &snapshot).await;
+            assert_eq!(probe.status, FormattingProbeStatus::Skipped);
+            assert_eq!(probe.failure, None);
+            assert_eq!(probe.elapsed, Duration::ZERO);
+            assert_eq!(probe.output, probe.input);
+        }
+        let short = probe_formatting(Some("test"), None, &settings).await;
+        assert_eq!(short.status, FormattingProbeStatus::Skipped);
+        assert_eq!(short.failure, None);
+        assert_eq!(short.output, "test");
+        no_request.assert_async().await;
+    }
+
+    fn sse_answer_with_id(id: &str, text: &str) -> String {
+        format!(
+            "data: {{\"type\":\"response.created\",\"response\":{{\"id\":\"{id}\"}}}}\n\n\
+             data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{text}\"}}\n\n\
+             data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{id}\",\"status\":\"completed\"}}}}\n\n"
+        )
+    }
+
+    fn request_json(request: &mockito::Request) -> serde_json::Value {
+        serde_json::from_slice(request.body().expect("request body")).expect("JSON body")
+    }
+
+    fn input_texts(body: &serde_json::Value) -> Vec<(String, String, String)> {
+        body["input"]
+            .as_array()
+            .expect("input items")
+            .iter()
+            .map(|item| {
+                let part = &item["content"][0];
+                (
+                    item["role"].as_str().unwrap_or_default().to_string(),
+                    part["type"].as_str().unwrap_or_default().to_string(),
+                    part["text"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// A key route asks the server to keep its reply: mtplx keeps nothing when
+    /// `store` is omitted, so every chained fragment came back 404 (2026-10-23).
+    /// The account backend still sends `store: false` and no predecessor.
+    #[test]
+    #[serial]
+    fn a_key_route_asks_the_server_to_keep_the_reply_it_chains_to() {
+        use crate::state::conversation::{
+            AiMode, reset_conversation_for_mode, set_response_id_for_mode,
+        };
+        reset_conversation_for_mode(AiMode::Formatting);
+        set_response_id_for_mode(AiMode::Formatting, "resp_prev".into());
+        let (_, previous, key) =
+            responses_chain_request("kawałek", "SYS", false, "m".into(), true, false, None);
+        let key = serde_json::to_value(&key).unwrap();
+        assert_eq!(previous.as_deref(), Some("resp_prev"));
+        assert_eq!(key["store"], json!(true));
+        assert_eq!(key["previous_response_id"], json!("resp_prev"));
+        let (_, previous, account) =
+            responses_chain_request("kawałek", "SYS", false, "m".into(), true, true, None);
+        let account = serde_json::to_value(&account).unwrap();
+        assert_eq!(previous, None);
+        assert_eq!(account["store"], json!(false));
+        assert!(account.get("previous_response_id").is_none());
+        reset_conversation_for_mode(AiMode::Formatting);
+    }
+
+    /// The account backend keeps no responses, so a take replays its own
+    /// earlier turns in `input`: user fragments and the assistant's replies.
+    #[tokio::test]
+    #[serial]
+    async fn an_account_backend_take_replays_its_own_turns() {
+        use crate::state::conversation::AiMode;
+        let take = TakeFormatterChain::new();
+        take.next_turn(async {
+            remember_completed_turn(AiMode::Formatting, "żyje i się", "Żyje i się", None);
+        })
+        .await;
+        let body = take
+            .next_turn(async {
+                let (_, previous, request) =
+                    responses_chain_request("obudziła", "SYS", false, "m".into(), true, true, None);
+                assert_eq!(previous, None);
+                serde_json::to_value(&request).unwrap()
+            })
+            .await;
+        assert_eq!(body["store"], json!(false));
+        assert_eq!(body["instructions"], json!("SYS"));
+        assert_eq!(
+            input_texts(&body),
+            vec![
+                ("user".into(), "input_text".into(), "żyje i się".into()),
+                (
+                    "assistant".into(),
+                    "output_text".into(),
+                    "Żyje i się".into()
+                ),
+                ("user".into(), "input_text".into(), "obudziła".into()),
+            ]
+        );
+    }
+
+    /// One take over the real Responses path: the second fragment chains to the
+    /// first one's reply, a refused predecessor reseeds from the take's own
+    /// turns instead of going bare, and a new take starts clean even though
+    /// the process-wide chain holds an id from elsewhere.
+    #[tokio::test]
+    #[serial]
+    async fn a_take_chains_its_own_fragments_and_never_another_take() {
+        use crate::state::conversation::{
+            AiMode, get_previous_response_id_for_mode, reset_conversation_for_mode,
+            set_response_id_for_mode,
+        };
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        reset_conversation_for_mode(AiMode::Formatting);
+        set_response_id_for_mode(AiMode::Formatting, "resp_earlier_take".into());
+        let mut server = mockito::Server::new_async().await;
+        let sse = |id: &str, text: &str| sse_answer_with_id(id, text);
+        let first = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                let body = request_json(request);
+                body["store"] == json!(true)
+                    && body.get("previous_response_id").is_none()
+                    && input_texts(&body)
+                        == vec![(
+                            "user".into(),
+                            "input_text".into(),
+                            "pierwszy kawałek".into(),
+                        )]
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse("resp_take_1", "Pierwszy kawałek"))
+            .expect(1)
+            .create_async()
+            .await;
+        let second = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                let body = request_json(request);
+                body["store"] == json!(true)
+                    && body["previous_response_id"] == json!("resp_take_1")
+                    && input_texts(&body).last().map(|item| item.2.as_str())
+                        == Some("drugi kawałek")
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse("resp_take_2", "drugi kawałek."))
+            .expect(1)
+            .create_async()
+            .await;
+        let refused = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                request_json(request)["previous_response_id"] == json!("resp_take_2")
+            })
+            .with_status(404)
+            .with_body(
+                json!({"error": {
+                    "message": "Previous response with id 'resp_take_2' not found.",
+                    "param": "previous_response_id",
+                    "code": "previous_response_not_found"
+                }})
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let reseeded = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                let body = request_json(request);
+                body.get("previous_response_id").is_none()
+                    && input_texts(&body)
+                        == vec![
+                            (
+                                "user".into(),
+                                "input_text".into(),
+                                "pierwszy kawałek".into(),
+                            ),
+                            (
+                                "assistant".into(),
+                                "output_text".into(),
+                                "Pierwszy kawałek".into(),
+                            ),
+                            ("user".into(), "input_text".into(), "drugi kawałek".into()),
+                            (
+                                "assistant".into(),
+                                "output_text".into(),
+                                "drugi kawałek.".into(),
+                            ),
+                            ("user".into(), "input_text".into(), "trzeci kawałek".into()),
+                        ]
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse("resp_take_3", "Trzeci kawałek."))
+            .expect(1)
+            .create_async()
+            .await;
+        let fresh = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                let body = request_json(request);
+                body.get("previous_response_id").is_none()
+                    && input_texts(&body)
+                        == vec![("user".into(), "input_text".into(), "nowe nagranie".into())]
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse("resp_next_take", "Nowe nagranie."))
+            .expect(1)
+            .create_async()
+            .await;
+        let settings = custom_lanes_with(
+            &format!("{}/v1/responses", server.url()),
+            "take-chain-9b",
+            None,
+        );
+        let lane = settings.llm_lanes().formatting();
+        let call = |message: &'static str| {
+            call_provider_once(
+                WireFamily::OpenAiResponses,
+                message,
+                "format only",
+                false,
+                lane,
+                true,
+                quick_stream(),
+            )
+        };
+
+        let take = TakeFormatterChain::new();
+        for message in ["pierwszy kawałek", "drugi kawałek", "trzeci kawałek"] {
+            take.next_turn(call(message))
+                .await
+                .unwrap_or_else(|error| panic!("{message}: {error}"));
+        }
+        let next_take = TakeFormatterChain::new();
+        let output = next_take
+            .next_turn(call("nowe nagranie"))
+            .await
+            .expect("a new take formats");
+        assert_eq!(output.assistant_text, "Nowe nagranie.");
+
+        for mock in [first, second, refused, reseeded, fresh] {
+            mock.assert_async().await;
+        }
+        assert_eq!(
+            get_previous_response_id_for_mode(AiMode::Formatting).as_deref(),
+            Some("resp_earlier_take"),
+            "a take's replies never move the process-wide chain"
+        );
+        reset_conversation_for_mode(AiMode::Formatting);
+    }
+
+    /// The next fragment of a take starts only after the previous one has
+    /// finished, so it can read that reply.
+    #[tokio::test]
+    async fn a_take_runs_its_fragments_one_after_another() {
+        let take = TakeFormatterChain::new();
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first = {
+            let (take, order) = (Arc::clone(&take), Arc::clone(&order));
+            tokio::spawn(async move {
+                take.next_turn(async {
+                    order.lock().unwrap().push("first started");
+                    held.await.unwrap();
+                    order.lock().unwrap().push("first finished");
+                })
+                .await
+            })
+        };
+        tokio::task::yield_now().await;
+        let second = {
+            let (take, order) = (Arc::clone(&take), Arc::clone(&order));
+            tokio::spawn(async move {
+                take.next_turn(async { order.lock().unwrap().push("second started") })
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(*order.lock().unwrap(), vec!["first started"]);
+        release.send(()).unwrap();
+        first.await.unwrap();
+        second.await.unwrap();
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["first started", "first finished", "second started"]
+        );
     }
 }

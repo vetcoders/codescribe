@@ -158,7 +158,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 - **Qube CLI tools** — `qube-report` and `qube-daemon` from `bin/qube_report.rs` / `bin/qube_daemon.rs`
 - **Metal GPU Acceleration** — Hardware-accelerated inference on Apple Silicon
 - **System Tray App** — Minimal menu-bar presence with animated status glyphs
-- **Global Hotkeys** — Hold Fn (default) or double‑tap Option to record
+- **Global Hotkeys** — Hold Fn (default); opt-in double‑tap Ctrl or Option for Formatting and the Agent
 - **OpenAI Responses by default** — Formatting uses `gpt-4.1`; Assistive uses `gpt-5.5`
 - **Custom MCP Servers** — Add your own MCP tools through `~/.codescribe/mcp.json`
 - **AI Formatting** — Optional post-processing via Responses API
@@ -182,7 +182,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 
 ### Prerequisites
 
-- **macOS 14+** (Sonoma or later)
+- **macOS 26+** (Tahoe or later)
 - **Apple Silicon** (M1, M2, M3, or later)
 - **Rust Toolchain** (1.94+; the workspace declares this MSRV) — source builds only
 
@@ -262,10 +262,10 @@ make logs
 ## Default Hotkeys (macOS)
 
 - **Dictation**: hold your configured modifier (default: **Hold Fn/Globe**) → release to finish; automatic paste follows the selected paste policy
-- **Formatting**: **Double‑tap Left Option** → recording without holding a key; formatting depends on AI settings and provider access
-- **Assistive (Agent)**: **Double‑tap Right Option** → voice‑chat overlay + agent response, separate from external numbered channels
+- **Formatting**: no shortcut; start it from the menu bar (**Start transcription**) or the overlay → recording without holding a key; formatting depends on AI settings and provider access
+- **Assistive (Agent)**: no shortcut; turn on **Start in Agent mode** in the menu bar and choose **Start transcription in Agent mode** → agent response, separate from external numbered channels
 
-Hotkeys are configured in **Settings → Hotkeys** (Polish: **Ustawienia → Skróty**). Double‑tap modes start recording without holding a key and stop on the next double‑tap. Delivery and AI processing depend on the selected mode and settings.
+The Option double-taps are opt-in gestures for Formatting and the Agent, guarded against typing, mouse use and synthetic key events. Hotkeys are configured in **Settings → Hotkeys** (Polish: **Ustawienia → Skróty**). A hands‑free take records without holding a key and stops on the next gesture or **Stop**. Delivery and AI processing depend on the selected mode and settings.
 
 ## Settings & Secrets
 
@@ -311,11 +311,11 @@ Full-file retranscription is an explicit action.
 
 ### Recording Modes
 
-| Mode                  | Trigger                   | Description                                |
-| --------------------- | ------------------------- | ------------------------------------------ |
-| **Dictation**         | Hold `Fn/Globe` (default) | Fast transcript (AI optional), auto‑paste  |
-| **Formatting**        | Double‑tap `Left Option`  | AI formatting pass, auto‑paste             |
-| **Assistive (Agent)** | Double‑tap `Right Option` | Agent chat with optional selection context |
+| Mode                  | Trigger                                         | Description                                |
+| --------------------- | ----------------------------------------------- | ------------------------------------------ |
+| **Dictation**         | Hold `Fn/Globe` (default)                       | Fast transcript (AI optional), auto‑paste  |
+| **Formatting**        | Menu bar **Start transcription** or the overlay | AI formatting pass, auto‑paste             |
+| **Assistive (Agent)** | Menu bar with **Start in Agent mode** on        | Agent chat with optional selection context |
 
 See [`docs/guide/modes.md`](docs/guide/modes.md) for detailed mode descriptions.
 

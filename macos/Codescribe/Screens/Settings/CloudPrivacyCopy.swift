@@ -19,9 +19,6 @@ import Foundation
 // Tests pin the copy to that contract so UI text cannot drift from the
 // enforced behavior.
 enum CloudPrivacyCopy {
-  /// Tab title, reused as the tab headline.
-  static let title = String(localized: "Cloud & privacy")
-
   /// One rendered subsection of the privacy details: a heading and the
   /// sentences under it.
   struct Block: Identifiable {

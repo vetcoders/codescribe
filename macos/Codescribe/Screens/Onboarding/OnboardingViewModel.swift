@@ -49,96 +49,6 @@ enum OnboardingModeChoice: String, CaseIterable {
   }
 }
 
-/// Recording-trigger preset. Maps onto the three core mode bindings (Dictation /
-/// Formatting / Assistive) — the exact same triples the AppKit wizard wrote via
-/// `save_hotkey_mode`. Full per-mode editing stays in Settings › Shortcuts.
-enum HotkeyModeChoice: String, CaseIterable {
-  case hold
-  case toggle
-  case both
-
-  var label: String {
-    label(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
-  }
-
-  func label(locale: Locale) -> String {
-    switch self {
-    case .hold:
-      return String(
-        localized: LocalizedStringResource(
-          "Hold to talk", locale: locale, comment: "Hotkey preset name"))
-    case .toggle:
-      return String(
-        localized: LocalizedStringResource(
-          "Hands-off (toggle)", locale: locale, comment: "Hotkey preset name"))
-    case .both:
-      return String(
-        localized: LocalizedStringResource(
-          "Hybrid (both)", locale: locale, comment: "Hotkey preset name: hold and toggle"))
-    }
-  }
-
-  var summary: String? {
-    summary(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
-  }
-
-  /// The gesture each preset binds. Hybrid has none of its own to explain —
-  /// it is the other two together — so it carries no detail line.
-  func summary(locale: Locale) -> String? {
-    switch self {
-    case .hold:
-      return String(
-        localized: LocalizedStringResource(
-          "Hold Fn/Globe while you speak. Release to stop.", locale: locale,
-          comment: "Hotkey preset detail; Fn and Globe are the key caps on a Mac keyboard"))
-    case .toggle:
-      return String(
-        localized: LocalizedStringResource(
-          "Double-tap left Option: dictation with formatting. Double-tap right Option: talk to the Agent. Tap again to stop.",
-          locale: locale,
-          comment: "Hotkey preset detail; left and right Option activate different modes"))
-    case .both:
-      return nil
-    }
-  }
-
-  /// Dictation / Formatting / Assistive bindings for this preset, mirroring
-  /// `actions::save_hotkey_mode` in the excised wizard.
-  var bindings: (CsShortcutBinding, CsShortcutBinding, CsShortcutBinding) {
-    switch self {
-    case .hold: return (.holdFn, .disabled, .disabled)
-    case .toggle: return (.disabled, .doubleLeftOption, .doubleRightOption)
-    case .both: return (.holdFn, .doubleLeftOption, .doubleRightOption)
-    }
-  }
-
-  /// Derive the closest preset from live bindings, mirroring
-  /// `initial_hotkey_choice`. Defaults to `both` when nothing hold-like or
-  /// toggle-like is bound.
-  static func derive(from bindings: [CsModeBinding]) -> HotkeyModeChoice {
-    func binding(_ mode: CsWorkMode) -> CsShortcutBinding? {
-      bindings.first { $0.mode == mode }?.binding
-    }
-    let dictation = binding(.dictation)
-    let holdEnabled: Bool
-    switch dictation {
-    case .holdFn, .holdCtrl, .holdCtrlAlt, .holdCtrlShift, .holdCtrlCmd:
-      holdEnabled = true
-    default:
-      holdEnabled = false
-    }
-    let toggleEnabled =
-      dictation == .doubleCtrl
-      || binding(.formatting) == .doubleLeftOption
-      || binding(.assistive) == .doubleRightOption
-    switch (holdEnabled, toggleEnabled) {
-    case (true, false): return .hold
-    case (false, true): return .toggle
-    default: return .both
-    }
-  }
-}
-
 @MainActor
 final class OnboardingViewModel: ObservableObject {
   @Published private(set) var stepIndex: Int
@@ -154,13 +64,6 @@ final class OnboardingViewModel: ObservableObject {
 
   // Language step state.
   @Published private(set) var selectedLanguage: CsLanguage
-
-  // Hotkey-mode step state.
-  @Published private(set) var hotkeyMode: HotkeyModeChoice
-  // Whether the user picked a preset in THIS wizard run. Only then does
-  // leaving the step overwrite the live mode bindings — otherwise a rerun
-  // would silently clobber custom shortcuts the user never touched here.
-  private var hotkeyModePicked = false
 
   // Agentic-readiness step state (lazy — probed when the step appears).
   @Published private(set) var readiness: CsAgenticReadiness?
@@ -251,7 +154,6 @@ final class OnboardingViewModel: ObservableObject {
     )
     self.onboardingMode = OnboardingModeChoice.from(engine.onboardingMode())
     self.selectedLanguage = engine.currentLanguage()
-    self.hotkeyMode = HotkeyModeChoice.derive(from: hotkeys.modeBindings())
     self.agentBridgeStatus = bridgeStatus
     self.selectedAgentClients = Set(bridgeStatus.installedClients)
     self.agentBridgeError = nil
@@ -284,7 +186,7 @@ final class OnboardingViewModel: ObservableObject {
     String(
       localized: LocalizedStringResource(
         "Getting started", locale: interfaceLocale,
-        comment: "Setup wizard window title"
+        comment: "Setup wizard window title: the wizard itself, reopened from Settings (General)"
       ))
   }
   var totalSteps: Int { OnboardingStep.count }
@@ -311,7 +213,7 @@ final class OnboardingViewModel: ObservableObject {
 
   /// The bar follows the same visible fraction as the counter.
   var progressFraction: Double {
-    Double(visibleStepNumber - 1) / Double(max(1, visibleStepCount - 1))
+    Double(visibleStepNumber) / Double(max(1, visibleStepCount))
   }
 
   var isDone: Bool { step == .done }
@@ -727,7 +629,6 @@ final class OnboardingViewModel: ObservableObject {
     case .interfaceLanguage: selectInterfaceLanguage(interfaceLanguage)
     case .mode: persistMode()
     case .language: persistLanguage()
-    case .hotkeyMode: if hotkeyModePicked { persistHotkeyMode() }
     default: break
     }
   }
@@ -845,43 +746,30 @@ final class OnboardingViewModel: ObservableObject {
     }
   }
 
-  // MARK: - Hotkey-mode step actions
+  // MARK: - Hotkey step
 
-  /// Select a recording-trigger preset and persist it by writing the three core
-  /// mode bindings (Dictation / Formatting / Assistive) through the shared
-  /// HotkeysEngine — the same seam and live-reload the Shortcuts panel uses.
-  func selectHotkeyMode(_ mode: HotkeyModeChoice) {
-    hotkeyMode = mode
-    hotkeyModePicked = true
-    persistHotkeyMode()
-  }
-
-  private func persistHotkeyMode() {
-    let (dictation, formatting, assistive) = hotkeyMode.bindings
-    do {
-      try hotkeys.setModeBinding(mode: .dictation, binding: dictation)
-      try hotkeys.setModeBinding(mode: .formatting, binding: formatting)
-      try hotkeys.setModeBinding(mode: .assistive, binding: assistive)
-    } catch {
-      lastError = error.userFacingMessage
-    }
-  }
-
-  /// Whether the live mode bindings do not exactly match any preset's triple —
-  /// i.e. the user is running custom shortcuts the wizard will leave alone
-  /// unless they pick a preset. Mirrors the three-core-mode comparison in
-  /// `HotkeyModeChoice.derive`.
-  var hotkeyBindingsAreCustom: Bool {
-    let live = hotkeys.modeBindings()
-    func binding(_ mode: CsWorkMode) -> CsShortcutBinding? {
-      live.first { $0.mode == mode }?.binding
-    }
-    let dictation = binding(.dictation)
-    let formatting = binding(.formatting)
-    let assistive = binding(.assistive)
-    return !HotkeyModeChoice.allCases.contains { preset in
-      let p = preset.bindings
-      return dictation == p.0 && formatting == p.1 && assistive == p.2
+  /// How dictation starts under the live bindings, the first line of the
+  /// hotkey step. The step only explains: Formatting and the Agent have no
+  /// gesture (founder decision 2026-10-26), and it never writes a binding, so
+  /// a rerun leaves custom shortcuts alone (Founder decision, 2026-10-20, UI-02).
+  var dictationStartLine: String {
+    switch hotkeys.modeBindings().first(where: { $0.mode == .dictation })?.binding {
+    case .holdFn, nil:
+      return String(
+        localized: LocalizedStringResource(
+          "Hold Fn to dictate.", locale: interfaceLocale,
+          comment: "Setup step; Fn is the key cap on a Mac keyboard"))
+    case .disabled:
+      return String(
+        localized: LocalizedStringResource(
+          "Dictation has no shortcut.", locale: interfaceLocale,
+          comment: "Setup step: the dictation shortcut was turned off in Settings"))
+    case let binding?:
+      let gesture = binding.visibleName
+      return String(
+        localized: LocalizedStringResource(
+          "Dictate with \(gesture).", locale: interfaceLocale,
+          comment: "Setup step; the argument is the dictation shortcut, e.g. Hold ⌃ (Ctrl)"))
     }
   }
 
@@ -964,7 +852,7 @@ final class OnboardingViewModel: ObservableObject {
     if selectedProviderAccountConnected {
       return String(
         localized: LocalizedStringResource(
-          "Connected", locale: interfaceLocale,
+          "Saved", locale: interfaceLocale,
           comment: "Setup Agent account row status"))
     }
     // A stored key already covers this provider, so the account is an extra.
@@ -996,7 +884,7 @@ final class OnboardingViewModel: ObservableObject {
     if selectedProviderKeySet {
       return String(
         localized: LocalizedStringResource(
-          "Set", locale: interfaceLocale,
+          "Saved", locale: interfaceLocale,
           comment: "Setup API key row status"))
     }
     // The connected account already covers this provider, so the key is an extra.

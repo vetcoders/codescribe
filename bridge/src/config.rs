@@ -94,6 +94,10 @@ pub struct CsSettings {
     pub hold_arm_modifier: String,
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
+    /// `TAP_MAX_MS`: longest Option press that still counts as a tap.
+    pub tap_max_ms: u64,
+    /// `TYPING_QUIET_MS`: Option taps count for nothing this long after typing.
+    pub typing_quiet_ms: u64,
     pub toggle_silence_sec: f32,
     /// `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
     pub whisper_context_window_sec: f32,
@@ -189,6 +193,22 @@ pub struct CsSettings {
     pub agent_auto_send: bool,
     /// Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
     pub agent_send_hold_sec: u32,
+    /// Built-in Agent auto-send countdown, `1...30` seconds.
+    pub agent_auto_send_delay_sec: u64,
+    /// A built-in Agent take without voice ends after this, `10...120` seconds.
+    pub agent_take_voiceless_end_sec: u64,
+    /// `continuous` | `end_after_message`.
+    pub agent_channel_session_policy: String,
+    /// Effective channel send pause; `0` only from the env override (off).
+    pub agent_channel_send_pause_sec: f32,
+    /// `settings` | `env_override`: where that pause came from.
+    pub agent_channel_send_pause_source: String,
+    /// `0` = never, else `15...600` seconds.
+    pub agent_channel_voiceless_close_sec: u64,
+    /// `off` | `light_plus` | `formatter`.
+    pub agent_channel_segment_finish: String,
+    /// Formatter budget for one channel message, `1...10` seconds.
+    pub agent_channel_format_wait_sec: u64,
     pub dump_audio_logs: bool,
     // ── Persisted lane selection and engine settings ──
     /// Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -256,6 +276,8 @@ impl CsSettings {
             hold_arm_modifier: config.hold_arm_modifier.as_str().to_string(),
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
+            tap_max_ms: config.tap_max_ms,
+            typing_quiet_ms: config.typing_quiet_ms,
             toggle_silence_sec: config.toggle_silence_sec,
             whisper_context_window_sec: config.whisper_context_window_sec,
             whisper_adaptive_buffer: config.whisper_adaptive_buffer,
@@ -312,6 +334,18 @@ impl CsSettings {
             agent_enter_sends: config.agent_enter_sends,
             agent_auto_send: config.agent_auto_send,
             agent_send_hold_sec: runtime.agent_send_hold_sec(),
+            agent_auto_send_delay_sec: config.agent_auto_send_delay_sec,
+            agent_take_voiceless_end_sec: config.agent_take_voiceless_end_sec,
+            agent_channel_session_policy: config.agent_channel.session_policy.as_str().to_string(),
+            agent_channel_send_pause_sec: config.agent_channel.send_pause_sec,
+            agent_channel_send_pause_source: config
+                .agent_channel
+                .send_pause_source
+                .as_str()
+                .to_string(),
+            agent_channel_voiceless_close_sec: config.agent_channel.voiceless_close_sec,
+            agent_channel_segment_finish: config.agent_channel.segment_finish.as_str().to_string(),
+            agent_channel_format_wait_sec: config.agent_channel.format_wait_sec,
             dump_audio_logs: config.dump_audio_logs,
             // Editable Settings fields prefer persisted intent from the same
             // seal so a fresh UI write is visible; sealed lanes fill gaps when
@@ -463,14 +497,12 @@ impl From<CsPasteMode> for PasteMode {
 /// UI-safe API-key liveness bucket. No variant carries secret material.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsApiKeyProbeStatus {
-    /// The key authenticated. Also covers a processed-but-rejected request
-    /// (most 4xx other than auth/quota): the server got far enough to prove the
-    /// credential is live, even when this particular probe body was refused.
+    /// The provider accepted this probe. This does not verify another model,
+    /// OAuth account or a later request.
     Ok,
     /// The provider rejected the credential itself (401 / 403).
     Invalid,
-    /// The key authenticates but the account cannot pay for the call
-    /// (429 / 402, or an explicit quota/billing marker in the body).
+    /// A usage, quota or billing limit (429 / 402 or an explicit marker).
     NoQuota,
     /// No verdict was reachable — transport failure or a provider 5xx.
     Network,
@@ -479,6 +511,8 @@ pub enum CsApiKeyProbeStatus {
     /// This account has no cheap liveness probe or belongs
     /// to no registered provider.
     Unsupported,
+    /// The request was rejected without establishing credential acceptance.
+    Rejected,
 }
 
 /// Result of one Settings "Test" action for a Keychain account.
@@ -504,6 +538,13 @@ pub struct CsFormattingProbe {
     pub model: String,
     /// The reasoning effort sent; `None` when the request carried no field.
     pub reasoning: Option<String>,
+    /// Fixed diagnostic code, never a raw provider error or response body.
+    pub failure_code: Option<String>,
+    pub http_status: Option<u16>,
+    /// Configured cloud route; excludes path, query and user information.
+    pub endpoint_host: Option<String>,
+    pub credential_source: String,
+    pub checked_at_unix_ms: u64,
 }
 
 impl From<codescribe_core::llm::ai_formatting::FormattingProbe> for CsFormattingProbe {
@@ -525,6 +566,11 @@ impl From<codescribe_core::llm::ai_formatting::FormattingProbe> for CsFormatting
             provider: probe.provider,
             model: probe.model,
             reasoning: probe.reasoning.map(str::to_string),
+            failure_code: probe.failure.map(|failure| failure.code().to_string()),
+            http_status: probe.failure.and_then(|failure| failure.http_status()),
+            endpoint_host: probe.endpoint_host,
+            credential_source: probe.credential_source.to_string(),
+            checked_at_unix_ms: probe.checked_at_unix_ms,
         }
     }
 }
@@ -1098,6 +1144,13 @@ impl CodescribeConfig {
     /// `CODESCRIBE_DATA_DIR` override).
     pub fn config_dir(&self) -> String {
         Config::config_dir().to_string_lossy().to_string()
+    }
+
+    /// Absolute path to the high-churn data folder (`<config dir>/data.noindex`),
+    /// resolved by `Config::churn_dir`. Swift places its diagnostic log and
+    /// overlay caches here instead of rebuilding the path.
+    pub fn churn_dir(&self) -> String {
+        Config::churn_dir().to_string_lossy().to_string()
     }
 
     /// Settings JSON belongs to the settings loader, not the app-data directory.
@@ -2144,6 +2197,8 @@ fn agent_env_keys() -> &'static [&'static str] {
         "AGENT_ENTER_SENDS",
         "AGENT_AUTO_SEND",
         "CODESCRIBE_AGENT_SEND_HOLD_SEC",
+        "AGENT_AUTO_SEND_DELAY_SEC",
+        "AGENT_TAKE_VOICELESS_END_SEC",
     ]
 }
 
@@ -2892,6 +2947,7 @@ impl From<ApiKeyLivenessStatus> for CsApiKeyProbeStatus {
             ApiKeyLivenessStatus::Network => Self::Network,
             ApiKeyLivenessStatus::Missing => Self::Missing,
             ApiKeyLivenessStatus::Unsupported => Self::Unsupported,
+            ApiKeyLivenessStatus::Rejected => Self::Rejected,
         }
     }
 }
@@ -3692,6 +3748,21 @@ mod settings_snapshot_tests {
         assert!(matches!(result, Err(CsError::Config { ref msg })
             if msg == "Configuration refusal recorded in this process"));
         assert_eq!(fs::read(path).unwrap(), source);
+    }
+
+    /// Swift reads the high-churn folder from the core resolver, never from a
+    /// string it builds itself.
+    #[test]
+    #[serial]
+    fn churn_dir_export_is_the_core_resolver_under_the_data_override() {
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let exported = CodescribeConfig {}.churn_dir();
+        assert_eq!(exported, Config::churn_dir().to_string_lossy());
+        assert_eq!(
+            std::path::PathBuf::from(exported),
+            root.path().canonicalize().unwrap().join("data.noindex")
+        );
     }
 
     #[test]

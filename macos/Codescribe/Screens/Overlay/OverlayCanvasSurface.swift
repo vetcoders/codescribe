@@ -36,16 +36,22 @@ struct OverlayCanvasSurface<Content: View>: View {
 }
 
 struct OverlayCanvasBackdrop: View {
+  @Environment(\.colorSchemeContrast) private var contrast
+  @Environment(\.csContrastOverride) private var contrastOverride
+  @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
   let palette: OverlayAppearancePalette
   let reduceTransparency: Bool
   var increasedContrast = false
+  var cornerRadius: CGFloat = CSRadius.window
 
   var body: some View {
     ZStack {
-      if reduceTransparency || increasedContrast {
+      if (reduceTransparencyOverride ?? reduceTransparency) || increasedContrast
+        || (contrastOverride ?? contrast) == .increased
+      {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
-        OverlayDesktopMaterial(palette: palette)
+        OverlayDesktopMaterial(palette: palette, cornerRadius: cornerRadius)
         Rectangle()
           .fill(Color(nsColor: Self.glassVeil(palette)))
           .allowsHitTesting(false)
@@ -54,7 +60,7 @@ struct OverlayCanvasBackdrop: View {
     }
   }
 
-  /// The palette's own sheet colour over the shared glass: near-black on ink,
+  /// The shared sheet colour over the native glass: near-black on ink,
   /// paper on paper, with the desktop left as a faint blurred hint (Maciej,
   /// 2026-10-15: "bardziej czarno", "dark almost black"). The 22 % veil of
   /// 2026-10-14 still took the page's brightness; the macOS Liquid Glass slider
@@ -67,7 +73,7 @@ struct OverlayCanvasBackdrop: View {
   /// sheet constant in both states; only the 16 % of desktop hint still follows
   /// the window.
   static func glassVeil(_ palette: OverlayAppearancePalette) -> NSColor {
-    let alpha = palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
+    let alpha: CGFloat = palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
     return palette.desktopBackground.nsColor.withAlphaComponent(alpha)
   }
 }
@@ -76,12 +82,13 @@ struct OverlayCanvasBackdrop: View {
 /// Keep the material active while the user types into another application.
 private struct OverlayDesktopMaterial: NSViewRepresentable {
   let palette: OverlayAppearancePalette
+  let cornerRadius: CGFloat
 
   func makeNSView(context: Context) -> NSView {
     if #available(macOS 26, *) {
       let view = OverlayDesktopGlassView()
       view.style = .regular
-      view.cornerRadius = CSRadius.window
+      view.cornerRadius = cornerRadius
       applyAppearance(to: view)
       return view
     }
@@ -94,6 +101,11 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {
+    if #available(macOS 26, *), let glass = nsView as? OverlayDesktopGlassView,
+      glass.cornerRadius != cornerRadius
+    {
+      glass.cornerRadius = cornerRadius
+    }
     applyAppearance(to: nsView)
   }
 
@@ -125,14 +137,13 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
 /// Header and composer use the same system-owned control surface.
 ///
 /// A surface flush with the window's own edges must carry the window's corner,
-/// not the pill's: the header spans the full width at the very top, so its
-/// `CSRadius.pill` circular corner sat inside the canvas's `CSRadius.window`
-/// continuous clip and the two curves read as a cut-off right end (Founder,
-/// 2026-10-18). The composer floats inside the sheet and keeps the pill radius;
-/// the corner style is `.continuous` for both, the way every other shape on
-/// this canvas is drawn.
+/// not a pill's: the header spans the full width at the very top, so a
+/// circular pill corner sat inside the canvas's `CSRadius.window` continuous
+/// clip and the two curves read as a cut-off right end (Founder, 2026-10-18).
+/// Floating composers pass their dedicated 12 pt corner, so their curve stays
+/// the same as the editor grows. Both surfaces use the canvas's continuous style.
 struct OverlayControlGlass: ViewModifier {
-  var cornerRadius: CGFloat = CSRadius.pill
+  var cornerRadius: CGFloat = CSRadius.window
   var isEnabled = true
 
   @ViewBuilder

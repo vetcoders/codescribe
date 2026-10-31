@@ -4,7 +4,7 @@
 
 ### 1. Prerequisites
 
-- macOS 14+ (Apple Silicon ARM64 only)
+- macOS 26+ (Apple Silicon ARM64 only)
 - Rust 1.94+ (the workspace MSRV)
 
 ### 2. Build & Run (Native App)
@@ -57,14 +57,16 @@ Grant in: System Settings > Privacy & Security
 
 ## Hotkeys
 
-| Key                             | Action                                    | AI Mode               |
-| ------------------------------- | ----------------------------------------- | --------------------- |
-| Hold **Fn**                     | Record → paste raw transcript             | ALWAYS RAW (no AI)    |
-| Hold **Fn+Shift** (default arm) | Record → agent voice chat                 | ALWAYS Assistive      |
-| Hold **Fn+Cmd** (arm alt)       | Same arm when Cmd is selected in Settings | ALWAYS Assistive      |
-| Armed hold **with selection**   | Selection transform lane                  | Assistive (selection) |
-| Double-tap **Left Option**      | Hands‑free toggle (normal)                | Respects level        |
-| Double-tap **Right Option**     | Hands‑free toggle (assistive)             | Assistive             |
+| Key                                      | Action                                         | AI Mode                 |
+| ---------------------------------------- | ---------------------------------------------- | ----------------------- |
+| Hold **Fn**                              | Record → paste raw transcript                  | ALWAYS RAW (no AI)      |
+| **Shift** during a Fn hold (default arm) | Attaches the live selection as `{selection_N}` | Raw (destination stays) |
+| **Cmd** during a Fn hold (arm alt)       | Same, when Cmd is selected in Settings         | Raw (destination stays) |
+| Menu bar **Start transcription**         | Hands‑free toggle (Formatting)                 | Respects level          |
+| Menu bar, **Start in Agent mode** on     | Hands‑free toggle (Agent)                      | Assistive               |
+
+The Option double-taps are opt-in for Formatting and the Agent (off by default).
+Fn+Shift from idle is plain dictation.
 
 ### Mode Behavior
 

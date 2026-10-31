@@ -37,7 +37,8 @@ pub const TRANSCRIPT_BUS_FILENAME: &str = "transcript-events.jsonl";
 pub enum TranscriptMode {
     /// Plain dictation or formatting; the downstream action is paste/format.
     Dictation,
-    /// Right Option / composer Agent voice input; the downstream action is send.
+    /// Agent voice input (menu bar, overlay or composer); the downstream
+    /// action is send.
     Agent,
     /// Hold-based Chat/Selection assistance; downstream action is Agent delivery.
     Assistive,
@@ -790,6 +791,10 @@ pub enum TranscriptDelivery {
     /// The stop path finished without any sink taking the text. It stays
     /// recoverable in the overlay and the session archive.
     Retained,
+    /// The assistive take ended after 30 s without voice, so the stop path
+    /// chose no destination. The text stays in the take archive; nothing may
+    /// send it on its own, and an explicit send still can.
+    EndedWithoutVoice,
     /// The text was copied to the clipboard without posting a paste.
     CopiedToClipboard,
     /// The text is armed for a later explicit insert, not pasted yet.
@@ -914,6 +919,9 @@ impl std::fmt::Debug for TranscriptBus {
 struct TranscriptBusWriter {
     /// Capture-time recipients are metadata, never transcript identity.
     channel_recipients: Option<serde_json::Value>,
+    /// Where this channel reads the other open agent channels from. Metadata
+    /// only: never a routing, recipients, identity, CAS or ACK input.
+    co_audience: CoAudienceSource,
     /// Disabled for the rest of this session after any uncertain append.
     file: Option<Box<dyn Write + Send>>,
     sequence: u64,
@@ -940,9 +948,76 @@ struct TranscriptBusWriter {
     /// channel close reads this marker instead when the take opted out.
     direct_terminal: Option<DirectPublicationCapability>,
     /// Documents whose start row already reached a channel bus. Quiet delivery
-    /// contract (Founder seal cc6c8248): between that start row and the
-    /// terminal seal, channel revisions stay in-process.
+    /// contract (Founder seal cc6c8248; only its reopen half was replaced on
+    /// 2026-10-26): between that start row and the terminal seal, channel
+    /// revisions stay in-process.
     announced_documents: HashSet<u64>,
+}
+
+/// A channel message as delivered: the finished text and the name of the
+/// revision it is (`committed`, `light_plus` or `formatter`). `fallback` says
+/// why a formatter revision was not delivered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChannelDelivery {
+    pub text: String,
+    pub revision: &'static str,
+    pub fallback: Option<&'static str>,
+}
+
+/// One open agent channel as the controller's registry holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ChannelCohortMember {
+    #[serde(skip)]
+    pub digit: u8,
+    pub channel: String,
+    pub audience: String,
+    /// Capture identity (`agent-channel-{digit}-{uuid}`), not the agent's.
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+}
+
+/// The controller's live agent-channel membership. The registry owner swaps
+/// the inner `Arc` once per registry change while holding the registry lock,
+/// and never holds this write lock while taking a bus writer lock. A bus
+/// writer may take the read lock: that read is the linearization point.
+pub(crate) type ChannelCohort = Arc<std::sync::RwLock<Arc<Vec<ChannelCohortMember>>>>;
+
+/// Where a channel bus reads its `co_audience` from.
+enum CoAudienceSource {
+    /// Shared bus, Fn+0, or a channel never admitted to the registry.
+    Absent,
+    /// Open: the cohort current at each emission, own digit excluded.
+    Emission { cohort: ChannelCohort, own: u8 },
+    /// Closing: the cohort frozen just before this channel left the registry,
+    /// shared by every channel removed in the same batch.
+    CaptureClose {
+        cohort: Arc<Vec<ChannelCohortMember>>,
+        own: u8,
+    },
+}
+
+impl CoAudienceSource {
+    /// The basis label and the other members, or `None` when there are none.
+    fn members(&self) -> Option<(&'static str, Vec<ChannelCohortMember>)> {
+        let (basis, cohort, own) = match self {
+            Self::Absent => return None,
+            Self::Emission { cohort, own } => (
+                "emission",
+                Arc::clone(&cohort.read().unwrap_or_else(|error| error.into_inner())),
+                *own,
+            ),
+            Self::CaptureClose { cohort, own } => ("capture_close", Arc::clone(cohort), *own),
+        };
+        let others: Vec<ChannelCohortMember> = cohort
+            .iter()
+            .filter(|member| member.digit != own)
+            .cloned()
+            .collect();
+        (!others.is_empty()).then_some((basis, others))
+    }
 }
 
 struct ChannelPublicationEvidence {
@@ -986,6 +1061,21 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Parent `channel_session` identity of a channel message document.
+/// Continuous voice sessions name each segment `<channel_session_id>-s<index>`,
+/// while the session's `open` and terminal `sealed` rows carry `<channel_session_id>`.
+fn channel_session_id_of_document(session: &str) -> &str {
+    if let Some((prefix, segment)) = session.rsplit_once("-s")
+        && prefix.starts_with("agent-channel-")
+        && !segment.is_empty()
+        && segment.bytes().all(|b| b.is_ascii_digit())
+        && segment.parse::<u32>().is_ok_and(|index| index >= 1)
+    {
+        return prefix;
+    }
+    session
+}
+
 /// Read an exact recent capture through the canonical generation/chunk decoder.
 /// Missing old history is a refusal; an append target is never guessed.
 fn capture_attachment_source(
@@ -1011,7 +1101,12 @@ fn capture_attachment_source(
         let mut discarded = String::new();
         reader.read_line(&mut discarded)?;
     }
-    let mut decoder = generation::Decoder::default();
+    let mut decoder = if start == 0 {
+        generation::Decoder::default()
+    } else {
+        generation::Decoder::from_tail_boundary()
+    };
+    let channel_session = channel_session_id_of_document(session);
     let mut latest = None;
     let mut selected = None;
     let mut open = false;
@@ -1026,6 +1121,23 @@ fn capture_attachment_source(
         line.clear();
         for packed in decoder.push(raw)? {
             for row in generation::rows(packed)? {
+                if row["schema"] == "codescribe.channel-session.v1" {
+                    if row["session_id"] == session {
+                        if row["state"] == "open" && !ended {
+                            open = true;
+                        } else {
+                            open = false;
+                            ended = true;
+                        }
+                    } else if row["session_id"] == channel_session {
+                        if row["state"] == "open" && !ended {
+                            open = true;
+                        } else if row["state"] != "segment_sealed" {
+                            open = false;
+                            ended = true;
+                        }
+                    }
+                }
                 if row["session_id"] != session {
                     continue;
                 }
@@ -1040,17 +1152,10 @@ fn capture_attachment_source(
                     }
                     seen_stage = true;
                 }
-                if row["schema"] == "codescribe.channel-session.v1" {
-                    if row["state"] == "open" && !ended {
-                        open = true;
-                    } else {
-                        open = false;
-                        ended = true;
-                    }
-                }
                 if row["status"] == "session_ended"
                     || row["reducer_action"] == "session_ended"
                     || row["schema"] == "codescribe.transcript-publication.v1"
+                    || (row["status"] == "transcript_sealed" && row["terminal"] == true)
                 {
                     ended = true;
                     open = false;
@@ -1239,11 +1344,19 @@ fn append_capture_attachment(
 /// External agent messages and delivery controls use the same private journal.
 /// PCM transcript authority remains reducer-only.
 pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<serde_json::Value> {
+    if event["schema"] == super::dual_host_projection::HISTORY_PROJECTION_SCHEMA {
+        return super::dual_host_projection::append_projection(path, event);
+    }
     if event["schema"] == "codescribe.capture-attachment.v1" {
         return append_capture_attachment(path, event);
     }
     let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid agent event");
-    if !path.is_absolute() || !event.is_object() {
+    if !path.is_absolute()
+        || !event.is_object()
+        || ["projection", "pair_id", "source_receipt"]
+            .iter()
+            .any(|key| event.get(*key).is_some())
+    {
         return Err(invalid());
     }
     let text_field = |key: &str| event[key].as_str().filter(|value| !value.trim().is_empty());
@@ -1348,6 +1461,16 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
                     .is_some_and(|text| text.len() > 64 * 1024)
                 || event["source"] != "typed"
                 || event["source_event_id"] != event["message_id"]
+                || event
+                    .get("final_revision")
+                    .is_some_and(|revision| revision.as_u64().is_none_or(|n| n == 0))
+                || event.get("history_reply_to").is_some_and(|reference| {
+                    !reference.is_null()
+                        && !serde_json::from_value::<super::dual_host_projection::MessageReference>(
+                            reference.clone(),
+                        )
+                        .is_ok_and(|reference| reference.valid())
+                })
                 || recipients.len() != 1
                 || [
                     "provider",
@@ -1450,6 +1573,15 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
             }
         }
         _ => return Err(invalid()),
+    }
+    if event["schema"] == "codescribe.agent-user-message.v1" {
+        if chrono::DateTime::parse_from_rfc3339(text_field("emitted_at").ok_or_else(invalid)?)
+            .is_err()
+            || serde_json::to_vec(event).map_err(io::Error::other)?.len() > 16 << 20
+        {
+            return Err(invalid());
+        }
+        return super::dual_host_projection::append_original(path, event);
     }
     let encoded = super::transcript_bus_maintenance::generation::encode(event)?;
     if encoded.len() > 24 << 20 {
@@ -1789,10 +1921,11 @@ impl TranscriptBus {
         } else {
             self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false)
         };
-        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29): a channel
-        // bus carries one start row per document, the terminal seal, manual
-        // edits and coverage verdicts. Intermediate revisions stay in-process;
-        // they still project to the HUD and in-process consumers below.
+        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29; only its
+        // reopen half was replaced on 2026-10-26): a channel bus carries one
+        // start row per document, the terminal seal, manual edits and coverage
+        // verdicts. Intermediate revisions stay in-process; they still project
+        // to the HUD and in-process consumers below.
         let channel_quiet = self.session.audience.is_some();
         let is_terminal_seal = matches!(
             &revision.action,
@@ -2045,9 +2178,10 @@ impl TranscriptBus {
         } else {
             self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false)
         };
-        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29): identical
-        // for the direct lane — one start row per document, the terminal row,
-        // intermediate revisions in-process only.
+        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29; only its
+        // reopen half was replaced on 2026-10-26): identical for the direct
+        // lane — one start row per document, the terminal row, intermediate
+        // revisions in-process only.
         let channel_quiet = self.session.audience.is_some();
         let mut emitted = Vec::new();
         let mut persisted = Vec::new();
@@ -2275,7 +2409,16 @@ impl TranscriptBus {
     /// Maciej, 2026-10-17 09:59Z: the pause before sending covered typed
     /// messages only. On a day the ledger sealed no channel take, every spoken
     /// message left at once, with no Cancel/Edit.
-    pub(crate) fn publish_channel_closed(&self, hold_sec: u32) -> io::Result<()> {
+    ///
+    /// `delivery` is the channel's finished message (`agent_channel.segment_finish`):
+    /// its text replaces the rendered document on both closing rows and its
+    /// revision name is stamped as `delivered_revision`. `None` delivers the
+    /// committed document unchanged.
+    pub(crate) fn publish_channel_closed(
+        &self,
+        hold_sec: u32,
+        delivery: Option<&ChannelDelivery>,
+    ) -> io::Result<()> {
         if self.session.mode != TranscriptMode::Agent || self.session.audience.is_none() {
             return Ok(());
         }
@@ -2382,8 +2525,17 @@ impl TranscriptBus {
         projection.sequence = writer.sequence.saturating_add(1);
         projection.emitted_at = now.to_rfc3339_opts(SecondsFormat::Micros, true);
         projection.terminal = true;
+        if let Some(delivery) = delivery.filter(|delivery| !delivery.text.trim().is_empty()) {
+            projection.rendered_text = delivery.text.clone();
+        }
         let mut evidence = serde_json::to_value(&projection).map_err(io::Error::other)?;
         evidence["status"] = serde_json::json!("transcript_sealed");
+        if let Some(delivery) = delivery {
+            evidence["delivered_revision"] = serde_json::json!(delivery.revision);
+            if let Some(reason) = delivery.fallback {
+                evidence["delivered_revision_fallback"] = serde_json::json!(reason);
+            }
+        }
         // The one row that authorizes delivery under `publication: controller`.
         evidence["closing_decision"] = serde_json::json!("publish");
         if !certified {
@@ -2408,6 +2560,23 @@ impl TranscriptBus {
         Self::append_projection_locked(&mut writer, &clean)
     }
 
+    /// The committed text the channel's closing seal would deliver, or `None`
+    /// when this session has nothing left to publish.
+    pub(crate) fn channel_closing_text(&self) -> Option<String> {
+        let writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if writer.channel_seal_published {
+            return None;
+        }
+        writer
+            .last_projection
+            .as_ref()
+            .map(|projection| projection.rendered_text.clone())
+            .filter(|text| !text.trim().is_empty())
+    }
+
     /// Channel boundaries share the session's destinations and failure state.
     pub(crate) fn record_channel_receipt(&self, receipt: &serde_json::Value) {
         let mut writer = self
@@ -2426,6 +2595,32 @@ impl TranscriptBus {
         }
     }
 
+    /// Read the controller's live cohort at every later emission. Called once
+    /// the channel is admitted, and again when a failed close keeps it open.
+    pub(crate) fn attach_co_audience(&self, cohort: ChannelCohort, own: u8) {
+        self.writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .co_audience = CoAudienceSource::Emission { cohort, own };
+    }
+
+    /// Stop following the live cohort: later rows of this closing session
+    /// carry `cohort`, taken before this channel left the registry. A bus
+    /// that never followed the cohort stays without co-audience.
+    pub(crate) fn freeze_co_audience(&self, cohort: Arc<Vec<ChannelCohortMember>>) {
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let own = match &writer.co_audience {
+            CoAudienceSource::Absent => return,
+            CoAudienceSource::Emission { own, .. } | CoAudienceSource::CaptureClose { own, .. } => {
+                *own
+            }
+        };
+        writer.co_audience = CoAudienceSource::CaptureClose { cohort, own };
+    }
+
     fn with_writer(
         session: TranscriptSession,
         path: PathBuf,
@@ -2436,6 +2631,7 @@ impl TranscriptBus {
             path,
             writer: Mutex::new(TranscriptBusWriter {
                 channel_recipients: None,
+                co_audience: CoAudienceSource::Absent,
                 file,
                 sequence: 0,
                 started: false,
@@ -2886,6 +3082,14 @@ impl TranscriptBus {
         writer: &mut TranscriptBusWriter,
         event: &impl Serialize,
     ) -> io::Result<()> {
+        if writer.file.is_none() {
+            return Ok(());
+        }
+        // Read the cohort before borrowing the file: one snapshot per row.
+        let co_audience = writer
+            .channel_recipients
+            .as_ref()
+            .and_then(|_| writer.co_audience.members());
         let Some(file) = writer.file.as_mut() else {
             return Ok(());
         };
@@ -2895,6 +3099,13 @@ impl TranscriptBus {
                 if let Some(fields) = value.as_object_mut() {
                     fields.insert("recipients".into(), recipients["recipients"].clone());
                     fields.insert("channel".into(), recipients["channel"].clone());
+                    if let Some((basis, members)) = &co_audience {
+                        fields.insert(
+                            "co_audience".into(),
+                            serde_json::to_value(members).map_err(io::Error::other)?,
+                        );
+                        fields.insert("co_audience_basis".into(), (*basis).into());
+                    }
                 }
                 super::transcript_bus_maintenance::generation::encode(&value)?
             } else {
@@ -2991,6 +3202,47 @@ mod tests {
             "source_sequence":0, "emitted_at":"2026-10-20T22:00:00Z", "attachments":[{"name":"image.png", "path":file,
             "media_type":"image/png", "bytes":13, "sha256":"a".repeat(64)}]});
         (temp, buses, request)
+    }
+
+    #[test]
+    fn capture_attachment_bounded_tail_can_start_inside_an_older_chunked_document() {
+        use super::super::transcript_bus_maintenance::generation;
+        use std::io::Write;
+        let (_temp, buses, request) = capture_attachment_fixture();
+        let current =
+            std::fs::read(&buses[0]).expect("bounded-tail attachment fixture must be valid");
+        // The real 64 MiB bound cuts through this older encoded document;
+        // the complete open + selected source still lie inside the window.
+        let older = serde_json::json!({
+            "schema":"codescribe.transcript-evidence.v1", "session_id":"older-capture",
+            "rendered_text":"x".repeat(50 * 1024 * 1024)
+        });
+        let prefix =
+            generation::encode(&older).expect("bounded-tail attachment fixture must be valid");
+        assert!(prefix.len() > 64 << 20);
+        let mut file = std::fs::File::create(&buses[0])
+            .expect("bounded-tail attachment fixture must be valid");
+        file.write_all(&prefix)
+            .expect("bounded-tail attachment fixture must be valid");
+        file.write_all(&current)
+            .expect("bounded-tail attachment fixture must be valid");
+        file.sync_all()
+            .expect("bounded-tail attachment fixture must be valid");
+        let receipt = super::append_agent_event(&buses[0], &request)
+            .expect("bounded-tail attachment fixture must be valid");
+        assert_eq!(
+            receipt["buses"]
+                .as_array()
+                .expect("bounded-tail attachment fixture must be valid")
+                .len(),
+            2
+        );
+        for bus in &buses {
+            let (_, staged) =
+                super::capture_attachment_source(bus, "agent-channel-0-fixture", &request)
+                    .expect("bounded-tail attachment fixture must be valid");
+            assert!(staged);
+        }
     }
 
     #[test]
@@ -3159,6 +3411,90 @@ mod tests {
                     .contains("capture_attachment")
             );
         }
+    }
+
+    #[test]
+    fn capture_attachment_accepts_continuous_channel_segments_and_refuses_sealed_segments() {
+        use std::io::Write;
+        let (_temp, buses, base_request) = capture_attachment_fixture();
+        let recipients = serde_json::json!([
+            {"provider":"codex", "provider_session_id":"one", "lease_id":"a", "channel":"7", "audience":"mira", "bus":buses[0]},
+            {"provider":"codex", "provider_session_id":"two", "lease_id":"b", "channel":"7", "audience":"mira", "bus":buses[1]}
+        ]);
+        let recipients_s1 = serde_json::json!({
+            "schema":"codescribe.channel-recipients.v1", "kind":"channel_recipients",
+            "session_id":"agent-channel-7-fixture-s1", "channel":"7", "audience":"mira", "recipients":recipients
+        });
+        let opened = serde_json::json!({
+            "schema":"codescribe.channel-session.v1", "kind":"channel_session",
+            "session_id":"agent-channel-7-fixture", "channel":"7", "state":"open"
+        });
+        let source_s1 = serde_json::json!({
+            "schema":"codescribe.transcript-evidence.v1", "session_id":"agent-channel-7-fixture-s1",
+            "sequence":0, "capture_epoch":1, "reducer_revision":1, "reducer_action":"record_ledger_projection",
+            "occurrence_session_id":"occurrence-s1", "sample_start":10, "sample_end":50, "document_index":0,
+            "channel":"7", "audience":"mira", "recipients":recipients, "rendered_text":"Segment one"
+        });
+        for bus in &buses {
+            std::fs::write(bus, format!("{recipients_s1}\n{opened}\n{source_s1}\n")).unwrap();
+        }
+        let mut request_s1 = base_request.clone();
+        request_s1["stage_id"] = "222222222222222222222222".into();
+        request_s1["session_id"] = "agent-channel-7-fixture-s1".into();
+        request_s1["capture_epoch"] = 1.into();
+        request_s1["source_sequence"] = 0.into();
+        let receipt_s1 = super::append_agent_event(&buses[0], &request_s1).unwrap();
+        assert_eq!(receipt_s1["buses"].as_array().unwrap().len(), 2);
+
+        // Seal segment 1 with segment_sealed and open segment 2 on the same continuous channel session.
+        let segment_sealed_s1 = serde_json::json!({
+            "schema":"codescribe.channel-session.v1", "kind":"channel_session",
+            "session_id":"agent-channel-7-fixture-s1", "channel_session_id":"agent-channel-7-fixture",
+            "channel":"7", "state":"segment_sealed"
+        });
+        let source_s2 = serde_json::json!({
+            "schema":"codescribe.transcript-evidence.v1", "session_id":"agent-channel-7-fixture-s2",
+            "sequence":0, "capture_epoch":1, "reducer_revision":1, "reducer_action":"record_ledger_projection",
+            "occurrence_session_id":"occurrence-s2", "sample_start":60, "sample_end":120, "document_index":0,
+            "channel":"7", "audience":"mira", "recipients":recipients, "rendered_text":"Segment two"
+        });
+        for bus in &buses {
+            writeln!(
+                std::fs::OpenOptions::new().append(true).open(bus).unwrap(),
+                "{segment_sealed_s1}\n{source_s2}"
+            )
+            .unwrap();
+        }
+
+        // Segment 1 is now sealed and must refuse new capture attachments.
+        let mut late_s1 = request_s1.clone();
+        late_s1["stage_id"] = "333333333333333333333333".into();
+        assert!(super::append_agent_event(&buses[0], &late_s1).is_err());
+
+        // Segment 2 is open under the parent channel session and must accept capture attachments.
+        let mut request_s2 = base_request.clone();
+        request_s2["stage_id"] = "444444444444444444444444".into();
+        request_s2["session_id"] = "agent-channel-7-fixture-s2".into();
+        request_s2["capture_epoch"] = 1.into();
+        request_s2["source_sequence"] = 0.into();
+        let receipt_s2 = super::append_agent_event(&buses[0], &request_s2).unwrap();
+        assert_eq!(receipt_s2["buses"].as_array().unwrap().len(), 2);
+
+        // Sealing the parent channel session closes segment 2 as well.
+        let parent_sealed = serde_json::json!({
+            "schema":"codescribe.channel-session.v1", "kind":"channel_session",
+            "session_id":"agent-channel-7-fixture", "channel":"7", "state":"sealed"
+        });
+        for bus in &buses {
+            writeln!(
+                std::fs::OpenOptions::new().append(true).open(bus).unwrap(),
+                "{parent_sealed}"
+            )
+            .unwrap();
+        }
+        let mut late_s2 = request_s2;
+        late_s2["stage_id"] = "555555555555555555555555".into();
+        assert!(super::append_agent_event(&buses[0], &late_s2).is_err());
     }
     #[test]
     fn typed_publication_uses_private_journal_and_refuses_audio_claims() {
@@ -3817,7 +4153,7 @@ mod tests {
                 !before_close.contains("hold_until"),
                 "the reducer seal is still pre-close"
             );
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             bus.record_channel_receipt(&serde_json::json!({
                 "schema": "codescribe.channel-session.v1",
                 "state": "sealed",
@@ -3874,7 +4210,7 @@ mod tests {
                     2
                 );
             }
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 raw,
@@ -3906,7 +4242,7 @@ mod tests {
             let (ledger, _, revision) = committed_fixture(id);
             bus.publish_revision(&revision, &ledger);
             assert!(!bus.writer.lock().unwrap().sealed);
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             bus.record_channel_receipt(&serde_json::json!({
                 "schema": "codescribe.channel-session.v1",
                 "state": "sealed",
@@ -3940,7 +4276,7 @@ mod tests {
                 "the joined close lets the unsealed session end"
             );
             let ended = std::fs::read_to_string(&path).unwrap();
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             assert_eq!(
                 std::fs::read_to_string(&path).unwrap(),
                 ended,
@@ -3994,7 +4330,7 @@ mod tests {
                 }));
             }
             bus.observe_channel_publication_evidence(&ledger);
-            bus.publish_channel_closed(10).unwrap();
+            bus.publish_channel_closed(10, None).unwrap();
 
             let raw = std::fs::read_to_string(&path).unwrap();
             let rows = crate::durable_bus_oracle::rows(&raw).unwrap();
@@ -4079,7 +4415,7 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), before_end);
             assert!(!bus.writer.lock().unwrap().ended);
 
-            bus.publish_channel_closed(seconds).unwrap();
+            bus.publish_channel_closed(seconds, None).unwrap();
             assert!(
                 bus.publish_ended(
                     TranscriptSessionEndReason::Completed,
@@ -4131,7 +4467,7 @@ mod tests {
             let (ledger, _, revision) = committed_fixture("plain-send-hold");
             bus.publish_revision(&revision, &ledger);
             let before = std::fs::read(&path).unwrap();
-            bus.publish_channel_closed(10).unwrap();
+            bus.publish_channel_closed(10, None).unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
     }
@@ -4200,8 +4536,9 @@ mod tests {
         assert!(!broken.exists());
     }
 
-    /// Quiet delivery contract (Founder seal cc6c8248): between one start row
-    /// per document and the terminal seal, channel revisions stay off disk.
+    /// Quiet delivery contract (Founder seal cc6c8248; only its reopen half was
+    /// replaced on 2026-10-26): between one start row per document and the
+    /// terminal seal, channel revisions stay off disk.
     #[test]
     fn channel_bus_carries_only_document_starts_and_the_terminal_seal() {
         let dir = tempfile::tempdir().unwrap();
@@ -5760,4 +6097,5 @@ mod tests {
             revision.rendered_text.len()
         );
     }
+    include!("transcript_bus_co_audience_tests.rs");
 }

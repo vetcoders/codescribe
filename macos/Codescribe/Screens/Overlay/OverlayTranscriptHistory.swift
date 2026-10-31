@@ -22,6 +22,10 @@ struct OverlayTranscriptHistory: View {
   /// Dismisses the history popover after a successful open.
   var onOpened: () -> Void = {}
 
+  /// Secondary lines take the overlay's muted rung, the ink its count beside
+  /// the date already used, so the popover keeps one secondary colour.
+  private var mutedText: Color { OverlayAppearancePalette.resolve(colorScheme).mutedText.color }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
@@ -36,14 +40,14 @@ struct OverlayTranscriptHistory: View {
       if let reason = openRefusal ?? model.error {
         Text(reason)
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(mutedText)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("overlay-history-notice")
       }
       if model.loading && model.entries.isEmpty {
         ProgressView().frame(maxWidth: .infinity)
       } else if model.entries.isEmpty {
-        Text("No saved transcriptions yet.").foregroundStyle(.secondary)
+        Text("No saved transcriptions yet.").foregroundStyle(mutedText)
       } else {
         historyList(model.entries)
       }
@@ -90,11 +94,11 @@ struct OverlayTranscriptHistory: View {
                   ProgressView().controlSize(.mini)
                 }
                 Text(date(entry.entry), format: .dateTime.month(.abbreviated).day().hour().minute())
-                  .foregroundStyle(.secondary)
+                  .foregroundStyle(mutedText)
                 Text(
                   verbatim: "· \(Self.characterCountLabel(entry.characterCount, locale: locale))"
                 )
-                .foregroundStyle(OverlayAppearancePalette.resolve(colorScheme).mutedText.color)
+                .foregroundStyle(mutedText)
               }
               .font(.caption)
               Text(entry.entry.preview.isEmpty ? Self.untitledLabel : entry.entry.preview)

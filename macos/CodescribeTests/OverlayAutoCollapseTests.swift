@@ -42,6 +42,60 @@ final class ManualAutoCollapseScheduler {
 
 @MainActor
 final class OverlayAutoCollapseTests: XCTestCase {
+  private final class InputSink: NSView {
+    var keyDowns = 0
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) { keyDowns += 1 }
+  }
+
+  func testNativeTypingRestartsTheThirtySecondIdleInterval() throws {
+    let keyBefore = NSApp.keyWindow
+    let (state, clock) = makeState(autoFoldSeconds: 30)
+    state.setPresentationMode(.mini)
+    state.setPresentationMode(.expanded)
+    let predecessor = try XCTUnwrap(clock.wakes.last)
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: -10000, y: -10000, width: 240, height: 100),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    let sink = InputSink(frame: NSRect(x: 0, y: 0, width: 240, height: 100))
+    panel.contentView = sink
+    panel.onUserActivity = { state.noteOverlayInputActivity() }
+    XCTAssertTrue(panel.makeFirstResponder(sink))
+    defer { panel.close() }
+    clock.advance(by: 29)
+    let event = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: [], timestamp: clock.now,
+        windowNumber: panel.windowNumber, context: nil, characters: "a",
+        charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
+    panel.sendEvent(event)
+    XCTAssertEqual(sink.keyDowns, 1)
+    XCTAssertEqual(state.autoCollapseDeadline, clock.now + 30)
+    XCTAssertFalse(predecessor.cancelled, "activity reuses the one outstanding wake")
+    XCTAssertEqual(clock.outstanding, 1)
+    clock.advance(by: 29)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    clock.advance(by: 1)
+    XCTAssertEqual(state.presentationMode, .mini)
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertTrue(NSApp.keyWindow === keyBefore)
+  }
+
+  func testInputDuringAnAutomaticFoldRestoresTheEditorAndItsFullIdleInterval() {
+    let (state, clock) = makeState(autoFoldSeconds: 30)
+    state.presentationMorphDuration = 1.2
+    state.setPresentationMode(.mini)
+    state.setPresentationMode(.expanded)
+    clock.advance(by: 30)
+    XCTAssertEqual(state.presentationMode, .mini)
+    state.noteOverlayInputActivity()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.autoCollapseDeadline, clock.now + 30)
+    clock.advance(by: 29)
+    XCTAssertEqual(state.presentationMode, .expanded)
+  }
+
   private func makeState(
     expandedByDefault: Bool = true,
     autoFoldSeconds: UInt32 = 10

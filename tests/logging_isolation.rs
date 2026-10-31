@@ -1,5 +1,5 @@
 //! Runtime proof that a bare Cargo integration-test binary cannot create the
-//! production-shaped `~/.codescribe/logs/codescribe.log` sink.
+//! production-shaped `~/.codescribe/data.noindex/logs/codescribe.log` sink.
 
 use std::process::Command;
 
@@ -9,7 +9,8 @@ fn bare_cargo_integration_test_refuses_production_log() {
 
     if std::env::var_os(CHILD).is_some() {
         let home = std::env::var_os("HOME").expect("child HOME");
-        let production_log = std::path::PathBuf::from(home).join(".codescribe/logs/codescribe.log");
+        let production_log =
+            std::path::PathBuf::from(home).join(".codescribe/data.noindex/logs/codescribe.log");
 
         codescribe::logging::init_logging();
         tracing::info!(target: "logging_isolation", "integration test probe");

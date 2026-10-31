@@ -82,23 +82,35 @@ impl WireFamily {
     /// trim, strip a known protocol suffix (or a bare `/v1`), append the
     /// canonical one. Pure string work — no settings, env, or Keychain.
     pub fn normalize_endpoint(self, raw: &str) -> String {
-        let known: &[&str] = match self {
-            WireFamily::OpenAiResponses => {
-                &["/v1/responses", "/v1/chat/completions", "/v1/completions"]
-            }
-            WireFamily::AnthropicMessages => &["/v1/messages", "/v1/responses"],
-        };
-        let mut base = raw.trim().trim_end_matches('/').to_string();
-        for suffix in known {
-            if base.ends_with(suffix) {
-                base.truncate(base.len() - suffix.len());
-                return format!("{base}{}", self.canonical_suffix());
-            }
+        // URL parsing can reinterpret a missing authority as a host from the
+        // path. Preserve invalid input so provider validation can reject it.
+        if endpoint_host(raw.trim()).is_empty() {
+            return raw.trim().to_string();
         }
-        if base.ends_with("/v1") {
+        let known = [
+            "/v1/responses",
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/v1/completions",
+        ];
+        let Ok(mut endpoint) = reqwest::Url::parse(raw.trim()) else {
+            return raw.trim().to_string();
+        };
+        let mut base = endpoint.path().trim_end_matches('/').to_string();
+        // A wire change replaces the previous API path. Repeated suffixes
+        // also occur in persisted rows written by the former append path.
+        // Work on the path only: neither host names nor query values are API
+        // suffixes. A bare /v1 in a mount prefix survives an existing API path.
+        let mut replaced_api_path = false;
+        while let Some(suffix) = known.iter().find(|suffix| base.ends_with(**suffix)) {
+            base.truncate(base.len() - suffix.len());
+            replaced_api_path = true;
+        }
+        if !replaced_api_path && base.ends_with("/v1") {
             base.truncate(base.len() - "/v1".len());
         }
-        format!("{base}{}", self.canonical_suffix())
+        endpoint.set_path(&format!("{base}{}", self.canonical_suffix()));
+        endpoint.to_string()
     }
 }
 
@@ -421,19 +433,39 @@ pub struct CustomProvider {
 
 impl CustomProvider {
     /// Validate and build a row: `id = slug(name)` must be non-empty, the
-    /// endpoint is normalized onto the wire's canonical path and must carry an
-    /// `http(s)` scheme and a host.
+    /// endpoint must carry an explicit `http(s)` authority before its path is
+    /// normalized onto the wire's canonical path.
     pub fn new(name: &str, wire: WireFamily, endpoint: &str) -> Result<Self, ProviderError> {
         let name = name.trim();
         let id = slug(name);
         if id.is_empty() {
             return Err(ProviderError::EmptyName);
         }
-        let endpoint = wire.normalize_endpoint(endpoint);
-        let scheme_ok = endpoint.starts_with("http://") || endpoint.starts_with("https://");
-        if !scheme_ok || endpoint_host(&endpoint).is_empty() {
-            return Err(ProviderError::InvalidEndpoint(endpoint));
+        let endpoint = endpoint.trim();
+        let scheme = endpoint.split(':').next().unwrap_or_default();
+        let scheme_ok = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+        // URL parsing repairs missing authority separators and ignores some
+        // control characters. Refuse those spellings before a path can become
+        // the host of a different endpoint.
+        let authority_ok = endpoint
+            .strip_prefix(scheme)
+            .and_then(|rest| rest.strip_prefix("://"))
+            .is_some_and(|rest| {
+                let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+                !authority.is_empty()
+                    && !authority
+                        .chars()
+                        .any(|ch| ch == '\\' || ch.is_ascii_control())
+            });
+        let host_ok = reqwest::Url::parse(endpoint).is_ok_and(|url| url.host_str().is_some());
+        if !scheme_ok || !authority_ok || !host_ok {
+            return Err(ProviderError::InvalidEndpoint(if scheme_ok {
+                endpoint.to_string()
+            } else {
+                wire.normalize_endpoint(endpoint)
+            }));
         }
+        let endpoint = wire.normalize_endpoint(endpoint);
         Ok(Self {
             id,
             name: name.to_string(),
@@ -489,7 +521,7 @@ pub fn is_custom_key_account(account: &str) -> bool {
 pub enum ProviderError {
     /// The name slugs to nothing (`""`, `"---"`, `"  "`).
     EmptyName,
-    /// Missing `http(s)` scheme or host; carries the normalized endpoint.
+    /// Missing or malformed `http(s)` authority; carries the rejected endpoint.
     InvalidEndpoint(String),
     /// A row with this id already exists.
     DuplicateId(String),
@@ -1013,6 +1045,37 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&WireFamily::AnthropicMessages).unwrap(),
             "\"messages\""
+        );
+    }
+
+    /// Repair only the protocol path; host names and proxy metadata are opaque.
+    #[test]
+    fn formatter_endpoint_repair_preserves_authority_mount_query_and_fragment() {
+        let responses = WireFamily::OpenAiResponses;
+        for (input, expected) in [
+            ("https://v1/", "https://v1/v1/responses"),
+            (
+                "https://proxy.example/v1/messages/v1/responses",
+                "https://proxy.example/v1/responses",
+            ),
+            (
+                "https://proxy.example/mount/v1/v1/messages",
+                "https://proxy.example/mount/v1/v1/responses",
+            ),
+            (
+                "https://proxy.example/v1/messages?next=/v1/messages#v1",
+                "https://proxy.example/v1/responses?next=/v1/messages#v1",
+            ),
+        ] {
+            let actual = responses.normalize_endpoint(input);
+            assert_eq!(actual, expected, "{input}");
+            assert_eq!(responses.normalize_endpoint(&actual), actual, "idempotence");
+        }
+        assert_eq!(responses.normalize_endpoint(" not a URL "), "not a URL");
+        assert_eq!(
+            WireFamily::AnthropicMessages
+                .normalize_endpoint("https://proxy.example/mount/v1/responses/v1/chat/completions"),
+            "https://proxy.example/mount/v1/messages"
         );
     }
 

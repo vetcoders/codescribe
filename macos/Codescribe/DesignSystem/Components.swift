@@ -236,14 +236,17 @@ struct CSFocusOutline: View {
   var isFocused: Bool
   var cornerRadius: CGFloat
   @Environment(\.displayScale) private var displayScale
+  @Environment(\.appearsActive) private var appearsActive
   @Environment(\.csFocusInput) private var input
 
   var body: some View {
     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
       .strokeBorder(
         CSColor.chromeAccent.opacity(
-          CSFocusPolicy.shouldShowOutline(
-            isFocused: isFocused, modality: input?.modality ?? .keyboard) ? 1 : 0),
+          appearsActive
+            && CSFocusPolicy.shouldShowOutline(
+              isFocused: isFocused, modality: input?.modality ?? .keyboard)
+            ? 1 : 0),
         lineWidth: 1 / max(displayScale, 1)
       )
       .allowsHitTesting(false)
@@ -309,13 +312,13 @@ private struct CSActionButtonStyle: ButtonStyle {
       .padding(.horizontal, 14)
       .padding(.vertical, 8)
       .background(
-        Color.accentColor.opacity(isEnabled ? (prominent ? 0.12 : 0.035) : 0.015),
+        CSColor.chromeAccent.opacity(isEnabled ? (prominent ? 0.12 : 0.035) : 0.015),
         in: .rect(cornerRadius: CSRadius.chip)
       )
       .overlay {
         RoundedRectangle(cornerRadius: CSRadius.chip)
           .strokeBorder(
-            Color.accentColor.opacity(isEnabled ? (prominent ? 0.32 : 0.22) : 0.08),
+            CSColor.chromeAccent.opacity(isEnabled ? (prominent ? 0.32 : 0.22) : 0.08),
             lineWidth: 1 / max(displayScale, 1))
       }
       .contentShape(.rect(cornerRadius: CSRadius.chip))
@@ -326,6 +329,72 @@ private struct CSActionButtonStyle: ButtonStyle {
 extension View {
   func csAction(prominent: Bool = false) -> some View {
     buttonStyle(CSActionButtonStyle(prominent: prominent))
+      .csFocusOutline()
+  }
+}
+
+/// A link in prose — one that opens a page, a window or another place in
+/// Settings — is underlined brick text, one style in the whole app (Founder,
+/// 2026-10-26), and turns the pointer into the pointing hand like any macOS
+/// link. Unlike an action it does take the brand text rung; unlike a control
+/// it never follows the macOS accent.
+private struct CSLinkButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .underline()
+      .foregroundStyle(CSColor.terracottaText.opacity(isEnabled ? 1 : 0.4))
+      .contentShape(Rectangle())
+      .pointerStyle(isEnabled ? .link : nil)
+      .opacity(configuration.isPressed && isEnabled ? 0.7 : 1)
+  }
+}
+
+extension View {
+  func csLink() -> some View {
+    buttonStyle(CSLinkButtonStyle())
+      .csFocusOutline()
+  }
+}
+
+/// A selectable choice (a radio-style row or card) shares the flat action's
+/// shape; the selected one wears the brand accent as a wash and a one-point
+/// edge (Founder, 2026-10-26), never the chrome accent of a pressed action.
+/// An unselected choice rests on the same quiet surface as a plain action.
+private struct CSChoiceButtonStyle: ButtonStyle {
+  let selected: Bool
+  @Environment(\.isEnabled) private var isEnabled
+  @Environment(\.displayScale) private var displayScale
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.body.weight(selected ? .semibold : .regular))
+      .foregroundStyle(Color.primary.opacity(isEnabled ? 1 : 0.4))
+      .padding(.horizontal, 14)
+      .padding(.vertical, 8)
+      .background(
+        selected
+          ? CSColor.brandAccent.opacity(isEnabled ? CSAlpha.selectionWash : 0.015)
+          : CSColor.chromeAccent.opacity(isEnabled ? 0.035 : 0.015),
+        in: .rect(cornerRadius: CSRadius.chip)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: CSRadius.chip)
+          .strokeBorder(
+            selected
+              ? CSColor.brandAccent.opacity(isEnabled ? CSAlpha.selectionStroke : 0.08)
+              : CSColor.chromeAccent.opacity(isEnabled ? 0.22 : 0.08),
+            lineWidth: selected ? 1 : 1 / max(displayScale, 1))
+      }
+      .contentShape(.rect(cornerRadius: CSRadius.chip))
+      .opacity(configuration.isPressed && isEnabled ? 0.7 : 1)
+  }
+}
+
+extension View {
+  func csChoice(selected: Bool) -> some View {
+    buttonStyle(CSChoiceButtonStyle(selected: selected))
       .csFocusOutline()
   }
 }
@@ -371,7 +440,7 @@ struct StatusPill: View {
       }
       .frame(width: 9, height: 9)
       Text(text)
-        .csMono(11, .medium)
+        .csFont(11, .medium)
         .foregroundStyle(color)
         // A squeezed chrome HStack was wrapping this one word into a vertical
         // capsule (S-t-r-e-a-m-i-n-g, operator crop 2026-09-22). Capsules stay
@@ -427,7 +496,7 @@ struct StaticStatusPill: View {
       Circle().fill(color).frame(width: 6, height: 6).opacity(0.7)
         .frame(width: 9, height: 9)
       Text(text)
-        .csMono(11, .medium)
+        .csFont(11, .medium)
         .foregroundStyle(color)
         .lineLimit(1)
         .fixedSize()
@@ -438,6 +507,87 @@ struct StaticStatusPill: View {
     .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 1))
     .clipShape(Capsule())
     .fixedSize()
+  }
+}
+
+/// A determinate linear progress bar in the brand accent. The macOS linear
+/// `ProgressView` paints the system accent and ignores `tint`, so progress
+/// that must wear the brand hue (Founder, 2026-10-26) draws its own track:
+/// a faint capsule and the brand capsule over it. Indeterminate progress
+/// keeps the native spinner.
+struct CSProgressBar: View {
+  let value: Double
+  var height: CGFloat = 4
+
+  private var fraction: Double { max(0, min(1, value)) }
+
+  var body: some View {
+    GeometryReader { proxy in
+      ZStack(alignment: .leading) {
+        Capsule().fill(Color.primary.opacity(CSAlpha.line))
+        Capsule().fill(CSColor.brandAccent)
+          .frame(width: fraction * proxy.size.width)
+      }
+    }
+    .frame(height: height)
+    // The drawing is the brand's; the semantics stay the system's, so VoiceOver
+    // announces a localized progress indicator, not a bare number.
+    .accessibilityRepresentation { ProgressView(value: fraction) }
+  }
+}
+
+/// A status word in the wizard and in Settings. A verified state ("Granted",
+/// "Ready") is a thin check on an olive capsule (Founder, 2026-10-26; the
+/// 2026-10-10 rule: a thin check, never a filled badge);
+/// stored identity that nothing has tested ("Saved") is an empty circle on
+/// the same capsule, the deliberate exception of 2026-10-26 to the grey
+/// "saved" of 99758557a. A blocked state pairs a warning glyph with
+/// `dangerLight` ink and a matching capsule, because terracotta is the colour
+/// of choice and progress, never of a problem; ordinary pending states and
+/// "Optional" remain plain ink. The dotted `StatusPill` stays the live-activity pill; this badge
+/// never pulses.
+struct CSStatusBadge: View {
+  enum Mark {
+    case none
+    case saved
+    case verified
+    case blocked
+  }
+
+  let text: String
+  let mark: Mark
+
+  private var tint: Color {
+    switch mark {
+    case .none: CSColor.secondaryInk
+    case .saved, .verified: CSColor.oliveLight
+    case .blocked: CSColor.dangerLight
+    }
+  }
+
+  var body: some View {
+    HStack(spacing: 5) {
+      switch mark {
+      case .none:
+        EmptyView()
+      case .saved:
+        CSIconView(icon: .circleEmpty, size: 9, weight: .semibold, color: CSColor.oliveLight)
+      case .verified:
+        CSIconView(icon: .success, size: 9, weight: .semibold, color: CSColor.oliveLight)
+      case .blocked:
+        CSIconView(icon: .warning, size: 9, weight: .semibold, color: CSColor.dangerLight)
+      }
+      Text(text).font(CSFont.ui(11, .medium))
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, mark == .none ? 0 : 8)
+    .padding(.vertical, mark == .none ? 0 : 3)
+    .background {
+      if mark != .none {
+        Capsule().fill(tint.opacity(0.14))
+      }
+    }
+    .fixedSize(horizontal: mark != .blocked, vertical: true)
   }
 }
 

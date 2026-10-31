@@ -5,7 +5,7 @@ import XCTest
 
 /// Ownership proof for the Agent voice lane.
 ///
-/// There is exactly ONE recorder behind Right Option, the tray, and the composer
+/// There is exactly ONE recorder behind the tray, the overlay and the composer
 /// mic. Before this cut every voice-lane fact was read live and globally, so the
 /// surface could disagree with the recorder in three ways at once:
 ///

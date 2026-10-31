@@ -181,8 +181,8 @@ monitor from `--watch` ([Monitor](monitor.md#watch-stream)).
 
 A take whose ledger refuses terminal finality (incomplete acoustic coverage)
 still reaches the mailbox as a seal with `coverage: "refused"` and
-`state_change_allowed: false`, once the channel moves on: a silence seal, a
-reopen, or the session's `session_ended` row. A hang-up (second digit or Fn
+`state_change_allowed: false`, once the channel moves on: a silence seal, the
+next open, or the session's `session_ended` row. A hang-up (second digit or Fn
 press) releases it only when the app writes one of those rows.
 
 ### Restore the conversation as well as the connection

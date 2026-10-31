@@ -114,15 +114,16 @@ impl DeliveryRoute {
 /// The stop path lost its intents in the W0 authority demolition
 /// (`ac6d399b3`, 2026-08-24) and with them auto-paste. Restored 2026-09-08:
 /// Auto Paste is the product's basic verb (Founder C02 2026-07-20, one
-/// persisted setting shared by Hold and Double Left Option).
+/// persisted setting shared by Hold and the Formatting toggle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryIntent {
-    /// Assistive hold / Double Right Option: the transcript is a first-class
+    /// Assistive take (menu bar or overlay): the transcript is a first-class
     /// Agent message. Never a focus-derived paste.
     AgentVoice,
     /// Hold Fn / Globe or toggle dictation: auto-paste into the latched target.
     OrientDictation,
-    /// Double Left Option: formatted dictation. Same destination as dictation.
+    /// Formatting take (menu bar or overlay): formatted dictation. Same
+    /// destination as dictation.
     OrientFormat,
     /// Save-only Quick Notes: history only, no user-visible delivery.
     NotesOnly,
@@ -280,7 +281,7 @@ pub fn resolve_delivery_route(intent: DeliveryIntent, facts: DeliveryFacts) -> D
     }
 }
 
-/// Stop-path Orient (Hold Fn / Globe, Double Left Option, toggle Finish).
+/// Stop-path Orient (Hold Fn / Globe, the Formatting toggle, toggle Finish).
 ///
 /// [`PasteMode`] is one persisted setting shared by every Orient gesture. The
 /// vetoes that keep Orient off the paste gun, in order: mode Off, a

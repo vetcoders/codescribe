@@ -106,6 +106,7 @@ final class OverlayController: ObservableObject {
   private var panel: NSPanel?
   private var intercomWidget: OverlayIntercomWidgetController?
   private var intercomPresentationStarted = false
+  private let intercomDesktopStore: OverlayIntercomDesktopStore
   private let overlayEnabledProvider: () -> Bool
   private let assistiveStatusProvider: () -> Bool
   private let panelFactory: @MainActor (OverlayState, TextScaleController) -> NSPanel
@@ -156,6 +157,7 @@ final class OverlayController: ObservableObject {
     state: OverlayState? = nil,
     engine: DictationEngine? = nil,
     composer: AgentChatStore? = nil,
+    intercomDesktopStore: OverlayIntercomDesktopStore = OverlayIntercomDesktopStore(),
     overlayEnabledProvider: @escaping () -> Bool = {
       DictationOverlayGate.shouldShowOverlay(
         trayEnabled: CodescribeConfig().trayToggles().transcriptionOverlayEnabled
@@ -174,6 +176,7 @@ final class OverlayController: ObservableObject {
   ) {
     let state = state ?? OverlayState()
     self.state = state
+    self.intercomDesktopStore = intercomDesktopStore
     self.overlayEnabledProvider = overlayEnabledProvider
     self.assistiveStatusProvider = assistiveStatusProvider
     self.composerOwnsCapture =
@@ -327,7 +330,7 @@ final class OverlayController: ObservableObject {
   func startIntercomPresentation() {
     guard !intercomPresentationStarted else { return }
     intercomPresentationStarted = true
-    syncIntercomPresentation()
+    observeIntercomPresentation()
   }
 
   func stopIntercomPresentation() {
@@ -338,20 +341,29 @@ final class OverlayController: ObservableObject {
     intercomWidget = nil
   }
 
-  private func syncIntercomPresentation() {
+  private func observeIntercomPresentation() {
     guard intercomPresentationStarted else { return }
     let preference = state.channelMapPreference
-    // Track only the presentation choice. Roster updates are projected by the
-    // widget's SwiftUI view; no second inventory, timer or event reader lives here.
-    let wantsWidget = withObservationTracking {
-      preference.enabled && preference.layout == .vertical
+    // Keep one observation chain. Preference notifications apply visibility
+    // directly without installing another observer for the same layout.
+    withObservationTracking {
+      _ = preference.enabled
+      _ = preference.layout
     } onChange: { [weak self] in
-      Task { @MainActor [weak self] in self?.syncIntercomPresentation() }
+      Task { @MainActor [weak self] in self?.observeIntercomPresentation() }
     }
+    syncIntercomPresentation(overlayEnabled: readOverlayPreference())
+  }
+
+  private func syncIntercomPresentation(overlayEnabled: Bool) {
+    guard intercomPresentationStarted else { return }
+    let preference = state.channelMapPreference
+    let wantsWidget = preference.enabled && preference.layout == .vertical && overlayEnabled
     if wantsWidget, intercomWidget == nil {
       intercomWidget = OverlayIntercomWidgetController(
         state: state, textScale: intercomTextScale,
-        revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) })
+        revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) },
+        desktopStore: intercomDesktopStore)
       // Mini's stacked counter leads here in the vertical layout.
       state.onRevealIntercom = { [weak self] in self?.intercomWidget?.revealGroup() }
     }
@@ -449,14 +461,17 @@ final class OverlayController: ObservableObject {
   /// The "Transcription Overlay" preference was written (tray toggle, Settings
   /// preview preset). Off closes an overlay that is already on screen instead
   /// of leaving it up until the next take; the persisted value is re-read, so
-  /// a rejected write closes nothing. On needs no action here: the next take
-  /// or status brings the panel back.
+  /// a rejected write closes nothing. Intercom windows follow either change;
+  /// the main panel returns on the next take or status when enabled.
   ///
   /// A take under review (caret in the canvas, or an uncommitted draft) is not
   /// closed out from under the user. Once the draft is committed or discarded
   /// the ordinary countdown closes the panel, which the pin no longer holds.
   func overlayPreferenceChanged() {
-    guard !readOverlayPreference(), panel != nil else { return }
+    let enabled = readOverlayPreference()
+    // Intercom can stand on its own before the main panel has ever existed.
+    syncIntercomPresentation(overlayEnabled: enabled)
+    guard !enabled, panel != nil else { return }
     guard !state.isEditingTranscript, !state.isRevisionDraftDirty else { return }
     DictationOverlayGate.logger.info("overlay closed: tray toggle off")
     hide()
@@ -784,7 +799,7 @@ final class OverlayController: ObservableObject {
   /// chat window). The overlay's job is done — fade it out immediately instead
   /// of lingering over the conversation it just fed.
   func hideForAgentHandoff() {
-    fadeOut(duration: 0.18) { true }
+    fadeOut(duration: CSMotion.Tempo.hover) { true }
   }
 
   /// The pin let go of a resting panel (Unpin, then `pinReleaseDelaySeconds`).

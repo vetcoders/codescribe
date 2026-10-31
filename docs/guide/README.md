@@ -58,11 +58,11 @@ That's it. You're transcribing.
 
 ## Recording Modes at a Glance
 
-| Hotkey                                  | Mode                  | What It Does                                |
-| --------------------------------------- | --------------------- | ------------------------------------------- |
-| Hold `Fn/Globe` (default; configurable) | **Dictation**         | Fast dictation (AI optional), auto‑paste ON |
-| Double‑tap `Left Option`                | **Formatting**        | AI formatting pass, auto‑paste ON           |
-| Double‑tap `Right Option`               | **Assistive (Agent)** | Agent chat (uses selection when available)  |
+| Hotkey                                          | Mode                  | What It Does                                |
+| ----------------------------------------------- | --------------------- | ------------------------------------------- |
+| Hold `Fn/Globe` (default; configurable)         | **Dictation**         | Fast dictation (AI optional), auto‑paste ON |
+| Menu bar **Start transcription** or the overlay | **Formatting**        | AI formatting pass, auto‑paste ON           |
+| Menu bar with **Start in Agent mode** on        | **Assistive (Agent)** | Agent chat (uses selection when available)  |
 
 ---
 
@@ -83,7 +83,7 @@ Codescribe lives in your menu bar. The icon color indicates status:
 
 ## System Requirements
 
-- **macOS**: 13.0 (Ventura) or later
+- **macOS**: 26.0 (Tahoe) or later
 - **Chip**: Apple Silicon (M1/M2/M3/M4/M5)
 - **RAM**: 8GB minimum, 16GB recommended
 - **Disk**: allow room for the app plus a local Whisper model cache (2GB recommended)
@@ -94,7 +94,7 @@ Codescribe lives in your menu bar. The icon color indicates status:
 
 - **GitHub Issues**: [github.com/vetcoders/codescribe/issues](https://github.com/vetcoders/codescribe/issues)
 - **Documentation**: This guide + [ARCHITECTURE.md](../ARCHITECTURE.md)
-- **Logs**: `~/.codescribe/logs/` or run `codescribe -v` for verbose output
+- **Logs**: `~/.codescribe/data.noindex/logs/` or run `codescribe -v` for verbose output
 
 ---
 

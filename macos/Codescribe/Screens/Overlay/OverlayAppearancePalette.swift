@@ -38,7 +38,7 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     desktopBackground = OverlayColorToken(CSPalette.sheet, in: appearance)
     border = OverlayColorToken(CSPalette.panelEdge, in: appearance)
     primaryText = OverlayColorToken(CSPalette.textHigh, in: appearance)
-    bodyText = OverlayColorToken(CSPalette.textBodyAlt, in: appearance)
+    bodyText = OverlayColorToken(CSPalette.textBody, in: appearance)
     mutedText = OverlayColorToken(CSPalette.textMuted, in: appearance)
     listeningStatus = OverlayColorToken(CSPalette.terracottaLight, in: appearance)
     processingStatus = OverlayColorToken(CSPalette.amberLight, in: appearance)

@@ -1,0 +1,38 @@
+{
+  "denominator": 1,
+  "message_id": "0123456789abcdef00000008",
+  "recipients": [
+    {
+      "at": "2026-10-26T06:00:01Z",
+      "channel": "3",
+      "delivered_at": "2026-10-26T06:00:01Z",
+      "delivery_id": "111111111111111111111111",
+      "name": "lena",
+      "state": "delivered",
+      "wake": "on"
+    },
+    {
+      "at": "2026-10-26T06:10:00Z",
+      "channel": "3",
+      "delivered_at": "2026-10-26T06:06:00Z",
+      "delivery_id": "222222222222222222222222",
+      "name": "lena",
+      "state": "read",
+      "wake": "on"
+    }
+  ],
+  "sent_to": [
+    {
+      "channel": "3",
+      "name": "lena"
+    }
+  ],
+  "spoken": null,
+  "withdrawn": [
+    {
+      "at": "2026-10-26T06:05:00Z",
+      "control_id": "cccccccccccccccccccccccc",
+      "delivery_id": "111111111111111111111111"
+    }
+  ]
+}

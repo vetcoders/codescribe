@@ -13,6 +13,90 @@ import XCTest
 
 @MainActor
 final class OverlayAppWindowYieldTests: XCTestCase {
+  func testIntercomKeepsPinnedCardsAcrossOrdinaryWindowFocusWithoutPresentingWindows() {
+    let state = makeState()
+    state.setPresentationMode(.expanded)
+    let header = OverlayIntercomPanel()
+    let card = OverlayIntercomPanel()
+    let detached = OverlayIntercomPanel()
+    detached.acceptsConversationFocus = true
+    let panels = [header, card, detached]
+    let settings = titledWindow("Settings")
+    defer {
+      for panel in panels { panel.close() }
+      settings.close()
+    }
+    let observer = OverlayAppWindowYield(panel: header, state: state, foldsOverlay: false) { window in
+      for panel in panels { panel.yieldToAppWindow(window) }
+    }
+    observer.start()
+    defer { observer.invalidate() }
+    let generation = state.captureGeneration
+    deliver(NSWindow.didBecomeKeyNotification, settings)
+    XCTAssertEqual(detached.level, OverlayIntercomPanel.detachedLevel)
+    XCTAssertLessThan(card.level.rawValue, detached.level.rawValue)
+    XCTAssertEqual(header.level, card.level)
+    // Repeated ordinary focus preserves the pinned hierarchy, without folding
+    // the separately owned transcription surface.
+    card.level = .floating
+    deliver(NSWindow.didBecomeKeyNotification, settings)
+    XCTAssertLessThan(card.level.rawValue, detached.level.rawValue)
+    deliver(NSWindow.willCloseNotification, settings)
+    XCTAssertEqual(header.level, OverlayIntercomPanel.passiveLevel)
+    XCTAssertEqual(card.level, OverlayIntercomPanel.passiveLevel)
+    XCTAssertEqual(detached.level, OverlayIntercomPanel.detachedLevel)
+    XCTAssertTrue(panels.allSatisfy { !$0.isVisible && !$0.isKeyWindow })
+    XCTAssertFalse(settings.isVisible)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertEqual(state.presentationMode, .expanded)
+  }
+
+  func testConversationLayerSurvivesCompactSiblingRefreshAndMinimizeRestore() {
+    let row = OverlayIntercomPanel()
+    let chat = OverlayIntercomPanel()
+    defer {
+      row.close()
+      chat.close()
+    }
+    chat.acceptsConversationFocus = true
+    let mainChatLevel = OverlayPresencePolicy.rest.windowLevel
+    XCTAssertGreaterThan(mainChatLevel.rawValue, chat.level.rawValue)
+    XCTAssertGreaterThan(chat.level.rawValue, row.level.rawValue)
+    for _ in 0..<100 {
+      row.yieldToAppWindow(nil)
+      XCTAssertLessThan(row.level.rawValue, chat.level.rawValue)
+    }
+    chat.acceptsConversationFocus = false
+    XCTAssertEqual(chat.level, row.level)
+    chat.acceptsConversationFocus = true
+    XCTAssertGreaterThan(chat.level.rawValue, row.level.rawValue)
+    XCTAssertFalse(row.isVisible)
+    XCTAssertFalse(chat.isVisible)
+  }
+
+  func testOpeningAndMinimizingConversationKeepsPinnedLayerAcrossOrdinarySettingsFocus() {
+    let settings = titledWindow("Settings")
+    let row = OverlayIntercomPanel()
+    let chat = OverlayIntercomPanel()
+    defer {
+      row.close()
+      chat.close()
+      settings.close()
+    }
+    row.yieldToAppWindow(settings)
+    chat.yieldToAppWindow(settings)
+    chat.acceptsConversationFocus = true
+    XCTAssertGreaterThan(chat.level.rawValue, settings.level.rawValue)
+    XCTAssertGreaterThan(row.level.rawValue, settings.level.rawValue)
+    XCTAssertLessThan(row.level.rawValue, chat.level.rawValue)
+    chat.acceptsConversationFocus = false
+    XCTAssertEqual(chat.level, row.level)
+    chat.acceptsConversationFocus = true
+    XCTAssertEqual(chat.level, OverlayIntercomPanel.detachedLevel)
+    XCTAssertFalse(chat.isKeyWindow)
+    XCTAssertFalse(settings.isVisible)
+  }
+
   private struct Rig {
     let state: OverlayState
     let panel: FloatingOverlayPanel

@@ -303,7 +303,7 @@ pub struct RecordedTakeRun {
     pub elapsed_seconds: f64,
     /// Engine warning codes, without their messages.
     pub warning_codes: BTreeSet<String>,
-    /// `replays/<session>/` in the data dir: the run's private bus and the
+    /// `replays/<session>/<measurement>/` in the data dir: the run's private bus and the
     /// sidecars its session wrote (trail, slots, replay card), comparable
     /// with the recorded take's own.
     pub evidence_dir: PathBuf,
@@ -446,14 +446,18 @@ async fn replay_recorded_take_on_worker(
     // The live constructors: `channel_presentation_emitter` for a channel, and
     // the take's `RecordingEventPipeline` knobs, minus its UI observers.
     let presentation = if channel {
-        super::agent_channel::channel_presentation_emitter(Arc::clone(&bus), ledger, &settings)
+        super::agent_channel::channel_presentation_emitter(
+            Arc::clone(&bus),
+            Arc::clone(&ledger),
+            &settings,
+        )
     } else {
         PresentationEmitter::new_with_authority(
             Arc::new(tokio::sync::Mutex::new(String::new())),
             None,
             None,
             Some(Arc::clone(&bus)),
-            Some(ledger),
+            Some(Arc::clone(&ledger)),
             None,
         )
         .with_sentence_pause_sec(settings.values().light_plus_sentence_pause_sec)
@@ -511,6 +515,17 @@ async fn replay_recorded_take_on_worker(
         })
         .collect();
     let last = documents.last();
+    // Reuse the live truth observer: the Lab reads these exact ledger pins,
+    // never reconstructs final words from decoder candidates or trail text.
+    let truth = codescribe_core::pipeline::take_truth::TakeTruth::observe_ledger(
+        &ledger.lock().unwrap_or_else(|error| error.into_inner()),
+        &session_id,
+        capture_epoch,
+    );
+    codescribe_core::pipeline::take_truth::write_truth_sidecar(
+        &evidence.dir.join(format!("{session_id}.wav")),
+        &truth,
+    )?;
     let warning_codes = std::mem::take(
         &mut *sink
             .warning_codes
@@ -547,6 +562,8 @@ async fn replay_recorded_take_on_worker(
 /// trip the trail's single start record.
 struct ReplayEvidence {
     dir: PathBuf,
+    root: PathBuf,
+    session_id: String,
     _lock: std::fs::File,
 }
 
@@ -567,16 +584,29 @@ impl ReplayEvidence {
             .write(true)
             .open(replays.join(format!("{session_id}.lock")))?;
         lock.lock()?;
-        let dir = replays.join(session_id);
-        match std::fs::remove_dir_all(&dir) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
-        for leftover in session_sidecars(root, session_id)? {
-            std::fs::remove_file(leftover)?;
+        // Repeating a measurement must preserve earlier builds and scenarios.
+        let dir = replays
+            .join(session_id)
+            .join(uuid::Uuid::new_v4().to_string());
+        let leftovers = session_sidecars(root, session_id)?;
+        if !leftovers.is_empty() {
+            let interrupted = replays
+                .join(session_id)
+                .join(format!("interrupted-{}", uuid::Uuid::new_v4()));
+            builder.create(&interrupted)?;
+            for leftover in leftovers {
+                if let Some(name) = leftover.file_name() {
+                    std::fs::rename(&leftover, interrupted.join(name))?;
+                }
+            }
         }
         builder.create(&dir)?;
-        Ok(Self { dir, _lock: lock })
+        Ok(Self {
+            dir,
+            root: root.to_path_buf(),
+            session_id: session_id.to_string(),
+            _lock: lock,
+        })
     }
 
     /// Move what the session wrote under `sessions/` into the evidence dir.
@@ -587,6 +617,16 @@ impl ReplayEvidence {
             }
         }
         Ok(())
+    }
+}
+
+impl Drop for ReplayEvidence {
+    fn drop(&mut self) {
+        // The session can fail before the success path collects its sidecars.
+        // Keep those diagnostics under the same lock instead of deleting them on retry.
+        if let Err(error) = self.collect_session_sidecars(&self.root, &self.session_id) {
+            tracing::warn!(evidence_dir = %self.dir.display(), %error, "replay evidence collection failed");
+        }
     }
 }
 
@@ -636,6 +676,10 @@ mod tests {
             "a run starts from nothing"
         );
         assert!(!sessions.join(format!("{session}.trail.jsonl")).exists());
+        assert_eq!(
+            std::fs::read_to_string(stale.join("transcript-events.jsonl")).unwrap(),
+            "old run\n"
+        );
 
         for name in [
             format!("{session}.trail.jsonl"),
@@ -670,6 +714,42 @@ mod tests {
             sessions
                 .join("replay-agent-channel-3-0123456789-r10.trail.jsonl")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn failed_replay_guard_preserves_partial_sidecars() {
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let evidence = ReplayEvidence::open(root.path(), "replay-take-r1").unwrap();
+        let directory = evidence.dir.clone();
+        std::fs::write(
+            sessions.join("replay-take-r1.trail.jsonl"),
+            "partial diagnostic",
+        )
+        .unwrap();
+        drop(evidence);
+        let next = ReplayEvidence::open(root.path(), "replay-take-r1").unwrap();
+        assert_ne!(directory, next.dir);
+        assert_eq!(
+            std::fs::read_to_string(directory.join("replay-take-r1.trail.jsonl")).unwrap(),
+            "partial diagnostic"
+        );
+    }
+
+    #[test]
+    fn repeating_a_replay_preserves_previous_measurements() {
+        let root = tempfile::tempdir().unwrap();
+        let first = ReplayEvidence::open(root.path(), "replay-take-r1").unwrap();
+        let previous = first.dir.clone();
+        std::fs::write(previous.join("replay-receipt.json"), "first build").unwrap();
+        drop(first);
+        let second = ReplayEvidence::open(root.path(), "replay-take-r1").unwrap();
+        assert_ne!(previous, second.dir);
+        assert_eq!(
+            std::fs::read_to_string(previous.join("replay-receipt.json")).unwrap(),
+            "first build"
         );
     }
 
@@ -991,7 +1071,11 @@ mod tests {
         })).await.expect("file replay must join");
     }
 
+    // Generic PCM replay has no capture identity/calibration. Keep this
+    // historical private probe explicit; calibrated acceptance uses the
+    // recorded-session replay card rather than a default profile.
     #[tokio::test]
+    #[ignore = "private PCM probe needs authenticated capture setup; use codescribe replay SESSION for calibrated acceptance"]
     async fn forensic_saved_pcm_produces_authenticated_projection() {
         if std::env::var_os("CODESCRIBE_APPLE_STT_BRIDGE").is_none() {
             let installed =

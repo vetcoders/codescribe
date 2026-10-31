@@ -17,22 +17,25 @@ import SwiftUI
 /// fields in the MCP form; one owner, so every field follows).
 private struct SettingsInputChrome: ViewModifier {
   let isFocused: Bool
+  /// A sentence to format or a display name reads in the UI face; keys,
+  /// tokens and addresses keep the mono face (Founder smoke, 2026-10-26, A7).
+  var prose = false
 
   func body(content: Content) -> some View {
     content
       .textFieldStyle(.plain)
-      .font(CSFont.mono(12, .regular))
+      .font(prose ? CSFont.ui(13) : CSFont.mono(12, .regular))
       .foregroundStyle(Color.primary)
       .autocorrectionDisabled()
       .padding(.horizontal, SettingsScale.controlInsetH)
       .padding(.vertical, SettingsScale.controlInsetV)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .fill(Color.primary.opacity(0.06))
+          .fill(Color.primary.opacity(CSAlpha.fill))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
       .overlay {
         CSFocusOutline(isFocused: isFocused, cornerRadius: CSRadius.input)
@@ -41,8 +44,8 @@ private struct SettingsInputChrome: ViewModifier {
 }
 
 extension View {
-  func settingsInputChrome(isFocused: Bool) -> some View {
-    modifier(SettingsInputChrome(isFocused: isFocused))
+  func settingsInputChrome(isFocused: Bool, prose: Bool = false) -> some View {
+    modifier(SettingsInputChrome(isFocused: isFocused, prose: prose))
   }
 }
 
@@ -87,11 +90,11 @@ struct SettingsChipButton<Label: View>: View {
         .padding(.vertical, SettingsScale.controlInsetV)
         .background(
           RoundedRectangle(cornerRadius: SettingsScale.controlRadius, style: .continuous)
-            .fill(Color.primary.opacity(0.06))
+            .fill(Color.primary.opacity(CSAlpha.fill))
         )
         .overlay(
           RoundedRectangle(cornerRadius: SettingsScale.controlRadius, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
         )
     }
     .csFocusRing(cornerRadius: SettingsScale.controlRadius)
@@ -192,7 +195,7 @@ struct SettingsUrlRow: View {
       if let error {
         Text(error)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-url-row-error")
       }
@@ -284,13 +287,13 @@ struct KeyRow: View {
 
   private var isUpdating: Bool { mutationPending || operationPending }
 
-  /// Presence tints the row green; an absent key stays neutral whether or not
-  /// it is marked optional. A key that is simply missing blocks nothing on its
-  /// own — an account can cover the same provider — so red is reserved for a
-  /// real failure, which `KeyProbeChip` and the operation error report.
-  private var accent: Color {
-    isSet ? CSColor.olive : CSColor.secondaryInk
-  }
+  /// Stored credentials are presence, not service acceptance. Only the explicit
+  /// probe chip carries a successful request's green verdict.
+  private var accent: Color { CSColor.secondaryInk }
+
+  /// A stored key is "saved, unverified" until a probe answers; only the
+  /// probe's verdict may turn the glyph into a check, warning or error.
+  private var statusTone: CsMcpRowTone { probeResult?.status.tone ?? .neutral }
 
   init(
     account: String, label: String, isSet: Bool, optional: Bool = false,
@@ -325,7 +328,7 @@ struct KeyRow: View {
       }
     }
     // Presence-tinted card: green when set, grey when not.
-    // Embedded rows keep the tint on the dot and state text only.
+    // Embedded rows keep the tint on the glyph and state text only.
     .padding(.horizontal, embedded ? 0 : SettingsScale.cardPadding)
     .padding(.vertical, embedded ? 2 : SettingsScale.cardPadding)
     .background(
@@ -369,7 +372,7 @@ struct KeyRow: View {
 
   private var standardSummary: some View {
     HStack(spacing: CSSpace.sm) {
-      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+      StatusToneGlyph(tone: statusTone)
       Text(label)
         .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
@@ -384,7 +387,7 @@ struct KeyRow: View {
 
   private var compactSummary: some View {
     HStack(spacing: CSSpace.sm) {
-      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+      StatusToneGlyph(tone: statusTone)
       Text(label)
         .font(SettingsScale.controlLabel)
         .foregroundStyle(Color.primary)
@@ -396,10 +399,15 @@ struct KeyRow: View {
     }
   }
 
+  @ViewBuilder
   private var presenceState: some View {
-    Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
-      .font(SettingsScale.statusBadge)
-      .foregroundStyle(isSet ? CSColor.oliveLight : accent)
+    if isSet {
+      CSStatusBadge(text: String(localized: "Saved"), mark: .saved)
+    } else {
+      Text(optional ? "Optional" : "Not set")
+        .font(SettingsScale.statusBadge)
+        .foregroundStyle(accent)
+    }
   }
 
   private var editButton: some View {
@@ -462,7 +470,7 @@ struct KeyRow: View {
         SettingsChipButton(enabled: isSet && !isUpdating, action: clear) {
           CSIconView(
             icon: .delete, size: 12, weight: .semibold,
-            color: isSet ? CSColor.terracottaText : CSColor.secondaryInk
+            color: isSet ? CSColor.dangerLight : CSColor.secondaryInk
           )
           .frame(width: 10, height: 18)
         }
@@ -535,6 +543,18 @@ extension KeyRow {
   }
 }
 
+extension CsApiKeyProbeStatus {
+  /// One verdict → tone map for the probe chip and the key row's glyph.
+  var tone: CsMcpRowTone {
+    switch self {
+    case .ok: return .good
+    case .invalid, .noQuota: return .bad
+    case .network, .rejected: return .warn
+    case .missing, .unsupported: return .neutral
+    }
+  }
+}
+
 struct KeyProbeChip: View {
   let result: CsApiKeyProbeResult
 
@@ -543,7 +563,8 @@ struct KeyProbeChip: View {
     switch result.status {
     case .ok: verdict = String(localized: "Key OK")
     case .invalid: verdict = String(localized: "Invalid key")
-    case .noQuota: verdict = String(localized: "No credits (check billing)")
+    case .noQuota: verdict = String(localized: "Usage limit (check billing and rate limits)")
+    case .rejected: verdict = String(localized: "Request rejected; key not verified")
     case .network: verdict = String(localized: "Network error")
     case .missing: verdict = String(localized: "Not set")
     // "Unsupported" read as "bad key" — it only means this provider ships no
@@ -557,24 +578,23 @@ struct KeyProbeChip: View {
     return "\(verdict) @ \(host)"
   }
 
-  private var tint: Color {
+  /// The sign carries the verdict (D2, 2026-10-26): an accepted key is the
+  /// thin verified check, a refused key or an exhausted limit blocks use, and
+  /// a key with no probe is stored but untested. A rejected probe request or a
+  /// network error proves nothing about the key, so it stays a plain word; the
+  /// row's tone glyph already marks it.
+  private var mark: CSStatusBadge.Mark {
     switch result.status {
-    case .ok: return CSColor.oliveLight
-    case .invalid, .noQuota: return CSColor.terracottaText
-    case .network: return CSColor.amberLight
-    case .missing, .unsupported: return CSColor.secondaryInk
+    case .ok: return .verified
+    case .invalid, .noQuota: return .blocked
+    case .unsupported: return .saved
+    case .rejected, .network, .missing: return .none
     }
   }
 
   var body: some View {
-    Text(label)
-      .font(SettingsScale.statusBadge)
+    CSStatusBadge(text: label, mark: mark)
       .lineLimit(1)
-      .foregroundStyle(tint)
-      .padding(.horizontal, 8)
-      .padding(.vertical, 4)
-      .background(Capsule().fill(tint.opacity(0.11)))
-      .overlay(Capsule().strokeBorder(tint.opacity(0.24), lineWidth: 1))
       .help(
         result.probedEndpoint.map {
           String(
@@ -601,7 +621,6 @@ struct AccountLoginRow: View {
   let onSignOut: () -> Void
 
   private var signedIn: Bool { provider.accountSignedIn }
-  private var accent: Color { signedIn ? CSColor.olive : CSColor.secondaryInk }
   private var accountBrand: String { Self.brand(for: provider) }
 
   /// Short brand for the account row — OpenCode-style, not a client-id dump.
@@ -614,34 +633,61 @@ struct AccountLoginRow: View {
     }
   }
 
-  /// `Connected as <email>` when the id token names the account, `Connected`
-  /// when it does not, `Not connected` otherwise.
+  /// A saved account is identity storage, not proof that the selected service
+  /// currently accepts requests. Capability is measured by the lane's Test.
   static func status(for provider: CsProviderOption) -> String {
     guard provider.accountSignedIn else { return String(localized: "Not connected") }
-    if let identity = provider.accountIdentity, !identity.isEmpty {
-      return String(
-        localized: "Connected as \(identity)",
-        comment: "Provider account row; the placeholder is the signed-in email")
-    }
-    return String(localized: "Connected")
+    return String(localized: "Saved")
+  }
+
+  /// The signed-in identity, shown as a line under the row name rather than
+  /// as part of the state word; nil when there is nothing to name.
+  static func identityLine(for provider: CsProviderOption) -> String? {
+    guard provider.accountSignedIn, let identity = provider.accountIdentity, !identity.isEmpty
+    else { return nil }
+    return String(
+      localized: "Saved account: \(identity)",
+      comment: "Provider account row; the placeholder is the signed-in email")
   }
 
   var body: some View {
     HStack(spacing: CSSpace.sm) {
-      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
-      Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
-        .font(SettingsScale.settingName)
-        .foregroundStyle(Color.primary)
-      Text(Self.status(for: provider))
-        .font(SettingsScale.statusBadge)
-        .foregroundStyle(signedIn ? CSColor.oliveLight : CSColor.secondaryInk)
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .help(provider.accountStatusMessage)
+      if !signedIn {
+        StatusToneGlyph(tone: .neutral)
+      }
+      VStack(alignment: .leading, spacing: 3) {
+        Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
+          .font(SettingsScale.settingName)
+          .foregroundStyle(Color.primary)
+        if let identityLine = Self.identityLine(for: provider) {
+          Text(identityLine)
+            .font(SettingsScale.helper)
+            .foregroundStyle(CSColor.secondaryInk)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .help(provider.accountIdentity ?? "")
+        }
+      }
+      Group {
+        if signedIn {
+          CSStatusBadge(text: Self.status(for: provider), mark: .saved)
+        } else {
+          Text(Self.status(for: provider))
+        }
+      }
+      .font(SettingsScale.statusBadge)
+      .foregroundStyle(CSColor.secondaryInk)
+      .lineLimit(1)
+      .truncationMode(.middle)
+      .help(
+        signedIn
+          ? String(
+            localized: "Saved. Use Test in Formatting to check the selected provider and model.")
+          : provider.accountStatusMessage)
       if let loginNotice, !loginNotice.isEmpty {
         Text(loginNotice)
           .font(SettingsScale.statusBadge)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .lineLimit(1)
           .help(loginNotice)
       }

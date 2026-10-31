@@ -21,6 +21,45 @@ final class AgentBridgeInstallerTests: XCTestCase {
     }
   }
 
+  func testCaptureAttachmentRefusalKeepsTheLocalizedMessageAndPrivateDiagnostic() async throws {
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: nil, homeDirectory: scratch, environment: [:])
+    let helper = installer.commandURL("cs-bus")
+    try FileManager.default.createDirectory(
+      at: helper.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let diagnostic = "capture attachment refused: capture target closed; draft retained"
+    let script = """
+      #!/bin/sh
+      # codescribe-managed-command: {"managed_id":"attachment-fixture"}
+      printf '%s\\n' '\(diagnostic)' >&2
+      exit 3
+      """
+    try script.write(to: helper, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+    let target = OverlayCaptureAttachmentTarget(
+      captureSessionID: "agent-channel-3-fixture", captureEpoch: 1, sourceSequence: 0,
+      occurrenceID: "occurrence", occurrenceSessionID: "occurrence", sampleStart: 0,
+      sampleEnd: 1, documentIndex: "0", audience: "fixture", recipientIDs: ["recipient"],
+      busPath: scratch.appendingPathComponent("fixture.jsonl").path)
+    do {
+      try await RealAgentBridgeInstaller.stageCaptureAttachments(
+        paths: [scratch.appendingPathComponent("image.png").path], target: target,
+        installer: installer)
+      XCTFail("The refusing helper must fail publication")
+    } catch {
+      let failure = error as NSError
+      // The shown message carries the helper's refusal, so the person learns
+      // WHY the files stayed in the draft, not only that they did.
+      XCTAssertEqual(
+        failure.localizedDescription,
+        String(
+          localized:
+            "Files could not be attached to this live capture. Keep them in your draft and try again."
+        ) + " (" + diagnostic + ")")
+      XCTAssertEqual(failure.userInfo[NSDebugDescriptionErrorKey] as? String, diagnostic)
+    }
+  }
+
   func testPlaybackIdentityReadsLargeLeasesAndUsesTheirCustomBus() async throws {
     let installer = RealAgentBridgeInstaller(
       resourceRoot: nil, homeDirectory: scratch, environment: [:])
@@ -982,7 +1021,8 @@ final class AgentBridgeInstallerTests: XCTestCase {
       payloadAvailable: true, bundleVersion: "9.8.7",
       installedClients: [.claudeCode, .codex], installedPaths: [], detail: "Installed",
       clientsWithCurrentSkill: [.claudeCode])
-    XCTAssertEqual(SettingsViewModel.creatorAgentBridgeAction(for: .claudeCode, in: status), .upToDate)
+    XCTAssertEqual(
+      SettingsViewModel.creatorAgentBridgeAction(for: .claudeCode, in: status), .upToDate)
     XCTAssertEqual(SettingsViewModel.creatorAgentBridgeAction(for: .codex, in: status), .update)
     XCTAssertEqual(SettingsViewModel.creatorAgentBridgeAction(for: .agents, in: status), .install)
   }
@@ -1001,7 +1041,8 @@ final class AgentBridgeInstallerTests: XCTestCase {
       servingStatusProvider: { nil })
     model.refreshCreatorAgentBridge()
 
-    XCTAssertNil(model.creatorAgentBridgeInstallPlan(for: .claudeCode), "current copy: nothing to do")
+    XCTAssertNil(
+      model.creatorAgentBridgeInstallPlan(for: .claudeCode), "current copy: nothing to do")
 
     let update = model.creatorAgentBridgeInstallPlan(for: .codex)
     XCTAssertEqual(update?.action, .update)

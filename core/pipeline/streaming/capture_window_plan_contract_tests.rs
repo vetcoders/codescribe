@@ -2,6 +2,84 @@
 use super::CaptureWindowPlan;
 use crate::stt::tail_provider::TailSampleRange;
 
+#[test]
+fn forward_publication_tiles_capture_without_context_overlap() {
+    for rate in [100_u32, 16_000, 48_000] {
+        for milliseconds in [10_u64, 5990, 8990, 9000, 9010, 12000, 12010, 25000] {
+            let end = u64::from(rate) * milliseconds / 1000;
+            let mut owner = plan(rate);
+            let frames = collect(&mut owner, end, true);
+            let mut bands = frames
+                .iter()
+                .rev()
+                .map(|frame| {
+                    let band = owner.publication_band(frame, end, true);
+                    assert!(frame.sample_start <= band.0 && band.1 <= frame.sample_end);
+                    band
+                })
+                .collect::<Vec<_>>();
+            bands.sort_unstable();
+            let mut cursor = 0;
+            for (start, stop) in bands {
+                assert_eq!(start, cursor, "rate={rate} duration={milliseconds}");
+                assert!(stop > start);
+                cursor = stop;
+            }
+            assert_eq!(cursor, end);
+            assert!(owner.next_due(end + u64::from(rate), true).is_none());
+        }
+    }
+}
+
+#[test]
+fn exact_live_eof_publishes_only_the_unowned_tail_without_new_decode() {
+    let mut owner = plan(100);
+    let frames = collect(&mut owner, 1200, false);
+    assert_eq!(bounds(&frames), [(0, 900), (300, 1200)]);
+    let live = frames
+        .iter()
+        .map(|frame| owner.publication_band(frame, 1200, false))
+        .collect::<Vec<_>>();
+    assert_eq!(live, [(0, 600), (600, 900)]);
+    assert!(collect(&mut owner, 1200, true).is_empty());
+    let last = frames.last().unwrap();
+    let terminal = owner.publication_band(last, 1200, true);
+    assert_eq!(terminal, (600, 1200));
+    assert_eq!((live.last().unwrap().1, terminal.1), (900, 1200));
+}
+
+#[test]
+fn publication_midpoint_has_one_owner_on_both_sides_of_the_seam() {
+    let mut owner = plan(100);
+    let frames = collect(&mut owner, 1500, true);
+    for (start, end) in [(570_u64, 629_u64), (570, 630), (571, 631), (890, 910)] {
+        let midpoint = start + (end - start) / 2;
+        let owning = frames
+            .iter()
+            .filter(|frame| {
+                let (left, right) = owner.publication_band(frame, 1500, true);
+                left <= midpoint && midpoint < right
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(owning.len(), 1, "{start}..{end}");
+        assert!(owning[0].sample_start <= start && end <= owning[0].sample_end);
+    }
+}
+
+#[test]
+fn direct_mode_publication_keeps_every_sample_of_each_disjoint_frame() {
+    let mut owner = plan(100);
+    owner.set_non_overlapping_publications();
+    let frames = collect(&mut owner, 2050, true);
+    assert_eq!(bounds(&frames), [(0, 900), (900, 1800), (1800, 2050)]);
+    for frame in frames {
+        assert_eq!(
+            owner.publication_band(&frame, 2050, true),
+            (frame.sample_start, frame.sample_end)
+        );
+    }
+}
+
 fn plan(rate: u32) -> CaptureWindowPlan {
     CaptureWindowPlan::new("capture-plan-proof".into(), 4, rate)
 }
@@ -180,36 +258,6 @@ fn grid_uses_original_sample_rate_and_preserves_half_open_three_visit_bound() {
         }
     }
     assert!(plan(0).next_due(100, true).is_none());
-}
-
-#[test]
-fn bounded_trial_keeps_grid_cursor_and_spends_one_capture_bucket() {
-    let mut owner = plan(100);
-    collect(&mut owner, 1800, false);
-    let horizon = owner.admission_horizon();
-    let trial = owner.offer_trial(800, 1450, 1800, false).unwrap();
-    assert_eq!(owner.next_due(1800, false), Some(trial.clone()));
-    assert!(owner.account(&trial));
-    assert_eq!(owner.admission_horizon(), horizon);
-    assert!(owner.offer_trial(850, 1500, 1800, false).is_none());
-    assert!(owner.next_due(1800, false).is_none());
-    assert!(!owner.account(&trial));
-    collect(&mut owner, 2700, false);
-    assert!(owner.offer_trial(1800, 2450, 2700, false).is_some());
-}
-
-#[test]
-fn bounded_trial_cannot_reopen_early_pcm_at_stop_or_exceed_window_budget() {
-    let mut owner = plan(100);
-    collect(&mut owner, 2700, true);
-    assert!(owner.offer_trial(1000, 1600, 2700, true).is_none());
-    assert!(owner.offer_trial(1799, 2700, 2700, true).is_none());
-    assert!(owner.offer_trial(1800, 2701, 2700, true).is_none());
-    let tail = owner.offer_trial(1850, 2650, 2700, true).unwrap();
-    assert!(!owner.is_finished());
-    assert!(owner.account(&tail));
-    assert!(owner.is_finished());
-    assert!(owner.next_due(4000, true).is_none());
 }
 
 // Integrator-authored tests for the same production capture planner.

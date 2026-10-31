@@ -1,13 +1,56 @@
 # STT contract — capture, recognition, admission and formatting
 
-> Current source checkpoint: 2026-10-11, `b282dc14cc5a79bcb2732a79e01f7138602257e5`.
+> Historical source checkpoint: 2026-10-11, `b282dc14cc5a79bcb2732a79e01f7138602257e5`.
 > Engine sources match build 798; later UI and closed Junie changes are retained.
 > Start with [ENGINE_MAP.md](ENGINE_MAP.md) for the stage map,
 > source owners, mode differences, Stop sequence and dated acceptance limits.
 > [THE_ENGINE_CONTRACT.md](THE_ENGINE_CONTRACT.md) owns the product invariants;
 > this file describes runtime wiring. A source checkpoint is not native quality acceptance.
 
-## Current runtime summary (2026-10-11)
+## Forward publication ownership (2026-10-29)
+
+`CaptureWindowPlan` owns both decoder coordinates and publication coordinates.
+The normal live grid decodes nine seconds every three seconds. The first frame
+publishes `[0, 6s)`; later frames publish their middle three seconds. A word's
+original sample midpoint selects its single publication band. The final frame
+extends publication to actual capture EOF. If that frame already returned while
+recording, Stop admits only its retained unpublished tail; it does not launch
+another lexical decode. Direct mode with disjoint decoder frames publishes each
+whole frame, including its short EOF frame.
+
+The full returned word evidence remains bound to the provider request separately
+from the selected publication pins. Extra lexical-trial scheduling is removed
+from native capture. An owned Whisper publication cannot relabel or retime a
+previously measured Whisper word, including through resegmentation or
+retokenization. Independent DictationTranscriber evidence retains its existing
+authority. A phrase-grain Whisper result cannot replace existing word slots.
+
+A provisional single-token Apple utterance label has no independently measured
+word identity. Authentic complete words in the owning band may refine it without requiring speech
+between those words to be silent. Its unpublished remainder remains explicit
+ledger recovery debt. Full decoder context, an empty answer, or a refused answer
+cannot clear this publication debt or authorize a terminal seal. Later accepted
+publication bands or an authorized complete measured DT recovery settle it.
+Measured words, negation, human edits and sealed text retain their protections.
+
+Before sealing, one final exact DT pin may propose a different partition of
+adjacent Whisper slots in one measured speech component. Each join requires
+persisted capture-hop evidence of continuous ungated voice. The operation retains
+all source slots and source ranges, and leaves the DT pin unchanged. Measured
+speech outside that pin stays explicit debt and prevents sealing. Missing or
+quiet boundary evidence, repeated source labels, polarity changes, human edits,
+separate acoustic anchors and sealed owners do not obtain this authority.
+
+Voice Lab displays the session-linked committed reducer document separately from
+timed word pins. Missing word timestamps do not imply an empty transcript. A
+committed empty document and an unavailable document remain distinct; no word
+timings are invented to fill the lane.
+
+The dated descriptions below describe earlier source generations. In particular,
+their live lexical-trial scheduling is superseded by this section. Source and
+synthetic geometry checks do not constitute native recognition-quality acceptance.
+
+## Historical runtime summary (2026-10-11)
 
 - `RecordingController` owns capture; `StreamingRecorder` fans one physical
   stream out to registered subscribers. Dictation and Agent channels do not
@@ -232,8 +275,15 @@ check, not proof of server-side permissions.
 `core/llm/speech.rs` is independent of the disabled CSM engine. It requests
 24 kHz mono PCM16, decodes signed samples, splits text at vendor character
 caps, and caches audio under `~/.codescribe/cache/tts/<sha256>.pcm`. The hash
-covers vendor, model, voice, speed, text and PCM rate; files are atomically
-published with owner-only permissions. No credentials or text enter filenames.
+covers vendor, model, voice, speed, text and PCM rate, and for xAI the
+language; files are atomically published with owner-only permissions. No
+credentials or text enter filenames. xAI requests carry the configured speech
+language (`speech.language`, `WHISPER_LANGUAGE`) as a bare code through
+`tts_language`, never `auto`: transcription may detect, synthesis may not,
+so `auto` speaks `pl` (`DEFAULT_TTS_LANGUAGE`) and logs that once. With
+`auto`, xAI spells a sentence that opens with a short Polish word ("W nocy"
+read as "double-u nocy"); keying the cache by the language also retires
+those recordings. OpenAI speech has no language parameter and keeps its keys.
 `SPEECH_TTS_*` options are defined in `ENV_REGISTRY.toml`. xAI accepts speed
 0.7–1.5; OpenAI accepts 0.25–4.0. xAI's default response is raw audio; its JSON
 base64 envelope is also supported. The UI labels the voice as AI-generated.
@@ -530,11 +580,11 @@ frozen in the recording snapshot; explicit file actions remain separate.
 
 ### 3.1 Hotkeys (start/stop recording)
 
-| Front entry                     | Binding (your settings)             | Bridge / OS                      | Controller                                                       | Backend                                      |
-| ------------------------------- | ----------------------------------- | -------------------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
-| Hold Fn (dictation)             | `mode_bindings.dictation = hold_fn` | `CodescribeHotkeys` + CGEventTap | `RecordingController::handle_hotkey_event` → `handle_hold_event` | recorder + streaming session + `core/stt::*` |
-| Double Left Option (formatting) | `formatting = double_left_option`   | same                             | hold/toggle + force AI format path                               | STT same, then `core/llm` formatting         |
-| Double Right Option (assistive) | `assistive = double_right_option`   | same                             | assistive session                                                | STT same, then agent lane                    |
+| Front entry                               | Binding (your settings)              | Bridge / OS                                    | Controller                                                       | Backend                                      |
+| ----------------------------------------- | ------------------------------------ | ---------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
+| Hold Fn (dictation)                       | `mode_bindings.dictation = hold_fn`  | `CodescribeHotkeys` + CGEventTap               | `RecordingController::handle_hotkey_event` → `handle_hold_event` | recorder + streaming session + `core/stt::*` |
+| Menu bar Start transcription (formatting) | no gesture (`formatting = disabled`) | `CodescribeHotkeys::start_recording`           | toggle + force AI format path                                    | STT same, then `core/llm` formatting         |
+| Start in Agent mode (assistive)           | no gesture (`assistive = disabled`)  | `CodescribeHotkeys::start_assistive_recording` | assistive session                                                | STT same, then agent lane                    |
 
 **Explicit Stop** first retains real PCM for the fixed 1.5-second capture grace,
 then closes that subscriber's feed. Automatic silence, handoff and cleanup do

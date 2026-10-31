@@ -191,12 +191,12 @@ struct WidgetShortcutRecorderPill: View {
           .padding(.vertical, SettingsScale.controlInsetV)
           .background(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .fill(Color.primary.opacity(recording ? 0.14 : 0.08))
+              .fill(Color.primary.opacity(recording ? 0.14 : CSAlpha.line))
           )
           .overlay(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
               .strokeBorder(
-                recording ? CSColor.terracotta.opacity(0.6) : Color.primary.opacity(0.12),
+                recording ? CSColor.terracotta.opacity(0.6) : Color.primary.opacity(CSAlpha.stroke),
                 lineWidth: 1)
           )
       }

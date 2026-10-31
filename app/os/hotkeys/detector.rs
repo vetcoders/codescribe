@@ -14,15 +14,16 @@
 //! `docs/HOTKEYS_CONTRACT.md`; this module implements the *detection* half of
 //! it, while the destination of each event is decided by the controller.
 
-use super::config::HotkeyRuntimeConfig;
+use super::config::{HotkeyRuntimeConfig, ModeHotkeyBindings};
 pub use crate::config::mode_binding_reachable;
-use crate::config::{ChannelModifier, DeferredInsertShortcut, ShortcutBinding};
+use crate::config::{ChannelModifier, DeferredInsertShortcut, ShortcutBinding, WorkMode};
 use std::time::{Duration, Instant};
 
 // --- Constants ---
 
-/// Max press duration for a "tap" gesture (milliseconds)
-const TAP_MAX_MS: u64 = 220;
+/// Max press duration of a Control tap (milliseconds). Option taps read the
+/// live `tap_max_ms` setting instead.
+const CTRL_TAP_MAX_MS: u64 = 220;
 
 /// Continuous-scroll points (trackpad, Magic Mouse) worth one chooser step.
 const SCROLL_POINTS_PER_STEP: i64 = 30;
@@ -81,11 +82,13 @@ pub enum HotkeyEvent {
     /// Captures the current OS selection as `{selection_N}` without changing
     /// destination, hiding the overlay, or fronting Agent.
     AttachSelection,
-    /// Normal toggle gesture (double-tap left Option)
+    /// Formatting toggle: the double-tap bound to Formatting (opt-in), the
+    /// menu bar or the overlay.
     ToggleNormal,
-    /// Raw toggle gesture (double-tap Ctrl)
+    /// Dictation toggle: the double-tap bound to Dictation, or an Fn tap.
     ToggleRaw,
-    /// Assistive toggle gesture (double-tap right Option)
+    /// Assistive toggle: the double-tap bound to the Agent (opt-in), the menu
+    /// bar or the overlay.
     ToggleAssistive,
     /// Configured modifier + 0..9 toggles one agent channel. This is not a dictation take.
     ///
@@ -163,6 +166,18 @@ pub enum DoubleTapBlockReason {
     BindingDisabled,
     /// A hold combo or another modifier was active, so the tap was ambiguous.
     ModifierComboActive,
+    /// The second tap came after the double-tap interval, within twice it.
+    TooSlow,
+    /// One of the two presses lasted longer than the longest tap.
+    TapTooLong,
+    /// A key was typed with Option, or just before the tap: Option was typing
+    /// a character (Polish diacritics), not tapping.
+    TypedRecently,
+    /// A click or a scroll landed during the pair: Option was a mouse modifier.
+    Mouse,
+    /// The Option events did not come from the keyboard hardware (another app
+    /// or a remote-control tool posted them).
+    SyntheticSource,
 }
 
 impl DoubleTapBlockReason {
@@ -171,6 +186,11 @@ impl DoubleTapBlockReason {
         match self {
             Self::BindingDisabled => "that gesture is not assigned to a Codescribe mode",
             Self::ModifierComboActive => "another modifier or hold gesture is active",
+            Self::TooSlow => "the second tap came too late",
+            Self::TapTooLong => "a press lasted too long to be a tap",
+            Self::TypedRecently => "a key was typed just before",
+            Self::Mouse => "the mouse was clicked or scrolled in between",
+            Self::SyntheticSource => "the key events did not come from the keyboard",
         }
     }
 
@@ -179,6 +199,75 @@ impl DoubleTapBlockReason {
         match self {
             Self::BindingDisabled => "binding_disabled",
             Self::ModifierComboActive => "modifier_combo_active",
+            Self::TooSlow => "too_slow",
+            Self::TapTooLong => "tap_too_long",
+            Self::TypedRecently => "typed_recently",
+            Self::Mouse => "mouse",
+            Self::SyntheticSource => "synthetic_source",
+        }
+    }
+}
+
+/// What one Option double-tap attempt came to, as the gesture tester shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoubleTapOutcome {
+    /// The pair was recognised and routed to its mode.
+    Recognized,
+    /// The pair was refused, with the reason.
+    Blocked(DoubleTapBlockReason),
+}
+
+impl DoubleTapOutcome {
+    const BLOCK_REASONS: [DoubleTapBlockReason; 7] = [
+        DoubleTapBlockReason::BindingDisabled,
+        DoubleTapBlockReason::ModifierComboActive,
+        DoubleTapBlockReason::TooSlow,
+        DoubleTapBlockReason::TapTooLong,
+        DoubleTapBlockReason::TypedRecently,
+        DoubleTapBlockReason::Mouse,
+        DoubleTapBlockReason::SyntheticSource,
+    ];
+
+    /// Nonzero code for the process-global outcome slot.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Recognized => 1,
+            Self::Blocked(reason) => Self::BLOCK_REASONS
+                .iter()
+                .position(|known| *known == reason)
+                .map_or(0, |index| index as u8 + 2),
+        }
+    }
+
+    /// Inverse of [`Self::code`]; `None` for 0 or an unknown code.
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Recognized),
+            code => Self::BLOCK_REASONS
+                .get(usize::from(code).checked_sub(2)?)
+                .copied()
+                .map(Self::Blocked),
+        }
+    }
+
+    /// The outcome of one tap input: only an Option modifier change that
+    /// completed (or was refused as) a pair has one.
+    pub fn of(input: &HotkeyDetectorInput, emitted: Option<&HotkeyEvent>) -> Option<Self> {
+        if !matches!(
+            input,
+            HotkeyDetectorInput::FlagsChanged {
+                key: HotkeyPhysicalKey::LeftOption | HotkeyPhysicalKey::RightOption,
+                ..
+            }
+        ) {
+            return None;
+        }
+        match emitted? {
+            HotkeyEvent::ToggleNormal | HotkeyEvent::ToggleAssistive | HotkeyEvent::ToggleRaw => {
+                Some(Self::Recognized)
+            }
+            HotkeyEvent::DoubleTapBlocked { reason, .. } => Some(Self::Blocked(*reason)),
+            _ => None,
         }
     }
 }
@@ -330,7 +419,15 @@ pub enum HotkeyDetectorInput {
         now: Instant,
         key: HotkeyPhysicalKey,
         modifiers: HotkeyModifierSnapshot,
+        /// The event came from the keyboard hardware
+        /// (`kCGEventSourceStateHIDSystemState`). An Option press or release
+        /// posted by another app never counts toward an Option double-tap.
+        source_is_hid: bool,
     },
+    /// A left or right click, or a scroll, outside the agent chooser. Option
+    /// held or tapped around it was a mouse modifier, so it breaks an Option
+    /// tap pair.
+    PointerActivity { now: Instant },
     /// Mouse button 2. Ignored unless `middle_mouse_acts_as_fn` or
     /// `middle_mouse_agent_gesture` is set. With the gesture on, a click is
     /// [`AgentGestureInput::MiddleClick`] and only a press held past the hold
@@ -369,8 +466,8 @@ pub struct HotkeyDetector {
     hold_active_ts: Option<Instant>,
     hold_mode: HoldMode,
     hold_event_sent: bool,
-    last_left_tap_ts: Option<Instant>,
-    last_right_tap_ts: Option<Instant>,
+    /// The last Option tap still waiting for its partner.
+    pending_option_tap: Option<PendingOptionTap>,
     last_ctrl_tap_ts: Option<Instant>,
     ctrl_down: bool,
     ctrl_down_ts: Option<Instant>,
@@ -384,6 +481,12 @@ pub struct HotkeyDetector {
     /// swallowing them): Option released after such a key-down was typing,
     /// never a tap.
     last_hid_key_down: Option<Instant>,
+    /// Last non-modifier key-down this tap received.
+    last_typed_key_down: Option<Instant>,
+    /// The current Option press was posted by software, not the keyboard.
+    option_press_synthetic: bool,
+    /// A click or scroll landed while Option was down or a tap was pending.
+    pointer_since_option: bool,
     key_pressed_during_modifier: bool,
     show_agent_space_down: bool,
     /// The widget chord's key is down; key repeat must not toggle twice.
@@ -419,8 +522,7 @@ impl Default for HotkeyDetector {
             hold_active_ts: None,
             hold_mode: HoldMode::Raw,
             hold_event_sent: false,
-            last_left_tap_ts: None,
-            last_right_tap_ts: None,
+            pending_option_tap: None,
             last_ctrl_tap_ts: None,
             ctrl_down: false,
             ctrl_down_ts: None,
@@ -428,6 +530,9 @@ impl Default for HotkeyDetector {
             option_side: None,
             option_down_ts: None,
             last_hid_key_down: None,
+            last_typed_key_down: None,
+            option_press_synthetic: false,
+            pointer_since_option: false,
             key_pressed_during_modifier: false,
             show_agent_space_down: false,
             toggle_widget_key_down: false,
@@ -517,7 +622,12 @@ impl HotkeyDetector {
                 now,
                 key,
                 modifiers,
-            } => self.handle_flags_changed(now, key, modifiers, config),
+                source_is_hid,
+            } => self.handle_flags_changed(now, key, modifiers, source_is_hid, config),
+            HotkeyDetectorInput::PointerActivity { now } => {
+                self.observe_pointer_activity(now, config);
+                None
+            }
             HotkeyDetectorInput::MiddleButton {
                 now,
                 pressed,
@@ -531,7 +641,7 @@ impl HotkeyDetector {
                 }
                 let mut modifiers = modifiers;
                 modifiers.fn_key = pressed || modifiers.fn_key;
-                self.handle_flags_changed(now, HotkeyPhysicalKey::Fn, modifiers, config)
+                self.handle_flags_changed(now, HotkeyPhysicalKey::Fn, modifiers, true, config)
             }
             HotkeyDetectorInput::ScrollWheel {
                 lines,
@@ -704,6 +814,31 @@ impl HotkeyDetector {
         self.last_hid_key_down = Some(at);
     }
 
+    /// A click or a scroll. While Option is down, or an Option tap waits for
+    /// its partner, it taints the pair: Option was a mouse modifier.
+    fn observe_pointer_activity(&mut self, now: Instant, config: HotkeyRuntimeConfig) {
+        let stale_after = Duration::from_millis(config.double_tap_interval_ms.saturating_mul(2));
+        if self
+            .pending_option_tap
+            .is_some_and(|pending| elapsed_between(now, pending.at) > stale_after)
+        {
+            self.pending_option_tap = None;
+        }
+        if self.option_down || self.pending_option_tap.is_some() {
+            self.pointer_since_option = true;
+        }
+    }
+
+    /// Whether a key was typed within `quiet_ms` before `at`, by this tap or
+    /// by the HID system (a letter another tap swallowed still counts).
+    fn typed_within(&self, at: Instant, quiet_ms: u64) -> bool {
+        let quiet = Duration::from_millis(quiet_ms);
+        [self.last_typed_key_down, self.last_hid_key_down]
+            .into_iter()
+            .flatten()
+            .any(|typed| typed <= at && elapsed_between(at, typed) < quiet)
+    }
+
     fn handle_key_down(
         &mut self,
         now: Instant,
@@ -711,6 +846,7 @@ impl HotkeyDetector {
         modifiers: HotkeyModifierSnapshot,
         config: HotkeyRuntimeConfig,
     ) -> Option<HotkeyEvent> {
+        self.last_typed_key_down = Some(now);
         if let HotkeyPhysicalKey::Digit(digit) = key
             && channel_chord_matches(config.channel_modifier, modifiers)
         {
@@ -794,8 +930,6 @@ impl HotkeyDetector {
 
         if modifiers.option && self.option_down {
             self.key_pressed_during_modifier = true;
-            self.last_left_tap_ts = None;
-            self.last_right_tap_ts = None;
         }
 
         emitted
@@ -814,15 +948,16 @@ impl HotkeyDetector {
         now: Instant,
         key: HotkeyPhysicalKey,
         modifiers: HotkeyModifierSnapshot,
+        source_is_hid: bool,
         config: HotkeyRuntimeConfig,
     ) -> Option<HotkeyEvent> {
         let dictation_binding = config.mode_bindings.dictation;
         let assistive_binding = config.mode_bindings.assistive;
-        let raw_toggle_enabled = dictation_binding == ShortcutBinding::DoubleCtrl;
-        let normal_toggle_enabled =
-            config.mode_bindings.formatting == ShortcutBinding::DoubleLeftOption;
-        let assistive_toggle_enabled =
-            config.mode_bindings.assistive == ShortcutBinding::DoubleRightOption;
+        let ctrl_toggle = double_tap_event(config.mode_bindings, ShortcutBinding::DoubleCtrl);
+        let left_option_toggle =
+            double_tap_event(config.mode_bindings, ShortcutBinding::DoubleLeftOption);
+        let right_option_toggle =
+            double_tap_event(config.mode_bindings, ShortcutBinding::DoubleRightOption);
         let assistive_selection_combo_active = assistive_hold_binding(assistive_binding)
             .is_some_and(|binding| check_hold_combo(modifiers, binding));
         let dictation_combo_active = check_hold_combo(modifiers, dictation_binding);
@@ -939,8 +1074,7 @@ impl HotkeyDetector {
             }
         }
 
-        if raw_toggle_enabled {
-            let mut toggle_event = None;
+        if let Some(ctrl_event) = ctrl_toggle {
             if key.is_ctrl() && modifiers.ctrl && !self.ctrl_down {
                 self.ctrl_down = true;
                 self.ctrl_down_ts = Some(now);
@@ -952,148 +1086,45 @@ impl HotkeyDetector {
                     .map(|ts| elapsed_between(now, ts))
                     .unwrap_or_default();
 
-                if held_for <= Duration::from_millis(TAP_MAX_MS)
+                if held_for <= Duration::from_millis(CTRL_TAP_MAX_MS)
                     && !modifiers.shift
                     && !modifiers.option
                     && !modifiers.cmd
                     && !self.key_pressed_during_modifier
                 {
-                    toggle_event = register_double_tap(
+                    let toggle_event = register_double_tap(
                         &mut self.last_ctrl_tap_ts,
                         now,
                         config.double_tap_interval_ms,
-                        HotkeyEvent::ToggleRaw,
+                        ctrl_event,
                     );
+                    emitted = emitted.or(toggle_event);
                 } else {
                     self.last_ctrl_tap_ts = None;
                     self.key_pressed_during_modifier = false;
                 }
             }
-
-            if !modifiers.ctrl && !modifiers.option && !modifiers.cmd {
-                self.key_pressed_during_modifier = false;
-            }
-
-            return emitted.or(toggle_event);
         }
 
-        if !normal_toggle_enabled && !assistive_toggle_enabled {
-            if key.is_option() {
-                if modifiers.option {
-                    self.option_down = true;
-                    self.option_side = Some(key.is_right_option());
-                    self.option_down_ts = Some(now);
-                } else {
-                    self.option_down = false;
-                    self.option_side = None;
-                    self.option_down_ts = None;
-                }
+        if left_option_toggle.is_none() && right_option_toggle.is_none() {
+            if key.is_option() && modifiers.option {
+                self.option_down = true;
+                self.option_side = Some(key.is_right_option());
+                self.option_down_ts = Some(now);
             } else if !modifiers.option {
                 self.option_down = false;
                 self.option_side = None;
                 self.option_down_ts = None;
             }
-            return emitted;
-        }
-
-        if key.is_option() && modifiers.option && !self.option_down {
+            self.pending_option_tap = None;
+            self.pointer_since_option = false;
+        } else if key.is_option() && modifiers.option && !self.option_down {
             self.option_down = true;
             self.option_side = Some(key.is_right_option());
             self.option_down_ts = Some(now);
+            self.option_press_synthetic = !source_is_hid;
         } else if !modifiers.option && self.option_down {
-            self.option_down = false;
-            let released_right = key.is_right_option();
-            let pressed_side = self.option_side.take();
-            let option_down_ts = self.option_down_ts.take();
-            let held_for = option_down_ts
-                .map(|ts| elapsed_between(now, ts))
-                .unwrap_or_default();
-            // A key-down the HID system saw while Option was down means the
-            // user typed with Option, even if the letter never reached the tap.
-            // Both ends of the hold are event times, so a late callback cannot
-            // move the letter outside the hold.
-            let typed_meanwhile = match (option_down_ts, self.last_hid_key_down) {
-                (Some(down), Some(at)) => at >= down && at <= now,
-                _ => false,
-            };
-
-            if !key.is_option() {
-                self.last_left_tap_ts = None;
-                self.last_right_tap_ts = None;
-                self.key_pressed_during_modifier = false;
-                return emitted;
-            }
-
-            if let Some(pressed_right) = pressed_side
-                && pressed_right != released_right
-            {
-                self.last_left_tap_ts = None;
-                self.last_right_tap_ts = None;
-                return emitted;
-            }
-
-            let hold_binding_blocks_toggle = match dictation_binding {
-                ShortcutBinding::HoldCtrlAlt => modifiers.ctrl || self.hold_active,
-                _ => modifiers.ctrl || modifiers.cmd || self.hold_active,
-            };
-
-            if self.key_pressed_during_modifier {
-                self.key_pressed_during_modifier = false;
-                return emitted;
-            }
-
-            // A tap is a short press with nothing typed in between. Anything
-            // else is a chord or a hold and must not pair into a double-tap.
-            if typed_meanwhile || held_for > Duration::from_millis(TAP_MAX_MS) {
-                self.last_left_tap_ts = None;
-                self.last_right_tap_ts = None;
-                return emitted;
-            }
-
-            let toggle_event = if hold_binding_blocks_toggle {
-                register_blocked_option_double_tap(
-                    self,
-                    released_right,
-                    now,
-                    config.double_tap_interval_ms,
-                    DoubleTapBlockReason::ModifierComboActive,
-                )
-            } else if released_right {
-                self.last_left_tap_ts = None;
-                if assistive_toggle_enabled {
-                    register_double_tap(
-                        &mut self.last_right_tap_ts,
-                        now,
-                        config.double_tap_interval_ms,
-                        HotkeyEvent::ToggleAssistive,
-                    )
-                } else {
-                    register_blocked_option_double_tap(
-                        self,
-                        released_right,
-                        now,
-                        config.double_tap_interval_ms,
-                        DoubleTapBlockReason::BindingDisabled,
-                    )
-                }
-            } else if normal_toggle_enabled {
-                self.last_right_tap_ts = None;
-                register_double_tap(
-                    &mut self.last_left_tap_ts,
-                    now,
-                    config.double_tap_interval_ms,
-                    HotkeyEvent::ToggleNormal,
-                )
-            } else {
-                register_blocked_option_double_tap(
-                    self,
-                    released_right,
-                    now,
-                    config.double_tap_interval_ms,
-                    DoubleTapBlockReason::BindingDisabled,
-                )
-            };
-
+            let toggle_event = self.release_option(now, key, modifiers, source_is_hid, config);
             emitted = emitted.or(toggle_event);
         }
 
@@ -1103,6 +1134,179 @@ impl HotkeyDetector {
 
         emitted
     }
+
+    /// Option went up: decide whether this release ends a tap, and whether
+    /// that tap closes a pair.
+    ///
+    /// One tap waits at a time. A tap carries the first reason it cannot
+    /// count (a press held too long, a synthetic source, a click or scroll, a
+    /// key typed just before); a pair that holds a reason on either tap is
+    /// refused with that reason as [`HotkeyEvent::DoubleTapBlocked`], so the
+    /// gesture tester and the log can say why nothing started. A chord (Option
+    /// typed a character) never completes a pair itself; it only taints the
+    /// tap that follows it.
+    fn release_option(
+        &mut self,
+        now: Instant,
+        key: HotkeyPhysicalKey,
+        modifiers: HotkeyModifierSnapshot,
+        source_is_hid: bool,
+        config: HotkeyRuntimeConfig,
+    ) -> Option<HotkeyEvent> {
+        self.option_down = false;
+        let released_right = key.is_right_option();
+        let pressed_side = self.option_side.take();
+        let option_down_ts = self.option_down_ts.take();
+        let synthetic = std::mem::take(&mut self.option_press_synthetic) || !source_is_hid;
+        let pointer = std::mem::take(&mut self.pointer_since_option);
+        let held_for = option_down_ts
+            .map(|ts| elapsed_between(now, ts))
+            .unwrap_or_default();
+        // A key-down the HID system saw while Option was down means the
+        // user typed with Option, even if the letter never reached the tap.
+        // Both ends of the hold are event times, so a late callback cannot
+        // move the letter outside the hold.
+        let typed_meanwhile = match (option_down_ts, self.last_hid_key_down) {
+            (Some(down), Some(at)) => at >= down && at <= now,
+            _ => false,
+        };
+
+        if !key.is_option() {
+            self.pending_option_tap = None;
+            self.key_pressed_during_modifier = false;
+            return None;
+        }
+        if let Some(pressed_right) = pressed_side
+            && pressed_right != released_right
+        {
+            self.pending_option_tap = None;
+            return None;
+        }
+
+        let chord = std::mem::take(&mut self.key_pressed_during_modifier) || typed_meanwhile;
+        if chord {
+            self.pending_option_tap = Some(PendingOptionTap {
+                right: released_right,
+                at: now,
+                taint: Some(DoubleTapBlockReason::TypedRecently),
+            });
+            return None;
+        }
+
+        let tap_max = Duration::from_millis(config.tap_max_ms);
+        if held_for > tap_max.saturating_mul(3) {
+            // A hold, not a tap: nothing to pair and nothing to explain.
+            self.pending_option_tap = None;
+            return None;
+        }
+
+        let taint = if held_for > tap_max {
+            Some(DoubleTapBlockReason::TapTooLong)
+        } else if synthetic {
+            Some(DoubleTapBlockReason::SyntheticSource)
+        } else if pointer {
+            Some(DoubleTapBlockReason::Mouse)
+        } else if self.typed_within(option_down_ts.unwrap_or(now), config.typing_quiet_ms) {
+            Some(DoubleTapBlockReason::TypedRecently)
+        } else {
+            None
+        };
+
+        let gesture = if released_right {
+            DoubleTapGesture::RightOption
+        } else {
+            DoubleTapGesture::LeftOption
+        };
+        let interval = Duration::from_millis(config.double_tap_interval_ms);
+        let this_tap = PendingOptionTap {
+            right: released_right,
+            at: now,
+            taint,
+        };
+        let previous = self
+            .pending_option_tap
+            .take()
+            .filter(|pending| pending.right == released_right);
+        let Some(previous) = previous else {
+            self.pending_option_tap = Some(this_tap);
+            return None;
+        };
+        let gap = elapsed_between(now, previous.at);
+
+        if gap > interval {
+            self.pending_option_tap = Some(this_tap);
+            let slow_pair =
+                previous.taint.is_none() && taint.is_none() && gap <= interval.saturating_mul(2);
+            return slow_pair.then(|| blocked_double_tap(gesture, DoubleTapBlockReason::TooSlow));
+        }
+
+        if let Some(reason) = previous.taint.or(taint) {
+            return Some(blocked_double_tap(gesture, reason));
+        }
+        let hold_binding_blocks_toggle = match config.mode_bindings.dictation {
+            ShortcutBinding::HoldCtrlAlt => modifiers.ctrl || self.hold_active,
+            _ => modifiers.ctrl || modifiers.cmd || self.hold_active,
+        };
+        if hold_binding_blocks_toggle {
+            return Some(blocked_double_tap(
+                gesture,
+                DoubleTapBlockReason::ModifierComboActive,
+            ));
+        }
+        let side = if released_right {
+            ShortcutBinding::DoubleRightOption
+        } else {
+            ShortcutBinding::DoubleLeftOption
+        };
+        let routed = double_tap_event(config.mode_bindings, side);
+        routed.or_else(|| {
+            Some(blocked_double_tap(
+                gesture,
+                DoubleTapBlockReason::BindingDisabled,
+            ))
+        })
+    }
+}
+
+/// One Option tap waiting for its partner, and the reason it cannot count
+/// toward a pair, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingOptionTap {
+    right: bool,
+    at: Instant,
+    taint: Option<DoubleTapBlockReason>,
+}
+
+/// The toggle a double-tap gesture starts: the mode bound to it that the
+/// detector routes that gesture to, Dictation first.
+fn double_tap_event(bindings: ModeHotkeyBindings, gesture: ShortcutBinding) -> Option<HotkeyEvent> {
+    [
+        (
+            WorkMode::Dictation,
+            bindings.dictation,
+            HotkeyEvent::ToggleRaw,
+        ),
+        (
+            WorkMode::Formatting,
+            bindings.formatting,
+            HotkeyEvent::ToggleNormal,
+        ),
+        (
+            WorkMode::Assistive,
+            bindings.assistive,
+            HotkeyEvent::ToggleAssistive,
+        ),
+    ]
+    .into_iter()
+    .find(|(mode, binding, _)| *binding == gesture && mode_binding_reachable(*mode, gesture))
+    .map(|(_, _, event)| event)
+}
+
+/// Log the stable refusal line and build the event that carries it.
+fn blocked_double_tap(gesture: DoubleTapGesture, reason: DoubleTapBlockReason) -> HotkeyEvent {
+    let line = blocked_double_tap_diagnostic_line(gesture, reason);
+    tracing::info!("{line}");
+    HotkeyEvent::DoubleTapBlocked { gesture, reason }
 }
 
 /// The middle button dictates on hold: it acts as Fn and Fn holds dictation.
@@ -1231,40 +1435,6 @@ fn consume_double_tap(last_tap: &mut Option<Instant>, now: Instant, interval_ms:
     false
 }
 
-/// Run an Option double-tap through the same window as a routable one, but emit
-/// [`HotkeyEvent::DoubleTapBlocked`] instead of a mode switch.
-///
-/// The block still consumes the tap pair and clears the opposite side's
-/// timestamp, so a blocked gesture cannot leave half-state that makes the next
-/// single tap look like a double. An INFO line is logged on the same edge, once
-/// per completed pair.
-fn register_blocked_option_double_tap(
-    detector: &mut HotkeyDetector,
-    released_right: bool,
-    now: Instant,
-    interval_ms: u64,
-    reason: DoubleTapBlockReason,
-) -> Option<HotkeyEvent> {
-    let (last_tap, gesture) = if released_right {
-        detector.last_left_tap_ts = None;
-        (
-            &mut detector.last_right_tap_ts,
-            DoubleTapGesture::RightOption,
-        )
-    } else {
-        detector.last_right_tap_ts = None;
-        (&mut detector.last_left_tap_ts, DoubleTapGesture::LeftOption)
-    };
-
-    if consume_double_tap(last_tap, now, interval_ms) {
-        let line = blocked_double_tap_diagnostic_line(gesture, reason);
-        tracing::info!("{line}");
-        Some(HotkeyEvent::DoubleTapBlocked { gesture, reason })
-    } else {
-        None
-    }
-}
-
 /// Whether the *base* modifiers of a hold binding are down, ignoring any arm
 /// modifier layered on top.
 ///
@@ -1391,6 +1561,8 @@ mod tests {
             hold_arm_modifier: crate::config::HoldArmModifier::Shift,
             hold_start_delay_ms: 800,
             double_tap_interval_ms: 200,
+            tap_max_ms: 220,
+            typing_quiet_ms: 300,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
             channel_modifier: ChannelModifier::Ctrl,
             widget_shortcut: crate::config::WidgetShortcut::default(),
@@ -1863,6 +2035,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::Fn,
                     modifiers: mods(false, false, false, false, true),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -1877,6 +2050,7 @@ mod tests {
                     now: base + Duration::from_secs(1),
                     key: HotkeyPhysicalKey::Fn,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -1899,6 +2073,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::Fn,
                     modifiers: mods(false, false, false, false, true),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -1913,6 +2088,7 @@ mod tests {
                     now: base + Duration::from_millis(10),
                     key: HotkeyPhysicalKey::Other,
                     modifiers: mods(false, false, true, false, true),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -1924,6 +2100,7 @@ mod tests {
                     now: base + Duration::from_millis(20),
                     key: HotkeyPhysicalKey::Fn,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -1945,6 +2122,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::Fn,
                     modifiers: mods(false, false, true, false, true),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -1959,6 +2137,7 @@ mod tests {
                     now: base + Duration::from_millis(5),
                     key: HotkeyPhysicalKey::Other,
                     modifiers: mods(false, false, true, false, true),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -1971,6 +2150,7 @@ mod tests {
                     now: base + Duration::from_millis(15),
                     key: HotkeyPhysicalKey::Fn,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -1992,6 +2172,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::Fn,
                     modifiers: mods(false, false, false, false, true),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2006,6 +2187,7 @@ mod tests {
                     now: base + Duration::from_millis(10),
                     key: HotkeyPhysicalKey::Other,
                     modifiers: mods(false, false, true, false, true),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2017,6 +2199,7 @@ mod tests {
                     now: base + Duration::from_millis(20),
                     key: HotkeyPhysicalKey::Other,
                     modifiers: mods(false, false, false, false, true),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2029,6 +2212,7 @@ mod tests {
                     now: base + Duration::from_millis(30),
                     key: HotkeyPhysicalKey::Other,
                     modifiers: mods(false, false, true, false, true),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2040,6 +2224,7 @@ mod tests {
                     now: base + Duration::from_millis(40),
                     key: HotkeyPhysicalKey::Fn,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2138,6 +2323,7 @@ mod tests {
                         now: base,
                         key: HotkeyPhysicalKey::LeftOption,
                         modifiers: mods(false, true, false, false, false),
+                        source_is_hid: true,
                     },
                     config,
                 ),
@@ -2149,6 +2335,7 @@ mod tests {
                         now: base + Duration::from_millis(1),
                         key: HotkeyPhysicalKey::LeftOption,
                         modifiers: mods(false, false, false, false, false),
+                        source_is_hid: true,
                     },
                     config,
                 ),
@@ -2160,6 +2347,7 @@ mod tests {
                         now: base + Duration::from_millis(gap_ms),
                         key: HotkeyPhysicalKey::LeftOption,
                         modifiers: mods(false, true, false, false, false),
+                        source_is_hid: true,
                     },
                     config,
                 ),
@@ -2171,6 +2359,7 @@ mod tests {
                     now: base + Duration::from_millis(gap_ms + 1),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             );
@@ -2179,7 +2368,10 @@ mod tests {
                 if expect_toggle {
                     Some(HotkeyEvent::ToggleNormal)
                 } else {
-                    None
+                    Some(HotkeyEvent::DoubleTapBlocked {
+                        gesture: DoubleTapGesture::LeftOption,
+                        reason: DoubleTapBlockReason::TooSlow,
+                    })
                 }
             );
         }
@@ -2197,6 +2389,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::RightOption,
                     modifiers: mods(false, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2208,6 +2401,7 @@ mod tests {
                     now: base + Duration::from_millis(1),
                     key: HotkeyPhysicalKey::RightOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2221,6 +2415,7 @@ mod tests {
                     now: base + Duration::from_millis(100),
                     key: HotkeyPhysicalKey::RightOption,
                     modifiers: mods(false, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2232,6 +2427,7 @@ mod tests {
                     now: base + Duration::from_millis(101),
                     key: HotkeyPhysicalKey::RightOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2249,11 +2445,13 @@ mod tests {
             now: t,
             key: HotkeyPhysicalKey::RightOption,
             modifiers: mods(false, true, false, false, false),
+            source_is_hid: true,
         };
         let release = |t| HotkeyDetectorInput::FlagsChanged {
             now: t,
             key: HotkeyPhysicalKey::RightOption,
             modifiers: mods(false, false, false, false, false),
+            source_is_hid: true,
         };
 
         // Option+s typed: the letter key-down is only visible to the HID system.
@@ -2275,8 +2473,9 @@ mod tests {
             None
         );
 
-        // A key-down from before the press does not poison a genuine double-tap.
-        detector.observe_hid_key_down(base + Duration::from_millis(400));
+        // A key-down from before the press and outside the typing-quiet window
+        // does not poison a genuine double-tap.
+        detector.observe_hid_key_down(base + Duration::from_millis(250));
         assert_eq!(
             detector.feed(press(base + Duration::from_millis(600)), config),
             None
@@ -2305,11 +2504,13 @@ mod tests {
             now: t,
             key: HotkeyPhysicalKey::RightOption,
             modifiers: mods(false, true, false, false, false),
+            source_is_hid: true,
         };
         let release = |t| HotkeyDetectorInput::FlagsChanged {
             now: t,
             key: HotkeyPhysicalKey::RightOption,
             modifiers: mods(false, false, false, false, false),
+            source_is_hid: true,
         };
 
         // Letter stamped at +30 ms, reported only when the release arrives.
@@ -2329,8 +2530,9 @@ mod tests {
             None
         );
 
-        // Letter stamped just before the press: a genuine pair still toggles.
-        detector.observe_hid_key_down(base + Duration::from_millis(599));
+        // Letter stamped before the press and outside the typing-quiet window
+        // (300 ms): a genuine pair still toggles.
+        detector.observe_hid_key_down(base + Duration::from_millis(300));
         assert_eq!(
             detector.feed(press(base + Duration::from_millis(600)), config),
             None
@@ -2358,11 +2560,13 @@ mod tests {
             now: t,
             key: HotkeyPhysicalKey::RightOption,
             modifiers: mods(false, true, false, false, false),
+            source_is_hid: true,
         };
         let release = |t| HotkeyDetectorInput::FlagsChanged {
             now: t,
             key: HotkeyPhysicalKey::RightOption,
             modifiers: mods(false, false, false, false, false),
+            source_is_hid: true,
         };
 
         assert_eq!(detector.feed(press(base), config), None);
@@ -2376,10 +2580,13 @@ mod tests {
         );
         assert_eq!(
             detector.feed(release(base + Duration::from_millis(400)), config),
-            None
+            Some(HotkeyEvent::DoubleTapBlocked {
+                gesture: DoubleTapGesture::RightOption,
+                reason: DoubleTapBlockReason::TapTooLong,
+            })
         );
 
-        // The long press cleared the pair; the next quick pair still works.
+        // The refusal cleared the pair; the next quick pair still works.
         assert_eq!(
             detector.feed(press(base + Duration::from_millis(900)), config),
             None
@@ -2415,6 +2622,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2426,6 +2634,7 @@ mod tests {
                     now: base + Duration::from_millis(1),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2437,6 +2646,7 @@ mod tests {
                     now: base + Duration::from_millis(100),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2448,6 +2658,7 @@ mod tests {
                     now: base + Duration::from_millis(101),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2535,6 +2746,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             );
@@ -2543,6 +2755,7 @@ mod tests {
                     now: base + Duration::from_millis(1),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             );
@@ -2551,6 +2764,7 @@ mod tests {
                     now: base + Duration::from_millis(100),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             );
@@ -2559,6 +2773,7 @@ mod tests {
                     now: base + Duration::from_millis(101),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             );
@@ -2580,6 +2795,7 @@ mod tests {
                     now: base + Duration::from_millis(400),
                     key: HotkeyPhysicalKey::Fn,
                     modifiers: mods(false, false, false, false, true),
+                    source_is_hid: true,
                 },
                 hold_fn_config,
             );
@@ -2587,7 +2803,8 @@ mod tests {
                 HotkeyDetectorInput::FlagsChanged {
                     now: base + Duration::from_millis(410),
                     key: HotkeyPhysicalKey::Other,
-                    modifiers: mods(false, false, false, true, true), // cmd + fn
+                    modifiers: mods(false, false, false, true, true), // cmd + fn,
+                    source_is_hid: true,
                 },
                 hold_fn_config,
             );
@@ -2621,6 +2838,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, true, false, true, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2632,6 +2850,7 @@ mod tests {
                     now: base + Duration::from_millis(1),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, true, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2643,6 +2862,7 @@ mod tests {
                     now: base + Duration::from_millis(100),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, true, false, true, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2654,6 +2874,7 @@ mod tests {
                     now: base + Duration::from_millis(101),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, true, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2682,6 +2903,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::LeftControl,
                     modifiers: mods(true, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2712,6 +2934,7 @@ mod tests {
                     now: base + Duration::from_millis(260),
                     key: HotkeyPhysicalKey::LeftControl,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2737,6 +2960,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::LeftControl,
                     modifiers: mods(true, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2750,6 +2974,7 @@ mod tests {
                     now: base + Duration::from_millis(1),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(true, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2778,6 +3003,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::LeftControl,
                     modifiers: mods(true, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2790,6 +3016,7 @@ mod tests {
                     now: base + Duration::from_millis(1),
                     key: HotkeyPhysicalKey::Other,
                     modifiers: mods(true, false, false, true, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2802,6 +3029,7 @@ mod tests {
                     now: base + Duration::from_millis(2),
                     key: HotkeyPhysicalKey::Other,
                     modifiers: mods(true, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2820,6 +3048,7 @@ mod tests {
                     now: base,
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2831,6 +3060,7 @@ mod tests {
                     now: base + Duration::from_millis(1),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2843,6 +3073,7 @@ mod tests {
                     now: base + Duration::from_millis(40),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2865,6 +3096,7 @@ mod tests {
                     now: base + Duration::from_millis(50),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2877,6 +3109,7 @@ mod tests {
                     now: base + Duration::from_millis(120),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2888,10 +3121,15 @@ mod tests {
                     now: base + Duration::from_millis(121),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
-            None
+            // The chord taints the tap that follows it: refused, not toggled.
+            Some(HotkeyEvent::DoubleTapBlocked {
+                gesture: DoubleTapGesture::LeftOption,
+                reason: DoubleTapBlockReason::TypedRecently,
+            })
         );
         assert_eq!(
             detector.feed(
@@ -2899,6 +3137,7 @@ mod tests {
                     now: base + Duration::from_millis(170),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, true, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2910,11 +3149,35 @@ mod tests {
                     now: base + Duration::from_millis(171),
                     key: HotkeyPhysicalKey::LeftOption,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
-            Some(HotkeyEvent::ToggleNormal)
+            None,
+            "the refusal consumed the chord taint; a lone tap waits for a partner"
         );
+
+        // Well after the typing-quiet window a clean pair works again.
+        for (ms, down, expected) in [
+            (700_u64, true, None),
+            (701, false, None),
+            (750, true, None),
+            (751, false, Some(HotkeyEvent::ToggleNormal)),
+        ] {
+            assert_eq!(
+                detector.feed(
+                    HotkeyDetectorInput::FlagsChanged {
+                        now: base + Duration::from_millis(ms),
+                        key: HotkeyPhysicalKey::LeftOption,
+                        modifiers: mods(false, down, false, false, false),
+                        source_is_hid: true,
+                    },
+                    config,
+                ),
+                expected,
+                "t={ms}"
+            );
+        }
     }
 
     #[test]
@@ -2933,6 +3196,7 @@ mod tests {
                 now: base,
                 key: HotkeyPhysicalKey::LeftControl,
                 modifiers: mods(true, false, false, false, false),
+                source_is_hid: true,
             },
             config,
         );
@@ -2954,6 +3218,7 @@ mod tests {
                     now: base + Duration::from_millis(20),
                     key: HotkeyPhysicalKey::LeftControl,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2966,6 +3231,7 @@ mod tests {
                     now: base + Duration::from_millis(100),
                     key: HotkeyPhysicalKey::LeftControl,
                     modifiers: mods(true, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2977,6 +3243,7 @@ mod tests {
                     now: base + Duration::from_millis(110),
                     key: HotkeyPhysicalKey::LeftControl,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2988,6 +3255,7 @@ mod tests {
                     now: base + Duration::from_millis(170),
                     key: HotkeyPhysicalKey::LeftControl,
                     modifiers: mods(true, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -2999,6 +3267,7 @@ mod tests {
                     now: base + Duration::from_millis(180),
                     key: HotkeyPhysicalKey::LeftControl,
                     modifiers: mods(false, false, false, false, false),
+                    source_is_hid: true,
                 },
                 config,
             ),
@@ -3136,6 +3405,7 @@ mod tests {
                 now,
                 key: HotkeyPhysicalKey::Fn,
                 modifiers: mods(false, false, false, false, down),
+                source_is_hid: true,
             },
             config,
         )
@@ -3622,6 +3892,7 @@ mod tests {
                         now: ms(offset),
                         key,
                         modifiers,
+                        source_is_hid: true,
                     },
                     config,
                 )
@@ -3708,7 +3979,11 @@ mod tests {
                 (WorkMode::Dictation, ShortcutBinding::HoldCtrlShift),
                 (WorkMode::Dictation, ShortcutBinding::HoldCtrlCmd),
                 (WorkMode::Dictation, ShortcutBinding::DoubleCtrl),
+                (WorkMode::Formatting, ShortcutBinding::DoubleCtrl),
                 (WorkMode::Formatting, ShortcutBinding::DoubleLeftOption),
+                (WorkMode::Formatting, ShortcutBinding::DoubleRightOption),
+                (WorkMode::Assistive, ShortcutBinding::DoubleCtrl),
+                (WorkMode::Assistive, ShortcutBinding::DoubleLeftOption),
                 (WorkMode::Assistive, ShortcutBinding::DoubleRightOption),
             ],
             "documented matrix in docs/HOTKEYS_CONTRACT.md"
@@ -3724,8 +3999,8 @@ mod tests {
 
     /// The audited reproduction: Dictation and Formatting both on double-tap
     /// left Option. The gesture starts Formatting only; Dictation is dead.
-    /// The defaults route each gesture to its own mode, and double-tap Ctrl
-    /// dictation silences the Option toggles (the precedence Settings reports).
+    /// The opt-in configs route each gesture to its own mode, and double-tap
+    /// Ctrl dictation leaves the Option toggles alive.
     #[test]
     fn duplicate_left_option_starts_formatting_only_and_defaults_route_each_mode() {
         let duplicate = test_config(
@@ -3754,7 +4029,7 @@ mod tests {
             assert_eq!(
                 started_modes(&perform_gesture(defaults, gesture)),
                 vec![mode],
-                "default {gesture:?}"
+                "opt-in {gesture:?}"
             );
         }
 
@@ -3767,14 +4042,469 @@ mod tests {
             started_modes(&perform_gesture(double_ctrl, ShortcutBinding::DoubleCtrl)),
             vec![WorkMode::Dictation]
         );
-        for gesture in [
-            ShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption,
+        // Double Ctrl on Dictation no longer silences the opt-in Option gestures.
+        assert_eq!(
+            started_modes(&perform_gesture(
+                double_ctrl,
+                ShortcutBinding::DoubleLeftOption
+            )),
+            vec![WorkMode::Formatting]
+        );
+        assert_eq!(
+            started_modes(&perform_gesture(
+                double_ctrl,
+                ShortcutBinding::DoubleRightOption
+            )),
+            vec![WorkMode::Assistive]
+        );
+    }
+
+    // ---- Option double-tap falsifiers (opt-in Formatting/Assistive) ----
+
+    const OPT_UP: fn() -> HotkeyModifierSnapshot = || mods(false, false, false, false, false);
+    const OPT_DOWN: fn() -> HotkeyModifierSnapshot = || mods(false, true, false, false, false);
+
+    /// Feed one Option modifier change at `base + ms`.
+    fn option_flags(
+        detector: &mut HotkeyDetector,
+        config: HotkeyRuntimeConfig,
+        base: Instant,
+        ms: u64,
+        key: HotkeyPhysicalKey,
+        down: bool,
+        source_is_hid: bool,
+    ) -> Option<HotkeyEvent> {
+        detector.feed(
+            HotkeyDetectorInput::FlagsChanged {
+                now: base + Duration::from_millis(ms),
+                key,
+                modifiers: if down { OPT_DOWN() } else { OPT_UP() },
+                source_is_hid,
+            },
+            config,
+        )
+    }
+
+    /// One HID Option tap pressed at `down_ms` and released at `up_ms`. The
+    /// press must stay silent; the release verdict is returned.
+    fn option_tap(
+        detector: &mut HotkeyDetector,
+        config: HotkeyRuntimeConfig,
+        base: Instant,
+        key: HotkeyPhysicalKey,
+        down_ms: u64,
+        up_ms: u64,
+    ) -> Option<HotkeyEvent> {
+        assert_eq!(
+            option_flags(detector, config, base, down_ms, key, true, true),
+            None,
+            "an Option press never starts anything"
+        );
+        option_flags(detector, config, base, up_ms, key, false, true)
+    }
+
+    fn blocked(gesture: DoubleTapGesture, reason: DoubleTapBlockReason) -> Option<HotkeyEvent> {
+        Some(HotkeyEvent::DoubleTapBlocked { gesture, reason })
+    }
+
+    fn option_chord(
+        detector: &mut HotkeyDetector,
+        config: HotkeyRuntimeConfig,
+        base: Instant,
+        key: HotkeyPhysicalKey,
+        down_ms: u64,
+        letter_ms: u64,
+        up_ms: u64,
+    ) -> Option<HotkeyEvent> {
+        assert_eq!(
+            option_flags(detector, config, base, down_ms, key, true, true),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(letter_ms),
+                    key: HotkeyPhysicalKey::Letter(b'A'),
+                    modifiers: OPT_DOWN(),
+                },
+                config,
+            ),
+            None
+        );
+        detector.feed(
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::Letter(b'A'),
+                modifiers: OPT_DOWN(),
+            },
+            config,
+        );
+        option_flags(detector, config, base, up_ms, key, false, true)
+    }
+
+    /// F1: Option+letter is typing. The chord taints the tap that follows, so
+    /// a clean tap right after a chord is refused with TypedRecently instead
+    /// of toggling Formatting.
+    #[test]
+    fn option_chord_then_clean_tap_is_blocked_typed_recently() {
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let key = HotkeyPhysicalKey::LeftOption;
+        assert_eq!(
+            option_chord(&mut detector, config, base, key, 0, 20, 60),
+            None
+        );
+        let verdict = option_tap(&mut detector, config, base, key, 150, 210);
+        assert_ne!(verdict, Some(HotkeyEvent::ToggleNormal));
+        assert_eq!(
+            verdict,
+            blocked(
+                DoubleTapGesture::LeftOption,
+                DoubleTapBlockReason::TypedRecently
+            )
+        );
+    }
+
+    /// F1: two chords in a row (typing with Option held) emit nothing, on
+    /// either side.
+    #[test]
+    fn two_option_chords_in_a_row_emit_nothing() {
+        for key in [
+            HotkeyPhysicalKey::LeftOption,
+            HotkeyPhysicalKey::RightOption,
         ] {
-            assert!(
-                started_modes(&perform_gesture(double_ctrl, gesture)).is_empty(),
-                "double-tap Ctrl dictation must silence {gesture:?}"
+            let (mut detector, config, base) = fn_hold_double_option_detector();
+            assert_eq!(
+                option_chord(&mut detector, config, base, key, 0, 20, 60),
+                None
+            );
+            assert_eq!(
+                option_chord(&mut detector, config, base, key, 100, 120, 160),
+                None,
+                "{key:?}: second chord"
+            );
+            assert_eq!(
+                option_chord(&mut detector, config, base, key, 200, 220, 260),
+                None,
+                "{key:?}: third chord"
             );
         }
+    }
+
+    /// A key typed (and seen only by the HID system) shortly before the pair
+    /// blocks it; the same pair after the quiet window toggles.
+    #[test]
+    fn key_typed_just_before_the_pair_blocks_it_until_quiet() {
+        let key = HotkeyPhysicalKey::LeftOption;
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        detector.observe_hid_key_down(base + Duration::from_millis(40));
+        assert_eq!(option_tap(&mut detector, config, base, key, 100, 140), None);
+        assert_eq!(
+            option_tap(&mut detector, config, base, key, 180, 220),
+            blocked(
+                DoubleTapGesture::LeftOption,
+                DoubleTapBlockReason::TypedRecently
+            )
+        );
+
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        detector.observe_hid_key_down(base);
+        assert_eq!(option_tap(&mut detector, config, base, key, 400, 440), None);
+        assert_eq!(
+            option_tap(&mut detector, config, base, key, 480, 520),
+            Some(HotkeyEvent::ToggleNormal)
+        );
+    }
+
+    /// F2: a click or scroll between the taps means Option was a mouse
+    /// modifier; the pair is refused as Mouse.
+    #[test]
+    fn pointer_activity_between_taps_blocks_pair_as_mouse() {
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let key = HotkeyPhysicalKey::LeftOption;
+        assert_eq!(option_tap(&mut detector, config, base, key, 0, 40), None);
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::PointerActivity {
+                    now: base + Duration::from_millis(60)
+                },
+                config
+            ),
+            None
+        );
+        assert_eq!(
+            option_tap(&mut detector, config, base, key, 80, 120),
+            blocked(DoubleTapGesture::LeftOption, DoubleTapBlockReason::Mouse)
+        );
+    }
+
+    /// F2: a click while the second Option press is held taints it too.
+    #[test]
+    fn pointer_activity_while_option_is_held_blocks_pair_as_mouse() {
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let key = HotkeyPhysicalKey::RightOption;
+        assert_eq!(option_tap(&mut detector, config, base, key, 0, 40), None);
+        assert_eq!(
+            option_flags(&mut detector, config, base, 80, key, true, true),
+            None
+        );
+        detector.feed(
+            HotkeyDetectorInput::PointerActivity {
+                now: base + Duration::from_millis(100),
+            },
+            config,
+        );
+        assert_eq!(
+            option_flags(&mut detector, config, base, 120, key, false, true),
+            blocked(DoubleTapGesture::RightOption, DoubleTapBlockReason::Mouse)
+        );
+    }
+
+    /// Pointer activity with no Option involved leaves a later clean pair alone.
+    #[test]
+    fn pointer_activity_without_option_does_not_taint_a_later_pair() {
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let key = HotkeyPhysicalKey::LeftOption;
+        detector.feed(
+            HotkeyDetectorInput::PointerActivity {
+                now: base + Duration::from_millis(5),
+            },
+            config,
+        );
+        assert_eq!(option_tap(&mut detector, config, base, key, 50, 90), None);
+        assert_eq!(
+            option_tap(&mut detector, config, base, key, 130, 170),
+            Some(HotkeyEvent::ToggleNormal)
+        );
+    }
+
+    /// F3: Option events posted by another app (not the HID system) never
+    /// count toward a pair.
+    #[test]
+    fn synthetic_option_pair_is_blocked_as_synthetic_source() {
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let key = HotkeyPhysicalKey::LeftOption;
+        let synthetic = |detector: &mut HotkeyDetector, ms, down| {
+            option_flags(detector, config, base, ms, key, down, false)
+        };
+        assert_eq!(synthetic(&mut detector, 0, true), None);
+        assert_eq!(synthetic(&mut detector, 30, false), None);
+        assert_eq!(synthetic(&mut detector, 60, true), None);
+        assert_eq!(
+            synthetic(&mut detector, 90, false),
+            blocked(
+                DoubleTapGesture::LeftOption,
+                DoubleTapBlockReason::SyntheticSource
+            )
+        );
+    }
+
+    /// F3: a synthetic partner poisons an otherwise clean HID tap.
+    #[test]
+    fn one_synthetic_tap_poisons_the_pair() {
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let key = HotkeyPhysicalKey::LeftOption;
+        assert_eq!(option_tap(&mut detector, config, base, key, 0, 30), None);
+        assert_eq!(
+            option_flags(&mut detector, config, base, 60, key, true, false),
+            None
+        );
+        assert_eq!(
+            option_flags(&mut detector, config, base, 90, key, false, true),
+            blocked(
+                DoubleTapGesture::LeftOption,
+                DoubleTapBlockReason::SyntheticSource
+            )
+        );
+    }
+
+    /// F4: a pair slower than the interval is refused as TooSlow; the same
+    /// pair under a wider live interval toggles Formatting.
+    #[test]
+    fn slow_pair_is_too_slow_until_the_interval_widens() {
+        let key = HotkeyPhysicalKey::LeftOption;
+        let (mut detector, mut config, base) = fn_hold_double_option_detector();
+        assert_eq!(config.double_tap_interval_ms, 200);
+        assert_eq!(option_tap(&mut detector, config, base, key, 0, 40), None);
+        assert_eq!(
+            option_tap(&mut detector, config, base, key, 300, 320),
+            blocked(DoubleTapGesture::LeftOption, DoubleTapBlockReason::TooSlow)
+        );
+
+        let (mut detector, _, base) = fn_hold_double_option_detector();
+        config.double_tap_interval_ms = 350;
+        assert_eq!(option_tap(&mut detector, config, base, key, 0, 40), None);
+        assert_eq!(
+            option_tap(&mut detector, config, base, key, 300, 320),
+            Some(HotkeyEvent::ToggleNormal)
+        );
+    }
+
+    /// A gap far beyond the interval is two unrelated taps, not a refusal.
+    #[test]
+    fn far_apart_taps_say_nothing() {
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        let key = HotkeyPhysicalKey::LeftOption;
+        assert_eq!(option_tap(&mut detector, config, base, key, 0, 40), None);
+        assert_eq!(
+            option_tap(&mut detector, config, base, key, 2_000, 2_040),
+            None
+        );
+    }
+
+    /// Clean pairs route by side: left to Formatting, right to Assistive.
+    #[test]
+    fn clean_option_pairs_route_by_side() {
+        for (key, expected) in [
+            (HotkeyPhysicalKey::LeftOption, HotkeyEvent::ToggleNormal),
+            (HotkeyPhysicalKey::RightOption, HotkeyEvent::ToggleAssistive),
+        ] {
+            let (mut detector, config, base) = fn_hold_double_option_detector();
+            assert_eq!(option_tap(&mut detector, config, base, key, 0, 40), None);
+            assert_eq!(
+                option_tap(&mut detector, config, base, key, 90, 130),
+                Some(expected),
+                "{key:?}"
+            );
+        }
+    }
+
+    /// A press held past tap_max is not a tap; the pair is refused as TapTooLong,
+    /// whichever of the two taps was long.
+    #[test]
+    fn press_longer_than_tap_max_blocks_pair_as_tap_too_long() {
+        let key = HotkeyPhysicalKey::LeftOption;
+        // First press long (held 230 ms > 220), second clean.
+        let (mut detector, config, base) = fn_hold_double_option_detector();
+        assert_eq!(option_tap(&mut detector, config, base, key, 0, 230), None);
+        assert_eq!(
+            option_tap(&mut detector, config, base, key, 260, 290),
+            blocked(
+                DoubleTapGesture::LeftOption,
+                DoubleTapBlockReason::TapTooLong
+            )
+        );
+        // First clean, second long. The gap runs release to release, so a
+        // long second press only reaches the pair check under a wide interval.
+        let (mut detector, mut config, base) = fn_hold_double_option_detector();
+        config.double_tap_interval_ms = 350;
+        assert_eq!(option_tap(&mut detector, config, base, key, 0, 40), None);
+        assert_eq!(
+            option_tap(&mut detector, config, base, key, 80, 310),
+            blocked(
+                DoubleTapGesture::LeftOption,
+                DoubleTapBlockReason::TapTooLong
+            )
+        );
+        // Exactly tap_max is still a tap (wide interval: the gap runs release
+        // to release and already includes the press).
+        let (mut detector, mut config, base) = fn_hold_double_option_detector();
+        config.double_tap_interval_ms = 350;
+        assert_eq!(option_tap(&mut detector, config, base, key, 0, 220), None);
+        assert_eq!(
+            option_tap(&mut detector, config, base, key, 250, 470),
+            Some(HotkeyEvent::ToggleNormal)
+        );
+    }
+
+    /// Defaults (Formatting and Assistive Disabled): Option gestures are inert
+    /// — taps, chords and long presses emit nothing, not even a refusal.
+    #[test]
+    fn disabled_option_bindings_emit_nothing_for_every_option_gesture() {
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::Disabled,
+            ShortcutBinding::Disabled,
+        );
+        for key in [
+            HotkeyPhysicalKey::LeftOption,
+            HotkeyPhysicalKey::RightOption,
+        ] {
+            let mut detector = HotkeyDetector::default();
+            let base = Instant::now();
+            assert_eq!(option_tap(&mut detector, config, base, key, 0, 40), None);
+            assert_eq!(option_tap(&mut detector, config, base, key, 90, 130), None);
+            assert_eq!(option_tap(&mut detector, config, base, key, 170, 200), None);
+            assert_eq!(
+                option_chord(&mut detector, config, base, key, 240, 250, 280),
+                None
+            );
+            assert_eq!(option_tap(&mut detector, config, base, key, 300, 700), None);
+            assert_eq!(option_tap(&mut detector, config, base, key, 730, 760), None);
+            detector.feed(
+                HotkeyDetectorInput::PointerActivity {
+                    now: base + Duration::from_millis(770),
+                },
+                config,
+            );
+            assert_eq!(option_tap(&mut detector, config, base, key, 780, 810), None);
+        }
+    }
+
+    /// Double Ctrl bound to Formatting or Assistive routes to that mode.
+    #[test]
+    fn double_ctrl_routes_to_the_mode_it_is_bound_to() {
+        let formatting = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleCtrl,
+            ShortcutBinding::Disabled,
+        );
+        assert_eq!(
+            perform_gesture(formatting, ShortcutBinding::DoubleCtrl),
+            vec![HotkeyEvent::ToggleNormal]
+        );
+        let assistive = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::Disabled,
+            ShortcutBinding::DoubleCtrl,
+        );
+        assert_eq!(
+            perform_gesture(assistive, ShortcutBinding::DoubleCtrl),
+            vec![HotkeyEvent::ToggleAssistive]
+        );
+        let dictation = test_config(
+            ShortcutBinding::DoubleCtrl,
+            ShortcutBinding::Disabled,
+            ShortcutBinding::Disabled,
+        );
+        assert_eq!(
+            perform_gesture(dictation, ShortcutBinding::DoubleCtrl),
+            vec![HotkeyEvent::ToggleRaw]
+        );
+    }
+
+    /// DoubleTapOutcome codes round-trip, and only Option modifier changes have one.
+    #[test]
+    fn double_tap_outcome_codes_round_trip_and_gate_on_option_inputs() {
+        let mut codes = std::collections::HashSet::new();
+        let mut outcomes = vec![DoubleTapOutcome::Recognized];
+        outcomes.extend(DoubleTapOutcome::BLOCK_REASONS.map(DoubleTapOutcome::Blocked));
+        for outcome in outcomes {
+            assert!(codes.insert(outcome.code()), "unique code for {outcome:?}");
+            assert_eq!(DoubleTapOutcome::from_code(outcome.code()), Some(outcome));
+        }
+        assert_eq!(DoubleTapOutcome::from_code(0), None);
+        assert_eq!(DoubleTapOutcome::from_code(200), None);
+
+        let base = Instant::now();
+        let option_input = HotkeyDetectorInput::FlagsChanged {
+            now: base,
+            key: HotkeyPhysicalKey::LeftOption,
+            modifiers: OPT_UP(),
+            source_is_hid: true,
+        };
+        let ctrl_input = HotkeyDetectorInput::FlagsChanged {
+            now: base,
+            key: HotkeyPhysicalKey::LeftControl,
+            modifiers: OPT_UP(),
+            source_is_hid: true,
+        };
+        assert_eq!(
+            DoubleTapOutcome::of(&option_input, Some(&HotkeyEvent::ToggleNormal)),
+            Some(DoubleTapOutcome::Recognized)
+        );
+        assert_eq!(DoubleTapOutcome::of(&option_input, None), None);
+        assert_eq!(
+            DoubleTapOutcome::of(&ctrl_input, Some(&HotkeyEvent::ToggleNormal)),
+            None
+        );
     }
 }

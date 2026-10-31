@@ -190,7 +190,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .midi, "the header never returns to mini")
     state.advancePresentationFromHeader()
     XCTAssertEqual(state.presentationMode, .expanded)
-    // The rotating preview control keeps its unchanged full cycle.
+    // The preview control explicitly folds back to mini.
     state.toggleCollapsed()
     XCTAssertEqual(state.presentationMode, .mini)
   }
@@ -334,10 +334,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.toggleCollapsed()
     XCTAssertTrue(state.isCollapsed)
     state.toggleCollapsed()
-    XCTAssertEqual(state.presentationMode, .midi)
-    state.toggleCollapsed()
     XCTAssertFalse(state.isCollapsed)
-    XCTAssertEqual(collapses, [true, true, false])
+    XCTAssertEqual(collapses, [true, false])
     XCTAssertTrue(state.expandedByDefault)
     XCTAssertTrue(engine.expanded)
     XCTAssertTrue(engine.expansionWrites.isEmpty)
@@ -371,7 +369,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let state = OverlayState()
       state.engine = engine
       state.attach()
-      state.toggleCollapsed()
+      state.setPresentationMode(.midi)
       state.handleRecordingStarted()
       XCTAssertEqual(state.isCollapsed, !expanded)
       XCTAssertTrue(engine.expansionWrites.isEmpty)
@@ -472,7 +470,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
       state.setPresentationMode(.mini)
       settle(root)
-      for mode in [OverlayPresentationMode.midi, .expanded, .mini, .midi, .expanded, .mini] {
+      for mode in [OverlayPresentationMode.expanded, .mini, .expanded, .mini] {
         state.toggleCollapsed()
         settle(root)
         XCTAssertEqual(state.presentationMode, mode)
@@ -829,7 +827,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(intents.contains(.recoverSuperseded))
     XCTAssertTrue(intents.contains(.discardSuperseded))
     XCTAssertTrue(intents.contains(.finish))
-    XCTAssertTrue(rail.contains("enabledSlots.contains(.intent(.sendToAgent))"))
     XCTAssertTrue(rail.contains("id: \"overlay-intent-\\(intent.rawValue)\""))
     actions.toggle()
     XCTAssertEqual(actions.phase, .idle, "The same cap removes the guarded rail again")
@@ -1112,7 +1109,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(chrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
     XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
     XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
-    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 8)
+    // The conversation's frame reader (sidebar fold, 2026-10-26) is the ninth:
+    // like the drawer's and the rail's readers it takes no click and, being
+    // Color.clear, hides nothing from accessibility.
+    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 9)
     XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 4)
     // The folded list's rail (2026-10-19) brought two of them: its leading
     // hairline and its frame reader, neither of which takes a click.
@@ -1285,7 +1285,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let titles = resolved.items.map(\.title)
       for title in [
         "Agents", "Transcription", "Pin", "Free motion", "Show transcript by default",
-        "Auto fold after… 10 s",
+        "Auto-fold: 10 s of inactivity",
       ] {
         XCTAssertTrue(titles.contains(title), "\(title) missing from \(titles)")
       }
@@ -1321,10 +1321,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         let resolved = try XCTUnwrap(menu)
         resolved.delegate?.menuNeedsUpdate?(resolved)
         let fold = try XCTUnwrap(
-          resolved.items.first { $0.title.hasPrefix("Auto fold after") })
-        let label = seconds == 0 ? "Never" : "\(seconds) s"
-        XCTAssertEqual(fold.title, "Auto fold after… \(label)")
-        XCTAssertNotNil(fold.submenu)
+          resolved.items.first { $0.title.hasPrefix("Auto-fold:") })
+        XCTAssertEqual(
+          fold.title,
+          seconds == 0 ? "Auto-fold: Never" : "Auto-fold: \(seconds) s of inactivity")
+        let submenu = try XCTUnwrap(fold.submenu)
+        submenu.delegate?.menuNeedsUpdate?(submenu)
+        let selected = submenu.items.filter { $0.state == .on }
+        XCTAssertEqual(selected.count, 1)
+        XCTAssertEqual(selected.first?.title, seconds == 0 ? "Never" : "\(seconds) s")
       }
     }
   }
@@ -1383,7 +1388,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.setPresentationMode(.mini)
     let text = state.activeText
     for (mode, symbol, label) in [
-      (OverlayPresentationMode.mini, "chevron.left", "Expand to compact widget"),
+      (OverlayPresentationMode.mini, "chevron.down", "Expand transcript"),
       (.midi, "chevron.down", "Expand transcript"),
       (.expanded, "arrow.up.right", "Collapse widget"),
     ] {
@@ -1395,7 +1400,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertEqual(controls.previewAccessibilityLabel, label)
       controls.togglePreview()
       XCTAssertEqual(
-        state.presentationMode, mode == .mini ? .midi : mode == .midi ? .expanded : .mini)
+        state.presentationMode, mode == .expanded ? .mini : .expanded)
       XCTAssertEqual(state.activeText, text)
     }
     XCTAssertEqual(state.presentationMode, .mini)
@@ -1611,9 +1616,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         "symbol: \"megaphone.fill\", tint: OverlayRecordingLight.agent.color, mirrored: true"))
     XCTAssertTrue(roster.contains(".scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
     let header = try headerSource(try overlaySource())
-    // Spec §13.4: mini draws the dot without the word; the counter follows.
+    // Spec §13.4: mini draws the dot without the word; the counter follows,
+    // beside the brand in mini and in every vertical form.
     XCTAssertTrue(header.contains("showsWord: !mini"))
-    XCTAssertTrue(header.contains("if mini, let map = channelMap {"))
+    XCTAssertTrue(header.contains("let leadingCounter = mini || state.channelMapCounterStacked"))
+    XCTAssertTrue(header.contains("if leadingCounter, let map = channelMap {"))
     XCTAssertFalse(header.contains("short: mini"))
     XCTAssertFalse(header.contains("miniAgentMicrophone"))
   }

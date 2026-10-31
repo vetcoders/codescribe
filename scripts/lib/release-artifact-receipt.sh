@@ -16,8 +16,9 @@ case "$operation" in
     [[ ! -e "$receipt" && ! -L "$receipt" ]] || refuse "receipt already exists"
     ;;
   verify)
-    [[ $# -eq 3 ]] || refuse "verify needs receipt, run, variant"
-    receipt=$1 expected_run=$2 expected_variant=$3
+    [[ $# -eq 3 || $# -eq 4 ]] || refuse "verify needs receipt, run, variant and optional channel"
+    receipt=$1 expected_run=$2 expected_variant=$3 expected_channel=${4:-stable}
+    [[ "$expected_channel" == stable || "$expected_channel" == nightly ]] || refuse "invalid channel"
     [[ -f "$receipt" && ! -L "$receipt" ]] || refuse "missing or nonregular receipt"
     # Bash read drops NUL bytes. Refuse them before parsing rather than accepting
     # a corrupted record whose visible fields happen to match.
@@ -50,5 +51,5 @@ if [[ "$operation" == write ]]; then
 else
   [[ "$actual_digest" == "$digest" ]] || refuse "artifact changed after production"
   root=$(cd "$(dirname "$0")/../.." && pwd)
-  exec "$root/scripts/verify-dmg-payload.sh" "$artifact" --variant "$variant" --version "$version"
+  exec "$root/scripts/verify-dmg-payload.sh" "$artifact" --variant "$variant" --version "$version" --channel "$expected_channel"
 fi

@@ -15,6 +15,10 @@ data  CsAccountLoginResult.providerId
 data  CsAccountLoginResult.status
 prose CsAccountLoginResult.message
 data  CsAccountLoginResult.authUrl
+data  CsMcpSignInResult.server
+data  CsMcpSignInResult.status
+data  CsMcpSignInResult.detail
+data  CsMcpSignInResult.authUrl
 data  CsAdmissionReadiness.code
 prose CsAdmissionReadiness.message
 data  CsAdmissionReadiness.deviceName
@@ -99,6 +103,9 @@ data  CsFormattingProbe.output
 data  CsFormattingProbe.provider
 data  CsFormattingProbe.model
 data  CsFormattingProbe.reasoning
+data  CsFormattingProbe.failureCode
+data  CsFormattingProbe.endpointHost
+data  CsFormattingProbe.credentialSource
 data  CsHistoryEntry.path
 data  CsHistoryEntry.preview
 prose CsHotkeyConflict.gestureLabel
@@ -238,6 +245,9 @@ prose CsRuntimeLlmLane.unavailableReason
 data  CsSettings.holdArmModifier
 data  CsSettings.deferredInsertShortcut
 data  CsSettings.channelModifier
+data  CsSettings.agentChannelSessionPolicy
+data  CsSettings.agentChannelSendPauseSource
+data  CsSettings.agentChannelSegmentFinish
 data CsSettings.widgetShortcut
 data CsSettings.widgetShortcutLabel
 data  CsSettings.transcriptSendMode
@@ -409,6 +419,7 @@ data  CodescribeAgent.streamReply()
 data  CodescribeAgent.streamReplyWithAttachments()
 data  CodescribeAgent.streamWorkspace()
 data  CodescribeAgent.streamWorkspaceWithAttachments()
+data  CodescribeConfig.churnDir()
 data  CodescribeConfig.composerModelCacheStamp()
 data  CodescribeConfig.configDir()
 data  CodescribeConfig.defaultAssistivePrompt()

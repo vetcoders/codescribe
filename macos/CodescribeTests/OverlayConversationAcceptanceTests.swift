@@ -7,6 +7,81 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
+  /// Intercom's attached conversation must keep the established message renderer.
+  /// These hosts are never ordered onto the desktop and open no microphone.
+  @MainActor
+  func testAttachedIntercomKeepsFormattedMessageBubbles() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    var row = reply(String(repeating: "f", count: 24), delivery: "intercom-render")
+    row["text"] = """
+      ## Czytelna rozmowa
+      **Ważne:** zachowaj formatowanie i `inline code`.
+
+      - Pierwszy punkt
+      - Drugi punkt z [odnośnikiem](https://example.com)
+
+      ```swift
+      let message = "Pełna treść"
+      print(message)
+      ```
+
+      Osobny akapit po bloku kodu.
+      """
+    bus.consume(row)
+    let conversation = try lenaConversation(bus)
+    let replyMessage = try XCTUnwrap(conversation.messages.first { $0.kind == .reply })
+    let userMessage = OverlayConversationMessage(
+      id: "user:intercom-render", kind: .user, text: replyMessage.text, order: replyMessage.order,
+      emittedAt: replyMessage.emittedAt, owner: nil, recipients: [], deliveryID: nil,
+      replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+
+    for dark in [false, true] {
+      let palette: OverlayAppearancePalette = dark ? .dark : .light
+      for width in [CGFloat(262), 459] {
+        for message in [userMessage, replyMessage] {
+          func render(_ presentation: OverlayConversationPresentation) throws
+            -> (NSSize, Data, NSImage)
+          {
+            let view = OverlayConversationView(
+              conversation: conversation, palette: palette, topInset: 0, bottomInset: 8,
+              pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+              draft: .constant(""), sending: false, sendError: nil, onSend: {},
+              hidesNavigation: true, presentation: presentation)
+            let host = NSHostingView(
+              rootView: view.messageBubble(message).frame(width: width)
+                .padding(8).background(palette.desktopBackground.color)
+                .environment(\.colorScheme, dark ? .dark : .light))
+            let size = host.fittingSize
+            let window = NSWindow(
+              contentRect: NSRect(origin: NSPoint(x: -10000, y: -10000), size: size),
+              styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            defer { window.contentView = nil }
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let image = NSImage(size: size)
+            image.addRepresentation(bitmap)
+            return (size, try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), image)
+          }
+          let standard = try render(.standard)
+          let attached = try render(.intercom)
+          let scenario = "\(dark ? "dark" : "light")-\(Int(width))-\(message.kind)"
+          for (name, rendered) in [("standard", standard), ("attached", attached)] {
+            let attachment = XCTAttachment(image: rendered.2)
+            attachment.name = "Intercom-\(scenario)-\(name)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+          }
+          XCTAssertGreaterThan(standard.0.height, 150, "Rich multiline content must paint")
+          XCTAssertEqual(attached.0, standard.0, scenario)
+          XCTAssertEqual(attached.1, standard.1, "Shared formatted bubble differs: \(scenario)")
+        }
+      }
+    }
+  }
+
   @MainActor
   func testWholeReplyBubbleKeepsPlaybackCopyAndBottomInsetCompact() throws {
     for state in ["spoken", "playing", "waiting", "stopped"] {
@@ -127,6 +202,85 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
             XCTAssertLessThanOrEqual(
               gap, 6 * scale, "status stays within one character of the glyph")
           }
+        }
+      }
+    }
+  }
+
+  @MainActor
+  func testSingleRecipientReceiptNeverWrapsIntoAVerticalColumn() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(reply(String(repeating: "e", count: 24)))
+    let conversation = try lenaConversation(bus)
+    let owner = try XCTUnwrap(conversation.owner)
+    let recipient = OverlayConversationRecipient(
+      owner: owner, deliveryID: "receipt-layout", queued: true, accepted: true, acknowledged: false)
+    for text in ["Krótka wiadomość", String(repeating: "Pełna czytelna treść wiadomości. ", count: 20)] {
+      let message = OverlayConversationMessage(
+        id: "user:receipt-layout", kind: .user, text: text, order: 1, emittedAt: "",
+        owner: nil, recipients: [recipient], deliveryID: "receipt-layout", replyTo: nil,
+        unsolicited: false, playback: nil, busPath: "")
+      let view = OverlayConversationView(
+        conversation: conversation, palette: .light, topInset: 0, bottomInset: 0,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in XCTFail("Must not play") },
+        draft: .constant("Retained draft"), sending: false, sendError: nil,
+        onSend: { XCTFail("Must not send") })
+      for scale in [CGFloat(1), 1.5, 2] {
+        for width in [CGFloat(80), 120, 180, 262] {
+          let host = NSHostingView(
+            rootView: view.messageFooter(message)
+              .environment(\.csTextScale, scale).frame(width: width))
+          host.frame = CGRect(x: 0, y: 0, width: width, height: 100)
+          host.layoutSubtreeIfNeeded()
+          XCTAssertGreaterThan(host.fittingSize.height, 0)
+          XCTAssertLessThanOrEqual(
+            host.fittingSize.height, max(24, 18 * scale) + 2,
+            "Receipt must stay one line beside Copy: width=\(width) scale=\(scale)")
+        }
+      }
+    }
+  }
+
+  @MainActor
+  func testWholeBubbleKeepsAcceptedReceiptCompactBesideCopyAndReply() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(reply(String(repeating: "d", count: 24)))
+    let conversation = try lenaConversation(bus)
+    let owner = try XCTUnwrap(conversation.owner)
+    let view = OverlayConversationView(
+      conversation: conversation, palette: .dark, topInset: 0, bottomInset: 0,
+      pendingControls: [], controlErrors: [:], onControl: { _, _ in XCTFail("Must not play") },
+      draft: .constant(""), sending: false, sendError: nil, onSend: { XCTFail("Must not send") },
+      onReply: { _ in XCTFail("Measurement must not invoke Reply") })
+    for text in ["Krótki tekst", String(repeating: "Długi tekst pozostaje czytelny. ", count: 12)] {
+      for scale in [CGFloat(1), 1.5, 2] {
+        for width in [CGFloat(220), 262, 400] {
+          func measure(acknowledged: Bool) throws -> CGFloat {
+            let recipient = OverlayConversationRecipient(
+              owner: owner, deliveryID: "full-receipt", queued: true, accepted: true,
+              acknowledged: acknowledged)
+            let message = OverlayConversationMessage(
+              id: "user:full-receipt", kind: .user, text: text, order: 1, emittedAt: "",
+              owner: nil, recipients: [recipient], deliveryID: "full-receipt", replyTo: nil,
+              unsolicited: false, playback: nil, busPath: "")
+            let host = NSHostingView(
+              rootView: view.messageBubble(message).environment(\.csTextScale, scale)
+                .frame(width: width))
+            let window = NSWindow(
+              contentRect: CGRect(x: -10000, y: -10000, width: width, height: 600),
+              styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            defer { window.contentView = nil; window.close() }
+            host.layoutSubtreeIfNeeded()
+            return host.fittingSize.height
+          }
+          let read = try measure(acknowledged: true)
+          let accepted = try measure(acknowledged: false)
+          XCTAssertGreaterThan(read, 0)
+          XCTAssertEqual(
+            accepted, read, accuracy: 1,
+            "Receipt and Copy/Reply must stay one row: width=\(width) scale=\(scale)")
         }
       }
     }
@@ -487,64 +641,73 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     let conversation = try lenaConversation(restored)
     XCTAssertEqual(
       conversation.messages.first?.text, raw, "rendering must preserve the exact receipt")
-    let key = "OverlayMarkdownZoom.\(UUID().uuidString)"
-    defer { UserDefaults.standard.removeObject(forKey: key) }
-    let scale = TextScaleController(key: key)
-    let view = OverlayConversationView(
-      conversation: conversation, palette: .light, topInset: 50, bottomInset: 20,
-      pendingControls: [], controlErrors: [:], onControl: { _, _ in },
-      draft: .constant("Zachowaj szkic"), sending: false, sendError: nil, onSend: {})
-    let host = NSHostingView(
-      rootView: TextScaleRoot(controller: scale) { view }
-        .background(OverlayAppearancePalette.light.desktopBackground.color)
-        .preferredColorScheme(.light))
-    host.sizingOptions = []
-    host.frame = NSRect(x: 0, y: 0, width: 532, height: 500)
-    let window = NSWindow(
-      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-    window.isReleasedWhenClosed = false
-    window.contentView = host
-    defer { window.close() }
-    func settle() {
-      host.layoutSubtreeIfNeeded()
-      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
-      host.layoutSubtreeIfNeeded()
-    }
-    func scrollViews(_ root: NSView) -> [NSScrollView] {
-      (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
-    }
-    func editor(_ root: NSView) -> NSTextView? {
-      if let text = root as? NSTextView, text.isEditable { return text }
-      return root.subviews.lazy.compactMap { editor($0) }.first
-    }
-    settle()
-    let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
-    let document = try XCTUnwrap(scroll.documentView)
-    let originalEditor = try XCTUnwrap(editor(host))
-    originalEditor.setSelectedRange(NSRange(location: 2, length: 5))
-    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-    host.cacheDisplay(in: host.bounds, to: bitmap)
-    var codeWellPixels = 0
-    for y in stride(from: 100, to: bitmap.pixelsHigh - 100, by: 4) {
-      for x in stride(from: 30, to: bitmap.pixelsWide / 2, by: 4) {
-        guard let color = bitmap.colorAt(x: x, y: y) else { continue }
-        if min(color.redComponent, color.greenComponent, color.blueComponent) > 0.97 {
-          codeWellPixels += 1
+    for presentation in [OverlayConversationPresentation.standard, .intercom] {
+      let key = "OverlayMarkdownZoom.\(UUID().uuidString)"
+      defer { UserDefaults.standard.removeObject(forKey: key) }
+      let scale = TextScaleController(key: key)
+      let view = OverlayConversationView(
+        conversation: conversation, palette: .light, topInset: 50, bottomInset: 20,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+        draft: .constant("Zachowaj szkic"), sending: false, sendError: nil, onSend: {},
+        hidesNavigation: presentation == .intercom, presentation: presentation)
+      let host = NSHostingView(
+        rootView: TextScaleRoot(controller: scale) { view }
+          .background(OverlayAppearancePalette.light.desktopBackground.color)
+          .preferredColorScheme(.light))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 532, height: 500)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      func settle() {
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+        host.layoutSubtreeIfNeeded()
+      }
+      func scrollViews(_ root: NSView) -> [NSScrollView] {
+        (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+      }
+      func editor(_ root: NSView) -> NSTextView? {
+        if let text = root as? NSTextView, text.isEditable { return text }
+        return root.subviews.lazy.compactMap { editor($0) }.first
+      }
+      settle()
+      let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
+      let document = try XCTUnwrap(scroll.documentView)
+      let originalEditor = try XCTUnwrap(editor(host))
+      originalEditor.setSelectedRange(NSRange(location: 2, length: 5))
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let image = NSImage(size: host.bounds.size)
+      image.addRepresentation(bitmap)
+      let attachment = XCTAttachment(image: image)
+      attachment.name = "Expanded conversation — \(presentation)"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+      var codeWellPixels = 0
+      for y in stride(from: 100, to: bitmap.pixelsHigh - 100, by: 4) {
+        for x in stride(from: 30, to: bitmap.pixelsWide / 2, by: 4) {
+          guard let color = bitmap.colorAt(x: x, y: y) else { continue }
+          if min(color.redComponent, color.greenComponent, color.blueComponent) > 0.97 {
+            codeWellPixels += 1
+          }
         }
       }
+      XCTAssertGreaterThan(
+        codeWellPixels, 100, "a fenced block must render the shared native code well")
+      for _ in 0..<6 { scale.increase() }
+      settle()
+      let viewport = scroll.convert(scroll.bounds, to: host)
+      XCTAssertEqual(host.bounds.maxX - viewport.maxX, 15, accuracy: 1)
+      XCTAssertEqual(viewport.height, host.bounds.height, accuracy: 1)
+      XCTAssertLessThanOrEqual(document.bounds.width, viewport.width + 1)
+      XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+      XCTAssertEqual(originalEditor.string, "Zachowaj szkic")
+      XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
+      XCTAssertEqual(try XCTUnwrap(originalEditor.font).pointSize, 22.4, accuracy: 0.05)
     }
-    XCTAssertGreaterThan(
-      codeWellPixels, 100, "a fenced block must render the shared native code well")
-    for _ in 0..<6 { scale.increase() }
-    settle()
-    let viewport = scroll.convert(scroll.bounds, to: host)
-    XCTAssertEqual(host.bounds.maxX - viewport.maxX, 15, accuracy: 1)
-    XCTAssertEqual(viewport.height, host.bounds.height, accuracy: 1)
-    XCTAssertLessThanOrEqual(document.bounds.width, viewport.width + 1)
-    XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
-    XCTAssertEqual(originalEditor.string, "Zachowaj szkic")
-    XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
-    XCTAssertEqual(try XCTUnwrap(originalEditor.font).pointSize, 22.4, accuracy: 0.05)
   }
 
   @MainActor
@@ -660,14 +823,16 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       message.supportsSpeechPlayback = source.supportsSpeechPlayback
       message.provider = source.provider
       message.providerSessionID = source.providerSessionID
-      var requested = false
+      var callbackCount = 0
+      var callbackIdentityMatches = false
+      var callbackStop = false
       let view = OverlayConversationView(
         conversation: conversation, palette: .dark, topInset: 0, bottomInset: 0,
         pendingControls: [], controlErrors: [:],
         onControl: { selected, stop in
-          XCTAssertEqual(selected.id, message.id)
-          XCTAssertFalse(stop)
-          requested = true
+          callbackCount += 1
+          callbackIdentityMatches = selected.id == message.id
+          callbackStop = stop
         }, draft: .constant(""), sending: false, sendError: nil, onSend: {})
       let host = NSHostingView(rootView: view.messageFooter(message).frame(width: 400))
       let window = NSWindow(
@@ -680,9 +845,16 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       host.layoutSubtreeIfNeeded()
       let identifier = "overlay-reply-play-\(message.id)"
       XCTAssertFalse(try NativeAccessibilityProbe.waitForElements(identifier).elements.isEmpty)
-      let pressed = try NativeAccessibilityProbe.query(identifier, press: true)
-      XCTAssertEqual(pressed.pressStatus, 0, "The Play control must be enabled: \(schema)")
-      XCTAssertTrue(requested)
+      try NativeAccessibilityProbe.verifyPress(
+        .voicelessReplyPlay,
+        testMethod: "OverlayConversationAcceptanceTests.\(#function)",
+        postcondition: { callbackCount == 1 && callbackIdentityMatches && !callbackStop },
+        cleanup: {
+          window.close()
+          window.contentView = nil
+          RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+          return !window.isVisible && !window.isKeyWindow && host.window == nil
+        })
     }
   }
 
@@ -772,14 +944,25 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     func scrollViews(_ root: NSView) -> [NSScrollView] {
       (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
     }
+    // The count comes from the receipts directory alone: the follower
+    // writes `<delivery_id>.read.json`, then the app's `agent-ack` row
+    // paints the row ahead of the next listing and never counts.
+    let directory = try XCTUnwrap(
+      bus.receiptDirectories().first, "the channel take has a receipts directory")
+    var files: [(name: String, row: [String: Any])] = []
     for readCount in 0...4 {
       if readCount > 0 {
         let prior = try lenaConversation(bus).messages[0]
-        var ack = recipients[readCount - 1]
-        ack.merge([
-          "schema": "codescribe.agent-ack.v1",
-          "delivery_id": try XCTUnwrap(prior.recipients[readCount - 1].deliveryID),
+        let delivery = try XCTUnwrap(prior.recipients[readCount - 1].deliveryID)
+        var read = recipients[readCount - 1]
+        read.merge([
+          "schema": OverlayReceiptState.schema, "kind": "read", "message_id": directory,
+          "delivery_id": delivery, "read_at": "2026-10-26T04:19:00Z",
         ]) { _, new in new }
+        files.append((name: "\(delivery).read.json", row: read))
+        bus.observeReceipts(files, messageID: directory)
+        var ack = recipients[readCount - 1]
+        ack.merge(["schema": "codescribe.agent-ack.v1", "delivery_id": delivery]) { _, new in new }
         bus.consume(ack)
       }
       for channel in ["0", "2"] {
@@ -810,7 +993,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
             tree.first {
               $0.accessibilityRole() == .menuButton && $0.accessibilityLabel() == expected
             },
-            "channel=\(channel) scale=\(scale): native menu missing; roles=\(tree.map { $0.accessibilityRole()?.rawValue ?? "" })"
+            "channel=\(channel) scale=\(scale): native menu missing; menus=\(tree.filter { $0.accessibilityRole() == .menuButton }.map { $0.accessibilityLabel() ?? "" })"
           )
           XCTAssertEqual(control.accessibilityLabel(), expected)
           let frame = control.accessibilityFrame()

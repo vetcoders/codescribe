@@ -30,7 +30,9 @@ struct DictionaryWordPins: View {
     "\(configDir)|\(session)"
   }
 
-  @MainActor static func remember(_ snapshot: DictionaryPinSnapshot, configDir: String, session: String) {
+  @MainActor static func remember(
+    _ snapshot: DictionaryPinSnapshot, configDir: String, session: String
+  ) {
     remembered[rememberedKey(configDir: configDir, session: session)] = snapshot
   }
 
@@ -92,7 +94,7 @@ struct DictionaryWordPins: View {
                       let length = Double(pin.end - pin.start) / Double(span)
                       ZStack(alignment: .leading) {
                         Capsule().fill(Color.secondary.opacity(0.15)).frame(height: 3)
-                        Capsule().fill(Color.accentColor)
+                        Capsule().fill(CSColor.chromeAccent)
                           .frame(width: max(3, geometry.size.width * length), height: 8)
                           .offset(x: geometry.size.width * left)
                       }
@@ -106,13 +108,16 @@ struct DictionaryWordPins: View {
                       .frame(width: 105, alignment: .leading)
                   }
                   .padding(6)
-                  .background(selected == pin.id ? Color.accentColor.opacity(0.15) : .clear)
+                  .background(selected == pin.id ? CSColor.chromeAccent.opacity(0.15) : .clear)
                   .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(pin.text))
                 .accessibilityValue(
-                  Text(verbatim: "#\(pin.index) · \(pin.timeRange) · \(pin.producer) · \(pin.speechState.label)"))
+                  Text(
+                    verbatim:
+                      "#\(pin.index) · \(pin.timeRange) · \(pin.producer) · \(pin.speechState.label)"
+                  ))
               }
             }
             .csAutohidingScrollers()
@@ -177,10 +182,12 @@ struct DictionaryWordPins: View {
             ZStack(alignment: .leading) {
               Capsule().fill(Color.secondary.opacity(0.15)).frame(height: 4)
               ForEach(Array(ranges.enumerated()), id: \.offset) { _, range in
-                Rectangle().fill(Color.green.opacity(0.8))
+                Rectangle().fill(CSColor.oliveStatus.opacity(0.8))
                   .frame(
-                    width: max(1, geometry.size.width * Double(range.end - range.start) / Double(end)),
-                    height: 10)
+                    width: max(
+                      1, geometry.size.width * Double(range.end - range.start) / Double(end)),
+                    height: 10
+                  )
                   .offset(x: geometry.size.width * Double(range.start) / Double(end))
               }
             }
@@ -241,7 +248,11 @@ struct DictionaryPinSnapshot: Sendable {
   var epochs: [UInt64] { Array(Set(pins.map(\.epoch)).union(speechObserved.keys)).sorted() }
 
   func timelineEnd(epoch: UInt64) -> UInt64 {
-    max(1, max(speechObserved[epoch] ?? 0, pins.filter { $0.epoch == epoch }.map(\.occurrenceEnd).max() ?? 0))
+    max(
+      1,
+      max(
+        speechObserved[epoch] ?? 0,
+        pins.filter { $0.epoch == epoch }.map(\.occurrenceEnd).max() ?? 0))
   }
 
   nonisolated static func read(root: String, requested: String) throws -> Self {
@@ -266,7 +277,10 @@ struct DictionaryPinSnapshot: Sendable {
     for (session, _, _) in files where seen.insert(session).inserted {
       result.sessions.append(session)
     }
-    guard let session = requested.isEmpty ? result.sessions.first : result.sessions.first(where: { $0 == requested }) else {
+    guard
+      let session = requested.isEmpty
+        ? result.sessions.first : result.sessions.first(where: { $0 == requested })
+    else {
       return result
     }
     result.session = session
@@ -319,7 +333,8 @@ struct DictionaryPinSnapshot: Sendable {
           let occurrence = evidence["occurrence"] as? [String: Any],
           occurrence["session"] as? String == session,
           number(occurrence["capture_epoch"]) == epoch,
-          let a = number(occurrence["sample_start"]), let b = number(occurrence["sample_end"]), a < b
+          let a = number(occurrence["sample_start"]), let b = number(occurrence["sample_end"]),
+          a < b
         {
           subFloor.append(RecordedPinRange(epoch: epoch, start: a, end: b))
         }
@@ -328,7 +343,8 @@ struct DictionaryPinSnapshot: Sendable {
           let occurrence = observation["occurrence"] as? [String: Any],
           occurrence["session"] as? String == session,
           number(occurrence["capture_epoch"]) == epoch,
-          let a = number(occurrence["sample_start"]), let b = number(occurrence["sample_end"]), a < b,
+          let a = number(occurrence["sample_start"]), let b = number(occurrence["sample_end"]),
+          a < b,
           let rate = rates[epoch], let slots = operation["result_slots"] as? [[String: Any]]
         {
           // A take is every completed occurrence snapshot, not the last operation.

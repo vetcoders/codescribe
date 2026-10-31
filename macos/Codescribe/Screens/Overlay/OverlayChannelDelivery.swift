@@ -14,7 +14,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
   let isOpen: Bool
   var broadcastIdentity: AgentPlaybackIdentity? = nil
   var broadcastPolicy: AgentBroadcastPolicy = .on
-  /// The follower's skip receipt for exactly that delivery and owner: off
+  /// The follower's skip receipt for exactly that delivery
+  /// (`runtime/receipts/<message_id>/<delivery_id>.skipped.json`): off
   /// channel 0 a broadcast is never queued (`queue_delivery` in bus-demux.py),
   /// so "sent" would otherwise wait for a receipt that never comes.
   var broadcastSkipped = false
@@ -44,10 +45,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     /// and the reader replays its bounded source tail to recover Play metadata.
     private var speechProjectionVersion: Int = 1
     private var receiptCursor: Int = 0
+    private var directoryCursor: Int = 0
     private var messageRevisions: [String: UInt64] = [:]
     private var deliveryOrigins: [String: DeliveryOrigin] = [:]
     private var captureAttachmentStages: [String: OverlayCaptureAttachmentReceipt]? = nil
     private var captureAttachmentCommits: [String: OverlayCaptureAttachmentCommit]? = nil
+    private var activeCaptureDocuments: [String: String]? = nil
     private var sessionOpenedAt: [String: String] = [:]
     private(set) var panelFocusResults: [String: OverlayPanelFocusResult] = [:]
     private struct DeliveryOrigin: Codable {
@@ -61,7 +64,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       case seals, sessions, endedSessions, receipts, sealOrder, seenSeals, messages, messageOrder
       case captureRecipients, historicalOwners, playbackByReply, retiredPlaybackTickets,
         messageSequence, messageRevisions, deliveryOrigins, captureAttachmentStages,
-        captureAttachmentCommits, revision, sessionOpenedAt,
+        captureAttachmentCommits, activeCaptureDocuments, revision, sessionOpenedAt,
         destinationVersion, holdProjectionVersion, speechProjectionVersion
     }
     private static let historyLimit = 256
@@ -116,6 +119,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let openedAt = row["opened_at"] as? String,
         let state = row["state"] as? String
       {
+        if state == "segment_sealed" {
+          endedSessions.insert(sessionID)
+          return
+        }
         // A delayed close from an earlier take cannot close its successor.
         if state != "open", let current = sessions[channel], current.openedAt != openedAt {
           return
@@ -294,66 +301,26 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         acknowledged: false)
     }
 
-    /// The follower's skip receipt (`record_broadcast_skipped` in
-    /// bus-demux.py) marks exactly this delivery to exactly this owner; a
-    /// receipt naming another lease, session or delivery marks nothing.
-    mutating func observeBroadcastSkip(
-      _ receipt: [String: Any], owner: OverlayConversationOwner, delivery: String
-    ) {
-      guard receipt["schema"] as? String == "codescribe.broadcast-policy.v1",
-        receipt["kind"] as? String == "broadcast_skipped",
-        receipt["delivery_id"] as? String == delivery,
-        receipt["lease_id"] as? String == owner.leaseID,
-        receipt["provider"] as? String == owner.provider,
-        receipt["provider_session_id"] as? String == owner.providerSessionID
-      else { return }
-      var changed = false
-      for id in messageOrder {
-        guard var message = messages[id] else { continue }
-        var rowChanged = false
-        for index in message.recipients.indices
-        where message.recipients[index].owner.id == owner.id
-          && message.recipients[index].deliveryID == delivery
-          && message.recipients[index].broadcastSkipped != true
-        {
-          message.recipients[index].broadcastSkipped = true
-          rowChanged = true
-        }
-        if rowChanged {
-          messages[id] = message
-          changed = true
-        }
-      }
-      if changed { revision &+= 1 }
-    }
-
     typealias ReceiptCoordinate = (
-      owner: OverlayConversationOwner, delivery: String, accepted: Bool, broadcast: Bool
+      owner: OverlayConversationOwner, delivery: String, accepted: Bool
     )
 
-    /// Unacknowledged recipients still worth a receipt poll. `accepted` says
-    /// whether provider acceptance was already observed, so the reader can
-    /// skip the wakeup receipt and only watch for the acknowledgment;
-    /// `broadcast` marks a channel-0 delivery, the only kind a follower skips.
-    /// A recorded skip settles the recipient: nothing reads it afterwards.
-    /// `settled` drops coordinates the reader has seen settle on another bus
-    /// before the 128-coordinate window is cut.
-    mutating func receiptCoordinates(
-      skipping settled: (OverlayConversationOwner, String) -> Bool = { _, _ in false }
-    ) -> [ReceiptCoordinate] {
+    /// Recipients whose provider acceptance (`wakeups/`) is still worth a
+    /// poll: their row is neither acknowledged nor skipped (flags painted by
+    /// the files, the ack row or the lease). `accepted` says acceptance was
+    /// already observed, so the reader skips that file. A rotating window of
+    /// 128 per poll.
+    mutating func receiptCoordinates() -> [ReceiptCoordinate] {
       var result: [ReceiptCoordinate] = []
       var seen: Set<String> = []
       for id in messageOrder {
         guard let message = messages[id] else { continue }
-        for recipient in message.recipients where recipient.broadcastSkipped != true {
-          // Conversation receipt settles observation even when provider queue
-          // acceptance was absent (for example, monitor-only delivery).
-          if let delivery = recipient.deliveryID, !recipient.acknowledged,
-            !settled(recipient.owner, delivery),
+        for recipient in message.recipients
+        where recipient.broadcastSkipped != true && !recipient.acknowledged {
+          if let delivery = recipient.deliveryID,
             seen.insert(recipient.owner.id + "\0" + delivery).inserted
           {
-            result.append(
-              (recipient.owner, delivery, recipient.accepted, message.sourceChannel == "0"))
+            result.append((recipient.owner, delivery, recipient.accepted))
           }
         }
       }
@@ -365,6 +332,91 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       let count = min(result.count, 128)
       receiptCursor = (start + count) % result.count
       return (0..<count).map { result[(start + $0) % result.count] }
+    }
+
+    /// The `runtime/receipts/<message_id>/` directories still worth a
+    /// listing: a message whose files do not yet settle it (`settled(_:)`),
+    /// a channel-0 text whose admitted list is unknown (its `sent.json` may
+    /// still be written), or one of the newest 32 replies whose playback is
+    /// unknown or running. A rotating window of 128 per poll; a settled
+    /// directory leaves it, whichever bus's copy the files settled.
+    mutating func receiptDirectories() -> [String] {
+      var unheard: Set<String> = []
+      for id in messageOrder.reversed() where unheard.count < 32 {
+        guard let message = messages[id], message.kind == .reply,
+          message.playback.map({ $0.state == "waiting" || $0.state == "playing" }) ?? true
+        else { continue }
+        unheard.insert(id)
+      }
+      var result: [String] = []
+      var seen: Set<String> = []
+      for id in messageOrder {
+        guard let message = messages[id], let directory = receiptDirectory(of: message),
+          !seen.contains(directory)
+        else { continue }
+        let settled = Self.settled(message)
+        let listed =
+          message.sentTo != nil || message.sourceChannel != "0"
+          || !(id.hasPrefix("typed:") || id.hasPrefix("reply:"))
+        if settled, listed, !unheard.contains(id) { continue }
+        seen.insert(directory)
+        result.append(directory)
+      }
+      guard !result.isEmpty else {
+        directoryCursor = 0
+        return []
+      }
+      let start = directoryCursor % result.count
+      let count = min(result.count, 128)
+      directoryCursor = (start + count) % result.count
+      return (0..<count).map { result[(start + $0) % result.count] }
+    }
+
+    /// Whether the receipt files leave nothing to wait for: the directory
+    /// was composed, every copy's delivery is `read`, `skipped` or withdrawn
+    /// there, and so is every agent on the list (the admitted list, else the
+    /// copies). Only the files settle a message: the `agent-ack` bus row and
+    /// the provider's acceptance paint a copy's row but never stop the
+    /// listing, so a `read` file written just before that row is still
+    /// composed. A message never composed is never settled; a message
+    /// without copies on this bus is settled by its list alone.
+    private static func settled(_ message: OverlayConversationMessage) -> Bool {
+      guard let receipt = message.receipt else { return false }
+      var states: [String: OverlayReceiptState.State] = [:]
+      for delivery in receipt.deliveries {
+        if let id = delivery.deliveryID, states[id] == nil { states[id] = delivery.state }
+      }
+      let withdrawn = Set(receipt.withdrawn.map(\.deliveryID))
+      func done(_ id: String?, _ state: OverlayReceiptState.State?) -> Bool {
+        if state == .read || state == .skipped { return true }
+        guard let id else { return false }
+        return withdrawn.contains(id)
+      }
+      for recipient in message.recipients {
+        let id = recipient.deliveryID
+        if !done(id, id.flatMap { states[$0] }) { return false }
+      }
+      let listed = message.sentTo ?? message.recipients.map(\.reach)
+      for recipient in receipt.summary(listed: listed).recipients {
+        if !done(recipient.deliveryID, recipient.state) { return false }
+      }
+      return true
+    }
+
+    /// The `runtime/receipts/<message_id>/` directory of a message: its
+    /// `message_id` for typed and peer text, `channel_message_identity` for a
+    /// channel take (the same digest as `channelMessageKey`). A plain
+    /// dictation seal has none and leaves no receipt.
+    private func receiptDirectory(of message: OverlayConversationMessage) -> String? {
+      let id = message.id
+      if id.hasPrefix("typed:") || id.hasPrefix("reply:") {
+        let identity = String(id.drop(while: { $0 != ":" }).dropFirst())
+        return identity.count == 24 ? identity : nil
+      }
+      guard let session = message.captureSessionID, Self.channelMessageKey(session) == id else {
+        return nil
+      }
+      return String(id.dropFirst("utterance:".count))
     }
 
     var verifiedCaptureAttachmentCommitPaths: [String: String] {
@@ -381,11 +433,15 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     /// This is read-only bus evidence for a paste waiting for that first segment.
     var activeCaptureAttachmentSessions: [OverlayCaptureAttachmentSession] {
       sessions.compactMap { channel, session in
-        guard session.isOpen, !endedSessions.contains(session.sessionID),
-          let recipients = captureRecipients[session.sessionID], !recipients.isEmpty
+        let documentID = activeCaptureDocuments?[session.sessionID] ?? session.sessionID
+        guard session.isOpen,
+          !endedSessions.contains(session.sessionID),
+          !endedSessions.contains(documentID),
+          let recipients = captureRecipients[documentID] ?? captureRecipients[session.sessionID],
+          !recipients.isEmpty
         else { return nil }
         return OverlayCaptureAttachmentSession(
-          id: session.sessionID, channel: channel, openedAt: session.openedAt,
+          id: documentID, channel: channel, openedAt: session.openedAt,
           recipientIDs: recipients.map(\.id).sorted())
       }
     }
@@ -437,7 +493,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       var result = [
         OverlayConversation(
           id: "0", channel: "0", name: "All", owner: nil,
-          messages: broadcast)
+          messages: broadcast),
+        .humanInbox(messages: ordered.filter { $0.sourceChannel == "10" }),
       ]
       // Materialize identity strings once per row, not once per historical
       // owner comparison on every poll. These coordinates are local to this
@@ -476,23 +533,106 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       return result
     }
 
-    mutating func observeAcknowledgment(
-      _ receipt: [String: Any], owner: OverlayConversationOwner,
-      delivery: String, busPath: String
+    /// The receipt files of one message directory, as the reader listed them
+    /// (`docs/TRANSCRIPT_BUS.md`, Receipts): the composer turns them into the
+    /// message's receipt state, the one source of `delivered`, `read`,
+    /// `skipped`, the admitted list and a reply's playback. A delivery is
+    /// keyed by `delivery_id`, never by lease: after a channel handover the
+    /// successor lease acknowledges the delivery its predecessor received,
+    /// one recipient. A file whose name and content disagree, or that names
+    /// another message, marks nothing.
+    mutating func observeReceipts(
+      _ files: [(name: String, row: [String: Any])], messageID: String
     ) {
-      guard receipt["lease_id"] as? String == owner.leaseID,
-        receipt["delivery_id"] as? String == delivery,
-        receipt["bus"] as? String == busPath,
-        let envelope = receipt["envelope"] as? [String: Any],
-        envelope["delivery_id"] as? String == delivery,
-        envelope["lease_id"] as? String == owner.leaseID,
-        envelope["provider"] as? String == owner.provider,
-        envelope["provider_session_id"] as? String == owner.providerSessionID
-      else { return }
-      associateEnvelope(envelope, owner: owner, delivery: delivery)
-      updateRecipient(
-        delivery: delivery, owner: owner, queued: false, accepted: false,
-        acknowledged: true)
+      let composed = OverlayReceiptState.compose(files: files, messageID: messageID)
+      var changed = false
+      for id in messageOrder {
+        guard var message = messages[id], receiptDirectory(of: message) == messageID else {
+          continue
+        }
+        var rowChanged = false
+        if message.receipt != composed {
+          message.receipt = composed
+          rowChanged = true
+        }
+        if let sentTo = composed.sentTo, message.sentTo != sentTo {
+          message.sentTo = sentTo
+          rowChanged = true
+        }
+        for index in message.recipients.indices {
+          guard let delivery = message.recipients[index].deliveryID,
+            let state = composed.deliveries.first(where: { $0.deliveryID == delivery })?.state
+          else { continue }
+          switch state {
+          case .read where !message.recipients[index].acknowledged:
+            message.recipients[index].acknowledged = true
+            rowChanged = true
+          case .delivered where !message.recipients[index].queued:
+            message.recipients[index].queued = true
+            rowChanged = true
+          case .skipped where message.recipients[index].broadcastSkipped != true:
+            message.recipients[index].broadcastSkipped = true
+            rowChanged = true
+          default:
+            break
+          }
+        }
+        if rowChanged {
+          messages[id] = message
+          changed = true
+        }
+        guard message.kind == .reply, let replyID = message.replyID else { continue }
+        for playback in composed.playbacks {
+          guard let owner = playback.owner else { continue }
+          if applyPlayback(
+            OverlayReplyPlayback(
+              replyID: replyID, ticket: playback.ticket, state: playback.state,
+              reason: playback.reason, spoken: playback.spoken, emittedAt: playback.at ?? ""),
+            owner: owner)
+          {
+            changed = true
+          }
+        }
+      }
+      if changed { revision &+= 1 }
+    }
+
+    /// Applies one playback observation under the ticket rules; true when the
+    /// projection changed.
+    @discardableResult
+    private mutating func applyPlayback(
+      _ playback: OverlayReplyPlayback, owner: OverlayConversationOwner
+    ) -> Bool {
+      let replyID = playback.replyID
+      let ticket = playback.ticket
+      let state = playback.state
+      guard let message = messages["reply:" + replyID], message.owner?.id == owner.id else {
+        return false
+      }
+      if retiredPlaybackTickets[replyID]?.contains(ticket) == true { return false }
+      // Delayed observations cannot rewind playback or finish another ticket.
+      if let current = playbackByReply[replyID] {
+        if playback.emittedAt < current.emittedAt { return false }
+        if current.ticket == ticket, current.state != "waiting" && current.state != "playing",
+          state == "waiting" || state == "playing"
+        {
+          return false
+        }
+      }
+      if let current = playbackByReply[replyID], current.ticket != ticket,
+        state != "waiting" && state != "playing"
+      {
+        return false
+      }
+      if let current = playbackByReply[replyID], current.ticket != ticket {
+        var retired = retiredPlaybackTickets[replyID] ?? []
+        retired.append(current.ticket)
+        retiredPlaybackTickets[replyID] = Array(retired.suffix(64))
+      }
+      if playbackByReply[replyID] == playback { return false }
+      playbackByReply[replyID] = playback
+      messages["reply:" + replyID]?.playback = playback
+      return true
     }
 
     private mutating func associateEnvelope(
@@ -615,6 +755,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           guard row["origin_channel"] as? String == "0", existing.sourceChannel == "0",
             existing.revisedText != nil || existing.text == text
           else { return }
+          if existing.sentTo == nil { existing.sentTo = OverlayReceiptState.stampedReach(row) }
           for owner in owners
           where !existing.recipients.contains(where: { $0.owner.id == owner.id }) {
             historicalOwners[owner.id] = historicalOwners[owner.id] ?? owner
@@ -643,6 +784,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           emittedAt: row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
           deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
         message.sourceChannel = (row["origin_channel"] as? String) ?? (row["channel"] as? String)
+        message.sentTo = OverlayReceiptState.stampedReach(row)
         message.attachments = OverlayMessageAttachment.pointers(row["attachments"])
         message.userReplyTo = (row["user_reply_to"] as? [String: Any]).flatMap(
           OverlayUserReplyReference.init(row:))
@@ -664,13 +806,17 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           for origin in deliveryOrigins.values
           where origin.channel == channel
             && origin.captureSession != session
+            && Self.channelSessionID(of: origin.captureSession) != session
           {
-            guard let previous = sessionOpenedAt[origin.captureSession],
+            guard
+              let previous = sessionOpenedAt[origin.captureSession]
+                ?? sessionOpenedAt[Self.channelSessionID(of: origin.captureSession)],
               let earlier = Self.openingDate(previous), earlier < opened
             else { continue }
             finalizeRefused(session: origin.captureSession)
           }
         } else {
+          endedSessions.insert(session)
           // A predecessor close can settle its own receipt, never its successor's.
           finalizeRefused(
             session: session, holdUntil: (row["hold_until"] as? String).flatMap(Self.openingDate))
@@ -689,9 +835,16 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let entries = row["recipients"] as? [[String: Any]]
       {
         captureRecipients[session] = entries.compactMap(OverlayConversationOwner.init(row:))
+        var documents = activeCaptureDocuments ?? [:]
+        documents[Self.channelSessionID(of: session)] = session
+        activeCaptureDocuments = documents
         for owner in captureRecipients[session] ?? [] { historicalOwners[owner.id] = owner }
         return
       }
+      // The app's own row after an agent's ACK: it paints the copy's row and
+      // the channel glyph as read, a hint ahead of the next directory
+      // listing. It is not a receipt: the count and the end of the listing
+      // come from the `read` file alone (`receiptDirectories`, `settled`).
       if schema == "codescribe.agent-ack.v1",
         let delivery = row["delivery_id"] as? String,
         let owner = OverlayConversationOwner(row: row)
@@ -705,36 +858,15 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let replyID = row["reply_id"] as? String,
         let owner = OverlayConversationOwner(row: row),
         let ticket = row["playback_ticket"] as? String,
-        let state = row["state"] as? String,
-        let message = messages["reply:" + replyID], message.owner?.id == owner.id
+        let state = row["state"] as? String
       {
-        let playback = OverlayReplyPlayback(
-          replyID: replyID, ticket: ticket, state: state,
-          reason: row["reason"] as? String ?? row["tts_error"] as? String,
-          spoken: row["spoken"] as? Bool == true,
-          emittedAt: row["emitted_at"] as? String ?? "")
-        if retiredPlaybackTickets[replyID]?.contains(ticket) == true { return }
-        // Delayed observations cannot rewind playback or finish another ticket.
-        if let current = playbackByReply[replyID] {
-          if playback.emittedAt < current.emittedAt { return }
-          if current.ticket == ticket, current.state != "waiting" && current.state != "playing",
-            state == "waiting" || state == "playing"
-          {
-            return
-          }
-        }
-        if let current = playbackByReply[replyID], current.ticket != ticket,
-          state != "waiting" && state != "playing"
-        {
-          return
-        }
-        if let current = playbackByReply[replyID], current.ticket != ticket {
-          var retired = retiredPlaybackTickets[replyID] ?? []
-          retired.append(current.ticket)
-          retiredPlaybackTickets[replyID] = Array(retired.suffix(64))
-        }
-        playbackByReply[replyID] = playback
-        messages["reply:" + replyID]?.playback = playback
+        applyPlayback(
+          OverlayReplyPlayback(
+            replyID: replyID, ticket: ticket, state: state,
+            reason: row["reason"] as? String ?? row["tts_error"] as? String,
+            spoken: row["spoken"] as? Bool == true,
+            emittedAt: row["emitted_at"] as? String ?? ""),
+          owner: owner)
         return
       }
       if schema == "codescribe.agent-reply.v1", let replyID = row["reply_id"] as? String,
@@ -790,6 +922,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         if row["sender"] != nil {
           message.sourceChannel = destination
         }
+        message.sentTo = messages[key]?.sentTo ?? OverlayReceiptState.stampedReach(row)
         message.supportsSpeechPlayback = true
         message.provider = owner.provider
         message.providerSessionID = owner.providerSessionID
@@ -823,6 +956,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       if let entries = row["recipients"] as? [[String: Any]] {
         owners = entries.compactMap(OverlayConversationOwner.init(row:))
         captureRecipients[session] = owners
+        var documents = activeCaptureDocuments ?? [:]
+        documents[Self.channelSessionID(of: session)] = session
+        activeCaptureDocuments = documents
       } else {
         owners = captureRecipients[session] ?? []
       }
@@ -880,7 +1016,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       // with its hold deadline) finishes a channel take; a phrase terminal
       // inside the take is still a revision of the same document.
       let closingRow = sealedRow && row["terminal"] as? Bool == true
-      let channelClosed = endedSessions.contains(session) || closingRow
+      let channelClosed =
+        endedSessions.contains(session)
+        || endedSessions.contains(Self.channelSessionID(of: session))
+        || closingRow
       let terminal =
         evidence
         ? row["reducer_action"] as? String == "record_ledger_terminal_seal" || closingRow
@@ -956,7 +1095,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         // (2026-10-23, 08:02:19 open, 08:02:29 first words, 08:02:30 reply).
         emittedAt: channelMessage != nil
           ? messages[key]?.emittedAt ?? row["emitted_at"] as? String ?? sessionOpenedAt[session]
-            ?? ""
+            ?? sessionOpenedAt[Self.channelSessionID(of: session)] ?? ""
           : row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
         deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
       let captureFinished =
@@ -1231,18 +1370,21 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
     private mutating func finalizeRefused(session: String, holdUntil: Date? = nil) {
       for (id, origin) in deliveryOrigins
-      where origin.captureSession == session {
+      where origin.captureSession == session
+        || Self.channelSessionID(of: origin.captureSession) == session
+      {
+        let originSession = origin.captureSession
         guard var message = messages[id] else { continue }
         message.deliverySealed = true
         message.holdUntil = holdUntil ?? message.holdUntil
-        if origin.terminal && Self.channelMessageKey(session) == nil {
+        if origin.terminal && Self.channelMessageKey(originSession) == nil {
           messages[id] = message
           continue
         }
         let phase =
-          Self.channelMessageKey(session) != nil
-          ? Self.identity(["channel-message-seal", session])
-          : Self.identity(["coverage-refused-seal", session, origin.documentIndex])
+          Self.channelMessageKey(originSession) != nil
+          ? Self.identity(["channel-message-seal", originSession])
+          : Self.identity(["coverage-refused-seal", originSession, origin.documentIndex])
         for index in message.recipients.indices {
           let owner = message.recipients[index].owner
           let delivery = Self.identity([
@@ -1256,13 +1398,13 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         }
         message.captureState = .finished
         messages[id] = message
-        if Self.channelMessageKey(session) != nil,
+        if Self.channelMessageKey(originSession) != nil,
           seenSeals.insert(origin.audience + "\0" + phase).inserted
         {
           sealOrder &+= 1
           seals[origin.audience] = Seal(
             phaseID: phase, audience: origin.audience, order: sealOrder,
-            captureSessionID: session, recipientIDs: message.recipients.map { $0.owner.id })
+            captureSessionID: originSession, recipientIDs: message.recipients.map { $0.owner.id })
         }
       }
     }
@@ -1368,9 +1510,25 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         seenSeals = Set(seals.values.map { $0.audience + "\0" + $0.phaseID })
       }
       if endedSessions.count > Self.historyLimit * 2 {
-        let retained = Set(sessions.values.map(\.sessionID))
+        let retained = Set(
+          sessions.values.map(\.sessionID) + deliveryOrigins.values.map(\.captureSession))
         endedSessions = endedSessions.intersection(retained)
       }
+      if let documents = activeCaptureDocuments, documents.count > Self.historyLimit {
+        let keep = Set(sessions.values.map(\.sessionID))
+        activeCaptureDocuments = documents.filter { keep.contains($0.key) }
+      }
+    }
+
+    static func channelSessionID(of session: String) -> String {
+      guard let range = session.range(of: "-s", options: .backwards) else { return session }
+      let prefix = String(session[..<range.lowerBound])
+      let suffix = session[range.upperBound...]
+      guard prefix.hasPrefix("agent-channel-"), !suffix.isEmpty,
+        suffix.allSatisfy({ $0.isASCII && $0.isNumber }),
+        let index = UInt32(suffix), index >= 1
+      else { return session }
+      return prefix
     }
 
     private static func captureSampleRateHz(_ row: [String: Any]) -> Double? {
@@ -1447,12 +1605,33 @@ struct OverlayConversationOwner: Codable, Equatable, Hashable, Sendable {
 struct OverlayConversationRecipient: Codable, Equatable, Sendable {
   let owner: OverlayConversationOwner
   var deliveryID: String?
+  /// The copy is in the owner's mailbox: the lease's `pending`, or the
+  /// follower's `delivered` receipt.
   var queued: Bool
   var accepted: Bool
+  /// The owner's `read` receipt for this delivery, the agent's acknowledgment.
   var acknowledged: Bool
   /// The owner's follower recorded this channel-0 delivery as skipped
-  /// (`broadcast-skipped/<lease>/<delivery>.json`): it was off channel 0.
+  /// (`<delivery_id>.skipped.json`): it was off channel 0. Final.
   var broadcastSkipped: Bool? = nil
+
+  var reach: OverlayConversationReach { .init(name: owner.name, channel: owner.channel) }
+}
+
+/// One agent as a publisher's admitted list names it: by name and channel
+/// only, the way `sent_to` is written (`docs/TRANSCRIPT_BUS.md`, Receipts).
+struct OverlayConversationReach: Codable, Equatable, Hashable, Sendable {
+  let name: String
+  let channel: String
+}
+
+/// What the "Read X/Y" footer shows for one message: `read` is X, the
+/// denominator is Y by the contract's formula, and `unreceipted` lists the
+/// admitted agents with no copy and no receipt at all (`no_receipt`).
+struct OverlayReadReceipt: Equatable, Sendable {
+  let read: Int
+  let denominator: Int
+  let unreceipted: [OverlayConversationReach]
 }
 
 struct OverlayReplyPlayback: Codable, Equatable, Sendable {
@@ -1477,25 +1656,58 @@ struct OverlayUserReplyReference: Codable, Equatable, Sendable {
 
   init(message: OverlayConversationMessage) {
     messageID = message.id
-    author = String(
-      (message.kind == .user
-        ? String(localized: "You") : message.owner?.name ?? String(localized: "Agent")).prefix(128))
+    let fallbackAuthor =
+      message.kind == .user ? String(localized: "You") : String(localized: "Agent")
+    let rawAuthor =
+      message.kind == .user ? fallbackAuthor : (message.owner?.name ?? fallbackAuthor)
+    let sanitizedAuthor = Self.stripControlScalars(from: rawAuthor)
+    let normalizedAuthor =
+      sanitizedAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? fallbackAuthor : sanitizedAuthor
+    let boundedAuthor = Self.scalarBoundedPrefix(of: normalizedAuthor, maxScalars: 128)
+    author =
+      boundedAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? fallbackAuthor : boundedAuthor
     let body = message.bodyText
     let context =
       body.isEmpty
       ? (message.attachments ?? []).map(\.name).joined(separator: ", ") : body
-    text = String(context.prefix(512))
+    text = Self.scalarBoundedPrefix(of: context, maxScalars: 512)
   }
 
   init?(row: [String: Any]) {
     guard let id = row["message_id"] as? String, !id.isEmpty, id.utf8.count <= 512,
-      !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-      let author = row["author"] as? String, !author.isEmpty, author.count <= 128,
-      let text = row["text"] as? String, text.count <= 512
+      !id.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
+      let author = row["author"] as? String,
+      !author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      author.unicodeScalars.count <= 128,
+      !author.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
+      let text = row["text"] as? String, text.unicodeScalars.count <= 512
     else { return nil }
     self.messageID = id
     self.author = author
     self.text = text
+  }
+
+  /// Truncate on whole extended grapheme clusters while keeping Unicode scalar
+  /// count within `bus-demux.py` `validate_user_reply_reference` limits.
+  private static func scalarBoundedPrefix(of value: String, maxScalars: Int) -> String {
+    guard maxScalars > 0 else { return "" }
+    if value.unicodeScalars.count <= maxScalars { return value }
+    var usedScalars = 0
+    var end = value.startIndex
+    for character in value {
+      let count = character.unicodeScalars.count
+      if usedScalars + count > maxScalars { break }
+      usedScalars += count
+      end = value.index(after: end)
+    }
+    return String(value[..<end])
+  }
+
+  private static func stripControlScalars(from value: String) -> String {
+    let filtered = value.unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }
+    return String(String.UnicodeScalarView(filtered))
   }
 }
 
@@ -1518,6 +1730,14 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var occurrenceIDs: [String]? = nil
   var sourceChannel: String? = nil
   var sourceRevision: UInt64? = nil
+  /// Who a channel-0 text was sent to, frozen by its publisher: the copy's
+  /// `target.recipients` stamp, outranked by the publisher's `sent.json`.
+  /// Nil means the reach is unknown (an older row, or a channel take whose
+  /// admitted owners are its `recipients`), never "everyone".
+  var sentTo: [OverlayConversationReach]? = nil
+  /// This message's receipt files as last composed
+  /// (`OverlayReceiptState.compose`); nil until the reader listed them.
+  var receipt: OverlayMessageReceipt? = nil
   /// File pointers the typed message carried; the bus never carries the bytes.
   var attachments: [OverlayMessageAttachment]? = nil
   var userReplyTo: OverlayUserReplyReference? = nil
@@ -1592,6 +1812,24 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
     var result = self
     result.holdSecondsRemaining = holdingSeconds(at: now)
     return result
+  }
+
+  /// The contract's count (`receipt_state` in bus-demux.py, "One contract,
+  /// two implementations" in `docs/TRANSCRIPT_BUS.md`) over the composed
+  /// receipt files alone: the admitted list plus every agent delivered to or
+  /// read outside it, minus every agent whose copy was skipped. Until a list
+  /// is known (`sent.json`, the files' stamp, the copy's stamp) the copies
+  /// themselves are the list, today's denominator. A listed agent with no
+  /// copy and no file is `unreceipted`; a copy without a file keeps its row.
+  var readReceipt: OverlayReadReceipt {
+    let summary = (receipt ?? OverlayMessageReceipt(messageID: "")).summary(
+      listed: sentTo ?? recipients.map(\.reach))
+    let present = Set(recipients.map(\.reach))
+    return OverlayReadReceipt(
+      read: summary.read, denominator: summary.denominator,
+      unreceipted: summary.recipients.compactMap { recipient -> OverlayConversationReach? in
+        recipient.state == .noReceipt ? recipient.reach : nil
+      }.filter { !present.contains($0) })
   }
   /// An agent-authored row can resolve a voice when Play is requested.
   var supportsSpeechPlayback = false
@@ -1735,6 +1973,23 @@ struct OverlayConversation: Equatable, Identifiable, Sendable {
   /// Archive metadata can advertise an owner before its bus has been read.
   /// An unopened history is not a verified empty conversation.
   var historyLoaded = true
+
+  /// The human mailbox has no agent lease, microphone or numeric shortcut.
+  /// Its internal route remains channel 10; only the presentation is named.
+  var isHumanInbox: Bool { id == "10" && channel == "10" && owner == nil }
+  var displayTitle: String {
+    isHumanInbox || channel.isEmpty ? name : "\(channel) · \(name)"
+  }
+
+  static func humanInbox(messages: [OverlayConversationMessage] = []) -> Self {
+    Self(
+      id: "10", channel: "10",
+      name: String(
+        localized: "Your Inbox",
+        comment: "The human mailbox beside agent conversations; no channel number is displayed"),
+      owner: nil, messages: messages)
+  }
+
   var replyIDs: [String] { messages.filter { $0.kind == .reply }.map(\.id) }
   func projectingDelivery(at now: Date) -> Self {
     var result = Self(
@@ -1838,4 +2093,259 @@ struct OverlayChannelDeliverySnapshot: Equatable, Sendable {
   /// First-load archive replies are history, including their broadcast mirrors.
   var historyReplyIDs: Set<String> = []
   var panelFocusResults: [String: OverlayPanelFocusResult] = [:]
+}
+
+/// One delivery as the receipt files describe it (`recipients[]` of
+/// `receipt_state`): the farthest file wins, `read` over `delivered`,
+/// `skipped` on its own; or an agent on the admitted list with no file at
+/// all (`no_receipt`, no delivery id).
+struct OverlayReceiptRecipient: Codable, Equatable, Sendable {
+  let deliveryID: String?
+  let name: String?
+  let channel: String?
+  let state: OverlayReceiptState.State
+  let wake: String?
+  let deliveredAt: String?
+  let at: String?
+
+  var reach: OverlayConversationReach? {
+    guard let name, let channel else { return nil }
+    return OverlayConversationReach(name: name, channel: channel)
+  }
+
+  /// One agent by name and channel, however many deliveries reached it; a
+  /// nameless file counts by its delivery.
+  var identity: String {
+    if let name { return name + "\u{0}" + (channel ?? "") }
+    return (deliveryID ?? "") + "\u{0}\u{0}"
+  }
+}
+
+/// One `playback.<ticket>.json`: the first terminal state of one playback of
+/// a reply, by the player named in the file.
+struct OverlayReceiptPlayback: Codable, Equatable, Sendable {
+  let ticket: String
+  let state: String
+  let reason: String?
+  let spoken: Bool
+  let at: String?
+  let owner: OverlayConversationOwner?
+}
+
+struct OverlayReceiptWithdrawal: Codable, Equatable, Sendable {
+  let deliveryID: String
+  let controlID: String?
+  let at: String?
+}
+
+/// `summary(listed:)` of a composed receipt: the recipients with their
+/// `no_receipt` entries, X and Y.
+struct OverlayReceiptSummary: Equatable, Sendable {
+  let recipients: [OverlayReceiptRecipient]
+  let read: Int
+  let denominator: Int
+}
+
+/// The receipt files of one message directory, composed (`receipt_state` in
+/// bus-demux.py): what the files say before any list fallback. `sentTo` is
+/// the publisher's `sent.json`, else the stamp the recipients' files carried;
+/// `deliveries` has one entry per `delivery_id`, sorted by time; `spoken` is
+/// the playback that completed, else the latest terminal one.
+struct OverlayMessageReceipt: Codable, Equatable, Sendable {
+  let messageID: String
+  var sentTo: [OverlayConversationReach]? = nil
+  var deliveries: [OverlayReceiptRecipient] = []
+  var withdrawn: [OverlayReceiptWithdrawal] = []
+  var playbacks: [OverlayReceiptPlayback] = []
+
+  var spoken: OverlayReceiptPlayback? { playbacks.first(where: \.spoken) ?? playbacks.last }
+
+  /// The contract's recipients and count over a list: `sentTo` when the files
+  /// carry one, else `fallback` (the helper has none; the overlay passes the
+  /// copies it sees). Every listed agent without a file is a `no_receipt`
+  /// entry and counts; a skipped one is shown, never counted.
+  func summary(listed fallback: [OverlayConversationReach]) -> OverlayReceiptSummary {
+    func identity(_ reach: OverlayConversationReach) -> String {
+      reach.name + "\u{0}" + reach.channel
+    }
+    let listed = (sentTo ?? fallback).map(identity)
+    let reached = deliveries.filter { $0.state == .delivered || $0.state == .read }
+      .map(\.identity)
+    let skipped = deliveries.filter { $0.state == .skipped }.map(\.identity)
+    var recipients = deliveries
+    for reach in sentTo ?? fallback {
+      let key = identity(reach)
+      guard !reached.contains(key), !deliveries.contains(where: { $0.identity == key }) else {
+        continue
+      }
+      recipients.append(
+        OverlayReceiptRecipient(
+          deliveryID: nil, name: reach.name, channel: reach.channel, state: .noReceipt,
+          wake: nil, deliveredAt: nil, at: nil))
+    }
+    return OverlayReceiptSummary(
+      recipients: recipients,
+      read: Set(deliveries.filter { $0.state == .read }.map(\.identity)).count,
+      denominator: OverlayReceiptState.denominator(
+        listed: listed, reached: reached, skipped: skipped))
+  }
+
+  /// The helper's JSON line (`cs-bus --receipts`) for this directory, with
+  /// `NSNull` for null, so a model directory's `expected.json` compares
+  /// exactly. The helper knows no copies, so its list fallback is empty.
+  func jsonObject(listed fallback: [OverlayConversationReach] = []) -> [String: Any] {
+    func json(_ value: Any?) -> Any { value ?? NSNull() }
+    let summary = summary(listed: fallback)
+    return [
+      "message_id": messageID,
+      "sent_to": json(sentTo.map { $0.map { ["name": $0.name, "channel": $0.channel] } }),
+      "recipients": summary.recipients.map { recipient -> [String: Any] in
+        [
+          "delivery_id": json(recipient.deliveryID), "name": json(recipient.name),
+          "channel": json(recipient.channel), "state": recipient.state.rawValue,
+          "wake": json(recipient.wake), "delivered_at": json(recipient.deliveredAt),
+          "at": json(recipient.at),
+        ]
+      },
+      "denominator": summary.denominator,
+      "withdrawn": withdrawn.map { withdrawal -> [String: Any] in
+        [
+          "delivery_id": withdrawal.deliveryID, "control_id": json(withdrawal.controlID),
+          "at": json(withdrawal.at),
+        ]
+      },
+      "spoken": json(
+        spoken.map { playback -> [String: Any] in
+          [
+            "state": playback.state, "reason": json(playback.reason), "spoken": playback.spoken,
+            "at": json(playback.at), "playback_ticket": playback.ticket,
+          ]
+        }),
+    ]
+  }
+}
+
+/// The receipts contract as the overlay computes it (`docs/TRANSCRIPT_BUS.md`,
+/// "Receipts" and "One contract, two implementations"): one file per fact
+/// under `runtime/receipts/<message_id>/`, a delivery's state is its farthest
+/// file (`read` over `delivered`, `skipped` on its own), and the denominator
+/// is one formula. The helper's `receipt_state` is the other implementation;
+/// both are pinned to the model directories under
+/// `scripts/tests/fixtures/receipts/<case>/` by their own test suites. The
+/// composer here is the overlay's one implementation: the reader hands it
+/// the files of a message directory and the projection keeps what it
+/// returns. The overlay computes only this: no roster, no policies, no reach
+/// of its own.
+enum OverlayReceiptState {
+  static let schema = "codescribe.message-receipt.v1"
+
+  enum State: String, Codable, Equatable, Sendable {
+    case delivered, read, skipped
+    case noReceipt = "no_receipt"
+  }
+
+  /// The admitted list a channel-0 text copy carries (`broadcast_reach` in
+  /// bus-demux.py): `target.recipients`, frozen by the publisher. Nil without
+  /// the stamp: the reach is unknown, never "everyone".
+  static func stampedReach(_ row: [String: Any]) -> [OverlayConversationReach]? {
+    guard let target = row["target"] as? [String: Any],
+      target["mode"] as? String == "broadcast",
+      let rows = target["recipients"] as? [[String: Any]]
+    else { return nil }
+    return reach(rows)
+  }
+
+  static func reach(_ rows: [[String: Any]]) -> [OverlayConversationReach] {
+    rows.compactMap { row in
+      guard let name = row["name"] as? String, let channel = row["channel"] as? String else {
+        return nil
+      }
+      return OverlayConversationReach(name: name, channel: channel)
+    }
+  }
+
+  /// The one count: everyone on the admitted list, plus anyone delivered to
+  /// or read outside it, minus everyone whose copy was skipped. An agent is
+  /// one entry by name and channel, however many deliveries reached it; a
+  /// member of the list whose copy was skipped leaves the count (the skip
+  /// wins), and a member without any file stays in it (`no_receipt`).
+  static func denominator<Agent: Hashable>(listed: [Agent], reached: [Agent], skipped: [Agent])
+    -> Int
+  {
+    Set(listed).union(reached).subtracting(skipped).count
+  }
+
+  /// `receipt_state(root, message_id)` of bus-demux.py over the files of one
+  /// message directory. `files` are the directory's entries by name; a name
+  /// starting with `.` (a write in progress), a name and content that
+  /// disagree, a foreign schema and a foreign message id are ignored, never
+  /// repaired.
+  static func compose(files: [(name: String, row: [String: Any])], messageID: String)
+    -> OverlayMessageReceipt
+  {
+    var rows: [String: [State: [String: Any]]] = [:]
+    var order: [String] = []
+    var result = OverlayMessageReceipt(messageID: messageID)
+    var stamped: [OverlayConversationReach]? = nil
+    var published: [OverlayConversationReach]? = nil
+    for (name, row) in files.sorted(by: { $0.name < $1.name }) {
+      guard !name.hasPrefix("."), name.hasSuffix(".json"),
+        row["schema"] as? String == schema, row["message_id"] as? String == messageID,
+        let kind = row["kind"] as? String
+      else { continue }
+      let stem = String(name.dropLast(".json".count))
+      let delivery = row["delivery_id"] as? String
+      if let state = State(rawValue: kind), state != .noReceipt, let delivery,
+        stem == delivery + "." + kind
+      {
+        if rows[delivery] == nil { order.append(delivery) }
+        rows[delivery, default: [:]][state] = row
+        if stamped == nil, let list = row["sent_to"] as? [[String: Any]] {
+          stamped = reach(list)
+        }
+      } else if kind == "sent", stem == "sent", let list = row["sent_to"] as? [[String: Any]] {
+        published = reach(list)
+      } else if kind == "withdrawn", let delivery, stem == "withdrawn." + delivery {
+        result.withdrawn.append(
+          OverlayReceiptWithdrawal(
+            deliveryID: delivery, controlID: row["control_id"] as? String,
+            at: row["at"] as? String))
+      } else if kind == "playback", let ticket = row["playback_ticket"] as? String,
+        stem == "playback." + ticket, let state = row["state"] as? String
+      {
+        result.playbacks.append(
+          OverlayReceiptPlayback(
+            ticket: ticket, state: state, reason: row["reason"] as? String,
+            spoken: row["spoken"] as? Bool == true, at: row["at"] as? String,
+            owner: OverlayConversationOwner(row: row)))
+      }
+    }
+    for delivery in order {
+      let kinds = rows[delivery] ?? [:]
+      let state: State =
+        kinds[.read] != nil ? .read : kinds[.delivered] != nil ? .delivered : .skipped
+      guard let row = kinds[state] else { continue }
+      let delivered = kinds[.delivered]
+      // Name and channel from the farthest file, completed from the others:
+      // a reader that acknowledged under a lease bound later may not have
+      // known its digit when it wrote `read`.
+      let others = [State.delivered, .read, .skipped].compactMap { kinds[$0] }
+      result.deliveries.append(
+        OverlayReceiptRecipient(
+          deliveryID: delivery,
+          name: row["name"] as? String ?? others.compactMap({ $0["name"] as? String }).first,
+          channel: row["channel"] as? String
+            ?? others.compactMap({ $0["channel"] as? String }).first,
+          state: state, wake: delivered?["wake"] as? String,
+          deliveredAt: delivered?["at"] as? String,
+          at: (state == .read ? row["read_at"] : row["at"]) as? String))
+    }
+    result.deliveries.sort {
+      ($0.at ?? "", $0.deliveryID ?? "") < ($1.at ?? "", $1.deliveryID ?? "")
+    }
+    result.withdrawn.sort { ($0.at ?? "", $0.deliveryID) < ($1.at ?? "", $1.deliveryID) }
+    result.playbacks.sort { ($0.at ?? "", $0.ticket) < ($1.at ?? "", $1.ticket) }
+    result.sentTo = published ?? stamped
+    return result
+  }
 }

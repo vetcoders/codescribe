@@ -58,7 +58,7 @@ skill_source = repo / "skills" / "codescribe"
 helper_source = repo / "scripts" / "bus-demux.py"
 entrypoints = [helper_source, *(repo / "scripts" / name for name in (
     "cs-bus", "cs-say", "cs-junie", "bus-mcp.py", "bus-mcp-agent.py",
-    "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py"))]
+    "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py", "bus-mcp-sessions.py"))]
 if not (skill_source / "SKILL.md").is_file() or not all(path.is_file() for path in entrypoints):
     raise SystemExit("agent bridge source is incomplete")
 if (
@@ -100,6 +100,16 @@ for source in entrypoints:
     target = stage / "bin" / source.name
     shutil.copy2(source, target)
     target.chmod(0o755)
+# The OpenAI package carries its Python server dependencies. Its entry verifies
+# both copies and runs the managed owner, so UI and MCP share follower identity.
+server = stage / "plugins" / "codescribe" / "server"
+server.mkdir()
+server_files = []
+for source in entrypoints:
+    target = server / source.name
+    shutil.copy2(source, target)
+    server_files.append({"path": source.name, "sha256": hashlib.sha256(target.read_bytes()).hexdigest()})
+(server / "manifest.json").write_text(json.dumps({"api_version": 1, "files": server_files}, sort_keys=True) + "\n")
 if publisher is not None:
     shutil.copy2(publisher, stage / "bin" / "codescribe")
     (stage / "bin" / "codescribe").chmod(0o755)
@@ -322,6 +332,31 @@ fi
 STAMP_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "==> stamp (pre-build): v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
 
+# Signing preflight for a headless build. The unlocked state of the login
+# keychain belongs to the security session that unlocked it: the graphical
+# session has it open while an SSH session to the same Mac sees it locked, and
+# no keychain setting or partition list changes that. A real-identity build
+# over SSH would therefore run xcodebuild for minutes and then die in codesign
+# with errSecInternalComponent, so probe the default keychain now and stop with
+# the way out: run the same lane inside the graphical session.
+DEFAULT_KEYCHAIN="$(security default-keychain 2>/dev/null | sed -n 's/^ *"\(.*\)" *$/\1/p' | head -1)"
+headless_signing_recipe() {
+  echo "error: the signing key in ${DEFAULT_KEYCHAIN:-the login keychain} is not usable from this SSH session$1." >&2
+  echo "       The login keychain is unlocked only inside the graphical session of this Mac; a keychain timeout or" >&2
+  echo "       \`security set-key-partition-list\` does not change that. Run the same lane in that session instead, e.g." >&2
+  echo "         open -a Terminal <lane>.command" >&2
+  echo "       (a locked screen is fine). This build does not fall back to ad-hoc signing." >&2
+}
+# A host without any real identity would sign ad-hoc anyway, so it is not
+# held up by a keychain it would never use.
+if [ "${SKIP_XCODEBUILD:-0}" != "1" ] && [ "${CODESCRIBE_CODESIGN_IDENTITY:-}" != "-" ] \
+  && [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] \
+  && security find-identity -v -p codesigning 2>/dev/null | grep -q '"Developer ID Application: \|"Apple Development: ' \
+  && ! security show-keychain-info "${DEFAULT_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}" >/dev/null 2>&1; then
+  headless_signing_recipe " (the keychain is locked here)"
+  exit 1
+fi
+
 echo "==> [1/7] Building codescribe-ffi ($PROFILE)"
 # Verify emitted artifact receipts before any consumer can touch stale files.
 # A configured build.target puts artifacts in a triple subdirectory. This app
@@ -491,8 +526,10 @@ else
     echo "    MiniLM not bundled (no runtime consumer); stale copies stripped; CLI/tests use the HF cache."
   fi
 fi
-# Only the two non-secret engine defaults belong in the signed app bundle.
-# The app owns merging them into settings.json at launch, with a backup.
+# Only the non-secret endpoint default belongs in the signed app bundle.
+# Never ship the builder's ASR mode: launch repair would seed it as an explicit
+# user choice and could make first-run setup wait for an unchosen Whisper model.
+# The app owns merging the endpoint into settings.json at launch, with a backup.
 python3 - "$APP/Contents/Resources/operator-pack/settings.json" "${CODESCRIBE_VOICE_LAB_SRC:-$REPO_ROOT/../voice-lab}" "$HOME/.codescribe/src/voice-lab" <<'PY_PACK'
 import json
 import sys
@@ -505,8 +542,10 @@ for pack in (pack for root in roots for pack in sorted((root / "examples").glob(
     if not (pack.parent / "keys").is_dir():
         continue
     source = json.loads(pack.read_text()).get("speech", {}).get("engine", {})
-    engine = {k: source[k] for k in ("cloud_transcription_endpoint", "asr_mode")
-              if isinstance(source.get(k), str) and source[k].strip()}
+    endpoint = source.get("cloud_transcription_endpoint")
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        continue
+    engine = {"cloud_transcription_endpoint": endpoint}
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps({"speech": {"engine": engine}}, indent=2) + "\n")
     break
@@ -549,10 +588,31 @@ BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundle
 # Monitoring) survives rebuilds. Ad-hoc (`--sign -`) is cdhash-based, so the grant
 # dies on every rebuild. An explicit "-" selects it for isolated test builds;
 # otherwise prefer a real identity whenever the caller did not specify one.
+# The identity comes from the default keychain search list (login), named by
+# its SHA-1 hash so the choice is unambiguous even when a certificate is
+# installed twice. There is no separate build keychain. The headless preflight
+# above already refused an SSH build whose login keychain is locked; the sign
+# helper keeps a second line of defence for a keychain that locked meanwhile.
+SIGN_KEYCHAIN="$DEFAULT_KEYCHAIN"
 SIGN_ID="${CODESCRIBE_CODESIGN_IDENTITY:-}"
 if [ -z "$SIGN_ID" ]; then
-  SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
-  [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)"
+  SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Developer ID Application: .*/\1/p' | head -1)"
+  [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*/\1/p' | head -1)"
+fi
+# Every real-identity codesign below goes through here. Ad-hoc signing never
+# needs a keychain and never comes here.
+sign() {
+  local out rc=0
+  out="$(codesign "$@" 2>&1)" || rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out" >&2
+  if [ "$rc" -ne 0 ] && [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] && printf '%s' "$out" | grep -q "errSecInternalComponent"; then
+    headless_signing_recipe " (errSecInternalComponent)"
+    exit 1
+  fi
+  return "$rc"
+}
+if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
+  echo "    signing from keychain: ${SIGN_KEYCHAIN:-<default>}"
 fi
 # Entitlements for the hardened-runtime signing path below. Same default path
 # as the Makefile's CODESCRIBE_ENTITLEMENTS (`make install-app`); honored from
@@ -564,13 +624,13 @@ ENTITLEMENTS_PATH="${CODESCRIBE_ENTITLEMENTS:-$REPO_ROOT/scripts/entitlements.pl
 # on every executable in the bundle); ad-hoc stays plain since ad-hoc +
 # hardened runtime breaks local TCC (Accessibility/Input Monitoring) testing.
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
-  codesign --force --options runtime --timestamp --sign "$SIGN_ID" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
+  sign --force --options runtime --timestamp --sign "$SIGN_ID" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
 else
   codesign --force --sign - --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
 fi
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
   echo "==> [7/7] Signing $SCHEME.app with stable identity: $SIGN_ID"
-  codesign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+  sign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 else
   echo "==> [7/7] Ad-hoc signing $SCHEME.app (TCC re-grants per build)"
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
@@ -580,7 +640,7 @@ python3 "$REPO_ROOT/scripts/lib/refresh-agent-publisher-manifest.py" "$AGENT_BRI
 # with the outer signature without signing that child a second time (no
 # --deep here by design: the nested code is already sealed above).
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
-  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+  sign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 else
   codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
 fi

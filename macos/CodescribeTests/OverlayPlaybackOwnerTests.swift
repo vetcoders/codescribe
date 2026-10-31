@@ -146,7 +146,9 @@ final class OverlayPlaybackOwnerTests: XCTestCase {
     defer { state = nil }
     weak let retainedState = state
     state?.applyChannelRoster([roster(old)])
-    state?.observeChannelDelivery(using: OverlayChannelDeliveryReader(root: root))
+    state?.observeChannelDelivery(
+      using: OverlayChannelDeliveryReader(
+        root: root, cacheRoot: root.appendingPathComponent("data.noindex", isDirectory: true)))
     func waitForDescriptor(_ descriptor: String) async throws {
       let deadline = ContinuousClock.now.advanced(by: .seconds(2))
       while state?.channelAgentDescriptors["2"] != descriptor && ContinuousClock.now < deadline {

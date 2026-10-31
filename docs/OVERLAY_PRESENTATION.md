@@ -34,11 +34,109 @@ surface. Keep the policy symbol/help from `AgentBroadcastPolicy`; its meaning
 does not belong to the visual style. `OverlayAgentUnreadBadge` is shared by
 current and saved conversations.
 
-An agent row's primary action and its microphone, speaker, Frame and archive
-actions are siblings. Identity, the clock, the descriptor and the preview take
-the full row width; the footer owns only its compact action group. That budget
-is five text lines: identity, descriptor, up to two preview lines, and footer
-state. Preserve it for agent rows.
+The [approved window mockup from 2026-10-29](guide/bus-window-mockup.html)
+records the compact-card layout and its matching More/right-click menu.
+The runtime action semantics and availability are defined below.
+
+An agent row has three blocks: identity and controls, the provider/model/project
+descriptor, and a routed message preview of at most two lines. There is no
+separate state-and-actions footer. The waveform microphone, speaker and more
+menu remain visible beside the identity without hover. The conversation button
+and these controls are siblings; opening a conversation never opens its
+microphone. Long names retain their full tooltip and accessibility label.
+
+Hovering the row's navigation area or a folded-rail entry for 350 ms opens
+the last loaded message in the shared `OverlayHintPanel`. The same message
+as the inline preview is used, including outgoing user messages; original
+paragraphs, rich formatting and attachments use `OverlayConversationMessageContent`.
+The preview is bounded to the display and scrollable. Its pointer target stays
+open while the cursor crosses the gap or rests on the preview, then dismisses
+after leaving both targets. The window cannot become key. It mounts no
+composer, changes no selected conversation or recipient, acknowledges no
+message, and fetches no saved history. Audio and menu controls keep their own
+action hints. Empty entries retain their existing navigation hint.
+
+The more menu contains channel-zero membership, Do not disturb, the detected
+client/terminal destination and removal into saved conversations. The same
+commands are available from the row's context menu. Existing pending,
+availability, frozen-owner and archive guards remain in force. An open
+microphone can still be stopped after its reader disconnects, and playback can
+still be muted. A client-focus request keeps its progress and result on the
+more control and in the menu; removing the footer must not erase that feedback.
+
+`cardAgentMenu` selects only these secondary actions from the existing command
+owner. Card menus do not repeat Write/Forward, microphone, playback or Show in
+Agents; the full menu remains available on other pill surfaces. The same
+subset is used by the conversation header's More control.
+
+Opening the workspace dispatches the existing `focusAgentPanel` command to
+the detected Frame pane, terminal or Codex thread. `showAgentInMonitor` is a
+separate navigation action. Removing a card uses `archiveAgent`: the exact
+owner is verified, an open microphone channel refuses the operation, a live
+reader is stopped before its digit is released, and the lease, backlog and
+saved conversation remain retained. No new action or archive semantics are
+introduced by the mockup's labels.
+
+Reception controls live in the menu, but restrictions remain visible by the
+name: a moon while Do not disturb is on, and a crossed antenna while the agent
+is outside channel zero. These are passive projections of the existing
+`OverlayBroadcastPolicyLedger`, not another policy writer. Disconnected rows
+dim without adding a Disconnected text line and remain available for history.
+
+The compact receipt mark describes the newest completed user delivery to the
+exact frozen recipient. A single check means a delivered receipt; the compact
+double-check shape means a read receipt or the canonical agent acknowledgment.
+Queue admission and provider acceptance are not delivered/read evidence. Held,
+skipped and unreceipted deliveries keep distinct marks and explanations. The
+mark sits near the identity, separately from the last-preview clock; its help
+and accessibility text name the time of its own outgoing message. A later
+incoming reply must not lend its time to that receipt. The circular unread
+reply count is a separate projection, also shown on the folded rail; compact
+map and floating Intercom badge rendering retain their existing form.
+
+## Horizontal conversation and text destination
+
+The horizontal window keeps the conversation header and its current-agent
+actions visible with either the full sidebar or its folded rail. The sidebar
+choice does not replace the current conversation, draft or microphone target.
+Folded-rail controls sit on the full column's centerline, with equal horizontal
+gutters that keep the numbered buttons clear of the native resize band.
+The existing All, Inbox and saved-conversation views keep their current data
+and routing semantics; the earlier proposal's additional history filters are
+not part of this change.
+
+The standard conversation reserves its composer space below the message
+viewport. The shared `.intercom` presentation keeps its existing floating
+composer arrangement. Text scale, resize, retained history, reply navigation,
+attachments, draft dictation and draft synchronization remain supported.
+
+The visible conversation, text destination and open microphone are independent.
+The text destination is always named beside the composer and can be selected
+explicitly. A separate action chooses the viewed conversation as the text
+destination. Selection pins conversation ID, channel and frozen owner identity;
+reusing a channel digit cannot adopt another owner's draft or pending reply.
+All drafts, replies, attachments, editor identity and send callbacks continue
+to use the existing per-conversation stores. A missing destination stays named
+as unavailable with a usable chooser instead of falling back to the viewed
+conversation. The microphone status reports actual open channels, separately
+from dictation into the text field.
+
+Native Undo remains scoped to the mounted editor. Switching the frozen text
+destination preserves each owner's stored draft, but starts a fresh native
+undo stack, as switching conversations did before. Undo never crosses owners.
+
+Replying to a displayed message and the explicit Write/Forward menu command
+choose their own frozen conversation as the text destination. Ordinary row,
+map and rail navigation only change the viewed conversation.
+Returning a held message to the draft first completes its withdrawal, then
+returns text to that frozen private owner or to the original channel-zero
+conversation. Navigating to a quoted reply opens its own history and retains
+the requested message ID while history loads. None of these changes creates a
+second document, recorder, bus writer or delivery route.
+
+The floating Intercom windows and the mini/compact top bar are outside this
+horizontal-window cut. Shared view parameters default to the existing Intercom
+behavior, and shared control renderers retain their existing appearance.
 
 `0 · All` is the exception. Its title button keeps the identity line and the
 clock. The outline megaphone and the speaker sit beside a three-line preview
@@ -58,6 +156,9 @@ read `sender → You`. Attachment-only messages use the same route. The receipt
 menu lists the frozen recipient set of a broadcast. A speaker who is not the
 open conversation stays a button that opens their conversation; the arrow and
 the audience are text.
+
+User-message bubbles retain a quiet warm outline using `terracottaDeep` at
+`CSAlpha.selectionStroke` strength. Incoming bubbles use the neutral panel edge.
 
 The channel map in mini and compact is another surface of the same
 projections. `OverlayChannelStatusView.channelMapModel` builds
@@ -152,6 +253,62 @@ does not need changes to these owners.
 - Capture-open, follower-alive, queued, acknowledged, unread and speaking are
   different facts. ACK confirms receipt, not task completion. Color, elapsed
   time, a hover animation or an unread badge must not manufacture a receipt.
+- Delivery states come from `runtime/receipts/<message_id>/` only (the
+  contract is the Receipts section of `docs/TRANSCRIPT_BUS.md`): the reader
+  lists the directory of every unsettled message when its stamp changed (a
+  copy neither read nor skipped, a channel-0 text without a known list, one
+  of the newest replies not yet heard) and hands all its files to the
+  composer, `OverlayReceiptState.compose`. The projection keeps the composed
+  state (`OverlayConversationMessage.receipt`) and derives from it the
+  recipient rows (`delivered`, `read`, `skipped`), the admitted list
+  (`sent.json`, else the files' stamp) and a reply's playback
+  (`playback.<ticket>.json`). The ACK and skip markers under
+  `acknowledgments/` and `broadcast-skipped/` are not read by the overlay:
+  one owner per state, no fallback to the previous files. A write in
+  progress (`.*.tmp`) is never read; a file whose name and content disagree
+  marks nothing. A delivery without a `message_id` (a plain dictation seal)
+  has no directory and stays "Addressed". Provider acceptance (`wakeups/`),
+  a lease's `pending` and the app's own `codescribe.agent-ack.v1` bus row
+  still mark a copy's row as accepted, queued or read; they are hints ahead
+  of the files, not receipts: they never count and never end the listing,
+  which stops only when the composed files show every copy and every listed
+  agent as `read`, `skipped` or withdrawn. A reply additionally leaves the
+  poll once its playback is known from either source, the bus's playback
+  rows or the receipt file. The poll costs at most 128 directory
+  `fstatat` calls plus 128 wakeup `fstatat` calls per tick and bus. A reply's
+  "Spoken" label is decided by one ticket arbiter (`applyPlayback`) for the
+  bus's playback rows and the receipt files alike; the composed `spoken` is
+  an input to that arbiter, not a second label.
+- "Read X/Y" counts the agents the message was sent to, not its copies.
+  Y is the contract's denominator (`OverlayConversationMessage.readReceipt`):
+  the admitted list (`target.recipients` on the copy, outranked by
+  `sent.json`) plus every agent delivered to or read outside it, minus every
+  agent whose copy was skipped. A skipped agent is shown as "Skipped: off
+  channel 0" and is not an unread one: a skip is final, so it never counts.
+  An admitted agent with no copy and no file is "No receipt" and counts: its
+  reader was not running or predates receipts. Without a list the copies are
+  the list, today's denominator; a channel take's admitted owners are its
+  `recipients`. **One contract, two implementations:** the overlay cannot
+  call the helper, so it computes the same formula a second time, from the
+  same files, in one place: the composer the reader feeds. There is no
+  second state machine next to it; the count is read off the composed state.
+  Both implementations are pinned to the model directories under
+  `scripts/tests/fixtures/receipts/<case>/` with their `expected.json`, every
+  new state goes to those directories first and then to both, and the
+  overlay computes only the formula: no roster, no policies, no reach of its
+  own. `delivered` with `wake: null` is history the helper backfilled.
+- A fresh message moves the selected conversation only when it is addressed
+  to the Founder: an agent's reply on its own channel, or a message to her
+  inbox (channel 10). A message between agents (`sourceChannel` 1–9) and any
+  reply that sits in channel 0 never move the selection or show the panel;
+  they stay unread in their conversations (Founder decision 2026-10-26).
+  `OverlayState.followNewlyReceivedReply` is the one owner of that choice. It
+  writes one `overlay-presentation` line per choice:
+  `conversation.auto_selected` (reply ids, owner, source, the channel before
+  and after) or `conversation.auto_skipped` (reply id, owner, source, reason,
+  the channel that stays), with ids and channels only, never the text. A
+  message to the Founder whose owner is not unique is skipped and traced
+  the same way (`ambiguous_owner` or `no_owner`).
 - Scale text through the existing text-scale projection, preserve Reduce
   Motion/Reduce Transparency, tooltips, keyboard focus and accessibility IDs.
   Change a symbol's font separately from the button's hit area.
@@ -315,8 +472,10 @@ dictation control keeps the plain `mic`, the dictation verb (Maciej,
 2026-10-23).
 Channel activity updates an already visible main overlay, but the vertical
 Intercom does not summon a closed main overlay; Show in Agents remains explicit.
-Rich informational hover and agent action menus belong
-to the floating pills; the classic Agents list retains its inline actions.
+The floating pills retain their rich informational hover. The classic Agents
+list keeps its inline actions and also offers the last-message hover described
+above; provider, model, status and session metadata are not repeated in a
+second tooltip.
 The same `OverlayChannelMapPreference` stores the layout; switching it preserves
 the selected conversation, drafts and active route. No second inventory or
 recorder is created. The default remains horizontal, and an absent opt-in stays off.

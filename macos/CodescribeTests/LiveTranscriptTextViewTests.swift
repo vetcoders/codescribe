@@ -343,6 +343,41 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     XCTAssertNil(material(in: host), "Reduce Transparency must replace translucent native material")
   }
 
+  func testNativeBackdropFollowsContainerCornerRadius() async throws {
+    guard #available(macOS 26, *) else { return }
+    let host = NSHostingView(
+      rootView: OverlayCanvasBackdrop(palette: .light, reduceTransparency: false))
+    let window = NSWindow(
+      contentRect: NSRect(x: -10000, y: -10000, width: 240, height: 160),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    func glass(in view: NSView) -> OverlayDesktopGlassView? {
+      if let glass = view as? OverlayDesktopGlassView { return glass }
+      return view.subviews.lazy.compactMap { glass(in: $0) }.first
+    }
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+    let native = try XCTUnwrap(glass(in: host))
+    XCTAssertEqual(native.cornerRadius, CSRadius.window)
+    for scale in [CGFloat(1), 1.6, 2.4] {
+      for corner in [
+        OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
+        OverlayIntercomWidgetLayout.conversationCornerRadius,
+      ] {
+        host.rootView = OverlayCanvasBackdrop(
+          palette: .dark, reduceTransparency: false, cornerRadius: corner)
+        host.layoutSubtreeIfNeeded()
+        await nextMainQueueTurn()
+        let updated = try XCTUnwrap(glass(in: host))
+        XCTAssertTrue(updated === native, "Resizing keeps one native glass surface")
+        XCTAssertEqual(updated.cornerRadius, corner)
+        XCTAssertNil(updated.hitTest(NSPoint(x: 30, y: 30)))
+      }
+    }
+  }
+
   func testNativeTranscriptDisablesWritingTools() {
     let textView = LiveTranscriptTextView.makeTextView()
     if #available(macOS 15.0, *) {
