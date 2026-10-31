@@ -23,8 +23,7 @@ use serde::Deserialize;
 use super::{
     BRIDGE_TEARDOWN_BUDGET, BridgeRequest, BridgeResponse, BridgeTeardownOutcome,
     ENV_ALLOW_DOWNLOAD, bridge_binary, bridge_global_lock, child_has_exited_without_reap,
-    configure_bridge_process_group, env_bool, resolved_locale,
-    teardown_bridge_process_and_readers,
+    configure_bridge_process_group, env_bool, resolved_locale, teardown_bridge_process_and_readers,
 };
 use crate::pipeline::contracts::TranscriptSegment;
 
@@ -714,6 +713,10 @@ pub fn progressive_live_enabled() -> bool {
     let mode = std::env::var("CODESCRIBE_APPLE_STT_LIVE_MODE").unwrap_or_else(|_| "stream".into());
     !mode.eq_ignore_ascii_case("wav") && !mode.eq_ignore_ascii_case("transcribe_live")
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "live_stream_pipe_acceptance.rs"]
+mod pipe_acceptance;
 
 /// Bridge stdout line parsers for progressive multi-seal events.
 #[cfg(test)]

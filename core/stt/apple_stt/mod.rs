@@ -15,6 +15,8 @@
 //!
 //! Optional `backend` field is additive.
 
+#[cfg(all(test, target_os = "macos"))]
+mod bridge_process_acceptance;
 mod live_stream;
 pub use live_stream::{LiveStreamEvent, LiveStreamSession, progressive_live_enabled};
 
@@ -94,9 +96,7 @@ pub(super) fn configure_bridge_process_group(command: &mut Command) {
 /// the process in the kernel zombie state (`WNOWAIT`) so its PID and process
 /// group (`pgid == child.id()`) cannot be recycled before group cleanup runs.
 #[cfg(unix)]
-pub(super) fn child_has_exited_without_reap(
-    child: &std::process::Child,
-) -> std::io::Result<bool> {
+pub(super) fn child_has_exited_without_reap(child: &std::process::Child) -> std::io::Result<bool> {
     let pid: libc::id_t = child.id();
     // SAFETY: `info` is zero-initialized on the stack. `waitid` with
     // `WEXITED | WNOHANG | WNOWAIT` only inspects the child's exit state
@@ -123,9 +123,7 @@ pub(super) fn child_has_exited_without_reap(
 }
 
 #[cfg(not(unix))]
-pub(super) fn child_has_exited_without_reap(
-    _child: &std::process::Child,
-) -> std::io::Result<bool> {
+pub(super) fn child_has_exited_without_reap(_child: &std::process::Child) -> std::io::Result<bool> {
     Ok(false)
 }
 
