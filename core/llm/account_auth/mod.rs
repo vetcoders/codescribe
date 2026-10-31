@@ -26,8 +26,8 @@ pub mod server;
 
 pub use google::{
     GOOGLE_ACCOUNT_TOKENS_ACCOUNT, GOOGLE_API_KEY_ACCOUNT, GoogleCredential,
-    google_api_key, google_credentials_available, redact_google_secrets,
-    resolve_google_credential,
+    google_api_key, google_credential_status, google_credentials_available, redact_google_secrets,
+    resolve_google_account_credential, resolve_google_credential,
 };
 
 pub use device_code::{
@@ -814,6 +814,9 @@ fn cached_account_tokens(provider: ProviderKind) -> Result<AccountTokens, Accoun
 /// Both are required — leaving the env override in place would let the next
 /// [`load_account_tokens`] resurrect the session the operator just ended.
 pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthError> {
+    if provider == ProviderKind::GoogleGemini {
+        return google::clear_google_account_tokens();
+    }
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
     provider_auth_state(provider).replace_with(|| {

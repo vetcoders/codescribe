@@ -100,6 +100,16 @@ pub fn is_cloud_code_assist(base: &str) -> bool {
     reqwest::Url::parse(base).is_ok_and(|url| url.path().contains("v1internal"))
 }
 
+/// Numeric loopback only: a fixture must not rely on a hostname resolving to
+/// the same address later when credentialed HTTP is sent.
+pub fn is_loopback_endpoint(base: &str) -> bool {
+    reqwest::Url::parse(base).is_ok_and(|url| url.host_str().is_some_and(|host| {
+        host.trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+    }))
+}
+
 /// Wrap the native payload for CCA. The Custom endpoint's `project` query
 /// parameter supplies the project; `antigravity=true` selects agy's envelope.
 /// These non-secret routing values never become credentials or a second owner.
@@ -110,12 +120,14 @@ pub fn prepare_request(
     streaming: bool,
 ) -> Result<(String, Value), String> {
     let url = reqwest::Url::parse(base).map_err(|_| "Invalid Google endpoint".to_string())?;
-    if !matches!(url.scheme(), "http" | "https")
+    let loopback = is_loopback_endpoint(base);
+    if !(url.scheme() == "https" || (url.scheme() == "http" && loopback))
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
+        || url.fragment().is_some()
     {
-        return Err("Google endpoint needs an http(s) host without user info".into());
+        return Err("Google endpoint requires HTTPS (HTTP is permitted only for a numeric loopback fixture), without user info or a fragment".into());
     }
     // Keys live in headers; refusing URL credentials also keeps diagnostics safe.
     if url

@@ -20,12 +20,18 @@ use codescribe_core::agent::{
 };
 use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane};
 use codescribe_core::llm::account_auth::{
-    GoogleCredential, redact_google_secrets, resolve_google_credential,
+    GoogleCredential, redact_google_secrets, resolve_google_account_credential,
+    resolve_google_credential,
 };
 use codescribe_core::llm::vendors::google;
 
 const STREAM_DEADLINE: Duration = Duration::from_secs(600);
 const MAX_SSE_EVENT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SSE_DATA_LINES: usize = 8192;
+const MAX_TURN_PART_BYTES: usize = 8 * 1024 * 1024;
+const MAX_TURN_PARTS: usize = 8192;
+const MAX_RETAINED_HISTORY_BYTES: usize = 16 * 1024 * 1024;
+const MAX_RETAINED_TURNS: usize = 128;
 
 /// Google protocol client. A provider instance belongs to one AgentSession.
 #[derive(Clone)]
@@ -38,6 +44,7 @@ pub struct GoogleProvider {
     initial_timeout: Duration,
     chunk_timeout: Duration,
     history: Arc<Mutex<Vec<RetainedTurn>>>,
+    turn_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -58,6 +65,7 @@ struct RetainedTurn {
     text: String,
     calls: Vec<Call>,
     parts: Vec<Value>,
+    part_bytes: usize,
 }
 
 impl GoogleProvider {
@@ -82,6 +90,12 @@ impl GoogleProvider {
     ) -> Result<Self> {
         google::prepare_request(&endpoint, &default_model, json!({}), true)
             .map_err(|error| anyhow!(error))?;
+        ensure!(
+            !google::is_cloud_code_assist(&endpoint)
+                || api_key.is_empty()
+                || google::is_loopback_endpoint(&endpoint),
+            "Cloud Code Assist requires account credentials; an API key is permitted only in a loopback fixture"
+        );
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(STREAM_DEADLINE)
@@ -96,6 +110,7 @@ impl GoogleProvider {
             initial_timeout: timing.attempt_timeout(),
             chunk_timeout: timing.inter_chunk_timeout(),
             history: Arc::new(Mutex::new(Vec::new())),
+            turn_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 }
@@ -108,6 +123,9 @@ impl AgentProvider for GoogleProvider {
         tools: &[ToolDefinition],
         options: &StreamOptions,
     ) -> Result<mpsc::Receiver<AgentEvent>> {
+        // Serialize metadata reconciliation and commit across provider clones.
+        // The canonical AgentSession remains the only message-history owner.
+        let turn_guard = self.turn_lock.clone().lock_owned().await;
         let model = if options.model.trim().is_empty() {
             &self.default_model
         } else {
@@ -119,6 +137,10 @@ impl AgentProvider for GoogleProvider {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             history.retain(|turn| turn.model == *model && turn.matches(messages));
+            ensure!(
+                history.len() < MAX_RETAINED_TURNS,
+                "Google signed history reached its retention limit; start a new conversation"
+            );
             history.clone()
         };
         let body = build_request(messages, tools, options, &retained)?;
@@ -126,6 +148,8 @@ impl AgentProvider for GoogleProvider {
             .map_err(|error| anyhow!(error))?;
         let credential = if let Some(key) = &self.fixture_key {
             GoogleCredential::ApiKey(key.clone())
+        } else if google::is_cloud_code_assist(&self.endpoint) {
+            resolve_google_account_credential().await?
         } else {
             resolve_google_credential(
                 self.credential_account
@@ -143,8 +167,10 @@ impl AgentProvider for GoogleProvider {
             text: String::new(),
             calls: Vec::new(),
             parts: Vec::new(),
+            part_bytes: 0,
         };
         tokio::spawn(async move {
+            let _turn_guard = turn_guard;
             let result = transport
                 .run_stream(endpoint, body, credential, pending, &tx)
                 .await;
@@ -241,6 +267,10 @@ fn build_request(
             continue;
         }
         let message = &messages[index];
+        ensure!(
+            message.role != Role::Assistant,
+            "Google cannot resume this history without its original signed parts (provider/model changed, history restored or compacted); start a new conversation"
+        );
         let mut parts = Vec::new();
         for block in &message.content {
             match block {
@@ -365,6 +395,7 @@ impl GoogleProvider {
         mut turn: RetainedTurn,
         tx: &mpsc::Sender<AgentEvent>,
     ) -> Result<()> {
+        let initial_deadline = tokio::time::Instant::now() + self.initial_timeout;
         let mut request = self
             .client
             .post(endpoint)
@@ -407,7 +438,18 @@ impl GoogleProvider {
                 biased;
                 _ = tx.closed() => return Ok(()),
                 _ = tokio::time::sleep_until(deadline) => bail!("Google stream exceeded its deadline"),
-                chunk = tokio::time::timeout(self.chunk_timeout, stream.next()) => chunk.map_err(|_| anyhow!("Google stream stalled"))?,
+                chunk = tokio::time::timeout(
+                    if state.content_started {
+                        self.chunk_timeout
+                    } else {
+                        initial_deadline.saturating_duration_since(tokio::time::Instant::now())
+                    },
+                    stream.next(),
+                ) => chunk.map_err(|_| anyhow!(if state.content_started {
+                    "Google stream stalled"
+                } else {
+                    "Google stream produced no content within the initial request budget"
+                }))?,
             };
             match chunk {
                 Some(Ok(bytes)) => {
@@ -438,12 +480,19 @@ impl GoogleProvider {
         turn.text = state.visible;
         turn.calls = state.calls;
         turn.parts = state.parts;
+        turn.part_bytes = state.part_bytes;
         // Persist before exposing the clean terminal: the next session step
         // can immediately build functionResponse from these exact signed parts.
-        self.history
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .push(turn.clone());
+        {
+            let mut history = self.history.lock().unwrap_or_else(|poison| poison.into_inner());
+            let retained_bytes: usize = history.iter().map(|item| item.part_bytes).sum();
+            ensure!(
+                history.len() < MAX_RETAINED_TURNS
+                    && retained_bytes.saturating_add(turn.part_bytes) <= MAX_RETAINED_HISTORY_BYTES,
+                "Google signed history reached its retention limit; start a new conversation"
+            );
+            history.push(turn.clone());
+        }
         tx.send(AgentEvent::TextDone(turn.text))
             .await
             .map_err(|_| anyhow!("Google receiver closed"))?;
@@ -494,9 +543,9 @@ impl GoogleSse {
             }
         } else if let Some(data) = line.strip_prefix("data:") {
             let data = data.strip_prefix(' ').unwrap_or(data);
-            self.event_bytes += data.len();
+            self.event_bytes = self.event_bytes.saturating_add(data.len()).saturating_add(1);
             ensure!(
-                self.event_bytes <= MAX_SSE_EVENT_BYTES,
+                self.event_bytes <= MAX_SSE_EVENT_BYTES && self.data.len() < MAX_SSE_DATA_LINES,
                 "Google SSE event exceeds limit"
             );
             self.data.push(data.to_string());
@@ -504,26 +553,24 @@ impl GoogleSse {
         Ok(())
     }
     fn finish(&mut self) -> Result<Vec<Value>> {
-        let mut events = Vec::new();
-        let bytes = std::mem::take(&mut self.bytes);
-        let line = std::str::from_utf8(&bytes)
-            .context("Truncated Google SSE UTF-8")?
-            .trim_end_matches('\r');
-        if !line.is_empty() {
-            self.line(line, &mut events)?;
-        }
-        self.line("", &mut events)?;
-        Ok(events)
+        std::str::from_utf8(&self.bytes).context("Truncated Google SSE UTF-8")?;
+        ensure!(
+            self.bytes.is_empty() && self.data.is_empty(),
+            "Google SSE ended inside an unfinished frame"
+        );
+        Ok(Vec::new())
     }
 }
 
 #[derive(Default)]
 struct ResponseState {
     parts: Vec<Value>,
+    part_bytes: usize,
     calls: Vec<Call>,
     visible: String,
     text: PlanningFilter,
     clean_terminal: bool,
+    content_started: bool,
 }
 impl ResponseState {
     async fn emit_text(&mut self, text: String, tx: &mpsc::Sender<AgentEvent>) -> Result<()> {
@@ -536,15 +583,32 @@ impl ResponseState {
         Ok(())
     }
     async fn consume(&mut self, envelope: Value, tx: &mpsc::Sender<AgentEvent>) -> Result<()> {
+        ensure!(envelope.is_object(), "Google SSE event must be an object");
+        ensure!(envelope.get("error").is_none(), "Google reported an SSE error");
         let value = envelope.get("response").unwrap_or(&envelope);
+        ensure!(value.is_object(), "Google response must be an object");
         ensure!(value.get("error").is_none(), "Google reported an SSE error");
         ensure!(
             value.pointer("/promptFeedback/blockReason").is_none(),
             "Google blocked the prompt"
         );
-        let Some(candidates) = value.get("candidates").and_then(Value::as_array) else {
+        let Some(raw_candidates) = value.get("candidates") else {
+            ensure!(
+                value.get("usageMetadata").is_some(),
+                "Google SSE event has no candidate or usage metadata"
+            );
             return Ok(());
         };
+        let candidates = raw_candidates.as_array().ok_or_else(|| anyhow!("Google candidates must be an array"))?;
+        ensure!(
+            candidates.iter().all(|candidate| candidate.is_object()
+                && candidate.get("index").is_none_or(|index| index.as_u64().is_some())),
+            "Google candidate or index is malformed"
+        );
+        ensure!(
+            candidates.iter().filter(|candidate| candidate.get("index").and_then(Value::as_u64).unwrap_or(0) == 0).count() <= 1,
+            "Google returned more than one primary candidate"
+        );
         // The Agent asks for one candidate. Never mix alternative answers/tools.
         let Some(candidate) = candidates
             .iter()
@@ -552,17 +616,29 @@ impl ResponseState {
         else {
             return Ok(());
         };
-        if let Some(parts) = candidate
-            .pointer("/content/parts")
-            .and_then(Value::as_array)
-        {
+        if let Some(raw_parts) = candidate.pointer("/content/parts") {
+            let parts = raw_parts.as_array().ok_or_else(|| anyhow!("Google parts must be an array"))?;
             ensure!(
                 !self.clean_terminal,
                 "Google emitted content after its terminal"
             );
             for part in parts {
+                ensure!(part.is_object(), "Google content part must be an object");
+                ensure!(
+                    part.get("text").is_none_or(Value::is_string)
+                        && part.get("thought").is_none_or(Value::is_boolean)
+                        && part.get("thoughtSignature").is_none_or(Value::is_string),
+                    "Google content part has malformed text or signature metadata"
+                );
+                let part_bytes = serde_json::to_vec(part)?.len();
+                self.part_bytes = self.part_bytes.saturating_add(part_bytes);
+                ensure!(
+                    self.parts.len() < MAX_TURN_PARTS && self.part_bytes <= MAX_TURN_PART_BYTES,
+                    "Google response exceeds the signed-part retention limit"
+                );
                 retain_thought_signature(&mut self.parts, part);
                 if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    self.content_started |= !text.is_empty();
                     if part
                         .get("thought")
                         .and_then(Value::as_bool)
@@ -576,6 +652,11 @@ impl ResponseState {
                     }
                 }
                 if let Some(call) = part.get("functionCall") {
+                    self.content_started = true;
+                    ensure!(
+                        call.is_object() && call.get("id").is_none_or(Value::is_string),
+                        "Google function call is malformed"
+                    );
                     ensure!(
                         call.get("partialArgs").is_none(),
                         "Google streamed partial function arguments without a complete call"
@@ -607,11 +688,12 @@ impl ResponseState {
                 }
             }
         }
-        if let Some(reason) = candidate.get("finishReason").and_then(Value::as_str) {
+        if let Some(reason) = candidate.get("finishReason") {
+            let reason = reason.as_str().ok_or_else(|| anyhow!("Google finish reason must be a string"))?;
+            ensure!(!self.clean_terminal, "Google emitted more than one terminal");
             ensure!(
                 reason == "STOP",
-                "Google did not complete the response (finish reason {})",
-                reason
+                "Google did not complete the response (non-STOP finish reason)"
             );
             self.clean_terminal = true;
         }
@@ -665,6 +747,11 @@ impl PlanningFilter {
             return None;
         }
         if trimmed.is_empty() {
+            if self.pending.len() > 512 {
+                self.decided = true;
+                self.suppress = true;
+                self.pending.clear();
+            }
             return None;
         }
         // Hold a possible object/fence prefix across arbitrary SSE parts. Once
@@ -672,7 +759,12 @@ impl PlanningFilter {
         let possible = ["{", "```"]
             .iter()
             .any(|prefix| prefix.starts_with(trimmed) || trimmed.starts_with(prefix));
-        if possible && !trimmed.contains(':') && self.pending.len() < 512 {
+        if possible && !trimmed.contains(':') {
+            if self.pending.len() > 512 {
+                self.decided = true;
+                self.suppress = true;
+                self.pending.clear();
+            }
             return None;
         }
         self.decided = true;

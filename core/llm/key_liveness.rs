@@ -92,6 +92,7 @@ pub fn probe_api_key_liveness(
         );
     }
     let client = match Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(PROBE_TIMEOUT)
         .connect_timeout(PROBE_TIMEOUT)
         .build()
@@ -469,7 +470,11 @@ fn probe_google_key(
         .header("x-goog-api-key", api_key)
         .json(&body)
         .send();
-    response_result(account, endpoint, response)
+    let mut result = response_result(account, endpoint, response);
+    if !api_key.is_empty() {
+        result.message = result.message.replace(api_key, "[REDACTED]");
+    }
+    result
 }
 
 /// Probe a GitHub token with an authenticated `GET /user`.

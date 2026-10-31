@@ -390,14 +390,20 @@ impl Config {
                 .resolve(&reference)
                 .or_else(|| registry.resolve(&ProviderRef::default()))
                 .expect("the default vendor is always registered");
-            let api_key = Self::runtime_lane_api_key(&provider.key_account).or_else(|| {
-                (provider.wire == WireFamily::GoogleGenerateContent)
-                    .then(account_auth::google_api_key)
-                    .flatten()
-            });
+            let google_account_only = provider.wire == WireFamily::GoogleGenerateContent
+                && crate::llm::vendors::google::is_cloud_code_assist(&provider.endpoint);
+            let api_key = if google_account_only {
+                None
+            } else {
+                Self::runtime_lane_api_key(&provider.key_account).or_else(|| {
+                    (provider.wire == WireFamily::GoogleGenerateContent)
+                        .then(account_auth::google_api_key)
+                        .flatten()
+                })
+            };
             let signed_in = if provider.wire == WireFamily::GoogleGenerateContent {
                 note_startup_acquisition("Google credential availability");
-                account_auth::google_credentials_available()
+                account_auth::google_credential_status().is_ok_and(|status| status.available)
             } else {
                 provider.wire == WireFamily::OpenAiResponses
                     && provider.oauth_vendor.is_some_and(|vendor| {
@@ -766,15 +772,21 @@ impl Config {
                 || (provider.wire == WireFamily::OpenAiResponses
                     && provider.oauth_vendor.is_some()));
         let configuration_fault = unavailable_reason.clone();
-        let credentialed = api_key.is_some() || account_auth || !provider.key_required;
+        let credential_required = provider.key_required
+            || provider.wire == WireFamily::GoogleGenerateContent;
+        let credentialed = api_key.is_some() || account_auth || !credential_required;
         if !credentialed && unavailable_reason.is_none() {
-            unavailable_reason = Some(format!(
+            unavailable_reason = Some(if provider.wire == WireFamily::GoogleGenerateContent
+                && crate::llm::vendors::google::is_cloud_code_assist(&provider.endpoint)
+            {
+                format!("The {} lane uses Cloud Code Assist, which requires locally provisioned Google account credentials or authorized-user ADC. A public Gemini API key cannot authenticate this endpoint.", lane.as_str())
+            } else { format!(
                 "The {} lane points at {} ({}), which requires a credential, but neither Keychain account {} nor a supported signed-in provider account is available.",
                 lane.as_str(),
                 provider.display_name,
                 provider.endpoint,
                 provider.key_account,
-            ));
+            ) });
         }
         let credential =
             RuntimeLlmCredential::seal(provider.key_account.clone(), api_key, account_auth);

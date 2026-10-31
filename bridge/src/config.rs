@@ -1230,9 +1230,12 @@ impl CodescribeConfig {
         let mut providers = Vec::new();
         let mut account_errors = std::collections::HashMap::new();
         for provider in registry.all() {
-            let account_unavailable = provider
-                .oauth_vendor
-                .is_some_and(|vendor| account_auth::account_status_snapshot(vendor).is_err());
+            let account_unavailable = if provider.wire == WireFamily::GoogleGenerateContent {
+                account_auth::google_credential_status().is_err()
+            } else {
+                provider.oauth_vendor
+                    .is_some_and(|vendor| account_auth::account_status_snapshot(vendor).is_err())
+            };
             let option = provider_option(provider);
             if account_unavailable {
                 // Never expose token JSON or its decoder details in public UI metadata.
@@ -2795,6 +2798,20 @@ fn resolve_catalog_provider(
 }
 
 fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
+    let google = provider.wire == WireFamily::GoogleGenerateContent;
+    let google_status = google.then(account_auth::google_credential_status);
+    let google_account_available = google_status.as_ref()
+        .is_some_and(|status| status.as_ref().is_ok_and(|status| status.available));
+    let google_message = google_status.as_ref().map(|status| match status {
+        Ok(status) => status.message.clone(),
+        Err(_) => "Google account credentials are unavailable or unsupported. Use an API key or authorized-user ADC; service-account and external-account credentials are not supported.".into(),
+    }).map(|message| {
+        if codescribe_core::llm::vendors::google::is_cloud_code_assist(&provider.endpoint) {
+            format!("Cloud Code Assist uses account credentials; API keys cannot authenticate this endpoint. {message}")
+        } else {
+            message
+        }
+    });
     let status = provider
         .oauth_vendor
         .map(account_auth::cached_account_status);
@@ -2809,15 +2826,25 @@ fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
         display_name: provider.display_name,
         wire: provider.wire.as_str().to_string(),
         endpoint: provider.endpoint,
-        api_key_set: keychain::key_present(&provider.key_account),
+        api_key_set: keychain::key_present(&provider.key_account)
+            || (google && account_auth::google_api_key().is_some()),
         api_key_account: provider.key_account,
-        key_required: provider.key_required,
-        account_signed_in: status.as_ref().is_some_and(|status| status.signed_in),
+        key_required: provider.key_required && !google_account_available,
+        account_signed_in: if google {
+            // Saved storage is not a token-acceptance receipt. ADC remains
+            // externally managed and is not shown as a removable account.
+            google_status.as_ref().and_then(|status| status.as_ref().ok())
+                .map_or_else(|| keychain::key_present(account_auth::GOOGLE_ACCOUNT_TOKENS_ACCOUNT),
+                    |status| status.stored_account)
+        } else {
+            status.as_ref().is_some_and(|status| status.signed_in)
+        },
         account_login_enabled: status
             .as_ref()
             .is_some_and(|status| status.client_id_configured),
         account_identity: status.as_ref().and_then(|status| status.identity.clone()),
-        account_status_message: status.map(|status| status.message).unwrap_or_default(),
+        account_status_message: google_message
+            .unwrap_or_else(|| status.map(|status| status.message).unwrap_or_default()),
         oauth_client_id: provider
             .oauth_vendor
             .and_then(|vendor| account_auth::client_id_for_provider(vendor).ok()),

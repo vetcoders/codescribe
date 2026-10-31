@@ -243,6 +243,7 @@ fn get_client() -> &'static Client {
         );
 
         Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(timeout)
             .connect_timeout(connect_timeout)
             .pool_idle_timeout(pool_idle_timeout)
@@ -486,16 +487,20 @@ async fn request_anthropic_thread_title(
 /// Title requests use the native Google protocol without joining a tool or
 /// response chain. ADC is refreshed at send time rather than frozen in settings.
 async fn request_google_thread_title(text: &str, provider: &ThreadTitleProvider) -> Result<String> {
-    let credential = match provider.api_key.as_ref() {
-        Some(key) => account_auth::GoogleCredential::ApiKey(key.clone()),
-        None => {
-            account_auth::resolve_google_credential(
-                provider
-                    .credential_account
-                    .as_deref()
-                    .unwrap_or("LLM_GOOGLE_API_KEY"),
-            )
-            .await?
+    let credential = if super::vendors::google::is_cloud_code_assist(&provider.endpoint) {
+        account_auth::resolve_google_account_credential().await?
+    } else {
+        match provider.api_key.as_ref() {
+            Some(key) => account_auth::GoogleCredential::ApiKey(key.clone()),
+            None => {
+                account_auth::resolve_google_credential(
+                    provider
+                        .credential_account
+                        .as_deref()
+                        .unwrap_or("LLM_GOOGLE_API_KEY"),
+                )
+                .await?
+            }
         }
     };
     let output = call_google_generate_content(
@@ -1908,8 +1913,11 @@ async fn call_provider_once(
 ) -> Result<ProviderOutput> {
     match wire_family {
         WireFamily::GoogleGenerateContent => {
-            let credential =
-                account_auth::resolve_google_credential(lane.credential().key_account()).await?;
+            let credential = if super::vendors::google::is_cloud_code_assist(lane.endpoint()) {
+                account_auth::resolve_google_account_credential().await?
+            } else {
+                account_auth::resolve_google_credential(lane.credential().key_account()).await?
+            };
             call_google_generate_content(
                 lane.endpoint(),
                 lane.model(),

@@ -319,6 +319,7 @@ pub fn discover_models(
     run_test_after_claim(reference);
 
     let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(DISCOVERY_TIMEOUT)
         .build()
         .map_err(|error| ModelDiscoveryError::Network {
@@ -495,6 +496,11 @@ async fn fetch_google_models(
             .send()
             .await
             .map_err(|error| network_error(reference, error))?;
+        if !response.status().is_success() {
+            // A custom endpoint may echo an arbitrary API key or bearer token;
+            // never put its rejection body into Settings or the model cache.
+            return Err(http_status_error(reference, response.status(), "Google model discovery rejected the credentialed request"));
+        }
         let body = response_body_or_error(reference, response).await?;
         let parsed: serde_json::Value =
             serde_json::from_str(&body).map_err(|error| ModelDiscoveryError::Parse {

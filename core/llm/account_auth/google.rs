@@ -59,10 +59,61 @@ pub fn google_api_key() -> Option<String> {
 /// contents and tokens are acquired later on the blocking pool, at secret use.
 pub fn google_credentials_available() -> bool {
     google_api_key().is_some()
-        || keychain::cached_runtime_key(GOOGLE_ACCOUNT_TOKENS_ACCOUNT)
-            .is_some_and(|raw| parse_record(&raw).is_ok())
-        || std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some_and(|path| !path.is_empty())
-        || adc_path().is_some_and(|path| path.is_file())
+        || google_credential_status().is_ok_and(|status| status.available)
+}
+
+/// Secret-free account projection for snapshot capture and the existing
+/// provider/account bridge. It neither refreshes tokens nor starts a login.
+pub struct GoogleCredentialStatus {
+    /// An account record or ADC file is present; acceptance is checked at send.
+    pub available: bool,
+    /// Only Codescribe's stored account can be removed by its account button.
+    pub stored_account: bool,
+    /// Honest provisioning guidance, with no token or filesystem contents.
+    pub message: String,
+}
+
+/// Inspect cached Keychain tokens or ADC file presence, never its secret body.
+/// A malformed higher-precedence record never masquerades as a signed-out user.
+pub fn google_credential_status() -> Result<GoogleCredentialStatus, AccountAuthError> {
+    if let Some(raw) = keychain::cached_runtime_key(GOOGLE_ACCOUNT_TOKENS_ACCOUNT) {
+        parse_record(&raw)?;
+        return Ok(GoogleCredentialStatus {
+            available: true,
+            stored_account: true,
+            message: "Google account credentials are stored locally and refreshed when needed. Browser sign-in is not available in Codescribe.".into(),
+        });
+    }
+    if adc_path().is_some_and(|path| path.is_file()) {
+        return Ok(GoogleCredentialStatus {
+            available: true,
+            stored_account: false,
+            message: "An ADC file is configured; credentials are validated when sending. Only authorized-user ADC is supported. Manage it with gcloud; Codescribe never changes the file. Service-account and external-account credentials are not supported.".into(),
+        });
+    }
+    if std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some_and(|path| !path.is_empty()) {
+        return Err(AccountAuthError::Storage("The configured Google ADC file is unavailable".into()));
+    }
+    Ok(GoogleCredentialStatus {
+        available: false,
+        stored_account: false,
+        message: "Use an API key or provision authorized-user ADC with gcloud auth application-default login. Browser sign-in, service-account and external-account credentials are not supported in Codescribe.".into(),
+    })
+}
+
+/// Remove only Codescribe's account. External ADC remains managed by gcloud.
+/// Invalidate both pending refreshes and the ADC refresh cache, including when
+/// storage refuses deletion; an old response must never recreate this record.
+pub fn clear_google_account_tokens() -> Result<(), AccountAuthError> {
+    provider_auth_state(ProviderKind::GoogleGemini).replace_with(|| {
+        *refreshed_cache().lock().unwrap_or_else(|error| error.into_inner()) = None;
+        keychain::delete_key(GOOGLE_ACCOUNT_TOKENS_ACCOUNT)
+            .map_err(|_| AccountAuthError::Storage("Google account could not be removed".into()))?;
+        // SAFETY: same account mutation boundary as the other provider owners.
+        unsafe { std::env::remove_var(GOOGLE_ACCOUNT_TOKENS_ACCOUNT) };
+        keychain::advance_bundle_revision();
+        Ok(())
+    })
 }
 
 fn adc_path() -> Option<PathBuf> {
@@ -102,6 +153,9 @@ fn refreshed_cache() -> &'static Mutex<Option<CachedToken>> {
 }
 
 fn parse_record(raw: &str) -> Result<Value, AccountAuthError> {
+    if raw.len() as u64 > MAX_CREDENTIAL_BYTES {
+        return Err(AccountAuthError::Storage("Google credential record exceeds the size limit".into()));
+    }
     let record: Value = serde_json::from_str(raw).map_err(|_| {
         AccountAuthError::Storage("Google credential record is not valid JSON".into())
     })?;
@@ -260,6 +314,20 @@ pub async fn resolve_google_credential(
         .map(GoogleCredential::Bearer)
 }
 
+/// CCA accepts the account rail, not a public Gemini API key. Keep account
+/// selection and refresh in this credential owner rather than in providers.
+pub async fn resolve_google_account_credential() -> Result<GoogleCredential, AccountAuthError> {
+    let keychain_present = credential_io(|| {
+        Ok(keychain::runtime_key(GOOGLE_ACCOUNT_TOKENS_ACCOUNT).is_some())
+    }).await?;
+    let source = if keychain_present {
+        TokenSource::Keychain
+    } else {
+        TokenSource::Adc(adc_path().ok_or_else(|| AccountAuthError::NotSignedIn("google-gemini".into()))?)
+    };
+    resolve_token_source(source).await.map(GoogleCredential::Bearer)
+}
+
 async fn resolve_token_source(source: TokenSource) -> Result<String, AccountAuthError> {
     // The detached transaction owns the refresh lock through persistence even
     // if a recording or caller is cancelled while Google is replying.
@@ -271,26 +339,29 @@ async fn resolve_token_source(source: TokenSource) -> Result<String, AccountAuth
             let epoch = snapshot_state
                 .mutation
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clone();
-            Ok((read_snapshot(source)?, epoch))
+                .unwrap_or_else(|error| error.into_inner());
+            Ok((read_snapshot(source)?, std::sync::Arc::clone(&epoch)))
         })
         .await?;
-        if let Some(token) = record_access_token(&snapshot.record) {
-            return Ok(token);
-        }
-        {
+        let ready_token = record_access_token(&snapshot.record).or_else(|| {
             let cache = refreshed_cache()
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if let Some(cached) = cache.as_ref().filter(|cached| {
+            cache.as_ref().filter(|cached| {
                 cached.source == snapshot.source
                     && cached.raw == snapshot.raw
                     && cached.expires_at_unix
                         > now_unix().saturating_add(REFRESH_SKEW.as_secs() as i64)
-            }) {
-                return Ok(cached.access_token.clone());
-            }
+            }).map(|cached| cached.access_token.clone())
+        });
+        if let Some(token) = ready_token {
+            let check_state = state.clone();
+            return credential_io(move || {
+                check_state.commit_with(ProviderKind::GoogleGemini, &epoch, || {
+                    ensure_snapshot_current(&snapshot)?;
+                    Ok(token)
+                })
+            }).await;
         }
         let refreshed = refresh_record(&snapshot.record).await?;
         snapshot.record["access_token"] = Value::String(refreshed.access_token.clone());
@@ -305,11 +376,7 @@ async fn resolve_token_source(source: TokenSource) -> Result<String, AccountAuth
             commit_state.commit_with(ProviderKind::GoogleGemini, &epoch, || {
                 // Also reject an external Keychain/ADC replacement that did not
                 // pass through Codescribe's own account mutation entry point.
-                if read_snapshot(snapshot.source.clone())?.raw != snapshot.raw {
-                    return Err(AccountAuthError::OAuth(
-                        "Google credentials changed during refresh; retry the request".into(),
-                    ));
-                }
+                ensure_snapshot_current(&snapshot)?;
                 if snapshot.source == TokenSource::Keychain {
                     let raw = serde_json::to_string(&snapshot.record).map_err(|_| {
                         AccountAuthError::Storage(
@@ -340,6 +407,15 @@ async fn resolve_token_source(source: TokenSource) -> Result<String, AccountAuth
     transaction
         .await
         .map_err(|_| AccountAuthError::Storage("Google credential refresh task ended".into()))?
+}
+
+fn ensure_snapshot_current(snapshot: &RecordSnapshot) -> Result<(), AccountAuthError> {
+    if read_snapshot(snapshot.source.clone())?.raw != snapshot.raw {
+        return Err(AccountAuthError::OAuth(
+            "Google credentials changed during acquisition; retry the request".into(),
+        ));
+    }
+    Ok(())
 }
 
 struct RefreshedToken {

@@ -213,14 +213,14 @@ struct ProviderCard: View {
   private var hasAccount: Bool {
     !isCustom && (provider.accountLoginEnabled || provider.accountSignedIn)
   }
-  /// A signed-in account stands in for the key only on the Responses wire:
-  /// the loader seals `account_auth` for that wire alone.
+  /// Responses account availability is projected here. Google credential
+  /// availability already makes its key optional through the bridge row.
   private var accountServesRequests: Bool {
     !isCustom && provider.accountSignedIn && provider.wire == "responses"
   }
   /// "Responses" / "Messages" — the one thing every provider declares.
   private var wireLabel: String {
-    ["responses": "Responses", "messages": "Messages"][provider.wire] ?? provider.wire
+    ["responses": "Responses", "messages": "Messages", "google-generate-content": "GenerateContent"][provider.wire] ?? provider.wire
   }
   /// The badge is where the wire is named, so the card title must not name it
   /// twice. Core ships `OpenAI (Responses)` and `Anthropic (Messages)`
@@ -246,9 +246,8 @@ struct ProviderCard: View {
         vendorProviderHeader
       }
       // Key-optional hosts, and vendors whose connected account serves
-      // requests, read "Optional": one credential is enough. Only a Responses
-      // vendor's account serves requests (`core/config/loader.rs`); a
-      // signed-in Messages account does not, so its key stays required.
+      // requests, read "Optional": one credential is enough. A signed-in
+      // Messages account does not serve requests, so its key stays required.
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
         isSet: provider.apiKeySet,
@@ -258,11 +257,24 @@ struct ProviderCard: View {
         Text("Account access unavailable")
           .font(SettingsScale.settingName)
         Text(error).font(SettingsScale.helper).textSelection(.enabled)
-        SettingsChipButton("Sign out", tint: CSColor.secondaryInk) {
-          model.signOutAccount(providerId: provider.id)
+        if provider.wire != "google-generate-content" {
+          SettingsChipButton("Sign out", tint: CSColor.secondaryInk) {
+            model.signOutAccount(providerId: provider.id)
+          }
+          .accessibilityLabel("Sign out \(provider.displayName)")
         }
-        .accessibilityLabel("Sign out \(provider.displayName)")
-      } else if hasAccount {
+      }
+      if provider.wire == "google-generate-content" {
+        Text(provider.accountStatusMessage)
+          .font(SettingsScale.helper)
+          .foregroundStyle(CSColor.secondaryInk)
+          .textSelection(.enabled)
+        if !isCustom && provider.accountSignedIn {
+          SettingsChipButton("Remove stored account", tint: CSColor.secondaryInk) {
+            model.signOutAccount(providerId: provider.id)
+          }
+        }
+      } else if hasAccount && model.providerAccountErrors[provider.id] == nil {
         AccountLoginRow(
           provider: provider,
           loginPending: model.accountLoginPending.contains(provider.id),
@@ -469,6 +481,7 @@ struct CustomProviderForm: View {
         Picker("Wire", selection: $wire) {
           Text("Responses (/v1/responses)").tag("responses")
           Text("Messages (/v1/messages)").tag("messages")
+          Text("Gemini (GenerateContent)").tag("google-generate-content")
         }
         .pickerStyle(.segmented)
         .labelsHidden()
