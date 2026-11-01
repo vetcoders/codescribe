@@ -45,9 +45,23 @@ struct OverlayConversationComposer: View {
   var captureAttachmentError: String? = nil
   var onRetryCaptureAttachments: (() -> Void)? = nil
   var onNavigateReply: (() -> Void)? = nil
+  var draftSyncChoices: [OverlayComposerSyncChoice] = []
   var draftSyncNames: [String] = []
   var draftSyncArmed: Bool = false
+  var draftSyncEnabled: Bool = false
+  var onActivateDraftSync: (() -> Void)? = nil
   var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
+  var onToggleDraftSync: ((String) -> Void)? = nil
+  var onStopDraftSync: (() -> Void)? = nil
+  /// The inbox and 0 · All choose their recipients here, as a small chevron
+  /// beside Send that opens the draft-sync toggles (Maciej, 2026-10-30 on
+  /// build 2981: "ta druga tafla ponad komposerem to jest taka wiocha. Nie
+  /// możemy tego zrobić jako dziubek w przycisku wysyłki?"). The "+" then
+  /// stays a plain attach button.
+  var recipientsOnSend = false
+  /// What clearing the set means here: 0 · All goes back to everyone, the
+  /// inbox back to nobody.
+  var clearRecipientsTitle = String(localized: "Send to everyone")
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @State private var pasteError: String?
@@ -55,14 +69,33 @@ struct OverlayConversationComposer: View {
   @State private var microphoneHint = ComposerMicrophoneHintState()
   @State private var accessoryHeight: CGFloat = 30
   @State private var editorHeight: CGFloat = 28
+  /// The recipient picker stays open across toggles; closing it hands the
+  /// keyboard back to the editor.
+  @State private var recipientPickerShown = false
+  @State private var recipientFocusNudge: UInt64 = 0
+
   /// The height budget caps the editor viewport, never the draft's line count.
   private var isCompact: Bool { maximumEditorHeight != nil }
+  /// The main window links drafts in the roster chain and the inbox's "To:";
+  /// its "+" is a plain attach button (Maciej, 2026-10-30 14:03: "+ ma być
+  /// czystym Załącz plik…"). A fiszka still offers the choices here.
+  private var offersDraftSyncHere: Bool {
+    !recipientsOnSend && (onToggleDraftSync != nil || onActivateDraftSync != nil)
+  }
+  private var showsDraftSync: Bool {
+    offersDraftSyncHere && (!draftSyncChoices.isEmpty || draftSyncActive)
+  }
+  private var showsRecipientMenu: Bool {
+    recipientsOnSend && onToggleDraftSync != nil && !draftSyncChoices.isEmpty
+  }
   private func cornerLayout(width: CGFloat = .greatestFiniteMagnitude)
     -> ConversationComposerCornerLayout
   {
     ConversationComposerCornerLayout(
       width: width, fontSize: ComposerControlMetrics.textSize * textScale,
-      compact: isCompact, showsMicrophone: onToggleDraftMicrophone != nil)
+      compact: isCompact, showsSync: showsDraftSync,
+      showsMicrophone: onToggleDraftMicrophone != nil,
+      showsRecipientMenu: showsRecipientMenu)
   }
   private var controlGlyphSize: CGFloat {
     isCompact ? ComposerControlMetrics.intercomGlyphSize : ComposerControlMetrics.glyphSize
@@ -316,6 +349,79 @@ struct OverlayConversationComposer: View {
       : draftMicrophoneRecording ? "mic.fill" : "mic"
   }
 
+  /// The send button's chevron: the recipient set of a source conversation
+  /// (the inbox builds it, 0 · All narrows the broadcast to it), the same
+  /// draft-sync toggles the roster chain flips. Lit while a set is chosen.
+  /// One press opens the picker, several agents are ticked in it, and
+  /// closing it returns to the composer. A menu closes on every pick, so the
+  /// set lives in a popover instead.
+  private func recipientMenu(_ corners: ConversationComposerCornerLayout) -> some View {
+    let sendGlyph = min(controlGlyphSize, corners.glyphSize)
+    return Button {
+      recipientPickerShown.toggle()
+    } label: {
+      Image(systemName: "chevron.down")
+        .font(.system(size: sendGlyph * 0.33, weight: .semibold))
+        // paperplane.fill sits slightly high; lift the tail onto its midline.
+        .offset(y: -(sendGlyph * 0.08))
+        .conversationActionHover(
+          restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+          hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+        )
+        .frame(
+          width: corners.recipientWidth, height: corners.actionHeight, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .frame(width: corners.recipientWidth, height: corners.actionHeight)
+    .disabled(sending)
+    .overlayFastHint(recipientMenuHint, palette: palette)
+    .popover(isPresented: $recipientPickerShown, arrowEdge: .top) {
+      recipientPicker
+    }
+    .onChange(of: recipientPickerShown) { _, shown in
+      if !shown { recipientFocusNudge &+= 1 }
+    }
+    .accessibilityLabel(Text("Choose recipients"))
+    .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+    .accessibilityIdentifier("overlay-conversation-recipients")
+  }
+
+  private var recipientPicker: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      ForEach(draftSyncChoices) { choice in
+        Toggle(
+          isOn: Binding(
+            get: { choice.selected },
+            set: { _ in onToggleDraftSync?(choice.id) })
+        ) {
+          Text(verbatim: choice.title)
+        }
+        .toggleStyle(.checkbox)
+        .disabled(!choice.enabled)
+      }
+      if draftSyncActive, let onStopDraftSync {
+        Divider()
+        Button(action: onStopDraftSync) { Text(verbatim: clearRecipientsTitle) }
+      }
+    }
+    .font(CSFont.ui(12, .medium))
+    .foregroundStyle(palette.primaryText.color)
+    .padding(10)
+    .frame(minWidth: 160, alignment: .leading)
+    .fixedSize()
+    .background(.regularMaterial)
+    .csFocusPolicy()
+    .onExitCommand { recipientPickerShown = false }
+    .accessibilityIdentifier("overlay-conversation-recipient-picker")
+  }
+
+  private var recipientMenuHint: String {
+    let base = String(localized: "Choose recipients")
+    guard draftSyncActive else { return base }
+    return base + " · " + draftSyncAccessibilityValue
+  }
+
   private func plusGlyph(_ corners: ConversationComposerCornerLayout) -> some View {
     Image(systemName: "plus")
       .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
@@ -323,19 +429,74 @@ struct OverlayConversationComposer: View {
       .contentShape(Rectangle())
   }
 
-  private func attachmentButton(_ corners: ConversationComposerCornerLayout) -> some View {
-    Button(action: pickAttachments) { plusGlyph(corners) }
-      .buttonStyle(.plain)
-      .frame(width: corners.actionWidth, height: corners.actionHeight)
-      .conversationActionHover(
-        restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
-        hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
-      )
-      .disabled(sending)
-      .overlayFastHint(String(localized: "Attach files…"), palette: palette)
-      .accessibilityLabel(Text("Attach files…"))
-      .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
-      .accessibilityIdentifier("overlay-conversation-plus")
+  /// One "+". Where this composer still offers draft linking it opens the
+  /// actions menu; otherwise it is the attach button itself and opens the
+  /// file panel directly, no submenu.
+  @ViewBuilder
+  private func composerPlusMenu(_ corners: ConversationComposerCornerLayout) -> some View {
+    if showsDraftSync {
+      composerPlusActionsMenu(corners)
+    } else {
+      Button(action: pickAttachments) { plusGlyph(corners) }
+        .buttonStyle(.plain)
+        .frame(width: corners.actionWidth, height: corners.actionHeight)
+        .conversationActionHover(
+          restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+          hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+        )
+        .disabled(sending)
+        .overlayFastHint(String(localized: "Attach files…"), palette: palette)
+        .accessibilityLabel(Text("Attach files…"))
+        .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+        .accessibilityIdentifier("overlay-conversation-plus")
+    }
+  }
+
+  private func composerPlusActionsMenu(_ corners: ConversationComposerCornerLayout) -> some View {
+    Menu {
+      Button("Attach files…", systemImage: "paperclip", action: pickAttachments)
+        .disabled(sending)
+        .accessibilityIdentifier("overlay-conversation-attach")
+      if showsDraftSync {
+        Divider()
+        Button("Sync draft", systemImage: "link") { onActivateDraftSync?() }
+          .disabled(sending || !draftSyncEnabled || onActivateDraftSync == nil)
+          .accessibilityIdentifier("overlay-conversation-draft-sync")
+        ForEach(draftSyncChoices) { choice in
+          Toggle(
+            isOn: Binding(
+              get: { choice.selected },
+              set: { _ in onToggleDraftSync?(choice.id) })
+          ) {
+            Text(verbatim: choice.title)
+          }
+          .disabled(sending || !choice.enabled)
+          .help(
+            choice.enabled
+              ? String(localized: "Share future typing and pasted attachments with this composer")
+              : String(localized: "This composer has a pending delivery or recording attachments."))
+        }
+        if draftSyncNames.count > 1 {
+          Button("Stop syncing") { onStopDraftSync?() }
+            .disabled(sending)
+        }
+      }
+    } label: {
+      plusGlyph(corners)
+    }
+    .menuStyle(.button)
+    .buttonStyle(.plain)
+    .menuIndicator(.hidden)
+    .frame(width: corners.actionWidth, height: corners.actionHeight)
+    .conversationActionHover(
+      restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+      hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+    )
+    .disabled(sending)
+    .overlayFastHint(composerPlusHint, palette: palette)
+    .accessibilityLabel(Text("Composer actions"))
+    .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+    .accessibilityIdentifier("overlay-conversation-plus")
   }
 
   private var draftSyncActive: Bool { draftSyncArmed || draftSyncNames.count > 1 }
@@ -347,6 +508,18 @@ struct OverlayConversationComposer: View {
       : draftSyncNames.count > 1 ? String(localized: "Sync linked") : String(localized: "Sync off")
     guard !draftSyncNames.isEmpty else { return status }
     return status + ": " + draftSyncNames.joined(separator: " · ")
+  }
+
+  /// The hint names the menu, not one of its entries; sync state rides along
+  /// so an armed or linked composer explains its tinted plus.
+  private var composerPlusHint: String {
+    let base = String(localized: "Composer actions")
+    if draftSyncArmed {
+      return base + " · " + String(localized: "Sync armed")
+    } else if draftSyncNames.count > 1 {
+      return base + " · " + String(localized: "Sync linked")
+    }
+    return base
   }
 
   var draftMicrophoneAccessibilityLabel: String {
@@ -367,7 +540,7 @@ struct OverlayConversationComposer: View {
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
-        onCancel: onCancel, focusRevision: focusRevision,
+        onCancel: onCancel, focusRevision: focusRevision &+ recipientFocusNudge,
         isCovered: isCovered,
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
@@ -400,7 +573,7 @@ struct OverlayConversationComposer: View {
         }
       }
       .overlay(alignment: .bottomLeading) {
-        attachmentButton(corners)
+        composerPlusMenu(corners)
           .background { OverlayMenuCursorRegion() }
       }
       .overlay(alignment: .bottomTrailing) {
@@ -429,26 +602,32 @@ struct OverlayConversationComposer: View {
             .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
             .accessibilityIdentifier("overlay-conversation-draft-microphone")
           }
-          Button("Send", systemImage: "paperplane.fill", action: onSubmit)
-            .labelStyle(.iconOnly)
-            .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
-            .frame(width: corners.actionWidth, height: corners.actionHeight)
-            .contentShape(Circle())
-            .buttonStyle(.plain)
-            .conversationActionHover(
-              restingColor: restingActionColor,
-              hoverColor: palette.primaryText.color
-            )
-            .disabled(
-              sending
-                || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                  && pendingCaptureAttachments.isEmpty)
-            )
-            .accessibilityIdentifier("overlay-conversation-send")
-            .overlayFastHint(
-              draftSyncNames.count > 1
-                ? String(localized: "Send to all linked agents") : String(localized: "Send"),
-              palette: palette)
+          // Send and the recipient tail share one visual control; mic keeps stack spacing.
+          HStack(spacing: 0) {
+            Button("Send", systemImage: "paperplane.fill", action: onSubmit)
+              .labelStyle(.iconOnly)
+              .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
+              .frame(width: corners.actionWidth, height: corners.actionHeight)
+              .contentShape(Circle())
+              .buttonStyle(.plain)
+              .conversationActionHover(
+                restingColor: restingActionColor,
+                hoverColor: palette.primaryText.color
+              )
+              .disabled(
+                sending
+                  || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && pendingCaptureAttachments.isEmpty)
+              )
+              .accessibilityIdentifier("overlay-conversation-send")
+              .overlayFastHint(
+                draftSyncNames.count > 1
+                  ? String(localized: "Send to all linked agents") : String(localized: "Send"),
+                palette: palette)
+            if showsRecipientMenu {
+              recipientMenu(corners)
+            }
+          }
         }
         .background { OverlayMenuCursorRegion() }
       }
@@ -468,9 +647,12 @@ private struct ConversationComposerCornerLayout: Equatable {
   let verticalPadding: CGFloat
   let leadingWidth: CGFloat
   let trailingWidth: CGFloat
+  /// The send button's recipient chevron: narrower than an action, a "dziubek".
+  let recipientWidth: CGFloat
 
   init(
-    width: CGFloat, fontSize: CGFloat, compact: Bool, showsMicrophone: Bool
+    width: CGFloat, fontSize: CGFloat, compact: Bool, showsSync: Bool, showsMicrophone: Bool,
+    showsRecipientMenu: Bool = false
   ) {
     lineHeight = ComposerTextLayout.lineHeight(fontSize: fontSize)
     actionHeight = min(ComposerControlMetrics.hitTargetSize, 2 * lineHeight)
@@ -479,9 +661,14 @@ private struct ConversationComposerCornerLayout: Equatable {
       ? ComposerControlMetrics.intercomVerticalPadding : ComposerControlMetrics.verticalPadding
     // Send plus BOTH outer margins fits inside two actual scaled text rows.
     verticalPadding = min(padding, max(0, (2 * lineHeight - actionHeight) / 2))
+    // The "+" menu folds attach and sync into one control; sync no longer
+    // widens the leading corner.
     let leadingCount: CGFloat = 1
+    _ = showsSync
+    // Split-button tail: a third of an action, glued to Send with no extra spacing.
+    let recipientShare: CGFloat = showsRecipientMenu ? 1.0 / 3.0 : 0
     let trailingActions: CGFloat = showsMicrophone ? 2 : 1
-    let count = leadingCount + trailingActions
+    let count = leadingCount + trailingActions + recipientShare
     clearance = min(4, max(0, width / 24))
     spacing = min(
       compact ? ComposerControlMetrics.intercomSpacing : ComposerControlMetrics.spacing,
@@ -492,7 +679,9 @@ private struct ConversationComposerCornerLayout: Equatable {
       ComposerControlMetrics.hitTargetSize,
       max(1, (width - proseWidth - 2 * clearance - trailingSpacings * spacing) / count))
     leadingWidth = leadingCount * actionWidth + (leadingCount - 1) * spacing
-    trailingWidth = trailingActions * actionWidth + trailingSpacings * spacing
+    recipientWidth = showsRecipientMenu ? ceil(actionWidth * recipientShare) : 0
+    trailingWidth =
+      trailingActions * actionWidth + recipientWidth + trailingSpacings * spacing
   }
 
   var glyphSize: CGFloat { min(actionWidth, actionHeight) * 0.65 }

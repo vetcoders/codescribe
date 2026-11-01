@@ -189,6 +189,8 @@ struct OverlayConversationView: View {
   var draftSyncChoices: [OverlayComposerSyncChoice] = []
   var draftSyncNames: [String] = []
   var draftSyncArmed: Bool = false
+  var draftSyncEnabled: Bool = false
+  var onActivateDraftSync: (() -> Void)? = nil
   var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
   var onToggleDraftSync: ((String) -> Void)? = nil
   var onStopDraftSync: (() -> Void)? = nil
@@ -461,8 +463,14 @@ struct OverlayConversationView: View {
           captureAttachmentError: captureAttachmentError,
           onRetryCaptureAttachments: onRetryCaptureAttachments,
           onNavigateReply: { navigateToReply(replySelection?.messageID) },
-          draftSyncNames: draftSyncNames, draftSyncArmed: draftSyncArmed,
-          onProseEdit: onProseEdit
+          draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
+          draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
+          onActivateDraftSync: onActivateDraftSync,
+          onProseEdit: onProseEdit,
+          onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync,
+          recipientsOnSend: true,
+          clearRecipientsTitle: (composerConversation ?? conversation).channel == "0"
+            ? String(localized: "Send to everyone") : String(localized: "Stop syncing")
         )
         // A reused native coordinator must never redirect an old owner's
         // proposal or undo history into a different conversation's binding.
@@ -626,20 +634,10 @@ struct OverlayConversationView: View {
   }
 
   private var navigationLabelMenu: OverlayBroadcastPolicyMenu {
-    let empty = OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
-    guard allowsLiveActions else { return empty }
-    var menu = navigationMenu ?? empty
-    guard conversation.isDraftSyncSource, composerAvailable, let onToggleDraftSync else {
-      return menu
+    guard allowsLiveActions, let navigationMenu else {
+      return OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
     }
-    menu.recipients = OverlayBroadcastPolicyMenu.Recipients(
-      choices: draftSyncChoices,
-      active: draftSyncArmed || draftSyncNames.count > 1,
-      enabled: !sending && pendingDeliveryControls.isEmpty,
-      clearTitle: conversation.channel == "0"
-        ? String(localized: "Send to everyone") : String(localized: "Stop syncing"),
-      onToggle: onToggleDraftSync, onStop: onStopDraftSync)
-    return menu
+    return navigationMenu
   }
 
   @ViewBuilder

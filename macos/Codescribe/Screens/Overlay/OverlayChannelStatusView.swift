@@ -833,15 +833,6 @@ final class OverlayBroadcastPolicyLedger {
 /// actions; the 0 · All row carries every member as a submenu, so nine or
 /// fifteen agents never need a second column. The command path is unchanged.
 struct OverlayBroadcastPolicyMenu: ViewModifier {
-  struct Recipients {
-    let choices: [OverlayComposerSyncChoice]
-    let active: Bool
-    let enabled: Bool
-    let clearTitle: String
-    let onToggle: (String) -> Void
-    let onStop: (() -> Void)?
-  }
-
   let members: [OverlayChannelDelivery]
   let palette: OverlayAppearancePalette
   let enabled: Bool
@@ -854,7 +845,6 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   /// beside the receipt only when the row is wide enough for the whole name.
   var carriesRowMarks = false
   var focusState: OverlayAgentPanelFocusState? = nil
-  var recipients: Recipients? = nil
   @State private var commandError: String?
 
   @MainActor
@@ -867,17 +857,44 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   }
 
   func body(content: Content) -> some View {
-    if members.isEmpty && recipients == nil {
+    if members.isEmpty {
       content
     } else {
       VStack(alignment: errorAlignment, spacing: 2) {
-        if recipients != nil {
-          HStack(spacing: 6) {
-            content
-            menuButton
+        if showsButton {
+          Menu {
+            menuContents
+          } label: {
+            Image(systemName: "ellipsis")
+              .font(.system(size: 12, weight: .semibold))
+              .frame(width: 16, height: 16)
+              .overlay(alignment: .topTrailing) {
+                if let focusState {
+                  if focusState.isRequesting {
+                    ProgressView().controlSize(.mini)
+                      .scaleEffect(0.6)
+                      .offset(x: 7, y: -5)
+                  } else {
+                    Image(
+                      systemName: focusState.isFailed
+                        ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+                    )
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(
+                      focusState.isFailed ? palette.errorStatus.color : palette.successStatus.color
+                    )
+                    .offset(x: 5, y: -4)
+                  }
+                }
+              }
           }
-        } else if showsButton {
-          menuButton
+          .menuStyle(.borderlessButton)
+          .menuIndicator(.hidden)
+          .fixedSize()
+          .accessibilityLabel(Text("Agent actions"))
+          .accessibilityValue(Text(verbatim: focusState?.statusText ?? ""))
+          .overlayFastHint(
+            focusState?.statusText ?? String(localized: "Agent actions"), palette: palette)
         } else {
           content.contextMenu { menuContents }
         }
@@ -890,77 +907,11 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     }
   }
 
-  private var menuButton: some View {
-    Menu {
-      menuContents
-    } label: {
-      Image(systemName: "ellipsis")
-        .font(.system(size: 12, weight: .semibold))
-        .modifier(
-          OverlayGlyphInk(
-            ink: recipients?.active == true ? AnyShapeStyle(palette.agentAccent.color) : nil))
-        .frame(width: 16, height: 16)
-        .overlay(alignment: .topTrailing) {
-          if let focusState {
-            if focusState.isRequesting {
-              ProgressView().controlSize(.mini)
-                .scaleEffect(0.6)
-                .offset(x: 7, y: -5)
-            } else {
-              Image(
-                systemName: focusState.isFailed
-                  ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
-              )
-              .font(.system(size: 8, weight: .semibold))
-              .foregroundStyle(
-                focusState.isFailed ? palette.errorStatus.color : palette.successStatus.color
-              )
-              .offset(x: 5, y: -4)
-            }
-          }
-        }
-    }
-    .menuStyle(.borderlessButton)
-    .menuIndicator(.hidden)
-    .fixedSize()
-    .accessibilityLabel(Text("Agent actions"))
-    .accessibilityValue(Text(verbatim: focusState?.statusText ?? ""))
-    .overlayFastHint(
-      focusState?.statusText ?? String(localized: "Agent actions"), palette: palette)
-  }
-
   @ViewBuilder
   private var menuContents: some View {
     if let commandError, !showsInlineError {
       Text(verbatim: commandError)
       Divider()
-    }
-    if let recipients {
-      Section {
-        ForEach(recipients.choices) { choice in
-          Toggle(
-            isOn: Binding(
-              get: { choice.selected },
-              set: { _ in recipients.onToggle(choice.id) })
-          ) {
-            Text(verbatim: choice.title)
-          }
-          .disabled(!recipients.enabled || !choice.enabled)
-          .help(
-            choice.enabled
-              ? String(localized: "Share future typing and pasted attachments with this composer")
-              : String(localized: "This composer has a pending delivery or recording attachments."))
-          .accessibilityIdentifier("overlay-conversation-recipient-\(choice.id)")
-        }
-        if recipients.active, let onStop = recipients.onStop {
-          Button(action: onStop) { Text(verbatim: recipients.clearTitle) }
-            .disabled(!recipients.enabled)
-        }
-      } header: {
-        Text("Choose recipients")
-      }
-      .accessibilityLabel(Text("Choose recipients"))
-      if !members.isEmpty { Divider() }
     }
     if members.count == 1, let member = members.first {
       if !secondaryActionsOnly, let agentActions {
