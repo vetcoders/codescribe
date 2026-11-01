@@ -78,6 +78,12 @@ update checks contact the configured feed according to the updater's settings.
 Model downloads contact their download hosts. Website analytics are disabled in
 the default build and can be explicitly enabled for a deployment.
 
+The app's first-successful-dictation confirmation is a separate opt-in, off by
+default. The current production configuration leaves its analytics domain empty,
+so no confirmation event is sent even if the preference is enabled. A build
+configured to use it sends app/macOS version information, not transcript text
+or audio; consent and the sent receipt are local macOS preferences.
+
 The website licence form sends the entered email over HTTPS to the issuer.
 The signed licence contains its SHA-256 hash; the issuance log records that hash,
 client IP, and timestamp. This is pseudonymous data, not an anonymity guarantee.

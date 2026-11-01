@@ -2,9 +2,11 @@
 
 This document describes the installation methods, configuration paths, and how the application locates its resources.
 
-> **Published release:** GitHub Latest is [`v0.15.2`](https://github.com/vetcoders/codescribe/releases/tag/v0.15.2).
-> The standard DMG is signed, notarized and stapled. The website and signed
-> Sparkle feed point to this release.
+For a packaged app, start with the [user installation guide](guide/installation.md)
+and the current [GitHub Releases](https://github.com/vetcoders/codescribe/releases).
+This page covers development builds, resource discovery, signing and launch.
+Do not infer the published version from the source version or this document.
+A local app build is not a signed distribution release.
 
 ## Installation Methods
 
@@ -38,14 +40,18 @@ runtime interlock while copying the signed bundle. An active take, agent turn,
 unreadable state or failed Quit refuses the copy. Launch the installed app through
 LaunchServices after the installer succeeds.
 
-### Method 2: Qube CLI Tools (Batch Quality Work)
+### Method 2: CLI and Batch Quality Tools
 
 ```bash
-make release-qube
 make install
 ```
 
-**Result**: the `codescribe` CLI is installed; `codescribe report` and `codescribe daemon` are the authoritative spellings of the quality tools. The standalone `qube-report` and `qube-daemon` binaries run the same functions and are slated for removal under the one-throne rule.
+**Result**: the `codescribe` CLI and quality tools are installed. Use
+`codescribe transcribe` for file transcription and `codescribe transcribe live`
+to observe the app-owned transcript. `codescribe report` and `codescribe daemon`
+provide the quality workflows. See the [CLI guide](CLI.md) for output, side
+effects and recognition flags. `make release-qube` builds the separate quality
+binaries; it does not install or launch Codescribe.app.
 
 **How it runs**: Terminal-only quality/reporting utilities, not the user-facing app.
 
@@ -523,19 +529,26 @@ flowchart LR
 
 Grant in **System Settings > Privacy & Security**:
 
-| Permission         | Purpose                 | When Prompted                         |
-| ------------------ | ----------------------- | ------------------------------------- |
-| Microphone         | Audio recording         | First recording attempt               |
-| Speech Recognition | SFSpeechRecognizer path | Setup / app launch while undetermined |
-| Accessibility      | Global hotkeys, paste   | First hotkey press                    |
-| Input Monitoring   | Keyboard event capture  | First hotkey press                    |
+| Permission         | Purpose                 | When Prompted                          |
+| ------------------ | ----------------------- | -------------------------------------- |
+| Microphone         | Audio recording         | First recording attempt                |
+| Speech Recognition | SFSpeechRecognizer path | Setup / app launch while undetermined  |
+| Accessibility      | Selected text, paste    | When the corresponding feature is used |
+| Input Monitoring   | Keyboard event capture  | First hotkey press                     |
+| Screen Recording   | Screenshot context      | Setup / screenshot context             |
+
+The setup checklist and the selected mode's recording readiness are distinct.
+Full Disk Access is optional. Apple only does not require a Whisper download;
+Local power requires a usable local model. See the
+[Settings reference](guide/settings.md) for the current GUI sections.
 
 ## Troubleshooting
 
 ### Empty Dock Icon
 
-- **CLI mode**: `set_dock_icon()` should set it programmatically
-- **Bundle mode**: Check that `Info.plist` exists and has `CFBundleIconFile`
+- Launch the native app bundle through Finder, Spotlight or LaunchServices;
+  the `codescribe` CLI is a separate terminal utility.
+- Check that the bundle's `Info.plist` exists and has `CFBundleIconFile`.
 - **Verify**: `plutil -lint /Applications/Codescribe.app/Contents/Info.plist`
 
 ### Empty Tray Icon
@@ -545,15 +558,20 @@ Grant in **System Settings > Privacy & Security**:
 
 ### Config Not Loading
 
-- Check `~/.codescribe/.env` exists
-- Verify syntax: `cat ~/.codescribe/.env`
-- Check logs: `make logs`
+- Check the value in Settings and whether the page has an explicit Save action.
+- Preferences use `settings.json` in Application Support; credentials use
+  Keychain. An optional `~/.codescribe/.env` is advanced configuration, not a
+  prerequisite for the GUI. See [CONFIG.md](CONFIG.md) for precedence.
+- Inspect the relevant log interval locally. Review it before sharing; do not
+  paste a `.env`, API key or unreviewed configuration dump into a report.
+- Start a new take when checking a recording-snapshot change. A saved preference
+  does not rewrite an active take.
 
 ### Hotkeys Not Working
 
 - Grant Accessibility permission
 - Grant Input Monitoring permission
-- Restart the application after granting
+- Follow any reopen prompt after granting, once recordings and agent work are idle.
 
 ---
 

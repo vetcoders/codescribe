@@ -1,101 +1,56 @@
 # Codescribe User Guide
 
-> **Speech-to-text for macOS with local Whisper plus optional cloud transcript paths**
+Codescribe is a native macOS app for dictation and conversations with agents.
+Use it to turn speech into text, work with the built-in Agent, or talk to an
+existing agent session through a named channel.
 
-Codescribe is a native macOS menu-bar application that transcribes your speech locally using Whisper. No internet is required for the local path. Optional cloud STT and AI formatting are available when you want a different final transcript backend.
+A fresh installation uses **Apple only** recognition. **Local power** uses a
+local Whisper model; **Cloud** uses an online transcription service with your
+consent. AI formatting and spoken replies are separate choices. See
+[Privacy & Security](privacy.md) before enabling an online service.
 
----
+## Start here
 
-## Quick Start (30 seconds)
+1. [Install and launch Codescribe](installation.md).
+2. [Make your first recording](QUICKSTART.md).
+3. [Choose dictation, formatting or an agent conversation](modes.md).
+4. [Navigate channels, use Sync and attach files](chat-overlay.md).
 
-1. **Install**: download a DMG from [Releases](https://github.com/vetcoders/codescribe/releases), or build from source if no tagged release is published yet
-2. **Launch**: Open codescribe from Applications
-3. **Grant permissions**: Microphone + Accessibility (follow prompts)
-4. **Transcribe**: Use your **Dictation** hotkey (default: hold `Fn/Globe`), speak, release → text appears at cursor (Settings → Hotkeys)
+## Reference
 
-That's it. You're transcribing.
+| Guide                                 | What you can do                                                               |
+| ------------------------------------- | ----------------------------------------------------------------------------- |
+| [Installation](installation.md)       | Install the app, grant relevant permissions and check its version             |
+| [Quick Start](QUICKSTART.md)          | Record, review and deliver a first transcript                                 |
+| [Recording Modes](modes.md)           | Choose the recognition mode, formatting and destination independently         |
+| [Chat & Overlay](chat-overlay.md)     | Use the overlay, agent roster, floating cards, composers and personal inbox   |
+| [Settings](settings.md)               | Find providers, hotkeys, microphones, models, tool permissions and local data |
+| [Troubleshooting](troubleshooting.md) | Resolve readiness, delivery and connection problems without losing a take     |
+| [Privacy & Security](privacy.md)      | Understand local storage, outgoing data and audio retention                   |
 
----
+## Which conversation am I using?
 
-## Table of Contents
+**The built-in Agent** has its own conversation window, configured model,
+workspace and tools. Open it with **Show Agent**.
 
-| Chapter                               | Description                                            |
-| ------------------------------------- | ------------------------------------------------------ |
-| [Installation](installation.md)       | System requirements, installation methods, permissions |
-| [Recording Modes](modes.md)           | Hold-to-talk, toggle mode, assistive mode              |
-| [Chat Overlay](chat-overlay.md)       | Voice Chat UI, drafts, AI responses                    |
-| [Overlay UX (POC)](overlay-ux-poc.md) | Agent/Drawer UX notes for this branch                  |
-| [Settings](settings.md)               | Configuration options, environment variables           |
-| [Troubleshooting](troubleshooting.md) | Common issues and solutions                            |
-| [Privacy & Security](privacy.md)      | What stays local, what goes to cloud                   |
+**Connected agents** are conversations running in another client, such as Codex
+or Claude Code. Codescribe connects them through channels **1–9** and delivers
+speech and written messages to their existing sessions. Installing a plugin
+alone does not connect a session.
 
----
+**0 · All** is a shared channel with its own audience rules. **Your inbox (10)**
+collects messages deliberately addressed to you. Neither is another agent.
 
-## How It Works
+## Version and availability
 
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Your Voice │ ──► │   Whisper   │ ──► │    Text     │
-│             │     │  (on Mac)   │     │  (pasted)   │
-└─────────────┘     └─────────────┘     └─────────────┘
-                           │
-                           ▼ (optional)
-                    ┌─────────────┐
-                    │  AI Format  │
-                    │  (cloud)    │
-                    └─────────────┘
-```
+This guide follows the development source. The app installed on your Mac may
+be older. Check its version and build in **Settings → User**, then compare with
+[release notes](https://github.com/vetcoders/codescribe/releases).
 
-**Key Features:**
+Nightly-only features are marked where described. In particular, attachment
+**Markup** is available in the nightly build, not every distribution. Changes
+to the sidebar and recipient menu may also arrive before the next public release.
 
-- **Local-first**: Whisper model runs entirely on your Mac (Metal GPU)
-- **Runtime-managed Whisper**: the local model is resolved from your configured path or cache at startup
-- **Live streaming**: See transcription appear as you speak
-- **Three modes**: Raw (fast), Formatted (clean), Assistive (AI-powered)
-- **Privacy**: Audio never leaves your machine unless you enable cloud AI
-
----
-
-## Recording Modes at a Glance
-
-| Hotkey                                          | Mode                  | What It Does                                |
-| ----------------------------------------------- | --------------------- | ------------------------------------------- |
-| Hold `Fn/Globe` (default; configurable)         | **Dictation**         | Fast dictation (AI optional), auto‑paste ON |
-| Menu bar **Start transcription** or the overlay | **Formatting**        | AI formatting pass, auto‑paste ON           |
-| Menu bar with **Start in Agent mode** on        | **Assistive (Agent)** | Agent chat (uses selection when available)  |
-
----
-
-## Menu Bar Icon
-
-Codescribe lives in your menu bar. The icon color indicates status:
-
-| Color     | Meaning                      |
-| --------- | ---------------------------- |
-| ⚫ Black  | Idle, ready                  |
-| 🔴 Red    | Recording (hold mode)        |
-| 🟣 Purple | Recording (assistive mode)   |
-| 🟠 Orange | Processing transcription     |
-| 🟢 Green  | Success, text pasted         |
-| ⚪ Gray   | Error or backend unavailable |
-
----
-
-## System Requirements
-
-- **macOS**: 26.0 (Tahoe) or later
-- **Chip**: Apple Silicon (M1/M2/M3/M4/M5)
-- **RAM**: 8GB minimum, 16GB recommended
-- **Disk**: allow room for the app plus a local Whisper model cache (2GB recommended)
-
----
-
-## Getting Help
-
-- **GitHub Issues**: [github.com/vetcoders/codescribe/issues](https://github.com/vetcoders/codescribe/issues)
-- **Documentation**: This guide + [ARCHITECTURE.md](../ARCHITECTURE.md)
-- **Logs**: `~/.codescribe/data.noindex/logs/` or run `codescribe -v` for verbose output
-
----
-
-_Created by Vetcoders (c)2026_
+For source builds and launch/signing details, see the
+[developer installation guide](../INSTALLATION.md). For implementation contracts,
+start with the [repository README](../../README.md).

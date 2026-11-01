@@ -1,105 +1,89 @@
 # Recording Modes
 
-Codescribe exposes **three work modes**. Dictation has **one shortcut binding** you can customize (or disable) in **Settings → Hotkeys**. Formatting and Assistive have no shortcut by default; you can opt into a double-tap (Ctrl, left Option or right Option) for either in **Settings → Shortcuts**. Both also start from the menu bar or the overlay, and the menu bar's **Start in Agent mode** switch decides which one.
+Three choices affect a recording: **where speech is recognized**, **how its
+text is formatted**, and **where the result is delivered**. Choosing one does
+not automatically choose the others.
 
----
+## Recognition mode
 
-## Mode Comparison
+Choose in **Settings → Dictation → Engine**. Changes apply to the next recording.
 
-| Mode                  | Default Shortcut                                | Auto‑Paste | AI       | Best For                                  |
-| --------------------- | ----------------------------------------------- | ---------- | -------- | ----------------------------------------- |
-| **Dictation**         | Hold `Fn/Globe`                                 | ON         | Optional | Fast dictation into any app               |
-| **Formatting**        | Menu bar **Start transcription** or the overlay | ON         | Always   | Cleanup/polish of dictated text           |
-| **Assistive (Agent)** | Menu bar with **Start in Agent mode** on        | OFF        | Always   | Questions, transformations, selected text |
+| Mode        | Recognition            | Preparation                                                        |
+| ----------- | ---------------------- | ------------------------------------------------------------------ |
+| Apple only  | Apple's on-device path | Speech Recognition and microphone permissions; no Whisper download |
+| Local power | A local Whisper model  | Download and validate the model in Dictation → Whisper             |
+| Cloud       | An online STT service  | Service configuration and explicit audio-egress consent            |
 
-Notes:
+Apple only is the default for a fresh installation. The selected mode and the
+last recognizer that produced a result are different information. Check actual
+availability before starting a take.
 
-- **Dictation** runs with or without AI depending on **Settings → Creator → Formatting level** (Off keeps the raw transcript).
-- **Formatting** and **Assistive** always require AI provider config (see **Settings → AI & Prompts**).
+Developer options can add Apple live observations or acoustic-ledger admission
+to other paths. They are not a mandatory sequence through every recognizer.
+Full-file retranscription is a separate operation.
 
----
+## Dictation
 
-## 1) Dictation (Hold Binding)
+Hold the Dictation binding, **Fn/Globe** by default, speak, then release it.
+You can change or disable the binding in **Settings → Hotkeys**. A recording
+started from a toggle or menu control ends with its corresponding Stop action.
 
-**Fast transcript with auto‑paste.**
+The overlay displays the developing transcript. Live text can be revised while
+recognition finishes. Review the delivered text, especially names, numbers and
+content inferred from quiet audio.
 
-### How to Use
+Delivery follows the explicit target and **Safe / Comfort / Off** paste policy.
+An active application alone does not determine every destination, and opening
+another conversation does not redirect a recording already in progress.
 
-1. Hold your Dictation binding (default: hold `Fn/Globe`)
-2. Speak
-3. Release the key(s)
-4. Text is inserted at the cursor in the frontmost app
+## Formatting
 
-### Behavior
+Choose the automatic level in **Settings → Creator → Formatting level**:
 
-- Auto‑paste: **ON**
-- AI: **optional** (controlled by the Formatting level; Off means no AI)
-- Preview: transcription overlay shows live text while you speak
+- **Off:** no AI formatting pass.
+- **Correction:** restrained correction.
+- **Smart:** more structured cleanup.
 
----
+**Max** is a separate, explicit per-take action in the overlay Format menu.
+It uses the Agent model and prompt for the dictated request; it is not an
+automatic formatting level.
 
-## 2) Formatting (menu bar or overlay)
+Choose the formatting provider/model in **Agent → AI models**; account and key
+configuration lives in **Providers**. Review custom prompts under **Agent →
+Prompts**. Formatting sends text to the configured service when used. It is not
+a substitute for checking recognition against the original audio.
 
-**Hands‑free dictation with an AI formatting pass.**
+Formatting and Assistive shortcuts are opt-in. Double-tap bindings, including
+left or right Option where offered, are configured in **Hotkeys**. Check for
+conflicts before using the same gesture in another application.
 
-### How to Use
+## Built-in Agent / Assistive mode
 
-1. Choose **Start transcription** in the menu bar (or start from the overlay)
-2. Speak normally
-3. Choose **Stop transcription** (or **Stop** in the overlay) to stop and deliver
+**Show Agent** opens Codescribe's own assistant conversation. Configure its
+provider/model, workspace and tools in **Settings → Agent**. You can type,
+attach context or speak a request, then explicitly send it.
 
-### Behavior
+The menu bar's Agent-mode start action records an assistive request rather than
+ordinary text for pasting. Stop ends that take and submits it to the built-in
+Agent. A silent assistive take can time out without sending a request; recover
+its text from history rather than assuming the agent received it.
 
-- Auto‑paste: **ON**
-- AI: **always on** (formatting pass)
-- UI: transcription overlay during recording; formatted result is pasted to the active app
+Selected text and screenshots are context when explicitly captured. The Agent's
+answer stays in its conversation; it is not ordinary dictation pasted into the
+frontmost app. Use a new conversation when you want a new context.
 
----
+## Connected agents and continuous voice
 
-## 3) Assistive (Agent) (menu bar)
+A channel connects an existing external agent session to Codescribe. Start its
+microphone control to speak to that channel, or use **0 · All** for the shared
+audience. Viewing a channel, choosing written recipients and changing the voice
+destination are separate actions.
 
-**Voice chat with an AI assistant.**
+Channel sessions can keep listening between utterances or end after one,
+according to **Settings → Agent → AI models**. Speech-pause and completion
+settings control when a message is submitted. Do not confuse a quiet interval
+with the end of the whole microphone session.
 
-### How to Use
-
-1. (Optional) Select text in the frontmost app
-2. In the menu bar, turn on **Start in Agent mode** and choose **Start transcription in Agent mode**
-3. Speak your request
-4. Choose **Stop transcription in Agent mode** to stop and send it to the Agent
-
-If you say nothing for 30 seconds, the take ends on its own and sends nothing. Its text stays in the take archive, and you can still send it with **To Agent**.
-
-### Behavior
-
-- Auto‑paste: **OFF** (agent answers in the overlay)
-- AI: **always on** (assistive model)
-- Selection: best‑effort capture; if selection is present, the agent is instructed to operate **only** on the selected text
-- Conversations: use **New conversation** in the overlay to reset context
-
----
-
-## Customizing Shortcuts
-
-Open **Settings → Hotkeys**:
-
-- **Dictation** supports:
-  - Hold `Fn/Globe`
-  - Hold `Ctrl`
-  - Hold `Ctrl+Option`
-  - Hold `Ctrl+Shift`
-  - Hold `Ctrl+Command`
-  - Double‑tap `Ctrl`
-  - Disabled
-- **Formatting** and **Assistive** have no gesture: their rows say where they start
-
-Use the built‑in conflict detector if macOS already uses the same shortcut.
-
----
-
-## Advanced Tuning
-
-- **Hold delay** and **double‑tap interval** are in **Settings → Hotkeys**.
-
----
-
-_Created by Vetcoders (c)2026_
+Written **Sync** shares a composer draft among selected agents. It does not open
+several microphones. See [Chat & Overlay](chat-overlay.md) for recipients,
+attachments, delivery receipts and the personal inbox.
