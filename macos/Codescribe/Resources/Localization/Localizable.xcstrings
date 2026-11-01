@@ -2331,6 +2331,17 @@
         }
       }
     },
+    "Add a name or term" : {
+      "comment" : "Formatter Keywords input placeholder for adding a new term",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj nazwę lub pojęcie"
+          }
+        }
+      }
+    },
     "Add an API key for this provider. You can also do this later." : {
       "comment" : "Setup step description for a provider whose only access path is an API key",
       "localizations" : {
@@ -2411,6 +2422,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj serwer"
+          }
+        }
+      }
+    },
+    "Add the term to the list. Nothing is saved until Save changes." : {
+      "comment" : "Formatter Keywords add button tooltip",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj pojęcie do listy. Nic nie zostanie zapisane do momentu kliknięcia Zapisz zmiany."
           }
         }
       }
@@ -7633,6 +7655,17 @@
         }
       }
     },
+    "Dictionary rules, which always replace one spelling with another, and speech recognition stay separate." : {
+      "comment" : "Formatter Keywords distinction from dictionary rules",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reguły słownika, które zawsze zastępują jedną pisownię inną, oraz rozpoznawanie mowy pozostają oddzielne."
+          }
+        }
+      }
+    },
     "Disable this server" : {
       "localizations" : {
         "pl" : {
@@ -9958,6 +9991,39 @@
         }
       }
     },
+    "Keyword" : {
+      "comment" : "Formatter Keywords placeholder for single keyword",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słowo kluczowe"
+          }
+        }
+      }
+    },
+    "Keywords" : {
+      "comment" : "Formatter Keywords section title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słowa kluczowe"
+          }
+        }
+      }
+    },
+    "Keywords were not saved." : {
+      "comment" : "Formatter Keywords error message heading",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słowa kluczowe nie zostały zapisane."
+          }
+        }
+      }
+    },
     "Lab" : {
       "comment" : "Settings section: developer experiments",
       "shouldTranslate" : false
@@ -11715,6 +11781,17 @@
         }
       }
     },
+    "Names and terms you often say. Correction, Smart and Max use them as context and prefer them when the transcript heard something similar." : {
+      "comment" : "Formatter Keywords description",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nazwy i pojęcia, które często wypowiadasz. Poziomy Korekta, Smart i Max używają ich jako kontekstu i preferują je, gdy transkrypcja usłyszy coś podobnego."
+          }
+        }
+      }
+    },
     "Native" : {
       "comment" : "Tool source: built-in tools",
       "localizations" : {
@@ -12228,6 +12305,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz API nie jest wymagany"
+          }
+        }
+      }
+    },
+    "No keywords yet. Formatting works from the transcript alone." : {
+      "comment" : "Formatter Keywords empty list label",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak słów kluczowych. Formatowanie działa wyłącznie na podstawie transkrypcji."
           }
         }
       }
@@ -15607,6 +15695,17 @@
         }
       }
     },
+    "Remove keyword" : {
+      "comment" : "Formatter Keywords remove keyword button label",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń słowo kluczowe"
+          }
+        }
+      }
+    },
     "Remove provider and its key" : {
       "localizations" : {
         "pl" : {
@@ -16585,6 +16684,17 @@
         }
       }
     },
+    "Saved keywords apply from the next take." : {
+      "comment" : "Formatter Keywords notice when dirty/saved",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisane słowa kluczowe obowiązują od następnego nagrania."
+          }
+        }
+      }
+    },
     "Saved the Agent replies as %@ in %@." : {
       "comment" : "Placeholders: file name, then folder path",
       "localizations" : {
@@ -16796,6 +16906,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisywanie poprawki"
+          }
+        }
+      }
+    },
+    "Saving keywords" : {
+      "comment" : "Formatter Keywords saving progress indicator label",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisywanie słów kluczowych"
           }
         }
       }
@@ -24226,6 +24347,42 @@
         }
       }
     },
+    "overlay.format.automaticLevel" : {
+      "comment" : "Format menu: one-take formats keep this automatic level (placeholder)",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Automatic formatting stays %@."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatyczne formatowanie pozostaje na poziomie %@."
+          }
+        }
+      }
+    },
+    "overlay.format.maxHint" : {
+      "comment" : "Format menu: what the Max choice does",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Max asks the Agent for this take, with its history and tools."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Max pyta Agenta o to nagranie, korzystając z jego historii i narzędzi."
+          }
+        }
+      }
+    },
     "overlay.intent.redo" : {
       "comment" : "Overlay Redo control",
       "extractionState" : "extracted_with_value",
@@ -24348,6 +24505,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lokalnie"
+          }
+        }
+      }
+    },
+    "overlay.transcript.liveFormatted" : {
+      "comment" : "Transcript area while recording: it shows accepted formatting so far",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Formatted while you speak"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowane podczas mówienia"
           }
         }
       }
@@ -25238,6 +25413,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "ustawienia"
+          }
+        }
+      }
+    },
+    "settings.formatting.level.maxManualOnly" : {
+      "comment" : "Refused write: Max runs only when picked for one take in the overlay",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Max is not an automatic level. Choose Max from the overlay Format menu."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Max nie jest poziomem automatycznym. Wybierz Max z menu Format w nakładce."
           }
         }
       }

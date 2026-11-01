@@ -39,6 +39,10 @@ targets:
       properties:
         CFBundleDisplayName: Codescribe
         CFBundleName: Codescribe
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations:
+          - en
+          - pl
         # Build provenance — expanded from build settings at xcodebuild time;
         # scripts/build-app.sh passes the real values (Cargo version, git commit,
         # diagnostic commit count, UTC timestamp). Release ordering uses the
