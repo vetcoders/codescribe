@@ -10961,16 +10961,6 @@
         }
       }
     },
-    "Max uses the Agent model. This lane is not required for readiness." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Max korzysta z modelu Agenta. Ten tor nie jest wymagany do gotowości."
-          }
-        }
-      }
-    },
     "Max words per update" : {
       "comment" : "Preview timing: most words the preview adds in one update",
       "localizations" : {
