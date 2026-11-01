@@ -912,7 +912,12 @@ struct AttachmentChip: View {
 
   var body: some View {
     Button {
-      showPreview = true
+      if AttachmentPreviewPresentation.usesWindow() {
+        // Sent: nothing to repoint, so the window previews without Markup.
+        AttachmentPreviewWindowController.present(attachment)
+      } else {
+        showPreview = true
+      }
     } label: {
       HStack(spacing: 6) {
         if let thumbnail {
@@ -971,9 +976,25 @@ struct AttachmentPreviewSheet: View {
 
   let attachment: MessageAttachment
   var onRemove: (() -> Void)? = nil
+  /// Set when the preview is its own window; a sheet closes through `dismiss`.
+  var onClose: (() -> Void)? = nil
+  /// Receives the annotated copy written by Markup. Markup is offered only
+  /// when this is set: a staged attachment can be repointed, a sent one not.
+  var onAnnotated: ((URL) -> Void)? = nil
   @Environment(\.dismiss) private var dismiss
   @State private var image: NSImage?
   @State private var zoom: CGFloat = 1.0
+  @State private var markup: AttachmentMarkupSession?
+  @State private var markupSaving = false
+  @State private var markupError: String?
+
+  private var offersMarkup: Bool {
+    onAnnotated != nil && image != nil && AttachmentPreviewPresentation.usesWindow()
+  }
+
+  private func close() {
+    if let onClose { onClose() } else { dismiss() }
+  }
 
   private var pathText: String {
     attachment.url?.path
@@ -1000,15 +1021,23 @@ struct AttachmentPreviewSheet: View {
             .foregroundStyle(CSColor.textTertiary)
         }
         Spacer(minLength: 8)
-        Button("Close") { dismiss() }
-          .keyboardShortcut(.cancelAction)
+        Button("Close") { close() }
+          // Escape belongs to Markup while it edits (ending a text box,
+          // dropping a selection); it must not throw the annotation away.
+          .keyboardShortcut(markup == nil ? .cancelAction : nil)
           .accessibilityIdentifier("attachment-preview-close")
       }
       .fixedSize(horizontal: false, vertical: true)
       .layoutPriority(1)
 
       Group {
-        if let image {
+        if let markup {
+          AttachmentMarkupEditor(session: markup)
+            .frame(minHeight: 240, maxHeight: .infinity)
+            .layoutPriority(-1)
+            .clipShape(.rect(cornerRadius: CSRadius.card, style: .continuous))
+            .accessibilityIdentifier("attachment-preview-markup-editor")
+        } else if let image {
           ScrollView([.horizontal, .vertical]) {
             Image(nsImage: image)
               .resizable()
@@ -1064,6 +1093,13 @@ struct AttachmentPreviewSheet: View {
         }
       }
 
+      if let markupError {
+        Text(verbatim: markupError)
+          .font(CSFont.mono(11))
+          .foregroundStyle(CSColor.dangerLight)
+          .accessibilityIdentifier("attachment-preview-markup-error")
+      }
+
       VStack(alignment: .leading, spacing: 4) {
         Text("Path")
           .font(CSFont.mono(10, .medium))
@@ -1080,41 +1116,11 @@ struct AttachmentPreviewSheet: View {
       .background(Color.primary.opacity(CSAlpha.subtle))
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
 
-      HStack(spacing: 10) {
-        if let onRemove {
-          Button("Remove", role: .destructive) {
-            onRemove()
-            dismiss()
-          }
-        }
-
-        Button("Copy path") {
-          // Tool metadata, not user content: preserve the literal path.
-          NSPasteboard.general.clearContents()
-          NSPasteboard.general.setString(pathText, forType: .string)
-        }
-        .disabled(attachment.url == nil)
-
-        Button("Reveal in Finder") {
-          if let url = attachment.url {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-          }
-        }
-        .disabled(!fileExists)
-
-        Button("Open") {
-          if let url = attachment.url {
-            NSWorkspace.shared.open(url)
-          }
-        }
-        .disabled(!fileExists)
-        .keyboardShortcut(.defaultAction)
-        .accessibilityIdentifier("attachment-preview-open")
-
-        Spacer(minLength: 0)
+      if markup != nil {
+        markupActions
+      } else {
+        fileActions
       }
-      .fixedSize(horizontal: false, vertical: true)
-      .layoutPriority(1)
     }
     .padding(18)
     .frame(minWidth: 520, idealWidth: 640, minHeight: 420, idealHeight: 640)
@@ -1123,6 +1129,103 @@ struct AttachmentPreviewSheet: View {
         image = NSImage(contentsOf: url)
       }
     }
+  }
+
+  private var markupActions: some View {
+    HStack(spacing: 10) {
+      Button("Cancel") {
+        markup = nil
+        markupError = nil
+      }
+      .disabled(markupSaving)
+      .accessibilityIdentifier("attachment-preview-markup-cancel")
+
+      Spacer(minLength: 0)
+
+      Button("Save Markup") { saveMarkup() }
+        .buttonStyle(.glassProminent)
+        .keyboardShortcut(.defaultAction)
+        .disabled(markupSaving)
+        .accessibilityIdentifier("attachment-preview-markup-save")
+    }
+    .fixedSize(horizontal: false, vertical: true)
+    .layoutPriority(1)
+  }
+
+  /// Writes the flattened image as a new asset and hands its URL over. The
+  /// original file is never written; an untouched canvas saves nothing.
+  private func saveMarkup() {
+    guard let session = markup, let onAnnotated else { return }
+    guard session.hasChanges else {
+      markup = nil
+      return
+    }
+    markupSaving = true
+    markupError = nil
+    Task { @MainActor in
+      defer { markupSaving = false }
+      guard let png = await session.flattenedPNG() else {
+        markupError = String(localized: "Could not save the annotated image")
+        return
+      }
+      do {
+        let annotated = URL(fileURLWithPath: try savePastedImage(data: png))
+        markup = nil
+        onAnnotated(annotated)
+      } catch {
+        markupError = String(localized: "Could not save the annotated image")
+      }
+    }
+  }
+
+  private var fileActions: some View {
+    HStack(spacing: 10) {
+      if let onRemove {
+        Button("Remove", role: .destructive) {
+          onRemove()
+          close()
+        }
+      }
+
+      if offersMarkup, let url = attachment.url {
+        Button("Markup", systemImage: "pencil.tip.crop.circle") {
+          markupError = nil
+          markup = AttachmentMarkupSession(url: url)
+          if markup == nil {
+            markupError = String(localized: "Could not open this image for Markup")
+          }
+        }
+        .help(Text("Annotate this image with Markup"))
+        .accessibilityIdentifier("attachment-preview-markup")
+      }
+
+      Button("Copy path") {
+        // Tool metadata, not user content: preserve the literal path.
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(pathText, forType: .string)
+      }
+      .disabled(attachment.url == nil)
+
+      Button("Reveal in Finder") {
+        if let url = attachment.url {
+          NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+      }
+      .disabled(!fileExists)
+
+      Button("Open") {
+        if let url = attachment.url {
+          NSWorkspace.shared.open(url)
+        }
+      }
+      .disabled(!fileExists)
+      .keyboardShortcut(.defaultAction)
+      .accessibilityIdentifier("attachment-preview-open")
+
+      Spacer(minLength: 0)
+    }
+    .fixedSize(horizontal: false, vertical: true)
+    .layoutPriority(1)
   }
 
   private func missingBanner(title: String, detail: String) -> some View {

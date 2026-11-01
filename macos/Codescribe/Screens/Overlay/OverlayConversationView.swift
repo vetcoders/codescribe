@@ -297,6 +297,11 @@ struct OverlayConversationView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
           if showsComposer && presentation == .standard {
             composer
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                composerHeight = $0
+              }
           }
         }
         .overlay(alignment: .bottom) {
@@ -318,7 +323,9 @@ struct OverlayConversationView: View {
               )
               .accessibilityHint(Text("Jump to the current reply"))
               .accessibilityIdentifier("overlay-conversation-jump-to-current")
-              .padding(.bottom, (presentation == .intercom ? visibleComposerHeight : 0) + 10)
+              // The overlay spans the composer in both presentations: the
+              // button rests just above it, never on it.
+              .padding(.bottom, visibleComposerHeight + 10)
               .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
@@ -829,6 +836,9 @@ struct OverlayConversationView: View {
     // The window inset and the header card's height: the newest rows rest
     // under them and scroll through the glass, the way they do under the composer.
     .contentMargins(.top, topInset + visibleNavigationHeight)
+    // Nothing shows above the label and rows fade out under its glass, so no
+    // text peeks between the window header and the label.
+    .mask { Self.topFadeMask(clearHeight: topInset, fadeHeight: visibleNavigationHeight) }
     if #available(macOS 26.0, *) {
       // Navigation reserves actual space outside the scrolling viewport.
       // No empty safe-area bar or translucent fade competes with that bound.
@@ -838,6 +848,16 @@ struct OverlayConversationView: View {
         .scrollEdgeEffectHidden(true, for: .bottom)
     } else {
       list
+    }
+  }
+
+  /// Clear above the label, a fade under its glass, opaque below.
+  static func topFadeMask(clearHeight: CGFloat, fadeHeight: CGFloat) -> some View {
+    VStack(spacing: 0) {
+      Color.clear.frame(height: clearHeight)
+      LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+        .frame(height: fadeHeight)
+      Color.black
     }
   }
 

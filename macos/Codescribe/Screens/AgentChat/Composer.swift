@@ -538,7 +538,11 @@ struct Composer: View {
         ForEach(store.pendingAttachments) { attachment in
           HStack(spacing: 6) {
             Button {
-              previewAttachment = attachment
+              if AttachmentPreviewPresentation.usesWindow() {
+                presentPreviewWindow(for: attachment)
+              } else {
+                previewAttachment = attachment
+              }
             } label: {
               HStack(spacing: 6) {
                 CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
@@ -583,6 +587,17 @@ struct Composer: View {
         }
       )
     }
+  }
+
+  /// Nightly: the preview as its own window above the chat. Markup's
+  /// annotated copy takes the staged slot (same id), the original stays on disk.
+  private func presentPreviewWindow(for attachment: PendingAttachment) {
+    let store = store
+    let id = attachment.id
+    AttachmentPreviewWindowController.present(
+      attachment.previewAttachment,
+      onRemove: { _ in store.removeAttachment(id) },
+      onAnnotated: { _, annotated in store.replaceAttachment(id, with: annotated) })
   }
 
   // MARK: Image picker

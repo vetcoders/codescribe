@@ -69,6 +69,10 @@ struct OverlayConversationComposer: View {
   @State private var microphoneHint = ComposerMicrophoneHintState()
   @State private var accessoryHeight: CGFloat = 30
   @State private var editorHeight: CGFloat = 28
+  /// The recipient picker stays open across toggles; closing it hands the
+  /// keyboard back to the editor.
+  @State private var recipientPickerShown = false
+  @State private var recipientFocusNudge: UInt64 = 0
 
   /// The height budget caps the editor viewport, never the draft's line count.
   private var isCompact: Bool { maximumEditorHeight != nil }
@@ -171,6 +175,17 @@ struct OverlayConversationComposer: View {
     let parts = ConversationDraft.split(draft)
     draft = ConversationDraft.compose(
       text: parts.text, attachments: parts.attachments.filter { $0 != path })
+  }
+  /// Markup's annotated copy takes the original's slot; the original file
+  /// stays on disk. Already attached elsewhere: the old slot just goes.
+  private func replaceAttachment(_ path: String, with annotated: String) {
+    let parts = ConversationDraft.split(draft)
+    guard parts.attachments.contains(path) else { return }
+    let replaced: [String] =
+      parts.attachments.contains(annotated)
+      ? parts.attachments.filter { $0 != path }
+      : parts.attachments.map { $0 == path ? annotated : $0 }
+    draft = ConversationDraft.compose(text: parts.text, attachments: replaced)
   }
 
   private func pickAttachments() {
@@ -298,7 +313,11 @@ struct OverlayConversationComposer: View {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 6) {
             ForEach(attached, id: \.self) { path in
-              OverlayComposerAttachmentPill(path: path, palette: palette) { detach(path) }
+              OverlayComposerAttachmentPill(
+                path: path, palette: palette,
+                onReplace: { current, annotated in replaceAttachment(current, with: annotated) },
+                onDetach: { current in detach(current) }
+              ) { detach(path) }
             }
           }
           // The chips keep their own sideways scrolling; the pin only makes
@@ -333,8 +352,43 @@ struct OverlayConversationComposer: View {
   /// The send button's chevron: the recipient set of a source conversation
   /// (the inbox builds it, 0 · All narrows the broadcast to it), the same
   /// draft-sync toggles the roster chain flips. Lit while a set is chosen.
+  /// One press opens the picker, several agents are ticked in it, and
+  /// closing it returns to the composer. A menu closes on every pick, so the
+  /// set lives in a popover instead.
   private func recipientMenu(_ corners: ConversationComposerCornerLayout) -> some View {
-    Menu {
+    let sendGlyph = min(controlGlyphSize, corners.glyphSize)
+    Button {
+      recipientPickerShown.toggle()
+    } label: {
+      Image(systemName: "chevron.down")
+        .font(.system(size: sendGlyph * 0.33, weight: .semibold))
+        // paperplane.fill sits slightly high; lift the tail onto its midline.
+        .offset(y: -(sendGlyph * 0.08))
+        .conversationActionHover(
+          restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+          hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+        )
+        .frame(
+          width: corners.recipientWidth, height: corners.actionHeight, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .frame(width: corners.recipientWidth, height: corners.actionHeight)
+    .disabled(sending)
+    .overlayFastHint(recipientMenuHint, palette: palette)
+    .popover(isPresented: $recipientPickerShown, arrowEdge: .top) {
+      recipientPicker
+    }
+    .onChange(of: recipientPickerShown) { _, shown in
+      if !shown { recipientFocusNudge &+= 1 }
+    }
+    .accessibilityLabel(Text("Choose recipients"))
+    .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+    .accessibilityIdentifier("overlay-conversation-recipients")
+  }
+
+  private var recipientPicker: some View {
+    VStack(alignment: .leading, spacing: 6) {
       ForEach(draftSyncChoices) { choice in
         Toggle(
           isOn: Binding(
@@ -343,31 +397,23 @@ struct OverlayConversationComposer: View {
         ) {
           Text(verbatim: choice.title)
         }
+        .toggleStyle(.checkbox)
         .disabled(!choice.enabled)
       }
       if draftSyncActive, let onStopDraftSync {
         Divider()
         Button(action: onStopDraftSync) { Text(verbatim: clearRecipientsTitle) }
       }
-    } label: {
-      Image(systemName: "chevron.down")
-        .font(.system(size: min(controlGlyphSize, corners.glyphSize) * 0.55, weight: .semibold))
-        .frame(width: corners.recipientWidth, height: corners.actionHeight)
-        .contentShape(Rectangle())
     }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .frame(width: corners.recipientWidth, height: corners.actionHeight)
-    .conversationActionHover(
-      restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
-      hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
-    )
-    .disabled(sending)
-    .overlayFastHint(recipientMenuHint, palette: palette)
-    .accessibilityLabel(Text("Choose recipients"))
-    .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
-    .accessibilityIdentifier("overlay-conversation-recipients")
+    .font(CSFont.ui(12, .medium))
+    .foregroundStyle(palette.primaryText.color)
+    .padding(10)
+    .frame(minWidth: 160, alignment: .leading)
+    .fixedSize()
+    .background(.regularMaterial)
+    .csFocusPolicy()
+    .onExitCommand { recipientPickerShown = false }
+    .accessibilityIdentifier("overlay-conversation-recipient-picker")
   }
 
   private var recipientMenuHint: String {
@@ -494,7 +540,8 @@ struct OverlayConversationComposer: View {
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
-        onCancel: onCancel, focusRevision: focusRevision, isCovered: isCovered,
+        onCancel: onCancel, focusRevision: focusRevision &+ recipientFocusNudge,
+        isCovered: isCovered,
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 },
@@ -555,28 +602,31 @@ struct OverlayConversationComposer: View {
             .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
             .accessibilityIdentifier("overlay-conversation-draft-microphone")
           }
-          Button("Send", systemImage: "paperplane.fill", action: onSubmit)
-            .labelStyle(.iconOnly)
-            .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
-            .frame(width: corners.actionWidth, height: corners.actionHeight)
-            .contentShape(Circle())
-            .buttonStyle(.plain)
-            .conversationActionHover(
-              restingColor: restingActionColor,
-              hoverColor: palette.primaryText.color
-            )
-            .disabled(
-              sending
-                || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                  && pendingCaptureAttachments.isEmpty)
-            )
-            .accessibilityIdentifier("overlay-conversation-send")
-            .overlayFastHint(
-              draftSyncNames.count > 1
-                ? String(localized: "Send to all linked agents") : String(localized: "Send"),
-              palette: palette)
-          if showsRecipientMenu {
-            recipientMenu(corners)
+          // Send and the recipient tail share one visual control; mic keeps stack spacing.
+          HStack(spacing: 0) {
+            Button("Send", systemImage: "paperplane.fill", action: onSubmit)
+              .labelStyle(.iconOnly)
+              .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
+              .frame(width: corners.actionWidth, height: corners.actionHeight)
+              .contentShape(Circle())
+              .buttonStyle(.plain)
+              .conversationActionHover(
+                restingColor: restingActionColor,
+                hoverColor: palette.primaryText.color
+              )
+              .disabled(
+                sending
+                  || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && pendingCaptureAttachments.isEmpty)
+              )
+              .accessibilityIdentifier("overlay-conversation-send")
+              .overlayFastHint(
+                draftSyncNames.count > 1
+                  ? String(localized: "Send to all linked agents") : String(localized: "Send"),
+                palette: palette)
+            if showsRecipientMenu {
+              recipientMenu(corners)
+            }
           }
         }
         .background { OverlayMenuCursorRegion() }
@@ -615,24 +665,23 @@ private struct ConversationComposerCornerLayout: Equatable {
     // widens the leading corner.
     let leadingCount: CGFloat = 1
     _ = showsSync
-    // The recipient chevron is smaller than an action beside Send.
-    let recipientShare: CGFloat = showsRecipientMenu ? 0.45 : 0
-    let trailingCount: CGFloat = (showsMicrophone ? 2 : 1) + recipientShare
-    let count = leadingCount + trailingCount
+    // Split-button tail: a third of an action, glued to Send with no extra spacing.
+    let recipientShare: CGFloat = showsRecipientMenu ? 1.0 / 3.0 : 0
+    let trailingActions: CGFloat = showsMicrophone ? 2 : 1
+    let count = leadingCount + trailingActions + recipientShare
     clearance = min(4, max(0, width / 24))
     spacing = min(
       compact ? ComposerControlMetrics.intercomSpacing : ComposerControlMetrics.spacing,
       max(0, width / 32))
     let proseWidth = min(3 * fontSize, max(0, width / 3))
+    let trailingSpacings = max(0, trailingActions - 1)
     actionWidth = min(
       ComposerControlMetrics.hitTargetSize,
-      max(1, (width - proseWidth - 2 * clearance - (count - 2) * spacing) / count))
+      max(1, (width - proseWidth - 2 * clearance - trailingSpacings * spacing) / count))
     leadingWidth = leadingCount * actionWidth + (leadingCount - 1) * spacing
     recipientWidth = showsRecipientMenu ? ceil(actionWidth * recipientShare) : 0
-    let trailingActions: CGFloat = showsMicrophone ? 2 : 1
     trailingWidth =
-      trailingActions * actionWidth + recipientWidth
-      + (trailingActions - 1 + (showsRecipientMenu ? 1 : 0)) * spacing
+      trailingActions * actionWidth + recipientWidth + trailingSpacings * spacing
   }
 
   var glyphSize: CGFloat { min(actionWidth, actionHeight) * 0.65 }
@@ -707,6 +756,13 @@ enum ConversationAttachmentLabel {
 struct OverlayComposerAttachmentPill: View {
   let path: String
   let palette: OverlayAppearancePalette
+  /// Repoints the draft from the path the preview window currently shows to
+  /// Markup's annotated copy. Nil where the attachment is owned elsewhere (an
+  /// active recording's captures), which leaves the window without Markup.
+  var onReplace: ((_ current: String, _ annotated: String) -> Void)? = nil
+  /// Removes the path the preview window currently shows; after a Markup
+  /// save that is the annotated copy, not `path`. Nil falls back to `onRemove`.
+  var onDetach: ((_ current: String) -> Void)? = nil
   let onRemove: () -> Void
   @State private var thumbnail: NSImage?
   @State private var bytes = 0
@@ -724,7 +780,11 @@ struct OverlayComposerAttachmentPill: View {
   var body: some View {
     HStack(spacing: 6) {
       Button {
-        showPreview = true
+        if AttachmentPreviewPresentation.usesWindow() {
+          presentPreviewWindow()
+        } else {
+          showPreview = true
+        }
       } label: {
         HStack(spacing: 6) {
           if let thumbnail {
@@ -784,6 +844,23 @@ struct OverlayComposerAttachmentPill: View {
         onRemove()
       }
     }
+  }
+
+  /// Nightly: the preview as its own window above the chat, with Markup when
+  /// the draft can be repointed to the annotated copy.
+  private func presentPreviewWindow() {
+    let remove = onRemove
+    let detach = onDetach
+    var onAnnotated: ((URL, URL) -> Void)? = nil
+    if let replace = onReplace {
+      onAnnotated = { current, annotated in replace(current.path, annotated.path) }
+    }
+    AttachmentPreviewWindowController.present(
+      attachment,
+      onRemove: { current in
+        if let detach, let current { detach(current.path) } else { remove() }
+      },
+      onAnnotated: onAnnotated)
   }
 }
 
