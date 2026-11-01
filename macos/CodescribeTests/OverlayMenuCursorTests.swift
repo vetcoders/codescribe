@@ -414,11 +414,9 @@ final class OverlayMenuCursorTests: XCTestCase {
     region.onHover = { transitions.append($0) }
     content.addSubview(region)
     BackgroundTestWindow.present(panel)
-    content.layoutSubtreeIfNeeded()
-    // `run(until:)` is unavailable from an async context; a synchronous helper spins it.
-    func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
-    settle()
     defer { panel.close() }
+    content.layoutSubtreeIfNeeded()
+    try await OverlayHoverDeliveryTestSupport.passInterval(of: region)
     func move(_ point: NSPoint) throws {
       panel.sendEvent(
         try XCTUnwrap(
