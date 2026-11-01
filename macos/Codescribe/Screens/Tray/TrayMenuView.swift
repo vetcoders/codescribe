@@ -63,6 +63,9 @@ struct TrayMenuView: View {
   private var statusHeader: some View {
     HStack(spacing: 9) {
       Wordmark(size: 14)
+        .lineLimit(1)
+        .fixedSize()
+        .layoutPriority(1)
       Spacer(minLength: 8)
       // Separate view type on active vs idle/error (same rule as the overlay
       // header): the animated pill exists only for live status phases.
