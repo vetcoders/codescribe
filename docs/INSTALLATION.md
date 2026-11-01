@@ -255,12 +255,16 @@ make notarize         # Notarize an existing signed DMG
 ```
 
 **Result**: standard `Codescribe_X.Y.Z-….dmg` (slim: Silero embedded,
-MiniLM signed as a runtime resource, Whisper via Settings download/cache) and
+Whisper via Settings download/cache, no MiniLM resource by default) and
 optional `…_full.dmg` (embeds Whisper too). `make release-standard` is the
 canonical distribution cut. `make release-stable` adds installation of that
 same stapled Release `.app` into `/Applications`; it does not publish a tag or
 GitHub Release. Do not chain `VAR=x make release && make dmg-signed` — make
 variables do not survive the `&&`.
+
+MiniLM is only bundled when explicitly requested. The default app/DMG path
+omits it because no product runtime path loads it; a development embedding
+resource is not a prerequisite for ordinary dictation.
 
 Before calling any DMG production-ready, record four independent facts:
 
