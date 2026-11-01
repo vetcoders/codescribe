@@ -219,10 +219,11 @@ struct ProviderCard: View {
   private var hasAccount: Bool {
     !isCustom && (provider.accountLoginEnabled || provider.accountSignedIn)
   }
-  /// Responses account availability is projected here. Google credential
-  /// availability already makes its key optional through the bridge row.
+  /// Responses and Google account availability are projected here.
   private var accountServesRequests: Bool {
-    !isCustom && provider.accountSignedIn && provider.wire == "responses"
+    !isCustom
+      && provider.accountSignedIn
+      && (provider.wire == "responses" || provider.wire == "google-generate-content")
   }
   /// "Responses" / "Messages" — the one thing every provider declares.
   private var wireLabel: String {
@@ -266,24 +267,12 @@ struct ProviderCard: View {
         Text("Account access unavailable")
           .font(SettingsScale.settingName)
         Text(error).font(SettingsScale.helper).textSelection(.enabled)
-        if provider.wire != "google-generate-content" {
-          SettingsChipButton("Sign out", tint: CSColor.secondaryInk) {
-            model.signOutAccount(providerId: provider.id)
-          }
-          .accessibilityLabel("Sign out \(provider.displayName)")
+        SettingsChipButton("Sign out", tint: CSColor.secondaryInk) {
+          model.signOutAccount(providerId: provider.id)
         }
+        .accessibilityLabel("Sign out \(provider.displayName)")
       }
-      if provider.wire == "google-generate-content" {
-        Text(provider.accountStatusMessage)
-          .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.secondaryInk)
-          .textSelection(.enabled)
-        if !isCustom && provider.accountSignedIn {
-          SettingsChipButton("Remove stored account", tint: CSColor.secondaryInk) {
-            model.signOutAccount(providerId: provider.id)
-          }
-        }
-      } else if hasAccount && model.providerAccountErrors[provider.id] == nil {
+      if hasAccount && model.providerAccountErrors[provider.id] == nil {
         AccountLoginRow(
           provider: provider,
           loginPending: model.accountLoginPending.contains(provider.id),
@@ -291,6 +280,17 @@ struct ProviderCard: View {
           onStart: { model.startAccountLogin(providerId: provider.id) },
           onSignOut: { model.signOutAccount(providerId: provider.id) }
         )
+      }
+      if provider.wire == "google-generate-content" && !hasAccount {
+        Text(provider.accountStatusMessage)
+          .font(SettingsScale.helper)
+          .foregroundStyle(CSColor.secondaryInk)
+          .textSelection(.enabled)
+        if provider.accountSignedIn {
+          SettingsChipButton("Remove stored account", tint: CSColor.secondaryInk) {
+            model.signOutAccount(providerId: provider.id)
+          }
+        }
       }
       DisclosureGroup(isExpanded: $showingAdvanced) {
         VStack(alignment: .leading, spacing: CSSpace.xs) {

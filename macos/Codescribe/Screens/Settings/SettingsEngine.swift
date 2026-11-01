@@ -1251,6 +1251,10 @@ extension CsProviderOption {
     .row(
       id: "anthropic-messages", kind: "vendor", name: "Anthropic", wire: "messages",
       endpoint: "https://api.anthropic.com/v1/messages", account: "LLM_ANTHROPIC_API_KEY"),
+    .row(
+      id: "google-gemini", kind: "vendor", name: "Google", wire: "google-generate-content",
+      endpoint: "https://generativelanguage.googleapis.com/v1beta/models",
+      account: "LLM_GOOGLE_API_KEY", login: true),
   ]
 }
 

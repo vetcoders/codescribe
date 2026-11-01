@@ -4195,7 +4195,8 @@ final class SettingsViewModel: ObservableObject {
 
   /// Persist the OAuth client id (non-secret; settings.json) for the provider
   /// that owns it. Takes effect on the next click — the core re-reads settings
-  /// per resolution. Advanced override only; shipped defaults cover OpenAI + xAI.
+  /// per resolution. Advanced override only; shipped defaults cover OpenAI,
+  /// xAI, and Google.
   func saveOauthClientId(providerId: String, value: String) {
     let settingKey: String
     switch providerId {
@@ -4205,6 +4206,8 @@ final class SettingsViewModel: ObservableObject {
       settingKey = "LLM_ANTHROPIC_OAUTH_CLIENT_ID"
     case "xai-responses":
       settingKey = "LLM_XAI_OAUTH_CLIENT_ID"
+    case "google-gemini":
+      settingKey = "LLM_GOOGLE_OAUTH_CLIENT_ID"
     default:
       lastError = String(
         localized: "No OAuth client-id setting for provider \(providerId)",

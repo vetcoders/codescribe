@@ -131,7 +131,10 @@ final class ProvidersPanelTests: XCTestCase {
     // and the UI must not re-sort it — first place is I1's call, not this test's.
     XCTAssertEqual(
       Set(model.vendorProviders.map(\.id)),
-      ["libraxis-responses", "openai-responses", "xai-responses", "anthropic-messages"]
+      [
+        "libraxis-responses", "openai-responses", "xai-responses", "anthropic-messages",
+        "google-gemini",
+      ]
     )
     XCTAssertEqual(
       model.vendorProviders.map(\.id),
@@ -291,6 +294,11 @@ final class ProvidersPanelTests: XCTestCase {
     XCTAssertNil(
       AccountLoginRow.identityLine(for: provider), "a signed-out row names no account")
     XCTAssertEqual(AccountLoginRow.brand(for: provider), "ChatGPT")
+
+    let google = CsProviderOption.sampleProviders[4]
+    XCTAssertEqual(google.id, "google-gemini")
+    XCTAssertTrue(google.accountLoginEnabled)
+    XCTAssertEqual(AccountLoginRow.brand(for: google), "Google")
   }
 
   /// LLMLaneEditor.body reads `llmLane` per menu item; the FFI loader must not.
