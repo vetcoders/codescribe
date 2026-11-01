@@ -483,3 +483,62 @@ fn room_noise_under_the_floor_up_to_silero_admits_no_leading_word() {
         "room noise under the floor never becomes the onset of the words in front of Silero"
     );
 }
+
+fn voiced_onset_capture(session: &str) -> (AppleSealState, CaptureLevelAccumulator) {
+    const SAMPLE_RATE: u32 = 48_000;
+    let mut state = AppleSealState::new_for_session(SAMPLE_RATE, session.into(), 1);
+    state.existence_floor_rms = Some(0.003);
+    let capture = CaptureLevelAccumulator::bound_to_at_rate(&state.capture_energy, SAMPLE_RATE);
+    (state, capture)
+}
+
+fn push_level(capture: &mut CaptureLevelAccumulator, level: f32, samples: usize) {
+    let pcm = vec![level; samples];
+    for chunk in pcm.chunks(960) {
+        capture.push_samples(chunk);
+    }
+}
+
+#[test]
+fn voiced_onset_anchors_are_measured_once_per_capture_snapshot() {
+    let (state, mut capture) = voiced_onset_capture("anchor-cache-snapshot");
+    push_level(&mut capture, 0.08, 96_000);
+
+    let first = state
+        .voiced_onset_anchors()
+        .expect("observed capture above the floor yields anchors");
+    assert!(!first.is_empty());
+    for _ in 0..64 {
+        let again = state
+            .voiced_onset_anchors()
+            .expect("an unchanged capture keeps its anchors");
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &again),
+            "an unchanged capture snapshot must not rescan the hop clock"
+        );
+    }
+}
+
+#[test]
+fn voiced_onset_anchors_follow_capture_that_arrives_after_the_cache() {
+    let (state, mut capture) = voiced_onset_capture("anchor-cache-growth");
+    push_level(&mut capture, 0.08, 96_000);
+    let before = state
+        .voiced_onset_anchors()
+        .expect("observed capture above the floor yields anchors");
+
+    push_level(&mut capture, 0.000_5, 48_000);
+    push_level(&mut capture, 0.08, 48_000);
+    let after = state
+        .voiced_onset_anchors()
+        .expect("grown capture keeps yielding anchors");
+
+    assert!(!std::sync::Arc::ptr_eq(&before, &after));
+    assert_eq!(after.len(), before.len() + 1);
+    let newest = after.last().expect("the new burst is an anchor");
+    assert!(
+        newest.range.sample_start >= 144_000,
+        "the burst after the quiet second must be its own anchor, got {:?}",
+        newest.range
+    );
+}
