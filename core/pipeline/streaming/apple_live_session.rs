@@ -5820,7 +5820,14 @@ impl AppleSealState {
         if !self.seal_ledger_enabled {
             return;
         }
-        let sample_start = sample_start.min(self.window_plan.admission_horizon());
+        let terminal_close = sample_start == u64::MAX
+            && self.refinement_submitted.is_empty()
+            && self.refinement_pending.is_empty();
+        let sample_start = if terminal_close {
+            u64::MAX
+        } else {
+            sample_start.min(self.window_plan.admission_horizon())
+        };
         self.admission_horizon = self.admission_horizon.max(sample_start);
         let owners = self.unsealed_word_owners();
         let mut expired_words = false;
@@ -5834,7 +5841,7 @@ impl AppleSealState {
             if owner.sample_end > self.admission_horizon {
                 continue;
             }
-            if self.whisper_work_may_cover(&owner) {
+            if !terminal_close && self.whisper_work_may_cover(&owner) {
                 continue;
             }
             let (is_open, has_return) = {
@@ -6637,6 +6644,8 @@ fn reconcile_silero_ledger(
         });
         return false;
     }
+    let ledger = ledger_with_voiced_onsets(state, ledger);
+    let ledger = &ledger;
     let apple_words = apple_segments_on_pcm_clock(state, disjoint);
     let mut fusion_words = std::mem::take(&mut state.unmatched_silero_words);
     fusion_words.extend(apple_words.iter().map(FusionWord::from_timed));
@@ -7799,14 +7808,14 @@ fn silero_speech_distance(state: &AppleSealState, start: u64, end: u64) -> Siler
         return SileroSpeechDistance::Unmeasured;
     }
     let rate = u64::from(state.sample_rate.max(1));
-    let nearest = evidence
-        .ranges()
+    let speech = voiced_onset_silero_ranges(state, &evidence);
+    let nearest = speech
         .iter()
         // Zero when the range overlaps the span; otherwise the gap on either side.
-        .map(|range| {
+        .map(|&(range_start, range_end)| {
             start
-                .saturating_sub(range.sample_end)
-                .max(range.sample_start.saturating_sub(end))
+                .saturating_sub(range_end)
+                .max(range_start.saturating_sub(end))
         })
         .min()
         .map(|samples| samples.saturating_mul(1_000) / rate);
@@ -7852,6 +7861,76 @@ fn silence_under_span(state: &AppleSealState, start: u64, end: u64) -> SilenceUn
     }
 }
 
+/// Maximum continuous voiced onset before a Silero speech range that Silero's
+/// RNN warm-up can miss at the start of an utterance (`2 * SPEECH_ISLAND_GAP_MS`).
+const SILERO_VOICED_ONSET_MAX_MS: u64 = 2 * crate::pipeline::speech_islands::SPEECH_ISLAND_GAP_MS;
+
+fn extend_silero_start_to_voiced_onset(
+    state: &AppleSealState,
+    start: u64,
+    previous_end: u64,
+) -> u64 {
+    let Some(floor) = state
+        .existence_floor_rms
+        .filter(|floor| floor.is_finite() && *floor > 0.0)
+    else {
+        return start;
+    };
+    let anchors = state.capture_energy.session_speech_anchors(
+        &state.session_id,
+        state.capture_epoch,
+        state.sample_rate,
+        floor,
+    );
+    if !matches!(anchors.availability, AcousticAvailability::Observed { .. }) {
+        return start;
+    }
+    let max_onset_samples =
+        u64::from(state.sample_rate.max(1)).saturating_mul(SILERO_VOICED_ONSET_MAX_MS) / 1_000;
+    anchors
+        .anchors
+        .iter()
+        .find(|anchor| {
+            anchor.range.sample_start < start
+                && anchor.range.sample_end > start
+                && start.saturating_sub(anchor.range.sample_start) <= max_onset_samples
+        })
+        .map_or(start, |anchor| {
+            anchor.range.sample_start.max(previous_end.min(start))
+        })
+}
+
+fn ledger_with_voiced_onsets(
+    state: &AppleSealState,
+    ledger: &super::silero_fusion::UtteranceLedger,
+) -> super::silero_fusion::UtteranceLedger {
+    let mut adjusted = ledger.clone();
+    let mut previous_end = 0u64;
+    for utterance in adjusted.utterances_mut() {
+        utterance.range.sample_start =
+            extend_silero_start_to_voiced_onset(state, utterance.range.sample_start, previous_end);
+        previous_end = previous_end.max(utterance.range.sample_end);
+    }
+    adjusted
+}
+
+fn voiced_onset_silero_ranges(
+    state: &AppleSealState,
+    evidence: &AcousticSpeechEvidence,
+) -> Vec<(u64, u64)> {
+    let mut previous_end = 0u64;
+    evidence
+        .ranges()
+        .iter()
+        .map(|range| {
+            let start =
+                extend_silero_start_to_voiced_onset(state, range.sample_start, previous_end);
+            previous_end = previous_end.max(range.sample_end);
+            (start, range.sample_end)
+        })
+        .collect()
+}
+
 /// Whether the span lies on a speech island: Silero speech joined across
 /// pauses shorter than
 /// [`SPEECH_ISLAND_GAP_MS`](crate::pipeline::speech_islands::SPEECH_ISLAND_GAP_MS),
@@ -7863,11 +7942,7 @@ fn silero_speech_on_span(state: &AppleSealState, start: u64, end: u64) -> Option
     let evidence = observed_silero(state)?;
     span_inside_observed(&evidence, end)?;
     let observed_samples = evidence.availability().observed_samples()?;
-    let speech: Vec<(u64, u64)> = evidence
-        .ranges()
-        .iter()
-        .map(|range| (range.sample_start, range.sample_end))
-        .collect();
+    let speech = voiced_onset_silero_ranges(state, &evidence);
     Some(
         join_speech_islands(&speech, state.sample_rate, observed_samples)
             .iter()
@@ -9086,17 +9161,21 @@ fn resume_witness_waiting_closures(
 ) {
     let waiting = std::mem::take(&mut state.dictation_witness_waiting);
     if state.capture_stopping {
-        let mut ledger = state
-            .acoustic_ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for owner in waiting {
-            ledger.note_frontier_return(&owner, LedgerObservationProducer::Whisper);
+        {
+            let mut ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for owner in waiting {
+                ledger.note_frontier_return(&owner, LedgerObservationProducer::Whisper);
+            }
         }
+        state.close_admission_horizon(ev_tx, state.admission_horizon);
     } else {
         for owner in waiting {
             state.finish_whisper_frontier(ev_tx, &owner);
         }
+        state.close_admission_horizon(ev_tx, state.window_plan.admission_horizon());
         state.publish_resolved_word_seals(ev_tx);
     }
 }
@@ -11070,6 +11149,7 @@ fn apple_stream_worker(
     // terminal PCM and every returned segment enters through ordinary ledger
     // admission; it never rewrites the document wholesale.
     run_terminal_dictation_witness(&mut state, &ev_tx, language, &witness_done_rx);
+    state.close_admission_horizon(&ev_tx, u64::MAX);
     state.publish_resolved_word_seals(&ev_tx);
     state.seal_remaining_at_session_end(&ev_tx);
     if let Some(owner) = consultation.as_mut() {
