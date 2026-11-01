@@ -959,7 +959,6 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
       } header: {
         Text("Choose recipients")
       }
-      .menuActionDismissBehavior(.disabled)
       .accessibilityLabel(Text("Choose recipients"))
       if !members.isEmpty { Divider() }
     }
