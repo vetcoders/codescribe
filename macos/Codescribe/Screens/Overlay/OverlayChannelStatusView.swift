@@ -1433,11 +1433,16 @@ struct OverlayChannelStatusView: View {
   func monitorBody(maximumHeight: CGFloat, focusRevision: UInt64 = 0) -> some View {
     OverlayTextScaleReader { scale in
       var installed = self
-      installed.textScale = scale
+      installed.textScale = scale * Self.messageListScale
       return installed.scaledMonitorBody(
         maximumHeight: maximumHeight, focusRevision: focusRevision)
     }
   }
+
+  /// The list reads at the message list's zoom: a row's preview (13 points)
+  /// lands on the message body size and the rest of the row keeps its
+  /// proportions. The rail keeps the window's scale, like the header's pills.
+  static var messageListScale: CGFloat { OverlayConversationMessageContent.bodyFontSize / 13 }
 
   /// The folded list (Maciej, 2026-10-19: "zostawia pigułki"): one pill per
   /// row of the list, channel 0 first. The list's minimal view: its divider
