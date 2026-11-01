@@ -142,19 +142,33 @@ private struct CSFocusInputKey: EnvironmentKey {
   static let defaultValue: CSFocusInputState? = nil
 }
 
+private struct CSFocusWindowAppearanceKey: EnvironmentKey {
+  static let defaultValue: Bool? = nil
+}
+
 extension EnvironmentValues {
   fileprivate var csFocusInput: CSFocusInputState? {
     get { self[CSFocusInputKey.self] }
     set { self[CSFocusInputKey.self] = newValue }
   }
+
+  /// Window appearance captured outside controls that keep their glass active.
+  var csFocusWindowAppearsActive: Bool? {
+    get { self[CSFocusWindowAppearanceKey.self] }
+    set { self[CSFocusWindowAppearanceKey.self] = newValue }
+  }
 }
 
 private struct CSFocusPolicyModifier: ViewModifier {
+  @Environment(\.appearsActive) private var windowAppearsActive
   @State private var input = CSFocusInputState()
 
   func body(content: Content) -> some View {
     content
       .environment(\.csFocusInput, input)
+      // A glass surface may force controlActiveState to key, which also
+      // changes appearsActive. Focus retains the window's original value.
+      .environment(\.csFocusWindowAppearsActive, windowAppearsActive)
       .background {
         CSFocusPolicyMonitor(input: input)
           .frame(width: 0, height: 0)
@@ -237,13 +251,14 @@ struct CSFocusOutline: View {
   var cornerRadius: CGFloat
   @Environment(\.displayScale) private var displayScale
   @Environment(\.appearsActive) private var appearsActive
+  @Environment(\.csFocusWindowAppearsActive) private var windowAppearsActive
   @Environment(\.csFocusInput) private var input
 
   var body: some View {
     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
       .strokeBorder(
         CSColor.chromeAccent.opacity(
-          appearsActive
+          (windowAppearsActive ?? appearsActive)
             && CSFocusPolicy.shouldShowOutline(
               isFocused: isFocused, modality: input?.modality ?? .keyboard)
             ? 1 : 0),

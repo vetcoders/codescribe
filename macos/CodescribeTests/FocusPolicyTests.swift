@@ -1,10 +1,42 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
 
 @MainActor
 final class FocusPolicyTests: XCTestCase {
+  func testActiveGlassCannotActivateAnInactiveWindowsFocusOutline() throws {
+    let appearance = try readFocusAppearance(windowAppearsActive: false)
+    XCTAssertTrue(appearance.control, "the glass keeps its requested active appearance")
+    XCTAssertEqual(
+      appearance.window, false,
+      "inactive cards must not inherit keyboard outlines from active-looking glass")
+  }
+
+  func testActiveWindowRetainsKeyboardFocusAppearanceInsideGlass() throws {
+    let appearance = try readFocusAppearance(windowAppearsActive: true)
+    XCTAssertTrue(appearance.control)
+    XCTAssertEqual(appearance.window, true)
+  }
+
+  private func readFocusAppearance(windowAppearsActive: Bool) throws -> (
+    control: Bool, window: Bool?
+  ) {
+    var observed: (control: Bool, window: Bool?)?
+    let host = NSHostingView(
+      rootView: FocusAppearanceProbe { control, window in
+        observed = (control, window)
+      }
+      .environment(\.controlActiveState, .key)
+      .csFocusPolicy()
+      .environment(\.appearsActive, windowAppearsActive))
+    host.frame = NSRect(x: 0, y: 0, width: 80, height: 24)
+    _ = host.fittingSize
+    host.layoutSubtreeIfNeeded()
+    return try XCTUnwrap(observed, "the hosted view must evaluate the real environment chain")
+  }
+
   func testPointerSuppressesOutlineBeforeDeferredFocusRelease() {
     XCTAssertFalse(CSFocusPolicy.shouldShowOutline(isFocused: true, modality: .pointer))
     XCTAssertTrue(CSFocusPolicy.shouldShowOutline(isFocused: true, modality: .keyboard))
@@ -79,4 +111,15 @@ final class FocusPolicyTests: XCTestCase {
     )
   }
 
+}
+
+private struct FocusAppearanceProbe: View {
+  @Environment(\.appearsActive) private var controlAppearsActive
+  @Environment(\.csFocusWindowAppearsActive) private var windowAppearsActive
+  let observe: @MainActor (Bool, Bool?) -> Void
+
+  var body: some View {
+    let _ = observe(controlAppearsActive, windowAppearsActive)
+    Color.clear.frame(width: 80, height: 24)
+  }
 }
