@@ -14,6 +14,10 @@ pub const DISPLAY_NAME: &str = "Google Gemini";
 pub const DOCS_URL: &str = "https://ai.google.dev/api/generate-content";
 /// Standard API base; the model is a path parameter for each request.
 pub const ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta";
+/// Default Cloud Code Assist base endpoint for Antigravity OAuth accounts.
+pub const CCA_DEFAULT_ENDPOINT: &str = "https://daily-cloudcode-pa.googleapis.com/v1internal";
+/// Production Cloud Code Assist base endpoint for Gemini CLI OAuth accounts.
+pub const CCA_PROD_ENDPOINT: &str = "https://cloudcode-pa.googleapis.com/v1internal";
 /// Codescribe Keychain account.
 pub const API_KEY_ACCOUNT: &str = "LLM_GOOGLE_API_KEY";
 /// Initial model seeds; discovery remains authoritative.
@@ -121,8 +125,61 @@ pub fn prepare_request(
     body: Value,
     streaming: bool,
 ) -> Result<(String, Value), String> {
-    let url = reqwest::Url::parse(base).map_err(|_| "Invalid Google endpoint".to_string())?;
-    let loopback = is_loopback_endpoint(base);
+    prepare_request_with_credential(base, model, body, streaming, None)
+}
+
+/// Resolve the effective base endpoint when using a Google credential.
+///
+/// When `base` is the default `GoogleGemini` vendor endpoint (`ENDPOINT`) and
+/// the resolved credential is a signed-in Google OAuth account (`OAuthAccount`),
+/// routes to the Cloud Code Assist endpoint (`CODESCRIBE_GOOGLE_CCA_ENDPOINT`
+/// override, else `CCA_DEFAULT_ENDPOINT` / `CCA_PROD_ENDPOINT`). Custom
+/// endpoints and API-key / ADC bearer credentials keep `base` unchanged.
+pub fn effective_endpoint_for_credential(
+    base: &str,
+    credential: Option<&crate::llm::account_auth::GoogleCredential>,
+) -> String {
+    if is_cloud_code_assist(base) {
+        return base.to_string();
+    }
+    if let Some(crate::llm::account_auth::GoogleCredential::OAuthAccount { antigravity, .. }) =
+        credential
+        && base.trim().trim_end_matches('/') == ENDPOINT
+    {
+        if let Ok(override_url) =
+            std::env::var(crate::llm::account_auth::google::GOOGLE_CCA_ENDPOINT_ENV)
+        {
+            let trimmed = override_url.trim().trim_end_matches('/');
+            if !trimmed.is_empty() {
+                return if trimmed.contains("v1internal") {
+                    trimmed.to_string()
+                } else {
+                    format!("{trimmed}/v1internal")
+                };
+            }
+        }
+        return if *antigravity {
+            CCA_DEFAULT_ENDPOINT.to_string()
+        } else {
+            CCA_PROD_ENDPOINT.to_string()
+        };
+    }
+    base.to_string()
+}
+
+/// Prepare a GenerateContent or Cloud Code Assist request with optional OAuth
+/// account credential context.
+pub fn prepare_request_with_credential(
+    base: &str,
+    model: &str,
+    body: Value,
+    streaming: bool,
+    credential: Option<&crate::llm::account_auth::GoogleCredential>,
+) -> Result<(String, Value), String> {
+    let effective_base = effective_endpoint_for_credential(base, credential);
+    let url =
+        reqwest::Url::parse(&effective_base).map_err(|_| "Invalid Google endpoint".to_string())?;
+    let loopback = is_loopback_endpoint(&effective_base);
     if !(url.scheme() == "https" || (url.scheme() == "http" && loopback))
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -141,8 +198,8 @@ pub fn prepare_request(
                 .into(),
         );
     }
-    let endpoint = generate_content_endpoint(base, model, streaming);
-    if !is_cloud_code_assist(base) {
+    let endpoint = generate_content_endpoint(&effective_base, model, streaming);
+    if !is_cloud_code_assist(&effective_base) {
         return Ok((endpoint, body));
     }
     let project = url
@@ -150,12 +207,18 @@ pub fn prepare_request(
         .find(|(key, _)| key == "project")
         .map(|(_, value)| value.into_owned())
         .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            credential
+                .and_then(|cred| cred.project_id())
+                .map(str::to_string)
+        })
         .ok_or_else(|| {
             "Cloud Code Assist Custom endpoint requires ?project=<project-id>".to_string()
         })?;
     let antigravity = url
         .query_pairs()
-        .any(|(key, value)| key == "antigravity" && value == "true");
+        .any(|(key, value)| key == "antigravity" && value == "true")
+        || credential.is_some_and(|cred| cred.is_antigravity());
     let mut envelope = json!({"project": project, "model": model, "request": body});
     if antigravity {
         envelope["userAgent"] = json!("antigravity");
@@ -163,6 +226,44 @@ pub fn prepare_request(
         envelope["requestId"] = json!(uuid::Uuid::new_v4().to_string());
     }
     Ok((endpoint, envelope))
+}
+
+/// Apply the resolved Google credential and any required Cloud Code Assist
+/// headers to an outgoing request.
+pub fn apply_credential_headers(
+    request: reqwest::RequestBuilder,
+    credential: &crate::llm::account_auth::GoogleCredential,
+    cca_endpoint: bool,
+) -> reqwest::RequestBuilder {
+    match credential {
+        crate::llm::account_auth::GoogleCredential::ApiKey(key) => {
+            request.header("x-goog-api-key", key)
+        }
+        crate::llm::account_auth::GoogleCredential::Bearer(token) => request.bearer_auth(token),
+        crate::llm::account_auth::GoogleCredential::OAuthAccount {
+            token, antigravity, ..
+        } => {
+            let mut req = request.bearer_auth(token);
+            if cca_endpoint {
+                let ua = if *antigravity {
+                    crate::llm::account_auth::google::ANTIGRAVITY_USER_AGENT
+                } else {
+                    crate::llm::account_auth::google::GEMINI_CLI_USER_AGENT
+                };
+                req = req
+                    .header("User-Agent", ua)
+                    .header(
+                        "X-Goog-Api-Client",
+                        crate::llm::account_auth::google::CCA_API_CLIENT_HEADER,
+                    )
+                    .header(
+                        "Client-Metadata",
+                        crate::llm::account_auth::google::CCA_CLIENT_METADATA_HEADER,
+                    );
+            }
+            req
+        }
+    }
 }
 
 /// Models collection URL for a standard GenerateContent host.
@@ -181,6 +282,51 @@ pub fn models_endpoint(base: &str) -> String {
     url.set_query(None);
     url.set_fragment(None);
     url.to_string()
+}
+
+/// Cloud Code Assist `fetchAvailableModels` operation URL.
+pub fn cca_models_endpoint(base: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(&normalize_endpoint(base)) else {
+        return base.to_string();
+    };
+    let path = url.path().to_string();
+    let prefix = path
+        .split(':')
+        .next()
+        .unwrap_or(&path)
+        .trim_end_matches('/');
+    url.set_path(&format!("{prefix}:fetchAvailableModels"));
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
+}
+
+/// Decode Cloud Code Assist `fetchAvailableModels` response (`{"models": { "<id>": { ... } }}`).
+pub fn models_from_cca_response(body: &Value) -> Vec<(String, Option<String>)> {
+    if let Some(map) = body.get("models").and_then(Value::as_object) {
+        let mut out: Vec<(String, Option<String>)> = map
+            .iter()
+            .filter_map(|(raw_id, info)| {
+                let id = raw_id
+                    .trim()
+                    .strip_prefix("models/")
+                    .unwrap_or(raw_id.trim());
+                if id.is_empty() || id.starts_with("chat_") || id.starts_with("tab_") {
+                    return None;
+                }
+                let display_name = info
+                    .get("displayName")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                Some((id.to_string(), display_name))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        return out;
+    }
+    models_from_response(body)
 }
 
 /// Decode Google's model list and omit entries that cannot generate content.
@@ -679,6 +825,26 @@ mod tests {
             models_endpoint("https://example.com/v1beta/models?project=p"),
             "https://example.com/v1beta/models"
         );
+        let oauth_cred = crate::llm::account_auth::GoogleCredential::OAuthAccount {
+            token: "oauth-test-token".into(),
+            project_id: "cca-proj-123".into(),
+            antigravity: true,
+        };
+        let (cca_url, cca_body) = prepare_request_with_credential(
+            ENDPOINT,
+            "gemini-2.5-pro",
+            json!({"contents":[]}),
+            true,
+            Some(&oauth_cred),
+        )
+        .unwrap();
+        assert_eq!(
+            cca_url,
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
+        );
+        assert_eq!(cca_body["project"], "cca-proj-123");
+        assert_eq!(cca_body["userAgent"], "antigravity");
+        assert_eq!(cca_body["requestType"], "agent");
     }
 
     #[test]

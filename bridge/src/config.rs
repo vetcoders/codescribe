@@ -2208,9 +2208,11 @@ fn agent_secret_accounts() -> &'static [&'static str] {
         "LLM_OPENAI_API_KEY",
         "LLM_ANTHROPIC_API_KEY",
         "LLM_XAI_API_KEY",
+        "LLM_GOOGLE_API_KEY",
         account_auth::OPENAI_ACCOUNT_TOKENS_ACCOUNT,
         account_auth::ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT,
         account_auth::XAI_ACCOUNT_TOKENS_ACCOUNT,
+        account_auth::GOOGLE_ACCOUNT_TOKENS_ACCOUNT,
     ]
 }
 
@@ -2241,12 +2243,15 @@ fn agent_env_keys() -> &'static [&'static str] {
         "LLM_OPENAI_API_KEY",
         "LLM_ANTHROPIC_API_KEY",
         "LLM_XAI_API_KEY",
+        "LLM_GOOGLE_API_KEY",
         "LLM_OPENAI_ACCOUNT_TOKENS",
         "LLM_ANTHROPIC_ACCOUNT_TOKENS",
         "LLM_XAI_ACCOUNT_TOKENS",
+        "LLM_GOOGLE_ACCOUNT_TOKENS",
         "LLM_OPENAI_OAUTH_CLIENT_ID",
         "LLM_ANTHROPIC_OAUTH_CLIENT_ID",
         "LLM_XAI_OAUTH_CLIENT_ID",
+        "LLM_GOOGLE_OAUTH_CLIENT_ID",
         "AGENT_WORKSPACE_ROOTS",
         "AGENT_ENTER_SENDS",
         "AGENT_AUTO_SEND",

@@ -2019,14 +2019,20 @@ async fn call_google_generate_content(
     if !generation.is_empty() {
         body["generationConfig"] = Value::Object(generation);
     }
-    let (endpoint, body) =
-        super::vendors::google::prepare_request(configured_endpoint, model, body, false)
-            .map_err(anyhow::Error::msg)?;
-    let mut request = get_client().post(endpoint).json(&body);
-    request = match &credential {
-        account_auth::GoogleCredential::ApiKey(key) => request.header("x-goog-api-key", key),
-        account_auth::GoogleCredential::Bearer(token) => request.bearer_auth(token),
-    };
+    let (endpoint, body) = super::vendors::google::prepare_request_with_credential(
+        configured_endpoint,
+        model,
+        body,
+        false,
+        Some(&credential),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let is_cca = super::vendors::google::is_cloud_code_assist(&endpoint);
+    let request = super::vendors::google::apply_credential_headers(
+        get_client().post(endpoint).json(&body),
+        &credential,
+        is_cca,
+    );
     let response = request.send().await.map_err(|error| {
         anyhow::anyhow!(
             "Google request failed: {}",

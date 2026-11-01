@@ -332,6 +332,11 @@ pub struct UserSettings {
     /// `CODESCRIBE_XAI_OAUTH_CLIENT_ID` is the dev-only mid-tier fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xai_oauth_client_id: Option<String>,
+    /// Optional override for Google OAuth client id. `None` falls through to
+    /// env, then the shipped Cloud Code Assist / Antigravity public client id
+    /// (`NOTICE`). Env `CODESCRIBE_GOOGLE_OAUTH_CLIENT_ID` is the dev fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google_oauth_client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1971,6 +1976,9 @@ struct SystemV2 {
     // xAI account-login OAuth client id (non-secret app identity).
     #[serde(skip_serializing_if = "Option::is_none")]
     xai_oauth_client_id: Option<String>,
+    // Google account-login OAuth client id (non-secret app identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    google_oauth_client_id: Option<String>,
     // C2: audio-egress consent record — install-level privacy state, kept in
     // `system` so engine-section rewrites can never touch it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2039,6 +2047,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "LLM_OPENAI_OAUTH_CLIENT_ID",
     "LLM_ANTHROPIC_OAUTH_CLIENT_ID",
     "LLM_XAI_OAUTH_CLIENT_ID",
+    "LLM_GOOGLE_OAUTH_CLIENT_ID",
     // Promoted from .env
     "USE_LOCAL_STT",
     "LOCAL_MODEL",
@@ -2320,6 +2329,7 @@ impl UserSettings {
                 openai_oauth_client_id: self.openai_oauth_client_id.clone(),
                 anthropic_oauth_client_id: self.anthropic_oauth_client_id.clone(),
                 xai_oauth_client_id: self.xai_oauth_client_id.clone(),
+                google_oauth_client_id: self.google_oauth_client_id.clone(),
                 cloud_audio_egress_consent: self.cloud_consent.clone(),
                 cloud_audio_egress_consent_at: self.cloud_consent_at.clone(),
             }),
@@ -2510,6 +2520,7 @@ impl UserSettings {
             openai_oauth_client_id: cloned!(v2.system, openai_oauth_client_id),
             anthropic_oauth_client_id: cloned!(v2.system, anthropic_oauth_client_id),
             xai_oauth_client_id: cloned!(v2.system, xai_oauth_client_id),
+            google_oauth_client_id: cloned!(v2.system, google_oauth_client_id),
             agent_enter_sends: copy!(v2.interaction, agent_enter_sends),
             agent_auto_send: copy!(v2.interaction, agent_auto_send),
             agent_send_hold_sec: copy!(v2.interaction, agent_send_hold_sec),
@@ -3249,6 +3260,7 @@ impl UserSettings {
                     "openai_oauth_client_id",
                     "anthropic_oauth_client_id",
                     "xai_oauth_client_id",
+                    "google_oauth_client_id",
                 ],
             )?;
             changed |=
@@ -3279,6 +3291,7 @@ impl UserSettings {
                     "openai_oauth_client_id",
                     "anthropic_oauth_client_id",
                     "xai_oauth_client_id",
+                    "google_oauth_client_id",
                     "agent_workspace_roots",
                     "agent_permissions",
                     "agent_capabilities",
@@ -3548,6 +3561,11 @@ impl UserSettings {
                 // Empty clears back to xAI's published desktop client id.
                 let trimmed = value.trim();
                 self.xai_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            }
+            "LLM_GOOGLE_OAUTH_CLIENT_ID" => {
+                // Empty clears back to Google's published Cloud Code Assist desktop client id.
+                let trimmed = value.trim();
+                self.google_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
             }
             "FORMATTING_LEVEL" => match FormattingPolicy::parse(value) {
                 Ok(policy) => self.formatting_level = Some(policy.as_str().to_string()),

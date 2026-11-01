@@ -444,23 +444,36 @@ pub async fn exchange_code_for_tokens(
     }
 
     let config = provider_oauth_config(provider)?;
-    let endpoint = format!("{}{}", issuer.trim_end_matches('/'), config.token_path);
-    let request = super::oauth_http_client(issuer)?.post(endpoint);
+    let endpoint = super::token_endpoint_for(config, issuer);
+    let client_secret = super::client_secret_for_provider(provider, client_id);
+    let request = super::oauth_http_client(&endpoint)?.post(&endpoint);
     let request = match config.encoding {
-        TokenRequestEncoding::Form => request.form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", redirect_uri),
-            ("client_id", client_id),
-            ("code_verifier", pkce.code_verifier.as_str()),
-        ]),
-        TokenRequestEncoding::Json => request.json(&serde_json::json!({
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "client_id": client_id,
-            "code_verifier": pkce.code_verifier,
-        })),
+        TokenRequestEncoding::Form => {
+            let mut form: Vec<(&str, &str)> = vec![
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", redirect_uri),
+                ("client_id", client_id),
+                ("code_verifier", pkce.code_verifier.as_str()),
+            ];
+            if let Some(secret) = client_secret.as_deref() {
+                form.push(("client_secret", secret));
+            }
+            request.form(&form)
+        }
+        TokenRequestEncoding::Json => {
+            let mut body = serde_json::json!({
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": client_id,
+                "code_verifier": pkce.code_verifier,
+            });
+            if let Some(secret) = client_secret.as_deref() {
+                body["client_secret"] = serde_json::Value::String(secret.to_string());
+            }
+            request.json(&body)
+        }
     };
 
     let response = request
@@ -479,14 +492,21 @@ pub async fn exchange_code_for_tokens(
         .json()
         .await
         .map_err(|error| AccountAuthError::OAuth(error.to_string()))?;
-    Ok(AccountTokens::new(
+    let mut account_tokens = AccountTokens::new(
         provider,
         tokens.access_token,
         tokens.refresh_token,
         tokens.id_token,
         tokens.token_type,
         tokens.expires_in,
-    ))
+    );
+    if provider == ProviderKind::GoogleGemini {
+        account_tokens.client_id = Some(client_id.to_string());
+        account_tokens.client_secret = client_secret;
+        account_tokens.token_uri = Some(endpoint);
+        super::google::complete_google_oauth_tokens(&mut account_tokens, issuer).await?;
+    }
+    Ok(account_tokens)
 }
 
 /// Build the authorize URL the user's browser opens.
@@ -507,20 +527,30 @@ fn build_authorize_url(
         config.authorize_path
     ))
     .expect("issuer must parse");
-    // OpenCode XaiAuthPlugin always sends OpenID `nonce` with the xAI authorize
-    // request (alongside PKCE + state). Harmless for other loopback providers
-    // that ignore unknown params; required for parity with auth.x.ai.
+    // OpenID `nonce` is sent when the provider's scope requests `openid`
+    // (OpenAI ChatGPT / xAI). Non-OIDC OAuth2 scopes (Google Cloud Code Assist)
+    // omit `nonce`.
+    let include_nonce = config
+        .scope
+        .split_whitespace()
+        .any(|scope| scope == "openid");
     let nonce = generate_state();
-    url.query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", &opts.client_id)
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("scope", config.scope)
-        .append_pair("code_challenge", &pkce.code_challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("nonce", &nonce)
-        .extend_pairs(config.extra_authorize_params.iter().copied())
-        .append_pair("state", state);
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs
+            .append_pair("response_type", "code")
+            .append_pair("client_id", &opts.client_id)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("scope", config.scope)
+            .append_pair("code_challenge", &pkce.code_challenge)
+            .append_pair("code_challenge_method", "S256");
+        if include_nonce {
+            pairs.append_pair("nonce", &nonce);
+        }
+        pairs
+            .extend_pairs(config.extra_authorize_params.iter().copied())
+            .append_pair("state", state);
+    }
     url.to_string()
 }
 
@@ -534,10 +564,10 @@ fn generate_state() -> String {
 
 /// Bind the loopback listener, evicting a stale login if the port is taken.
 ///
-/// The port is not arbitrary — it is the one the provider's registered redirect
-/// URI points at, so falling back to a different one would break the callback.
-/// An abandoned earlier attempt is therefore asked to release it (`/cancel`)
-/// and the bind is retried once.
+/// An abandoned earlier attempt on `port` is asked to release it (`/cancel`)
+/// and the bind is retried once. If `port` is still held by another local
+/// process, fall back to an ephemeral loopback port (`127.0.0.1:0`) because
+/// Google installed-app OAuth clients accept any port on `http://127.0.0.1`.
 fn bind_server(port: u16) -> Result<Server, AccountAuthError> {
     let bind_address = format!("127.0.0.1:{port}");
     match Server::http(&bind_address) {
@@ -547,9 +577,20 @@ fn bind_server(port: u16) -> Result<Server, AccountAuthError> {
             if message.contains("Address already in use") {
                 let _ = send_cancel_request(port);
             }
-            Server::http(&bind_address).map_err(|retry_error| {
-                AccountAuthError::Io(io::Error::other(retry_error.to_string()))
-            })
+            match Server::http(&bind_address) {
+                Ok(server) => Ok(server),
+                Err(retry_error) => {
+                    if port != 0
+                        && retry_error.to_string().contains("Address already in use")
+                        && let Ok(fallback) = Server::http("127.0.0.1:0")
+                    {
+                        return Ok(fallback);
+                    }
+                    Err(AccountAuthError::Io(io::Error::other(
+                        retry_error.to_string(),
+                    )))
+                }
+            }
         }
     }
 }

@@ -469,26 +469,64 @@ async fn fetch_google_models(
                 message: account_auth::redact_google_secrets(&error.to_string()),
             })?,
     };
-    vendors::google::prepare_request(
+    vendors::google::prepare_request_with_credential(
         &provider.endpoint,
         "discovery",
         serde_json::Value::Null,
         false,
+        Some(&credential),
     )
     .map_err(|message| ModelDiscoveryError::Parse {
         provider: reference.clone(),
         message,
     })?;
+    let effective_base =
+        vendors::google::effective_endpoint_for_credential(&provider.endpoint, Some(&credential));
+    if vendors::google::is_cloud_code_assist(&effective_base) {
+        let endpoint = vendors::google::cca_models_endpoint(&effective_base);
+        let payload = match credential.project_id() {
+            Some(project_id) => serde_json::json!({ "project": project_id }),
+            None => serde_json::json!({}),
+        };
+        let request = vendors::google::apply_credential_headers(
+            client.post(&endpoint).json(&payload),
+            &credential,
+            true,
+        );
+        let response = request
+            .send()
+            .await
+            .map_err(|error| network_error(reference, error))?;
+        if !response.status().is_success() {
+            return Err(http_status_error(
+                reference,
+                response.status(),
+                "Google model discovery rejected the credentialed request",
+            ));
+        }
+        let body = response_body_or_error(reference, response).await?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| ModelDiscoveryError::Parse {
+                provider: reference.clone(),
+                message: format!("failed to parse Google models response: {error}"),
+            })?;
+        return Ok(vendors::google::models_from_cca_response(&parsed)
+            .into_iter()
+            .map(|(id, display_name)| DiscoveredModel {
+                display_name: display_name
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| id.clone()),
+                id,
+            })
+            .collect());
+    }
     let endpoint = vendors::google::models_endpoint(&provider.endpoint);
     let mut page_token = None;
     let mut seen_tokens = HashSet::new();
     let mut models = Vec::new();
     loop {
-        let mut request = client.get(&endpoint);
-        request = match &credential {
-            GoogleCredential::ApiKey(key) => request.header("x-goog-api-key", key),
-            GoogleCredential::Bearer(token) => request.bearer_auth(token),
-        };
+        let mut request =
+            vendors::google::apply_credential_headers(client.get(&endpoint), &credential, false);
         if let Some(token) = page_token.as_deref() {
             request = request.query(&[("pageToken", token)]);
         }

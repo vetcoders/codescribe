@@ -1063,6 +1063,48 @@ reload = "restart"
 category = "llm"
 description = "Override the xAI OAuth issuer base URL used for account login (HTTPS proxies and staging only; credential requests never follow redirects). Note that the published desktop client is registered against the loopback redirect http://127.0.0.1:56121/callback; changing the issuer does not change that redirect"
 
+[vars.CODESCRIBE_GOOGLE_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Dev/CI fallback for the Google account-login OAuth client id. Non-secret; the operator-facing value lives in settings.json under LLM_GOOGLE_OAUTH_CLIENT_ID. Leaving both unset uses the shipped Antigravity / Cloud Code Assist public desktop client id (see NOTICE)"
+
+[vars.CODESCRIBE_GOOGLE_OAUTH_CLIENT_SECRET]
+default = ""
+type = "secret"
+reload = "restart"
+category = "llm"
+description = "Optional desktop OAuth client secret override when pairing a custom Google installed-app OAuth client id via LLM_GOOGLE_OAUTH_CLIENT_ID or CODESCRIBE_GOOGLE_OAUTH_CLIENT_ID; unset selects the matching built-in desktop secret for the shipped Antigravity or Gemini CLI client ids"
+
+[vars.CODESCRIBE_GOOGLE_OAUTH_ISSUER]
+default = "https://accounts.google.com"
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override the Google OAuth issuer base URL used for loopback account login and test fixtures (HTTPS proxies and numeric loopback test fixtures only; credential requests never follow redirects)"
+
+[vars.CODESCRIBE_GOOGLE_CCA_ENDPOINT]
+default = "https://daily-cloudcode-pa.googleapis.com/v1internal"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Cloud Code Assist base endpoint override for a signed-in Google OAuth account when the lane points at the default Google Gemini vendor endpoint; does not affect API-key requests"
+
+[vars.GOOGLE_CLOUD_PROJECT]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Optional Google Cloud project id hint for Cloud Code Assist onboarding and discovery during Google OAuth sign-in"
+
+[vars.GOOGLE_CLOUD_PROJECT_ID]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Secondary Google Cloud project id fallback when GOOGLE_CLOUD_PROJECT is unset during Cloud Code Assist discovery"
+
 [vars.LLM_USE_STREAMING]
 default = "1"
 type = "bool"
@@ -1920,6 +1962,13 @@ type = "string"
 reload = "restart"
 category = "llm"
 description = "Override of the default public desktop OAuth client id used for xAI/Grok sign-in; empty means the built-in public Grok CLI client id (see NOTICE)."
+
+[vars.LLM_GOOGLE_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override of the default public desktop OAuth client id used for Google sign-in; empty means the built-in public Antigravity / Cloud Code Assist client id (see NOTICE)."
 
 [vars.ONBOARDING_MODE]
 default = ""

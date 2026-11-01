@@ -207,8 +207,6 @@ impl AgentProvider for GoogleProvider {
             .clone();
         let (body, skipped_tools) =
             build_request_with_host(messages, tools, options, &retained, host.as_ref())?;
-        let (endpoint, body) = google::prepare_request(&self.endpoint, model, body, true)
-            .map_err(|error| anyhow!(error))?;
         let credential = if let Some(key) = &self.fixture_key {
             GoogleCredential::ApiKey(key.clone())
         } else if google::is_cloud_code_assist(&self.endpoint) {
@@ -221,6 +219,14 @@ impl AgentProvider for GoogleProvider {
             )
             .await?
         };
+        let (endpoint, body) = google::prepare_request_with_credential(
+            &self.endpoint,
+            model,
+            body,
+            true,
+            Some(&credential),
+        )
+        .map_err(|error| anyhow!(error))?;
         let (tx, rx) = mpsc::channel(256);
         let transport = self.clone();
         let pending = PendingTurn {
@@ -812,15 +818,15 @@ impl GoogleProvider {
         tx: &mpsc::Sender<AgentEvent>,
     ) -> Result<()> {
         let mut watchdog = StreamWatchdog::start(self.first_event_timeout, self.chunk_timeout);
-        let mut request = self
-            .client
-            .post(endpoint)
-            .header("accept", "text/event-stream")
-            .json(&body);
-        match credential {
-            GoogleCredential::ApiKey(key) => request = request.header("x-goog-api-key", key),
-            GoogleCredential::Bearer(token) => request = request.bearer_auth(token),
-        }
+        let is_cca = google::is_cloud_code_assist(&endpoint);
+        let request = google::apply_credential_headers(
+            self.client
+                .post(endpoint)
+                .header("accept", "text/event-stream")
+                .json(&body),
+            &credential,
+            is_cca,
+        );
         let response = tokio::select! {
             biased;
             _ = tx.closed() => return Ok(()),

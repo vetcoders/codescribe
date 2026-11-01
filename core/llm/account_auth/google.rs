@@ -19,16 +19,60 @@ use crate::llm::provider::ProviderKind;
 pub const GOOGLE_API_KEY_ACCOUNT: &str = "LLM_GOOGLE_API_KEY";
 /// Serialized Google OAuth token record. Never mirrored into process env.
 pub const GOOGLE_ACCOUNT_TOKENS_ACCOUNT: &str = "LLM_GOOGLE_ACCOUNT_TOKENS";
+/// Optional Cloud Code Assist base endpoint override for tests / proxies.
+pub const GOOGLE_CCA_ENDPOINT_ENV: &str = "CODESCRIBE_GOOGLE_CCA_ENDPOINT";
+/// Default Cloud Code Assist project fallback (matches Antigravity desktop OAuth).
+pub const DEFAULT_CCA_PROJECT_ID: &str = "rising-fact-p41fc";
+/// Antigravity desktop User-Agent sent to Cloud Code Assist endpoints.
+pub const ANTIGRAVITY_USER_AGENT: &str =
+    "antigravity/hub/2.19.1 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)";
+/// Gemini CLI User-Agent sent when authenticated with the Gemini CLI client id.
+pub const GEMINI_CLI_USER_AGENT: &str = "google-cloud-sdk vscode_cloudshelleditor/0.1";
+/// Cloud SDK API client header expected by Cloud Code Assist.
+pub const CCA_API_CLIENT_HEADER: &str = "google-cloud-sdk vscode_cloudshelleditor/0.1";
+/// Client-Metadata JSON header expected by Cloud Code Assist.
+pub const CCA_CLIENT_METADATA_HEADER: &str =
+    r#"{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#;
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
+const USERINFO_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v1/userinfo?alt=json";
+const CCA_DAILY_ENDPOINT: &str = "https://daily-cloudcode-pa.googleapis.com";
+const CCA_PROD_ENDPOINT: &str = "https://cloudcode-pa.googleapis.com";
 const MAX_CREDENTIAL_BYTES: u64 = 1024 * 1024;
 
 /// A resolved credential, with its wire authentication mechanism intact.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum GoogleCredential {
     /// Sent in `x-goog-api-key`, never in the URL.
     ApiKey(String),
-    /// Sent in `Authorization: Bearer …`.
+    /// Sent in `Authorization: Bearer …` (e.g. `authorized_user` ADC or explicit bearer).
     Bearer(String),
+    /// Signed-in Google OAuth account carrying a provisioned Cloud Code Assist project id.
+    OAuthAccount {
+        token: String,
+        project_id: String,
+        antigravity: bool,
+    },
+}
+
+impl GoogleCredential {
+    /// Cloud Code Assist project id when authenticated via a Google OAuth account.
+    pub fn project_id(&self) -> Option<&str> {
+        match self {
+            Self::OAuthAccount { project_id, .. } => Some(project_id.as_str()),
+            Self::ApiKey(_) | Self::Bearer(_) => None,
+        }
+    }
+
+    /// Whether this credential uses the Antigravity OAuth client identity.
+    pub fn is_antigravity(&self) -> bool {
+        matches!(
+            self,
+            Self::OAuthAccount {
+                antigravity: true,
+                ..
+            }
+        )
+    }
 }
 
 impl fmt::Debug for GoogleCredential {
@@ -36,6 +80,7 @@ impl fmt::Debug for GoogleCredential {
         f.write_str(match self {
             Self::ApiKey(_) => "GoogleCredential::ApiKey([REDACTED])",
             Self::Bearer(_) => "GoogleCredential::Bearer([REDACTED])",
+            Self::OAuthAccount { .. } => "GoogleCredential::OAuthAccount([REDACTED])",
         })
     }
 }
@@ -97,11 +142,17 @@ pub struct GoogleCredentialStatus {
 /// A malformed higher-precedence record never masquerades as a signed-out user.
 pub fn google_credential_status() -> Result<GoogleCredentialStatus, AccountAuthError> {
     if let Some(raw) = keychain::cached_runtime_key(GOOGLE_ACCOUNT_TOKENS_ACCOUNT) {
-        parse_record(&raw)?;
+        let record = parse_record(&raw)?;
+        let message = match string_field(&record, "email") {
+            Some(email) => format!(
+                "Signed in as {email}. Google account credentials are stored in Keychain and refreshed automatically."
+            ),
+            None => "Signed in with Google. Account credentials are stored in Keychain and refreshed automatically.".into(),
+        };
         return Ok(GoogleCredentialStatus {
             available: true,
             stored_account: true,
-            message: "Google account credentials are stored locally and refreshed when needed. Browser sign-in is not available in Codescribe.".into(),
+            message,
         });
     }
     if adc_path().is_some_and(|path| path.is_file()) {
@@ -119,7 +170,7 @@ pub fn google_credential_status() -> Result<GoogleCredentialStatus, AccountAuthE
     Ok(GoogleCredentialStatus {
         available: false,
         stored_account: false,
-        message: "Use an API key or provision authorized-user ADC with gcloud auth application-default login. Browser sign-in, service-account and external-account credentials are not supported in Codescribe.".into(),
+        message: "Sign in with Google, use an API key, or provision authorized-user ADC with gcloud auth application-default login. Service-account and external-account credentials are not supported.".into(),
     })
 }
 
@@ -319,17 +370,13 @@ pub async fn resolve_google_credential(
     })
     .await?;
     if let Some(source) = source {
-        return resolve_token_source(source)
-            .await
-            .map(GoogleCredential::Bearer);
+        return resolve_token_source(source).await;
     }
     if let Some(key) = non_empty_env("GEMINI_API_KEY").or_else(|| non_empty_env("GOOGLE_API_KEY")) {
         return Ok(GoogleCredential::ApiKey(key));
     }
     let source = adc_path().ok_or_else(|| AccountAuthError::NotSignedIn("google-gemini".into()))?;
-    resolve_token_source(TokenSource::Adc(source))
-        .await
-        .map(GoogleCredential::Bearer)
+    resolve_token_source(TokenSource::Adc(source)).await
 }
 
 /// CCA accepts the account rail, not a public Gemini API key. Keep account
@@ -345,12 +392,25 @@ pub async fn resolve_google_account_credential() -> Result<GoogleCredential, Acc
             adc_path().ok_or_else(|| AccountAuthError::NotSignedIn("google-gemini".into()))?,
         )
     };
-    resolve_token_source(source)
-        .await
-        .map(GoogleCredential::Bearer)
+    resolve_token_source(source).await
 }
 
-async fn resolve_token_source(source: TokenSource) -> Result<String, AccountAuthError> {
+fn credential_from_record_and_token(record: &Value, token: String) -> GoogleCredential {
+    if let Some(project_id) = string_field(record, "project_id") {
+        let antigravity = string_field(record, "client_id")
+            .map(|id| id != super::GOOGLE_GEMINI_CLI_CLIENT_ID)
+            .unwrap_or(true);
+        GoogleCredential::OAuthAccount {
+            token,
+            project_id: project_id.to_string(),
+            antigravity,
+        }
+    } else {
+        GoogleCredential::Bearer(token)
+    }
+}
+
+async fn resolve_token_source(source: TokenSource) -> Result<GoogleCredential, AccountAuthError> {
     // The detached transaction owns the refresh lock through persistence even
     // if a recording or caller is cancelled while Google is replying.
     let transaction = tokio::spawn(async move {
@@ -384,19 +444,20 @@ async fn resolve_token_source(source: TokenSource) -> Result<String, AccountAuth
             return credential_io(move || {
                 check_state.commit_with(ProviderKind::GoogleGemini, &epoch, || {
                     ensure_snapshot_current(&snapshot)?;
-                    Ok(token)
+                    Ok(credential_from_record_and_token(&snapshot.record, token))
                 })
             })
             .await;
         }
-        let refreshed = refresh_record(&snapshot.record).await?;
+        let refreshed = refresh_record(&snapshot.record, &snapshot.source).await?;
         snapshot.record["access_token"] = Value::String(refreshed.access_token.clone());
         snapshot.record["expires_at_unix"] = Value::from(refreshed.expires_at_unix);
         if let Some(refresh_token) = refreshed.refresh_token {
             snapshot.record["refresh_token"] = Value::String(refresh_token);
         }
-        let token = refreshed.access_token;
-        let cache_token = token.clone();
+        let credential =
+            credential_from_record_and_token(&snapshot.record, refreshed.access_token.clone());
+        let cache_token = refreshed.access_token;
         let commit_state = state.clone();
         credential_io(move || {
             commit_state.commit_with(ProviderKind::GoogleGemini, &epoch, || {
@@ -428,7 +489,7 @@ async fn resolve_token_source(source: TokenSource) -> Result<String, AccountAuth
             })
         })
         .await?;
-        Ok(token)
+        Ok(credential)
     });
     transaction
         .await
@@ -450,18 +511,41 @@ struct RefreshedToken {
     expires_at_unix: i64,
 }
 
-async fn refresh_record(record: &Value) -> Result<RefreshedToken, AccountAuthError> {
+async fn refresh_record(
+    record: &Value,
+    source: &TokenSource,
+) -> Result<RefreshedToken, AccountAuthError> {
     let refresh_token = string_field(record, "refresh_token").ok_or_else(|| {
         AccountAuthError::OAuth("Google credential expired and has no refresh token".into())
     })?;
-    let client_id = string_field(record, "client_id").ok_or_else(|| {
-        AccountAuthError::OAuth("Google refresh requires client_id in the credential record".into())
-    })?;
-    let client_secret = string_field(record, "client_secret").ok_or_else(|| {
-        AccountAuthError::OAuth(
-            "Google refresh requires client_secret in the credential record".into(),
-        )
-    })?;
+    let client_id = match string_field(record, "client_id") {
+        Some(id) => id.to_string(),
+        None if *source == TokenSource::Keychain => {
+            super::client_id_for_provider(ProviderKind::GoogleGemini)?
+        }
+        None => {
+            return Err(AccountAuthError::OAuth(
+                "Google refresh requires client_id in the credential record".into(),
+            ));
+        }
+    };
+    let client_secret = match string_field(record, "client_secret") {
+        Some(secret) => secret.to_string(),
+        None if *source == TokenSource::Keychain => {
+            super::client_secret_for_provider(ProviderKind::GoogleGemini, &client_id).ok_or_else(
+                || {
+                    AccountAuthError::OAuth(
+                        "Google refresh requires client_secret in the credential record".into(),
+                    )
+                },
+            )?
+        }
+        None => {
+            return Err(AccountAuthError::OAuth(
+                "Google refresh requires client_secret in the credential record".into(),
+            ));
+        }
+    };
     let endpoint = string_field(record, "token_uri").unwrap_or(TOKEN_ENDPOINT);
     validate_token_endpoint(endpoint)?;
     let client = super::oauth_http_client(endpoint)?;
@@ -470,8 +554,8 @@ async fn refresh_record(record: &Value) -> Result<RefreshedToken, AccountAuthErr
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
-            ("client_id", client_id),
-            ("client_secret", client_secret),
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
         ])
         .send()
         .await
@@ -509,6 +593,246 @@ async fn refresh_record(record: &Value) -> Result<RefreshedToken, AccountAuthErr
         refresh_token: body.refresh_token,
         expires_at_unix,
     })
+}
+
+/// Complete a freshly exchanged Google OAuth token record by resolving the
+/// signed-in account email (`oauth2/v1/userinfo`) and discovering or
+/// provisioning its Cloud Code Assist project id (`loadCodeAssist` / `onboardUser`).
+pub async fn complete_google_oauth_tokens(
+    tokens: &mut super::AccountTokens,
+    issuer: &str,
+) -> Result<(), AccountAuthError> {
+    let antigravity = tokens
+        .client_id
+        .as_deref()
+        .map(|id| id != super::GOOGLE_GEMINI_CLI_CLIENT_ID)
+        .unwrap_or(true);
+    tokens.email = fetch_google_user_email(&tokens.access_token, issuer)
+        .await
+        .or_else(|| super::id_token_identity(tokens));
+    let project_id = discover_google_cca_project(&tokens.access_token, issuer, antigravity).await?;
+    tokens.project_id = Some(project_id);
+    Ok(())
+}
+
+async fn fetch_google_user_email(access_token: &str, issuer: &str) -> Option<String> {
+    let trimmed = issuer.trim().trim_end_matches('/');
+    let endpoint = if trimmed == super::GOOGLE_DEFAULT_ISSUER {
+        USERINFO_ENDPOINT.to_string()
+    } else {
+        format!("{trimmed}/oauth2/v1/userinfo?alt=json")
+    };
+    let client = super::oauth_http_client(&endpoint).ok()?;
+    let response = client
+        .get(&endpoint)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let payload: Value = response.json().await.ok()?;
+    string_field(&payload, "email").map(str::to_string)
+}
+
+fn cca_discovery_endpoints(issuer: &str, antigravity: bool) -> Vec<String> {
+    if let Some(override_url) = non_empty_env(GOOGLE_CCA_ENDPOINT_ENV) {
+        return vec![
+            override_url
+                .trim_end_matches('/')
+                .trim_end_matches("/v1internal")
+                .to_string(),
+        ];
+    }
+    let trimmed = issuer.trim().trim_end_matches('/');
+    if trimmed != super::GOOGLE_DEFAULT_ISSUER {
+        return vec![trimmed.to_string()];
+    }
+    if antigravity {
+        vec![
+            CCA_DAILY_ENDPOINT.to_string(),
+            CCA_PROD_ENDPOINT.to_string(),
+        ]
+    } else {
+        vec![CCA_PROD_ENDPOINT.to_string()]
+    }
+}
+
+fn extract_companion_project(value: &Value) -> Option<String> {
+    match value.get("cloudaicompanionProject") {
+        Some(Value::String(id)) if !id.trim().is_empty() => Some(id.trim().to_string()),
+        Some(Value::Object(map)) => map
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+async fn discover_google_cca_project(
+    access_token: &str,
+    issuer: &str,
+    antigravity: bool,
+) -> Result<String, AccountAuthError> {
+    let env_project =
+        non_empty_env("GOOGLE_CLOUD_PROJECT").or_else(|| non_empty_env("GOOGLE_CLOUD_PROJECT_ID"));
+    let user_agent = if antigravity {
+        ANTIGRAVITY_USER_AGENT
+    } else {
+        GEMINI_CLI_USER_AGENT
+    };
+    let metadata = serde_json::json!({
+        "ideType": "ANTIGRAVITY",
+        "platform": "PLATFORM_UNSPECIFIED",
+        "pluginType": "GEMINI",
+        "duetProject": env_project,
+    });
+
+    for endpoint in cca_discovery_endpoints(issuer, antigravity) {
+        let Ok(client) = super::oauth_http_client(&endpoint) else {
+            continue;
+        };
+        let load_url = format!("{endpoint}/v1internal:loadCodeAssist");
+        let load_body = serde_json::json!({
+            "cloudaicompanionProject": env_project,
+            "metadata": metadata,
+        });
+        let Ok(response) = client
+            .post(&load_url)
+            .bearer_auth(access_token)
+            .header("Content-Type", "application/json")
+            .header("User-Agent", user_agent)
+            .header("X-Goog-Api-Client", CCA_API_CLIENT_HEADER)
+            .header("Client-Metadata", CCA_CLIENT_METADATA_HEADER)
+            .json(&load_body)
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(data) = response.json::<Value>().await else {
+            continue;
+        };
+        if let Some(project_id) = extract_companion_project(&data) {
+            return Ok(project_id);
+        }
+        if data.get("currentTier").is_some()
+            && let Some(project_id) = env_project.clone()
+        {
+            return Ok(project_id);
+        }
+        let default_tier = if antigravity {
+            "legacy-tier"
+        } else {
+            "free-tier"
+        };
+        let tier_id = data
+            .get("allowedTiers")
+            .and_then(Value::as_array)
+            .and_then(|tiers| {
+                tiers
+                    .iter()
+                    .find(|tier| tier.get("isDefault").and_then(Value::as_bool) == Some(true))
+                    .and_then(|tier| string_field(tier, "id"))
+            })
+            .unwrap_or(default_tier);
+        if let Some(project_id) = onboard_cca_user(
+            &client,
+            &endpoint,
+            access_token,
+            user_agent,
+            tier_id,
+            env_project.as_deref(),
+            &metadata,
+        )
+        .await
+        {
+            return Ok(project_id);
+        }
+    }
+
+    if let Some(project_id) = env_project {
+        return Ok(project_id);
+    }
+    if antigravity {
+        return Ok(DEFAULT_CCA_PROJECT_ID.to_string());
+    }
+    Err(AccountAuthError::OAuth(
+        "Google Cloud Code Assist requires a Google Cloud project; set GOOGLE_CLOUD_PROJECT or sign in with the default Antigravity OAuth client".into(),
+    ))
+}
+
+async fn onboard_cca_user(
+    client: &reqwest::Client,
+    endpoint: &str,
+    access_token: &str,
+    user_agent: &str,
+    tier_id: &str,
+    env_project: Option<&str>,
+    metadata: &Value,
+) -> Option<String> {
+    let onboard_url = format!("{endpoint}/v1internal:onboardUser");
+    let onboard_body = if tier_id == "free-tier" {
+        serde_json::json!({
+            "tierId": tier_id,
+            "cloudaicompanionProject": Value::Null,
+            "metadata": metadata,
+        })
+    } else {
+        serde_json::json!({
+            "tierId": tier_id,
+            "cloudaicompanionProject": env_project,
+            "metadata": metadata,
+        })
+    };
+    let response = client
+        .post(&onboard_url)
+        .bearer_auth(access_token)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", user_agent)
+        .header("X-Goog-Api-Client", CCA_API_CLIENT_HEADER)
+        .header("Client-Metadata", CCA_CLIENT_METADATA_HEADER)
+        .json(&onboard_body)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let mut lro: Value = response.json().await.ok()?;
+    for _ in 0..6 {
+        if lro.get("done").and_then(Value::as_bool) == Some(true) {
+            break;
+        }
+        let op_name = string_field(&lro, "name")?;
+        #[cfg(test)]
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        #[cfg(not(test))]
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let poll_url = format!("{endpoint}/v1internal/{op_name}");
+        let poll_resp = client
+            .get(&poll_url)
+            .bearer_auth(access_token)
+            .header("User-Agent", user_agent)
+            .header("X-Goog-Api-Client", CCA_API_CLIENT_HEADER)
+            .header("Client-Metadata", CCA_CLIENT_METADATA_HEADER)
+            .send()
+            .await
+            .ok()?;
+        if !poll_resp.status().is_success() {
+            return None;
+        }
+        lro = poll_resp.json().await.ok()?;
+    }
+    lro.get("response")
+        .and_then(extract_companion_project)
+        .or_else(|| env_project.map(str::to_string))
 }
 
 /// Scrub recognizable Google API keys and OAuth access tokens from diagnostics.
@@ -629,5 +953,103 @@ mod tests {
             server.await.unwrap();
             assert_eq!(std::fs::read_to_string(&adc).unwrap(), expected);
         }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn google_oauth_login_discovers_cca_project_and_resolves_oauth_account_credential() {
+        let _disable = crate::test_isolation::EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        let _tokens = crate::test_isolation::EnvGuard::remove(GOOGLE_ACCOUNT_TOKENS_ACCOUNT);
+        let _cca = crate::test_isolation::EnvGuard::remove(GOOGLE_CCA_ENDPOINT_ENV);
+        let _key1 = crate::test_isolation::EnvGuard::remove("GEMINI_API_KEY");
+        let _key2 = crate::test_isolation::EnvGuard::remove("GOOGLE_API_KEY");
+        let _bundle = keychain::test_support::install_bundle(&[]);
+
+        let mut server = mockito::Server::new_async().await;
+        let _token_mock = server
+            .mock("POST", "/token")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "grant_type".into(),
+                    "authorization_code".into(),
+                ),
+                mockito::Matcher::UrlEncoded(
+                    "client_id".into(),
+                    super::super::GOOGLE_ANTIGRAVITY_CLIENT_ID.into(),
+                ),
+                mockito::Matcher::UrlEncoded(
+                    "client_secret".into(),
+                    super::super::GOOGLE_ANTIGRAVITY_CLIENT_SECRET.into(),
+                ),
+            ]))
+            .with_status(200)
+            .with_body(
+                r#"{"access_token":"oauth-access-token","refresh_token":"refresh-token-value","expires_in":3600}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let _userinfo_mock = server
+            .mock("GET", "/oauth2/v1/userinfo?alt=json")
+            .match_header("authorization", "Bearer oauth-access-token")
+            .with_status(200)
+            .with_body(r#"{"email":"founder@vetcoders.io"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let _load_mock = server
+            .mock("POST", "/v1internal:loadCodeAssist")
+            .match_header("authorization", "Bearer oauth-access-token")
+            .with_status(200)
+            .with_body(r#"{"cloudaicompanionProject":{"id":"cca-vetcoders-proj"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut opts = super::super::ServerOptions::new(
+            ProviderKind::GoogleGemini,
+            super::super::GOOGLE_ANTIGRAVITY_CLIENT_ID.to_string(),
+        )
+        .expect("Google OAuth row exists");
+        opts.issuer = server.url();
+        opts.port = 0;
+        opts.force_state = Some("google-state".to_string());
+
+        let login = super::super::run_login_server(opts)
+            .await
+            .expect("bind Google OAuth loopback server");
+        assert!(login.auth_url.contains("access_type=offline"));
+        assert!(login.auth_url.contains("prompt=consent"));
+        assert!(!login.auth_url.contains("nonce="));
+
+        let callback = format!(
+            "http://127.0.0.1:{}/oauth-callback?code=google-code&state=google-state",
+            login.actual_port
+        );
+        let resp = reqwest::get(&callback).await.expect("callback GET");
+        assert!(resp.status().is_success());
+        login.block_until_done().await.expect("login finishes");
+
+        let stored = super::super::load_account_tokens(ProviderKind::GoogleGemini)
+            .expect("Google tokens persisted");
+        assert_eq!(stored.email.as_deref(), Some("founder@vetcoders.io"));
+        assert_eq!(stored.project_id.as_deref(), Some("cca-vetcoders-proj"));
+
+        let status = google_credential_status().expect("status");
+        assert!(status.available);
+        assert!(status.stored_account);
+        assert!(status.message.contains("Signed in as founder@vetcoders.io"));
+
+        let cred = resolve_google_credential(GOOGLE_API_KEY_ACCOUNT)
+            .await
+            .expect("resolve OAuth account credential");
+        assert_eq!(
+            cred,
+            GoogleCredential::OAuthAccount {
+                token: "oauth-access-token".to_string(),
+                project_id: "cca-vetcoders-proj".to_string(),
+                antigravity: true,
+            }
+        );
     }
 }
