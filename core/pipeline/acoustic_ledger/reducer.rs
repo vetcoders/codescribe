@@ -1214,7 +1214,10 @@ impl AcousticLedger {
                 // while its shifted clock misses the same-slot threshold.
                 // Preserve that uncertainty as evidence and recovery debt;
                 // neither text equality nor weaker overlap grants identity.
-                if word.producer == ObservationProducer::Apple {
+                if matches!(
+                    word.producer,
+                    ObservationProducer::Apple | ObservationProducer::AppleDictation
+                ) {
                     let sources = prior
                         .iter()
                         .filter(|source| {
@@ -2544,25 +2547,6 @@ impl AcousticLedger {
                 (start < end).then_some((start, end))
             }));
         }
-        if let Some(hops) = self
-            .decode_fence_energy
-            .as_ref()
-            .filter(|energy| energy.captured_samples >= pin.sample_end)
-            .and_then(|energy| {
-                energy.owner.voiced_hops_in(
-                    &pin.session,
-                    pin.capture_epoch,
-                    pin.sample_start,
-                    pin.sample_end,
-                )
-            })
-        {
-            active_spans.extend(hops.into_iter().filter_map(|(hop_start, hop_end)| {
-                let start = hop_start.max(pin.sample_start);
-                let end = hop_end.min(pin.sample_end);
-                (start < end).then_some((start, end))
-            }));
-        }
         if let Some(anchors) = self.speech_anchors.as_ref().filter(|anchors| {
             anchors.identity.matches(&pin.session, pin.capture_epoch)
                 && anchors
@@ -2573,6 +2557,26 @@ impl AcousticLedger {
             active_spans.extend(anchors.anchors.iter().filter_map(|anchor| {
                 let start = anchor.range.sample_start.max(pin.sample_start);
                 let end = anchor.range.sample_end.min(pin.sample_end);
+                (start < end).then_some((start, end))
+            }));
+        }
+        if active_spans.is_empty()
+            && let Some(hops) = self
+                .decode_fence_energy
+                .as_ref()
+                .filter(|energy| energy.captured_samples >= pin.sample_end)
+                .and_then(|energy| {
+                    energy.owner.voiced_hops_in(
+                        &pin.session,
+                        pin.capture_epoch,
+                        pin.sample_start,
+                        pin.sample_end,
+                    )
+                })
+        {
+            active_spans.extend(hops.into_iter().filter_map(|(hop_start, hop_end)| {
+                let start = hop_start.max(pin.sample_start);
+                let end = hop_end.min(pin.sample_end);
                 (start < end).then_some((start, end))
             }));
         }

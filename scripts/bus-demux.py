@@ -8649,7 +8649,7 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
     # delivery id the runtime stamps (`delivery_identity`), one bus pass per
     # lease, never by text or time; a delivery that matches no copy or more
     # than one message stays unmapped.
-    legacy: dict[tuple[str, str], list[tuple[dict[str, Any], str | None, str]]] = {}
+    unattributed_skips: dict[tuple[str, str], list[tuple[dict[str, Any], str | None, str]]] = {}
     for directory in lease_directories(root / "broadcast-skipped"):
         lease_id = directory.name
         for path in entries(directory):
@@ -8663,10 +8663,10 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
             if message_id is not None:
                 plan_skipped(row, modified, lease_id, delivery_id, message_id)
             elif isinstance(row.get("bus"), str) and row["bus"]:
-                legacy.setdefault((row["bus"], lease_id), []).append((row, modified, delivery_id))
+                unattributed_skips.setdefault((row["bus"], lease_id), []).append((row, modified, delivery_id))
             else:
                 unmapped += 1
-    for (bus, lease_id), markers in sorted(legacy.items()):
+    for (bus, lease_id), markers in sorted(unattributed_skips.items()):
         first = markers[0][0]
         copies = reader_copies_in_bus(
             Path(bus), provider=str(first.get("provider") or ""),

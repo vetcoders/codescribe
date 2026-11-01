@@ -1168,4 +1168,49 @@ mod tests {
         assert_eq!(app.as_deref(), Some("Codescribe"));
         assert!(!should_restore);
     }
+
+    #[test]
+    fn paste_latch_ignores_loginwindow_and_system_prompts() {
+        for system_app in [
+            "loginwindow",
+            "UserNotificationCenter",
+            "CoreServicesUIAgent",
+            "SecurityAgent",
+            "universalAccessAuthWarn",
+        ] {
+            assert_eq!(
+                paste_latch_from_frontmost(Some(system_app.to_string()), None),
+                None
+            );
+            assert_eq!(
+                paste_latch_from_frontmost(
+                    Some(system_app.to_string()),
+                    Some("Ghostty".to_string())
+                ),
+                Some("Ghostty".to_string())
+            );
+            assert_eq!(
+                paste_latch_from_frontmost(
+                    Some("Codescribe".to_string()),
+                    Some(system_app.to_string())
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn remember_foreign_frontmost_refuses_loginwindow_and_system_prompts() {
+        remember_foreign_frontmost(Some("Ghostty"));
+        for system_app in [
+            "loginwindow",
+            "UserNotificationCenter",
+            "CoreServicesUIAgent",
+            "SecurityAgent",
+            "universalAccessAuthWarn",
+        ] {
+            remember_foreign_frontmost(Some(system_app));
+            assert_eq!(last_foreign_frontmost().as_deref(), Some("Ghostty"));
+        }
+    }
 }

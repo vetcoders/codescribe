@@ -2352,7 +2352,9 @@ fn recorded_b1a679a9_word_owner_index_routes_silence_padded_boundary_word_to_uni
 
     let left = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_587_136, 6_955_008);
     let right = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_966_528, 7_483_392);
-    let mut pcm = vec![0.0; 7_500_000];
+    // Ambient room noise in b1a679a9.wav sits around 0.0005..0.0014 (> 1e-4 uncalibrated floor),
+    // which previously caused voiced_hops_in to mark silent gap hops as active speech.
+    let mut pcm = vec![0.0007; 7_500_000];
     pcm[6_610_944..6_938_000].fill(0.1);
     pcm[6_982_656..7_465_984].fill(0.1);
     let mut ledger = measured_ledger_at_rate(&left, &pcm, RATE);
@@ -2410,4 +2412,37 @@ fn recorded_b1a679a9_word_owner_index_routes_silence_padded_boundary_word_to_uni
     // its active speech spans both owners, `word_owner_index` must refuse (None).
     let bridging_pin = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_935_000, 6_988_800);
     assert_eq!(ledger.word_owner_index(&bridging_pin, &owners), None);
+}
+
+#[test]
+fn recorded_b1a679a9_late_apple_dictation_pin_overlapping_complete_whisper_word_requires_partition()
+{
+    let owner = OccurrenceIdentity::new("b1a679a9-apple-dt", 1, 6_966_528, 7_483_392);
+    let mut pcm = vec![0.0007; 7_500_000];
+    pcm[6_982_656..7_465_984].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+    ledger.admit_word_slots(
+        &whisper,
+        &decoded(
+            &[
+                ("w", 7_165_440, 7_177_920),
+                ("kodeksie", 7_177_920, 7_223_040),
+            ],
+            (6_966_528, 7_483_392),
+        ),
+    );
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+
+    // Late AppleDictation pin "w" (7188288..7189728) falls inside the complete
+    // Whisper word "kodeksie" (7177920..7223040). It must be recorded as
+    // late_apple_overlap_requires_partition recovery debt instead of minting a
+    // third duplicate "w" slot ("w w kodeksie").
+    let dt = ObservationIdentity::new(ObservationProducer::AppleDictation, 2, 0, owner.clone());
+    ledger.admit_word_slots(
+        &dt,
+        &decoded(&[("w", 7_188_288, 7_189_728)], (6_966_528, 7_483_392)),
+    );
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
 }

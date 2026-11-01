@@ -2064,7 +2064,8 @@ falls back to `delivered`. `--ack` writes the `read` file before the ACK
 marker: the marker ends the delivery's pending life and a repeated `--ack`
 is filtered by it, so a crash between the two leaves the half that the next
 `--ack` completes, never a marker without its `read`. `wake` records the broadcast policy as it stood
-at delivery (`on`, or `quiet` under the moon or the legacy quiet membership),
+at delivery (`on`, or `quiet` under the moon, including the combined
+`policy: quiet` representation),
 the same answer the follower gave the native wake; whether the copy wakes
 now is read from the current policy, not from this file. The moon is not a
 message state.

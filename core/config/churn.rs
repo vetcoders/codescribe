@@ -108,37 +108,46 @@ pub struct ChurnMove {
     pub outcome: ChurnMoveOutcome,
 }
 
-/// Move every [`CHURN_ENTRIES`] item from its old location into `churn`
-/// (`Config::churn_dir` in production). `data_root` and `bridge_home` anchor
-/// the old locations. Call before any owner opens these paths.
-pub fn migrate_churn_data(data_root: &Path, churn: &Path, bridge_home: &Path) -> Vec<ChurnMove> {
+/// Move owned [`CHURN_ENTRIES`] items from their old locations into `churn`
+/// (`Config::churn_dir` in production). `data_root` anchors data-root entries;
+/// `bridge_home` admits bridge entries only when that runtime owns the bridge.
+/// Call before any owner opens these paths.
+pub fn migrate_churn_data(
+    data_root: &Path,
+    churn: &Path,
+    bridge_home: Option<&Path>,
+) -> Vec<ChurnMove> {
     CHURN_ENTRIES
         .iter()
-        .map(|entry| {
+        .filter_map(|entry| {
             let from = match entry.anchor {
                 ChurnAnchor::DataRoot => data_root.join(entry.name),
-                ChurnAnchor::BridgeRuntime => bridge_home.join("runtime").join(entry.name),
+                ChurnAnchor::BridgeRuntime => bridge_home?.join("runtime").join(entry.name),
             };
             let to = churn.join(entry.name);
             let outcome = move_entry(&from, &to, churn);
-            ChurnMove {
+            Some(ChurnMove {
                 entry: *entry,
                 from,
                 to,
                 outcome,
-            }
+            })
         })
         .collect()
 }
 
-/// The production migration: the resolved data root, its churn folder and the
-/// resolved agent-bridge home. The app runs it once per process, before the
-/// log sink opens (`codescribe::logging`).
+/// The production migration: the resolved data root, its churn folder and,
+/// for standalone Codescribe only, the resolved agent-bridge home. An embedding
+/// host owns its data root but does not own the standalone bridge. The app runs
+/// this once per process, before the log sink opens (`codescribe::logging`).
 pub fn migrate_churn_data_at_startup() -> Vec<ChurnMove> {
+    let bridge_home = super::runtime_host::selected()
+        .is_none()
+        .then(crate::stt::active_names::bridge_home);
     migrate_churn_data(
         &Config::config_dir(),
         &Config::churn_dir(),
-        &crate::stt::active_names::bridge_home(),
+        bridge_home.as_deref(),
     )
 }
 
@@ -267,7 +276,7 @@ mod tests {
         }
 
         fn run(&self) -> Vec<ChurnMove> {
-            migrate_churn_data(&self.root, &self.churn(), &self.bridge)
+            migrate_churn_data(&self.root, &self.churn(), Some(&self.bridge))
         }
     }
 
