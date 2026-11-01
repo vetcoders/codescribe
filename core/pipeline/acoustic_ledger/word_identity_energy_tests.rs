@@ -2154,3 +2154,260 @@ fn recorded_1021_a_recovery_pin_over_the_neighbours_word_is_that_word_whatever_i
             && alternative.reason == "cross_owner_sequence_correspondence"
     }));
 }
+
+#[test]
+fn recorded_3298e023_multiword_apple_dictation_refines_coarse_apple_after_whisper_polarity_deferral()
+ {
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+    };
+    use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+    use crate::stt::tail_provider::TailSampleRange;
+
+    let owner = OccurrenceIdentity::new("3298e023-oj-nie", 1, 1_109_760, 1_187_328);
+    let mut pcm = vec![0.0; 1_373_184];
+    pcm[1_125_888..1_162_752].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+        CaptureEvidenceIdentity::new(&owner.session, owner.capture_epoch),
+        SILERO_BOUNDARIES_PRODUCER,
+        AcousticAvailability::Observed {
+            observed_samples: pcm.len() as u64,
+        },
+        vec![TailSampleRange {
+            session: owner.session.clone(),
+            capture_epoch: owner.capture_epoch,
+            sample_start: 1_125_888,
+            sample_end: 1_162_752,
+        }],
+    ));
+
+    // Ordinal 8: coarse Apple live hypothesis "spoko" (unpinned utterance span).
+    let apple_live = ObservationIdentity::new(ObservationProducer::Apple, 6, 0, owner.clone());
+    assert!(ledger.admit(&apple_live, "spoko").grants_mutation());
+    assert_eq!(ledger.committed.get(&owner).unwrap().label, "spoko");
+
+    // Ordinal 9: Whisper offers ["oj", "nie"] which disagrees in polarity with
+    // coarse "spoko" and defers until independent lexical evidence arrives.
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 7, 0, owner.clone());
+    let whisper_receipt = ledger.admit_word_slots(
+        &whisper,
+        &decoded(
+            &[("oj", 1_123_200, 1_139_520), ("nie", 1_139_520, 1_163_520)],
+            (1_008_000, 1_373_184),
+        ),
+    );
+    assert!(!whisper_receipt.grants_mutation());
+    assert_eq!(ledger.committed.get(&owner).unwrap().label, "spoko");
+
+    // Ordinal 10: AppleDictation arrives with two words ["Oj", "nie"] confirming
+    // the multi-word negation over the coarse Apple slot.
+    let dictation =
+        ObservationIdentity::new(ObservationProducer::AppleDictation, 10, 0, owner.clone());
+    let dictation_receipt = ledger.admit_word_slots(
+        &dictation,
+        &decoded(
+            &[("Oj", 1_123_200, 1_139_520), ("nie", 1_139_520, 1_163_520)],
+            (965_760, 1_373_184),
+        ),
+    );
+    assert!(
+        dictation_receipt.grants_mutation(),
+        "multi-word AppleDictation must refine a coarse Apple slot instead of returning early: {dictation_receipt:?}"
+    );
+    assert_eq!(ledger.committed.get(&owner).unwrap().label, "Oj nie");
+    assert_eq!(
+        ledger
+            .slots_of(&owner)
+            .unwrap()
+            .iter()
+            .map(|slot| slot.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Oj", "nie"]
+    );
+}
+
+#[test]
+fn recorded_b1a679a9_witness_absence_preserves_multiword_whisper_owner_over_speech() {
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+    };
+    use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+    use crate::stt::tail_provider::{TailRequestIdentity, TailSampleRange};
+
+    let owner = OccurrenceIdentity::new("b1a679a9-o-co", 1, 530_688, 591_360);
+    let mut pcm = vec![0.0; 960_000];
+    pcm[546_816..566_784].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+        CaptureEvidenceIdentity::new(&owner.session, owner.capture_epoch),
+        SILERO_BOUNDARIES_PRODUCER,
+        AcousticAvailability::Observed {
+            observed_samples: pcm.len() as u64,
+        },
+        vec![TailSampleRange {
+            session: owner.session.clone(),
+            capture_epoch: owner.capture_epoch,
+            sample_start: 546_816,
+            sample_end: 566_784,
+        }],
+    ));
+
+    // Whisper holds ["O", "co?"] where "O" precedes the Silero speech span and
+    // "co?" overlaps the Silero speech span.
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 18, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[("O", 531_840, 539_520), ("co?", 539_520, 569_280)],
+                    (530_688, 960_000),
+                ),
+            )
+            .grants_mutation()
+    );
+    assert_eq!(ledger.committed.get(&owner).unwrap().label, "O co?");
+    assert_eq!(
+        ledger.committed.get(&owner).unwrap().producer,
+        ObservationProducer::Whisper
+    );
+
+    // AppleDictation returns an empty witness over the same decode window.
+    // Stamping SlotWitness::Absent must preserve both words, the "O co?" label,
+    // and the Whisper producer without withholding "co?" as lower_authority_over_speech.
+    let absent_witness =
+        ObservationIdentity::new(ObservationProducer::AppleDictation, 21, 0, owner.clone());
+    ledger.word_adjudication.provider = Some((
+        TailRequestIdentity {
+            request_id: 21,
+            range: TailSampleRange {
+                session: owner.session.clone(),
+                capture_epoch: owner.capture_epoch,
+                sample_start: 530_688,
+                sample_end: 591_360,
+            },
+        },
+        "apple:apple_dictation".into(),
+        "final".into(),
+        "exact_sample_range".into(),
+    ));
+    ledger.stage_word_evidence(&absent_witness, &[], Some("apple:apple_dictation"), "final");
+    let receipt = ledger.record_witness_absence(&absent_witness);
+    assert!(
+        matches!(
+            receipt,
+            Some(MutationReceipt::Preserve {
+                held_by: ObservationProducer::Whisper,
+                ..
+            })
+        ),
+        "empty AppleDictation witness must preserve Whisper ownership: {receipt:?}"
+    );
+    let held = ledger.committed.get(&owner).unwrap();
+    assert_eq!(held.label, "O co?");
+    assert_eq!(held.producer, ObservationProducer::Whisper);
+    let slots = ledger.slots_of(&owner).unwrap();
+    assert_eq!(
+        slots
+            .iter()
+            .map(|slot| slot.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["O", "co?"]
+    );
+    assert!(
+        slots
+            .iter()
+            .all(|slot| matches!(slot.witness, SlotWitness::Absent { .. }))
+    );
+    assert!(
+        !ledger.slot_alternatives.iter().any(|alt| {
+            alt.observation == absent_witness && alt.reason == "lower_authority_over_speech"
+        }),
+        "witness absence must not record a lower_authority_over_speech refusal"
+    );
+
+    // Negative falsifier: an actual lower-authority replacement over the
+    // speech-bearing slot ("co?" -> "coś") without DT partition debt is still withheld.
+    let lower_replacement =
+        ObservationIdentity::new(ObservationProducer::Apple, 22, 0, owner.clone());
+    let replacement_receipt = ledger.admit_word_slots(
+        &lower_replacement,
+        &decoded(
+            &[("O", 531_840, 539_520), ("coś", 539_520, 569_280)],
+            (530_688, 591_360),
+        ),
+    );
+    assert!(!replacement_receipt.grants_mutation());
+    assert_eq!(ledger.committed.get(&owner).unwrap().label, "O co?");
+}
+
+#[test]
+fn recorded_b1a679a9_word_owner_index_routes_silence_padded_boundary_word_to_unique_speech_owner() {
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+    };
+    use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+    use crate::stt::tail_provider::TailSampleRange;
+
+    let left = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_587_136, 6_955_008);
+    let right = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_966_528, 7_483_392);
+    let mut pcm = vec![0.0; 7_500_000];
+    pcm[6_610_944..6_938_000].fill(0.1);
+    pcm[6_982_656..7_465_984].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&left, &pcm, RATE);
+    let calibration = EnergyCalibration::new("word-fixture-pcm", 1.0, 1);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: right.clone(),
+                    duration_ms: (right.sample_end - right.sample_start) as f64 / 48.0,
+                    energy_integral: (right.sample_end - right.sample_start) as f64 * 0.01,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -20.0,
+                    vad_open_sample: Some(right.sample_start),
+                    vad_close_sample: Some(right.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration,
+            )
+            .is_qualified()
+    );
+    ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+        CaptureEvidenceIdentity::new(&left.session, left.capture_epoch),
+        SILERO_BOUNDARIES_PRODUCER,
+        AcousticAvailability::Observed {
+            observed_samples: pcm.len() as u64,
+        },
+        vec![
+            TailSampleRange {
+                session: left.session.clone(),
+                capture_epoch: left.capture_epoch,
+                sample_start: 6_610_944,
+                sample_end: 6_938_000,
+            },
+            TailSampleRange {
+                session: right.session.clone(),
+                capture_epoch: right.capture_epoch,
+                sample_start: 6_982_656,
+                sample_end: 7_465_984,
+            },
+        ],
+    ));
+    let owners = vec![left.clone(), right.clone()];
+
+    // "Nie" (6938880..6988800): raw midpoint is 6963840 inside the silent gap
+    // 6955008..6966528, but 100% of its speech (6982656..6988800) lies inside `right`.
+    let nie_pin = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_938_880, 6_988_800);
+    assert_eq!(ledger.word_owner_index(&nie_pin, &owners), Some(1));
+    assert_eq!(
+        ledger.classify_overlap_pin(&nie_pin, 6_587_136, 7_483_392, &owners, true),
+        OverlapPinClass::ExclusiveTail { member_index: 1 }
+    );
+
+    // Negative falsifier: if a boundary pin's raw midpoint is in the gap and
+    // its active speech spans both owners, `word_owner_index` must refuse (None).
+    let bridging_pin = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_935_000, 6_988_800);
+    assert_eq!(ledger.word_owner_index(&bridging_pin, &owners), None);
+}

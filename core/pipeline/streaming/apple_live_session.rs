@@ -4175,6 +4175,20 @@ impl AppleSealState {
         let mut routes = vec![MemberPinRoute::default(); members.len()];
         let mut side = Vec::new();
         {
+            if word_grain {
+                let speech = self
+                    .fusion
+                    .as_ref()
+                    .map(|fusion| fusion.acoustic_speech_evidence());
+                let mut ledger = self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(speech) = speech {
+                    ledger.record_speech_evidence(&speech);
+                }
+                self.record_decode_fence_measurement(&mut ledger, None);
+            }
             let ledger = self
                 .acoustic_ledger
                 .lock()
@@ -5820,14 +5834,7 @@ impl AppleSealState {
         if !self.seal_ledger_enabled {
             return;
         }
-        let terminal_close = sample_start == u64::MAX
-            && self.refinement_submitted.is_empty()
-            && self.refinement_pending.is_empty();
-        let sample_start = if terminal_close {
-            u64::MAX
-        } else {
-            sample_start.min(self.window_plan.admission_horizon())
-        };
+        let sample_start = sample_start.min(self.window_plan.admission_horizon());
         self.admission_horizon = self.admission_horizon.max(sample_start);
         let owners = self.unsealed_word_owners();
         let mut expired_words = false;
@@ -5841,7 +5848,7 @@ impl AppleSealState {
             if owner.sample_end > self.admission_horizon {
                 continue;
             }
-            if !terminal_close && self.whisper_work_may_cover(&owner) {
+            if self.whisper_work_may_cover(&owner) {
                 continue;
             }
             let (is_open, has_return) = {

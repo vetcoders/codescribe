@@ -187,6 +187,12 @@ fn witness_return_after_admission_horizon_closes_word_conflict_before_seal() {
         .lock()
         .unwrap()
         .schedule_observer(owner.clone(), LedgerObservationProducer::AppleDictation);
+    while let Some(range) = state
+        .window_plan
+        .next_due(state.audio.session_sample_end(), state.capture_stopping)
+    {
+        state.window_plan.account(&range);
+    }
     state.dictation_witness_waiting.push(owner.clone());
     state.dictation_witness_owners.push(owner.clone());
     state.dictation_witness_inflight = true;

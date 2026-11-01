@@ -1589,13 +1589,14 @@ impl AcousticLedger {
             observation.producer != ObservationProducer::ManualHuman
                 && !operations.iter().any(|operation| {
                     operation.sources.contains(source)
-                        && self
-                            .independent_dt_partition_debt(
-                                observation,
-                                &operation.sources,
-                                &operation.outputs,
-                            )
-                            .is_some()
+                        && (operation.rule_id == "witness_absence_preserves_speech/v1"
+                            || self
+                                .independent_dt_partition_debt(
+                                    observation,
+                                    &operation.sources,
+                                    &operation.outputs,
+                                )
+                                .is_some())
                 })
                 && source.producer.authority_rank() > observation.producer.authority_rank()
                 && !self.speech_evidence.as_ref().is_some_and(|speech| {
@@ -2501,7 +2502,7 @@ impl AcousticLedger {
         if !pin.is_anchored() {
             return None;
         }
-        owners
+        if let Some(index) = owners
             .iter()
             .enumerate()
             .filter(|(_, owner)| {
@@ -2522,6 +2523,76 @@ impl AcousticLedger {
                 )
             })
             .map(|(index, _)| index)
+        {
+            return Some(index);
+        }
+        // Decoder-padded leading/trailing silence can shift a boundary word's
+        // raw midpoint into the silent gap between two utterance owners even
+        // when all measured speech/voiced energy inside the pin belongs to a
+        // single qualified owner.
+        let mut active_spans = Vec::new();
+        if let Some(speech) = self.speech_evidence.as_ref().filter(|speech| {
+            speech.identity().matches(&pin.session, pin.capture_epoch)
+                && speech
+                    .availability()
+                    .observed_samples()
+                    .is_some_and(|end| end >= pin.sample_end)
+        }) {
+            active_spans.extend(speech.ranges().iter().filter_map(|range| {
+                let start = range.sample_start.max(pin.sample_start);
+                let end = range.sample_end.min(pin.sample_end);
+                (start < end).then_some((start, end))
+            }));
+        }
+        if let Some(hops) = self
+            .decode_fence_energy
+            .as_ref()
+            .filter(|energy| energy.captured_samples >= pin.sample_end)
+            .and_then(|energy| {
+                energy.owner.voiced_hops_in(
+                    &pin.session,
+                    pin.capture_epoch,
+                    pin.sample_start,
+                    pin.sample_end,
+                )
+            })
+        {
+            active_spans.extend(hops.into_iter().filter_map(|(hop_start, hop_end)| {
+                let start = hop_start.max(pin.sample_start);
+                let end = hop_end.min(pin.sample_end);
+                (start < end).then_some((start, end))
+            }));
+        }
+        if let Some(anchors) = self.speech_anchors.as_ref().filter(|anchors| {
+            anchors.identity.matches(&pin.session, pin.capture_epoch)
+                && anchors
+                    .availability
+                    .observed_samples()
+                    .is_some_and(|end| end >= pin.sample_end)
+        }) {
+            active_spans.extend(anchors.anchors.iter().filter_map(|anchor| {
+                let start = anchor.range.sample_start.max(pin.sample_start);
+                let end = anchor.range.sample_end.min(pin.sample_end);
+                (start < end).then_some((start, end))
+            }));
+        }
+        let active_start = active_spans.iter().map(|(start, _)| *start).min()?;
+        let active_end = active_spans.iter().map(|(_, end)| *end).max()?;
+        let mut matched = owners.iter().enumerate().filter(|(_, owner)| {
+            pin.same_capture(owner)
+                && self.is_qualified(owner)
+                && active_spans
+                    .iter()
+                    .all(|(start, end)| *start >= owner.sample_start && *end <= owner.sample_end)
+                && declared_range_contains_midpoint(
+                    owner.sample_start,
+                    owner.sample_end,
+                    active_start,
+                    active_end,
+                )
+        });
+        let (index, _) = matched.next()?;
+        matched.next().is_none().then_some(index)
     }
 
     /// Route word pins by midpoint to any supplied owner, including owners

@@ -208,7 +208,7 @@ pub(super) struct WordAdjudicationState {
     /// Speech crossing a live decode fence is evidence awaiting a whole
     /// window, not an admitted lexical occurrence or a request for final-pass work.
     deferred_anchor_words: Vec<DeferredAnchorWord>,
-    provider: Option<(
+    pub(super) provider: Option<(
         crate::stt::tail_provider::TailRequestIdentity,
         String,
         String,
@@ -1101,10 +1101,10 @@ impl AcousticLedger {
         words: &[WordPin],
         anchors: &[crate::audio::capture_receipt::SpeechAnchor],
     ) -> Vec<WordPin> {
+        self.prepare_word_evidence(observation, words);
         if observation.producer != ObservationProducer::Whisper || anchors.is_empty() {
             return words.to_vec();
         }
-        self.prepare_word_evidence(observation, words);
         let owner = &observation.occurrence;
         // Owner boundaries are independently qualified by the utterance VAD.
         // A preceding burst outside this owner cannot make its first word cut.
