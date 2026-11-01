@@ -2054,6 +2054,10 @@ struct OverlayChannelStatusView: View {
               conversation: conversation, palette: palette, textScale: textScale,
               isOpen: conversation.map { $0.id == selectedConversationID } ?? false,
               onOpen: { viewConversation(channel) }))
+          // Maciej, 2026-11-01: the agent's "…" sits beside the clock, outside
+          // the row's button, so the name gets the line and the pair the right.
+          EmptyView().modifier(cardAgentMenu(for: channel.channel, showsButton: true))
+            .fixedSize()
         }
         .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
         // Identity owns the full first line. Like message-header actions,
@@ -2158,13 +2162,17 @@ struct OverlayChannelStatusView: View {
       receipt: statusChannel.flatMap {
         deliveryReceiptDisplay(for: $0, conversation: conversation)
       },
-      trailingMarks: rowMarks(for: statusChannel, conversation: conversation)
+      // Maciej, 2026-11-01: "synchronizuj szkic" and the panel jump leave the
+      // roster rows and stay on the conversation label above the list.
+      trailingMarks: nil
     )
   }
 
   /// After the receipt: the sync chain, a toggle as on the fiszki, and the
   /// one-press jump to the agent's panel, both out of the "…" menu
   /// (Maciej, 2026-10-30 14:08 and 14:12). Nothing on the All row.
+  /// No longer drawn in roster rows since 2026-11-01; kept only for the tests
+  /// that still call it, which need retargeting before it is removed.
   func rowMarks(for channel: OverlayChannelDelivery?, conversation: OverlayConversation?)
     -> AnyView?
   {
@@ -2236,8 +2244,11 @@ struct OverlayChannelStatusView: View {
         connected: !hasDeadFollower(channel)
       )
       .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
-      EmptyView().modifier(
-        cardAgentMenu(for: channel.channel, showsButton: true))
+      // Roster rows carry "…" beside the clock; the conversation label keeps it here.
+      if !chrome {
+        EmptyView().modifier(
+          cardAgentMenu(for: channel.channel, showsButton: true))
+      }
     }
     .fixedSize()
     .accessibilityIdentifier("overlay-agent-row-controls-\(channel.channel)")
@@ -2467,16 +2478,16 @@ struct OverlayChannelStatusView: View {
     Button {
       onSelectConversation?(conversation.id)
     } label: {
-      HStack(spacing: 10) {
+      HStack(spacing: 6) {
         Image(systemName: conversation.isHumanInbox ? "tray" : saved ? "clock" : "bubble.left")
           .font(.system(size: 12))
           .foregroundStyle(palette.mutedText.color)
           .frame(width: 16)
         VStack(alignment: .leading, spacing: 2) {
           if conversation.channel == "0" {
-            Text(verbatim: broadcastHeader)
+            Text(verbatim: broadcastHeader).lineLimit(1)
           } else {
-            Text(verbatim: conversation.displayTitle)
+            Text(verbatim: conversation.displayTitle).lineLimit(1)
           }
           if saved, let owner = conversation.owner {
             Text(verbatim: savedConversationDetail(conversation, owner: owner))
@@ -2502,6 +2513,8 @@ struct OverlayChannelStatusView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    // The row claims the arrow, so the cursor stops flipping over its text.
+    .background { OverlayMenuCursorRegion() }
     .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
     .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: CSRadius.chip, outset: 6))
     .modifier(
