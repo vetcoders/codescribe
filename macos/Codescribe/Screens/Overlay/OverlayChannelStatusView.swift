@@ -1780,9 +1780,22 @@ struct OverlayChannelStatusView: View {
       perform: { onToggleDraftSync(conversation.id) })
   }
 
+  /// The list's fold rides on the All card whenever that card is shown.
+  private var foldRidesOnAllCard: Bool {
+    onSelectConversation != nil && currentConversations.contains(where: { $0.channel == "0" })
+  }
+
+  private func listFoldToggle(_ controls: OverlayAgentsSidebarControls) -> some View {
+    OverlaySidebarToggleButton(
+      symbol: "sidebar.right", title: String(localized: "Hide agents list"),
+      identifier: "overlay-agent-sidebar-fold", palette: palette,
+      textScale: textScale, action: controls.onFoldList)
+  }
+
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
     OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
+      showsHeader: !foldRidesOnAllCard && sidebarControls != nil,
       focusRevision: focusRevision, focusedRowID: selectedConversationID,
       scrollTargetID: gestureFocusID.flatMap { id in
         currentConversations.contains(where: {
@@ -1790,20 +1803,11 @@ struct OverlayChannelStatusView: View {
         }) ? nil : id
       }
     ) {
+      // Maciej, 2026-11-01: the "Agents" row goes; the list says what it is.
+      // Only without the All card does the fold keep a slim row of its own.
       HStack(spacing: 6) {
-        Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
         Spacer()
-        Text(verbatim: String(channels.count))
-          .font(.system(size: 11 * textScale))
-          .monospacedDigit()
-          .foregroundStyle(palette.mutedText.color)
-          .accessibilityHidden(true)
-        if let sidebarControls {
-          OverlaySidebarToggleButton(
-            symbol: "sidebar.right", title: String(localized: "Hide agents list"),
-            identifier: "overlay-agent-sidebar-fold", palette: palette,
-            textScale: textScale, action: sidebarControls.onFoldList)
-        }
+        if let sidebarControls { listFoldToggle(sidebarControls) }
       }
     } pinned: { rowFocus in
       if onSelectConversation != nil,
@@ -1815,7 +1819,10 @@ struct OverlayChannelStatusView: View {
           {
             rowGlassContainer(
               VStack(alignment: .leading, spacing: 2) {
-                broadcastRow(broadcast, rowFocus: rowFocus)
+                HStack(alignment: .center, spacing: 4) {
+                  broadcastRow(broadcast, rowFocus: rowFocus)
+                  if let sidebarControls { listFoldToggle(sidebarControls) }
+                }
                 // The pair sits beside the preview, not in the Agents header
                 // and not in the agent-row footer. Three lines belong to All.
                 HStack(alignment: .center, spacing: 8) {
@@ -3218,6 +3225,7 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
   var focusRevision: UInt64 = 0
   var focusedRowID: String? = nil
   var scrollTargetID: String? = nil
+  var showsHeader = true
   @State private var headerHeight: CGFloat = 22
   @State private var pinnedHeight: CGFloat = 0
   @State private var contentHeight: CGFloat?
@@ -3229,6 +3237,7 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
   init(
     maximumHeight: CGFloat, palette: OverlayAppearancePalette,
     focusRevision: UInt64 = 0, focusedRowID: String? = nil, scrollTargetID: String? = nil,
+    showsHeader: Bool = true,
     @ViewBuilder header: () -> Header,
     @ViewBuilder pinned: @escaping (FocusState<String?>.Binding) -> Pinned,
     @ViewBuilder content: @escaping (FocusState<String?>.Binding) -> Content
@@ -3238,6 +3247,7 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
     self.focusRevision = focusRevision
     self.focusedRowID = focusedRowID
     self.scrollTargetID = scrollTargetID
+    self.showsHeader = showsHeader
     self.header = header()
     pinnedBuilder = pinned
     contentBuilder = content
@@ -3245,20 +3255,22 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
 
   private var viewportHeight: CGFloat {
     OverlayAgentMonitorLayout.viewportHeight(
-      maximumHeight: maximumHeight, headerHeight: headerHeight, pinnedHeight: pinnedHeight,
-      contentHeight: contentHeight)
+      maximumHeight: maximumHeight, headerHeight: showsHeader ? headerHeight : 0,
+      pinnedHeight: pinnedHeight, contentHeight: contentHeight)
   }
 
   var body: some View {
     ChannelRosterContent(palette: palette) {
       VStack(alignment: .leading, spacing: 8) {
-        header
-          .fixedSize(horizontal: false, vertical: true)
-          .onGeometryChange(for: CGFloat.self) {
-            $0.size.height
-          } action: {
-            headerHeight = $0
-          }
+        if showsHeader {
+          header
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) {
+              $0.size.height
+            } action: {
+              headerHeight = $0
+            }
+        }
         // The pinned card floats over the list like the conversation's label
         // over its messages: rows scroll under its glass instead of the card
         // sitting on a solid strip (Maciej, 2026-11-01).
@@ -3276,6 +3288,14 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
           .contentMargins(.top, pinnedHeight + 8, for: .scrollContent)
           .frame(height: viewportHeight + pinnedHeight + 8)
           .clipped()
+          // Rows fade out under the card instead of showing through it.
+          .mask {
+            VStack(spacing: 0) {
+              LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                .frame(height: pinnedHeight + 8)
+              Color.black
+            }
+          }
           .accessibilityIdentifier("overlay-agent-monitor-scroll")
           .overlay(alignment: .top) {
             pinnedBuilder($rowFocus)

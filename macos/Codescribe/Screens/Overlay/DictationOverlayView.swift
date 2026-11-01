@@ -618,8 +618,6 @@ struct DictationOverlayView: View {
             - (columnShown ? splitDrawerWidth : 0) - (railShown ? railWidth : 0)
             - transcriptActionsWidth)
         let canvasHidden = canvasWidth < 1 || conversationFolded
-        // The conversation toggle has a reserved row, clear of message text.
-        let conversationControlsHeight: CGFloat = columnShown ? 30 * textScale : 0
         HStack(alignment: .top, spacing: 0) {
           ZStack {
             // Both ends are numbers, so the fold interpolates with the window's
@@ -640,7 +638,7 @@ struct DictationOverlayView: View {
               let composesText = resolvedTarget != nil || conversation.isDraftSyncSource
               OverlayConversationView(
                 conversation: conversation, palette: palette,
-                topInset: headerHeight + 8 + conversationControlsHeight, bottomInset: 20,
+                topInset: headerHeight + 8, bottomInset: 20,
                 pendingControls: state.pendingReplyControls,
                 controlErrors: state.replyControlErrors,
                 onControl: { message, stop in
@@ -682,6 +680,7 @@ struct DictationOverlayView: View {
                 navigationMenu: conversationHeaderMenu(conversation),
                 navigationActions: conversationHeaderActions(conversation),
                 navigationIndicators: conversationHeaderIndicators(conversation),
+                navigationLeading: columnShown ? AnyView(conversationFoldToggle()) : nil,
                 composerConversation: resolvedTarget,
                 composerAvailable: composesText,
                 composerMicrophoneOpen: state.conversationMicrophoneOpen(conversation),
@@ -759,8 +758,8 @@ struct DictationOverlayView: View {
           .frame(width: canvasWidth, height: geometry.size.height, alignment: .leading)
           .clipped()
           .overlay(alignment: .topLeading) {
-            if columnShown {
-              conversationEdgeControls(canvasShown: !canvasHidden)
+            if columnShown && canvasHidden {
+              conversationEdgeControls(canvasShown: false)
                 .padding(.top, headerHeight + 16)
             }
           }
@@ -979,8 +978,8 @@ struct DictationOverlayView: View {
     }
   }
 
-  /// A real slot on the conversation's own edge, with equal insets on both
-  /// sides. The row above the messages is reserved by their top inset.
+  /// A real slot on the conversation's own edge while the conversation is
+  /// folded. Beside a shown conversation the toggle rides on its label.
   private func conversationEdgeControls(canvasShown: Bool) -> some View {
     let controls = agentsSidebarControls(canvasShown: canvasShown)
     return HStack(spacing: 0) {
@@ -997,6 +996,16 @@ struct DictationOverlayView: View {
       }
     }
     .padding(.horizontal, 8 * textScale)
+  }
+
+  /// The conversation's fold on its label's glass: the row above the label
+  /// is gone (Maciej, 2026-11-01).
+  private func conversationFoldToggle() -> some View {
+    let controls = agentsSidebarControls(canvasShown: true)
+    return OverlaySidebarToggleButton(
+      symbol: "sidebar.left", title: controls.canvasTitle,
+      identifier: "overlay-agent-sidebar-toggle-canvas", palette: palette,
+      textScale: textScale, action: controls.onToggleCanvas)
   }
 
   private func agentsSidebarControls(canvasShown: Bool) -> OverlayAgentsSidebarControls {

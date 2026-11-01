@@ -155,6 +155,9 @@ struct OverlayConversationView: View {
   /// Optional controls for the horizontal bus window only.
   var navigationActions: AnyView? = nil
   var navigationIndicators: AnyView? = nil
+  /// Set before the name on the label's glass: the docked window's
+  /// conversation fold, which no longer owns a row above the label.
+  var navigationLeading: AnyView? = nil
   /// The recipient may differ; draft state always belongs to `conversation`.
   var composerConversation: OverlayConversation? = nil
   var composerAvailable = true
@@ -563,6 +566,10 @@ struct OverlayConversationView: View {
       .accessibilityIdentifier("overlay-conversation-navigation")
     } else {
       HStack(alignment: .center, spacing: 8) {
+        if let navigationLeading {
+          navigationLeading
+            .fixedSize()
+        }
         VStack(alignment: .leading, spacing: 2) {
           HStack(spacing: 6) {
             Group {
@@ -829,6 +836,9 @@ struct OverlayConversationView: View {
     // The window inset and the header card's height: the newest rows rest
     // under them and scroll through the glass, the way they do under the composer.
     .contentMargins(.top, topInset + visibleNavigationHeight)
+    // Nothing shows above the label and rows fade out under its glass, so no
+    // text peeks between the window header and the label (Maciej, 2026-11-01).
+    .mask { Self.topFadeMask(clearHeight: topInset, fadeHeight: visibleNavigationHeight) }
     if #available(macOS 26.0, *) {
       // Navigation reserves actual space outside the scrolling viewport.
       // No empty safe-area bar or translucent fade competes with that bound.
@@ -838,6 +848,16 @@ struct OverlayConversationView: View {
         .scrollEdgeEffectHidden(true, for: .bottom)
     } else {
       list
+    }
+  }
+
+  /// Clear above the label, a fade under its glass, opaque below.
+  static func topFadeMask(clearHeight: CGFloat, fadeHeight: CGFloat) -> some View {
+    VStack(spacing: 0) {
+      Color.clear.frame(height: clearHeight)
+      LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+        .frame(height: fadeHeight)
+      Color.black
     }
   }
 
