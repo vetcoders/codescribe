@@ -69,6 +69,10 @@ struct OverlayConversationComposer: View {
   @State private var microphoneHint = ComposerMicrophoneHintState()
   @State private var accessoryHeight: CGFloat = 30
   @State private var editorHeight: CGFloat = 28
+  /// The recipient picker stays open across toggles; closing it hands the
+  /// keyboard back to the editor.
+  @State private var recipientPickerShown = false
+  @State private var recipientFocusNudge: UInt64 = 0
 
   /// The height budget caps the editor viewport, never the draft's line count.
   private var isCompact: Bool { maximumEditorHeight != nil }
@@ -333,8 +337,39 @@ struct OverlayConversationComposer: View {
   /// The send button's chevron: the recipient set of a source conversation
   /// (the inbox builds it, 0 · All narrows the broadcast to it), the same
   /// draft-sync toggles the roster chain flips. Lit while a set is chosen.
+  /// Maciej, 2026-11-01: one press opens the picker, several agents are
+  /// ticked in it, and closing it returns to the composer. A menu closes on
+  /// every pick, so the set lives in a popover instead.
   private func recipientMenu(_ corners: ConversationComposerCornerLayout) -> some View {
-    Menu {
+    Button {
+      recipientPickerShown.toggle()
+    } label: {
+      Image(systemName: "chevron.down")
+        .font(.system(size: min(controlGlyphSize, corners.glyphSize) * 0.4, weight: .bold))
+        .frame(width: corners.recipientWidth, height: corners.actionHeight)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .frame(width: corners.recipientWidth, height: corners.actionHeight)
+    .conversationActionHover(
+      restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+      hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+    )
+    .disabled(sending)
+    .overlayFastHint(recipientMenuHint, palette: palette)
+    .popover(isPresented: $recipientPickerShown, arrowEdge: .top) {
+      recipientPicker
+    }
+    .onChange(of: recipientPickerShown) { _, shown in
+      if !shown { recipientFocusNudge &+= 1 }
+    }
+    .accessibilityLabel(Text("Choose recipients"))
+    .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+    .accessibilityIdentifier("overlay-conversation-recipients")
+  }
+
+  private var recipientPicker: some View {
+    VStack(alignment: .leading, spacing: 6) {
       ForEach(draftSyncChoices) { choice in
         Toggle(
           isOn: Binding(
@@ -343,31 +378,23 @@ struct OverlayConversationComposer: View {
         ) {
           Text(verbatim: choice.title)
         }
+        .toggleStyle(.checkbox)
         .disabled(!choice.enabled)
       }
       if draftSyncActive, let onStopDraftSync {
         Divider()
         Button(action: onStopDraftSync) { Text(verbatim: clearRecipientsTitle) }
       }
-    } label: {
-      Image(systemName: "chevron.down")
-        .font(.system(size: min(controlGlyphSize, corners.glyphSize) * 0.55, weight: .semibold))
-        .frame(width: corners.recipientWidth, height: corners.actionHeight)
-        .contentShape(Rectangle())
     }
-    .menuStyle(.button)
-    .buttonStyle(.plain)
-    .menuIndicator(.hidden)
-    .frame(width: corners.recipientWidth, height: corners.actionHeight)
-    .conversationActionHover(
-      restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
-      hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
-    )
-    .disabled(sending)
-    .overlayFastHint(recipientMenuHint, palette: palette)
-    .accessibilityLabel(Text("Choose recipients"))
-    .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
-    .accessibilityIdentifier("overlay-conversation-recipients")
+    .font(CSFont.ui(12, .medium))
+    .foregroundStyle(palette.primaryText.color)
+    .padding(10)
+    .frame(minWidth: 160, alignment: .leading)
+    .fixedSize()
+    .background(.regularMaterial)
+    .csFocusPolicy()
+    .onExitCommand { recipientPickerShown = false }
+    .accessibilityIdentifier("overlay-conversation-recipient-picker")
   }
 
   private var recipientMenuHint: String {
@@ -494,7 +521,8 @@ struct OverlayConversationComposer: View {
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
-        onCancel: onCancel, focusRevision: focusRevision, isCovered: isCovered,
+        onCancel: onCancel, focusRevision: focusRevision &+ recipientFocusNudge,
+        isCovered: isCovered,
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 },
