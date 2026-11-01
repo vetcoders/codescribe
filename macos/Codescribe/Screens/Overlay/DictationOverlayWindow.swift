@@ -1651,7 +1651,6 @@ enum OverlayPresencePolicy: Equatable {
     "com.apple.SecurityAgent",
     "com.apple.UserNotificationCenter",
     "com.apple.CoreServicesUIAgent",
-    "com.apple.loginwindow",
   ]
 
   static func resolve(
