@@ -566,6 +566,10 @@ struct OverlayAgentAudioControls: View {
 
   static let broadcastScale: CGFloat = 1.33
   static let controlFrame: CGFloat = 16
+  /// Roster circles keep their shape in the composer's glass (Maciej,
+  /// 2026-11-01: "zrównaną do materiału kompozera"), so their glyphs take the
+  /// same muted ink as the header's instead of the system button's label.
+  static let rosterDiameter: CGFloat = 24
   private var controlScale: CGFloat { broadcast && broadcastEmphasis ? Self.broadcastScale : 1 }
   private var glyphSize: CGFloat {
     (diameter.map { min(24, max(12, $0 * 0.42)) } ?? 12) * controlScale
@@ -2087,6 +2091,16 @@ struct OverlayChannelStatusView: View {
           }
           .frame(maxWidth: .infinity, alignment: .leading)
           .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
+          // Maciej, 2026-11-01: the preview fades lightly toward the window's
+          // edge, where the pair floats over it.
+          .mask {
+            LinearGradient(
+              stops: [
+                .init(color: .black, location: 0.6),
+                .init(color: .black.opacity(0.35), location: 1),
+              ],
+              startPoint: .leading, endPoint: .trailing)
+          }
           compactAgentActions(for: channel)
         }
       }
@@ -2202,7 +2216,7 @@ struct OverlayChannelStatusView: View {
   }
 
   /// `chrome: false` for a pair that sits on a glass card (the conversation
-  /// header); roster rows on the plain canvas keep their glass circles.
+  /// header); roster rows on the plain canvas keep circles in the composer's glass.
   /// `panel: true` adds the header's third control, the jump to the agent's
   /// panel in the same shape as the pair (Maciej, 2026-10-30 14:08); roster
   /// rows carry that button beside the receipt instead.
@@ -2217,7 +2231,8 @@ struct OverlayChannelStatusView: View {
         palette: palette, onMicrophone: { toggle(channel) },
         onPlayback: { onTogglePlayback?(channel.channel) },
         speaking: conversation(for: channel)?.replySpeaking == true,
-        chrome: chrome, panel: panel ? panelControl(for: channel) : nil,
+        chrome: chrome, diameter: chrome ? OverlayAgentAudioControls.rosterDiameter : nil,
+        panel: panel ? panelControl(for: channel) : nil,
         connected: !hasDeadFollower(channel)
       )
       .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
@@ -3178,14 +3193,9 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
           } action: {
             headerHeight = $0
           }
-        pinnedBuilder($rowFocus)
-          .fixedSize(horizontal: false, vertical: true)
-          .onGeometryChange(for: CGFloat.self) {
-            $0.size.height
-          } action: {
-            pinnedHeight = $0
-          }
-          .accessibilityIdentifier("overlay-agent-monitor-pinned-mailboxes")
+        // The pinned card floats over the list like the conversation's label
+        // over its messages: rows scroll under its glass instead of the card
+        // sitting on a solid strip (Maciej, 2026-11-01).
         ScrollViewReader { proxy in
           ScrollView(.vertical) {
             contentBuilder($rowFocus)
@@ -3197,9 +3207,20 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
               }
               .csAutohidingScrollers()
           }
-          .frame(height: viewportHeight)
+          .contentMargins(.top, pinnedHeight + 8, for: .scrollContent)
+          .frame(height: viewportHeight + pinnedHeight + 8)
           .clipped()
           .accessibilityIdentifier("overlay-agent-monitor-scroll")
+          .overlay(alignment: .top) {
+            pinnedBuilder($rowFocus)
+              .fixedSize(horizontal: false, vertical: true)
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                pinnedHeight = $0
+              }
+              .accessibilityIdentifier("overlay-agent-monitor-pinned-mailboxes")
+          }
           .onChange(of: scrollTargetID) { _, target in
             guard let target else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover)) {
