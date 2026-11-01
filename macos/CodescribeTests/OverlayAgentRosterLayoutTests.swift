@@ -360,7 +360,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         "let channel = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
     let dim = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayDisconnectedRowDim: ViewModifier {",
-      to: "struct OverlayAgentsSidebarControls {")
+      to: "struct OverlayRowHoverHighlight: ViewModifier {")
     XCTAssertEqual(OverlayDisconnectedRowDim.opacity, 0.45)
     XCTAssertTrue(dim.contains(".opacity(disconnected ? Self.opacity : 1)"))
     XCTAssertTrue(dim.contains(".grayscale(disconnected ? 1 : 0)"))

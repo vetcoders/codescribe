@@ -1095,7 +1095,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         mode: .finalizing, transcribing: true, terminal: true))
   }
 
-  func testResizeChromeUsesTheGeometryContractsWithoutAddingSwiftUIHitTargets() throws {
+  func testResizeChromeKeepsPassiveSurfacesAndMountsBothDividerGestures() throws {
     let source = try overlaySource()
     let chrome = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
@@ -1117,20 +1117,22 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(source.contains("OverlayPointerHoverChrome("))
     XCTAssertFalse(chrome.contains("pointerInsideOverlay"))
     let passiveChrome = chrome + pointerChrome
-    // The conversation's frame reader (sidebar fold, 2026-10-26) is the ninth:
-    // like the drawer's and the rail's readers it takes no click and, being
-    // Color.clear, hides nothing from accessibility.
-    XCTAssertEqual(passiveChrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 9)
-    XCTAssertEqual(passiveChrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 4)
-    // The folded list's rail (2026-10-19) brought two of them: its leading
-    // hairline and its frame reader, neither of which takes a click.
+    // Geometry readers and decorative chrome stay passive. Both dividers
+    // are interactive, including the rail's formerly passive hairline.
+    XCTAssertEqual(passiveChrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 7)
+    XCTAssertEqual(passiveChrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 2)
     let rail = try section(
-      of: chrome, from: "private func agentRail", to: "private func agentDrawerResizeHandle")
-    XCTAssertEqual(rail.components(separatedBy: ".allowsHitTesting(false)").count - 1, 2)
-    XCTAssertEqual(rail.components(separatedBy: ".accessibilityHidden(true)").count - 1, 1)
-    // The docked agents column's hairline became its resize handle (15d5640d5):
-    // that handle owns the chrome's only drag, and nothing else adds one.
-    XCTAssertEqual(chrome.components(separatedBy: "DragGesture").count - 1, 1)
+      of: chrome, from: "private func agentRail(", to: "private func agentRailUnfoldHandle")
+    XCTAssertEqual(rail.components(separatedBy: ".allowsHitTesting(false)").count - 1, 1)
+    XCTAssertEqual(rail.components(separatedBy: ".accessibilityHidden(true)").count - 1, 0)
+    XCTAssertTrue(rail.contains("agentRailUnfoldHandle(width: width, windowWidth: windowWidth)"))
+    XCTAssertEqual(chrome.components(separatedBy: "DragGesture").count - 1, 2)
+    let railHandle = try section(
+      of: chrome, from: "private func agentRailUnfoldHandle",
+      to: "private func agentDrawerResizeHandle")
+    XCTAssertTrue(railHandle.contains("DragGesture"))
+    XCTAssertTrue(railHandle.contains("OverlayAgentDrawerLayout.railUnfoldDrag"))
+    XCTAssertTrue(railHandle.contains(".accessibilityIdentifier(\"overlay-agent-rail-resize\")"))
     let handle = try section(
       of: chrome, from: "private func agentDrawerResizeHandle", to: ".onEnded")
     XCTAssertTrue(handle.contains("DragGesture"))
@@ -1269,8 +1271,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(header.contains("character: OverlayHeaderGlyph.transcription"))
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     XCTAssertTrue(roster.contains("character: OverlayHeaderGlyph.agents"))
-    // sidebar.right is the list's own corner button (Maciej, 2026-10-19),
-    // never the header's Agents mark.
+    // The header's Agents mark remains distinct from the sidebar glyph.
     let glyph = try XCTUnwrap(roster.range(of: "private var headerGlyph: some View"))
     XCTAssertFalse(roster[glyph.lowerBound...].prefix(700).contains("sidebar.right"))
   }
