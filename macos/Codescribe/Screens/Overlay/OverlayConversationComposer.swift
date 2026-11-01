@@ -356,20 +356,24 @@ struct OverlayConversationComposer: View {
   /// ticked in it, and closing it returns to the composer. A menu closes on
   /// every pick, so the set lives in a popover instead.
   private func recipientMenu(_ corners: ConversationComposerCornerLayout) -> some View {
+    let sendGlyph = min(controlGlyphSize, corners.glyphSize)
     Button {
       recipientPickerShown.toggle()
     } label: {
       Image(systemName: "chevron.down")
-        .font(.system(size: min(controlGlyphSize, corners.glyphSize) * 0.4, weight: .bold))
-        .frame(width: corners.recipientWidth, height: corners.actionHeight)
+        .font(.system(size: sendGlyph * 0.33, weight: .semibold))
+        // paperplane.fill sits slightly high; lift the tail onto its midline.
+        .offset(y: -(sendGlyph * 0.08))
+        .conversationActionHover(
+          restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+          hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+        )
+        .frame(
+          width: corners.recipientWidth, height: corners.actionHeight, alignment: .leading)
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .frame(width: corners.recipientWidth, height: corners.actionHeight)
-    .conversationActionHover(
-      restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
-      hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
-    )
     .disabled(sending)
     .overlayFastHint(recipientMenuHint, palette: palette)
     .popover(isPresented: $recipientPickerShown, arrowEdge: .top) {
@@ -598,28 +602,31 @@ struct OverlayConversationComposer: View {
             .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
             .accessibilityIdentifier("overlay-conversation-draft-microphone")
           }
-          Button("Send", systemImage: "paperplane.fill", action: onSubmit)
-            .labelStyle(.iconOnly)
-            .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
-            .frame(width: corners.actionWidth, height: corners.actionHeight)
-            .contentShape(Circle())
-            .buttonStyle(.plain)
-            .conversationActionHover(
-              restingColor: restingActionColor,
-              hoverColor: palette.primaryText.color
-            )
-            .disabled(
-              sending
-                || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                  && pendingCaptureAttachments.isEmpty)
-            )
-            .accessibilityIdentifier("overlay-conversation-send")
-            .overlayFastHint(
-              draftSyncNames.count > 1
-                ? String(localized: "Send to all linked agents") : String(localized: "Send"),
-              palette: palette)
-          if showsRecipientMenu {
-            recipientMenu(corners)
+          // Send and the recipient tail share one visual control; mic keeps stack spacing.
+          HStack(spacing: 0) {
+            Button("Send", systemImage: "paperplane.fill", action: onSubmit)
+              .labelStyle(.iconOnly)
+              .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
+              .frame(width: corners.actionWidth, height: corners.actionHeight)
+              .contentShape(Circle())
+              .buttonStyle(.plain)
+              .conversationActionHover(
+                restingColor: restingActionColor,
+                hoverColor: palette.primaryText.color
+              )
+              .disabled(
+                sending
+                  || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && pendingCaptureAttachments.isEmpty)
+              )
+              .accessibilityIdentifier("overlay-conversation-send")
+              .overlayFastHint(
+                draftSyncNames.count > 1
+                  ? String(localized: "Send to all linked agents") : String(localized: "Send"),
+                palette: palette)
+            if showsRecipientMenu {
+              recipientMenu(corners)
+            }
           }
         }
         .background { OverlayMenuCursorRegion() }
@@ -658,24 +665,23 @@ private struct ConversationComposerCornerLayout: Equatable {
     // widens the leading corner.
     let leadingCount: CGFloat = 1
     _ = showsSync
-    // The recipient chevron is smaller than an action beside Send.
-    let recipientShare: CGFloat = showsRecipientMenu ? 0.45 : 0
-    let trailingCount: CGFloat = (showsMicrophone ? 2 : 1) + recipientShare
-    let count = leadingCount + trailingCount
+    // Split-button tail: a third of an action, glued to Send with no extra spacing.
+    let recipientShare: CGFloat = showsRecipientMenu ? 1.0 / 3.0 : 0
+    let trailingActions: CGFloat = showsMicrophone ? 2 : 1
+    let count = leadingCount + trailingActions + recipientShare
     clearance = min(4, max(0, width / 24))
     spacing = min(
       compact ? ComposerControlMetrics.intercomSpacing : ComposerControlMetrics.spacing,
       max(0, width / 32))
     let proseWidth = min(3 * fontSize, max(0, width / 3))
+    let trailingSpacings = max(0, trailingActions - 1)
     actionWidth = min(
       ComposerControlMetrics.hitTargetSize,
-      max(1, (width - proseWidth - 2 * clearance - (count - 2) * spacing) / count))
+      max(1, (width - proseWidth - 2 * clearance - trailingSpacings * spacing) / count))
     leadingWidth = leadingCount * actionWidth + (leadingCount - 1) * spacing
     recipientWidth = showsRecipientMenu ? ceil(actionWidth * recipientShare) : 0
-    let trailingActions: CGFloat = showsMicrophone ? 2 : 1
     trailingWidth =
-      trailingActions * actionWidth + recipientWidth
-      + (trailingActions - 1 + (showsRecipientMenu ? 1 : 0)) * spacing
+      trailingActions * actionWidth + recipientWidth + trailingSpacings * spacing
   }
 
   var glyphSize: CGFloat { min(actionWidth, actionHeight) * 0.65 }
