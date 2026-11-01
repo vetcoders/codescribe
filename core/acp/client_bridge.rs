@@ -1610,4 +1610,72 @@ mod tests {
             json!({"outcome":{"outcome":"selected","optionId":"opt-allow"}})
         );
     }
+
+    /// Kills mutant 03 (acp-write-parent-recheck-removed): the canonical target
+    /// stays fixed, so registry confirmation accepts it, but the nearest existing
+    /// parent changes during approval. The retained directory capability remains
+    /// valid and writable; only the write-specific recheck refuses this change.
+    #[tokio::test]
+    async fn acp_write_rechecks_new_parent_after_approval() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("created-during-approval");
+        let target = parent.join("notes.txt");
+        let policy = AgentPermissions {
+            side_effect_default: PermissionLevel::Ask,
+            ..Default::default()
+        };
+        let mut config =
+            AcpClientBridgeConfig::for_workspace(vec![root.path().into()], policy).unwrap();
+        let (ui_tx, mut ui_rx) = mpsc::channel(8);
+        config.ui_tx = Some(ui_tx);
+        let approval_parent = parent.clone();
+        config.approval_handler = Some(Arc::new(move |_| {
+            let parent = approval_parent.clone();
+            Box::pin(async move {
+                std::fs::create_dir(&parent).unwrap();
+                true
+            })
+        }));
+        let mut bridge = AcpClientBridge::new(config).unwrap();
+        bridge.set_session_id("session-1".into());
+        let mut input = params(&target);
+        input["content"] = json!("must not be written");
+
+        let before = checked_path(&target, &bridge.config.workspace_roots, true).unwrap();
+        let (_, decided_targets) = bridge.config.registry.decide_with_targets(
+            WRITE_TOOL,
+            &input,
+            "preflight",
+            "session-1",
+            &bridge.config.thread_id,
+        );
+        let retained_parent = open_relative_directory(
+            bridge.root_dir(&before).unwrap(),
+            &before.existing_ancestor_relative,
+        )
+        .unwrap();
+        let result = bridge.handle("fs/write_text_file", input.clone()).await;
+
+        assert!(matches!(
+            ui_rx.try_recv(),
+            Ok(AgentUiEvent::ToolApprovalRequested(_))
+        ));
+        let after = checked_path(&target, &bridge.config.workspace_roots, true).unwrap();
+        assert_eq!(before.canonical, after.canonical);
+        assert_ne!(before.existing_ancestor, after.existing_ancestor);
+        bridge
+            .config
+            .registry
+            .confirm_targets(WRITE_TOOL, &input, &decided_targets)
+            .expect("registry target confirmation must still accept the same canonical path");
+        retained_parent
+            .write("created-during-approval/capability-probe.txt", b"still writable")
+            .expect("retained capability must independently permit a write to this parent");
+        assert!(matches!(
+            result,
+            Err(AcpError::PermissionDenied(ref reason))
+                if reason == "ACP target changed after authorization"
+        ));
+        assert!(!target.exists(), "refused write must not create a file");
+    }
 }

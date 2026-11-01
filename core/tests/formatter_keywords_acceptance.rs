@@ -131,3 +131,107 @@ fn formatter_keywords_snapshot_freezes_per_generation() {
         first.formatting_vocabulary_context()
     );
 }
+
+/// Kills mutants 10 (keywords-count-101) and 14 (keywords-count-99) with literal
+/// public boundaries, independent of the implementation's limit constants.
+#[test]
+fn formatter_keywords_accept_exactly_100_and_refuse_101() {
+    let at_limit: Vec<String> = (0..100)
+        .map(|index| format!("term-{index:03}"))
+        .collect();
+    assert_eq!(normalize_formatter_keywords(&at_limit).unwrap(), at_limit);
+    let sealed = FormatterKeywordsContext::seal(Some(&at_limit));
+    assert_eq!(sealed.terms(), at_limit.as_slice());
+    assert!(sealed.refusal().is_none());
+    assert!(sealed.prompt_suffix().is_some());
+
+    let mut over_limit = at_limit;
+    over_limit.push("term-100".to_string());
+    let expected = FormatterKeywordsError::TooManyTerms {
+        count: 101,
+        limit: 100,
+    };
+    assert_eq!(
+        normalize_formatter_keywords(&over_limit),
+        Err(expected.clone())
+    );
+    let refused = FormatterKeywordsContext::seal(Some(&over_limit));
+    assert_eq!(refused.refusal(), Some(&expected));
+    assert!(
+        refused.terms().is_empty(),
+        "101 terms must not be truncated to 100"
+    );
+    assert!(refused.prompt_suffix().is_none());
+}
+
+/// Kills mutants 11 (keywords-term-121) and 15 (keywords-term-119). A multibyte
+/// fixture pins 120 Unicode scalars rather than accidentally imposing 120 bytes.
+#[test]
+fn formatter_keywords_accept_120_scalars_and_refuse_121() {
+    let at_limit = vec!["ą".repeat(120)];
+    assert_eq!(at_limit[0].chars().count(), 120);
+    assert_eq!(at_limit[0].len(), 240);
+    assert_eq!(normalize_formatter_keywords(&at_limit).unwrap(), at_limit);
+    let sealed = FormatterKeywordsContext::seal(Some(&at_limit));
+    assert_eq!(sealed.terms(), at_limit.as_slice());
+    assert!(sealed.refusal().is_none());
+
+    let over_limit = vec!["ą".repeat(121)];
+    let expected = FormatterKeywordsError::TermTooLong {
+        term_prefix: "ą".repeat(24),
+        chars: 121,
+        limit: 120,
+    };
+    assert_eq!(
+        normalize_formatter_keywords(&over_limit),
+        Err(expected.clone())
+    );
+    let refused = FormatterKeywordsContext::seal(Some(&over_limit));
+    assert_eq!(refused.refusal(), Some(&expected));
+    assert!(
+        refused.terms().is_empty(),
+        "121 scalars must not be truncated to 120"
+    );
+    assert!(refused.prompt_suffix().is_none());
+}
+
+/// Kills mutants 12 (keywords-context-8193) and 16 (keywords-context-8191).
+/// This fixed fixture emits exactly 8192 bytes: 61 distinct 120-byte terms,
+/// one 38-byte term, JSON framing and the fixed application instruction/tags.
+/// No fixture size or expected error is derived from a production limit.
+#[test]
+fn formatter_keywords_accept_8192_context_bytes_and_refuse_8193() {
+    let mut at_limit: Vec<String> = (0..61)
+        .map(|index| format!("term-{index:02}-{}", "a".repeat(112)))
+        .collect();
+    at_limit.push("z".repeat(38));
+    assert_eq!(normalize_formatter_keywords(&at_limit).unwrap(), at_limit);
+    let sealed = FormatterKeywordsContext::seal(Some(&at_limit));
+    assert_eq!(sealed.terms(), at_limit.as_slice());
+    assert!(sealed.refusal().is_none());
+    assert_eq!(
+        sealed
+            .prompt_suffix()
+            .expect("boundary context accepted")
+            .len(),
+        8192
+    );
+
+    let mut over_limit = at_limit;
+    over_limit.last_mut().unwrap().push('z');
+    let expected = FormatterKeywordsError::ContextTooLarge {
+        bytes: 8193,
+        limit: 8192,
+    };
+    assert_eq!(
+        normalize_formatter_keywords(&over_limit),
+        Err(expected.clone())
+    );
+    let refused = FormatterKeywordsContext::seal(Some(&over_limit));
+    assert_eq!(refused.refusal(), Some(&expected));
+    assert!(
+        refused.terms().is_empty(),
+        "8193 bytes must not be truncated to fit"
+    );
+    assert!(refused.prompt_suffix().is_none());
+}
