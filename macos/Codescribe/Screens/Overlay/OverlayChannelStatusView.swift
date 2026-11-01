@@ -416,8 +416,15 @@ struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
 struct OverlayAgentControlStyle: ViewModifier {
   var diameter: CGFloat? = nil
   var chrome = true
-  @ViewBuilder
+
   func body(content: Content) -> some View {
+    // Maciej, 2026-11-01: the pills wear one material whether the window is
+    // key or not; only the agent's own activity changes them.
+    styled(content).environment(\.controlActiveState, .key)
+  }
+
+  @ViewBuilder
+  private func styled(_ content: Content) -> some View {
     if !chrome {
       content.buttonStyle(OverlayFlatControlButtonStyle(diameter: diameter ?? 22))
     } else if let diameter {
@@ -532,8 +539,12 @@ struct OverlayAgentAudioControls: View {
   var shared = false
   /// The conversation header's third control; a shared slot has no room for it.
   var panel: OverlayAgentPanelControl? = nil
+  /// A disconnected agent keeps the same glass; only its glyphs fade, so the
+  /// control reads as the agent's state, never the window's.
+  var connected = true
 
   private var speakingNow: Bool { speaking && muted == false }
+  private var glyphOpacity: Double { connected ? 1 : OverlayDisconnectedRowDim.opacity }
 
   /// An open microphone keeps the shared place: that take is still running.
   static func sharedShowsSpeaker(speaking: Bool, muted: Bool?, open: Bool) -> Bool {
@@ -667,6 +678,7 @@ struct OverlayAgentAudioControls: View {
             .frame(
               width: glyphBox, height: glyphBox,
               alignment: chrome ? .center : .trailing)
+            .opacity(glyphOpacity)
         }
         .modifier(
           OverlayAudioControlInk(
@@ -700,6 +712,7 @@ struct OverlayAgentAudioControls: View {
           .frame(
             width: glyphBox, height: glyphBox,
             alignment: chrome ? .center : .leading)
+          .opacity(glyphOpacity)
         }
         // Violet means speech is playing; enabled playback alone rests neutral.
         .modifier(
@@ -726,6 +739,7 @@ struct OverlayAgentAudioControls: View {
             .frame(
               width: glyphBox, height: glyphBox,
               alignment: chrome ? .center : .leading)
+            .opacity(glyphOpacity)
         }
         .modifier(
           OverlayAudioControlInk(
@@ -2037,6 +2051,7 @@ struct OverlayChannelStatusView: View {
               isOpen: conversation.map { $0.id == selectedConversationID } ?? false,
               onOpen: { viewConversation(channel) }))
         }
+        .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
         // Identity owns the full first line. Like message-header actions,
         // audio and More float over the preview's top trailing corner without
         // narrowing its text layout.
@@ -2071,6 +2086,7 @@ struct OverlayChannelStatusView: View {
             rosterRowState(channel, receiptText: receiptText)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
+          .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
           compactAgentActions(for: channel)
         }
       }
@@ -2098,7 +2114,6 @@ struct OverlayChannelStatusView: View {
         targetID: conversation?.id, onHover: onGestureHover)
     )
     .id(conversation?.id ?? "overlay-channel-\(channel.channel)")
-    .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-row-\(channel.channel)")
   }
@@ -2202,7 +2217,8 @@ struct OverlayChannelStatusView: View {
         palette: palette, onMicrophone: { toggle(channel) },
         onPlayback: { onTogglePlayback?(channel.channel) },
         speaking: conversation(for: channel)?.replySpeaking == true,
-        chrome: chrome, panel: panel ? panelControl(for: channel) : nil
+        chrome: chrome, panel: panel ? panelControl(for: channel) : nil,
+        connected: !hasDeadFollower(channel)
       )
       .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
       EmptyView().modifier(
