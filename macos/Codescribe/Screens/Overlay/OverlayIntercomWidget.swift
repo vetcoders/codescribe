@@ -2323,6 +2323,11 @@ private struct OverlayIntercomCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .simultaneousGesture(moveGesture, including: expanded ? .subviews : .all)
+        if current, let conversation, conversation.isDraftSyncSource {
+          EmptyView().modifier(
+            OverlayBroadcastPolicyMenu.intercomRecipients(
+              state: state, conversation: conversation, palette: palette))
+        }
         if current, let conversation, state.hasSynchronizedDraft(conversation.id) {
           OverlayIntercomSyncIndicator(
             state: state, conversationID: conversation.id, palette: palette)
@@ -2629,11 +2634,6 @@ private struct OverlayIntercomConversationBody: View {
       draftSyncChoices: current ? state.draftSyncChoices(for: conversation) : [],
       draftSyncNames: state.draftSyncNames(for: conversation.id),
       draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
-      draftSyncEnabled: current && state.canActivateDraftSync(for: conversation.id),
-      onActivateDraftSync: {
-        guard current else { return }
-        state.activateDraftSync(for: conversation.id)
-      },
       onProseEdit: { edit in
         guard current else { return }
         state.applyConversationProseEdit(edit, for: conversation.id)
@@ -2647,6 +2647,25 @@ private struct OverlayIntercomConversationBody: View {
         state.stopDraftSync(for: conversation.id)
       }
     )
+  }
+}
+
+private extension OverlayBroadcastPolicyMenu {
+  @MainActor
+  static func intercomRecipients(
+    state: OverlayState, conversation: OverlayConversation, palette: OverlayAppearancePalette
+  ) -> Self {
+    Self(
+      members: [], palette: palette, enabled: false,
+      recipients: Recipients(
+        choices: state.draftSyncChoices(for: conversation),
+        active: state.armedDraftSyncConversationID == conversation.id
+          || state.draftSyncNames(for: conversation.id).count > 1,
+        enabled: !state.pendingTextMessages.contains(conversation.id),
+        clearTitle: conversation.channel == "0"
+          ? String(localized: "Send to everyone") : String(localized: "Stop syncing"),
+        onToggle: { state.toggleDraftSync(from: conversation.id, with: $0) },
+        onStop: { state.stopDraftSync(for: conversation.id) }))
   }
 }
 
@@ -3064,6 +3083,11 @@ private struct OverlayIntercomInstanceCard: View {
         OverlayIntercomFocusButton(
           roster: roster, channel: channelRow, palette: palette,
           diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+      }
+      if current, let conversation, conversation.isDraftSyncSource, layout.tier != .icon {
+        EmptyView().modifier(
+          OverlayBroadcastPolicyMenu.intercomRecipients(
+            state: state, conversation: conversation, palette: palette))
       }
       if current, let conversation, state.hasSynchronizedDraft(conversation.id) {
         OverlayIntercomSyncIndicator(

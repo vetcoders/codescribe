@@ -5970,16 +5970,6 @@
         }
       }
     },
-    "Composer actions" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Akcje pola wiadomości"
-          }
-        }
-      }
-    },
     "Configuration error: %@" : {
       "comment" : "Placeholder is an error message",
       "localizations" : {

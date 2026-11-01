@@ -726,13 +726,9 @@ struct DictationOverlayView: View {
                   state.conversationReplies[conversation.id] = OverlayUserReplyReference(
                     message: message)
                 },
-                // Every channel's composer carries the recipient chevron beside
-                // Send with the draft-sync set menu; the "+" stays a plain
-                // attach button (Maciej, 2026-10-31 01:13Z).
                 draftSyncChoices: state.draftSyncChoices(for: conversation),
                 draftSyncNames: state.draftSyncNames(for: conversation.id),
                 draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
-                draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
                 onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
                 onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
                 onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
