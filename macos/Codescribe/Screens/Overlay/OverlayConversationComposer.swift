@@ -1233,6 +1233,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     private var arranging = false
 
     override func tile() {
+      let origin: NSPoint? = rowReleasedForDraft ? contentView.bounds.origin : nil
       super.tile()
       guard rowReleasedForDraft else { return }
       // Text-container padding scrolls away. Keep the actual viewport and its
@@ -1247,6 +1248,13 @@ private struct ConversationMessageField: NSViewRepresentable {
         frame.size.height = max(0, frame.height - inset)
         if isFlipped { frame.origin.y += inset }
         scroller.frame = frame
+      }
+      if let origin {
+        // Super briefly restores the full-height clip and clamps its bottom
+        // offset. Restore the passage after applying the stationary inset.
+        let proposed = NSRect(origin: origin, size: contentView.bounds.size)
+        contentView.scroll(to: contentView.constrainBoundsRect(proposed).origin)
+        reflectScrolledClipView(contentView)
       }
     }
 
