@@ -590,13 +590,16 @@ struct DictationOverlayView: View {
         let conversationEdgeWidth = min(
           geometry.size.width,
           OverlayAgentDrawerLayout.conversationEdgeWidth(textScale: textScale))
+        // A dragged divider may narrow the list down to its rail: past the
+        // fold width it folds there on release.
+        let dragMinimumWidth: CGFloat? = agentDrawerResize == nil ? nil : railWidth
         let drawerWidth =
           conversationFolded && agentDrawerResize == nil
           ? max(0, geometry.size.width - conversationEdgeWidth)
           : OverlayAgentDrawerLayout.drawerWidth(
             textScale: textScale,
             preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
-            windowWidth: geometry.size.width)
+            windowWidth: geometry.size.width, minimumWidth: dragMinimumWidth)
         let canvasWidth = max(
           0,
           geometry.size.width
@@ -611,7 +614,7 @@ struct DictationOverlayView: View {
         let splitDrawerWidth = OverlayAgentDrawerLayout.drawerWidth(
           textScale: textScale,
           preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
-          windowWidth: geometry.size.width)
+          windowWidth: geometry.size.width, minimumWidth: dragMinimumWidth)
         let conversationContentWidth = max(
           0,
           geometry.size.width
@@ -680,7 +683,6 @@ struct DictationOverlayView: View {
                 navigationMenu: conversationHeaderMenu(conversation),
                 navigationActions: conversationHeaderActions(conversation),
                 navigationIndicators: conversationHeaderIndicators(conversation),
-                navigationLeading: columnShown ? AnyView(conversationFoldToggle()) : nil,
                 composerConversation: resolvedTarget,
                 composerAvailable: composesText,
                 composerMicrophoneOpen: state.conversationMicrophoneOpen(conversation),
@@ -752,17 +754,11 @@ struct DictationOverlayView: View {
           .opacity(canvasHidden ? 0 : 1)
           .allowsHitTesting(!canvasHidden)
           .accessibilityHidden(canvasHidden)
-          // Keep the conversation and its reveal edge in the same cell. Its
-          // control stays usable when the conversation itself is folded. The
-          // cell clips the split-width conversation while it slides.
+          // The cell clips the split-width conversation while it slides. A
+          // folded conversation leaves only its edge; the divider beside it
+          // brings it back.
           .frame(width: canvasWidth, height: geometry.size.height, alignment: .leading)
           .clipped()
-          .overlay(alignment: .topLeading) {
-            if columnShown && canvasHidden {
-              conversationEdgeControls(canvasShown: false)
-                .padding(.top, headerHeight + 16)
-            }
-          }
           .animation(
             reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
             value: state.isCollapsed
@@ -776,7 +772,9 @@ struct DictationOverlayView: View {
             .onExitCommand { state.hideAgentSidebar() }
           }
           if railShown {
-            agentRail(maximumHeight: geometry.size.height, width: railWidth)
+            agentRail(
+              maximumHeight: geometry.size.height, width: railWidth,
+              windowWidth: geometry.size.width)
               .transition(.move(edge: .trailing).combined(with: .opacity))
           }
           if transcriptActionsShown {
@@ -939,14 +937,14 @@ struct DictationOverlayView: View {
   }
 
   /// The roster is always a side column, sized by the user and capped to
-  /// leave the conversation readable. Its header owns only its own fold.
+  /// leave the conversation readable. Its divider is its only fold.
   private func agentDrawerColumn(
     maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
   ) -> some View {
-    OverlayObservationScope {
+    let contentMinimum = OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale)
+    return OverlayObservationScope {
       var roster = channelStatusView
       roster.gestureFocusID = state.agentGestureFocusID
-      roster.sidebarControls = agentsSidebarControls(canvasShown: state.agentsLayout != .agents)
       return roster.monitorBody(
         maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
         focusRevision: state.agentDrawerFocusRevision
@@ -955,12 +953,13 @@ struct DictationOverlayView: View {
     .padding(.top, headerHeight + 8)
     .padding(.horizontal, 8)
     .padding(.bottom, 16)
-    .frame(width: width)
+    .frame(width: max(width, contentMinimum))
     // The list lays out at its new width at once and only the column's frame
     // slides over it, anchored to the window edge: a row never re-wraps its
-    // title and preview inside a half-way frame (Founder, 2026-10-26).
+    // title and preview inside a half-way frame. A
+    // divider dragged toward the rail keeps the rows' leading pills in view.
     .animation(nil, value: width)
-    .frame(width: width, alignment: .trailing)
+    .frame(width: width, alignment: width < contentMinimum ? .leading : .trailing)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()
     .background { OverlayMenuCursorRegion() }
@@ -978,53 +977,14 @@ struct DictationOverlayView: View {
     }
   }
 
-  /// A real slot on the conversation's own edge while the conversation is
-  /// folded. Beside a shown conversation the toggle rides on its label.
-  private func conversationEdgeControls(canvasShown: Bool) -> some View {
-    let controls = agentsSidebarControls(canvasShown: canvasShown)
-    return HStack(spacing: 0) {
-      OverlaySidebarToggleButton(
-        symbol: "sidebar.left", title: controls.canvasTitle,
-        identifier: "overlay-agent-sidebar-toggle-canvas", palette: palette,
-        textScale: textScale, action: controls.onToggleCanvas)
-      Spacer(minLength: 0)
-      if canvasShown {
-        Color.clear
-          .frame(width: 22 * textScale, height: 22 * textScale)
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
-      }
-    }
-    .padding(.horizontal, 8 * textScale)
-  }
-
-  /// The conversation's fold on its label's glass: the row above the label
-  /// is gone (Maciej, 2026-11-01).
-  private func conversationFoldToggle() -> some View {
-    let controls = agentsSidebarControls(canvasShown: true)
-    return OverlaySidebarToggleButton(
-      symbol: "sidebar.left", title: controls.canvasTitle,
-      identifier: "overlay-agent-sidebar-toggle-canvas", palette: palette,
-      textScale: textScale, action: controls.onToggleCanvas)
-  }
-
-  private func agentsSidebarControls(canvasShown: Bool) -> OverlayAgentsSidebarControls {
-    OverlayAgentsSidebarControls(
-      canvasShown: canvasShown,
-      canvasIsTranscription: state.windowContentSurface == .transcription,
-      onToggleCanvas: {
-        if canvasShown {
-          state.hideAgentsCanvas()
-        } else {
-          state.showAgentsCanvas()
-        }
-      },
-      onFoldList: { state.foldAgentList() })
-  }
-
-  /// Preserve the existing explicit divider gesture: crossing the conversation
-  /// floor folds that pane, while ordinary window resizing keeps the split.
+  /// The divider folds both panes; no button does. Crossing the conversation
+  /// floor folds the conversation; released under the rail fold width, the
+  /// list folds to its pills. Ordinary window resizing keeps the split.
   private func commitAgentDrawerWidth(_ preferred: CGFloat, windowWidth: CGFloat) {
+    if preferred * textScale < OverlayAgentDrawerLayout.railFoldWidth(textScale: textScale) {
+      state.foldAgentList()
+      return
+    }
     guard
       let width = OverlayAgentDrawerLayout.rememberedWidth(
         textScale: textScale, preferredWidth: preferred, windowWidth: windowWidth)
@@ -1036,16 +996,15 @@ struct DictationOverlayView: View {
     if state.agentsLayout == .agents { state.setAgentsLayout(.split) }
   }
 
-  /// The folded list beside the conversation: its pills, under the
-  /// `sidebar.right` that unfolds it, where the list's own button was.
-  private func agentRail(maximumHeight: CGFloat, width: CGFloat) -> some View {
+  /// The folded list beside the conversation: its pills, the minimal view of
+  /// the list. Its divider, dragged toward the conversation, unfolds it.
+  private func agentRail(
+    maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
+  ) -> some View {
     OverlayObservationScope {
       var roster = channelStatusView
       roster.gestureFocusID = state.agentGestureFocusID
-      return roster.railBody(
-        maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
-        onUnfold: { state.unfoldAgentList() }
-      )
+      return roster.railBody(maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16))
     }
     .padding(.top, headerHeight + 8)
     .padding(.bottom, 16)
@@ -1057,12 +1016,7 @@ struct DictationOverlayView: View {
     .clipped()
     .background { OverlayMenuCursorRegion() }
     .overlay(alignment: .leading) {
-      Rectangle()
-        .fill(palette.border.color)
-        .frame(width: 1 / max(displayScale, 1))
-        .padding(.top, headerHeight)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+      agentRailUnfoldHandle(width: width, windowWidth: windowWidth)
     }
     .accessibilityIdentifier("overlay-agent-rail")
     .background {
@@ -1073,6 +1027,42 @@ struct DictationOverlayView: View {
       }
       .allowsHitTesting(false)
     }
+  }
+
+  /// The rail keeps the list's divider. Dragged toward the conversation and
+  /// released, it unfolds the list; dragged past the rows' minimum, the list
+  /// opens at the dragged width.
+  private func agentRailUnfoldHandle(width: CGFloat, windowWidth: CGFloat) -> some View {
+    Rectangle()
+      .fill(palette.border.color)
+      .frame(width: 1 / max(displayScale, 1))
+      .frame(width: 10, alignment: .leading)
+      .contentShape(Rectangle())
+      .background { OverlayMenuCursorRegion(cursor: .resizeLeftRight) }
+      .gesture(
+        DragGesture(minimumDistance: 2, coordinateSpace: .named("overlay-canvas"))
+          .onEnded { value in
+            guard -value.translation.width >= OverlayAgentDrawerLayout.railUnfoldDrag else {
+              return
+            }
+            let dragged = (width - value.translation.width) / textScale
+            if dragged * textScale
+              >= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale),
+              let remembered = OverlayAgentDrawerLayout.rememberedWidth(
+                textScale: textScale, preferredWidth: dragged, windowWidth: windowWidth)
+            {
+              preferredAgentDrawerWidth = remembered
+            }
+            state.unfoldAgentList()
+          }
+      )
+      .accessibilityElement()
+      .accessibilityLabel(String(localized: "Resize agents sidebar"))
+      .accessibilityAdjustableAction { direction in
+        if direction == .increment { state.unfoldAgentList() }
+      }
+      .accessibilityIdentifier("overlay-agent-rail-resize")
+      .padding(.top, headerHeight)
   }
 
   private func agentDrawerResizeHandle(width: CGFloat, windowWidth: CGFloat) -> some View {
@@ -1108,11 +1098,14 @@ struct DictationOverlayView: View {
         // Narrowing a roster that covers the window leaves the snap zone at
         // once; a 20-point step would stay inside it.
         let fills = state.agentsLayout == .agents
+        // At the rows' minimum one more step down folds the list to its rail.
+        let atMinimum =
+          width <= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale) + 0.5
         let next =
           fills && step < 0
           ? OverlayAgentDrawerLayout.widestSplitWidth(
             textScale: textScale, windowWidth: windowWidth)
-          : width / textScale + step
+          : atMinimum && step < 0 ? 0 : width / textScale + step
         commitAgentDrawerWidth(next, windowWidth: windowWidth)
       }
       .accessibilityIdentifier("overlay-agent-sidebar-resize")

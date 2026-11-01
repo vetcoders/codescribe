@@ -352,9 +352,9 @@ struct OverlayConversationComposer: View {
   /// The send button's chevron: the recipient set of a source conversation
   /// (the inbox builds it, 0 · All narrows the broadcast to it), the same
   /// draft-sync toggles the roster chain flips. Lit while a set is chosen.
-  /// Maciej, 2026-11-01: one press opens the picker, several agents are
-  /// ticked in it, and closing it returns to the composer. A menu closes on
-  /// every pick, so the set lives in a popover instead.
+  /// One press opens the picker, several agents are ticked in it, and
+  /// closing it returns to the composer. A menu closes on every pick, so the
+  /// set lives in a popover instead.
   private func recipientMenu(_ corners: ConversationComposerCornerLayout) -> some View {
     let sendGlyph = min(controlGlyphSize, corners.glyphSize)
     Button {

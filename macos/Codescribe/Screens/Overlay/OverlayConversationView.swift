@@ -155,9 +155,6 @@ struct OverlayConversationView: View {
   /// Optional controls for the horizontal bus window only.
   var navigationActions: AnyView? = nil
   var navigationIndicators: AnyView? = nil
-  /// Set before the name on the label's glass: the docked window's
-  /// conversation fold, which no longer owns a row above the label.
-  var navigationLeading: AnyView? = nil
   /// The recipient may differ; draft state always belongs to `conversation`.
   var composerConversation: OverlayConversation? = nil
   var composerAvailable = true
@@ -300,6 +297,11 @@ struct OverlayConversationView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
           if showsComposer && presentation == .standard {
             composer
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                composerHeight = $0
+              }
           }
         }
         .overlay(alignment: .bottom) {
@@ -321,7 +323,9 @@ struct OverlayConversationView: View {
               )
               .accessibilityHint(Text("Jump to the current reply"))
               .accessibilityIdentifier("overlay-conversation-jump-to-current")
-              .padding(.bottom, (presentation == .intercom ? visibleComposerHeight : 0) + 10)
+              // The overlay spans the composer in both presentations: the
+              // button rests just above it, never on it.
+              .padding(.bottom, visibleComposerHeight + 10)
               .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
@@ -566,10 +570,6 @@ struct OverlayConversationView: View {
       .accessibilityIdentifier("overlay-conversation-navigation")
     } else {
       HStack(alignment: .center, spacing: 8) {
-        if let navigationLeading {
-          navigationLeading
-            .fixedSize()
-        }
         VStack(alignment: .leading, spacing: 2) {
           HStack(spacing: 6) {
             Group {
@@ -837,7 +837,7 @@ struct OverlayConversationView: View {
     // under them and scroll through the glass, the way they do under the composer.
     .contentMargins(.top, topInset + visibleNavigationHeight)
     // Nothing shows above the label and rows fade out under its glass, so no
-    // text peeks between the window header and the label (Maciej, 2026-11-01).
+    // text peeks between the window header and the label.
     .mask { Self.topFadeMask(clearHeight: topInset, fadeHeight: visibleNavigationHeight) }
     if #available(macOS 26.0, *) {
       // Navigation reserves actual space outside the scrolling viewport.
