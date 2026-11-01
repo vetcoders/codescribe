@@ -1937,4 +1937,146 @@ mod tests {
         assert_eq!(filter.push(" continues."), Some(" continues.".into()));
         assert_eq!(filter.finish(), None);
     }
+
+    async fn m3a_ticks<F: std::future::Future>(future: F) -> Option<F::Output> {
+        use std::task::Poll;
+        tokio::pin!(future);
+        for _ in 0..10_000 {
+            let polled = std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await;
+            if let Poll::Ready(value) = polled { return Some(value); }
+            tokio::task::yield_now().await;
+        }
+        None
+    }
+
+    fn m3a_schema_tools() -> [ToolDefinition; 2] {
+        [
+            ToolDefinition {
+                name: "choose_colour".into(), description: "a formal string choice".into(),
+                input_schema: json!({"type":"object","properties":{"colour":{"type":"string","enum":["red","blue"]}},"required":["colour"]}),
+            },
+            ToolDefinition {
+                name: "mcp__wire__numeric".into(), description: "cannot be a Gemini declaration".into(),
+                input_schema: json!({"type":"object","properties":{"n":{"type":"integer","enum":[7,9]}}}),
+            },
+        ]
+    }
+
+    /// Fix 71ad0e25a / e3acfb6de; kills M3a-15, M3a-17, M3a-18, M3a-19, M3a-20, M3a-23, M3a-24.
+    /// Inspect the actual submitted JSON, real lazy registry and UI warning.
+    #[tokio::test(start_paused = true)]
+    async fn m3a_google_wire_keeps_valid_enum_and_gateway_but_skips_bad_declaration() {
+        let mut server = mockito::Server::new_async().await;
+        let submitted = Arc::new(Mutex::new(None));
+        let captured = Arc::clone(&submitted);
+        let endpoint = server.mock("POST", "/v1beta/models/gemini-test:streamGenerateContent?alt=sse")
+            .match_request(move |request| {
+                *captured.lock().unwrap() = Some(serde_json::from_slice::<Value>(request.body().unwrap()).unwrap());
+                true
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(json!({"candidates":[{"content":{"parts":[{"text":"wire-exam"}]},"finishReason":"STOP"}]})))
+            .expect(1).create_async().await;
+        let mut registry = ToolRegistry::new();
+        registry.register_with_policy(
+            ToolDefinition {
+                name: "mcp__vet__numeric".into(), description: "upstream numeric choice".into(),
+                input_schema: json!({"type":"object","properties":{"n":{"type":"integer","enum":[7,9]}}}),
+            },
+            Box::new(|_| Box::pin(async { Vec::new() })),
+            ToolExecutionPolicy {
+                origin: ToolOrigin::Mcp { server: "vet".into(), upstream_tool: "numeric".into() },
+                risk: ToolRisk::ReadOnly, requires_approval: false,
+            }, None,
+        ).unwrap();
+        let (ui_tx, mut ui_rx) = mpsc::channel(8);
+        let host = AgentProviderHost {
+            tools: Arc::new(registry), ui_tx, approval_handler: None,
+            approval_timeout: Duration::from_secs(1),
+            session_id: "m3a-wire".into(), thread_id: "m3a-wire".into(),
+        };
+        let mut definitions = host.tools.wire_definitions();
+        definitions.extend(m3a_schema_tools());
+        let mut provider = GoogleProvider::from_configuration(
+            format!("{}/v1beta", server.url()), "gemini-test".into(), "exam-key".into(), &timing(),
+        ).unwrap();
+        provider.client = reqwest::Client::builder().no_proxy().build().unwrap();
+        provider.bind_host(host.clone());
+        let received = m3a_ticks(events(&provider, &[user("wire exam")], &definitions)).await.expect("loopback settled without time");
+        assert!(received.iter().any(|e| matches!(e, AgentEvent::ResponseDone { clean: true, .. })), "{received:?}");
+        assert!(!received.iter().any(|e| matches!(e, AgentEvent::Error(_))), "{received:?}");
+        endpoint.assert_async().await;
+        let body = submitted.lock().unwrap().take().expect("actual HTTP payload captured");
+        let declarations = body["tools"][0]["functionDeclarations"].as_array().unwrap();
+        let names = declarations.iter().map(|d| d["name"].as_str().unwrap()).collect::<Vec<_>>();
+        assert_eq!(names, ["mcp_search_tools", "call_mcp_tool", "choose_colour"]);
+        assert_eq!(declarations[2]["parameters"]["properties"]["colour"]["enum"], json!(["red","blue"]));
+        assert_eq!(declarations[2]["parameters"]["required"], json!(["colour"]));
+        let catalogue = declarations[0]["description"].as_str().unwrap();
+        assert!(catalogue.contains("vet"), "{catalogue}");
+        assert!(catalogue.contains("mcp__wire__numeric"), "unavailable wire declaration must be named: {catalogue}");
+        let warning = body["systemInstruction"].to_string();
+        for literal in ["mcp__wire__numeric", "wire", "numeric", "enum"] {
+            assert!(warning.contains(literal), "{warning}");
+        }
+        // Upstream schemas are gateway data, not Gemini declarations. They
+        // must remain searchable under the canonical registry (e3acfb6de).
+        let entries = host.tools.mcp_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].registered_name, "mcp__vet__numeric");
+        assert_eq!(entries[0].input_schema["properties"]["n"]["enum"], json!([7,9]));
+        assert!(format!("{:?}", host.tools.search_mcp_tools(&json!({"query":"numeric"}))).contains("mcp__vet__numeric"));
+        match ui_rx.try_recv().expect("one visible skip warning") {
+            AgentUiEvent::ToolResult { name, id, summary, is_error } => {
+                assert_eq!(name, "mcp__wire__numeric");
+                assert_eq!(id, "google_schema_skip_mcp__wire__numeric");
+                assert!(is_error);
+                assert!(summary.contains("mcp__wire__numeric") && summary.contains("enum"));
+            }
+            event => panic!("skip warning used a different UI event: {event:?}"),
+        }
+        assert!(matches!(ui_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    /// Fix f9ab3524e; kills M3a-16, including the ghost-warning race after cancel.
+    #[tokio::test(start_paused = true)]
+    async fn m3a_google_cancel_emits_no_warning_when_ui_capacity_returns() {
+        let provider = GoogleProvider::from_configuration(
+            "http://127.0.0.1:9/v1beta".into(), "gemini-test".into(), "exam-key".into(), &timing(),
+        ).unwrap();
+        let (ui_tx, mut ui_rx) = mpsc::channel(1);
+        ui_tx.try_send(AgentUiEvent::ToolResult {
+            name: "occupied".into(), id: "occupied".into(), summary: "occupied".into(), is_error: false,
+        }).unwrap();
+        provider.bind_host(AgentProviderHost {
+            tools: Arc::new(ToolRegistry::new()), ui_tx, approval_handler: None,
+            approval_timeout: Duration::from_secs(1),
+            session_id: "m3a-cancel".into(), thread_id: "m3a-cancel".into(),
+        });
+        let rx = provider.stream(&[user("cancel exam")], &m3a_schema_tools(), &StreamOptions::default()).await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(provider.turn_lock.try_lock().is_err());
+        assert_eq!(ui_rx.len(), 1);
+        let before = tokio::time::Instant::now();
+        drop(rx);
+        // Cancellation and send capacity are now ready together. The biased
+        // cancellation branch must win, not enqueue a result for a dead turn.
+        assert!(matches!(ui_rx.try_recv().unwrap(), AgentUiEvent::ToolResult { name, .. } if name == "occupied"));
+        let guard = m3a_ticks(provider.turn_lock.lock()).await.expect("cancelled warning retained turn_guard");
+        assert!(matches!(ui_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)), "cancelled turn emitted a skip warning");
+        assert_eq!(tokio::time::Instant::now(), before);
+        drop(guard);
+    }
+
+    /// Fix 71ad0e25a; kills M3a-21 and M3a-22 with literal empty/all-invalid lists.
+    #[test]
+    fn m3a_google_empty_input_is_legal_but_nonempty_all_invalid_refuses() {
+        let (body, skipped) = build_request_with_host(&[user("no tools")], &[], &StreamOptions::default(), &[], None).unwrap();
+        assert!(skipped.is_empty());
+        assert!(body.get("tools").is_none());
+        let invalid = m3a_schema_tools().into_iter().nth(1).unwrap();
+        let error = build_request_with_host(&[user("bad tools")], &[invalid], &StreamOptions::default(), &[], None).unwrap_err().to_string();
+        assert!(error.contains("rejected all 1 requested tool(s)"), "{error}");
+        assert!(error.contains("mcp__wire__numeric"), "{error}");
+    }
 }
