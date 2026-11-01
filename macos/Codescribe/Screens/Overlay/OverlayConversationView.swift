@@ -830,6 +830,10 @@ struct OverlayConversationView: View {
       }
       .csAutohidingScrollers()
     }
+    // Keep the existing viewport and resting insets, but let moving rows reach
+    // the pane's outer clip behind the header, label and composer. Their glass
+    // samples the rows; the gaps between those surfaces stay fully sharp.
+    .scrollClipDisabled()
     .contentMargins(
       .bottom,
       presentation == .intercom && showsComposer
@@ -838,28 +842,14 @@ struct OverlayConversationView: View {
     // The window inset and the header card's height: the newest rows rest
     // under them and scroll through the glass, the way they do under the composer.
     .contentMargins(.top, topInset + visibleNavigationHeight)
-    // Nothing shows above the label and rows fade out under its glass, so no
-    // text peeks between the window header and the label.
-    .mask { Self.topFadeMask(clearHeight: topInset, fadeHeight: visibleNavigationHeight) }
     if #available(macOS 26.0, *) {
-      // Navigation reserves actual space outside the scrolling viewport.
-      // No empty safe-area bar or translucent fade competes with that bound.
+      // Only the actual glass surfaces soften the rows. A viewport-wide edge
+      // treatment would also blur the clear gaps between floating controls.
       list
         .scrollEdgeEffectHidden(true, for: .top)
-        // The composer's glass sits on the floor with nothing pinned behind it.
         .scrollEdgeEffectHidden(true, for: .bottom)
     } else {
       list
-    }
-  }
-
-  /// Clear above the label, a fade under its glass, opaque below.
-  static func topFadeMask(clearHeight: CGFloat, fadeHeight: CGFloat) -> some View {
-    VStack(spacing: 0) {
-      Color.clear.frame(height: clearHeight)
-      LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-        .frame(height: fadeHeight)
-      Color.black
     }
   }
 

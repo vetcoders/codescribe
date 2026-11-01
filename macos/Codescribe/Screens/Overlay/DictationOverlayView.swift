@@ -495,7 +495,7 @@ struct DictationOverlayView: View {
     OverlayCanvasSurface(palette: palette) {
       // The rail reads the live transcript (intents, versions, history
       // refusal). Scoped, a capture tick re-renders the rail, not the root.
-      canvasStack(
+      overlayGlassContainer(canvasStack(
         OverlayObservationScope {
           OverlayIntentRail(
             phase: state.statusText,
@@ -516,7 +516,7 @@ struct DictationOverlayView: View {
             onRetranscribe: { state.retranscribe(pass: $0) },
             onFormatOnce: { state.formatTranscript(at: $0) }
           )
-        })
+        }))
     }
     .coordinateSpace(name: "overlay-canvas")
     .csFocusPolicy()
@@ -556,6 +556,17 @@ struct DictationOverlayView: View {
     }
     .onChange(of: state.channelMapInHeader) { _, _ in
       state.channelMapPreferenceChanged()
+    }
+  }
+
+  @ViewBuilder
+  private func overlayGlassContainer<Content: View>(_ content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      // One sampling region for the header and both panes' floating controls.
+      // Zero merge distance keeps the existing clear gaps between them open.
+      GlassEffectContainer(spacing: 0) { content }
+    } else {
+      content
     }
   }
 

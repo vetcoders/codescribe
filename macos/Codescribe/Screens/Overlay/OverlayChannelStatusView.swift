@@ -3194,9 +3194,9 @@ struct ChannelRosterContent<Content: View>: View {
 
 /// A roster hugs its measured content but never grows past the canvas budget.
 /// Both measurements are SwiftUI points; Retina changes pixel density, not layout.
-/// The header stays outside the scroll viewport so the channel count is always
-/// visible. The focus state is the docked column's name-pill channel: bumping
-/// `focusRevision` moves keyboard focus to the selected conversation's row.
+/// The header keeps its layout slot while scrolling rows can paint behind its
+/// glass, up to the column's outer clip. The focus state is the docked column's
+/// name-pill channel: bumping `focusRevision` moves keyboard focus to the selected row.
 /// `scrollTargetID` is the middle-click chooser's focus, kept in view.
 private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View>: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -3265,17 +3265,12 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
               }
               .csAutohidingScrollers()
           }
+          // Match the conversation: retain the current geometry while rows
+          // pass under the pinned card and window header, and stay sharp in
+          // the gaps. The full-height column owns the final clipping boundary.
+          .scrollClipDisabled()
           .contentMargins(.top, pinnedHeight + 8, for: .scrollContent)
           .frame(height: viewportHeight + pinnedHeight + 8)
-          .clipped()
-          // Rows fade out under the card instead of showing through it.
-          .mask {
-            VStack(spacing: 0) {
-              LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                .frame(height: pinnedHeight + 8)
-              Color.black
-            }
-          }
           .accessibilityIdentifier("overlay-agent-monitor-scroll")
           .overlay(alignment: .top) {
             pinnedBuilder($rowFocus)
