@@ -113,9 +113,28 @@ struct OverlayConversationComposer: View {
             RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
               .fill(palette.desktopBackground.color)
           }
+          if draftSyncActive {
+            RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+              .fill(
+                palette.agentAccent.color.opacity(
+                  reduceTransparency
+                    ? ComposerControlMetrics.syncSurfaceTintReducedTransparencyOpacity
+                    : ComposerControlMetrics.syncSurfaceTintOpacity))
+          }
         }
         .modifier(
-          OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency))
+          OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
+        )
+        .overlay {
+          if draftSyncActive {
+            RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+              .strokeBorder(
+                palette.agentAccent.color.opacity(ComposerControlMetrics.syncSurfaceBorderOpacity),
+                lineWidth: 1
+              )
+              .allowsHitTesting(false)
+          }
+        }
       if microphoneHint.visible {
         Text(verbatim: ComposerCaretOwnership.microphoneHint)
           .font(.system(size: 10 * textScale, weight: .medium))
@@ -332,7 +351,7 @@ struct OverlayConversationComposer: View {
       }
     } label: {
       Image(systemName: "chevron.down")
-        .font(.system(size: min(controlGlyphSize, corners.glyphSize) * 0.7, weight: .bold))
+        .font(.system(size: min(controlGlyphSize, corners.glyphSize) * 0.55, weight: .semibold))
         .frame(width: corners.recipientWidth, height: corners.actionHeight)
         .contentShape(Rectangle())
     }
@@ -345,10 +364,16 @@ struct OverlayConversationComposer: View {
       hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
     )
     .disabled(sending)
-    .overlayFastHint(String(localized: "Choose recipients"), palette: palette)
+    .overlayFastHint(recipientMenuHint, palette: palette)
     .accessibilityLabel(Text("Choose recipients"))
     .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
     .accessibilityIdentifier("overlay-conversation-recipients")
+  }
+
+  private var recipientMenuHint: String {
+    let base = String(localized: "Choose recipients")
+    guard draftSyncActive else { return base }
+    return base + " · " + draftSyncAccessibilityValue
   }
 
   private func plusGlyph(_ corners: ConversationComposerCornerLayout) -> some View {
@@ -590,8 +615,8 @@ private struct ConversationComposerCornerLayout: Equatable {
     // widens the leading corner.
     let leadingCount: CGFloat = 1
     _ = showsSync
-    // The recipient chevron takes just over half an action beside Send.
-    let recipientShare: CGFloat = showsRecipientMenu ? 0.6 : 0
+    // The recipient chevron is smaller than an action beside Send.
+    let recipientShare: CGFloat = showsRecipientMenu ? 0.45 : 0
     let trailingCount: CGFloat = (showsMicrophone ? 2 : 1) + recipientShare
     let count = leadingCount + trailingCount
     clearance = min(4, max(0, width / 24))
@@ -824,8 +849,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     scroll.borderType = .noBorder
     scroll.maximumEditorHeight =
       maximumEditorHeight
-      ?? ComposerControlMetrics.conversationEditorMaximumHeight * fontSize
-      / ComposerControlMetrics.textSize
+      ?? ComposerControlMetrics.conversationEditorMaximumHeight(
+        lineHeight: corners.lineHeight, actionHeight: corners.actionHeight)
     scroll.corners = corners
     let editor = MessageTextView()
     editor.wantsLayer = true
@@ -875,8 +900,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     context.coordinator.parent = self
     (scroll as? MessageScrollView)?.maximumEditorHeight =
       maximumEditorHeight
-      ?? ComposerControlMetrics.conversationEditorMaximumHeight * fontSize
-      / ComposerControlMetrics.textSize
+      ?? ComposerControlMetrics.conversationEditorMaximumHeight(
+        lineHeight: corners.lineHeight, actionHeight: corners.actionHeight)
     (scroll as? MessageScrollView)?.onHeightChange = { context.coordinator.updateHeight($0) }
     (scroll as? MessageScrollView)?.corners = corners
     guard let editor = scroll.documentView as? MessageTextView else { return }
@@ -1229,7 +1254,8 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     private func caretRect(_ range: NSRange, in editor: NSTextView) -> NSRect? {
       guard let window = editor.window, range.location != NSNotFound else { return nil }
-      let index = min(range.location, editor.textStorage?.length ?? 0)
+      let length = editor.textStorage?.length ?? 0
+      let index = min(range.location, length)
       let screenRect = editor.firstRect(
         forCharacterRange: NSRange(location: index, length: 0), actualRange: nil)
       // An insertion rectangle may have zero width and still have a visible
@@ -1237,7 +1263,33 @@ private struct ConversationMessageField: NSViewRepresentable {
       guard screenRect.height > 0, screenRect.origin.x.isFinite, screenRect.origin.y.isFinite,
         screenRect.height.isFinite
       else { return nil }
-      return editor.convert(window.convertFromScreen(screenRect), from: nil)
+      var rect = editor.convert(window.convertFromScreen(screenRect), from: nil)
+      if let textLayout = editor.layoutManager, let container = editor.textContainer {
+        textLayout.ensureLayout(for: container)
+        let origin = editor.textContainerOrigin
+        let lineRect: NSRect?
+        if index == length, textLayout.extraLineFragmentTextContainer === container {
+          lineRect = textLayout.extraLineFragmentUsedRect.offsetBy(dx: origin.x, dy: origin.y)
+        } else if length > 0 {
+          let charIndex = min(index, length - 1)
+          let glyphIndex = textLayout.glyphIndexForCharacter(at: charIndex)
+          if glyphIndex < textLayout.numberOfGlyphs {
+            lineRect = textLayout.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+              .offsetBy(dx: origin.x, dy: origin.y)
+          } else {
+            lineRect = nil
+          }
+        } else {
+          lineRect = nil
+        }
+        if let lineRect, lineRect.height > 0 {
+          let top = min(rect.minY, lineRect.minY)
+          let bottom = max(rect.maxY, lineRect.maxY)
+          rect.origin.y = top
+          rect.size.height = bottom - top
+        }
+      }
+      return rect
     }
 
     func revealUnobscuredRange(_ range: NSRange, in editor: NSTextView) {
@@ -1339,12 +1391,7 @@ private struct ConversationMessageField: NSViewRepresentable {
           // A released row needs at least one readable native line ABOVE it,
           // even when an attachment or a small height budget reduces the cap.
           let releasedMinimum = minimum + corners.actionHeight
-          let limit = max(
-            releasedMinimum,
-            ComposerTextLayout.resolve(
-              contentHeight: .greatestFiniteMagnitude, lineHeight: corners.lineHeight,
-              maximumHeight: maximumEditorHeight
-            ).height)
+          let limit = max(releasedMinimum, maximumEditorHeight)
           candidate = min(limit, max(releasedMinimum, measuredHeight))
         } else {
           candidate = minimum

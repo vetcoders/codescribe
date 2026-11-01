@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 
 /// Maciej (2026-10-16): no outline on the bubble's agent name — hovering
@@ -111,6 +112,7 @@ struct OverlayConversationMessageContent: View {
 struct OverlayConversationView: View {
   @Environment(\.displayScale) private var displayScale
   @Environment(\.csTextScale) private var textScale
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   let conversation: OverlayConversation
   let palette: OverlayAppearancePalette
@@ -211,6 +213,7 @@ struct OverlayConversationView: View {
   /// row above someone reading; "Show earlier" moves it back a window.
   @State private var windowStartID: String?
   @State private var windowConversationID: String?
+  @State private var sendErrorNotice = ComposerSendErrorNoticeState()
 
   var onDeliveryControl:
     (OverlayDeliveryControl, OverlayConversationMessage, OverlayConversationOwner?, String?)
@@ -458,19 +461,43 @@ struct OverlayConversationView: View {
           onActivateDraftSync: onActivateDraftSync,
           onProseEdit: onProseEdit,
           onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync,
-          recipientsOnSend: conversation.isDraftSyncSource,
-          clearRecipientsTitle: conversation.isHumanInbox
-            ? String(localized: "Stop syncing") : String(localized: "Send to everyone")
+          recipientsOnSend: true,
+          clearRecipientsTitle: (composerConversation ?? conversation).channel == "0"
+            ? String(localized: "Send to everyone") : String(localized: "Stop syncing")
         )
         // A reused native coordinator must never redirect an old owner's
         // proposal or undo history into a different conversation's binding.
         .id([conversation.id, conversation.owner?.id ?? ""])
-        if let sendError { composerError(sendError) }
+        if let transientSendError = sendErrorNotice.message {
+          composerError(transientSendError)
+            .transition(.opacity)
+            .accessibilityIdentifier("overlay-conversation-send-error")
+        }
         if let playbackError {
           composerError(playbackError)
             .accessibilityIdentifier("overlay-conversation-playback-error")
         }
       }
+    }
+    .onAppear {
+      sendErrorNotice.reconcile(
+        sendError: sendError, sending: sending, reduceMotion: reduceMotion)
+    }
+    .onChange(of: sendError) { _, newValue in
+      sendErrorNotice.reconcile(
+        sendError: newValue, sending: sending, reduceMotion: reduceMotion)
+    }
+    .onChange(of: sending) { wasSending, isSending in
+      if isSending {
+        sendErrorNotice.dismiss(reduceMotion: reduceMotion)
+      } else if wasSending {
+        sendErrorNotice.reconcile(
+          sendError: sendError, sending: false, reduceMotion: reduceMotion)
+      }
+    }
+    .onChange(of: conversation.id) { _, _ in
+      sendErrorNotice.reconcile(
+        sendError: sendError, sending: sending, reduceMotion: reduceMotion)
     }
     .padding(.horizontal, contentInset)
     .padding(.top, 6)
@@ -1293,5 +1320,48 @@ enum HeldDeliveryCopy {
   static func countdown(seconds: Int, bundle: Bundle = .main) -> String {
     let format = bundle.localizedString(forKey: "Sending in %lld s", value: nil, table: nil)
     return String(format: format, Int64(max(0, seconds)))
+  }
+}
+
+/// Transient send-error notice under a conversation composer: appears when a
+/// send or partial linked send fails, then dismisses itself after a short
+/// display window instead of lingering until the next send.
+@MainActor @Observable
+final class ComposerSendErrorNoticeState {
+  static let defaultDuration: Duration = .seconds(4)
+  private(set) var message: String?
+  @ObservationIgnored private var dismissal: Task<Void, Never>?
+
+  func reconcile(
+    sendError: String?, sending: Bool, reduceMotion: Bool = false,
+    duration: Duration = ComposerSendErrorNoticeState.defaultDuration
+  ) {
+    guard !sending, let sendError, !sendError.isEmpty else {
+      dismiss(reduceMotion: reduceMotion)
+      return
+    }
+    show(sendError, reduceMotion: reduceMotion, duration: duration)
+  }
+
+  func show(
+    _ text: String, reduceMotion: Bool = false,
+    duration: Duration = ComposerSendErrorNoticeState.defaultDuration
+  ) {
+    dismissal?.cancel()
+    let animation: Animation? = reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover)
+    withAnimation(animation) { message = text }
+    dismissal = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: duration)
+      guard !Task.isCancelled else { return }
+      withAnimation(animation) { self?.message = nil }
+    }
+  }
+
+  func dismiss(reduceMotion: Bool = false) {
+    dismissal?.cancel()
+    dismissal = nil
+    guard message != nil else { return }
+    let animation: Animation? = reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover)
+    withAnimation(animation) { message = nil }
   }
 }

@@ -510,6 +510,7 @@ private final class AudioControlsFixture {
       contentRect: NSRect(x: -10000, y: -10000, width: 240, height: 110), styleMask: .borderless,
       backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
+    window.colorSpace = .sRGB
     window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
     window.contentView = host
     host.layoutSubtreeIfNeeded()
@@ -547,9 +548,9 @@ private final class AudioControlsFixture {
     host.layoutSubtreeIfNeeded()
     let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
     host.cacheDisplay(in: host.bounds, to: bitmap)
-    let corner = try XCTUnwrap(bitmap.colorAt(x: 2, y: 2))
+    let corner = try XCTUnwrap(pixelToken(atX: 2, y: 2, in: bitmap))
     XCTAssertLessThanOrEqual(
-      channelDelta(token(corner), sheet), OverlayHoverCursorContractTests.pinTolerance,
+      channelDelta(corner, sheet), OverlayHoverCursorContractTests.pinTolerance,
       "fixture: the sheet did not render")
     return bitmap
   }
@@ -565,8 +566,7 @@ private final class AudioControlsFixture {
     var covered = 0
     for y in Int(top * scaleY)..<Int((top + rect.height) * scaleY) {
       for x in Int(rect.minX * scaleX)..<Int(rect.maxX * scaleX) {
-        guard let color = bitmap.colorAt(x: x, y: y) else { continue }
-        let pixel = token(color)
+        guard let pixel = pixelToken(atX: x, y: y, in: bitmap) else { continue }
         let delta = channelDelta(pixel, sheet)
         if delta > 0.08 { covered += 1 }
         if delta > strongest {
@@ -579,6 +579,14 @@ private final class AudioControlsFixture {
       throw ContractFixtureError(description: "no glyph rendered in \(square)")
     }
     return ink
+  }
+
+  private func pixelToken(atX x: Int, y: Int, in bitmap: NSBitmapImageRep) -> OverlayColorToken? {
+    guard let raw = bitmap.colorAt(x: x, y: y) else { return nil }
+    let components: [CGFloat] = [
+      raw.redComponent, raw.greenComponent, raw.blueComponent, raw.alphaComponent,
+    ]
+    return token(NSColor(colorSpace: bitmap.colorSpace, components: components, count: 4))
   }
 }
 

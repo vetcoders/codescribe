@@ -346,11 +346,10 @@ final class OverlayRecipientRoutingTests: XCTestCase {
     ).split(whereSeparator: \.isWhitespace).joined(separator: " ")
   }
 
-  /// The bar above the composer is gone (Maciej, 2026-10-30 on build 2981:
-  /// "ta druga tafla ponad komposerem to jest taka wiocha. Nie możemy tego
-  /// zrobić jako dziubek w przycisku wysyłki?"): the inbox and 0 · All pick
-  /// their set from a chevron beside Send, the "+" stays the plain attach
-  /// button, an agent's conversation gets neither.
+  /// The bar above the composer is gone (Maciej, 2026-10-30 on build 2981) and
+  /// every channel's composer carries the smaller chevron beside Send with the
+  /// draft-sync set menu from All (Maciej, 2026-10-31 01:13Z), while the "+"
+  /// stays the plain attach button.
   func testRecipientsAreAChevronBesideSendOnSourcesAndTheBarIsGone() throws {
     let window = try overlaySource("DictationOverlayView.swift")
     XCTAssertFalse(window.contains("composerRouting"), "no bar above the composer")
@@ -359,21 +358,20 @@ final class OverlayRecipientRoutingTests: XCTestCase {
     XCTAssertFalse(window.contains("Voice channels"))
     XCTAssertFalse(window.contains("chooseComposerTarget"), "no recipient override remains")
     XCTAssertTrue(
-      window.contains(
-        "draftSyncChoices: conversation.isDraftSyncSource ? state.draftSyncChoices(for: conversation) : []"
-      ), "only a source offers choices to the composer")
+      window.contains("draftSyncChoices: state.draftSyncChoices(for: conversation)"),
+      "every channel's composer offers the draft-sync choices beside Send")
     XCTAssertTrue(
       window.contains(
-        "onToggleDraftSync: conversation.isDraftSyncSource ? { state.toggleDraftSync(from: conversation.id, with: $0) } : nil"
+        "onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) }"
       ))
     XCTAssertTrue(
       window.contains(
-        "onStopDraftSync: conversation.isDraftSyncSource ? { state.stopDraftSync(for: conversation.id) } : nil"
+        "onStopDraftSync: { state.stopDraftSync(for: conversation.id) }"
       ))
 
     let view = try overlaySource("OverlayConversationView.swift")
     XCTAssertFalse(view.contains("composerRouting"))
-    XCTAssertTrue(view.contains("recipientsOnSend: conversation.isDraftSyncSource"))
+    XCTAssertTrue(view.contains("recipientsOnSend: true"))
     // The sticky set is named in the placeholder, since the chevron does not show it.
     XCTAssertTrue(view.contains("let names = draftSyncNames.filter { $0 != conversation.name }"))
     XCTAssertTrue(
@@ -410,12 +408,12 @@ final class OverlayRecipientRoutingTests: XCTestCase {
         "if draftSyncActive, let onStopDraftSync { Divider() "
           + "Button(action: onStopDraftSync) { Text(verbatim: clearRecipientsTitle) } }"),
       "a chosen set can be dropped from the same menu")
-    // Clearing means different things: 0 · All goes back to everyone, the
-    // inbox back to nobody, so the view names the item.
+    // Clearing means different things: 0 · All goes back to everyone, while the
+    // inbox and agent channels stop syncing.
     XCTAssertTrue(
       view.contains(
-        "clearRecipientsTitle: conversation.isHumanInbox ? String(localized: \"Stop syncing\") "
-          + ": String(localized: \"Send to everyone\")"))
+        "clearRecipientsTitle: (composerConversation ?? conversation).channel == \"0\" "
+          + "? String(localized: \"Send to everyone\") : String(localized: \"Stop syncing\")"))
     XCTAssertTrue(composer.contains("\"overlay-conversation-plus\""))
     XCTAssertTrue(composer.contains("\"overlay-conversation-attach\""))
   }
@@ -426,7 +424,11 @@ final class OverlayRecipientRoutingTests: XCTestCase {
   /// arithmetic is pinned at the source.
   func testTheRecipientChevronWidensTheTrailingCornerByItsWidthAndOneSpacing() throws {
     let composer = try overlaySource("OverlayConversationComposer.swift")
-    XCTAssertTrue(composer.contains("let recipientShare: CGFloat = showsRecipientMenu ? 0.6 : 0"))
+    XCTAssertTrue(composer.contains("let recipientShare: CGFloat = showsRecipientMenu ? 0.45 : 0"))
+    XCTAssertTrue(
+      composer.contains(
+        ".font(.system(size: min(controlGlyphSize, corners.glyphSize) * 0.55, weight: .semibold))"
+      ))
     XCTAssertTrue(
       composer.contains(
         "recipientWidth = showsRecipientMenu ? ceil(actionWidth * recipientShare) : 0"))
@@ -441,5 +443,96 @@ final class OverlayRecipientRoutingTests: XCTestCase {
     XCTAssertTrue(
       composer.contains(".frame(width: corners.recipientWidth, height: corners.actionHeight)"),
       "the chevron is drawn at the width the layout reserved")
+  }
+
+  func testSyncStateShowsSubtleComposerTintInSyncAccentColor() throws {
+    let composer = try overlaySource("OverlayConversationComposer.swift")
+    XCTAssertTrue(
+      composer.contains(
+        "if draftSyncActive { RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous) "
+          + ".fill( palette.agentAccent.color.opacity( reduceTransparency "
+          + "? ComposerControlMetrics.syncSurfaceTintReducedTransparencyOpacity "
+          + ": ComposerControlMetrics.syncSurfaceTintOpacity)) }"
+      ))
+    XCTAssertTrue(
+      composer.contains(
+        "if draftSyncActive { RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous) "
+          + ".strokeBorder( palette.agentAccent.color.opacity(ComposerControlMetrics.syncSurfaceBorderOpacity), "
+          + "lineWidth: 1 ) .allowsHitTesting(false) }"
+      ))
+  }
+
+  func testConversationComposerGrowsToSixLinesPlusOneBottomControlRow() throws {
+    let lineHeight = ComposerTextLayout.lineHeight(fontSize: ComposerControlMetrics.textSize)
+    XCTAssertEqual(ComposerControlMetrics.conversationEditorMaximumLines, 6)
+    XCTAssertEqual(
+      ComposerControlMetrics.conversationEditorMaximumHeight(
+        lineHeight: lineHeight, actionHeight: ComposerControlMetrics.hitTargetSize),
+      6 * lineHeight + ComposerTextLayout.verticalPadding + ComposerControlMetrics.hitTargetSize,
+      "6 text lines + vertical inset padding + 1 bottom control row"
+    )
+    let sixLines = (1...6).map { "Line \($0)" }.joined(separator: "\n")
+    let sevenLines = (1...7).map { "Line \($0)" }.joined(separator: "\n")
+    var measuredSix: CGFloat = 0
+    var measuredSeven: CGFloat = 0
+    let sixHost = NSHostingView(
+      rootView: OverlayConversationComposer(
+        palette: .dark, draft: .constant(sixLines), sending: false, onSubmit: {}))
+    let sevenHost = NSHostingView(
+      rootView: OverlayConversationComposer(
+        palette: .dark, draft: .constant(sevenLines), sending: false, onSubmit: {}))
+    for host in [sixHost, sevenHost] {
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 380, height: 220)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      BackgroundTestWindow.present(window)
+      defer { window.close() }
+      for _ in 0..<5 {
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+      }
+      func findScroll(_ view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView, scroll.documentView is NSTextView { return scroll }
+        return view.subviews.lazy.compactMap { findScroll($0) }.first
+      }
+      let scroll = try XCTUnwrap(findScroll(host))
+      if host === sixHost {
+        measuredSix = scroll.frame.height
+      } else {
+        measuredSeven = scroll.frame.height
+      }
+    }
+    let expectedCap = ComposerControlMetrics.conversationEditorMaximumHeight(
+      lineHeight: lineHeight, actionHeight: ComposerControlMetrics.hitTargetSize)
+    XCTAssertEqual(
+      measuredSix, expectedCap, accuracy: 1, "6 lines + 1 control row fits without clipping")
+    XCTAssertEqual(
+      measuredSeven, expectedCap, accuracy: 1, "7th line clamps at the 6-line + 1-control-row cap")
+  }
+
+  func testPartialSendErrorNoticeAutoDismissesAndNeverHidesDeliveryReceipt() async throws {
+    let f = try Fixture()
+    f.state.selectConversation(f.six.id)
+    XCTAssertTrue(f.state.toggleDraftSync(from: f.six.id, with: f.four.id))
+    f.typeText("Hello both", in: f.six.id)
+    f.refusing = [f.four.id]
+    await f.state.sendConversationText(f.six)
+    let error = try XCTUnwrap(f.state.draftSyncSendError(for: f.six.id))
+    let notice = ComposerSendErrorNoticeState()
+    notice.reconcile(
+      sendError: error, sending: false, reduceMotion: true, duration: .milliseconds(60))
+    XCTAssertEqual(notice.message, error)
+    try await Task.sleep(for: .milliseconds(140))
+    XCTAssertNil(
+      notice.message,
+      "partial-send error notification disappears automatically without waiting for the next send"
+    )
+    XCTAssertNotNil(
+      f.state.draftSyncSendError(for: f.six.id),
+      "underlying retry state remains intact while the transient banner self-dismisses"
+    )
   }
 }

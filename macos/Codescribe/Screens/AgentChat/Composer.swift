@@ -799,7 +799,19 @@ enum ComposerControlMetrics {
   static let horizontalPadding: CGFloat = 12
   static let verticalPadding: CGFloat = 8
   static let restingActionOpacity = 0.75
-  static let conversationEditorMaximumHeight: CGFloat = 112
+  static let syncSurfaceTintOpacity = 0.08
+  static let syncSurfaceTintReducedTransparencyOpacity = 0.12
+  static let syncSurfaceBorderOpacity = 0.28
+  static let conversationEditorMaximumLines = 6
+  static let conversationEditorMaximumHeight: CGFloat = conversationEditorMaximumHeight(
+    lineHeight: ComposerTextLayout.lineHeight(fontSize: textSize))
+
+  static func conversationEditorMaximumHeight(
+    lineHeight: CGFloat, actionHeight: CGFloat = hitTargetSize
+  ) -> CGFloat {
+    CGFloat(conversationEditorMaximumLines) * max(1, lineHeight)
+      + ComposerTextLayout.verticalPadding + actionHeight
+  }
 
   // Inline agent cards share the stacked editor and toolbar, with less chrome.
   static let intercomGlyphSize: CGFloat = 14

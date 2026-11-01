@@ -725,18 +725,16 @@ struct DictationOverlayView: View {
                   state.conversationReplies[conversation.id] = OverlayUserReplyReference(
                     message: message)
                 },
-                // Linking lives in the roster chain and, for the inbox and
-                // 0 · All, in the chevron beside Send; the composer's "+" is a
-                // plain attach button here (Maciej, 2026-10-30 14:03 and the
-                // 2981 build). Names still tint and label the status.
-                draftSyncChoices: conversation.isDraftSyncSource
-                  ? state.draftSyncChoices(for: conversation) : [],
+                // Every channel's composer carries the recipient chevron beside
+                // Send with the draft-sync set menu; the "+" stays a plain
+                // attach button (Maciej, 2026-10-31 01:13Z).
+                draftSyncChoices: state.draftSyncChoices(for: conversation),
                 draftSyncNames: state.draftSyncNames(for: conversation.id),
+                draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
+                draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
                 onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
-                onToggleDraftSync: conversation.isDraftSyncSource
-                  ? { state.toggleDraftSync(from: conversation.id, with: $0) } : nil,
-                onStopDraftSync: conversation.isDraftSyncSource
-                  ? { state.stopDraftSync(for: conversation.id) } : nil
+                onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
+                onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
               )
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
