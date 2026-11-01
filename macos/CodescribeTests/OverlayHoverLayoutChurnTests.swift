@@ -54,8 +54,8 @@ final class OverlayHoverLayoutChurnTests: XCTestCase {
   func testDrawerAndRailObserveFocusInsideTheirOwnScope() throws {
     let source = try overlaySource()
     for (start, end) in [
-      ("private func agentDrawerColumn", "private func conversationEdgeControls"),
-      ("private func agentRail(", "private func agentDrawerResizeHandle"),
+      ("private func agentDrawerColumn", "private func commitAgentDrawerWidth"),
+      ("private func agentRail(", "private func agentRailUnfoldHandle"),
     ] {
       let slot = try section(source, from: start, to: end)
       let scope = try XCTUnwrap(slot.range(of: "OverlayObservationScope {"))

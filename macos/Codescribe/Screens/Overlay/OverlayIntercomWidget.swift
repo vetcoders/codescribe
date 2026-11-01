@@ -1574,7 +1574,7 @@ private struct OverlayIntercomHeader: View {
           broadcast, title: String(localized: "Shared conversation"),
           symbol: "bubble.left.and.bubble.right", identifier: "overlay-intercom-all")
         mailboxMenuItem(
-          inbox, title: String(localized: "Your Inbox"), symbol: "tray",
+          inbox, title: String(localized: "Your Inbox"), symbol: "envelope",
           identifier: "overlay-intercom-inbox")
         let closed = controller.closedInstances
         if !closed.isEmpty {
@@ -2202,7 +2202,7 @@ private struct OverlayIntercomCard: View {
         } label: {
           HStack(spacing: 4) {
             if identity.isHumanInbox {
-              Image(systemName: "tray").csFont(11)
+              Image(systemName: "envelope").csFont(11)
             } else {
               Text(verbatim: identity.displayDigit).csMono(10)
                 .foregroundStyle(detached ? palette.mutedText.color : palette.primaryText.color)
@@ -2264,7 +2264,7 @@ private struct OverlayIntercomCard: View {
             OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
           }
           if identity.isHumanInbox {
-            Image(systemName: "tray").csFont(11)
+            Image(systemName: "envelope").csFont(11)
           } else {
             OverlayIntercomStatusMark(
               roster: roster, channel: channelRow,
@@ -3018,7 +3018,7 @@ private struct OverlayIntercomInstanceCard: View {
         OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
       }
       if instance.isHumanInbox {
-        Image(systemName: "tray").csFont(11)
+        Image(systemName: "envelope").csFont(11)
       } else if !current {
         Image(systemName: "clock.arrow.circlepath").csFont(11)
           .overlayFastHint(String(localized: "Saved conversation"), palette: palette)

@@ -297,6 +297,11 @@ struct OverlayConversationView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
           if showsComposer && presentation == .standard {
             composer
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                composerHeight = $0
+              }
           }
         }
         .overlay(alignment: .bottom) {
@@ -318,7 +323,9 @@ struct OverlayConversationView: View {
               )
               .accessibilityHint(Text("Jump to the current reply"))
               .accessibilityIdentifier("overlay-conversation-jump-to-current")
-              .padding(.bottom, (presentation == .intercom ? visibleComposerHeight : 0) + 10)
+              // The overlay spans the composer in both presentations: the
+              // button rests just above it, never on it.
+              .padding(.bottom, visibleComposerHeight + 10)
               .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
@@ -821,6 +828,10 @@ struct OverlayConversationView: View {
       }
       .csAutohidingScrollers()
     }
+    // Keep the existing viewport and resting insets, but let moving rows reach
+    // the pane's outer clip behind the header, label and composer. Their glass
+    // samples the rows; the gaps between those surfaces stay fully sharp.
+    .scrollClipDisabled()
     .contentMargins(
       .bottom,
       presentation == .intercom && showsComposer
@@ -830,11 +841,10 @@ struct OverlayConversationView: View {
     // under them and scroll through the glass, the way they do under the composer.
     .contentMargins(.top, topInset + visibleNavigationHeight)
     if #available(macOS 26.0, *) {
-      // Navigation reserves actual space outside the scrolling viewport.
-      // No empty safe-area bar or translucent fade competes with that bound.
+      // Only the actual glass surfaces soften the rows. A viewport-wide edge
+      // treatment would also blur the clear gaps between floating controls.
       list
         .scrollEdgeEffectHidden(true, for: .top)
-        // The composer's glass sits on the floor with nothing pinned behind it.
         .scrollEdgeEffectHidden(true, for: .bottom)
     } else {
       list

@@ -36,8 +36,8 @@ final class OverlayBusWindowTests: XCTestCase {
     state.applyConversationSnapshot(.init(deliveries: [], conversations: conversations))
   }
 
-  /// The open conversation is its own recipient (Maciej, 2026-10-30 13:58);
-  /// viewing, folding and drafts elsewhere never move it.
+  /// The open conversation is its own recipient; viewing, folding and drafts
+  /// elsewhere never move it.
   func testViewingAndFoldingKeepTheRecipientAndEachOwnersDraft() throws {
     let first = try conversation("2")
     let second = try conversation("3", lease: "b")
@@ -48,8 +48,14 @@ final class OverlayBusWindowTests: XCTestCase {
 
     state.selectConversation(second.id, expand: false)
     state.foldAgentList()
+    XCTAssertEqual(state.agentsLayout, .rail)
+    XCTAssertEqual(state.selectedConversationID, second.id)
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: second)?.id, second.id)
+    XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, first.id)
+    XCTAssertEqual(state.conversationDraft(for: first.id), "Private first draft")
+    XCTAssertEqual(state.conversationDraft(for: second.id), "Private second draft")
     state.unfoldAgentList()
-
+    XCTAssertEqual(state.agentsLayout, .split)
     XCTAssertEqual(state.selectedConversationID, second.id)
     XCTAssertEqual(state.resolvedComposerTarget(viewing: second)?.id, second.id)
     XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, first.id)

@@ -157,6 +157,59 @@ final class OverlayComposerGeometryAcceptanceTests: XCTestCase {
     }
   }
 
+  func testMultilineComposerKeepsTextAndScrollerBelowTheGlassEdgeWhileScrolling() throws {
+    for width in [CGFloat(280), 420] {
+      for scale in [CGFloat(1), 1.7] {
+        let draft = (1...30).map { "Żółć \($0): the draft keeps a clear glass edge." }
+          .joined(separator: "\n")
+        let host = NSHostingView(
+          rootView: OverlayConversationComposer(
+            palette: .light, draft: .constant(draft), maximumEditorHeight: 96,
+            sending: false, onSubmit: {}, onToggleDraftMicrophone: {}
+          ).environment(\.csTextScale, scale))
+        host.sizingOptions = []
+        host.frame = NSRect(x: 0, y: 0, width: width, height: 180)
+        let window = NSWindow(
+          contentRect: NSRect(x: -10000, y: -10000, width: width, height: 180),
+          styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        for _ in 0..<5 {
+          host.layoutSubtreeIfNeeded()
+          RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+        }
+        let editor = try XCTUnwrap(editableText(in: host))
+        let scroll = try XCTUnwrap(editor.enclosingScrollView)
+        let clip = scroll.contentView
+        XCTAssertEqual(scroll.frame.height, 96, accuracy: 0.5, "the outer editor cap is unchanged")
+        for fraction in [CGFloat(0), 0.5, 1] {
+          let end = max(0, editor.frame.height - clip.bounds.height)
+          clip.scroll(to: NSPoint(x: 0, y: end * fraction))
+          scroll.reflectScrolledClipView(clip)
+          host.layoutSubtreeIfNeeded()
+          XCTAssertGreaterThanOrEqual(
+            clip.frame.minY - scroll.bounds.minY, ComposerControlMetrics.textVerticalInset,
+            "the top breathing space belongs to the viewport, not the scrolling document")
+          XCTAssertEqual(clip.frame.maxY, scroll.bounds.maxY, accuracy: 0.5)
+          let scroller = try XCTUnwrap(scroll.verticalScroller)
+          XCTAssertGreaterThanOrEqual(scroller.frame.minY, clip.frame.minY)
+        }
+        let range = NSRange(location: (draft as NSString).length - 1, length: 1)
+        editor.scrollRangeToVisible(range)
+        let manager = try XCTUnwrap(editor.layoutManager)
+        let container = try XCTUnwrap(editor.textContainer)
+        manager.ensureLayout(for: container)
+        let glyph = manager.boundingRect(
+          forGlyphRange: manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil),
+          in: container).offsetBy(dx: editor.textContainerOrigin.x, dy: editor.textContainerOrigin.y)
+        XCTAssertLessThanOrEqual(
+          glyph.maxY, clip.bounds.maxY - ComposerControlMetrics.hitTargetSize + 1,
+          "the last glyph stays above the stationary controls")
+      }
+    }
+  }
+
   private func editableText(in view: NSView) -> NSTextView? {
     if let text = view as? NSTextView, text.isEditable { return text }
     return view.subviews.lazy.compactMap { self.editableText(in: $0) }.first

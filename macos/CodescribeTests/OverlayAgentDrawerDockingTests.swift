@@ -619,7 +619,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       state.agentsLayout, .rail, "a pill switches the conversation and the list stays folded")
   }
 
-  func testCornerButtonsMoveTheWideWindowBetweenTheThreeLayouts() throws {
+  func testExplicitPaneTransitionsKeepTheRememberedDrawerWidth() throws {
     let (broadcast, lena, astra) = try rosterFixture()
     let state = OverlayState.previewFormatted()
     state.applyConversationSnapshot(
@@ -645,7 +645,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     state.foldAgentList()
     settle()
     XCTAssertEqual(state.agentsLayout, .rail)
-    XCTAssertEqual(drawer.frame, .zero, "sidebar.right folds the column away")
+    XCTAssertEqual(drawer.frame, .zero, "folding the list removes the column")
     XCTAssertEqual(
       rail.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1,
       "into the rail of pills")
@@ -664,7 +664,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     state.unfoldAgentList()
     settle()
     XCTAssertEqual(state.agentsLayout, .split)
-    XCTAssertEqual(drawer.frame.width, 300, accuracy: 1, "the rail's sidebar.right unfolds it")
+    XCTAssertEqual(drawer.frame.width, 300, accuracy: 1, "unfolding retains the column width")
     XCTAssertEqual(rail.frame, .zero)
   }
 
@@ -687,22 +687,30 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     }
   }
 
-  func testEachPaneOwnsItsOwnToggleAndRailHoverCannotUndoFold() throws {
+  func testDividersOwnPaneFoldingAndRailHoverCannotUndoFold() throws {
     let roster = try overlaySource("OverlayChannelStatusView.swift")
     let header = try section(
       of: roster, from: "private func scaledMonitorBody(", to: "} content: { rowFocus in")
+    XCTAssertTrue(header.contains("showsHeader: false"))
+    XCTAssertTrue(header.contains("EmptyView()"))
     XCTAssertFalse(header.contains("symbol: \"sidebar.left\""))
-    XCTAssertTrue(header.contains("symbol: \"sidebar.right\""))
+    XCTAssertFalse(header.contains("symbol: \"sidebar.right\""))
     let overlay = try overlaySource("DictationOverlayView.swift")
-    let controls = try section(
-      of: overlay, from: "private func conversationEdgeControls",
-      to: "private func agentsSidebarControls")
-    XCTAssertTrue(controls.contains("sidebar.left"))
-    XCTAssertTrue(controls.contains("state.hideAgentsCanvas()"))
+    let commit = try section(
+      of: overlay, from: "private func commitAgentDrawerWidth", to: "private func agentRail(")
+    XCTAssertTrue(commit.contains("state.foldAgentList()"))
+    XCTAssertTrue(commit.contains("state.setAgentsLayout(.agents)"))
+    XCTAssertTrue(commit.contains("state.setAgentsLayout(.split)"))
     let rail = try section(
-      of: overlay, from: "private func agentRail", to: "private func agentDrawerResizeHandle")
-    XCTAssertTrue(rail.contains("onUnfold: { state.unfoldAgentList() }"))
+      of: overlay, from: "private func agentRail(", to: "private func agentRailUnfoldHandle")
+    XCTAssertTrue(rail.contains("agentRailUnfoldHandle(width: width, windowWidth: windowWidth)"))
     XCTAssertFalse(rail.contains("onContinuousHover"))
+    let handle = try section(
+      of: overlay, from: "private func agentRailUnfoldHandle",
+      to: "private func agentDrawerResizeHandle")
+    XCTAssertTrue(handle.contains("state.unfoldAgentList()"))
+    XCTAssertTrue(handle.contains(".accessibilityIdentifier(\"overlay-agent-rail-resize\")"))
+    XCTAssertFalse(handle.contains("onContinuousHover"))
   }
 
   /// The overlay over a suite of its own defaults, reporting the column's and
@@ -819,8 +827,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
   /// The numbered pills must take real mouseDown/mouseUp through the panel —
   /// an AXPress proves the action exists, not that a click reaches it past
-  /// the panel's own resize band and window-drag routing. Channel 0 leads:
-  /// it is the first pill under the disclosure control.
+  /// the panel's own resize band and window-drag routing. Channel 0 leads
+  /// the rail beside its divider.
   func testNumberedRailButtonsTakeNativeClicksWithoutResizeOrUnfolding() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let (broadcast, lena, astra) = try rosterFixture()
@@ -884,14 +892,14 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         try send(.leftMouseUp, at: point, clickCount: 1)
       }
 
-      // Pointer travel from the disclosure control down to the first pill
+      // Pointer travel from the rail divider to the first pill
       // keeps the pill as the click target; the list stays folded.
-      let unfold = try windowRect(of: "overlay-agent-rail-unfold")
+      let divider = try windowRect(of: "overlay-agent-rail-resize")
       let zero = try windowRect(of: "overlay-agent-rail-0")
       for step in 0...4 {
         let point = NSPoint(
-          x: unfold.midX + (zero.midX - unfold.midX) * CGFloat(step) / 4,
-          y: unfold.midY + (zero.midY - unfold.midY) * CGFloat(step) / 4)
+          x: divider.midX + (zero.midX - divider.midX) * CGFloat(step) / 4,
+          y: divider.midY + (zero.midY - divider.midY) * CGFloat(step) / 4)
         try send(.mouseMoved, at: point)
         XCTAssertFalse(state.showsAgentMonitor)
         XCTAssertEqual(state.agentsLayout, .rail)
@@ -1738,11 +1746,14 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let column = try section(
       of: overlay,
       from: "private func agentDrawerColumn",
-      to: "private func conversationEdgeControls")
+      to: "private func commitAgentDrawerWidth")
     XCTAssertTrue(column.contains(".animation(nil, value: width)"), "the list snaps")
     XCTAssertTrue(
-      column.contains(".frame(width: width, alignment: .trailing)"),
-      "the sliding frame is anchored to the window edge")
+      column.contains(".frame(width: max(width, contentMinimum))"),
+      "rows retain their readable layout while the divider narrows their viewport")
+    XCTAssertTrue(
+      column.contains(".frame(width: width, alignment: width < contentMinimum ? .leading : .trailing)"),
+      "a narrow viewport preserves the leading pills; a full column anchors to the window edge")
     let stack = try section(
       of: overlay, from: "private func canvasStack", to: "private func agentDrawerColumn")
     XCTAssertTrue(
