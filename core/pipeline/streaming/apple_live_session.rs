@@ -16690,6 +16690,67 @@ mod rc_w2_acoustic_tests {
         assert_eq!(ledger.conservation().residue(), 0);
     }
 
+    /// Fix d0670e5ac; kills M3b-07 (settled frames re-enter Stop admission).
+    /// Literal settled speech and a stale quiet-tail decode survive two Stops
+    /// without another mutation, duplicated document text or a changed seal.
+    #[test]
+    fn m3b_repeated_stop_preserves_literal_settled_transcript_without_reoffers() {
+        use crate::stt::tail_provider::TailSegmentGrain;
+
+        let mut state = one_burst_in_a_ten_second_take("m3b-settled-stop");
+        let (events, mut receiver) = mpsc::unbounded_channel();
+        let owner = commit_the_burst(&mut state, &events);
+        let seal = state.acoustic_ledger.lock().unwrap().seal_of(&owner).unwrap().clone();
+        assert_eq!(state.acoustic_ledger.lock().unwrap().rendered_text(), "Iwo");
+
+        let request = TailProviderRequest {
+            identity: TailRequestIdentity {
+                request_id: 700,
+                range: TailSampleRange {
+                    session: state.session_id.clone(),
+                    capture_epoch: state.capture_epoch,
+                    sample_start: 0,
+                    sample_end: 144_000,
+                },
+            },
+            sample_rate: 16_000,
+            language: Some("pl".into()),
+        };
+        let mut stale = gap_payload(&request);
+        stale.text = "Jutro.".into();
+        stale.evidence.segment_grain = TailSegmentGrain::Word;
+        stale.segments = vec![TimedTailSegment {
+            text: "Jutro.".into(),
+            confidence: None,
+            grain: TailSegmentGrain::Word,
+            range: TailSampleRange {
+                sample_start: 64_000,
+                sample_end: 72_000,
+                ..request.identity.range.clone()
+            },
+        }];
+        stale.validate().unwrap();
+        state.retain_word_decode(&stale);
+        assert_eq!(state.retained_word_decodes.len(), 1);
+        while receiver.try_recv().is_ok() {}
+        state.capture_stopping = true;
+
+        for _ in 0..2 {
+            let coverage = reconcile_terminal_coverage(&mut state, &events);
+            assert_eq!(coverage.status, SealCoverageStatus::Complete);
+            let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+            assert!(
+                !emitted.iter().any(|event| matches!(event, EngineEvent::LedgerMutation { .. })),
+                "Stop re-offered a settled historical frame, even if the ledger refused it"
+            );
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.rendered_text(), "Iwo");
+            assert_eq!(ledger.text_of(&owner), Some("Iwo"));
+            assert_eq!(ledger.seal_of(&owner), Some(&seal));
+            assert_eq!(ledger.conservation().residue(), 0);
+        }
+    }
+
     #[test]
     fn terminal_retained_recovery_still_accounts_for_unowned_speech() {
         use crate::stt::tail_provider::TailSegmentGrain;
@@ -24465,6 +24526,29 @@ mod live_refinement_admission_tests {
                 "unresolved labels must not become padding around the real baseline"
             );
             assert!(!state.capture_stopping, "this is the live path before Stop");
+        }
+    }
+
+    /// Fix d0670e5ac; kills M3b-08 (empty labels become synthetic separators).
+    #[test]
+    fn m3b_shared_decode_joins_only_literal_nonempty_labels_in_owner_order() {
+        for (labels, expected) in [
+            (["", "", ""], ""),
+            (["Ala", "", "kot"], "Ala kot"),
+            (["", "Iwo", ""], "Iwo"),
+        ] {
+            let (mut state, events, _receiver, mut requests) = fixture(3);
+            CaptureLevelAccumulator::bound_to_at_rate(&state.capture_energy, RATE)
+                .push_samples(&vec![0.25; 20_000]);
+            reconcile_silero_ledger(&mut state, &events, &closed(3), &[]);
+            for (id, label) in (1..=3).zip(labels) {
+                state.pending_events.get_mut(&id).unwrap().layer1_baseline = label.into();
+            }
+            state.pump_capture_windows(&events);
+            let request = requests.try_recv().expect("live decode request for all three owners");
+            assert_eq!(request.member_occurrences.len(), 3);
+            assert_eq!(request.committed_text, expected);
+            assert!(!state.capture_stopping);
         }
     }
 

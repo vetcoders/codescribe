@@ -5,6 +5,52 @@ import XCTest
 
 @MainActor
 final class FormatterKeywordsTests: XCTestCase {
+  /// Fixes 3dea75ef4 and 5aac8c9df; kills M3b-04 (sync reload) and M3b-06
+  /// (extension-only dispatch), on both successful and refused writes.
+  func testM3bKeywordsSaveAwaitsExistentialSnapshotOnSuccessAndRefusal() async {
+    for refusesWrite in [false, true] {
+      var synchronousReads = 0
+      var asynchronousReads = 0
+      var writes: [[String]] = []
+      let engine: any SettingsEngine = MockSettingsEngine(
+        setFormatterKeywordsObserver: { terms in
+          writes.append(terms)
+          if refusesWrite { throw CsError.Config(msg: "M3b refused write") }
+          return ["Vetcoders"]
+        },
+        settingsLoader: {
+          synchronousReads += 1
+          var snapshot = CsSettings.sample
+          snapshot.formatterKeywords = ["synchronous stale snapshot"]
+          return snapshot
+        },
+        settingsAsyncLoader: {
+          await Task.yield()
+          asynchronousReads += 1
+          var snapshot = CsSettings.sample
+          snapshot.formatterKeywords = ["Codescribe", "LibraxisAI"]
+          return snapshot
+        }
+      )
+      let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+      let readsAfterInitialization = synchronousReads
+      XCTAssertEqual(model.formatterKeywords, ["synchronous stale snapshot"])
+
+      do {
+        let stored = try await model.saveFormatterKeywords(["  Vetcoders  "])
+        XCTAssertFalse(refusesWrite, "a refused write must propagate its error")
+        XCTAssertEqual(stored, ["Vetcoders"])
+      } catch {
+        XCTAssertTrue(refusesWrite, "the successful write unexpectedly failed: \(error)")
+      }
+
+      XCTAssertEqual(writes, [["  Vetcoders  "]])
+      XCTAssertEqual(asynchronousReads, 1, "the existential must call its async witness")
+      XCTAssertEqual(synchronousReads, readsAfterInitialization, "post-save I/O used the sync path")
+      XCTAssertEqual(model.formatterKeywords, ["Codescribe", "LibraxisAI"])
+    }
+  }
+
   func testSettingsEngineExistentialUsesAsyncSnapshotOverride() async {
     var syncLoads = 0
     var asyncLoads = 0

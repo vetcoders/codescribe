@@ -119,6 +119,50 @@ class ReleaseVersionTests(unittest.TestCase):
         self.git("checkout", "-q", "--detach", current)
         return boundary
 
+    def test_m3b_patch_bump_ignores_higher_unreachable_marker_without_tags(self):
+        """Fix 70381be54; kills M3b-09 (automatic marker lacks ancestry check)."""
+        # This entire graph is disposable. The foreign marker models 6aede4c05;
+        # no SHA or release boundary is read from the real repository.
+        reachable = self.git("rev-parse", "v0.1.0")
+        release_head = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "--detach", reachable)
+        (self.root / "foreign.txt").write_text("foreign release line\n")
+        self.commit("feat: Foreign source boundary")
+        foreign = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "--detach", release_head)
+        self.git("tag", "-d", "v0.1.0")
+        changelog = self.root / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text()
+            + "\n<!-- release-boundary: 0.0.9 " + reachable + " -->\n"
+            + "<!-- release-boundary: 0.1.0 " + foreign + " -->\n"
+        )
+        self.commit("docs: Import divergent automatic markers")
+        (self.root / "feature.txt").write_text("current release line only\n")
+        self.commit("fix: Keep current line in patch release")
+        end = self.git("rev-parse", "HEAD")
+        self.assertEqual(self.git("tag"), "")
+        diagnostics = io.StringIO()
+
+        try:
+            with contextlib.redirect_stderr(diagnostics):
+                self.run_release(kind="patch")
+        except ValueError as error:
+            self.fail(f"automatic selection must skip the foreign marker: {error}")
+
+        self.assertEqual(release.cargo_version((self.root / "Cargo.toml").read_text()), "0.1.1")
+        receipt = json.loads((self.root / "docs/releases/0.1.1-commits.json").read_text())
+        self.assertEqual(receipt["from_sha"], reachable)
+        self.assertEqual(receipt["to_sha"], end)
+        self.assertEqual([row["subject"] for row in receipt["commits"]], [
+            "feat: Show recording status",
+            "docs: Import divergent automatic markers",
+            "fix: Keep current line in patch release",
+        ])
+        self.assertNotIn("feat: Foreign source boundary", json.dumps(receipt))
+        self.assertIn("not an ancestor", diagnostics.getvalue())
+        self.assertIn("Selected reachable source boundary 0.0.9", diagnostics.getvalue())
+
     def test_automatic_divergent_changelog_boundary_selects_reachable_history(self):
         self.run_release()
         self.commit("chore: Prepare an untagged source version")
