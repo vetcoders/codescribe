@@ -279,7 +279,7 @@ private struct LLMLaneEditor: View {
       subtitle: isFormatting
         ? String(
           localized:
-            "None answers fastest. Higher levels are slower; choose one only if a model needs it.",
+            "The none level answers fastest. Higher levels are slower; choose one only if a model needs it.",
           comment: "Formatting reasoning row explanation")
         : String(
           localized:

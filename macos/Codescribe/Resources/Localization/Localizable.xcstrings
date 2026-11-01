@@ -12747,13 +12747,13 @@
         }
       }
     },
-    "None answers fastest. Higher levels are slower; choose one only if a model needs it." : {
+    "The none level answers fastest. Higher levels are slower; choose one only if a model needs it." : {
       "comment" : "Formatting reasoning row explanation",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poziom „Brak” zwykle pozwala uzyskać odpowiedź najszybciej. Wyższe poziomy mogą wydłużyć czas oczekiwania. Wybierz je, gdy zadanie tego wymaga."
+            "value" : "Poziom „none” zwykle pozwala uzyskać odpowiedź najszybciej. Wyższe poziomy mogą wydłużyć czas oczekiwania. Wybierz je, gdy zadanie tego wymaga."
           }
         }
       }
