@@ -791,6 +791,7 @@ struct OverlayAgentPillMenuActions {
   let showInAgents: OverlayAgentPillMenuAction?
   let focus: OverlayAgentPillMenuAction?
   let archive: OverlayAgentPillMenuAction?
+  var sync: OverlayAgentPillMenuAction? = nil
 }
 
 /// The one owner of reception changes (Copilot on #183). The marks, the pill
@@ -886,6 +887,9 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   var showsInlineError = true
   var showsButton = false
   var secondaryActionsOnly = false
+  /// Roster rows: sync and the panel jump always live here, and show inline
+  /// beside the receipt only when the row is wide enough for the whole name.
+  var carriesRowMarks = false
   var focusState: OverlayAgentPanelFocusState? = nil
   @State private var commandError: String?
 
@@ -959,10 +963,16 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
       if !secondaryActionsOnly, let agentActions {
         agentCommands(agentActions)
         Divider()
+      } else if carriesRowMarks, let agentActions,
+        agentActions.sync != nil || agentActions.focus != nil
+      {
+        if let sync = agentActions.sync { agentCommand(sync) }
+        if let focus = agentActions.focus { agentCommand(focus) }
+        Divider()
       }
       policyActions(for: member)
-      // The jump to the agent's panel is a button beside the pair (header)
-      // and beside the receipt (rows), no longer a menu entry.
+      // The jump to the agent's panel is a button beside the pair (header);
+      // roster rows carry it here and show it inline only when it fits.
       if let archive = agentActions?.archive {
         Divider()
         agentCommand(archive, role: .destructive)
@@ -1650,7 +1660,7 @@ struct OverlayChannelStatusView: View {
   /// intercom. Broadcast policy execution remains in its existing modifier.
   func agentPillMenu(
     for digit: String, showsInlineError: Bool = true, showsButton: Bool = false,
-    secondaryActionsOnly: Bool = false
+    secondaryActionsOnly: Bool = false, carriesRowMarks: Bool = false
   ) -> OverlayBroadcastPolicyMenu {
     guard let channel = channels.first(where: { $0.channel == digit }), digit != "0",
       let actions = agentPillMenuActions(for: digit, showsFocusState: true)
@@ -1660,15 +1670,18 @@ struct OverlayChannelStatusView: View {
     return OverlayBroadcastPolicyMenu(
       members: [channel], palette: palette, enabled: !unavailable,
       agentActions: actions, showsInlineError: showsInlineError, showsButton: showsButton,
-      secondaryActionsOnly: secondaryActionsOnly,
+      secondaryActionsOnly: secondaryActionsOnly, carriesRowMarks: carriesRowMarks,
       focusState: showsButton ? panelFocusStates[digit] : nil)
   }
 
   /// More keeps a compact secondary menu beside the inline audio controls.
   /// The roster label's context menu retains the full guarded action set.
-  func cardAgentMenu(for digit: String, showsButton: Bool = false) -> OverlayBroadcastPolicyMenu {
+  func cardAgentMenu(
+    for digit: String, showsButton: Bool = false, carriesRowMarks: Bool = false
+  ) -> OverlayBroadcastPolicyMenu {
     agentPillMenu(
-      for: digit, showsInlineError: false, showsButton: showsButton, secondaryActionsOnly: true)
+      for: digit, showsInlineError: false, showsButton: showsButton, secondaryActionsOnly: true,
+      carriesRowMarks: carriesRowMarks)
   }
 
   /// Both the card controls and the action menu use the same command guards.
@@ -1751,7 +1764,20 @@ struct OverlayChannelStatusView: View {
           symbol: "archivebox",
           identifier: "overlay-agent-menu-archive-\(digit)",
           enabled: !isOpen(channel) && owner.map { !pendingArchives.contains($0) } == true,
-          perform: { archiveAgent(channel) }))
+          perform: { archiveAgent(channel) }),
+      sync: syncMenuAction(for: channel, digit: digit))
+  }
+
+  /// The row chain's toggle as a menu entry, for rows too narrow to show it.
+  private func syncMenuAction(
+    for channel: OverlayChannelDelivery, digit: String
+  ) -> OverlayAgentPillMenuAction? {
+    guard let conversation = conversation(for: channel), let onToggleDraftSync else { return nil }
+    let linked = syncedConversationIDs.contains(conversation.id)
+    return OverlayAgentPillMenuAction(
+      title: linked ? String(localized: "Stop syncing") : String(localized: "Sync draft"),
+      symbol: "link", identifier: "overlay-agent-menu-sync-\(digit)", enabled: true,
+      perform: { onToggleDraftSync(conversation.id) })
   }
 
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
@@ -2056,8 +2082,10 @@ struct OverlayChannelStatusView: View {
               onOpen: { viewConversation(channel) }))
           // Maciej, 2026-11-01: the agent's "…" sits beside the clock, outside
           // the row's button, so the name gets the line and the pair the right.
-          EmptyView().modifier(cardAgentMenu(for: channel.channel, showsButton: true))
-            .fixedSize()
+          EmptyView().modifier(
+            cardAgentMenu(for: channel.channel, showsButton: true, carriesRowMarks: true)
+          )
+          .fixedSize()
         }
         .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
         // Identity owns the full first line. Like message-header actions,
@@ -2139,11 +2167,38 @@ struct OverlayChannelStatusView: View {
   /// Compose display values here; the visual shell never reads state or
   /// executes commands. The header and content are separate so its buttons
   /// remain siblings of the conversation navigation button.
+  @ViewBuilder
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
     conversation: OverlayConversation?, dot: OverlayAgentDotKind,
     includePreview: Bool = true, titleAccessory: AnyView? = nil,
     headerOnly: Bool = false, contentOnly: Bool = false
+  ) -> some View {
+    let label = { (marks: AnyView?) in
+      rosterRowLabelBody(
+        title: title, statusChannel: statusChannel, conversation: conversation, dot: dot,
+        includePreview: includePreview, titleAccessory: titleAccessory,
+        headerOnly: headerOnly, contentOnly: contentOnly, trailingMarks: marks)
+    }
+    // Name wins (2026-11-01): the chain and panel jump show beside the
+    // receipt only when the header fits with the whole name; otherwise they
+    // live in the row's "…" alone. ViewThatFits compares ideal widths, where
+    // a one-line name is never truncated.
+    if headerOnly, let marks = rowMarks(for: statusChannel, conversation: conversation) {
+      ViewThatFits(in: .horizontal) {
+        label(marks)
+        label(nil)
+      }
+    } else {
+      label(nil)
+    }
+  }
+
+  private func rosterRowLabelBody(
+    title: String, statusChannel: OverlayChannelDelivery?,
+    conversation: OverlayConversation?, dot: OverlayAgentDotKind,
+    includePreview: Bool, titleAccessory: AnyView?,
+    headerOnly: Bool, contentOnly: Bool, trailingMarks: AnyView?
   ) -> some View {
     let last = conversation?.messages.last
     return OverlayAgentRosterLabel(
@@ -2162,17 +2217,15 @@ struct OverlayChannelStatusView: View {
       receipt: statusChannel.flatMap {
         deliveryReceiptDisplay(for: $0, conversation: conversation)
       },
-      // Maciej, 2026-11-01: "synchronizuj szkic" and the panel jump leave the
-      // roster rows and stay on the conversation label above the list.
-      trailingMarks: nil
+      trailingMarks: trailingMarks
     )
   }
 
   /// After the receipt: the sync chain, a toggle as on the fiszki, and the
   /// one-press jump to the agent's panel, both out of the "…" menu
   /// (Maciej, 2026-10-30 14:08 and 14:12). Nothing on the All row.
-  /// No longer drawn in roster rows since 2026-11-01; kept only for the tests
-  /// that still call it, which need retargeting before it is removed.
+  /// Drawn beside the receipt only when the whole name fits; the row's "…"
+  /// always carries both.
   func rowMarks(for channel: OverlayChannelDelivery?, conversation: OverlayConversation?)
     -> AnyView?
   {
