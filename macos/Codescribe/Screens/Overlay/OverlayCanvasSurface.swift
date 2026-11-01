@@ -143,18 +143,59 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
 /// Floating composers pass their dedicated 12 pt corner, so their curve stays
 /// the same as the editor grows. Both surfaces use the canvas's continuous style.
 struct OverlayControlGlass: ViewModifier {
+  @Environment(\.colorScheme) private var colorScheme
   var cornerRadius: CGFloat = CSRadius.window
   var isEnabled = true
 
   @ViewBuilder
   func body(content: Content) -> some View {
     let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-    if #available(macOS 26.0, *) {
-      content.glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
-    } else {
-      content.background {
-        if isEnabled { shape.fill(.regularMaterial) }
+    Group {
+      if #available(macOS 26.0, *) {
+        // Control glass does not dim with the window (Maciej, 2026-11-01).
+        content.glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
+          .environment(\.controlActiveState, .key)
+      } else {
+        content.background {
+          if isEnabled { shape.fill(.regularMaterial) }
+        }
       }
     }
+    .overlay {
+      if isEnabled {
+        // A short, soft contour separates glass from passing letters without
+        // shadowing the panel's text or spreading across the clear gaps.
+        shape.strokeBorder(
+          Color.black.opacity(colorScheme == .dark ? 0.28 : 0.14),
+          lineWidth: 1
+        )
+        .blur(radius: 1.2)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+      }
+    }
+  }
+}
+
+/// The composer's surface for the bars that sit beside it: the same glass and
+/// corner, and the same opaque sheet when Reduce Transparency is on. Maciej,
+/// 2026-10-30: the composer is the reference and is not modified; the text
+/// destination bar and the pinned All card adopt its surface, not the reverse.
+/// A modifier, not a call site: `OverlayChannelStatusView` is never installed
+/// as a view, so an environment read on it would see the default.
+struct OverlayComposerSurface: ViewModifier {
+  let palette: OverlayAppearancePalette
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+  func body(content: Content) -> some View {
+    content
+      .background {
+        if reduceTransparency {
+          RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+            .fill(palette.desktopBackground.color)
+        }
+      }
+      .modifier(
+        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency))
   }
 }

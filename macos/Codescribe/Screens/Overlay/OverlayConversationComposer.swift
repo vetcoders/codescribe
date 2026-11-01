@@ -53,6 +53,15 @@ struct OverlayConversationComposer: View {
   var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
   var onToggleDraftSync: ((String) -> Void)? = nil
   var onStopDraftSync: (() -> Void)? = nil
+  /// The inbox and 0 · All choose their recipients here, as a small chevron
+  /// beside Send that opens the draft-sync toggles (Maciej, 2026-10-30 on
+  /// build 2981: "ta druga tafla ponad komposerem to jest taka wiocha. Nie
+  /// możemy tego zrobić jako dziubek w przycisku wysyłki?"). The "+" then
+  /// stays a plain attach button.
+  var recipientsOnSend = false
+  /// What clearing the set means here: 0 · All goes back to everyone, the
+  /// inbox back to nobody.
+  var clearRecipientsTitle = String(localized: "Send to everyone")
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @State private var pasteError: String?
@@ -60,17 +69,33 @@ struct OverlayConversationComposer: View {
   @State private var microphoneHint = ComposerMicrophoneHintState()
   @State private var accessoryHeight: CGFloat = 30
   @State private var editorHeight: CGFloat = 28
+  /// The recipient picker stays open across toggles; closing it hands the
+  /// keyboard back to the editor.
+  @State private var recipientPickerShown = false
+  @State private var recipientFocusNudge: UInt64 = 0
 
   /// The height budget caps the editor viewport, never the draft's line count.
   private var isCompact: Bool { maximumEditorHeight != nil }
-  private var showsDraftSync: Bool { !draftSyncChoices.isEmpty || draftSyncActive }
+  /// The main window links drafts in the roster chain and the inbox's "To:";
+  /// its "+" is a plain attach button (Maciej, 2026-10-30 14:03: "+ ma być
+  /// czystym Załącz plik…"). A fiszka still offers the choices here.
+  private var offersDraftSyncHere: Bool {
+    !recipientsOnSend && (onToggleDraftSync != nil || onActivateDraftSync != nil)
+  }
+  private var showsDraftSync: Bool {
+    offersDraftSyncHere && (!draftSyncChoices.isEmpty || draftSyncActive)
+  }
+  private var showsRecipientMenu: Bool {
+    recipientsOnSend && onToggleDraftSync != nil && !draftSyncChoices.isEmpty
+  }
   private func cornerLayout(width: CGFloat = .greatestFiniteMagnitude)
     -> ConversationComposerCornerLayout
   {
     ConversationComposerCornerLayout(
       width: width, fontSize: ComposerControlMetrics.textSize * textScale,
       compact: isCompact, showsSync: showsDraftSync,
-      showsMicrophone: onToggleDraftMicrophone != nil)
+      showsMicrophone: onToggleDraftMicrophone != nil,
+      showsRecipientMenu: showsRecipientMenu)
   }
   private var controlGlyphSize: CGFloat {
     isCompact ? ComposerControlMetrics.intercomGlyphSize : ComposerControlMetrics.glyphSize
@@ -92,9 +117,28 @@ struct OverlayConversationComposer: View {
             RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
               .fill(palette.desktopBackground.color)
           }
+          if draftSyncActive {
+            RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+              .fill(
+                palette.agentAccent.color.opacity(
+                  reduceTransparency
+                    ? ComposerControlMetrics.syncSurfaceTintReducedTransparencyOpacity
+                    : ComposerControlMetrics.syncSurfaceTintOpacity))
+          }
         }
         .modifier(
-          OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency))
+          OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
+        )
+        .overlay {
+          if draftSyncActive {
+            RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+              .strokeBorder(
+                palette.agentAccent.color.opacity(ComposerControlMetrics.syncSurfaceBorderOpacity),
+                lineWidth: 1
+              )
+              .allowsHitTesting(false)
+          }
+        }
       if microphoneHint.visible {
         Text(verbatim: ComposerCaretOwnership.microphoneHint)
           .font(.system(size: 10 * textScale, weight: .medium))
@@ -131,6 +175,17 @@ struct OverlayConversationComposer: View {
     let parts = ConversationDraft.split(draft)
     draft = ConversationDraft.compose(
       text: parts.text, attachments: parts.attachments.filter { $0 != path })
+  }
+  /// Markup's annotated copy takes the original's slot; the original file
+  /// stays on disk. Already attached elsewhere: the old slot just goes.
+  private func replaceAttachment(_ path: String, with annotated: String) {
+    let parts = ConversationDraft.split(draft)
+    guard parts.attachments.contains(path) else { return }
+    let replaced: [String] =
+      parts.attachments.contains(annotated)
+      ? parts.attachments.filter { $0 != path }
+      : parts.attachments.map { $0 == path ? annotated : $0 }
+    draft = ConversationDraft.compose(text: parts.text, attachments: replaced)
   }
 
   private func pickAttachments() {
@@ -258,7 +313,11 @@ struct OverlayConversationComposer: View {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 6) {
             ForEach(attached, id: \.self) { path in
-              OverlayComposerAttachmentPill(path: path, palette: palette) { detach(path) }
+              OverlayComposerAttachmentPill(
+                path: path, palette: palette,
+                onReplace: { current, annotated in replaceAttachment(current, with: annotated) },
+                onDetach: { current in detach(current) }
+              ) { detach(path) }
             }
           }
           // The chips keep their own sideways scrolling; the pin only makes
@@ -290,9 +349,110 @@ struct OverlayConversationComposer: View {
       : draftMicrophoneRecording ? "mic.fill" : "mic"
   }
 
-  /// One "+" opens the composer actions; the former paperclip and link
-  /// buttons live inside it.
+  /// The send button's chevron: the recipient set of a source conversation
+  /// (the inbox builds it, 0 · All narrows the broadcast to it), the same
+  /// draft-sync toggles the roster chain flips. Lit while a set is chosen.
+  /// One press opens the picker, several agents are ticked in it, and
+  /// closing it returns to the composer. A menu closes on every pick, so the
+  /// set lives in a popover instead.
+  private func recipientMenu(_ corners: ConversationComposerCornerLayout) -> some View {
+    let sendGlyph = min(controlGlyphSize, corners.glyphSize)
+    return Button {
+      recipientPickerShown.toggle()
+    } label: {
+      Image(systemName: "chevron.down")
+        .font(.system(size: sendGlyph * 0.33, weight: .semibold))
+        // paperplane.fill sits slightly high; lift the tail onto its midline.
+        .offset(y: -(sendGlyph * 0.08))
+        .conversationActionHover(
+          restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+          hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+        )
+        .frame(
+          width: corners.recipientWidth, height: corners.actionHeight, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .frame(width: corners.recipientWidth, height: corners.actionHeight)
+    .disabled(sending)
+    .overlayFastHint(recipientMenuHint, palette: palette)
+    .popover(isPresented: $recipientPickerShown, arrowEdge: .top) {
+      recipientPicker
+    }
+    .onChange(of: recipientPickerShown) { _, shown in
+      if !shown { recipientFocusNudge &+= 1 }
+    }
+    .accessibilityLabel(Text("Choose recipients"))
+    .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+    .accessibilityIdentifier("overlay-conversation-recipients")
+  }
+
+  private var recipientPicker: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      ForEach(draftSyncChoices) { choice in
+        Toggle(
+          isOn: Binding(
+            get: { choice.selected },
+            set: { _ in onToggleDraftSync?(choice.id) })
+        ) {
+          Text(verbatim: choice.title)
+        }
+        .toggleStyle(.checkbox)
+        .disabled(!choice.enabled)
+      }
+      if draftSyncActive, let onStopDraftSync {
+        Divider()
+        Button(action: onStopDraftSync) { Text(verbatim: clearRecipientsTitle) }
+      }
+    }
+    .font(CSFont.ui(12, .medium))
+    .foregroundStyle(palette.primaryText.color)
+    .padding(10)
+    .frame(minWidth: 160, alignment: .leading)
+    .fixedSize()
+    .background(.regularMaterial)
+    .csFocusPolicy()
+    .onExitCommand { recipientPickerShown = false }
+    .accessibilityIdentifier("overlay-conversation-recipient-picker")
+  }
+
+  private var recipientMenuHint: String {
+    let base = String(localized: "Choose recipients")
+    guard draftSyncActive else { return base }
+    return base + " · " + draftSyncAccessibilityValue
+  }
+
+  private func plusGlyph(_ corners: ConversationComposerCornerLayout) -> some View {
+    Image(systemName: "plus")
+      .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
+      .frame(width: corners.actionWidth, height: corners.actionHeight)
+      .contentShape(Rectangle())
+  }
+
+  /// One "+". Where this composer still offers draft linking it opens the
+  /// actions menu; otherwise it is the attach button itself and opens the
+  /// file panel directly, no submenu.
+  @ViewBuilder
   private func composerPlusMenu(_ corners: ConversationComposerCornerLayout) -> some View {
+    if showsDraftSync {
+      composerPlusActionsMenu(corners)
+    } else {
+      Button(action: pickAttachments) { plusGlyph(corners) }
+        .buttonStyle(.plain)
+        .frame(width: corners.actionWidth, height: corners.actionHeight)
+        .conversationActionHover(
+          restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+          hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+        )
+        .disabled(sending)
+        .overlayFastHint(String(localized: "Attach files…"), palette: palette)
+        .accessibilityLabel(Text("Attach files…"))
+        .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+        .accessibilityIdentifier("overlay-conversation-plus")
+    }
+  }
+
+  private func composerPlusActionsMenu(_ corners: ConversationComposerCornerLayout) -> some View {
     Menu {
       Button("Attach files…", systemImage: "paperclip", action: pickAttachments)
         .disabled(sending)
@@ -322,10 +482,7 @@ struct OverlayConversationComposer: View {
         }
       }
     } label: {
-      Image(systemName: "plus")
-        .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
-        .frame(width: corners.actionWidth, height: corners.actionHeight)
-        .contentShape(Rectangle())
+      plusGlyph(corners)
     }
     .menuStyle(.button)
     .buttonStyle(.plain)
@@ -383,7 +540,8 @@ struct OverlayConversationComposer: View {
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
-        onCancel: onCancel, focusRevision: focusRevision, isCovered: isCovered,
+        onCancel: onCancel, focusRevision: focusRevision &+ recipientFocusNudge,
+        isCovered: isCovered,
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 },
@@ -416,6 +574,7 @@ struct OverlayConversationComposer: View {
       }
       .overlay(alignment: .bottomLeading) {
         composerPlusMenu(corners)
+          .background { OverlayMenuCursorRegion() }
       }
       .overlay(alignment: .bottomTrailing) {
         HStack(spacing: corners.spacing) {
@@ -443,27 +602,34 @@ struct OverlayConversationComposer: View {
             .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
             .accessibilityIdentifier("overlay-conversation-draft-microphone")
           }
-          Button("Send", systemImage: "paperplane.fill", action: onSubmit)
-            .labelStyle(.iconOnly)
-            .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
-            .frame(width: corners.actionWidth, height: corners.actionHeight)
-            .contentShape(Circle())
-            .buttonStyle(.plain)
-            .conversationActionHover(
-              restingColor: restingActionColor,
-              hoverColor: palette.primaryText.color
-            )
-            .disabled(
-              sending
-                || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                  && pendingCaptureAttachments.isEmpty)
-            )
-            .accessibilityIdentifier("overlay-conversation-send")
-            .overlayFastHint(
-              draftSyncNames.count > 1
-                ? String(localized: "Send to all linked agents") : String(localized: "Send"),
-              palette: palette)
+          // Send and the recipient tail share one visual control; mic keeps stack spacing.
+          HStack(spacing: 0) {
+            Button("Send", systemImage: "paperplane.fill", action: onSubmit)
+              .labelStyle(.iconOnly)
+              .font(.system(size: min(controlGlyphSize, corners.glyphSize), weight: .semibold))
+              .frame(width: corners.actionWidth, height: corners.actionHeight)
+              .contentShape(Circle())
+              .buttonStyle(.plain)
+              .conversationActionHover(
+                restingColor: restingActionColor,
+                hoverColor: palette.primaryText.color
+              )
+              .disabled(
+                sending
+                  || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && pendingCaptureAttachments.isEmpty)
+              )
+              .accessibilityIdentifier("overlay-conversation-send")
+              .overlayFastHint(
+                draftSyncNames.count > 1
+                  ? String(localized: "Send to all linked agents") : String(localized: "Send"),
+                palette: palette)
+            if showsRecipientMenu {
+              recipientMenu(corners)
+            }
+          }
         }
+        .background { OverlayMenuCursorRegion() }
       }
     }
     .frame(height: editorViewportHeight)
@@ -481,8 +647,13 @@ private struct ConversationComposerCornerLayout: Equatable {
   let verticalPadding: CGFloat
   let leadingWidth: CGFloat
   let trailingWidth: CGFloat
+  /// The send button's recipient chevron: narrower than an action, a "dziubek".
+  let recipientWidth: CGFloat
 
-  init(width: CGFloat, fontSize: CGFloat, compact: Bool, showsSync: Bool, showsMicrophone: Bool) {
+  init(
+    width: CGFloat, fontSize: CGFloat, compact: Bool, showsSync: Bool, showsMicrophone: Bool,
+    showsRecipientMenu: Bool = false
+  ) {
     lineHeight = ComposerTextLayout.lineHeight(fontSize: fontSize)
     actionHeight = min(ComposerControlMetrics.hitTargetSize, 2 * lineHeight)
     let padding =
@@ -494,18 +665,23 @@ private struct ConversationComposerCornerLayout: Equatable {
     // widens the leading corner.
     let leadingCount: CGFloat = 1
     _ = showsSync
-    let trailingCount: CGFloat = showsMicrophone ? 2 : 1
-    let count = leadingCount + trailingCount
+    // Split-button tail: a third of an action, glued to Send with no extra spacing.
+    let recipientShare: CGFloat = showsRecipientMenu ? 1.0 / 3.0 : 0
+    let trailingActions: CGFloat = showsMicrophone ? 2 : 1
+    let count = leadingCount + trailingActions + recipientShare
     clearance = min(4, max(0, width / 24))
     spacing = min(
       compact ? ComposerControlMetrics.intercomSpacing : ComposerControlMetrics.spacing,
       max(0, width / 32))
     let proseWidth = min(3 * fontSize, max(0, width / 3))
+    let trailingSpacings = max(0, trailingActions - 1)
     actionWidth = min(
       ComposerControlMetrics.hitTargetSize,
-      max(1, (width - proseWidth - 2 * clearance - (count - 2) * spacing) / count))
+      max(1, (width - proseWidth - 2 * clearance - trailingSpacings * spacing) / count))
     leadingWidth = leadingCount * actionWidth + (leadingCount - 1) * spacing
-    trailingWidth = trailingCount * actionWidth + (trailingCount - 1) * spacing
+    recipientWidth = showsRecipientMenu ? ceil(actionWidth * recipientShare) : 0
+    trailingWidth =
+      trailingActions * actionWidth + recipientWidth + trailingSpacings * spacing
   }
 
   var glyphSize: CGFloat { min(actionWidth, actionHeight) * 0.65 }
@@ -580,6 +756,13 @@ enum ConversationAttachmentLabel {
 struct OverlayComposerAttachmentPill: View {
   let path: String
   let palette: OverlayAppearancePalette
+  /// Repoints the draft from the path the preview window currently shows to
+  /// Markup's annotated copy. Nil where the attachment is owned elsewhere (an
+  /// active recording's captures), which leaves the window without Markup.
+  var onReplace: ((_ current: String, _ annotated: String) -> Void)? = nil
+  /// Removes the path the preview window currently shows; after a Markup
+  /// save that is the annotated copy, not `path`. Nil falls back to `onRemove`.
+  var onDetach: ((_ current: String) -> Void)? = nil
   let onRemove: () -> Void
   @State private var thumbnail: NSImage?
   @State private var bytes = 0
@@ -597,7 +780,11 @@ struct OverlayComposerAttachmentPill: View {
   var body: some View {
     HStack(spacing: 6) {
       Button {
-        showPreview = true
+        if AttachmentPreviewPresentation.usesWindow() {
+          presentPreviewWindow()
+        } else {
+          showPreview = true
+        }
       } label: {
         HStack(spacing: 6) {
           if let thumbnail {
@@ -658,6 +845,23 @@ struct OverlayComposerAttachmentPill: View {
       }
     }
   }
+
+  /// Nightly: the preview as its own window above the chat, with Markup when
+  /// the draft can be repointed to the annotated copy.
+  private func presentPreviewWindow() {
+    let remove = onRemove
+    let detach = onDetach
+    var onAnnotated: ((URL, URL) -> Void)? = nil
+    if let replace = onReplace {
+      onAnnotated = { current, annotated in replace(current.path, annotated.path) }
+    }
+    AttachmentPreviewWindowController.present(
+      attachment,
+      onRemove: { current in
+        if let detach, let current { detach(current.path) } else { remove() }
+      },
+      onAnnotated: onAnnotated)
+  }
 }
 
 /// SwiftUI owns the draft; AppKit owns text editing and the responder chain.
@@ -699,6 +903,9 @@ private struct ConversationMessageField: NSViewRepresentable {
 
   func makeNSView(context: Context) -> NSScrollView {
     let scroll = MessageScrollView()
+    let clipView = MessageClipView(frame: scroll.contentView.frame)
+    clipView.drawsBackground = false
+    scroll.contentView = clipView
     // This editor mutates TextKit geometry during main-thread layout. Give it
     // explicit backing layers so an ancestor's flattened layer cannot draw it
     // on a Core Animation worker while layout holds the view-hierarchy lock.
@@ -710,6 +917,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     scroll.contentView.canDrawConcurrently = false
     scroll.contentView.layer?.drawsAsynchronously = false
     scroll.drawsBackground = false
+    scroll.documentCursor = nil
+    scroll.contentView.documentCursor = nil
     scroll.hasVerticalScroller = true
     // The scroller policy lives in `CSScrollerPin` (Founder, 2026-10-18); the
     // coordinator keeps it pinned across "Show scroll bars" changes.
@@ -717,8 +926,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     scroll.borderType = .noBorder
     scroll.maximumEditorHeight =
       maximumEditorHeight
-      ?? ComposerControlMetrics.conversationEditorMaximumHeight * fontSize
-      / ComposerControlMetrics.textSize
+      ?? ComposerControlMetrics.conversationEditorMaximumHeight(
+        lineHeight: corners.lineHeight, actionHeight: corners.actionHeight)
     scroll.corners = corners
     let editor = MessageTextView()
     editor.wantsLayer = true
@@ -768,8 +977,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     context.coordinator.parent = self
     (scroll as? MessageScrollView)?.maximumEditorHeight =
       maximumEditorHeight
-      ?? ComposerControlMetrics.conversationEditorMaximumHeight * fontSize
-      / ComposerControlMetrics.textSize
+      ?? ComposerControlMetrics.conversationEditorMaximumHeight(
+        lineHeight: corners.lineHeight, actionHeight: corners.actionHeight)
     (scroll as? MessageScrollView)?.onHeightChange = { context.coordinator.updateHeight($0) }
     (scroll as? MessageScrollView)?.corners = corners
     guard let editor = scroll.documentView as? MessageTextView else { return }
@@ -981,7 +1190,26 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
   }
 
+  private final class MessageClipView: NSClipView {
+    override var documentCursor: NSCursor? {
+      get { nil }
+      set {}
+    }
+
+    override func resetCursorRects() {
+      discardCursorRects()
+    }
+  }
+
   private final class MessageScrollView: NSScrollView {
+    override var documentCursor: NSCursor? {
+      get { nil }
+      set {}
+    }
+
+    override func resetCursorRects() {
+      discardCursorRects()
+    }
     var onHeightChange: (CGFloat) -> Void = { _ in }
     var maximumEditorHeight = ComposerControlMetrics.conversationEditorMaximumHeight {
       didSet {
@@ -1004,9 +1232,86 @@ private struct ConversationMessageField: NSViewRepresentable {
     private let cornerClip = CAShapeLayer()
     private var arranging = false
 
+    override func tile() {
+      let origin: NSPoint? = rowReleasedForDraft ? contentView.bounds.origin : nil
+      super.tile()
+      guard rowReleasedForDraft else { return }
+      // Text-container padding scrolls away. Keep the actual viewport and its
+      // scroller below the rounded glass edge, including midway through a draft.
+      let inset = ComposerControlMetrics.textVerticalInset
+      var viewport = contentView.frame
+      viewport.size.height = max(0, viewport.height - inset)
+      if isFlipped { viewport.origin.y += inset }
+      contentView.frame = viewport
+      if let scroller = verticalScroller {
+        var frame = scroller.frame
+        frame.size.height = max(0, frame.height - inset)
+        if isFlipped { frame.origin.y += inset }
+        scroller.frame = frame
+      }
+      if let origin {
+        // Super briefly restores the full-height clip and clamps its bottom
+        // offset. Restore the passage after applying the stationary inset.
+        let proposed = NSRect(origin: origin, size: contentView.bounds.size)
+        contentView.scroll(to: contentView.constrainBoundsRect(proposed).origin)
+        reflectScrolledClipView(contentView)
+      }
+    }
+
     func invalidateContentMeasurement() {
       needsContentMeasurement = true
       needsLayout = true
+    }
+
+    func hitsCornerControls(_ clipPoint: NSPoint) -> Bool {
+      guard let corners, contentView.bounds.contains(clipPoint) else { return false }
+      return corners.exclusions(viewport: contentView.bounds, textOrigin: .zero).contains {
+        $0.contains(clipPoint)
+      }
+    }
+
+    func hitsCornerControls(windowPoint: NSPoint) -> Bool {
+      hitsCornerControls(contentView.convert(windowPoint, from: nil))
+    }
+
+    func cursorRegions(in target: NSView) -> (editable: [NSRect], controls: [NSRect]) {
+      let viewport = contentView.bounds
+      guard viewport.width > 0, viewport.height > 0 else { return ([], []) }
+      guard let corners else {
+        return ([target.convert(viewport, from: contentView)], [])
+      }
+      let controls = corners.exclusions(viewport: viewport, textOrigin: .zero)
+      let controlRowY = max(viewport.minY, viewport.maxY - corners.actionHeight)
+      var editable: [NSRect] = []
+      let upper = NSRect(
+        x: viewport.minX, y: viewport.minY,
+        width: viewport.width, height: max(0, controlRowY - viewport.minY))
+      if !upper.isEmpty {
+        editable.append(upper)
+      }
+      if !rowReleasedForDraft, controls.count == 2 {
+        let left = controls[0]
+        let right = controls[1]
+        let middle = NSRect(
+          x: left.maxX, y: controlRowY,
+          width: max(0, right.minX - left.maxX),
+          height: max(0, viewport.maxY - controlRowY))
+        if !middle.isEmpty {
+          editable.append(middle)
+        }
+      }
+      return (
+        editable: editable.map { target.convert($0, from: contentView) },
+        controls: controls.map { target.convert($0, from: contentView) }
+      )
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+      let localPoint = superview != nil ? convert(point, from: superview) : point
+      if hitsCornerControls(contentView.convert(localPoint, from: self)) {
+        return nil
+      }
+      return super.hitTest(point)
     }
 
     override func reflectScrolledClipView(_ clipView: NSClipView) {
@@ -1052,7 +1357,8 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     private func caretRect(_ range: NSRange, in editor: NSTextView) -> NSRect? {
       guard let window = editor.window, range.location != NSNotFound else { return nil }
-      let index = min(range.location, editor.textStorage?.length ?? 0)
+      let length = editor.textStorage?.length ?? 0
+      let index = min(range.location, length)
       let screenRect = editor.firstRect(
         forCharacterRange: NSRange(location: index, length: 0), actualRange: nil)
       // An insertion rectangle may have zero width and still have a visible
@@ -1060,7 +1366,33 @@ private struct ConversationMessageField: NSViewRepresentable {
       guard screenRect.height > 0, screenRect.origin.x.isFinite, screenRect.origin.y.isFinite,
         screenRect.height.isFinite
       else { return nil }
-      return editor.convert(window.convertFromScreen(screenRect), from: nil)
+      var rect = editor.convert(window.convertFromScreen(screenRect), from: nil)
+      if let textLayout = editor.layoutManager, let container = editor.textContainer {
+        textLayout.ensureLayout(for: container)
+        let origin = editor.textContainerOrigin
+        let lineRect: NSRect?
+        if index == length, textLayout.extraLineFragmentTextContainer === container {
+          lineRect = textLayout.extraLineFragmentUsedRect.offsetBy(dx: origin.x, dy: origin.y)
+        } else if length > 0 {
+          let charIndex = min(index, length - 1)
+          let glyphIndex = textLayout.glyphIndexForCharacter(at: charIndex)
+          if glyphIndex < textLayout.numberOfGlyphs {
+            lineRect = textLayout.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+              .offsetBy(dx: origin.x, dy: origin.y)
+          } else {
+            lineRect = nil
+          }
+        } else {
+          lineRect = nil
+        }
+        if let lineRect, lineRect.height > 0 {
+          let top = min(rect.minY, lineRect.minY)
+          let bottom = max(rect.maxY, lineRect.maxY)
+          rect.origin.y = top
+          rect.size.height = bottom - top
+        }
+      }
+      return rect
     }
 
     func revealUnobscuredRange(_ range: NSRange, in editor: NSTextView) {
@@ -1105,7 +1437,7 @@ private struct ConversationMessageField: NSViewRepresentable {
         let container = editor.textContainer, let textLayout = editor.layoutManager,
         contentView.bounds.width > 0
       else { return }
-      let viewport = contentView.bounds.size
+      var viewport = contentView.bounds.size
       if previousViewport != viewport {
         // Preserve a visible caret on resize, but never jump from a manually
         // scrolled passage to an offscreen selection.
@@ -1132,7 +1464,11 @@ private struct ConversationMessageField: NSViewRepresentable {
         container.exclusionPaths = []
         container.containerSize = NSSize(
           width: max(1, viewport.width), height: .greatestFiniteMagnitude)
-        if (editor.textStorage?.length ?? 0) == 0 { rowReleasedForDraft = false }
+        if (editor.textStorage?.length ?? 0) == 0, rowReleasedForDraft {
+          rowReleasedForDraft = false
+          tile()
+          viewport = contentView.bounds.size
+        }
         var measuredHeight: CGFloat
         if !rowReleasedForDraft {
           // The controls are at the CURRENT viewport bottom, not the height
@@ -1145,6 +1481,8 @@ private struct ConversationMessageField: NSViewRepresentable {
           measuredHeight = documentHeight()
           if measuredHeight > minimum {
             rowReleasedForDraft = true
+            tile()
+            viewport = contentView.bounds.size
           }
         } else {
           measuredHeight = 0
@@ -1162,12 +1500,7 @@ private struct ConversationMessageField: NSViewRepresentable {
           // A released row needs at least one readable native line ABOVE it,
           // even when an attachment or a small height budget reduces the cap.
           let releasedMinimum = minimum + corners.actionHeight
-          let limit = max(
-            releasedMinimum,
-            ComposerTextLayout.resolve(
-              contentHeight: .greatestFiniteMagnitude, lineHeight: corners.lineHeight,
-              maximumHeight: maximumEditorHeight
-            ).height)
+          let limit = max(releasedMinimum, maximumEditorHeight)
           candidate = min(limit, max(releasedMinimum, measuredHeight))
         } else {
           candidate = minimum
@@ -1180,6 +1513,7 @@ private struct ConversationMessageField: NSViewRepresentable {
         editor.minSize = NSSize(width: 0, height: viewport.height)
         if editor.frame.size != documentSize { editor.setFrameSize(documentSize) }
         needsContentMeasurement = false
+        window?.invalidateCursorRects(for: editor)
         onHeightChange(candidate)
       }
       updateCornerClip()
@@ -1441,6 +1775,61 @@ private struct ConversationMessageField: NSViewRepresentable {
         (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
       }
       notifyFocusChange()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+      if let scroll = enclosingScrollView as? MessageScrollView {
+        let localPoint = superview != nil ? convert(point, from: superview) : point
+        if scroll.hitsCornerControls(scroll.contentView.convert(localPoint, from: self)) {
+          return nil
+        }
+      }
+      return super.hitTest(point)
+    }
+
+    override func resetCursorRects() {
+      discardCursorRects()
+      guard let scroll = enclosingScrollView as? MessageScrollView else {
+        super.resetCursorRects()
+        return
+      }
+      let regions = scroll.cursorRegions(in: self)
+      for rect in regions.editable where !rect.isEmpty {
+        addCursorRect(rect, cursor: .iBeam)
+      }
+      for rect in regions.controls where !rect.isEmpty {
+        addCursorRect(rect, cursor: .arrow)
+      }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+      if (enclosingScrollView as? MessageScrollView)?.hitsCornerControls(
+        windowPoint: event.locationInWindow) == true
+      {
+        NSCursor.arrow.set()
+        return
+      }
+      super.cursorUpdate(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+      if (enclosingScrollView as? MessageScrollView)?.hitsCornerControls(
+        windowPoint: event.locationInWindow) == true
+      {
+        NSCursor.arrow.set()
+        return
+      }
+      super.mouseMoved(with: event)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+      if (enclosingScrollView as? MessageScrollView)?.hitsCornerControls(
+        windowPoint: event.locationInWindow) == true
+      {
+        NSCursor.arrow.set()
+        return
+      }
+      super.mouseEntered(with: event)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

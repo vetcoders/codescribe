@@ -114,12 +114,12 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertEqual(tray.holdBadgeOption, .twelve, "tray must re-read persisted Settings truth")
   }
 
-  /// The tray's Auto Format row cycles the full wheel: Off → Correction →
-  /// Smart → Max → back to Off. One canonical order, no dead ends.
+  /// The tray's Auto Format row cycles the automatic wheel: Off → Correction →
+  /// Smart → back to Off. One canonical order, no dead ends.
   func testAutoFormatLevelCyclesFullWheel() {
     XCTAssertEqual(FormattingPolicyOption.off.next, .correction)
     XCTAssertEqual(FormattingPolicyOption.correction.next, .smart)
-    XCTAssertEqual(FormattingPolicyOption.smart.next, .max)
+    XCTAssertEqual(FormattingPolicyOption.smart.next, .off)
     XCTAssertEqual(FormattingPolicyOption.max.next, .off)
   }
 
@@ -418,12 +418,12 @@ final class TrayViewModelTests: XCTestCase {
   }
 
   func testAutoFormatWritesEveryNormalizedLevelAndReconcilesSuccess() {
-    for level in FormattingPolicyOption.allCases {
+    for level in FormattingPolicyOption.automaticCases {
       let engine = TrackingTrayEngine(
         showDockIcon: true,
         overlayEnabled: true,
         pasteMode: .safe,
-        autoFormatLevel: level == .off ? .max : .off,
+        autoFormatLevel: level == .off ? .smart : .off,
         notesMode: false,
         startInAssistive: false
       )
@@ -439,8 +439,8 @@ final class TrayViewModelTests: XCTestCase {
   }
 
   func testAutoFormatRejectedWritesKeepPersistedTruthForEveryLevel() {
-    for level in FormattingPolicyOption.allCases {
-      let persisted: FormattingPolicyOption = level == .off ? .max : .off
+    for level in FormattingPolicyOption.automaticCases {
+      let persisted: FormattingPolicyOption = level == .off ? .smart : .off
       let engine = TrackingTrayEngine(
         showDockIcon: true,
         overlayEnabled: true,

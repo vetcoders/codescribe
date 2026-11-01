@@ -72,7 +72,7 @@ pub use mcp_projection::{
 pub use permissions::{
     AgentPermissions, PermissionLevel, PermissionSource, ToolCapability, tool_identity,
 };
-pub use provider::{AgentProvider, StreamOptions};
+pub use provider::{AgentProvider, AgentProviderHost, StreamOptions};
 pub use redaction::{
     CommandRedactor, contains_sensitive_key, redact_command_line, redacted_arguments,
 };
@@ -92,4 +92,7 @@ pub use thread_delivery::{
 };
 pub use thread_index::{ThreadFilter, ThreadIndex, ThreadIndexData, ThreadSummary};
 pub use thread_store::{Thread, ThreadMessage, ThreadNote, ThreadStore, TokenUsage};
-pub use types::{ContentBlock, ImageAsset, Message, Role};
+pub use types::{
+    ContentBlock, ImageAsset, Message, MessageMetadata, ProviderResponseMetadata,
+    ProviderWireMessage, Role,
+};

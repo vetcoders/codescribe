@@ -371,6 +371,84 @@ enum OverlayHeaderDensity: Equatable {
   }
 }
 
+/// Pointer paint owns its state outside the canvas's observation scope. Crossing
+/// the window boundary changes these indicators without rebuilding its geometry.
+private struct OverlayPointerHoverChrome: ViewModifier {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var pointerInsideOverlay = false
+  let palette: OverlayAppearancePalette
+  let showsIndicators: Bool
+  let onHover: (Bool) -> Void
+
+  func body(content: Content) -> some View {
+    content
+      .overlay {
+        if showsIndicators {
+          HStack {
+            Capsule().frame(width: 3, height: 28)
+            Spacer()
+            Capsule().frame(width: 3, height: 28)
+          }
+          .foregroundStyle(palette.primaryText.color)
+          .padding(.horizontal, 5)
+          .opacity(OverlayResizeChrome.sideIndicatorOpacity(pointerInside: pointerInsideOverlay))
+          .animation(
+            OverlayResizeChrome.sideIndicatorAnimation(reduceMotion: reduceMotion),
+            value: pointerInsideOverlay
+          )
+          .transaction { transaction in
+            if reduceMotion {
+              transaction.animation = nil
+              transaction.disablesAnimations = true
+            }
+          }
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+        }
+      }
+      .onHover { inside in
+        guard pointerInsideOverlay != inside else { return }
+        pointerInsideOverlay = inside
+        onHover(inside)
+      }
+  }
+}
+
+/// The brand's hover changes only the close control, never the canvas layout.
+private struct OverlayCloseButton: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var closeDotHovered = false
+  let palette: OverlayAppearancePalette
+  let onClose: () -> Void
+
+  var body: some View {
+    Button(action: onClose) {
+      ModeDot(color: CSColor.terracotta, size: 9)
+        .overlay {
+          if closeDotHovered {
+            OverlayCloseCross()
+              .stroke(palette.desktopBackground.color, style: StrokeStyle(lineWidth: 1))
+              .accessibilityHidden(true)
+          }
+        }
+        .scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)
+        .contentShape(Circle().inset(by: -7.5))
+    }
+    .buttonStyle(.plain)
+    .background { OverlayMenuCursorRegion { closeDotHovered = $0 } }
+    .animation(
+      reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered
+    )
+    .focusable(false)
+    .modifier(
+      OverlayHeaderControlChrome(
+        title: OverlayIntent.close.helpText, accent: nil, palette: palette)
+    )
+    .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
+    .accessibilityIdentifier("overlay-brand-close-dot")
+  }
+}
+
 struct DictationOverlayView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
@@ -381,8 +459,6 @@ struct DictationOverlayView: View {
   @AppStorage(OverlayAgentDrawerLayout.widthDefaultsKey) private var preferredAgentDrawerWidth =
     300.0
   @State private var agentDrawerResize: (start: CGFloat, width: CGFloat)?
-  @State private var closeDotHovered = false
-  @State private var pointerInsideOverlay = false
   @State private var overlayVisible = false
   @State private var headerHeight: CGFloat = 48
   @State private var footerHeight: CGFloat = 0
@@ -419,7 +495,7 @@ struct DictationOverlayView: View {
     OverlayCanvasSurface(palette: palette) {
       // The rail reads the live transcript (intents, versions, history
       // refusal). Scoped, a capture tick re-renders the rail, not the root.
-      canvasStack(
+      overlayGlassContainer(canvasStack(
         OverlayObservationScope {
           OverlayIntentRail(
             phase: state.statusText,
@@ -440,7 +516,7 @@ struct DictationOverlayView: View {
             onRetranscribe: { state.retranscribe(pass: $0) },
             onFormatOnce: { state.formatTranscript(at: $0) }
           )
-        })
+        }))
     }
     .coordinateSpace(name: "overlay-canvas")
     .csFocusPolicy()
@@ -468,16 +544,29 @@ struct DictationOverlayView: View {
       )
     }
     .animation(reduceMotion ? nil : CSMotion.floatIn, value: state.toast)
-    .onHover { inside in
-      pointerInsideOverlay = inside
-      state.setPointerHovering(inside)
-    }
+    .modifier(
+      OverlayPointerHoverChrome(
+        palette: palette, showsIndicators: !state.isCollapsed,
+        onHover: { state.setPointerHovering($0) }
+      )
+    )
 
     .onAppear {
       FontLoader.register()
     }
     .onChange(of: state.channelMapInHeader) { _, _ in
       state.channelMapPreferenceChanged()
+    }
+  }
+
+  @ViewBuilder
+  private func overlayGlassContainer<Content: View>(_ content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      // One sampling region for the header and both panes' floating controls.
+      // Zero merge distance keeps the existing clear gaps between them open.
+      GlassEffectContainer(spacing: 0) { content }
+    } else {
+      content
     }
   }
 
@@ -512,13 +601,16 @@ struct DictationOverlayView: View {
         let conversationEdgeWidth = min(
           geometry.size.width,
           OverlayAgentDrawerLayout.conversationEdgeWidth(textScale: textScale))
+        // A dragged divider may narrow the list down to its rail: past the
+        // fold width it folds there on release.
+        let dragMinimumWidth: CGFloat? = agentDrawerResize == nil ? nil : railWidth
         let drawerWidth =
           conversationFolded && agentDrawerResize == nil
           ? max(0, geometry.size.width - conversationEdgeWidth)
           : OverlayAgentDrawerLayout.drawerWidth(
             textScale: textScale,
             preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
-            windowWidth: geometry.size.width)
+            windowWidth: geometry.size.width, minimumWidth: dragMinimumWidth)
         let canvasWidth = max(
           0,
           geometry.size.width
@@ -533,15 +625,13 @@ struct DictationOverlayView: View {
         let splitDrawerWidth = OverlayAgentDrawerLayout.drawerWidth(
           textScale: textScale,
           preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
-          windowWidth: geometry.size.width)
+          windowWidth: geometry.size.width, minimumWidth: dragMinimumWidth)
         let conversationContentWidth = max(
           0,
           geometry.size.width
             - (columnShown ? splitDrawerWidth : 0) - (railShown ? railWidth : 0)
             - transcriptActionsWidth)
         let canvasHidden = canvasWidth < 1 || conversationFolded
-        // The conversation toggle has a reserved row, clear of message text.
-        let conversationControlsHeight: CGFloat = columnShown ? 30 * textScale : 0
         HStack(alignment: .top, spacing: 0) {
           ZStack {
             // Both ends are numbers, so the fold interpolates with the window's
@@ -557,9 +647,12 @@ struct DictationOverlayView: View {
               .accessibilityHidden(!transcriptVisible)
             if agentsSurface, let conversation = state.selectedConversation {
               let resolvedTarget = state.resolvedComposerTarget(viewing: conversation)
+              // The inbox composes with no recipient of its own: the agents
+              // linked to it are the destination (Maciej, 2026-10-30 13:58).
+              let composesText = resolvedTarget != nil || conversation.isDraftSyncSource
               OverlayConversationView(
                 conversation: conversation, palette: palette,
-                topInset: headerHeight + 8 + conversationControlsHeight, bottomInset: 20,
+                topInset: headerHeight + 8, bottomInset: 20,
                 pendingControls: state.pendingReplyControls,
                 controlErrors: state.replyControlErrors,
                 onControl: { message, stop in
@@ -569,26 +662,18 @@ struct DictationOverlayView: View {
                 isPresented: !state.isCollapsed,
                 isCovered: canvasHidden,
                 draft: Binding(
-                  get: { resolvedTarget.map { state.conversationDraft(for: $0.id) } ?? "" },
+                  get: { state.conversationDraft(for: conversation.id) },
                   set: { value in
-                    guard let target = resolvedTarget, state.composerTargetIsAvailable(target)
-                    else { return }
-                    state.setConversationDraft(value, for: target.id)
+                    guard composesText else { return }
+                    state.setConversationDraft(value, for: conversation.id)
                   }),
-                sending: resolvedTarget.map { state.pendingTextMessages.contains($0.id) } ?? false,
-                sendError: resolvedTarget.flatMap { target in
-                  state.draftSyncSendError(for: target.id)
-                    ?? (state.draftCapture.errorConversationID == target.id
-                      ? state.draftCapture.error : nil)
-                },
+                sending: state.pendingTextMessages.contains(conversation.id),
+                sendError: state.draftSyncSendError(for: conversation.id)
+                  ?? (state.draftCapture.errorConversationID == conversation.id
+                    ? state.draftCapture.error : nil),
                 onSend: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  Task {
-                    guard state.composerTargetIsAvailable(target) else { return }
-                    await state.sendConversationText(target)
-                  }
+                  guard composesText else { return }
+                  Task { await state.sendConversationText(conversation) }
                 },
                 microphoneOpen: state.conversationMicrophoneOpen(conversation),
                 microphoneEnabled: state.canToggleConversationMicrophone(conversation)
@@ -606,120 +691,63 @@ struct DictationOverlayView: View {
                 },
                 focusAgentPanelHint: conversation.owner.flatMap { state.agentPanelFocusHelp($0) },
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
+                navigationMenu: conversationHeaderMenu(conversation),
                 navigationActions: conversationHeaderActions(conversation),
                 navigationIndicators: conversationHeaderIndicators(conversation),
                 composerConversation: resolvedTarget,
-                composerAvailable: resolvedTarget != nil,
-                composerMicrophoneOpen: resolvedTarget.map { state.conversationMicrophoneOpen($0) },
-                composerRouting: AnyView(composerRouting(viewing: conversation)),
+                composerAvailable: composesText,
+                composerMicrophoneOpen: state.conversationMicrophoneOpen(conversation),
                 onPrepareHeldEdit: { message in
-                  state.prepareHeldComposerEdit(heldComposerTarget(message, viewing: conversation))
+                  state.prepareHeldComposerEdit(
+                    state.heldComposerTarget(message, viewing: conversation))
                 },
                 onReturnHeldText: { message, text, revision in
                   state.returnHeldComposerText(
-                    text, to: heldComposerTarget(message, viewing: conversation), revision: revision
+                    text, to: state.heldComposerTarget(message, viewing: conversation),
+                    revision: revision
                   )
                 },
-                onNavigateComposerReply: resolvedTarget?.id == conversation.id
-                  ? nil
-                  : {
-                    guard let target = resolvedTarget, state.composerTargetIsAvailable(target),
-                      let messageID = state.conversationReplies[target.id]?.messageID
-                    else { return }
-                    state.navigateToConversationMessage(target, messageID: messageID)
-                  },
                 conversationNavigationRequest: state.conversationNavigationRequest,
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
                 onComposerTypingActivity: { state.noteComposerTypingActivity() },
-                replySelection: resolvedTarget.flatMap { state.conversationReplies[$0.id] },
-                onClearReply: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.conversationReplies.removeValue(forKey: target.id)
-                },
-                draftMicrophoneRecording: resolvedTarget.map {
-                  state.draftCapture.conversationID == $0.id
-                } ?? false,
-                draftMicrophoneBusy: resolvedTarget.map { state.draftMicrophoneBusy(in: $0) }
-                  ?? true,
+                replySelection: state.conversationReplies[conversation.id],
+                onClearReply: { state.conversationReplies.removeValue(forKey: conversation.id) },
+                draftMicrophoneRecording: state.draftCapture.conversationID == conversation.id,
+                draftMicrophoneBusy: state.draftMicrophoneBusy(in: conversation),
                 onToggleDraftMicrophone: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  Task {
-                    guard state.composerTargetIsAvailable(target) else { return }
-                    await state.toggleDraftMicrophone(in: target)
-                  }
+                  guard composesText else { return }
+                  Task { await state.toggleDraftMicrophone(in: conversation) }
                 },
                 onStageCaptureAttachments: { paths in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return false
-                  }
-                  return state.stageConversationAttachments(paths, in: target)
+                  // Only a live take of this exact agent may adopt the files;
+                  // the inbox keeps them in its draft for manual Send.
+                  guard state.composerTargetIsAvailable(conversation) else { return false }
+                  return state.stageConversationAttachments(paths, in: conversation)
                 },
-                pendingCaptureAttachments: resolvedTarget.flatMap {
-                  state.captureAttachmentDrafts[$0.id]?.paths
-                } ?? [],
-                onRemoveCaptureAttachment: { path in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.removeCaptureAttachment(path, in: target.id)
+                pendingCaptureAttachments: state.captureAttachmentDrafts[conversation.id]?.paths
+                  ?? [],
+                onRemoveCaptureAttachment: {
+                  state.removeCaptureAttachment($0, in: conversation.id)
                 },
-                captureAttachmentError: resolvedTarget.flatMap {
-                  state.captureAttachmentErrors[$0.id]
-                },
+                captureAttachmentError: state.captureAttachmentErrors[conversation.id],
                 onRetryCaptureAttachments: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  Task {
-                    guard state.composerTargetIsAvailable(target) else { return }
-                    await state.retryCaptureAttachments(in: target.id)
-                  }
+                  Task { await state.retryCaptureAttachments(in: conversation.id) }
                 },
                 onReply: { message in
-                  state.chooseComposerTarget(conversation)
                   state.conversationReplies[conversation.id] = OverlayUserReplyReference(
                     message: message)
                 },
-                draftSyncChoices: resolvedTarget.map { state.draftSyncChoices(for: $0) } ?? [],
-                draftSyncNames: resolvedTarget.map { state.draftSyncNames(for: $0.id) } ?? [],
-                draftSyncArmed: resolvedTarget.map {
-                  state.armedDraftSyncConversationID == $0.id
-                } ?? false,
-                draftSyncEnabled: resolvedTarget.map { state.canActivateDraftSync(for: $0.id) }
-                  ?? false,
-                onActivateDraftSync: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.activateDraftSync(for: target.id)
-                },
-                onProseEdit: { edit in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.applyConversationProseEdit(edit, for: target.id)
-                },
-                onToggleDraftSync: { id in
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.toggleDraftSync(from: target.id, with: id)
-                },
-                onStopDraftSync: {
-                  guard let target = resolvedTarget, state.composerTargetIsAvailable(target) else {
-                    return
-                  }
-                  state.stopDraftSync(for: target.id)
-                }
+                // Every channel's composer carries the recipient chevron beside
+                // Send with the draft-sync set menu; the "+" stays a plain
+                // attach button (Maciej, 2026-10-31 01:13Z).
+                draftSyncChoices: state.draftSyncChoices(for: conversation),
+                draftSyncNames: state.draftSyncNames(for: conversation.id),
+                draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
+                draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
+                onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
+                onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
+                onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
               )
-              .onAppear { state.initializeComposerTarget(conversation) }
-              .onChange(of: conversation.id) { _, _ in
-                state.initializeComposerTarget(conversation)
-              }
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
               .accessibilityHidden(state.isCollapsed)
@@ -737,17 +765,11 @@ struct DictationOverlayView: View {
           .opacity(canvasHidden ? 0 : 1)
           .allowsHitTesting(!canvasHidden)
           .accessibilityHidden(canvasHidden)
-          // Keep the conversation and its reveal edge in the same cell. Its
-          // control stays usable when the conversation itself is folded. The
-          // cell clips the split-width conversation while it slides.
+          // The cell clips the split-width conversation while it slides. A
+          // folded conversation leaves only its edge; the divider beside it
+          // brings it back.
           .frame(width: canvasWidth, height: geometry.size.height, alignment: .leading)
           .clipped()
-          .overlay(alignment: .topLeading) {
-            if columnShown {
-              conversationEdgeControls(canvasShown: !canvasHidden)
-                .padding(.top, headerHeight + 16)
-            }
-          }
           .animation(
             reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
             value: state.isCollapsed
@@ -761,7 +783,9 @@ struct DictationOverlayView: View {
             .onExitCommand { state.hideAgentSidebar() }
           }
           if railShown {
-            agentRail(maximumHeight: geometry.size.height, width: railWidth)
+            agentRail(
+              maximumHeight: geometry.size.height, width: railWidth,
+              windowWidth: geometry.size.width)
               .transition(.move(edge: .trailing).combined(with: .opacity))
           }
           if transcriptActionsShown {
@@ -888,30 +912,6 @@ struct DictationOverlayView: View {
           .accessibilityHidden(true)
       }
     }
-    .overlay {
-      if !state.isCollapsed {
-        HStack {
-          Capsule().frame(width: 3, height: 28)
-          Spacer()
-          Capsule().frame(width: 3, height: 28)
-        }
-        .foregroundStyle(palette.primaryText.color)
-        .padding(.horizontal, 5)
-        .opacity(OverlayResizeChrome.sideIndicatorOpacity(pointerInside: pointerInsideOverlay))
-        .animation(
-          OverlayResizeChrome.sideIndicatorAnimation(reduceMotion: reduceMotion),
-          value: pointerInsideOverlay
-        )
-        .transaction { transaction in
-          if reduceMotion {
-            transaction.animation = nil
-            transaction.disablesAnimations = true
-          }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-      }
-    }
     .onChange(of: state.captureGeneration) { _, _ in
       if state.windowContentSurface == .transcription {
         state.refreshRetranscriptionAvailability()
@@ -948,25 +948,29 @@ struct DictationOverlayView: View {
   }
 
   /// The roster is always a side column, sized by the user and capped to
-  /// leave the conversation readable. Its header owns only its own fold.
+  /// leave the conversation readable. Its divider is its only fold.
   private func agentDrawerColumn(
     maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
   ) -> some View {
-    var roster = channelStatusView
-    roster.sidebarControls = agentsSidebarControls(canvasShown: state.agentsLayout != .agents)
-    return roster.monitorBody(
-      maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
-      focusRevision: state.agentDrawerFocusRevision
-    )
+    let contentMinimum = OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale)
+    return OverlayObservationScope {
+      var roster = channelStatusView
+      roster.gestureFocusID = state.agentGestureFocusID
+      return roster.monitorBody(
+        maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
+        focusRevision: state.agentDrawerFocusRevision
+      )
+    }
     .padding(.top, headerHeight + 8)
     .padding(.horizontal, 8)
     .padding(.bottom, 16)
-    .frame(width: width)
+    .frame(width: max(width, contentMinimum))
     // The list lays out at its new width at once and only the column's frame
     // slides over it, anchored to the window edge: a row never re-wraps its
-    // title and preview inside a half-way frame (Founder, 2026-10-26).
+    // title and preview inside a half-way frame. A
+    // divider dragged toward the rail keeps the rows' leading pills in view.
     .animation(nil, value: width)
-    .frame(width: width, alignment: .trailing)
+    .frame(width: width, alignment: width < contentMinimum ? .leading : .trailing)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()
     .background { OverlayMenuCursorRegion() }
@@ -984,43 +988,14 @@ struct DictationOverlayView: View {
     }
   }
 
-  /// A real slot on the conversation's own edge, with equal insets on both
-  /// sides. The row above the messages is reserved by their top inset.
-  private func conversationEdgeControls(canvasShown: Bool) -> some View {
-    let controls = agentsSidebarControls(canvasShown: canvasShown)
-    return HStack(spacing: 0) {
-      OverlaySidebarToggleButton(
-        symbol: "sidebar.left", title: controls.canvasTitle,
-        identifier: "overlay-agent-sidebar-toggle-canvas", palette: palette,
-        textScale: textScale, action: controls.onToggleCanvas)
-      Spacer(minLength: 0)
-      if canvasShown {
-        Color.clear
-          .frame(width: 22 * textScale, height: 22 * textScale)
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
-      }
-    }
-    .padding(.horizontal, 8 * textScale)
-  }
-
-  private func agentsSidebarControls(canvasShown: Bool) -> OverlayAgentsSidebarControls {
-    OverlayAgentsSidebarControls(
-      canvasShown: canvasShown,
-      canvasIsTranscription: state.windowContentSurface == .transcription,
-      onToggleCanvas: {
-        if canvasShown {
-          state.hideAgentsCanvas()
-        } else {
-          state.showAgentsCanvas()
-        }
-      },
-      onFoldList: { state.foldAgentList() })
-  }
-
-  /// Preserve the existing explicit divider gesture: crossing the conversation
-  /// floor folds that pane, while ordinary window resizing keeps the split.
+  /// The divider folds both panes; no button does. Crossing the conversation
+  /// floor folds the conversation; released under the rail fold width, the
+  /// list folds to its pills. Ordinary window resizing keeps the split.
   private func commitAgentDrawerWidth(_ preferred: CGFloat, windowWidth: CGFloat) {
+    if preferred * textScale < OverlayAgentDrawerLayout.railFoldWidth(textScale: textScale) {
+      state.foldAgentList()
+      return
+    }
     guard
       let width = OverlayAgentDrawerLayout.rememberedWidth(
         textScale: textScale, preferredWidth: preferred, windowWidth: windowWidth)
@@ -1032,13 +1007,16 @@ struct DictationOverlayView: View {
     if state.agentsLayout == .agents { state.setAgentsLayout(.split) }
   }
 
-  /// The folded list beside the conversation: its pills, under the
-  /// `sidebar.right` that unfolds it, where the list's own button was.
-  private func agentRail(maximumHeight: CGFloat, width: CGFloat) -> some View {
-    channelStatusView.railBody(
-      maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
-      onUnfold: { state.unfoldAgentList() }
-    )
+  /// The folded list beside the conversation: its pills, the minimal view of
+  /// the list. Its divider, dragged toward the conversation, unfolds it.
+  private func agentRail(
+    maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
+  ) -> some View {
+    OverlayObservationScope {
+      var roster = channelStatusView
+      roster.gestureFocusID = state.agentGestureFocusID
+      return roster.railBody(maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16))
+    }
     .padding(.top, headerHeight + 8)
     .padding(.bottom, 16)
     // The native panel owns the outer resize band before SwiftUI hit testing.
@@ -1049,12 +1027,7 @@ struct DictationOverlayView: View {
     .clipped()
     .background { OverlayMenuCursorRegion() }
     .overlay(alignment: .leading) {
-      Rectangle()
-        .fill(palette.border.color)
-        .frame(width: 1 / max(displayScale, 1))
-        .padding(.top, headerHeight)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+      agentRailUnfoldHandle(width: width, windowWidth: windowWidth)
     }
     .accessibilityIdentifier("overlay-agent-rail")
     .background {
@@ -1065,6 +1038,42 @@ struct DictationOverlayView: View {
       }
       .allowsHitTesting(false)
     }
+  }
+
+  /// The rail keeps the list's divider. Dragged toward the conversation and
+  /// released, it unfolds the list; dragged past the rows' minimum, the list
+  /// opens at the dragged width.
+  private func agentRailUnfoldHandle(width: CGFloat, windowWidth: CGFloat) -> some View {
+    Rectangle()
+      .fill(palette.border.color)
+      .frame(width: 1 / max(displayScale, 1))
+      .frame(width: 10, alignment: .leading)
+      .contentShape(Rectangle())
+      .background { OverlayMenuCursorRegion(cursor: .resizeLeftRight) }
+      .gesture(
+        DragGesture(minimumDistance: 2, coordinateSpace: .named("overlay-canvas"))
+          .onEnded { value in
+            guard -value.translation.width >= OverlayAgentDrawerLayout.railUnfoldDrag else {
+              return
+            }
+            let dragged = (width - value.translation.width) / textScale
+            if dragged * textScale
+              >= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale),
+              let remembered = OverlayAgentDrawerLayout.rememberedWidth(
+                textScale: textScale, preferredWidth: dragged, windowWidth: windowWidth)
+            {
+              preferredAgentDrawerWidth = remembered
+            }
+            state.unfoldAgentList()
+          }
+      )
+      .accessibilityElement()
+      .accessibilityLabel(String(localized: "Resize agents sidebar"))
+      .accessibilityAdjustableAction { direction in
+        if direction == .increment { state.unfoldAgentList() }
+      }
+      .accessibilityIdentifier("overlay-agent-rail-resize")
+      .padding(.top, headerHeight)
   }
 
   private func agentDrawerResizeHandle(width: CGFloat, windowWidth: CGFloat) -> some View {
@@ -1100,11 +1109,14 @@ struct DictationOverlayView: View {
         // Narrowing a roster that covers the window leaves the snap zone at
         // once; a 20-point step would stay inside it.
         let fills = state.agentsLayout == .agents
+        // At the rows' minimum one more step down folds the list to its rail.
+        let atMinimum =
+          width <= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale) + 0.5
         let next =
           fills && step < 0
           ? OverlayAgentDrawerLayout.widestSplitWidth(
             textScale: textScale, windowWidth: windowWidth)
-          : width / textScale + step
+          : atMinimum && step < 0 ? 0 : width / textScale + step
         commitAgentDrawerWidth(next, windowWidth: windowWidth)
       }
       .accessibilityIdentifier("overlay-agent-sidebar-resize")
@@ -1174,34 +1186,7 @@ struct DictationOverlayView: View {
   }
 
   private var closeButton: some View {
-    Button {
-      state.relayIntent(.close)
-    } label: {
-      ModeDot(color: CSColor.terracotta, size: 9)
-        .overlay {
-          if closeDotHovered {
-            OverlayCloseCross()
-              .stroke(palette.desktopBackground.color, style: StrokeStyle(lineWidth: 1))
-              .accessibilityHidden(true)
-          }
-        }
-        .scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)
-        .contentShape(Circle().inset(by: -7.5))
-    }
-    .buttonStyle(.plain)
-    .background {
-      OverlayMenuCursorRegion { closeDotHovered = $0 }
-    }
-    .animation(
-      reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered
-    )
-    .focusable(false)
-    .modifier(
-      OverlayHeaderControlChrome(
-        title: OverlayIntent.close.helpText, accent: nil, palette: palette)
-    )
-    .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
-    .accessibilityIdentifier("overlay-brand-close-dot")
+    OverlayCloseButton(palette: palette) { state.relayIntent(.close) }
   }
 
   private func recordingControls(compact: Bool, showsMicrophone: Bool = true) -> some View {
@@ -1235,7 +1220,11 @@ struct DictationOverlayView: View {
       // agent count, the agents on hover, the open channel's digit with the
       // violet open-channel dot (spec §14). This replaces Maciej's 2026-10-20 rule that mini
       // always reads "cs"; his agents button and its stop meaning stay.
-      HStack(spacing: DictationOverlayWindow.miniBrandGap) {
+      HStack(
+        spacing: state.channelMapCounterStacked
+          ? (mini ? DictationOverlayWindow.miniStackedBrandGap : 12)
+          : DictationOverlayWindow.miniBrandGap
+      ) {
         Wordmark(size: density.brandSize, spacing: mini ? 6 : 5, showsWord: !mini || !mapEnabled) {
           closeButton
         }
@@ -1433,75 +1422,11 @@ struct DictationOverlayView: View {
   /// Internal so a test can assert that two body passes share one search model.
   var channelStatusView: OverlayChannelStatusView {
     var roster = OverlayChannelStatusView.intercomRoster(
-      state: state, palette: palette, animates: overlayVisible)
+      state: state, palette: palette, animates: overlayVisible, includesGestureFocus: false)
     roster.onWriteConversation = { conversation in
-      state.chooseComposerTarget(conversation)
       state.chooseConversation(conversation.id)
     }
     return roster
-  }
-
-  private func heldComposerTarget(
-    _ message: OverlayConversationMessage, viewing conversation: OverlayConversation
-  ) -> OverlayConversation {
-    message.sourceChannel == "0"
-      ? OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
-      : conversation
-  }
-
-  private func composerRouting(viewing conversation: OverlayConversation) -> some View {
-    let target = state.composerTarget
-    let selected = state.resolvedComposerTarget(viewing: conversation)
-    let choices = state.availableComposerRecipients
-    let openChannels = state.channelHudStates.filter { $0.value.open }.keys.sorted()
-    let openChannelTitles = openChannels.map { digit in
-      if digit == "0" { return String(localized: "0 · All") }
-      if let row = state.visibleChannelRows.first(where: { $0.channel == digit }) {
-        return "\(digit) · \(row.agent)"
-      }
-      return digit
-    }
-    return VStack(alignment: .leading, spacing: 4) {
-      HStack(spacing: 6) {
-        Text("To:")
-        Menu {
-          ForEach(choices) { choice in
-            Button(choice.displayTitle) { state.chooseComposerTarget(choice) }
-          }
-        } label: {
-          Text(verbatim: selected?.displayTitle ?? target?.title ?? "—")
-            .lineLimit(1).truncationMode(.middle)
-        }
-        .accessibilityIdentifier("overlay-composer-recipient")
-        if conversation.owner != nil || conversation.channel == "0",
-          selected?.id != conversation.id || selected?.owner?.id != conversation.owner?.id
-        {
-          Button {
-            state.chooseComposerTarget(conversation)
-          } label: {
-            Text("Write to \(conversation.displayTitle)")
-          }
-          .buttonStyle(.plain)
-        }
-        Spacer(minLength: 0)
-      }
-      if target != nil && selected == nil {
-        Text("Recipient unavailable")
-          .accessibilityIdentifier("overlay-composer-recipient-unavailable")
-      }
-      HStack(spacing: 4) {
-        Image(systemName: "waveform.badge.mic")
-        if openChannels.isEmpty {
-          Text("Voice channels closed")
-        } else {
-          Text("Voice channels:")
-          Text(verbatim: openChannelTitles.joined(separator: ", "))
-            .lineLimit(1).truncationMode(.middle)
-        }
-      }
-    }
-    .font(.system(size: 11 * textScale, weight: .medium))
-    .foregroundStyle(palette.mutedText.color)
   }
 
   /// A digit may be reused; roster actions belong only to the exact live lease.
@@ -1518,9 +1443,19 @@ struct DictationOverlayView: View {
     }
   }
 
+  private func conversationHeaderMenu(_ conversation: OverlayConversation)
+    -> OverlayBroadcastPolicyMenu?
+  {
+    conversationHeaderChannel(conversation).map {
+      channelStatusView.agentPillMenu(for: $0.channel, showsInlineError: false)
+    }
+  }
+
+  /// The header card is itself a glass surface, like the composer under it:
+  /// its pair paints flat on the card, not as glass circles on glass.
   private func conversationHeaderActions(_ conversation: OverlayConversation) -> AnyView? {
     conversationHeaderChannel(conversation).map {
-      AnyView(channelStatusView.compactAgentActions(for: $0))
+      AnyView(channelStatusView.compactAgentActions(for: $0, chrome: false, panel: true))
     }
   }
 
@@ -1770,6 +1705,17 @@ struct DictationOverlayView: View {
       .modifier(OverlayScrollEdgeEffects())
       .frame(minHeight: transcriptMinHeight)
       .accessibilityIdentifier("overlay-transcript-area")
+      // Accepted formatting painted during the take, not a finished format.
+      .accessibilityValue(
+        state.showsLiveFormattedPresentation
+          ? Text(
+            String(
+              localized: "overlay.transcript.liveFormatted",
+              defaultValue: "Formatted while you speak",
+              comment: "Transcript area while recording: it shows accepted formatting so far"
+            ))
+          : Text(verbatim: "")
+      )
       // The empty branch is absence of a hint, not copy, so it stays verbatim.
       .accessibilityHint(
         state.archivedTranscript != nil

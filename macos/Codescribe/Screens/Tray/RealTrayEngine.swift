@@ -74,7 +74,11 @@ final class RealTrayEngine: TrayEngine {
     holdBadgeOption: HoldBadgeOption
   )? {
     let toggles = config.trayToggles()
-    guard let formatLevel = FormattingPolicyOption(rawValue: toggles.formattingLevel) else {
+    // Automatic level: a stored Max runs Smart at the core's automatic
+    // boundary, so the tray shows Smart and cycles from it.
+    guard
+      let formatLevel = FormattingPolicyOption(rawValue: toggles.formattingLevel)?.automaticLevel
+    else {
       return nil
     }
     return (
@@ -107,6 +111,7 @@ final class RealTrayEngine: TrayEngine {
   }
 
   func setAutoFormatLevel(_ level: FormattingPolicyOption) {
+    guard FormattingPolicyOption.automaticCases.contains(level) else { return }
     _ = recordWrite(action: "settings.formatLevel") {
       _ = try config.setAutoFormatLevel(level: level.rawValue)
     }

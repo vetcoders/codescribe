@@ -237,8 +237,16 @@ final class OverlayComposerSyncTests: XCTestCase {
       ConversationDraft.split(state.conversationDraft(for: agents[2].id)).text, "Third shared")
   }
 
-  func testJoiningAllowsDifferentPrivateDraftsButExcludesBroadcastAndInbox() throws {
+  /// The inbox and 0 · All are chosen from, never offered: they are sources
+  /// of a draft link, not destinations (Maciej, 2026-10-30 13:58–14:24).
+  func testJoiningAllowsDifferentPrivateDraftsAndNeverOffersBroadcastOrInbox() throws {
     let (state, agents) = try fixture()
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let inbox = OverlayConversation(
+      id: "10", channel: "10", name: "Your Inbox", owner: nil, messages: [])
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, inbox] + agents))
     state.setConversationDraft("Source", for: agents[0].id)
     state.setConversationDraft("Retain this private draft", for: agents[1].id)
     let choices = state.draftSyncChoices(for: agents[0])
@@ -247,8 +255,12 @@ final class OverlayComposerSyncTests: XCTestCase {
     XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
     XCTAssertEqual(state.conversationDraft(for: agents[0].id), "Source")
     XCTAssertEqual(state.conversationDraft(for: agents[1].id), "Retain this private draft")
-    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: "0"))
-    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: "10"))
+    for source in [broadcast, inbox] {
+      XCTAssertTrue(source.isDraftSyncSource)
+      XCTAssertEqual(
+        Set(state.draftSyncChoices(for: source).map(\.id)), Set(agents.map(\.id)),
+        "a source offers every agent and never the other source")
+    }
   }
 
   func testPartialPublicationRetriesOnlyMissingExactOwnersAndKeepsGroupForNextDraft() async throws {

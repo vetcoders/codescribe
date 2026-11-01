@@ -15,12 +15,20 @@ use crate::llm::provider::ProviderKind;
 
 /// Device-code OAuth grant for providers that cannot do loopback redirects.
 pub mod device_code;
+/// Google API keys and locally provisioned OAuth / ADC credentials.
+pub mod google;
 /// Paste-code flow: user copies `"code#state"` from the provider's page.
 pub mod paste_code;
 /// PKCE verifier/challenge helpers shared by loopback and paste-code logins.
 pub mod pkce;
 /// Local loopback HTTP server that receives OAuth redirect callbacks.
 pub mod server;
+
+pub use google::{
+    GOOGLE_ACCOUNT_TOKENS_ACCOUNT, GOOGLE_API_KEY_ACCOUNT, GoogleCredential, google_api_key,
+    google_credential_status, google_credentials_available, redact_google_secrets,
+    resolve_google_account_credential, resolve_google_credential,
+};
 
 pub use device_code::{
     DeviceAuthConfig, DeviceCode, complete_device_code_login, request_device_code,
@@ -84,6 +92,29 @@ pub const OPENAI_CODEX_CLI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 /// below are part of the contract, not preferences.
 pub const XAI_GROK_CLI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 
+/// Settings router key for Google's operator-pasted client id.
+pub const GOOGLE_CLIENT_ID_SETTING: &str = "LLM_GOOGLE_OAUTH_CLIENT_ID";
+/// Dev/CI env fallback for Google's client id.
+pub const GOOGLE_CLIENT_ID_ENV: &str = "CODESCRIBE_GOOGLE_OAUTH_CLIENT_ID";
+/// Dev/CI env fallback for Google's desktop client secret when using a custom client id.
+pub const GOOGLE_CLIENT_SECRET_ENV: &str = "CODESCRIBE_GOOGLE_OAUTH_CLIENT_SECRET";
+/// Env override for Google's OAuth issuer base URL.
+pub const GOOGLE_ISSUER_ENV: &str = "CODESCRIBE_GOOGLE_OAUTH_ISSUER";
+/// Google's OAuth authorize issuer base URL.
+pub const GOOGLE_DEFAULT_ISSUER: &str = "https://accounts.google.com";
+/// Google's OAuth token exchange/refresh endpoint URL.
+pub const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+/// Public desktop OAuth client id published by Google for Cloud Code Assist / Antigravity (`NOTICE`).
+pub const GOOGLE_ANTIGRAVITY_CLIENT_ID: &str =
+    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+/// Public desktop OAuth client secret paired with [`GOOGLE_ANTIGRAVITY_CLIENT_ID`].
+pub const GOOGLE_ANTIGRAVITY_CLIENT_SECRET: &str = "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";
+/// Public desktop OAuth client id published by Google for Gemini CLI (`NOTICE`).
+pub const GOOGLE_GEMINI_CLI_CLIENT_ID: &str =
+    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+/// Public desktop OAuth client secret paired with [`GOOGLE_GEMINI_CLI_CLIENT_ID`].
+pub const GOOGLE_GEMINI_CLI_CLIENT_SECRET: &str = "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";
+
 /// How a provider's token endpoint wants its request body. OpenAI speaks
 /// form-urlencoded (RFC 6749 §4.1.3 to the letter); Anthropic's console
 /// endpoint takes JSON.
@@ -135,6 +166,9 @@ pub struct ProviderOAuthConfig {
     /// operator configured none. `None` ⇒ the provider stays gated on
     /// registration; Codescribe never borrows another application's identity.
     pub default_client_id: Option<&'static str>,
+    /// Optional public desktop OAuth client secret paired with `default_client_id`
+    /// when the provider's token endpoint requires it (e.g. Google installed apps).
+    pub default_client_secret: Option<&'static str>,
     /// Env override for the issuer base URL.
     pub issuer_env: &'static str,
     /// Issuer used when the env override is unset.
@@ -145,6 +179,11 @@ pub struct ProviderOAuthConfig {
     pub authorize_path: &'static str,
     /// Path appended to the issuer for the token endpoint.
     pub token_path: &'static str,
+    /// Optional full token endpoint URL when the provider hosts token exchange on
+    /// a different origin than `default_issuer` (e.g. `oauth2.googleapis.com`).
+    /// Used when `issuer_for` resolves to `default_issuer`; an explicit issuer
+    /// override still routes to `{issuer}{token_path}` for hermetic tests.
+    pub token_url_override: Option<&'static str>,
     /// Redirect path the provider is registered to call back on — appended to
     /// the loopback origin for [`LoginFlow::Loopback`], to the issuer for
     /// [`LoginFlow::PasteCode`].
@@ -178,10 +217,12 @@ const OPENAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     // Codex CLI public app id — see `OPENAI_CODEX_CLI_CLIENT_ID` + NOTICE.
     // Operator override via settings/env still wins.
     default_client_id: Some(OPENAI_CODEX_CLI_CLIENT_ID),
+    default_client_secret: None,
     issuer_env: OPENAI_ISSUER_ENV,
     default_issuer: DEFAULT_ISSUER,
     authorize_path: "/oauth/authorize",
     token_path: "/oauth/token",
+    token_url_override: None,
     callback_path: "/auth/callback",
     callback_host: "localhost",
     preferred_port: 1455,
@@ -202,10 +243,12 @@ const ANTHROPIC_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     client_id_env: ANTHROPIC_CLIENT_ID_ENV,
     client_id_from_settings: |settings| settings.anthropic_oauth_client_id.clone(),
     default_client_id: None,
+    default_client_secret: None,
     issuer_env: ANTHROPIC_ISSUER_ENV,
     default_issuer: ANTHROPIC_DEFAULT_ISSUER,
     authorize_path: "/oauth/authorize",
     token_path: "/v1/oauth/token",
+    token_url_override: None,
     // Anthropic redirects to a page on the issuer host that renders the code;
     // there is no loopback origin to fill in.
     callback_path: "/oauth/code/callback",
@@ -229,10 +272,12 @@ const XAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     // xAI publishes this id for third-party desktop clients
     // (`XAI_GROK_CLI_CLIENT_ID`). Operator settings/env still win.
     default_client_id: Some(XAI_GROK_CLI_CLIENT_ID),
+    default_client_secret: None,
     issuer_env: XAI_ISSUER_ENV,
     default_issuer: XAI_DEFAULT_ISSUER,
     authorize_path: "/oauth2/authorize",
     token_path: "/oauth2/token",
+    token_url_override: None,
     // Historical Grok-CLI loopback registration (OpenCode abandoned this path
     // for SuperGrok in favour of device code). Kept so NOTICE/tests stay honest
     // about the published client; Codescribe does not bind this port for login.
@@ -247,11 +292,36 @@ const XAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     encoding: TokenRequestEncoding::Form,
 };
 
+/// Google account-auth row: loopback redirect (`http://127.0.0.1:51121/oauth-callback`),
+/// form-encoded token endpoint (`https://oauth2.googleapis.com/token`), and
+/// Cloud Code Assist project provisioning.
+const GOOGLE_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
+    provider: ProviderKind::GoogleGemini,
+    tokens_account: GOOGLE_ACCOUNT_TOKENS_ACCOUNT,
+    client_id_setting: GOOGLE_CLIENT_ID_SETTING,
+    client_id_env: GOOGLE_CLIENT_ID_ENV,
+    client_id_from_settings: |settings| settings.google_oauth_client_id.clone(),
+    default_client_id: Some(GOOGLE_ANTIGRAVITY_CLIENT_ID),
+    default_client_secret: Some(GOOGLE_ANTIGRAVITY_CLIENT_SECRET),
+    issuer_env: GOOGLE_ISSUER_ENV,
+    default_issuer: GOOGLE_DEFAULT_ISSUER,
+    authorize_path: "/o/oauth2/v2/auth",
+    token_path: "/token",
+    token_url_override: Some(GOOGLE_TOKEN_URL),
+    callback_path: "/oauth-callback",
+    callback_host: "127.0.0.1",
+    preferred_port: 51121,
+    scope: "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs",
+    extra_authorize_params: &[("access_type", "offline"), ("prompt", "consent")],
+    login_flow: LoginFlow::Loopback,
+    encoding: TokenRequestEncoding::Form,
+};
+
 /// The OAuth registry: one row per provider that can sign in with an account.
 /// A provider absent from this table has no account auth — [`provider_oauth_config`]
 /// answers `UnsupportedProvider`, which is the honest answer, not a panic.
-const PROVIDER_OAUTH_REGISTRY: [ProviderOAuthConfig; 3] =
-    [OPENAI_OAUTH, ANTHROPIC_OAUTH, XAI_OAUTH];
+const PROVIDER_OAUTH_REGISTRY: [ProviderOAuthConfig; 4] =
+    [OPENAI_OAUTH, ANTHROPIC_OAUTH, XAI_OAUTH, GOOGLE_OAUTH];
 
 /// Look up a provider's registry row, or `UnsupportedProvider` if it has none.
 pub fn provider_oauth_config(
@@ -330,6 +400,10 @@ impl From<std::io::Error> for AccountAuthError {
     }
 }
 
+fn default_token_type() -> String {
+    "Bearer".to_string()
+}
+
 /// One provider's stored OAuth tokens, serialized as JSON into the Keychain.
 ///
 /// Expiry is persisted as an absolute Unix timestamp rather than the
@@ -338,18 +412,36 @@ impl From<std::io::Error> for AccountAuthError {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AccountTokens {
     /// Provider tag, from `ProviderKind::as_str`.
+    #[serde(default)]
     pub provider: String,
     /// Bearer credential for API calls.
+    #[serde(default)]
     pub access_token: String,
     /// Used to mint a new access token. `None` ⇒ sign-in ends at expiry.
     pub refresh_token: Option<String>,
     /// Identity JWT, kept only for the display label. Never authorization.
     pub id_token: Option<String>,
     /// Normally `"Bearer"`; defaulted when the provider omits it.
+    #[serde(default = "default_token_type")]
     pub token_type: String,
     /// Absolute expiry. `None` ⇒ the provider declared no lifetime, so the
     /// token is never proactively refreshed.
     pub expires_at_unix: Option<i64>,
+    /// Provider account email when resolved via userinfo (e.g. Google OAuth).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Provisioned Cloud Code Assist project id for Google OAuth accounts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// OAuth client id used to mint the refresh token when provider refresh requires it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// Public desktop OAuth client secret when provider refresh requires it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    /// Explicit token endpoint URI recorded with the credential when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_uri: Option<String>,
 }
 
 impl fmt::Debug for AccountTokens {
@@ -361,6 +453,8 @@ impl fmt::Debug for AccountTokens {
             .field("id_token_present", &self.id_token.is_some())
             .field("token_type", &self.token_type)
             .field("expires_at_unix", &self.expires_at_unix)
+            .field("email", &self.email)
+            .field("project_id", &self.project_id)
             .finish()
     }
 }
@@ -385,8 +479,13 @@ impl AccountTokens {
             access_token,
             refresh_token,
             id_token,
-            token_type: token_type.unwrap_or_else(|| "Bearer".to_string()),
+            token_type: token_type.unwrap_or_else(default_token_type),
             expires_at_unix,
+            email: None,
+            project_id: None,
+            client_id: None,
+            client_secret: None,
+            token_uri: None,
         }
     }
 
@@ -529,10 +628,13 @@ fn jwt_claims(token: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&decoded).ok()
 }
 
-/// Best-effort display identity from the id_token JWT payload (email, else
-/// sub). Display-only — the claims are NOT verified here; authorization always
-/// rides the access token, never this label.
-fn id_token_identity(tokens: &AccountTokens) -> Option<String> {
+/// Best-effort display identity from stored userinfo email or id_token JWT
+/// payload (email, else sub). Display-only — the claims are NOT verified here;
+/// authorization always rides the access token, never this label.
+pub(crate) fn id_token_identity(tokens: &AccountTokens) -> Option<String> {
+    if let Some(email) = tokens.email.clone().and_then(non_empty_trimmed) {
+        return Some(email);
+    }
     let claims = jwt_claims(tokens.id_token.as_deref()?)?;
     ["email", "sub"].iter().find_map(|key| {
         claims
@@ -540,6 +642,47 @@ fn id_token_identity(tokens: &AccountTokens) -> Option<String> {
             .and_then(serde_json::Value::as_str)
             .and_then(|value| non_empty_trimmed(value.to_string()))
     })
+}
+
+/// Resolve the token endpoint URL for a provider row and issuer.
+///
+/// When `config.token_url_override` is present and `issuer` matches the row's
+/// `default_issuer`, returns the override URL (e.g. `https://oauth2.googleapis.com/token`
+/// for Google, whose authorize page lives on `accounts.google.com`). When an
+/// explicit issuer override is active (such as a hermetic test server), routes
+/// to `{issuer}{token_path}`.
+pub(crate) fn token_endpoint_for(config: ProviderOAuthConfig, issuer: &str) -> String {
+    let trimmed = issuer.trim().trim_end_matches('/');
+    if let Some(override_url) = config.token_url_override
+        && trimmed == config.default_issuer.trim_end_matches('/')
+    {
+        return override_url.to_string();
+    }
+    format!("{trimmed}{}", config.token_path)
+}
+
+/// Resolve the optional public desktop client secret for `provider` and `client_id`.
+pub(crate) fn client_secret_for_provider(
+    provider: ProviderKind,
+    client_id: &str,
+) -> Option<String> {
+    if provider == ProviderKind::GoogleGemini {
+        if let Some(secret) = std::env::var(GOOGLE_CLIENT_SECRET_ENV)
+            .ok()
+            .and_then(non_empty_trimmed)
+        {
+            return Some(secret);
+        }
+        return match client_id {
+            GOOGLE_ANTIGRAVITY_CLIENT_ID => Some(GOOGLE_ANTIGRAVITY_CLIENT_SECRET.to_string()),
+            GOOGLE_GEMINI_CLI_CLIENT_ID => Some(GOOGLE_GEMINI_CLI_CLIENT_SECRET.to_string()),
+            _ => None,
+        };
+    }
+    provider_oauth_config(provider)
+        .ok()?
+        .default_client_secret
+        .map(str::to_string)
 }
 
 /// ChatGPT workspace id a request on the vendor's own backend must carry as
@@ -806,6 +949,9 @@ fn cached_account_tokens(provider: ProviderKind) -> Result<AccountTokens, Accoun
 /// Both are required — leaving the env override in place would let the next
 /// [`load_account_tokens`] resurrect the session the operator just ended.
 pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthError> {
+    if provider == ProviderKind::GoogleGemini {
+        return google::clear_google_account_tokens();
+    }
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
     provider_auth_state(provider).replace_with(|| {
@@ -984,12 +1130,29 @@ async fn refresh_tokens(
     tokens: AccountTokens,
 ) -> Result<AccountTokens, AccountAuthError> {
     let config = provider_oauth_config(provider)?;
-    let refresh_token = tokens.refresh_token.ok_or_else(|| {
+    let refresh_token = tokens.refresh_token.clone().ok_or_else(|| {
         AccountAuthError::OAuth("stored account has no refresh token".to_string())
     })?;
-    let client_id = client_id_for_provider(provider)?;
+    let client_id = tokens
+        .client_id
+        .clone()
+        .and_then(non_empty_trimmed)
+        .map(Ok)
+        .unwrap_or_else(|| client_id_for_provider(provider))?;
     let issuer = issuer_for(provider);
-    refresh_provider_tokens(provider, config, &issuer, &client_id, &refresh_token).await
+    let mut refreshed =
+        refresh_provider_tokens(provider, config, &issuer, &client_id, &refresh_token).await?;
+    if refreshed.id_token.is_none() {
+        refreshed.id_token = tokens.id_token;
+    }
+    refreshed.email = tokens.email;
+    refreshed.project_id = tokens.project_id;
+    refreshed.client_id = tokens.client_id.or(Some(client_id.clone()));
+    refreshed.client_secret = tokens
+        .client_secret
+        .or_else(|| client_secret_for_provider(provider, &client_id));
+    refreshed.token_uri = tokens.token_uri;
+    Ok(refreshed)
 }
 
 /// The refresh round trip itself: POST to the provider's token endpoint in its
@@ -1012,20 +1175,33 @@ async fn refresh_provider_tokens(
         expires_in: Option<u64>,
     }
 
-    let endpoint = format!("{}{}", issuer.trim_end_matches('/'), config.token_path);
-    let client = oauth_http_client(issuer)?;
+    let endpoint = token_endpoint_for(config, issuer);
+    let client = oauth_http_client(&endpoint)?;
+    let client_secret = client_secret_for_provider(provider, client_id);
     let request = client.post(endpoint);
     let request = match config.encoding {
-        TokenRequestEncoding::Form => request.form(&[
-            ("grant_type", "refresh_token"),
-            ("client_id", client_id),
-            ("refresh_token", refresh_token),
-        ]),
-        TokenRequestEncoding::Json => request.json(&serde_json::json!({
-            "grant_type": "refresh_token",
-            "client_id": client_id,
-            "refresh_token": refresh_token,
-        })),
+        TokenRequestEncoding::Form => {
+            let mut form: Vec<(&str, &str)> = vec![
+                ("grant_type", "refresh_token"),
+                ("client_id", client_id),
+                ("refresh_token", refresh_token),
+            ];
+            if let Some(secret) = client_secret.as_deref() {
+                form.push(("client_secret", secret));
+            }
+            request.form(&form)
+        }
+        TokenRequestEncoding::Json => {
+            let mut body = serde_json::json!({
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "refresh_token": refresh_token,
+            });
+            if let Some(secret) = client_secret.as_deref() {
+                body["client_secret"] = serde_json::Value::String(secret.to_string());
+            }
+            request.json(&body)
+        }
     };
     let response = request
         .send()
@@ -1519,14 +1695,14 @@ mod tests {
         use base64::Engine;
         let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(r#"{"email":"user@example.com","sub":"user-123"}"#);
-        let tokens = AccountTokens {
-            provider: ProviderKind::OpenAiResponses.as_str().to_string(),
-            access_token: "access".to_string(),
-            refresh_token: None,
-            id_token: Some(format!("header.{claims}.signature")),
-            token_type: "Bearer".to_string(),
-            expires_at_unix: None,
-        };
+        let tokens = AccountTokens::new(
+            ProviderKind::OpenAiResponses,
+            "access".to_string(),
+            None,
+            Some(format!("header.{claims}.signature")),
+            Some("Bearer".to_string()),
+            None,
+        );
         assert_eq!(
             id_token_identity(&tokens).as_deref(),
             Some("user@example.com")
@@ -1749,6 +1925,7 @@ mod tests {
             let expected = match row.provider {
                 ProviderKind::OpenAiResponses => Some(OPENAI_CODEX_CLI_CLIENT_ID),
                 ProviderKind::XaiResponses => Some(XAI_GROK_CLI_CLIENT_ID),
+                ProviderKind::GoogleGemini => Some(GOOGLE_ANTIGRAVITY_CLIENT_ID),
                 _ => None,
             };
             assert_eq!(
@@ -1757,6 +1934,34 @@ mod tests {
                 row.provider
             );
         }
+    }
+
+    #[test]
+    fn google_row_matches_registered_antigravity_loopback_contract() {
+        let row = provider_oauth_config(ProviderKind::GoogleGemini).unwrap();
+        assert_eq!(row.callback_host, "127.0.0.1");
+        assert_eq!(row.preferred_port, 51121);
+        assert_eq!(row.callback_path, "/oauth-callback");
+        assert_eq!(row.default_issuer, GOOGLE_DEFAULT_ISSUER);
+        assert_eq!(row.authorize_path, "/o/oauth2/v2/auth");
+        assert_eq!(row.token_url_override, Some(GOOGLE_TOKEN_URL));
+        assert_eq!(row.login_flow, LoginFlow::Loopback);
+        assert_eq!(row.encoding, TokenRequestEncoding::Form);
+        assert!(row.scope.contains("cloud-platform"));
+        assert!(row.scope.contains("userinfo.email"));
+        assert!(
+            row.extra_authorize_params
+                .contains(&("access_type", "offline"))
+        );
+        assert!(row.extra_authorize_params.contains(&("prompt", "consent")));
+        assert_eq!(
+            token_endpoint_for(row, GOOGLE_DEFAULT_ISSUER),
+            GOOGLE_TOKEN_URL
+        );
+        assert_eq!(
+            token_endpoint_for(row, "http://127.0.0.1:18080"),
+            "http://127.0.0.1:18080/token"
+        );
     }
 
     /// OpenAI sign-in must not require a Keys-panel paste when nothing is

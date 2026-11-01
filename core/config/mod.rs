@@ -36,6 +36,9 @@ pub use defaults::{
 /// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
 /// source of the runtime settings throne).
 pub mod energy_calibration;
+/// Formatter Keywords: one normalization owner and the sealed vocabulary
+/// context shared by every formatting kind.
+pub mod formatter_keywords;
 /// Process/install interlock preventing runtime and bundle replacement overlap.
 mod install_interlock;
 /// macOS Keychain storage for API keys (not plaintext `.env`).
@@ -89,6 +92,10 @@ pub use energy_calibration::{
     EnergyCalibrationProfile, EnergyCalibrationRefusal, EnergyCalibrationStatus,
     GuidedCalibrationRefused, SealedEnergyCalibration, energy_calibration_path,
 };
+pub use formatter_keywords::{
+    FormatterKeywordsContext, FormatterKeywordsError, MAX_FORMATTER_KEYWORD_CHARS,
+    MAX_FORMATTER_KEYWORDS, MAX_FORMATTING_VOCABULARY_CONTEXT_BYTES, normalize_formatter_keywords,
+};
 pub use install_interlock::{
     AGENT_TURN_LEASE_FILE_NAME, AgentTurnLease, AppRuntimeInstallLease,
     INSTALL_INTERLOCK_FILE_NAME, acquire_agent_turn_lease, acquire_agent_turn_lease_at,
@@ -100,11 +107,12 @@ pub use portable::{
     write_portable_export,
 };
 pub use settings::{
-    FormattingPolicy, PromptSource, RemovedCustomProvider, RuntimeAiExecution,
-    RuntimeAiRequestTiming, RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane,
-    RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSealedPrompt, RuntimeSettingsSnapshot,
-    SettingsLoaderInput, SettingsSnapshotDigest, SettingsSnapshotProvenance,
-    SettingsSnapshotValidation, SettingsSnapshotValidationError, UserSettings,
+    AcpLaunchSettings, FormattingPolicy, PromptSource, RemovedCustomProvider,
+    RuntimeAcpConfiguration, RuntimeAiExecution, RuntimeAiRequestTiming, RuntimeFormatterExecution,
+    RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSealedPrompt,
+    RuntimeSettingsSnapshot, SettingsLoaderInput, SettingsSnapshotDigest,
+    SettingsSnapshotProvenance, SettingsSnapshotValidation, SettingsSnapshotValidationError,
+    UserSettings,
 };
 pub use storage_reset::{AppDataResetGuard, begin_app_data_reset};
 pub use types::Language;

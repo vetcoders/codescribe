@@ -71,17 +71,50 @@ impl CaptureWindowPlan {
         if self.step_samples == self.window_samples {
             return (range.sample_start, range.sample_end);
         }
+        Self::overlapping_publication_band(range, self.step_samples, capture_end, stopping)
+    }
+
+    /// Reconstruct only the middle band of a full overlapping live frame.
+    /// First, partial, off-grid and invalid-rate frames supply no such proof.
+    /// The caller must also reject terminal-tail and disjoint publications.
+    pub(crate) fn interior_publication_band(
+        range: &TailSampleRange,
+        sample_rate: u32,
+    ) -> Option<(u64, u64)> {
+        let step_samples = u64::from(sample_rate) * u64::from(LIVE_STEP_SECS);
+        let window_samples = u64::from(sample_rate) * u64::from(LIVE_WINDOW_SECS);
+        if sample_rate == 0
+            || range.sample_start == 0
+            || !range.sample_start.is_multiple_of(step_samples)
+            || range.sample_start.checked_add(window_samples) != Some(range.sample_end)
+        {
+            return None;
+        }
+        Some(Self::overlapping_publication_band(
+            range,
+            step_samples,
+            range.sample_end,
+            false,
+        ))
+    }
+
+    fn overlapping_publication_band(
+        range: &TailSampleRange,
+        step_samples: u64,
+        capture_end: u64,
+        stopping: bool,
+    ) -> (u64, u64) {
         let start = if range.sample_start == 0 {
             0
         } else {
-            range.sample_start.saturating_add(self.step_samples)
+            range.sample_start.saturating_add(step_samples)
         };
         let end = if stopping && range.sample_end == capture_end {
             range.sample_end
         } else {
             range
                 .sample_start
-                .saturating_add(self.step_samples.saturating_mul(2))
+                .saturating_add(step_samples.saturating_mul(2))
                 .min(range.sample_end)
         };
         (start.min(end), end)

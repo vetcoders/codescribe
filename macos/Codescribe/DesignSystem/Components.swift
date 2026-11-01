@@ -446,14 +446,14 @@ struct StatusPill: View {
         // capsule (S-t-r-e-a-m-i-n-g, operator crop 2026-09-22). Capsules stay
         // horizontal; the title truncates first.
         .lineLimit(1)
-        .fixedSize()
+        .truncationMode(.tail)
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 4)
     .background(color.opacity(0.12))
     .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 1))
     .clipShape(Capsule())
-    .fixedSize()
+    .fixedSize(horizontal: false, vertical: true)
     .onAppear { syncStatusAnimations() }
     .onChange(of: rippling) { _, _ in syncStatusAnimations() }
     .onChange(of: reduceMotion) { _, _ in syncStatusAnimations() }
@@ -499,14 +499,14 @@ struct StaticStatusPill: View {
         .csFont(11, .medium)
         .foregroundStyle(color)
         .lineLimit(1)
-        .fixedSize()
+        .truncationMode(.tail)
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 4)
     .background(color.opacity(0.12))
     .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 1))
     .clipShape(Capsule())
-    .fixedSize()
+    .fixedSize(horizontal: false, vertical: true)
   }
 }
 
@@ -610,9 +610,12 @@ struct Wordmark<Dot: View>: View {
           .font(CSFont.ui(size, .bold))
           .tracking(-0.3)
           .foregroundStyle(CSColor.textHigh)
+          .lineLimit(1)
+          .fixedSize()
           .allowsHitTesting(false)
       }
     }
+    .fixedSize()
   }
 }
 

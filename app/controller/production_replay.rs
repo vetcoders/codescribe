@@ -908,6 +908,10 @@ mod tests {
             let provider = CustomProvider::new("p0-replay-refusal", WireFamily::OpenAiResponses, &endpoint).unwrap();
             let settings = UserSettings {
                 asr_mode: Some("local_power".into()),
+                // This witness exercises ledger-backed live formatting, an
+                // explicit opt-in independent of the product's direct default.
+                seal_ledger_enabled: Some(true),
+                apple_live_enabled: Some(true),
                 formatting_level: Some("smart".into()),
                 llm_formatting_provider: Some(format!("custom:{}", provider.id)),
                 llm_formatting_model: Some("replay-refusal".into()),
@@ -919,6 +923,9 @@ mod tests {
                 codescribe_core::config::energy_calibration_path(),
             ).expect("use the incident host's measured capture calibration");
             let snapshot = Arc::new(codescribe_core::config::Config::load_runtime_snapshot_without_keychain().unwrap());
+            assert!(snapshot.seal_ledger_enabled());
+            assert!(snapshot.apple_live_enabled());
+            assert!(snapshot.seal_lane_armed());
             assert_eq!(snapshot.llm_lanes().formatting().endpoint(), endpoint);
             assert!(snapshot.llm_lanes().formatting().request_available());
             assert_eq!(snapshot.formatting_policy(), codescribe_core::config::FormattingPolicy::Smart);
@@ -934,6 +941,7 @@ mod tests {
             });
             let session_id = uuid::Uuid::new_v4().to_string();
             sink.on_capture_opened(&session_id, 1);
+            let formatter_deadline = retained_formatter_deadline(&snapshot);
             let config = codescribe_core::pipeline::streaming::SessionConfig {
                 session_id, capture_epoch: 1, runtime_settings: snapshot,
                 live_formatting_agent: None, acoustic_ledger: ledger.clone(), sample_rate: rate,
@@ -945,7 +953,19 @@ mod tests {
             let started = std::time::Instant::now();
             codescribe_core::pipeline::streaming::replay_buffered_engine_session(&samples, config, sink.clone())
                 .await.expect("the complete live PCM session must return");
-            Arc::get_mut(&mut sink).unwrap().emitter.finish().await;
+            let raw_words_at_capture_end = buffer.lock().await.split_whitespace().count();
+            assert!(raw_words_at_capture_end > 19, "Raw delivery must continue while optional formatter jobs are retained");
+            // Match the live replay owner's bounded drain: formatter jobs may
+            // still hold the sink after ASR has returned the full recording.
+            tokio::time::timeout(formatter_deadline, async {
+                loop {
+                    if let Some(sink) = Arc::get_mut(&mut sink) {
+                        sink.emitter.finish().await;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            }).await.expect("retained formatter jobs must release the replay sink within their deadline");
             let delivered = buffer.lock().await.clone();
             let events = sink.events.lock().unwrap();
             let proposals = events.iter().filter(|event| matches!(event, EngineEvent::OccurrenceLabelProposal { .. })).count();
@@ -963,6 +983,7 @@ mod tests {
                 "events": events.len(), "formatter_proposals": proposals,
                 "worker_failed": worker_failed, "observed_samples": observed,
                 "last_covered_sample": last_covered, "delivered_words": words,
+                "raw_words_at_capture_end": raw_words_at_capture_end,
                 "warning_codes": events.iter().filter_map(|event| match event {
                     EngineEvent::Warning { code, .. } => Some(code), _ => None,
                 }).collect::<std::collections::BTreeSet<_>>(),

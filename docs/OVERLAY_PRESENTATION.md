@@ -38,21 +38,28 @@ The [approved window mockup from 2026-10-29](guide/bus-window-mockup.html)
 records the compact-card layout and its matching More/right-click menu.
 The runtime action semantics and availability are defined below.
 
-An agent row has three blocks: identity and controls, the provider/model/project
-descriptor, and a routed message preview of at most two lines. There is no
-separate state-and-actions footer. The waveform microphone, speaker and more
-menu remain visible beside the identity without hover. The conversation button
-and these controls are siblings; opening a conversation never opens its
-microphone. Long names retain their full tooltip and accessibility label.
+An agent row gives its full first line to identity, receipt and clock. The
+waveform microphone, speaker and More menu remain visible over the top trailing
+corner of the provider/model/project descriptor and routed two-line preview
+below it. The preview keeps the full text layout width underneath the controls,
+like the conversation's message-header actions. The delivery/reader state line
+remains below the preview; panel and Sync controls keep their separate targets
+on the identity row.
+The conversation button and these controls remain siblings; opening a
+conversation never opens its microphone. Long names retain their full tooltip
+and accessibility label.
 
 Hovering the row's navigation area or a folded-rail entry for 350 ms opens
 the last loaded message in the shared `OverlayHintPanel`. The same message
 as the inline preview is used, including outgoing user messages; original
 paragraphs, rich formatting and attachments use `OverlayConversationMessageContent`.
-The preview is bounded to the display and scrollable. Its pointer target stays
+The preview is bounded to the display and scrollable. An already selected
+conversation has no duplicate hover preview. Clicking an unselected preview
+uses that row's existing conversation-navigation command; hovering alone never
+selects it. Its pointer target stays
 open while the cursor crosses the gap or rests on the preview, then dismisses
 after leaving both targets. The window cannot become key. It mounts no
-composer, changes no selected conversation or recipient, acknowledges no
+composer, changes no recipient, acknowledges no
 message, and fetches no saved history. Audio and menu controls keep their own
 action hints. Empty entries retain their existing navigation hint.
 
@@ -64,10 +71,13 @@ microphone can still be stopped after its reader disconnects, and playback can
 still be muted. A client-focus request keeps its progress and result on the
 more control and in the menu; removing the footer must not erase that feedback.
 
-`cardAgentMenu` selects only these secondary actions from the existing command
-owner. Card menus do not repeat Write/Forward, microphone, playback or Show in
-Agents; the full menu remains available on other pill surfaces. The same
-subset is used by the conversation header's More control.
+`cardAgentMenu` selects only these secondary actions for the compact More
+control. The roster label's right-click uses the full `agentPillMenu`, restoring
+Write/Forward, microphone, playback and Show in Agents with the existing command
+guards (Founder correction, 2026-10-30). The conversation header label uses
+the same full menu only after matching its current frozen owner and when the
+presentation allows live actions. Historical owners retain reading and copying
+without live commands. The header's More control keeps the compact subset.
 
 Opening the workspace dispatches the existing `focusAgentPanel` command to
 the detected Frame pane, terminal or Codex thread. `showAgentInMonitor` is a
@@ -84,8 +94,9 @@ is outside channel zero. These are passive projections of the existing
 dim without adding a Disconnected text line and remain available for history.
 
 The compact receipt mark describes the newest completed user delivery to the
-exact frozen recipient. A single check means a delivered receipt; the compact
-double-check shape means a read receipt or the canonical agent acknowledgment.
+exact frozen recipient. Delivered and read use the same compact double-check
+shape: muted ink means delivered; full body ink means read or the canonical agent
+acknowledgment.
 Queue admission and provider acceptance are not delivered/read evidence. Held,
 skipped and unreceipted deliveries keep distinct marks and explanations. The
 mark sits near the identity, separately from the last-preview clock; its help
@@ -93,6 +104,9 @@ and accessibility text name the time of its own outgoing message. A later
 incoming reply must not lend its time to that receipt. The circular unread
 reply count is a separate projection, also shown on the folded rail; compact
 map and floating Intercom badge rendering retain their existing form.
+The roster's positive unread count keeps its fixed badge instead of disappearing
+when space is tight. It has layout priority over the name and clock. The read
+mark consists of two identical translated checks; it is not two different states.
 
 ## Horizontal conversation and text destination
 
@@ -318,6 +332,18 @@ does not need changes to these owners.
   owner and its geometry checks together; SwiftUI layout alone cannot prove it.
 
 ## Independent canvas sizes
+
+The Founder's 2026-10-30 recording makes the full Agents canvas and floating
+Intercom mutually exclusive. `OverlayController.syncIntercomPresentation`
+decides native visibility from the existing preference, canvas and presentation
+mode. Opening the full Agents canvas hides grouped and detached windows without
+closing their durable instances. Entering Intercom hides the default Agents
+widget; a separate transcription canvas retains its capture presentation.
+Drafts, recipients and microphone state do not change with this visibility.
+
+Automatic collapse set to Never also excludes folding when another window of
+this application becomes key. An explicit Compact/Mini choice remains available.
+Window presence and layering keep their existing owner; Never is not a new pin policy.
 
 The transcription and agents canvases use the same native panel, with a last
 expanded size for each `OverlayContentSurface`. `OverlayState.windowContentSurface`

@@ -619,7 +619,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       state.agentsLayout, .rail, "a pill switches the conversation and the list stays folded")
   }
 
-  func testCornerButtonsMoveTheWideWindowBetweenTheThreeLayouts() throws {
+  func testExplicitPaneTransitionsKeepTheRememberedDrawerWidth() throws {
     let (broadcast, lena, astra) = try rosterFixture()
     let state = OverlayState.previewFormatted()
     state.applyConversationSnapshot(
@@ -645,7 +645,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     state.foldAgentList()
     settle()
     XCTAssertEqual(state.agentsLayout, .rail)
-    XCTAssertEqual(drawer.frame, .zero, "sidebar.right folds the column away")
+    XCTAssertEqual(drawer.frame, .zero, "folding the list removes the column")
     XCTAssertEqual(
       rail.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1,
       "into the rail of pills")
@@ -664,7 +664,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     state.unfoldAgentList()
     settle()
     XCTAssertEqual(state.agentsLayout, .split)
-    XCTAssertEqual(drawer.frame.width, 300, accuracy: 1, "the rail's sidebar.right unfolds it")
+    XCTAssertEqual(drawer.frame.width, 300, accuracy: 1, "unfolding retains the column width")
     XCTAssertEqual(rail.frame, .zero)
   }
 
@@ -687,22 +687,30 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     }
   }
 
-  func testEachPaneOwnsItsOwnToggleAndRailHoverCannotUndoFold() throws {
+  func testDividersOwnPaneFoldingAndRailHoverCannotUndoFold() throws {
     let roster = try overlaySource("OverlayChannelStatusView.swift")
     let header = try section(
       of: roster, from: "private func scaledMonitorBody(", to: "} content: { rowFocus in")
+    XCTAssertTrue(header.contains("showsHeader: false"))
+    XCTAssertTrue(header.contains("EmptyView()"))
     XCTAssertFalse(header.contains("symbol: \"sidebar.left\""))
-    XCTAssertTrue(header.contains("symbol: \"sidebar.right\""))
+    XCTAssertFalse(header.contains("symbol: \"sidebar.right\""))
     let overlay = try overlaySource("DictationOverlayView.swift")
-    let controls = try section(
-      of: overlay, from: "private func conversationEdgeControls",
-      to: "private func agentsSidebarControls")
-    XCTAssertTrue(controls.contains("sidebar.left"))
-    XCTAssertTrue(controls.contains("state.hideAgentsCanvas()"))
+    let commit = try section(
+      of: overlay, from: "private func commitAgentDrawerWidth", to: "private func agentRail(")
+    XCTAssertTrue(commit.contains("state.foldAgentList()"))
+    XCTAssertTrue(commit.contains("state.setAgentsLayout(.agents)"))
+    XCTAssertTrue(commit.contains("state.setAgentsLayout(.split)"))
     let rail = try section(
-      of: overlay, from: "private func agentRail", to: "private func agentDrawerResizeHandle")
-    XCTAssertTrue(rail.contains("onUnfold: { state.unfoldAgentList() }"))
+      of: overlay, from: "private func agentRail(", to: "private func agentRailUnfoldHandle")
+    XCTAssertTrue(rail.contains("agentRailUnfoldHandle(width: width, windowWidth: windowWidth)"))
     XCTAssertFalse(rail.contains("onContinuousHover"))
+    let handle = try section(
+      of: overlay, from: "private func agentRailUnfoldHandle",
+      to: "private func agentDrawerResizeHandle")
+    XCTAssertTrue(handle.contains("state.unfoldAgentList()"))
+    XCTAssertTrue(handle.contains(".accessibilityIdentifier(\"overlay-agent-rail-resize\")"))
+    XCTAssertFalse(handle.contains("onContinuousHover"))
   }
 
   /// The overlay over a suite of its own defaults, reporting the column's and
@@ -819,8 +827,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
   /// The numbered pills must take real mouseDown/mouseUp through the panel —
   /// an AXPress proves the action exists, not that a click reaches it past
-  /// the panel's own resize band and window-drag routing. Channel 0 leads:
-  /// it is the first pill under the disclosure control.
+  /// the panel's own resize band and window-drag routing. Channel 0 leads
+  /// the rail beside its divider.
   func testNumberedRailButtonsTakeNativeClicksWithoutResizeOrUnfolding() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let (broadcast, lena, astra) = try rosterFixture()
@@ -884,14 +892,14 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         try send(.leftMouseUp, at: point, clickCount: 1)
       }
 
-      // Pointer travel from the disclosure control down to the first pill
+      // Pointer travel from the rail divider to the first pill
       // keeps the pill as the click target; the list stays folded.
-      let unfold = try windowRect(of: "overlay-agent-rail-unfold")
+      let divider = try windowRect(of: "overlay-agent-rail-resize")
       let zero = try windowRect(of: "overlay-agent-rail-0")
       for step in 0...4 {
         let point = NSPoint(
-          x: unfold.midX + (zero.midX - unfold.midX) * CGFloat(step) / 4,
-          y: unfold.midY + (zero.midY - unfold.midY) * CGFloat(step) / 4)
+          x: divider.midX + (zero.midX - divider.midX) * CGFloat(step) / 4,
+          y: divider.midY + (zero.midY - divider.midY) * CGFloat(step) / 4)
         try send(.mouseMoved, at: point)
         XCTAssertFalse(state.showsAgentMonitor)
         XCTAssertEqual(state.agentsLayout, .rail)
@@ -948,7 +956,10 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
   }
 
-  func testCardMenuKeepsExactlyFourSecondaryActionsAndTheirFrozenOwner() throws {
+  /// The jump to the agent's panel left the "…" menu for a one-press button
+  /// beside the receipt (Maciej, 2026-10-30 14:08); the action itself stays
+  /// on the row so the button and the fiszka share one reachability.
+  func testCardMenuKeepsExactlyThreeSecondaryActionsAndTheFocusButtonOnTheRow() throws {
     let (_, lena, _) = try rosterFixture()
     let owner = try XCTUnwrap(lena.owner)
     let row = OverlayChannelDelivery(
@@ -988,6 +999,49 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.08))
     host.layoutSubtreeIfNeeded()
+    // The "…" is a SwiftUI Menu whose items exist only while it is open, so
+    // the secondary set is read from the one menu body the button and the
+    // card's right-click share: the agent commands, the focus entry among
+    // them, render only outside `secondaryActionsOnly`; the two policy
+    // toggles and the archive entry remain. Exactly three.
+    func compact(_ text: String) -> String {
+      text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let contents = compact(
+      try section(
+        of: source, from: "private var menuContents: some View {",
+        to: "private func agentCommands("))
+    XCTAssertEqual(
+      contents.components(separatedBy: "agentCommands(agentActions)").count - 1, 1,
+      "one rendering of the agent commands")
+    XCTAssertTrue(
+      contents.contains(
+        "if !secondaryActionsOnly, let agentActions { agentCommands(agentActions) Divider() }"),
+      "the agent commands, focus among them, stay out of the secondary menu")
+    XCTAssertFalse(contents.contains("actions.focus"), "no focus entry of the menu body's own")
+    XCTAssertFalse(contents.contains("agentActions?.focus"))
+    XCTAssertTrue(contents.contains("policyActions(for: member)"))
+    XCTAssertTrue(
+      contents.contains(
+        "if let archive = agentActions?.archive { Divider() agentCommand(archive, role: .destructive) }"
+      ))
+    let commands = compact(
+      try section(
+        of: source, from: "private func agentCommands(", to: "private func agentCommand("))
+    XCTAssertTrue(
+      commands.contains("if let focus = actions.focus { agentCommand(focus) }"),
+      "the full menu keeps the focus command")
+    let policy = try section(
+      of: source, from: "private func policyActions(for channel: OverlayChannelDelivery)",
+      to: "private func apply(")
+    XCTAssertEqual(
+      policy.components(separatedBy: "Toggle(").count - 1, 2, "Channel 0 and Do not disturb")
+    XCTAssertTrue(policy.contains("Text(\"Channel 0\""))
+    XCTAssertTrue(policy.contains("\"Do not disturb\""))
+
+    // The row's real menu reaches the same frozen owner through its archive
+    // entry and touches no primary action. Absence is not a pass.
     var found: NSMenu?
     scan: for x in stride(from: CGFloat(6), to: host.bounds.width, by: 12) {
       for y in stride(from: CGFloat(6), to: host.bounds.height, by: 12) {
@@ -1000,30 +1054,32 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         var hit = host.hitTest(point)
         while let current = hit {
           if let menu = current.menu(for: event) {
-            found = menu
-            break scan
+            menu.delegate?.menuNeedsUpdate?(menu)
+            if menu.items.contains(where: { $0.title == archive.title }) {
+              found = menu
+              break scan
+            }
+            break
           }
           hit = current.superview
         }
       }
     }
-    let menu = try XCTUnwrap(found, "the real card must resolve a menu; absence is not a pass")
-    menu.delegate?.menuNeedsUpdate?(menu)
-    let items = menu.items.filter { !$0.isSeparatorItem }
-    XCTAssertEqual(items.count, 4)
-    XCTAssertEqual(
-      Set(items.map(\.title)),
-      Set([
-        String(localized: "Channel 0"), String(localized: "Do not disturb"), focus.title,
-        archive.title,
-      ]))
-    let focusIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == focus.title })
+    let menu = try XCTUnwrap(found, "the row must resolve a menu with the archive entry")
     let archiveIndex = try XCTUnwrap(menu.items.firstIndex { $0.title == archive.title })
-    menu.performActionForItem(at: focusIndex)
     menu.performActionForItem(at: archiveIndex)
-    XCTAssertEqual(focusOwners, [owner])
+    XCTAssertTrue(focusOwners.isEmpty)
     XCTAssertEqual(archiveOwners, [owner])
-    XCTAssertEqual(primaryCalls, 0, "secondary actions cannot select, write, record or mute")
+    XCTAssertEqual(primaryCalls, 0, "the archive entry cannot select, write, record or mute")
+    // The row's one-press button and the header's third control share the
+    // menu action's reachability and reach the same frozen owner.
+    let control = try XCTUnwrap(view.panelControl(for: row))
+    XCTAssertEqual(control.symbol, focus.symbol)
+    XCTAssertTrue(control.enabled)
+    control.action()
+    view.focusAgentPanel(row)
+    XCTAssertEqual(focusOwners, [owner, owner])
+    XCTAssertEqual(primaryCalls, 0)
   }
 
   /// The 2026-10-29 card contract supersedes the older no-menu roster:
@@ -1464,9 +1520,13 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "a visual reply control is not a delivery until the envelope carries the source id")
   }
 
-  func testCompactAgentRowDropsTheFooterAndKeepsUnreadApartFromReceipts() throws {
-    // The compact card has identity, descriptor and up to two preview lines.
-    // Receipt and unread are distinct marks, neither adds a footer row.
+  /// The name row carries identity, descriptor, the receipt glyph and up to
+  /// two preview lines; unread is a badge on the title line. The delivery
+  /// state of the last sent message is both the glyph after the name and the
+  /// line under the preview, in the bubble's words (Maciej, 2026-10-30 on
+  /// build 2981: "ja bym zostawił te ptaszki, ale one naprawdę muszą dawać
+  /// status").
+  func testCompactAgentRowStatesTheDeliveryUnderThePreviewAndKeepsUnreadAsABadge() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let label = try section(
       of: source, from: "private func rosterRowLabel(", to: "func compactAgentActions(")
@@ -1474,14 +1534,24 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let limits = (visual + label).components(separatedBy: ".lineLimit(").dropFirst().compactMap {
       Int($0.prefix { $0.isNumber })
     }
-    XCTAssertEqual(limits.reduce(0, +), 4, "identity, descriptor and two preview lines")
+    XCTAssertEqual(
+      limits.reduce(0, +), 5, "identity, its timestamp, descriptor and two preview lines")
     XCTAssertTrue(
       visual.contains("OverlayAgentUnreadBadge("), "unread rides the title line as a badge")
     XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
     XCTAssertTrue(
-      label.contains("deliveryReceiptDisplay("), "receipt follows frozen delivery evidence")
+      visual.contains("OverlayRosterReceiptMark(receipt: receipt"),
+      "the receipt glyph is back on the name row")
+    XCTAssertFalse(
+      visual.contains("OverlayRosterDoubleCheckmark"),
+      "the two-state mark is gone; one shape draws one or two checks")
+    XCTAssertTrue(visual.contains("\"overlay-agent-receipt-\\(receipt.symbol)\""))
+    XCTAssertTrue(
+      label.contains("deliveryReceiptDisplay("), "the label resolves the glyph's receipt")
     let row = try section(of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
-    XCTAssertFalse(row.contains("rosterRowState("), "compact cards have no separate footer")
+    XCTAssertTrue(row.contains("deliveryReceiptDisplay("), "the row resolves the receipt words")
+    XCTAssertTrue(row.contains("rosterRowState("), "the state line sits under the preview")
+    XCTAssertTrue(source.contains("\"overlay-agent-state-\\(channel.channel)\""))
   }
 
   func testBroadcastPolicyRidesTheRowsContextMenuWithNoDisclosureList() throws {
@@ -1676,11 +1746,14 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let column = try section(
       of: overlay,
       from: "private func agentDrawerColumn",
-      to: "private func conversationEdgeControls")
+      to: "private func commitAgentDrawerWidth")
     XCTAssertTrue(column.contains(".animation(nil, value: width)"), "the list snaps")
     XCTAssertTrue(
-      column.contains(".frame(width: width, alignment: .trailing)"),
-      "the sliding frame is anchored to the window edge")
+      column.contains(".frame(width: max(width, contentMinimum))"),
+      "rows retain their readable layout while the divider narrows their viewport")
+    XCTAssertTrue(
+      column.contains(".frame(width: width, alignment: width < contentMinimum ? .leading : .trailing)"),
+      "a narrow viewport preserves the leading pills; a full column anchors to the window edge")
     let stack = try section(
       of: overlay, from: "private func canvasStack", to: "private func agentDrawerColumn")
     XCTAssertTrue(

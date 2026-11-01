@@ -9332,42 +9332,69 @@ def note_skipped_broadcast_channel(
 
 
 def capture_attachment_is_committed(stage: dict[str, Any]) -> bool:
-    """Require an exact decoded primary commit inside the verified 64 MiB tail."""
+    """Require an exact decoded primary commit inside the bounded journal tail."""
     try:
         with GenerationFile(Path(stage["commit_bus"])) as handle:
             end = handle.size
             start = max(0, end - (64 << 20))
-            handle.seek(start)
-            if start:
-                discarded = handle.readline(min(1024 * 1024 + 1, end - handle.tell()))
-                if not discarded.endswith(b"\n"):
-                    raise ValueError("capture commit tail begins outside a complete storage record")
-            decoder = ChunkDecoder()
-            while handle.tell() < end:
-                raw = handle.readline(min(1024 * 1024 + 1, end - handle.tell()))
-                if not raw or not raw.endswith(b"\n"):
-                    raise ValueError("capture commit tail has an incomplete storage record")
+            stage_id = str(stage["stage_id"]).encode("ascii")
+            commit_schema = CAPTURE_ATTACHMENT_COMMIT_SCHEMA.encode("ascii")
+
+            def reverse_lines() -> Any:
+                # Starting a forward decoder at an arbitrary byte boundary can
+                # land on part N of an unrelated chunked record. Search newest
+                # complete rows first and verify the candidate record itself.
+                position, carry, trailing = end, b"", True
+                while position > start:
+                    width = min(256 << 10, position - start)
+                    position -= width
+                    handle.seek(position)
+                    pieces = (handle.read(width) + carry).split(b"\n")
+                    carry = pieces.pop(0)
+                    if trailing and pieces:
+                        pieces.pop()  # empty or incomplete row at the observed end
+                        trailing = False
+                    if len(carry) > 1024 * 1024:
+                        raise ValueError("capture commit tail has an oversized row")
+                    for raw in reversed(pieces):
+                        if len(raw) > 1024 * 1024:
+                            raise ValueError("capture commit tail has an oversized row")
+                        yield raw
+                if start == 0 and not trailing and carry:
+                    yield carry
+
+            chunks: list[dict[str, Any]] = []
+            for raw in reverse_lines():
+                if not chunks and stage_id not in raw and commit_schema not in raw:
+                    continue
                 parsed = parse_line(raw.decode("utf-8", errors="strict"))
                 if parsed is None:
-                    if decoder.pending or b"persistence_encoding" in raw or b"codescribe.bus-chunk" in raw:
-                        raise ValueError("capture commit tail interrupted a verified storage record")
-                    continue
-                decoded = decoder.feed(parsed)
-                if decoded is None:
-                    continue
-                rows = evidence_revision_rows(decoded)
-                if rows is None:
-                    raise ValueError("capture commit tail has unknown revision encoding")
-                for row in rows:
-                    if (row.get("schema") == CAPTURE_ATTACHMENT_COMMIT_SCHEMA
-                            and row.get("kind") == "capture_attachment_commit"
-                            and all(row.get(key) == stage.get(key) for key in
-                                    ("stage_id", "session_id", "capture_epoch", "source_sequence", "commit_bus"))):
-                        return True
-            if decoder.pending:
-                raise ValueError("capture commit tail ends inside a storage record")
+                    raise ValueError("invalid capture commit record")
+                is_commit_chunk = (parsed.get("schema") == "codescribe.bus-chunk.v1"
+                                   and isinstance(parsed.get("event"), dict)
+                                   and parsed["event"].get("schema") == CAPTURE_ATTACHMENT_COMMIT_SCHEMA)
+                if is_commit_chunk:
+                    chunks.append(parsed)
+                    if parsed.get("part") != 0:
+                        continue
+                    decoder = ChunkDecoder()
+                    decoded = None
+                    for chunk in reversed(chunks):
+                        decoded = decoder.feed(chunk)
+                    if decoder.pending or decoded is None:
+                        raise ValueError("incomplete capture commit record")
+                    chunks.clear()
+                else:
+                    if chunks:
+                        raise ValueError("interrupted capture commit record")
+                    decoded = parsed
+                if (decoded.get("schema") == CAPTURE_ATTACHMENT_COMMIT_SCHEMA
+                        and decoded.get("kind") == "capture_attachment_commit"
+                        and all(decoded.get(key) == stage.get(key) for key in
+                                ("stage_id", "session_id", "capture_epoch", "source_sequence", "commit_bus"))):
+                    return True
             raise ValueError("capture attachment has no verified primary commit within 64 MiB")
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, UnicodeError) as error:
         sys.stderr.write(f"bus-demux: capture attachment commit refused: {error}\n")
         return False
 

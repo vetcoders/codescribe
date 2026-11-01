@@ -629,6 +629,7 @@ struct AccountLoginRow: View {
     case "openai-responses": return "ChatGPT"
     case "xai-responses": return "xAI"
     case "anthropic-messages": return "Claude"
+    case "google-gemini": return "Google"
     default: return provider.displayName
     }
   }

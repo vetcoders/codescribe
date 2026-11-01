@@ -143,7 +143,8 @@ fn init_tracing(owner: LogOwner, default_filter: &str, test_process: bool) {
 
     let filter_layer = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let file = log_file_path(&Config::churn_dir(), test_process)
+    let refuse_file_sink = test_process || cli_invocation_refuses_file_sink(owner);
+    let file = log_file_path(&Config::churn_dir(), refuse_file_sink)
         .and_then(|path| RollingLog::open(&path, owner).ok());
 
     if let Some(file) = file {
@@ -168,11 +169,19 @@ fn init_tracing(owner: LogOwner, default_filter: &str, test_process: bool) {
 }
 
 /// Resolve the production file sink under the high-churn folder. Test
-/// harnesses deliberately receive no path: relying on a Makefile-exported data
-/// directory is insufficient because bare `cargo test` compiles
-/// integration-test dependencies without `cfg(test)`.
-fn log_file_path(churn_dir: &Path, test_process: bool) -> Option<PathBuf> {
-    (!test_process).then(|| churn_dir.join("logs").join("codescribe.log"))
+/// harnesses and offline replay/corpus CLI invocations deliberately receive no
+/// path: relying on a Makefile-exported data directory is insufficient because
+/// bare `cargo test` compiles integration-test dependencies without
+/// `cfg(test)`, and `codescribe replay` reads from the live data directory
+/// while keeping its diagnostics on stderr.
+fn log_file_path(churn_dir: &Path, refuse_file_sink: bool) -> Option<PathBuf> {
+    (!refuse_file_sink).then(|| churn_dir.join("logs").join("codescribe.log"))
+}
+
+fn cli_invocation_refuses_file_sink(owner: LogOwner) -> bool {
+    owner == LogOwner::Cli
+        && (crate::cli::replay::replay_argv_requested()
+            || crate::cli::corpus::corpus_argv_requested())
 }
 
 /// Open the production log with append semantics, creating only its parent.

@@ -74,7 +74,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       "OverlayChannelStatusView.swift", from: "func channelRow(",
       to: "private func rosterRowLabel(")
     XCTAssertTrue(row.contains("compactAgentActions(for: channel)"))
-    XCTAssertFalse(row.contains("rosterRowState("))
+    // The delivery state is the line under the preview, beside the receipt
+    // glyph the name row carries again (Maciej, 2026-10-30 on build 2981:
+    // "ja bym zostawił te ptaszki, ale one naprawdę muszą dawać status").
+    XCTAssertTrue(row.contains("rosterRowState("))
     XCTAssertFalse(row.contains("panelFocusAccessory("))
 
     let audio = try sourceSection(
@@ -270,7 +273,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
   func testIntercomControlsRestSmokedAndNamesBrightenInsteadOfViolet() throws {
     let roster = try overlaySource("OverlayChannelStatusView.swift")
     XCTAssertFalse(roster.contains("AnyShapeStyle(.foreground)"), "an explicit ink is primary")
-    XCTAssertTrue(roster.contains("return chrome ? AnyShapeStyle(palette.primaryText.color) : nil"))
+    XCTAssertTrue(roster.contains("private var idleControlInk: Color { palette.mutedText.color }"))
     let focus = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomFocusButton: View {",
       to: "private struct OverlayIntercomConversationBody: View {")
@@ -357,7 +360,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         "let channel = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
     let dim = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayDisconnectedRowDim: ViewModifier {",
-      to: "struct OverlayAgentsSidebarControls {")
+      to: "struct OverlayRowHoverHighlight: ViewModifier {")
     XCTAssertEqual(OverlayDisconnectedRowDim.opacity, 0.45)
     XCTAssertTrue(dim.contains(".opacity(disconnected ? Self.opacity : 1)"))
     XCTAssertTrue(dim.contains(".grayscale(disconnected ? 1 : 0)"))
@@ -384,7 +387,8 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertFalse(
       marks.contains("litColor: palette.processingStatus"), "the lit moon is not a warning")
     XCTAssertTrue(marks.contains("unlitOpacity: Double = 1"), "the antenna keeps its existing tone")
-    XCTAssertTrue(marks.contains("lit ? litColor : palette.mutedText.color.opacity(unlitOpacity)"))
+    XCTAssertTrue(
+      marks.contains("palette: palette, lit: lit ? litColor : nil, unlitOpacity: unlitOpacity"))
   }
 
   func testActionButtonsSitBelowThePrimaryLabel() throws {

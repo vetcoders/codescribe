@@ -35,6 +35,15 @@ use tracing::{debug, info};
 
 use super::transcript_bus::{TranscriptBus, TranscriptBusEvidenceEvent};
 
+/// Live whole-document view of accepted formatter fragments. A child module of
+/// the emitter so it reads the reducer's private state instead of copying it;
+/// the file sits beside the emitter, hence the explicit path.
+#[path = "formatter_live.rs"]
+mod formatter_live;
+#[cfg(test)]
+#[path = "formatter_live_acceptance.rs"]
+mod formatter_live_acceptance;
+
 /// Read-only capture paint observer: full overlay text and acoustic warning state.
 pub type CursorObserver = Arc<dyn Fn(&CompactProjection) + Send + Sync>;
 /// Read-only, ephemeral Apple recognition paint; never a document mutation.
@@ -1529,7 +1538,10 @@ impl TranscriptReducer {
         preview_sample_point(word.sample_start, word.sample_end) < extent_end
     }
 
-    fn read_paint(&self) -> PaintedCanvas {
+    /// The canvas fragments in paint order: committed tokens, live unanchored
+    /// evidence and the provisional Apple tail. `read_paint` and the live
+    /// formatted view both read this one list.
+    fn read_paint_fragments(&self) -> Vec<(u64, String, VisibleWordSource, bool)> {
         let mut fragments = self.visible_paint_fragments();
         let ledger_word_keys = self
             .unanchored_evidence
@@ -1602,6 +1614,11 @@ impl TranscriptReducer {
             ),
             _ => (0, *start),
         });
+        fragments
+    }
+
+    fn read_paint(&self) -> PaintedCanvas {
+        let fragments = self.read_paint_fragments();
         let mut paint = PaintedCanvas::default();
         for (_, text, source, is_evidence) in fragments {
             for member in source.committed_members() {
@@ -3308,6 +3325,42 @@ impl TranscriptReducer {
         true
     }
 
+    fn explicit_raw_step_selected(&self) -> bool {
+        self.document_timeline.steps.len() > 1
+            && self
+                .document_timeline
+                .current()
+                .is_some_and(|step| step.presentation.is_none())
+    }
+
+    fn needs_refused_occurrence_projection_wait(
+        &self,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+    ) -> bool {
+        if self.delivery_selection.is_some()
+            || !matches!(
+                policy,
+                FormattingPolicy::Correction | FormattingPolicy::Smart
+            )
+            || self.document_by_occurrence.is_empty()
+            || !self.direct_document.is_empty()
+            || self.committed_rendered_text() != raw_at_handoff
+            || self.raw_human_revision
+            || self.manual_rendered_text.is_some()
+            || !self.context_markers.is_empty()
+            || self.explicit_raw_step_selected()
+        {
+            return false;
+        }
+        self.document_by_occurrence.values().any(|entry| {
+            entry.seal_receipt.is_some()
+                && !entry.label.trim().is_empty()
+                && entry.manual_edit_receipt.is_none()
+                && self.latest_source_projection(entry, policy).is_none()
+        })
+    }
+
     fn needs_occurrence_projection_wait(
         &self,
         policy: FormattingPolicy,
@@ -3344,24 +3397,7 @@ impl TranscriptReducer {
             if entry.label.trim().is_empty() || entry.manual_edit_receipt.is_some() {
                 return false;
             }
-            let projection = self.derived_projections.iter().rev().find(|projection| {
-                projection.requested_mode == policy.as_str()
-                    && projection
-                        .source_observation
-                        .as_ref()
-                        .is_some_and(|source| {
-                            source.occurrence == entry.occurrence
-                                && projection.source_raw_text == entry.label
-                                && entry.manual_edit_receipt.is_none()
-                                && entry.observation_receipt.starts_with(&format!(
-                                    "{}:{}:{}:",
-                                    source.producer.as_str(),
-                                    source.request,
-                                    source.generation
-                                ))
-                        })
-            });
-            match projection {
+            match self.latest_source_projection(entry, policy) {
                 Some(projection) if projection.status == "applied" => {}
                 Some(_) => return false,
                 None => missing_any = true,
@@ -3942,10 +3978,19 @@ pub struct PresentationEmitter {
     overlap_refusals: std::sync::Mutex<BTreeMap<String, u64>>,
     formatter_pending: std::sync::atomic::AtomicBool,
     derived_projection_notify: tokio::sync::Notify,
+    /// Last whole formatted view published while the take is still capturing.
+    live_view: formatter_live::LiveViewMemo,
     sentence_pause_sec: f32,
     tick_clock: Arc<dyn Fn() -> std::time::Duration + Send + Sync>,
     #[cfg(test)]
     paint_commands: std::sync::Mutex<Vec<String>>,
+}
+
+/// How stop-time formatter selection assembles occurrence projections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectionAssembly {
+    AllOrWholeRaw,
+    RefusedPerOccurrence,
 }
 
 impl PresentationEmitter {
@@ -4259,6 +4304,7 @@ impl PresentationEmitter {
             stop_snapshot_pending: std::sync::atomic::AtomicBool::new(false),
             formatter_pending: std::sync::atomic::AtomicBool::new(false),
             derived_projection_notify: tokio::sync::Notify::new(),
+            live_view: formatter_live::LiveViewMemo::default(),
             sentence_pause_sec: 0.7,
             tick_clock: {
                 let origin = std::time::Instant::now();
@@ -5227,6 +5273,46 @@ impl PresentationEmitter {
         .await;
     }
 
+    /// Wait while background occurrence formatter jobs are still in flight for
+    /// this active presentation and a refused take still has sealed occurrences
+    /// without a formatter projection for `policy`. The retained job owner
+    /// enforces `retained_formatter_deadline` and clears `formatter_pending`
+    /// on completion, timeout, panic, or cancellation.
+    pub async fn wait_for_refused_occurrence_projections(
+        &self,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+    ) {
+        loop {
+            let notified = self.derived_projection_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let should_wait = {
+                let active = *self
+                    .active_presentation
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if !active
+                    || !self
+                        .formatter_pending
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    false
+                } else {
+                    let reducer = self
+                        .session_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    reducer.needs_refused_occurrence_projection_wait(policy, raw_at_handoff)
+                }
+            };
+            if !should_wait {
+                break;
+            }
+            notified.await;
+        }
+    }
+
     /// Choose one whole-take version. An incomplete Smart set yields a single
     /// Corrections floor over all Raw; late versions never trigger delivery.
     pub fn delivery_projection(
@@ -5234,6 +5320,24 @@ impl PresentationEmitter {
         policy: FormattingPolicy,
         raw_at_handoff: &str,
     ) -> Option<DerivedTranscriptProjection> {
+        self.delivery_projection_with_assembly(
+            None,
+            policy,
+            raw_at_handoff,
+            ProjectionAssembly::AllOrWholeRaw,
+        )
+    }
+
+    pub fn delivery_projection_with_assembly(
+        &self,
+        take_id: Option<&str>,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+        assembly: ProjectionAssembly,
+    ) -> Option<DerivedTranscriptProjection> {
+        if assembly == ProjectionAssembly::RefusedPerOccurrence {
+            return self.refused_delivery_projection(take_id, policy, raw_at_handoff);
+        }
         let mut reducer = self
             .session_state
             .lock()
@@ -5291,24 +5395,7 @@ impl PresentationEmitter {
             complete = true;
         } else {
             for entry in reducer.document_by_occurrence.values() {
-                let projection = reducer.derived_projections.iter().rev().find(|projection| {
-                    projection.requested_mode == policy.as_str()
-                        && projection
-                            .source_observation
-                            .as_ref()
-                            .is_some_and(|source| {
-                                source.occurrence == entry.occurrence
-                                    && projection.source_raw_text == entry.label
-                                    && entry.manual_edit_receipt.is_none()
-                                    && entry.observation_receipt.starts_with(&format!(
-                                        "{}:{}:{}:",
-                                        source.producer.as_str(),
-                                        source.request,
-                                        source.generation
-                                    ))
-                            })
-                });
-                match projection {
+                match reducer.latest_source_projection(entry, policy) {
                     Some(projection) if projection.status == "applied" => {
                         append_exact_fragment(&mut text, &projection.rendered_text)
                     }
@@ -5358,6 +5445,112 @@ impl PresentationEmitter {
             && projection.rendered_text != raw_at_handoff
         {
             let session_id = projection.session_id.clone();
+            reducer.anchor_document_timeline(&session_id);
+            let step = reducer.snapshot_step(
+                "formatter",
+                Some(policy.as_str().to_string()),
+                projection.receipt_id.clone(),
+                Some(projection.clone()),
+            );
+            reducer.push_document_step(step);
+        }
+        reducer.delivery_selection = Some(projection.clone());
+        drop(reducer);
+        self.publish_derived_paint(&projection);
+        Some(projection)
+    }
+
+    fn refused_delivery_projection(
+        &self,
+        take_id: Option<&str>,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+    ) -> Option<DerivedTranscriptProjection> {
+        if self.literal_delivery()
+            || !matches!(
+                policy,
+                FormattingPolicy::Correction | FormattingPolicy::Smart
+            )
+        {
+            return None;
+        }
+        let mut reducer = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(selected) = &reducer.delivery_selection {
+            return (selected.status == "applied").then(|| selected.clone());
+        }
+        let session_id = reducer
+            .document_by_occurrence
+            .keys()
+            .next()
+            .map(|occurrence| occurrence.session.clone())?;
+        if let Some(expected) = take_id.map(|id| id.strip_suffix(":stopping").unwrap_or(id))
+            && session_id != expected
+        {
+            return None;
+        }
+        if reducer.document_by_occurrence.is_empty()
+            || !reducer.direct_document.is_empty()
+            || reducer.committed_rendered_text() != raw_at_handoff
+            || reducer.raw_human_revision
+            || reducer.manual_rendered_text.is_some()
+            || !reducer.context_markers.is_empty()
+            || reducer.explicit_raw_step_selected()
+            || reducer
+                .document_by_occurrence
+                .keys()
+                .any(|occurrence| occurrence.session != session_id)
+        {
+            return None;
+        }
+        let mut text = String::new();
+        let mut any_formatted = false;
+        for (occurrence, entry) in &reducer.document_by_occurrence {
+            let formatted = if entry.manual_edit_receipt.is_none() {
+                reducer
+                    .latest_source_projection(entry, policy)
+                    .filter(|projection| {
+                        projection.status == "applied"
+                            && !projection.rendered_text.trim().is_empty()
+                    })
+                    .map(|projection| projection.rendered_text.clone())
+            } else {
+                None
+            };
+            if let Some(formatted) = formatted {
+                append_exact_fragment(&mut text, &formatted);
+                any_formatted = true;
+            } else {
+                append_exact_fragment(&mut text, reducer.presentation_of(occurrence, entry));
+            }
+        }
+        if !any_formatted || text.trim().is_empty() {
+            return None;
+        }
+        let source_revision = reducer.revision;
+        let mut projection = reducer.mint_derived_projection(
+            session_id.clone(),
+            source_revision,
+            raw_at_handoff.to_string(),
+            policy,
+            AiFormatResult {
+                text: text.clone(),
+                reasoning_text: None,
+                status: AiFormatStatus::Applied,
+            },
+            None,
+        );
+        if projection.rendered_text != text {
+            projection.rendered_text = text.clone();
+            projection.publication_digest = projection.digest();
+            *reducer
+                .derived_projections
+                .last_mut()
+                .expect("minted refused selection") = projection.clone();
+        }
+        if projection.rendered_text != raw_at_handoff {
             reducer.anchor_document_timeline(&session_id);
             let step = reducer.snapshot_step(
                 "formatter",
@@ -5481,6 +5674,9 @@ impl EventSink for PresentationEmitter {
 
     /// Route an `EngineEvent` into reducer state and ordered delta delivery.
     fn on_event(&self, event: &EngineEvent) {
+        // Declared first, so it drops last: every ledger and reducer guard of
+        // the arms below is already released when the live view republishes.
+        let _live_view = formatter_live::LiveViewRefresh::after(self, event);
         let tick_budget = self.schedule_light_plus();
         // Apple-live opt-out: that lane's events never touch paint, mirror, or
         // document. A late callback after the lane's own retirement dies here.
@@ -5769,6 +5965,9 @@ impl EventSink for PresentationEmitter {
                 if evidence_closed {
                     self.repaint_cursor();
                 }
+                // The accepted fragment reaches the overlay as part of the whole
+                // live view: `LiveViewRefresh` (derived paint, like `publish_derived_paint`)
+                // publishes it when this event ends, after the ledger guard below is released.
                 // Raw shaping does not depend on formatting; this tick is an
                 // idempotent re-check of the unchanged acoustic label.
                 self.mint_incremental_light_plus(

@@ -136,6 +136,17 @@ struct IntercomContentMetrics: Equatable {
       slots: min(3, max(0, Int((free / slot).rounded(.down)))), marks: false)
   }
 
+  /// A tall, narrow fiszka spends preview space on audio rather than hiding
+  /// its owner's name. Header-only rows keep their existing shared audio slot.
+  func audioFooterHeight(width: CGFloat, cardHeight: CGFloat) -> CGFloat {
+    let scale = nameFontSize / 11
+    let row = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+    guard tier(width: width, cardHeight: cardHeight) != .icon, width < actionsWidth,
+      cardHeight >= 2 * row + OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
+    else { return 0 }
+    return row
+  }
+
   /// Align execution context with the name, after the grip, digit and status.
   func nameLeadingInset(width: CGFloat, digit: String) -> CGFloat {
     let scale = nameFontSize / 11
@@ -177,7 +188,7 @@ struct IntercomContentMetrics: Equatable {
   func compactPreviewLayout(width: CGFloat, cardHeight: CGFloat) -> IntercomCompactPreviewLayout? {
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return nil }
     let scale = nameFontSize / 11
-    let font = NSFont.systemFont(ofSize: 13 * scale)
+    let font = NSFont.systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)
     let readableWidth = ("Message preview" as NSString).size(withAttributes: [.font: font]).width
     guard width - 24 >= readableWidth else { return nil }
     let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
@@ -186,6 +197,7 @@ struct IntercomContentMetrics: Equatable {
     let available =
       cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       - OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
+      - audioFooterHeight(width: width, cardHeight: cardHeight)
     let minimum =
       lineHeight + metadataLine
       + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
@@ -274,7 +286,9 @@ enum OverlayIntercomWidgetLayout {
   /// still scrolls; this is the same reading budget used by the input gate.
   static func minimumReadableConversationHeight(scale: CGFloat) -> CGFloat {
     let layout = NSLayoutManager()
-    let body = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 13 * scale)))
+    let body = ceil(
+      layout.defaultLineHeight(
+        for: .systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)))
     let metadata = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
     return 2 * body + 2 * metadata + 2 * 5 + 2 * 12 + 2 * 8 + 12 + 1
   }

@@ -47,6 +47,8 @@ pub use live_archive::ArchiveRefusal;
 #[cfg(test)]
 mod channel_tray_tests;
 #[cfg(test)]
+mod formatter_manual_max_acceptance;
+#[cfg(test)]
 mod formatter_selection_acceptance;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
@@ -152,6 +154,21 @@ fn formatter_revision_level(
             "settings"
         },
     ))
+}
+
+/// Seal one capture take's formatting at admission. A take formats only with
+/// the automatic policy (Off, Correction or Smart): Max is the Agent and runs
+/// only for an explicit overlay or history Format action, so no capture can
+/// schedule a Max readiness or execution request, live or at Stop. The
+/// controller generation and the persisted selection stay untouched; only this
+/// take's snapshot is derived, from the same captured inputs.
+fn automatic_take_settings(settings: Arc<RuntimeSettingsSnapshot>) -> Arc<RuntimeSettingsSnapshot> {
+    let automatic = settings.automatic_formatting_policy();
+    if settings.formatting_policy() == automatic {
+        settings
+    } else {
+        Arc::new(settings.with_formatting_level(automatic))
+    }
 }
 
 /// What the production formatter did with a reopened archive transcript.
@@ -2270,6 +2287,10 @@ impl RecordingController {
     /// the Agent's actionable reason; it never falls back to the formatting
     /// lane or Apple. A retained consultation stays selected and resumes once
     /// the Agent is configured again.
+    ///
+    /// Only an explicit request reaches Max: an overlay/history Format action
+    /// or an Agent-window turn derives a one-operation Max snapshot. A capture
+    /// take carries the sealed automatic policy, so this returns `None` there.
     async fn selected_max_consultation(
         &self,
         settings: &RuntimeSettingsSnapshot,
@@ -2313,10 +2334,15 @@ impl RecordingController {
     }
 
     /// Prepare the selected Max conversation before the first formatting turn.
+    ///
+    /// Max is manual-only (invoked explicitly from the Format menu or an Agent
+    /// conversation turn), so startup readiness evaluates the automatic take
+    /// policy (where a persisted `max` is clamped to `Smart`) and never touches
+    /// `max_consultation` or `MaxConsultation::prepare` at launch.
     pub async fn prepare_max_consultation(
         &self,
     ) -> Result<Option<codescribe_core::agent::consultation::ConsultationPreparation>> {
-        let settings = self.runtime_settings_arc().await;
+        let settings = automatic_take_settings(self.runtime_settings_arc().await);
         if let Some(consultation) = self.selected_max_consultation(&settings).await? {
             return consultation.prepare(&settings).await.map(Some);
         }
@@ -2663,18 +2689,39 @@ impl RecordingController {
             .selected_max_consultation(runtime_settings.as_ref())
             .await?;
         let turn_id = format!("{session_id}:revision:{source_revision}");
-        let result = format_text_with_status_for_policy(
-            &source,
-            language.whisper_hint(),
-            runtime_settings.as_ref(),
-            consultation.as_deref().map(|agent| {
-                codescribe_core::ai_formatting::FormattingConsultation {
-                    agent,
-                    turn_id: &turn_id,
+        let result = match &consultation {
+            Some(consultation) => match consultation.prepare(runtime_settings.as_ref()).await {
+                Ok(_) => {
+                    format_text_with_status_for_policy(
+                        &source,
+                        language.whisper_hint(),
+                        runtime_settings.as_ref(),
+                        Some(codescribe_core::ai_formatting::FormattingConsultation {
+                            agent: consultation.as_ref(),
+                            turn_id: &turn_id,
+                        }),
+                    )
+                    .await
                 }
-            }),
-        )
-        .await;
+                Err(error) => {
+                    warn!(%error, "Max consultation preparation failed on explicit Format");
+                    codescribe_core::llm::ai_formatting::AiFormatResult {
+                        text: source.clone(),
+                        reasoning_text: None,
+                        status: codescribe_core::llm::ai_formatting::AiFormatStatus::Failed,
+                    }
+                }
+            },
+            None => {
+                format_text_with_status_for_policy(
+                    &source,
+                    language.whisper_hint(),
+                    runtime_settings.as_ref(),
+                    None,
+                )
+                .await
+            }
+        };
         let _serial_guard = self.serial_lock.lock().await;
         if self.current_state().await != State::Idle {
             return Err(anyhow::anyhow!(
@@ -2755,18 +2802,39 @@ impl RecordingController {
             "archive:{archive_path}:revision:{source_revision}:{}",
             Uuid::new_v4()
         );
-        let result = format_text_with_status_for_policy(
-            &source,
-            language.whisper_hint(),
-            runtime_settings.as_ref(),
-            consultation.as_deref().map(|agent| {
-                codescribe_core::ai_formatting::FormattingConsultation {
-                    agent,
-                    turn_id: &turn_id,
+        let result = match &consultation {
+            Some(consultation) => match consultation.prepare(runtime_settings.as_ref()).await {
+                Ok(_) => {
+                    format_text_with_status_for_policy(
+                        &source,
+                        language.whisper_hint(),
+                        runtime_settings.as_ref(),
+                        Some(codescribe_core::ai_formatting::FormattingConsultation {
+                            agent: consultation.as_ref(),
+                            turn_id: &turn_id,
+                        }),
+                    )
+                    .await
                 }
-            }),
-        )
-        .await;
+                Err(error) => {
+                    warn!(%error, "Max consultation preparation failed on archived Format");
+                    codescribe_core::llm::ai_formatting::AiFormatResult {
+                        text: source.clone(),
+                        reasoning_text: None,
+                        status: codescribe_core::llm::ai_formatting::AiFormatStatus::Failed,
+                    }
+                }
+            },
+            None => {
+                format_text_with_status_for_policy(
+                    &source,
+                    language.whisper_hint(),
+                    runtime_settings.as_ref(),
+                    None,
+                )
+                .await
+            }
+        };
         let outcome = ArchivedFormatOutcome::from_result(&source, result);
         let revision = match &outcome {
             ArchivedFormatOutcome::Applied(text) => {
@@ -3242,22 +3310,13 @@ impl RecordingController {
 
     /// Install one already-sealed generation. Callers must own `serial_lock`;
     /// keeping the single write site here preserves the one-generation fence.
+    ///
+    /// Max consultation is manual-only (invoked explicitly via Format or Agent
+    /// conversation turns), so installing a settings generation never prepares
+    /// Max in the background when `max` is persisted on disk.
     async fn install_runtime_settings_generation(&self, runtime_settings: RuntimeSettingsSnapshot) {
         let settings = Arc::new(runtime_settings);
         *self.runtime_settings.write().await = Arc::clone(&settings);
-        // Selecting Max after launch also prepares its provider. Do not make the
-        // next capture wait under serial_lock for tool discovery/history I/O.
-        match self.selected_max_consultation(&settings).await {
-            Ok(Some(consultation)) => {
-                tokio::spawn(async move {
-                    if let Err(error) = consultation.prepare(&settings).await {
-                        warn!(%error, "Max preparation after settings change requires attention");
-                    }
-                });
-            }
-            Ok(None) => {}
-            Err(error) => warn!(%error, "Max selection after settings change requires attention"),
-        }
     }
 
     /// Reload the just-persisted calibration into the controller before the
@@ -4323,6 +4382,21 @@ impl RecordingController {
             );
             return Ok(disposition);
         }
+        let selected_refused = if seal_refused && !assistive {
+            let settings = automatic_take_settings(self.runtime_settings_arc().await);
+            Some(
+                self.select_paste_projection_with_assembly(
+                    take_id,
+                    settings.as_ref(),
+                    trimmed.to_string(),
+                    crate::presentation::emitter::ProjectionAssembly::RefusedPerOccurrence,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let trimmed = selected_refused.as_deref().unwrap_or(trimmed).trim();
         let notes_save_only = config.quick_notes_enabled && config.quick_notes_save_only;
         let intent = delivery_intent_from_session(assistive, force_ai, notes_save_only);
         let latched_target = self.pre_overlay_frontmost_app.read().await.clone();
@@ -6128,27 +6202,9 @@ impl RecordingController {
             return Ok(());
         }
         self.refresh_pending_runtime_settings_locked().await?;
-        let runtime_settings = self.runtime_settings_arc().await;
+        // The take seals the automatic policy: a capture never runs Max.
+        let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
         let config = runtime_settings.values().clone();
-
-        let live_formatting_agent = if !assistive
-            && !*self.force_raw_mode.read().await
-            && runtime_settings.formatting_policy() != FormattingPolicy::Off
-        {
-            match self
-                .selected_max_consultation(runtime_settings.as_ref())
-                .await
-            {
-                Ok(consultation) => consultation
-                    .map(|agent| agent as Arc<dyn codescribe_core::ai_formatting::FormattingAgent>),
-                Err(error) => {
-                    warn!(%error, "Max live executor unavailable; capture remains transcription-only");
-                    None
-                }
-            }
-        } else {
-            None
-        };
 
         // Hold mode never runs the assistive loop
         self.assistive_loop_active.store(false, Ordering::SeqCst);
@@ -6415,7 +6471,6 @@ impl RecordingController {
             // so the very first deltas route to the correct overlay.
             set_assistive_session(is_assistive);
             rec.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
-            rec.set_live_formatting_agent(live_formatting_agent);
             hold_session.delivery_tagger.begin(
                 if is_assistive {
                     "assistive"
@@ -6577,7 +6632,8 @@ impl RecordingController {
         // A new take inherits no destination from the previous one.
         *self.delivery_disposition.write().await = TranscriptDelivery::Unattempted;
         self.refresh_pending_runtime_settings_locked().await?;
-        let runtime_settings = self.runtime_settings_arc().await;
+        // The take seals the automatic policy: a capture never runs Max.
+        let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
         let config = runtime_settings.values();
         let _start_guard = AtomicFlagGuard::new(Arc::clone(&self.start_transition_in_flight));
 
@@ -6721,26 +6777,6 @@ impl RecordingController {
             config.whisper_language.as_str(),
         );
         *self.composer_delivery_payload.write().await = None;
-        let live_formatting_agent = if !is_assistive
-            && capture_turn.schedules_live_formatting()
-            && !*self.force_raw_mode.read().await
-            && runtime_settings.formatting_policy() != FormattingPolicy::Off
-        {
-            match self
-                .selected_max_consultation(runtime_settings.as_ref())
-                .await
-            {
-                Ok(consultation) => consultation
-                    .map(|agent| agent as Arc<dyn codescribe_core::ai_formatting::FormattingAgent>),
-                Err(error) => {
-                    warn!(%error, "Max live executor unavailable; capture remains transcription-only");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        recorder.set_live_formatting_agent(live_formatting_agent);
         let transcript_bus = TranscriptBus::open(TranscriptSession {
             session_id: new_session_id.clone(),
             mode: if is_assistive {
@@ -6906,7 +6942,9 @@ impl RecordingController {
         let assistive = *self.assistive_mode.read().await;
         let force_ai = *self.force_ai_mode.read().await;
 
-        let runtime_settings = self.runtime_settings_arc().await;
+        // The same automatic seal as the take's start: Stop formatting and
+        // projection selection never run Max for a capture.
+        let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
 
         // Self-deadlock guard (Rust 2024): the read guard temporary from an
         // if-let chain scrutinee outlives the chain body. Inlining the read
@@ -7557,19 +7595,46 @@ impl RecordingController {
         runtime_settings: &RuntimeSettingsSnapshot,
         raw: String,
     ) -> String {
+        self.select_paste_projection_with_assembly(
+            take_id,
+            runtime_settings,
+            raw,
+            crate::presentation::emitter::ProjectionAssembly::AllOrWholeRaw,
+        )
+        .await
+    }
+
+    async fn select_paste_projection_with_assembly(
+        &self,
+        take_id: Option<&str>,
+        runtime_settings: &RuntimeSettingsSnapshot,
+        raw: String,
+        assembly: crate::presentation::emitter::ProjectionAssembly,
+    ) -> String {
+        use crate::presentation::emitter::ProjectionAssembly;
         let policy = runtime_settings.formatting_policy();
-        if !matches!(
-            policy,
-            FormattingPolicy::Correction | FormattingPolicy::Smart | FormattingPolicy::Max
-        ) {
+        let policy_supported = match assembly {
+            ProjectionAssembly::AllOrWholeRaw => matches!(
+                policy,
+                FormattingPolicy::Correction | FormattingPolicy::Smart | FormattingPolicy::Max
+            ),
+            ProjectionAssembly::RefusedPerOccurrence => {
+                matches!(
+                    policy,
+                    FormattingPolicy::Correction | FormattingPolicy::Smart
+                )
+            }
+        };
+        if !policy_supported {
             return raw;
         }
         let Some(presentation) = self.active_presentation.read().await.clone() else {
             return raw;
         };
+        let expected_session = take_id.map(|id| id.strip_suffix(STOPPING_SUFFIX).unwrap_or(id));
         if !presentation
             .visible_canvas_snapshot()
-            .is_some_and(|canvas| Some(canvas.session_id.as_str()) == take_id)
+            .is_some_and(|canvas| Some(canvas.session_id.as_str()) == expected_session)
         {
             warn!(
                 take_id,
@@ -7584,18 +7649,32 @@ impl RecordingController {
             policy,
             FormattingPolicy::Correction | FormattingPolicy::Smart
         ) {
-            presentation
-                .wait_for_occurrence_projections(
-                    policy,
-                    &raw,
-                    runtime_settings
-                        .ai_execution()
-                        .request_timing()
-                        .attempt_timeout(),
-                )
-                .await;
+            match assembly {
+                ProjectionAssembly::AllOrWholeRaw => {
+                    presentation
+                        .wait_for_occurrence_projections(
+                            policy,
+                            &raw,
+                            runtime_settings
+                                .ai_execution()
+                                .request_timing()
+                                .attempt_timeout(),
+                        )
+                        .await;
+                }
+                ProjectionAssembly::RefusedPerOccurrence => {
+                    presentation
+                        .wait_for_refused_occurrence_projections(policy, &raw)
+                        .await;
+                }
+            }
         }
-        let Some(projection) = presentation.delivery_projection(policy, &raw) else {
+        let Some(projection) =
+            presentation.delivery_projection_with_assembly(take_id, policy, &raw, assembly)
+        else {
+            if assembly == ProjectionAssembly::RefusedPerOccurrence {
+                self.publish_formatting_degraded(expected_session);
+            }
             return raw;
         };
         if policy == FormattingPolicy::Smart
@@ -7605,7 +7684,12 @@ impl RecordingController {
         }
         if projection.requested_mode != projection.delivered_mode || projection.status != "applied"
         {
-            self.publish_formatting_degraded(take_id);
+            self.publish_formatting_degraded(expected_session);
+        }
+        if assembly == ProjectionAssembly::RefusedPerOccurrence
+            && let Some(session_id) = expected_session
+        {
+            self.sync_live_archive(&presentation, session_id).await;
         }
         projection.rendered_text
     }
@@ -7697,7 +7781,8 @@ impl RecordingController {
         closed: Option<watch::Sender<bool>>,
     ) -> Result<ProcessRecordingOutcome> {
         let (assistive, hold_mode, force_raw, force_ai) = mode;
-        let runtime_settings = self.runtime_settings_arc().await;
+        // The same automatic seal as the take's start: Stop never runs Max.
+        let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
         if cfg!(test) {
             info!(
                 "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",

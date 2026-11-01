@@ -825,8 +825,10 @@ final class OverlayState {
   /// midi, through the one presentation write, which also forgets a pending
   /// automatic return. Mini and midi stay as they are.
   func yieldToAppWindow() {
-    guard presentationMode == .expanded else { return }
-    applyPresentationMode(.midi, cause: .user)
+    // Focus entering another app window is an automatic fold, not the human
+    // choosing Compact. Never must also exclude this non-timer path.
+    guard autoFoldSeconds > 0, presentationMode == .expanded else { return }
+    applyPresentationMode(.midi, cause: .automatic)
   }
 
   /// The one presentation write. Any expansion to `.expanded` remembers the
@@ -1374,6 +1376,18 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
+  /// Each viewed main-window draft owns its recipient override.
+  struct ComposerContext: Hashable {
+    let id: String
+    let channel: String
+    let ownerID: String?
+
+    init(_ conversation: OverlayConversation) {
+      id = conversation.id
+      channel = conversation.channel
+      ownerID = conversation.owner?.id
+    }
+  }
   /// A composer destination is pinned to its owner, never to a reusable digit.
   struct ComposerTarget: Equatable {
     let id: String
@@ -1388,13 +1402,16 @@ final class OverlayState {
       title = conversation.displayTitle
     }
   }
-  private(set) var composerTarget: ComposerTarget?
-  private(set) var composerTargetRevision = UUID()
+  /// Bumped when the set of recipients of the open draft changes (a draft
+  /// link made or broken). A held edit that returns under an older revision
+  /// appends its words without taking focus.
+  var composerTargetRevision = UUID()
 
   /// The same current owners that text publication accepts, plus broadcast.
+  /// The inbox and 0 · All are draft-sync sources, never destinations.
   var availableComposerRecipients: [OverlayConversation] {
     let broadcast = conversations.filter { $0.id == "0" && $0.channel == "0" && $0.owner == nil }
-    return broadcast + draftSyncConversations
+    return broadcast + draftSyncConversations.filter { $0.owner != nil }
   }
 
   struct ConversationNavigationRequest: Equatable {
@@ -1416,15 +1433,17 @@ final class OverlayState {
       conversationID: conversation.id, messageID: messageID, revision: UUID())
   }
 
-  func chooseComposerTarget(_ conversation: OverlayConversation) {
-    guard conversation.owner != nil || conversation.channel == "0" else { return }
-    composerTarget = ComposerTarget(conversation)
-    composerTargetRevision = UUID()
+  func heldComposerTarget(
+    _ message: OverlayConversationMessage, viewing conversation: OverlayConversation
+  ) -> OverlayConversation {
+    message.sourceChannel == "0"
+      ? OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+      : conversation
   }
 
   /// Select at the click, before withdrawal can suspend.
   func prepareHeldComposerEdit(_ target: OverlayConversation) -> UUID {
-    chooseComposerTarget(target)
+    selectConversation(target.id)
     return composerTargetRevision
   }
 
@@ -1435,13 +1454,9 @@ final class OverlayState {
   {
     let old = conversationDraft(for: target.id)
     setConversationDraft(old.isEmpty ? text : old + "\n\n" + text, for: target.id)
-    return composerTargetRevision == revision && composerTargetIsAvailable(target)
-      && composerTarget?.id == target.id && composerTarget?.ownerID == target.owner?.id
-      && composerTarget?.channel == target.channel
-  }
-
-  func initializeComposerTarget(_ conversation: OverlayConversation) {
-    if composerTarget == nil { chooseComposerTarget(conversation) }
+    return composerTargetRevision == revision && selectedConversationID == target.id
+      && resolvedComposerTarget(viewing: target).map({ ComposerContext($0) })
+        == ComposerContext(target)
   }
 
   func composerTargetIsAvailable(_ target: OverlayConversation) -> Bool {
@@ -1450,11 +1465,16 @@ final class OverlayState {
     }
   }
 
+  /// The open conversation is the recipient; nothing routes a message away
+  /// from it (Maciej, 2026-10-30 13:58). Further recipients are the agents
+  /// whose drafts are linked to it, sent by the sync path. The inbox and a
+  /// retired owner resolve to nil: nothing of their own to publish to.
   func resolvedComposerTarget(viewing conversation: OverlayConversation) -> OverlayConversation? {
-    guard let target = composerTarget else {
-      return composerTargetIsAvailable(conversation) ? conversation : nil
-    }
-    return availableComposerRecipients.first {
+    composerTargetIsAvailable(conversation) ? conversation : nil
+  }
+
+  private func resolveComposerRecipient(_ target: ComposerTarget) -> OverlayConversation? {
+    availableComposerRecipients.first {
       $0.id == target.id && $0.channel == target.channel && $0.owner?.id == target.ownerID
     }
   }
@@ -2265,6 +2285,7 @@ final class OverlayState {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     selectedConversationID = id
+    composerTargetRevision = UUID()
     windowContentSurface = id == nil ? .transcription : .agents
     if let id { lastAgentConversationID = id }
     conversationFocusRevision &+= 1
@@ -2985,32 +3006,30 @@ final class OverlayState {
       }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
-    // A retired Sync member may already have lost its group. Revalidate at
-    // the routing boundary so that a stale callback cannot send it singly.
-    if conversation.channel != "0" {
-      guard
-        draftSyncConversations.contains(where: {
-          $0.id == conversation.id && $0.owner?.id == conversation.owner?.id
-            && $0.channel == conversation.channel
-            && $0.owner?.channel == conversation.owner?.channel
-        })
-      else { return }
-    }
+    // The open conversation is the destination. A linked draft goes to every
+    // linked agent instead: the inbox has no destination of its own, and
+    // 0 · All with a chosen set sends only to that set.
+    guard composerTargetIsAvailable(conversation) || conversation.isHumanInbox else { return }
     if hasSynchronizedDraft(conversation.id) {
       await sendSynchronizedDraft(from: conversation)
       return
     }
+    guard !conversation.isHumanInbox else { return }
+    let destination = conversation
     let draft = conversationDraft(for: conversation.id)
     let hasWaitingCaptureAttachments =
       captureAttachmentDrafts[conversation.id]?.target == nil
       && !(captureAttachmentDrafts[conversation.id]?.paths.isEmpty ?? true)
       && !pendingCaptureAttachmentSends.contains(conversation.id)
     guard conversation.owner != nil || conversation.channel == "0",
-      !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasWaitingCaptureAttachments,
+      !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || hasWaitingCaptureAttachments,
       !pendingTextMessages.contains(conversation.id)
     else { return }
     pendingTextMessages.insert(conversation.id)
     let reply = conversationReplies[conversation.id]
+    let draftRevision = conversationDraftRevisions[conversation.id]
+    let replyRevision = conversationReplyRevisions[conversation.id]
     textMessageErrors.removeValue(forKey: conversation.id)
     defer { pendingTextMessages.remove(conversation.id) }
     // Files pasted after the words, while the capture still waited for a
@@ -3025,9 +3044,12 @@ final class OverlayState {
       : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
     guard !outgoing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     do {
-      try await publishConversationText(conversation.owner, outgoing, reply, [])
-      // A newer draft belongs to the Founder, even if publication finishes late.
-      if conversationDraft(for: conversation.id) == draft {
+      try await publishConversationText(destination.owner, outgoing, reply, [])
+      // A newer draft or reply belongs to the Founder, even if publication finishes late.
+      if conversationDraftRevisions[conversation.id] == draftRevision,
+        conversationReplyRevisions[conversation.id] == replyRevision,
+        conversationDraft(for: conversation.id) == draft
+      {
         setConversationDraft("", for: conversation.id)
         if conversationReplies[conversation.id] == reply {
           conversationReplies.removeValue(forKey: conversation.id)
@@ -3038,12 +3060,15 @@ final class OverlayState {
     }
   }
 
-  private func draftPublication(for conversation: OverlayConversation)
+  private func draftPublication(
+    for conversation: OverlayConversation, recipient: OverlayConversation
+  )
     -> OverlayComposerDraftPublication?
   {
     guard let owner = conversation.owner else { return nil }
     return OverlayComposerDraftPublication(
-      id: conversation.id, owner: owner, payload: conversationDraft(for: conversation.id),
+      id: conversation.id, owner: owner, recipient: ComposerTarget(recipient),
+      payload: conversationDraft(for: conversation.id),
       reply: conversationReplies[conversation.id],
       draftRevision: conversationDraftRevisions[conversation.id],
       replyRevision: conversationReplyRevisions[conversation.id])
@@ -3051,7 +3076,7 @@ final class OverlayState {
 
   private func draftPublicationIsCurrent(_ publication: OverlayComposerDraftPublication) -> Bool {
     guard let conversation = draftSyncConversations.first(where: { $0.id == publication.id }),
-      let current = draftPublication(for: conversation)
+      let current = draftPublication(for: conversation, recipient: conversation)
     else { return false }
     return current == publication
   }
@@ -3059,10 +3084,12 @@ final class OverlayState {
   private func draftPublicationOwnerIsCurrent(_ publication: OverlayComposerDraftPublication)
     -> Bool
   {
-    draftSyncConversations.contains {
-      $0.id == publication.id && $0.owner?.id == publication.owner.id
-        && $0.channel == publication.owner.channel && $0.owner?.channel == publication.owner.channel
-    }
+    resolveComposerRecipient(publication.recipient) != nil
+      && draftSyncConversations.contains {
+        $0.id == publication.id && $0.owner?.id == publication.owner.id
+          && $0.channel == publication.owner.channel
+          && $0.owner?.channel == publication.owner.channel
+      }
   }
 
   /// Freeze each exact owner's own payload and reply. A late receipt may clear
@@ -3080,7 +3107,15 @@ final class OverlayState {
     guard Set(recipients.map(\.id)) == group.members,
       recipients.allSatisfy({ group.participants[$0.id]?.owns($0) == true })
     else { return }
-    let frozen = recipients.compactMap { draftPublication(for: $0) }.filter {
+    // Each linked agent receives its own draft. The inbox and 0 · All are
+    // sources only: no lease to publish to; their draft clears with the agents'.
+    let agents = recipients.filter { $0.owner != nil }
+    let publications = agents.compactMap { source in
+      draftPublication(for: source, recipient: source)
+    }
+    // A member without a current owner must not silently drop one linked draft.
+    guard publications.count == agents.count else { return }
+    let frozen = publications.filter {
       !$0.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     let pending = frozen.filter { conversationDraftReceipts[$0.id] != $0 }
@@ -3092,15 +3127,20 @@ final class OverlayState {
       // Send authorized the frozen payload. Subsequent editing does not recall
       // it; only retirement/rebinding can cancel this exact recipient. A group
       // dissolving after another owner retires cannot cancel a surviving owner.
-      guard draftPublicationOwnerIsCurrent(recipient) else { continue }
+      guard draftPublicationOwnerIsCurrent(recipient),
+        let destination = resolveComposerRecipient(recipient.recipient)
+      else { continue }
       let id = recipient.id
       do {
-        let alsoSentTo = frozen.filter {
-          $0.id != id && OverlayComposerProseEdit.identical($0.payload, recipient.payload)
-            && draftPublicationOwnerIsCurrent($0)
-        }.map(\.owner)
+        let alsoSentTo = Set(
+          frozen.filter {
+            $0.id != id && OverlayComposerProseEdit.identical($0.payload, recipient.payload)
+              && draftPublicationOwnerIsCurrent($0)
+          }.compactMap { resolveComposerRecipient($0.recipient)?.owner }
+        )
+        .filter { $0.id != destination.owner?.id }.sorted { $0.id < $1.id }
         try await publishConversationText(
-          recipient.owner, recipient.payload, recipient.reply, alsoSentTo)
+          destination.owner, recipient.payload, recipient.reply, alsoSentTo)
         // Membership can retire while the publication is in flight. Its
         // receipt still belongs to an unchanged, still-current exact owner.
         if draftPublicationIsCurrent(recipient) {
@@ -3112,6 +3152,11 @@ final class OverlayState {
         }
       }
     }
+    // Decided before any draft clears: clearing a draft drops its receipt
+    // (the `conversationDrafts` observer), so this must be read first.
+    let everyAgentHoldsItsReceipt = frozen.allSatisfy {
+      conversationDraftReceipts[$0.id] == $0 && draftPublicationIsCurrent($0)
+    }
     var cleared = false
     for recipient in frozen {
       guard conversationDraftReceipts[recipient.id] == recipient,
@@ -3121,6 +3166,17 @@ final class OverlayState {
       conversationReplies.removeValue(forKey: recipient.id)
       textMessageErrors.removeValue(forKey: recipient.id)
       cleared = true
+    }
+    // A source's draft is the same words: it clears once every linked agent
+    // holds its receipt, and stays for a retry while any of them failed. The
+    // set itself persists, on 0 · All as in the inbox (Maciej, 2026-10-30
+    // 14:3x: "wyślij nie jest one shot"); only the chain or the menu changes it.
+    if cleared, everyAgentHoldsItsReceipt {
+      for source in recipients where source.owner == nil {
+        conversationDrafts[source.id] = ""
+        conversationReplies.removeValue(forKey: source.id)
+        textMessageErrors.removeValue(forKey: source.id)
+      }
     }
     // A partial send leaves failed/newer drafts intact. All subsequent input
     // starts at the resulting prose ends, while Sync membership stays enabled.
@@ -3193,8 +3249,13 @@ final class OverlayState {
       else { return false }
       return opened <= pastedAt
     }
-    guard Set(candidates.map(\.id)).count == 1 else { return nil }
-    return candidates.first
+    let parents = Set(candidates.map { OverlayChannelDelivery.Bus.channelSessionID(of: $0.id) })
+    let documents = Set(
+      candidates.map(\.id).filter {
+        $0 != OverlayChannelDelivery.Bus.channelSessionID(of: $0)
+      })
+    guard parents.count == 1, documents.count <= 1 else { return nil }
+    return candidates.first(where: { documents.contains($0.id) }) ?? candidates.first
   }
 
   private func resolveWaitingCaptureAttachments(in projected: [OverlayConversation]) {
@@ -3202,13 +3263,14 @@ final class OverlayState {
       guard let conversation = projected.first(where: { $0.id == id }),
         let session = captureSessionForPaste(in: conversation, at: original.pastedAt),
         original.captureSessionID == nil
-          || OverlayChannelDelivery.Bus.channelSessionID(of: original.captureSessionID ?? "")
-            == OverlayChannelDelivery.Bus.channelSessionID(of: session.id),
+          || OverlayChannelDelivery.Bus.sameCaptureSession(
+            original.captureSessionID ?? "", session.id),
         let target = conversation.messages.reversed().compactMap(\.activeCaptureAttachmentTarget)
           .first(where: {
-            ($0.captureSessionID == session.id
-              || OverlayChannelDelivery.Bus.channelSessionID(of: $0.captureSessionID)
-                == OverlayChannelDelivery.Bus.channelSessionID(of: session.id))
+            OverlayChannelDelivery.Bus.sameCaptureSession($0.captureSessionID, session.id)
+              && (original.captureSessionID == nil
+                || OverlayChannelDelivery.Bus.sameCaptureSession(
+                  $0.captureSessionID, original.captureSessionID ?? ""))
               && $0.recipientIDs.sorted() == session.recipientIDs
           })
       else { continue }
@@ -3238,13 +3300,29 @@ final class OverlayState {
   /// choice, instead of capturing every later paste in an unretryable target.
   private func recoverClosedCaptureAttachments(in projected: [OverlayConversation]) {
     for (id, staged) in captureAttachmentDrafts {
-      guard captureAttachmentErrors[id] != nil,
-        !pendingCaptureAttachmentSends.contains(id),
-        let target = staged.target,
-        let conversation = projected.first(where: { $0.id == id }),
-        conversation.messages.contains(where: {
-          $0.captureSessionID == target.captureSessionID && $0.captureState == .finished
-        })
+      guard !pendingCaptureAttachmentSends.contains(id),
+        let conversation = projected.first(where: { $0.id == id })
+      else { continue }
+      let sessionID = staged.target?.captureSessionID ?? staged.captureSessionID
+      let matchesSession: (OverlayConversationMessage) -> Bool = { message in
+        guard let sessionID else { return true }
+        guard let document = message.captureSessionID else { return false }
+        return OverlayChannelDelivery.Bus.sameCaptureSession(document, sessionID)
+      }
+      let finished =
+        sessionID != nil
+        && conversation.messages.contains {
+          $0.captureState == .finished && matchesSession($0)
+        }
+      let receiving = conversation.messages.contains {
+        $0.captureState == .receiving && matchesSession($0)
+      }
+      let stillOpen = activeCaptureAttachmentSessions.contains { session in
+        session.includes(conversation)
+          && (sessionID == nil
+            || OverlayChannelDelivery.Bus.sameCaptureSession(session.id, sessionID ?? ""))
+      }
+      guard finished || (!stillOpen && !receiving && !conversationMicrophoneOpen(conversation))
       else { continue }
       returnCaptureAttachmentsToDraft(in: id)
     }
@@ -3799,9 +3877,28 @@ final class OverlayState {
     }
     if isRevisionDraftDirty { return revisionDraft }
     if !terminal, !finalized, recording || transcribing, let compactProjection {
-      return compactProjection.text
+      return showsLiveFormattedPresentation ? formattedText : compactProjection.text
     }
     return formattedText
+  }
+
+  /// The capture on screen is still recording and its newest accepted
+  /// document event is a live formatted presentation: Rust's whole view of
+  /// the newest Raw revision, accepted formatted fragments with Raw elsewhere.
+  /// The canvas paints that whole projection instead of the raw live paint,
+  /// without joining the two. A following Raw revision replaces it until Rust
+  /// presents that revision too; capture, delivery and the Raw document are
+  /// untouched.
+  var showsLiveFormattedPresentation: Bool {
+    guard !terminal, !finalized, recording || transcribing, archivedTranscript == nil,
+      let projection = latestTranscriptProjection,
+      projection.reducerAction == "derived_projection", !projection.terminal,
+      projection.deliveryText?.isEmpty == false
+    else { return false }
+    guard let compactProjection else { return true }
+    return compactProjection.sessionId == projection.sessionId
+      && (projection.captureEpoch == 0
+        || compactProjection.captureEpoch == projection.captureEpoch)
   }
 
   /// Uncertain words painted on the canvas. The spans index into
@@ -4616,6 +4713,11 @@ final class OverlayState {
     // extraction over a zero delta yields zero rules), so this fills the
     // queue without poisoning learning.
     guard isEdited || action == "close" else { return }
+    // Raw text and formatting level come from accepted Rust provenance of the
+    // bytes on the canvas, never from the selected automatic level. When
+    // neither the history nor the document names them, no receipt is written:
+    // formatted bytes must not be filed as Raw, nor Raw under a level.
+    guard let provenance = qualityProvenance else { return }
     let recordedAction = isEdited ? action : "close-unreviewed"
     let editProvenance = userRevisionProvenance
     if isEdited {
@@ -4628,13 +4730,8 @@ final class OverlayState {
     // Bridge FFI (generated by uniffi) appends the quality JSONL and feeds safe
     // candidates to lexicon.custom.jsonl. That is blocking disk I/O, so it runs
     // off the main actor — Copy/Send/Close must never wait on the disk.
-    // The projection exposes only rendered truth. Until its receipt carries a
-    // distinct acoustic-text field, use admitted delivery bytes instead of an
-    // unwritten Swift "raw" shadow.
-    let rawForRecord = delivered
-    // Automatic product formatting is unavailable until C15C wires the
-    // occurrence-bound producer before seal; quality receipts state that truth.
-    let formattingLevel = FormattingPolicyOption.off.rawValue
+    let rawForRecord = provenance.rawText
+    let formattingLevel = provenance.formattingLevel.rawValue
     // The admitted projection contract does not currently expose aggregate
     // Whisper confidence. Persist absence honestly instead of maintaining an
     // unwritten Swift confidence shadow.
@@ -4663,6 +4760,21 @@ final class OverlayState {
         }
       }
     }
+  }
+
+  /// Provenance of the canvas bytes for the quality receipt. With accepted
+  /// operations it is the versions history at this exact revision. Before the
+  /// first operation the canvas is the reducer's committed acoustic document,
+  /// which is Raw only when no formatter presentation or revision receipt
+  /// stands over it. Anything else is unknown.
+  private var qualityProvenance: OverlayQualityProvenance? {
+    guard let projection = latestTranscriptProjection else { return nil }
+    let versions = transcriptVersions
+    if !versions.options.isEmpty { return versions.qualityProvenance }
+    guard projection.reducerAction != "derived_projection",
+      projection.documentRevisionReceipt == nil
+    else { return nil }
+    return OverlayQualityProvenance(rawText: projection.renderedText, formattingLevel: .off)
   }
 
   // MARK: Edit as revision (Swift side; Rust ledger mints the revision)
@@ -5627,6 +5739,14 @@ final class OverlayState {
           onCaptureEnded?(projection.sessionId)
         }
       }
+      return
+    }
+    // A live formatted presentation answers a Raw revision of a capture that
+    // is still recording. After that capture's lifecycle ended, a late one
+    // cannot repaint the reviewed document, its versions or its delivery.
+    if projection.reducerAction == "derived_projection", !projection.terminal,
+      endedProjectionSessions.contains(projection.sessionId)
+    {
       return
     }
     if let accepted = projectionOrder[projection.sessionId] {
@@ -6812,7 +6932,11 @@ final class ControllerDictationEngine: DictationEngine {
   func cloudRetranscribeConfigured() -> Bool { config.cloudFileRetranscriptionAvailable() }
   func currentOverlayPolicy() -> OverlayPolicySnapshot? {
     let toggles = config.trayToggles()
-    guard let formatLevel = FormattingPolicyOption(rawValue: toggles.formattingLevel) else {
+    // A stored Max runs Smart at the core's automatic boundary; the overlay
+    // names the level that runs. Max itself is a one-take Format choice.
+    guard
+      let formatLevel = FormattingPolicyOption(rawValue: toggles.formattingLevel)?.automaticLevel
+    else {
       return nil
     }
     return OverlayPolicySnapshot(autoFormatLevel: formatLevel)

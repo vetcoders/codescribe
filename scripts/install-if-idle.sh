@@ -54,21 +54,6 @@ def wait_for_old_generation(old_pids: set[str]) -> set[str]:
         time.sleep(0.25)
 
 
-def lock_holders(path: Path) -> str:
-    try:
-        found = subprocess.run(["lsof", "-t", "--", str(path)], capture_output=True, text=True)
-        pids = sorted(set(found.stdout.split()))
-        if not pids:
-            return "PID and command unavailable"
-        holders = []
-        for pid in pids:
-            command = subprocess.run(["ps", "-p", pid, "-o", "command="], capture_output=True, text=True)
-            holders.append(f"PID {pid} ({command.stdout.strip() or 'command unavailable'})")
-        return ", ".join(holders)
-    except OSError:
-        return "PID and command unavailable"
-
-
 def resolved_path(flag: str) -> Path:
     result = subprocess.run(
         [sys.executable, str(demux), flag],
@@ -98,7 +83,7 @@ def assert_turn_idle(lease_path: Path) -> None:
     except OSError as error:
         if error.errno in (errno.EACCES, errno.EAGAIN):
             print(
-                f"install-if-idle: refuse — an agent turn is in flight (lock held by {lock_holders(lease_path)})",
+                "install-if-idle: refuse — an agent turn is in flight (agent-turn lock is held)",
                 file=sys.stderr,
             )
             raise SystemExit(2)
@@ -315,7 +300,7 @@ def install_local(lease_path: Path) -> None:
         print("install-if-idle: no live take, no agent turn, runtime idle — make install-app")
     else:
         print(
-            f"install-if-idle: no live take, no agent turn; app is running (runtime lock held by {lock_holders(interlock_path)}) — "
+            "install-if-idle: no live take, no agent turn; runtime lock is held — "
             "installing over it, then requesting Quit"
         )
     try:
@@ -389,8 +374,7 @@ def install_prebuilt(source: Path, lease_path: Path) -> None:
     if not held:
         os.close(interlock)
         raise Refuse(
-            "runtime install interlock unavailable (lock held by "
-            f"{lock_holders(interlock_path)})"
+            "runtime install interlock unavailable (runtime lock is held)"
         )
     try:
         flags = fcntl.fcntl(interlock, fcntl.F_GETFD)

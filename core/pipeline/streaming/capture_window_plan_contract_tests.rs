@@ -3,6 +3,49 @@ use super::CaptureWindowPlan;
 use crate::stt::tail_provider::TailSampleRange;
 
 #[test]
+fn interior_band_proof_matches_the_plan_and_refuses_noncanonical_frames() {
+    for rate in [100, 16_000, 48_000] {
+        let mut owner = plan(rate);
+        let head = u64::from(rate) * 18;
+        for frame in collect(&mut owner, head, false) {
+            let proof = CaptureWindowPlan::interior_publication_band(&frame, rate);
+            if frame.sample_start == 0 {
+                assert_eq!(proof, None, "the first frame owns a different band");
+            } else {
+                assert_eq!(proof, Some(owner.publication_band(&frame, head, false)));
+                let mut shifted = frame.clone();
+                shifted.sample_start += 1;
+                shifted.sample_end += 1;
+                assert_eq!(
+                    CaptureWindowPlan::interior_publication_band(&shifted, rate),
+                    None
+                );
+                let mut partial = frame.clone();
+                partial.sample_end -= 1;
+                assert_eq!(
+                    CaptureWindowPlan::interior_publication_band(&partial, rate),
+                    None
+                );
+                assert_eq!(
+                    CaptureWindowPlan::interior_publication_band(&frame, 0),
+                    None
+                );
+            }
+        }
+    }
+    let overflow = TailSampleRange {
+        session: "overflow".into(),
+        capture_epoch: 1,
+        sample_start: u64::MAX,
+        sample_end: u64::MAX,
+    };
+    assert_eq!(
+        CaptureWindowPlan::interior_publication_band(&overflow, 1),
+        None
+    );
+}
+
+#[test]
 fn forward_publication_tiles_capture_without_context_overlap() {
     for rate in [100_u32, 16_000, 48_000] {
         for milliseconds in [10_u64, 5990, 8990, 9000, 9010, 12000, 12010, 25000] {

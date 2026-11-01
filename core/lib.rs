@@ -35,6 +35,8 @@
 // Core modules (namespaced)
 // ═══════════════════════════════════════════════════════════
 
+/// Bidirectional Agent Client Protocol with permission-gated client methods.
+pub mod acp;
 /// Agent runtime: threads, sessions, capabilities, permissions, tool grants,
 /// and durable run monitoring.
 pub mod agent;
@@ -182,3 +184,7 @@ pub use llm::{ai_formatting, client};
 pub use pipeline::contracts;
 pub use quality::{engine_contract, overlay_quality, qube_daemon, qube_report};
 pub use util::safe_path;
+
+#[cfg(test)]
+#[path = "tests/formatter_keywords_acceptance.rs"]
+mod formatter_keywords_acceptance;

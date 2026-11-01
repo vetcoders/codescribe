@@ -26,6 +26,11 @@ struct DictationWhisperModelTab: View {
       } else {
         selectedModelCard(status: status, catalog: catalog)
         selectionMessages(catalog: catalog)
+        if catalog?.discoveryPending == true {
+          Text("Checking other model locations…")
+            .font(SettingsScale.helper)
+            .foregroundStyle(CSColor.secondaryInk)
+        }
       }
 
       // Readiness of the Local power refinement belongs next to the model it
@@ -95,12 +100,12 @@ struct DictationWhisperModelTab: View {
     -> some View
   {
     VStack(spacing: 0) {
-      if let catalog {
-        cardRow {
-          Text("Model", comment: "Whisper tab row: the model selector")
-            .font(SettingsScale.settingName)
-            .foregroundStyle(Color.primary)
-          Spacer(minLength: CSSpace.sm)
+      cardRow {
+        Text("Model", comment: "Whisper tab row: the model selector")
+          .font(SettingsScale.settingName)
+          .foregroundStyle(Color.primary)
+        Spacer(minLength: CSSpace.sm)
+        if let catalog {
           Picker(
             selection: Binding(
               get: { model.whisperModelSelection },
@@ -121,9 +126,16 @@ struct DictationWhisperModelTab: View {
           // saved; on screen that state is the resolution failure below.
           .accessibilityLabel(Text("Whisper model"))
           .accessibilityValue(Text(verbatim: Self.selectedOptionLabel(catalog)))
+        } else {
+          ProgressView()
+            .controlSize(.small)
+          Text("Checking the model catalog…")
+            .font(SettingsScale.helper)
+            .foregroundStyle(CSColor.secondaryInk)
         }
-        divider
       }
+      .accessibilityIdentifier("whisper-model-selector")
+      divider
       cardRow {
         let line = Self.modelStatus(available: status.available, catalog: catalog)
         let statusText = String(

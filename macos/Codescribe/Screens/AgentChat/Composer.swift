@@ -538,7 +538,11 @@ struct Composer: View {
         ForEach(store.pendingAttachments) { attachment in
           HStack(spacing: 6) {
             Button {
-              previewAttachment = attachment
+              if AttachmentPreviewPresentation.usesWindow() {
+                presentPreviewWindow(for: attachment)
+              } else {
+                previewAttachment = attachment
+              }
             } label: {
               HStack(spacing: 6) {
                 CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
@@ -583,6 +587,17 @@ struct Composer: View {
         }
       )
     }
+  }
+
+  /// Nightly: the preview as its own window above the chat. Markup's
+  /// annotated copy takes the staged slot (same id), the original stays on disk.
+  private func presentPreviewWindow(for attachment: PendingAttachment) {
+    let store = store
+    let id = attachment.id
+    AttachmentPreviewWindowController.present(
+      attachment.previewAttachment,
+      onRemove: { _ in store.removeAttachment(id) },
+      onAnnotated: { _, annotated in store.replaceAttachment(id, with: annotated) })
   }
 
   // MARK: Image picker
@@ -799,7 +814,19 @@ enum ComposerControlMetrics {
   static let horizontalPadding: CGFloat = 12
   static let verticalPadding: CGFloat = 8
   static let restingActionOpacity = 0.75
-  static let conversationEditorMaximumHeight: CGFloat = 112
+  static let syncSurfaceTintOpacity = 0.08
+  static let syncSurfaceTintReducedTransparencyOpacity = 0.12
+  static let syncSurfaceBorderOpacity = 0.28
+  static let conversationEditorMaximumLines = 6
+  static let conversationEditorMaximumHeight: CGFloat = conversationEditorMaximumHeight(
+    lineHeight: ComposerTextLayout.lineHeight(fontSize: textSize))
+
+  static func conversationEditorMaximumHeight(
+    lineHeight: CGFloat, actionHeight: CGFloat = hitTargetSize
+  ) -> CGFloat {
+    CGFloat(conversationEditorMaximumLines) * max(1, lineHeight)
+      + ComposerTextLayout.verticalPadding + actionHeight
+  }
 
   // Inline agent cards share the stacked editor and toolbar, with less chrome.
   static let intercomGlyphSize: CGFloat = 14

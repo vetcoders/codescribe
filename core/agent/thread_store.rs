@@ -114,13 +114,24 @@ impl Thread {
 /// Storage form of one message. Content blocks are kept as raw JSON rather
 /// than typed variants so a thread written by an older or newer build stays
 /// readable; conversion happens in [`ThreadMessage::to_message`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadMessage {
     pub role: String,
     pub content: Vec<Value>,
     pub timestamp: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+}
+
+impl std::fmt::Debug for ThreadMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThreadMessage")
+            .field("role", &self.role)
+            .field("content", &self.content)
+            .field("timestamp", &self.timestamp)
+            .field("metadata_present", &self.metadata.is_some())
+            .finish()
+    }
 }
 
 impl From<&Message> for ThreadMessage {
@@ -136,7 +147,10 @@ impl From<&Message> for ThreadMessage {
             role: role_to_string(message.role).to_string(),
             content,
             timestamp: message.timestamp.unwrap_or_else(Utc::now),
-            metadata: None,
+            metadata: message
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.as_stored().clone()),
         }
     }
 }
@@ -153,6 +167,14 @@ impl ThreadMessage {
         }
         let mut message = self.to_message();
         message.role = role;
+        if let Some(metadata) = &message.metadata
+            && metadata.provider_wire()?.is_some()
+        {
+            anyhow::ensure!(
+                role == Role::Assistant,
+                "Provider wire state belongs to an Assistant occurrence"
+            );
+        }
         Ok(message)
     }
 
@@ -170,6 +192,10 @@ impl ThreadMessage {
             role: role_from_string(&self.role),
             content,
             timestamp: Some(self.timestamp),
+            metadata: self
+                .metadata
+                .clone()
+                .map(super::MessageMetadata::from_stored),
         }
     }
 }
@@ -1676,6 +1702,7 @@ mod tests {
                 },
             ],
             timestamp: Some(Utc::now()),
+            metadata: None,
         };
 
         let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());

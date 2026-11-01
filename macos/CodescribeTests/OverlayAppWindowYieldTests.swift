@@ -368,4 +368,22 @@ final class OverlayAppWindowYieldTests: XCTestCase {
       "Settings-like titled window: after occlusion without .visible, "
         + "a new key should yield to midi")
   }
+
+  func testSpuriousLoginwindowFrontmostDoesNotYieldPinnedOverlayBelowTerminal() {
+    XCTAssertFalse(
+      OverlayPresencePolicy.shouldYield(
+        frontmostBundleId: "com.apple.loginwindow", modalWindowPresent: false),
+      "spurious loginwindow frontmost during unlocked desktop use must not demote a pinned overlay"
+    )
+    let resolved = OverlayPresencePolicy.resolve(
+      screenshotChord: false,
+      shouldYield: OverlayPresencePolicy.shouldYield(
+        frontmostBundleId: "com.apple.loginwindow", modalWindowPresent: false),
+      pinned: true)
+    XCTAssertEqual(resolved, .rest)
+    XCTAssertGreaterThan(resolved.windowLevel.rawValue, NSWindow.Level.floating.rawValue)
+    XCTAssertTrue(
+      OverlayPresencePolicy.shouldYield(
+        frontmostBundleId: "com.apple.SecurityAgent", modalWindowPresent: false))
+  }
 }

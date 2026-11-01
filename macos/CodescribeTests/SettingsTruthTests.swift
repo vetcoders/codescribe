@@ -226,7 +226,7 @@ final class SettingsTruthTests: XCTestCase {
     )
   }
 
-  func testNewMaxConsultationIsUnavailableOutsideEnabledMax() async {
+  func testNewMaxConsultationRemainsAvailableUnderAutomaticLevels() async {
     for policy in ["off", "correction", "smart"] {
       var settings = CsSettings.sample
       settings.formattingLevel = policy
@@ -236,15 +236,17 @@ final class SettingsTruthTests: XCTestCase {
           settings: settings,
           beginNewMaxConsultationObserver: {
             calls += 1
-            return "unexpected"
+            return "consultation-\(policy)"
           }
         ), permissionProbe: MockPermissionProbe())
       model.refresh()
-      XCTAssertFalse(model.maxConsultationEnabled)
       await model.beginNewMaxConsultation()
-      XCTAssertEqual(calls, 0)
+      XCTAssertEqual(calls, 1)
       XCTAssertFalse(model.newMaxConsultationPending)
-      XCTAssertNil(model.maxConsultationNotice)
+      XCTAssertEqual(
+        model.maxConsultationNotice,
+        "New consultation started. Previous history is preserved."
+      )
     }
   }
 
@@ -787,7 +789,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(target.anchor, .maxConsultation)
     model.select(target)
     XCTAssertEqual(model.section, .creator)
-    XCTAssertTrue(model.maxConsultationEnabled, "the anchored control must be available")
+    XCTAssertEqual(model.automaticFormattingLevel, .smart, "stored Max projects as automatic Smart")
     XCTAssertEqual(resets, 0, "navigation must not start or reset a conversation")
     XCTAssertNil(links.consume(), "the repair route must remain one-shot")
   }
@@ -1541,13 +1543,15 @@ final class SettingsTruthTests: XCTestCase {
       engine: MockSettingsEngine(updateConfigObserver: { key, value in
         writes.append((key, value))
       }), permissionProbe: MockPermissionProbe())
-    for value in ["raw", "medium", "smart", "creative"] {
+    for value in ["raw", "medium", "smart"] {
       model.setFormattingLevel(value)
     }
+    model.setFormattingLevel("creative")
+    XCTAssertNotNil(model.lastError)
     model.setFormattingLevel("aggressive")
 
-    XCTAssertEqual(writes.map(\.0), Array(repeating: "FORMATTING_LEVEL", count: 4))
-    XCTAssertEqual(writes.map(\.1), ["off", "correction", "smart", "max"])
+    XCTAssertEqual(writes.map(\.0), Array(repeating: "FORMATTING_LEVEL", count: 3))
+    XCTAssertEqual(writes.map(\.1), ["off", "correction", "smart"])
     XCTAssertNotNil(model.lastError)
   }
 

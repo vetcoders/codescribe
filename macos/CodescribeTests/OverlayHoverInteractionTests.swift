@@ -209,7 +209,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
     }
   }
 
-  func testNarrowRailHoverHintEscapesScrollClipOverTheDocument() throws {
+  func testNarrowRailHoverHintEscapesScrollClipOverTheDocument() async throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let host = NSHostingView(
       rootView: HStack(spacing: 0) {
@@ -251,6 +251,10 @@ final class OverlayHoverInteractionTests: XCTestCase {
     }
     let region = try XCTUnwrap(regions.first { $0.onHover != nil && $0.hovered })
     region.updateHover(at: nil)
+    XCTAssertFalse(region.hovered, "Native exit is immediate")
+    try await OverlayHoverDeliveryTestSupport.wait {
+      OverlayHintPanel.shared.presentedPanel == nil
+    }
     XCTAssertNil(OverlayHintPanel.shared.presentedPanel)
   }
 

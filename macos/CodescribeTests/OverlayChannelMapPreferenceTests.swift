@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import XCTest
@@ -120,15 +121,35 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  func testDisabledPanelUsesEarlierMiniAndCompactWidths() throws {
+  /// Mini with the map off is as wide as its row: the measured brand word
+  /// with the dot, the gaps and the 81 pt trailing controls, idle and while
+  /// capturing alike. The former fixed 200 pt (164 capturing) clipped the
+  /// fold control at the capsule's edge (Maciej, 2026-10-30 14:24).
+  func testMiniBrandWidthIsTheMeasuredWordRowAndNeverNarrowerThanItsControls() {
+    typealias W = DictationOverlayWindow
+    let font = NSFont.systemFont(ofSize: W.miniWordSize, weight: .bold)
+    let word =
+      ceil(
+        ("codescribe" as NSString).size(withAttributes: [.font: font, .kern: W.miniWordTracking])
+          .width) + 1
+    let row =
+      W.miniOuterPadding + W.miniBrandDot + W.miniBrandGap + word + 2 * W.miniWordRowSpacing
+      + W.miniTrailingControls
+    XCTAssertEqual(W.miniBrandWidth, ceil(row + W.miniWordClosedCentre))
+    XCTAssertGreaterThanOrEqual(W.miniBrandWidth, row, "the fold control is never clipped")
+    XCTAssertGreaterThan(W.miniBrandWidth, W.miniFloorWidth)
+    XCTAssertEqual(W.miniBrandWidth, W.miniBrandWidth.rounded(.up), "whole points")
+  }
+
+  func testDisabledPanelUsesTheBrandRowWidthIdleAndCapturing() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let panel = FloatingOverlayPanel(
       contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
     defer { panel.invalidatePresence() }
     panel.setChannelMapPresentation(enabled: false, capturing: false, naturalWidth: 160)
-    XCTAssertEqual(panel.miniSize.width, 200)
+    XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniBrandWidth)
     panel.setChannelMapPresentation(enabled: false, capturing: true, naturalWidth: 160)
-    XCTAssertEqual(panel.miniSize.width, 164)
+    XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniBrandWidth)
     panel.setChannelMapPresentation(enabled: true, capturing: true, naturalWidth: 160)
     XCTAssertEqual(panel.miniSize.width, 160)
     panel.setMidiNaturalWidth(DictationOverlayWindow.midiSize.width)

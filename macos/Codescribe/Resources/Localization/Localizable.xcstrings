@@ -2331,6 +2331,17 @@
         }
       }
     },
+    "Add a name or term" : {
+      "comment" : "Formatter Keywords input placeholder for adding a new term",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj nazwę lub pojęcie"
+          }
+        }
+      }
+    },
     "Add an API key for this provider. You can also do this later." : {
       "comment" : "Setup step description for a provider whose only access path is an API key",
       "localizations" : {
@@ -2411,6 +2422,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj serwer"
+          }
+        }
+      }
+    },
+    "Add the term to the list. Nothing is saved until Save changes." : {
+      "comment" : "Formatter Keywords add button tooltip",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj pojęcie do listy. Nic nie zostanie zapisane do momentu kliknięcia Zapisz zmiany."
           }
         }
       }
@@ -3280,6 +3302,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pozycja"
+          }
+        }
+      }
+    },
+    "Annotate this image with Markup" : {
+      "comment" : "Attachment preview window: tooltip of the Markup button",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Annotate this image with Markup"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj oznaczenia do tego obrazu"
           }
         }
       }
@@ -4903,6 +4942,17 @@
         }
       }
     },
+    "Checking other model locations…" : {
+      "comment" : "Whisper tab: available models can be selected while optional locations are being read",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sprawdzanie pozostałych lokalizacji modeli…"
+          }
+        }
+      }
+    },
     "Checking provider access…" : {
       "comment" : "Setup Agent readiness while the provider snapshot is loading\nSetup provider row status while credentials are loading",
       "localizations" : {
@@ -5034,6 +5084,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz poziom rozumowania Agenta"
+          }
+        }
+      }
+    },
+    "Choose recipients" : {
+      "comment" : "Inbox composer placeholder and recipient chooser label while no agent is linked",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz odbiorców"
           }
         }
       }
@@ -6549,6 +6611,23 @@
         }
       }
     },
+    "Could not open this image for Markup" : {
+      "comment" : "Attachment preview window: the image could not be loaded into Markup",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not open this image for Markup"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się otworzyć tego obrazu do oznaczania"
+          }
+        }
+      }
+    },
     "Could not open this transcript." : {
       "localizations" : {
         "pl" : {
@@ -6612,6 +6691,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "nie udało się zapisać notatki"
+          }
+        }
+      }
+    },
+    "Could not save the annotated image" : {
+      "comment" : "Attachment preview window: Markup save failed; the original attachment is unchanged",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not save the annotated image"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zapisać obrazu z oznaczeniami"
           }
         }
       }
@@ -7606,6 +7702,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Reguły słownika"
+          }
+        }
+      }
+    },
+    "Dictionary rules, which always replace one spelling with another, and speech recognition stay separate." : {
+      "comment" : "Formatter Keywords distinction from dictionary rules",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reguły słownika, które zawsze zastępują jedną pisownię inną, oraz rozpoznawanie mowy pozostają oddzielne."
           }
         }
       }
@@ -9050,6 +9157,10 @@
         }
       }
     },
+    "Gemini (GenerateContent)" : {
+      "comment" : "Provider and wire protocol names.",
+      "shouldTranslate" : false
+    },
     "Get license key" : {
       "localizations" : {
         "pl" : {
@@ -9284,42 +9395,12 @@
         }
       }
     },
-    "Hide agents list" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schowaj listę agentów"
-          }
-        }
-      }
-    },
-    "Hide conversation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schowaj rozmowę"
-          }
-        }
-      }
-    },
     "Hide full comparison" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ukryj pełne porównanie"
-          }
-        }
-      }
-    },
-    "Hide transcription" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Schowaj transkrypcję"
           }
         }
       }
@@ -9927,6 +10008,39 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucze są bezpiecznie przechowywane w pęku kluczy macOS."
+          }
+        }
+      }
+    },
+    "Keyword" : {
+      "comment" : "Formatter Keywords placeholder for single keyword",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słowo kluczowe"
+          }
+        }
+      }
+    },
+    "Keywords" : {
+      "comment" : "Formatter Keywords section title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słowa kluczowe"
+          }
+        }
+      }
+    },
+    "Keywords were not saved." : {
+      "comment" : "Formatter Keywords error message heading",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Słowa kluczowe nie zostały zapisane."
           }
         }
       }
@@ -10767,6 +10881,23 @@
         }
       }
     },
+    "Markup" : {
+      "comment" : "Attachment preview window: opens the system Markup tools on the image",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Markup"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oznaczenia"
+          }
+        }
+      }
+    },
     "Max" : {
       "comment" : "Formatting level: maximum prose polish",
       "localizations" : {
@@ -10826,16 +10957,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Max korzysta z modelu Agenta. Skonfiguruj endpoint Agenta, aby używać Max."
-          }
-        }
-      }
-    },
-    "Max uses the Agent model. This lane is not required for readiness." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Max korzysta z modelu Agenta. Ten tor nie jest wymagany do gotowości."
           }
         }
       }
@@ -11688,6 +11809,17 @@
         }
       }
     },
+    "Names and terms you often say. Correction, Smart and Max use them as context and prefer them when the transcript heard something similar." : {
+      "comment" : "Formatter Keywords description",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nazwy i pojęcia, które często wypowiadasz. Poziomy Korekta, Smart i Max używają ich jako kontekstu i preferują je, gdy transkrypcja usłyszy coś podobnego."
+          }
+        }
+      }
+    },
     "Native" : {
       "comment" : "Tool source: built-in tools",
       "localizations" : {
@@ -12201,6 +12333,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz API nie jest wymagany"
+          }
+        }
+      }
+    },
+    "No keywords yet. Formatting works from the transcript alone." : {
+      "comment" : "Formatter Keywords empty list label",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak słów kluczowych. Formatowanie działa wyłącznie na podstawie transkrypcji."
           }
         }
       }
@@ -13212,6 +13355,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zmieni się tylko %@: własny plik zostanie usunięty, a w użyciu będzie wbudowany prompt. Poprzednią wersję można odzyskać z folderu kopii zapasowych promptów."
+          }
+        }
+      }
+    },
+    "Only to: %@" : {
+      "comment" : "0 · All composer placeholder while a recipient set narrows the broadcast; %@ = agent names",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tylko do: %@"
           }
         }
       }
@@ -15568,6 +15723,17 @@
         }
       }
     },
+    "Remove keyword" : {
+      "comment" : "Formatter Keywords remove keyword button label",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń słowo kluczowe"
+          }
+        }
+      }
+    },
     "Remove provider and its key" : {
       "localizations" : {
         "pl" : {
@@ -15594,6 +15760,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Usuń serwer"
+          }
+        }
+      }
+    },
+    "Remove stored account" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń zapisane konto"
           }
         }
       }
@@ -16390,6 +16566,23 @@
         }
       }
     },
+    "Save Markup" : {
+      "comment" : "Attachment preview window: saves the annotated copy and attaches it in place of the original",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save Markup"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisz oznaczenia"
+          }
+        }
+      }
+    },
     "Save a key first to test it" : {
       "localizations" : {
         "pl" : {
@@ -16532,6 +16725,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Zapisane rozmowy"
+          }
+        }
+      }
+    },
+    "Saved keywords apply from the next take." : {
+      "comment" : "Formatter Keywords notice when dirty/saved",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisane słowa kluczowe obowiązują od następnego nagrania."
           }
         }
       }
@@ -16747,6 +16951,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisywanie poprawki"
+          }
+        }
+      }
+    },
+    "Saving keywords" : {
+      "comment" : "Formatter Keywords saving progress indicator label",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisywanie słów kluczowych"
           }
         }
       }
@@ -17027,6 +17242,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyślij teraz"
+          }
+        }
+      }
+    },
+    "Send only to…" : {
+      "comment" : "Label of the one-shot recipient chooser above the 0 · All composer",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wyślij tylko do…"
           }
         }
       }
@@ -17328,26 +17555,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokazuj kanały agentów w widoku mini i kompaktowym."
-          }
-        }
-      }
-    },
-    "Show agents list" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż listę agentów"
-          }
-        }
-      }
-    },
-    "Show conversation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż rozmowę"
           }
         }
       }
@@ -24165,6 +24372,42 @@
         }
       }
     },
+    "overlay.format.automaticLevel" : {
+      "comment" : "Format menu: one-take formats keep this automatic level (placeholder)",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Automatic formatting stays %@."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatyczne formatowanie pozostaje na poziomie %@."
+          }
+        }
+      }
+    },
+    "overlay.format.maxHint" : {
+      "comment" : "Format menu: what the Max choice does",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Max asks the Agent for this take, with its history and tools."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Max pyta Agenta o to nagranie, korzystając z jego historii i narzędzi."
+          }
+        }
+      }
+    },
     "overlay.intent.redo" : {
       "comment" : "Overlay Redo control",
       "extractionState" : "extracted_with_value",
@@ -24287,6 +24530,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lokalnie"
+          }
+        }
+      }
+    },
+    "overlay.transcript.liveFormatted" : {
+      "comment" : "Transcript area while recording: it shows accepted formatting so far",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Formatted while you speak"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatowane podczas mówienia"
           }
         }
       }
@@ -25177,6 +25438,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "ustawienia"
+          }
+        }
+      }
+    },
+    "settings.formatting.level.maxManualOnly" : {
+      "comment" : "Refused write: Max runs only when picked for one take in the overlay",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Max is not an automatic level. Choose Max from the overlay Format menu."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Max nie jest poziomem automatycznym. Wybierz Max z menu Format w nakładce."
           }
         }
       }

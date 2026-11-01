@@ -57,7 +57,6 @@ struct OverlayHeaderControlChrome: ViewModifier {
   var hintInteractive = false
   @State private var hovered = false
   @State private var anchor = OverlayHintAnchor()
-  @State private var pendingHint: Task<Void, Never>?
 
   func body(content: Content) -> some View {
     let selection: Color? = selected ? accent?.selectionTint(in: palette) : nil
@@ -110,7 +109,6 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .onChange(of: hintInteractive) { _, _ in syncHint(inside: hovered) }
       .onChange(of: palette) { _, _ in syncHint(inside: hovered) }
       .onDisappear {
-        pendingHint?.cancel()
         anchor.hide()
       }
       .animation(reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: hovered)
@@ -120,31 +118,13 @@ struct OverlayHeaderControlChrome: ViewModifier {
   /// becoming false withdraws only this anchor, so a neighbor that has since
   /// taken the panel stays on screen.
   private func syncHint(inside: Bool) {
-    pendingHint?.cancel()
-    pendingHint = nil
     guard showsHint, inside, !title.isEmpty else {
       anchor.hide(allowPointerRetention: showsHint && hintInteractive)
       return
     }
-    if hintDelay > 0, !anchor.isPresented {
-      pendingHint = Task { @MainActor in
-        do {
-          try await Task.sleep(for: .seconds(hintDelay))
-        } catch {
-          return
-        }
-        guard !Task.isCancelled else { return }
-        presentHint()
-      }
-    } else {
-      presentHint()
-    }
-  }
-
-  private func presentHint() {
     anchor.show(
       title, palette: palette, leading: hintLeading, withinWindow: hintWithinWindow,
-      content: hintContent, size: hintSize, interactive: hintInteractive)
+      content: hintContent, size: hintSize, interactive: hintInteractive, delay: hintDelay)
   }
 }
 
@@ -152,21 +132,41 @@ struct OverlayHeaderControlChrome: ViewModifier {
 @MainActor
 final class OverlayHintAnchor {
   weak var view: NSView?
+  // Scheduling is AppKit presentation bookkeeping, not rendered SwiftUI state.
+  private var pendingHint: Task<Void, Never>?
 
   var isPresented: Bool { OverlayHintPanel.shared.isPresented(owner: self) }
 
   func show(
     _ title: String, palette: OverlayAppearancePalette, leading: Bool = false,
     withinWindow: Bool = false, content: AnyView? = nil, size: CGSize? = nil,
-    interactive: Bool = false
+    interactive: Bool = false, delay: TimeInterval = 0
   ) {
-    guard let view else { return }
-    OverlayHintPanel.shared.show(
-      title, palette: palette, below: view, owner: self, leading: leading,
-      withinWindow: withinWindow, content: content, size: size, interactive: interactive)
+    pendingHint?.cancel()
+    pendingHint = nil
+    if delay > 0, !isPresented {
+      pendingHint = Task { @MainActor [weak self] in
+        do {
+          try await Task.sleep(for: .seconds(delay))
+        } catch {
+          return
+        }
+        guard !Task.isCancelled, let self else { return }
+        self.pendingHint = nil
+        self.show(
+          title, palette: palette, leading: leading, withinWindow: withinWindow,
+          content: content, size: size, interactive: interactive)
+      }
+    } else if let view {
+      OverlayHintPanel.shared.show(
+        title, palette: palette, below: view, owner: self, leading: leading,
+        withinWindow: withinWindow, content: content, size: size, interactive: interactive)
+    }
   }
 
   func hide(allowPointerRetention: Bool = false) {
+    pendingHint?.cancel()
+    pendingHint = nil
     OverlayHintPanel.shared.hide(owner: self, allowPointerRetention: allowPointerRetention)
   }
 }
@@ -278,7 +278,7 @@ final class OverlayHintPanel {
       leading
       ? Self.frame(size: size, leading: anchorRect, within: bounds)
       : Self.frame(size: size, below: anchorRect, within: bounds)
-    panel.setFrame(frame, display: true)
+    if panel.frame != frame { panel.setFrame(frame, display: true) }
     if panel.parent !== parent {
       panel.parent?.removeChildWindow(panel)
       parent.addChildWindow(panel, ordered: .above)

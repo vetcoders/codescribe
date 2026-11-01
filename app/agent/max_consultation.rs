@@ -6,6 +6,11 @@
 //! cap all come from the sealed Agent (assistive) lane and the canonical Agent
 //! options owner. The formatting lane and Apple serve
 //! Smart/Corrections only, and their settings never reach this module.
+//!
+//! Max formats only on an explicit overlay/history Format action. A capture
+//! take seals the automatic policy at admission and never selects Max. A
+//! formatting turn adds the snapshot's Keywords context to its own request
+//! options once; an Agent-window conversation turn does not.
 
 use anyhow::{Context, Result, ensure};
 use codescribe_core::agent::consultation::{
@@ -195,6 +200,7 @@ impl MaxConsultation {
 
     /// All request knobs and provenance come from one immutable snapshot's
     /// Agent lane. A formatter provider selection cannot leak into this request.
+    /// This is a conversation turn (the Agent window): it carries no Keywords.
     pub fn enqueue(
         &self,
         turn_id: String,
@@ -202,8 +208,13 @@ impl MaxConsultation {
         attachments: Vec<ImageAttachment>,
         settings: &RuntimeSettingsSnapshot,
     ) -> Result<oneshot::Receiver<Result<ConsultationAnswer>>> {
-        self.runtime()?
-            .enqueue(Self::prepare_turn(turn_id, text, attachments, settings)?)
+        self.runtime()?.enqueue(Self::prepare_turn(
+            turn_id,
+            text,
+            attachments,
+            settings,
+            TurnPurpose::Conversation,
+        )?)
     }
 
     fn prepare_turn(
@@ -211,15 +222,21 @@ impl MaxConsultation {
         text: String,
         attachments: Vec<ImageAttachment>,
         settings: &RuntimeSettingsSnapshot,
+        purpose: TurnPurpose,
     ) -> Result<ConsultationTurn> {
         ensure!(
             settings.formatting_policy() == FormattingPolicy::Max,
             "Max consultation is not selected"
         );
-        let options = stream_options(settings)?;
+        let mut options = stream_options(settings)?;
+        if purpose == TurnPurpose::Formatting {
+            append_formatting_vocabulary(&mut options, settings);
+        }
         // Compare this seal only when the FIFO owner executes the admitted
         // turn. A rejected duplicate cannot change the selected provider, and
         // the provider prepared at launch survives for an unchanged snapshot.
+        // The seal reads the canonical Agent options, never the Keywords
+        // suffix, so a Keywords edit keeps the prepared provider and history.
         let replacement_provider = Some(admitted_provider(settings)?);
         Ok(ConsultationTurn {
             id: turn_id,
@@ -235,6 +252,34 @@ impl MaxConsultation {
                 .to_string(),
             replacement_provider,
         })
+    }
+}
+
+/// What an admitted turn is for. Keywords are formatting-only context: an
+/// explicit Format action carries them, an Agent-window conversation does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnPurpose {
+    Conversation,
+    Formatting,
+}
+
+/// Append this snapshot's frozen Keywords context once, after the canonical
+/// Agent prompt, for one formatting operation. Options are rebuilt from the
+/// snapshot for every turn, so a retained conversation never accumulates
+/// earlier suffixes. The application owns the instruction and the terms travel
+/// as JSON data inside it: they cannot add a role, a tool or a permission, and
+/// the Agent's own tools and approvals stay exactly as configured. No Keywords
+/// leaves the prompt bytes unchanged.
+fn append_formatting_vocabulary(options: &mut StreamOptions, settings: &RuntimeSettingsSnapshot) {
+    let Some(context) = settings.formatting_vocabulary_context() else {
+        return;
+    };
+    match options.system_prompt.as_mut() {
+        Some(prompt) => {
+            prompt.push_str("\n\n");
+            prompt.push_str(context);
+        }
+        None => options.system_prompt = Some(context.to_string()),
     }
 }
 
@@ -254,6 +299,7 @@ fn admitted_provider(settings: &RuntimeSettingsSnapshot) -> Result<AdmittedConsu
     lane.wire_family().as_str().hash(&mut identity);
     lane.endpoint().hash(&mut identity);
     lane.model().hash(&mut identity);
+    lane.acp_configuration().hash(&mut identity);
     lane.credential().key_account().hash(&mut identity);
     lane.credential().account_auth().hash(&mut identity);
     options.system_prompt.hash(&mut identity);
@@ -265,9 +311,11 @@ fn admitted_provider(settings: &RuntimeSettingsSnapshot) -> Result<AdmittedConsu
     // rotated or another account signs in; neither the key nor this
     // fingerprint is persisted or logged.
     let mut credential = std::collections::hash_map::DefaultHasher::new();
-    lane.credential().request_api_key().hash(&mut credential);
-    if let Some(vendor) = lane.vendor() {
-        codescribe_core::llm::account_auth::account_id(vendor).hash(&mut credential);
+    if lane.acp_configuration().is_none() {
+        lane.credential().request_api_key().hash(&mut credential);
+        if let Some(vendor) = lane.vendor() {
+            codescribe_core::llm::account_auth::account_id(vendor).hash(&mut credential);
+        }
     }
     Ok(AdmittedConsultationProvider {
         seal: format!(
@@ -337,18 +385,31 @@ impl codescribe_core::ai_formatting::FormattingAgent for MaxConsultation {
             input.text().to_string(),
             Vec::new(),
             settings,
+            TurnPurpose::Formatting,
         )?;
         self.runtime()?.prepare_group(input, turn)
     }
 
+    /// One explicit Format action: the same retained owner, FIFO, history,
+    /// tool registry and approval broker as an Agent-window turn, plus this
+    /// operation's Keywords. A pending tool approval keeps the broker's
+    /// semantics; a failure leaves the caller's source text authoritative.
     async fn execute(
         &self,
         turn_id: &str,
         text: &str,
         settings: &RuntimeSettingsSnapshot,
     ) -> Result<String> {
+        let turn = Self::prepare_turn(
+            turn_id.to_string(),
+            text.to_string(),
+            Vec::new(),
+            settings,
+            TurnPurpose::Formatting,
+        )?;
         let answer = self
-            .enqueue(turn_id.to_string(), text.to_string(), Vec::new(), settings)?
+            .runtime()?
+            .enqueue(turn)?
             .await
             .context("Max consultation owner stopped before replying")??;
         Ok(answer.text)
@@ -405,7 +466,8 @@ async fn collect_readiness(
                 text = done;
                 text_done = true;
             }
-            AgentEvent::ReasoningDelta(_) => {}
+            // A hosted search runs on the server; it is not local tool use.
+            AgentEvent::ReasoningDelta(_) | AgentEvent::ServerToolProgress { .. } => {}
             AgentEvent::ResponseDone { clean, .. } => {
                 ensure!(clean, "readiness response did not complete cleanly");
                 terminal = true;

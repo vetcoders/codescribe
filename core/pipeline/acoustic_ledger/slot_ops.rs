@@ -1631,6 +1631,8 @@ impl AcousticLedger {
             observation.producer,
             ObservationProducer::Whisper | ObservationProducer::CloudLive
         ) && !(incoming.len() == 1 && self.dt_partition_preflight(observation))
+            && !(observation.producer == ObservationProducer::AppleDictation
+                && slots.iter().any(|source| self.coarse_word_source(source)))
         {
             return (Vec::new(), Vec::new());
         }
@@ -1696,6 +1698,8 @@ impl AcousticLedger {
                 // Refusals and alternatives are recorded after discovery.
                 let connected = |source: usize, pin: usize| {
                     if observation.producer == ObservationProducer::AppleDictation
+                        && pins.len() == 1
+                        && self.dt_partition_preflight(observation)
                         && prior[source].producer == ObservationProducer::Whisper
                         && prior[source].sample_start < pins[pin].sample_end
                         && pins[pin].sample_start < prior[source].sample_end

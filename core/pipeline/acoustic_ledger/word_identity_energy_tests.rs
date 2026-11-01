@@ -12,6 +12,440 @@ use super::*;
 
 const RATE: u32 = 48_000;
 
+fn recorded_1178_short_burst_fixture() -> (AcousticLedger, OccurrenceIdentity) {
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, CaptureEvidenceIdentity, SpeechAnchor, SpeechAnchorEvidence,
+    };
+    // Native1178 ordinal32: the closed burst ends only40ms after the9s
+    // decode fence, while the four complete offered pins end2.66s earlier.
+    // Synthetic PCM supplies energy; the exact archived anchor map isolates
+    // the completeness geometry. No decoder, VAD model or microphone runs.
+    let ranges = [
+        (35_520, 44_160, false),
+        (60_480, 429_120, false),
+        (432_960, 721_920, false),
+        (730_560, 825_856, true),
+    ];
+    let mut pcm = vec![0.0; 825_856];
+    for &(start, end, _) in &ranges {
+        pcm[start as usize..end as usize].fill(0.1);
+    }
+    let owner = OccurrenceIdentity::new("word-fence-1178", 1, 247_296, 823_296);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    ledger.speech_anchors = Some(SpeechAnchorEvidence {
+        identity: CaptureEvidenceIdentity::new(&owner.session, owner.capture_epoch),
+        availability: AcousticAvailability::Observed {
+            observed_samples: pcm.len() as u64,
+        },
+        anchors: ranges
+            .into_iter()
+            .map(|(start, end, open_at_end)| SpeechAnchor {
+                range: crate::stt::tail_provider::TailSampleRange {
+                    session: owner.session.clone(),
+                    capture_epoch: owner.capture_epoch,
+                    sample_start: start,
+                    sample_end: end,
+                },
+                open_at_end,
+            })
+            .collect(),
+    });
+    (ledger, owner)
+}
+
+#[test]
+fn recorded_1178_interior_names_do_not_inherit_the_later_burst_fence() {
+    let (mut ledger, owner) = recorded_1178_short_burst_fixture();
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 3, 0, owner.clone());
+    let words = decoded(
+        &[
+            ("kanały:", 442_560, 471_360),
+            ("Lenę,", 471_360, 503_040),
+            ("Romana,", 503_040, 543_360),
+            ("Explorka,", 543_360, 592_320),
+        ],
+        (288_000, 720_000),
+    );
+    for word in &words {
+        assert!(!ledger.decode_word_fence_incomplete(
+            &owner,
+            288_000,
+            720_000,
+            word.sample_start,
+            word.sample_end,
+        ));
+    }
+    recorded_1178_stage_publication(&mut ledger, &observation, &words);
+    let anchors = ledger.measured_word_anchors(&owner).unwrap();
+    let closed = ledger.defer_edge_cut_words(&observation, &words, &anchors);
+    assert_eq!(
+        closed
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>(),
+        ["kanały:", "Lenę,", "Romana,", "Explorka,"],
+        "a later acoustic burst fence cannot make every interior lexical pin incomplete",
+    );
+}
+
+fn recorded_1178_words() -> Vec<WordPin> {
+    decoded(
+        &[
+            ("kanały:", 442_560, 471_360),
+            ("Lenę,", 471_360, 503_040),
+            ("Romana,", 503_040, 543_360),
+            ("Explorka,", 543_360, 592_320),
+        ],
+        (288_000, 720_000),
+    )
+}
+
+fn recorded_1178_stage_publication(
+    ledger: &mut AcousticLedger,
+    observation: &ObservationIdentity,
+    selected: &[WordPin],
+) {
+    let full = decoded(
+        &[
+            ("do", 293_760, 304_320),
+            ("towarzystwa", 304_320, 374_400),
+            ("na", 374_400, 442_560),
+            ("kanały:", 442_560, 471_360),
+            ("Lenę,", 471_360, 503_040),
+            ("Romana,", 503_040, 543_360),
+            ("Explorka,", 543_360, 592_320),
+            ("Tomka", 592_320, 617_280),
+            ("i", 617_280, 650_880),
+            ("kogo", 650_880, 662_400),
+            ("tam", 662_400, 669_120),
+            ("potrzebujesz.", 669_120, 709_440),
+        ],
+        (288_000, 720_000),
+    );
+    ledger.stage_word_evidence(observation, selected, Some("inprocess:whisper"), "final");
+    ledger.stage_word_publication(observation, (432_000, 576_000), false, &full);
+    let mut input = ledger.word_evidence_input(observation).unwrap().clone();
+    // Restore the captured provider envelope, as saved-slot replay does.
+    // The observation sequence and decoder request need not share an ID.
+    input.producer_request = Some(crate::stt::tail_provider::TailRequestIdentity {
+        request_id: 3,
+        range: crate::stt::tail_provider::TailSampleRange {
+            session: observation.occurrence.session.clone(),
+            capture_epoch: observation.occurrence.capture_epoch,
+            sample_start: 288_000,
+            sample_end: 720_000,
+        },
+    });
+    input.timing = "exact_sample_range".into();
+    ledger.restore_word_evidence(input);
+}
+
+#[test]
+fn recorded_1178_without_publication_keeps_the_conservative_fence() {
+    let (mut ledger, owner) = recorded_1178_short_burst_fixture();
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 2, owner.clone());
+    let anchors = ledger.measured_word_anchors(&owner).unwrap();
+    assert!(
+        ledger
+            .defer_edge_cut_words(&observation, &recorded_1178_words(), &anchors)
+            .is_empty()
+    );
+}
+
+#[test]
+fn recorded_1178_one_offered_name_uses_its_full_decoder_context() {
+    let (mut ledger, owner) = recorded_1178_short_burst_fixture();
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 2, owner.clone());
+    let words = recorded_1178_words();
+    let selected = &words[2..3];
+    recorded_1178_stage_publication(&mut ledger, &observation, selected);
+    let anchors = ledger.measured_word_anchors(&owner).unwrap();
+    let closed = ledger.defer_edge_cut_words(&observation, selected, &anchors);
+    assert_eq!(
+        closed.len(),
+        1,
+        "one offered pin can be interior to its complete decoder context"
+    );
+    assert_eq!(closed[0].text, "Romana,");
+}
+
+#[test]
+fn recorded_1178_invalid_publication_cannot_release_an_edge_debt() {
+    for fault in [
+        "missing",
+        "missing_request",
+        "foreign_epoch",
+        "foreign_session",
+        "decode",
+        "timing",
+        "finality",
+        "changed_word",
+        "no_right_context",
+        "terminal_tail",
+        "overlapping_context",
+        "foreign_context_decode",
+        "empty_context_word",
+        "widened_band",
+        "shifted_band",
+        "missing_rate",
+        "zero_rate",
+        "wrong_rate",
+    ] {
+        let (mut ledger, owner) = recorded_1178_short_burst_fixture();
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 1, 2, owner.clone());
+        let words = recorded_1178_words();
+        let selected = &words[3..4];
+        recorded_1178_stage_publication(&mut ledger, &observation, selected);
+        let mut input = ledger.word_evidence_input(&observation).unwrap().clone();
+        let anchors = ledger.measured_word_anchors(&owner).unwrap();
+        match fault {
+            "missing" => input.publication = None,
+            "missing_request" => input.producer_request = None,
+            "foreign_epoch" => input.producer_request.as_mut().unwrap().range.capture_epoch += 1,
+            "foreign_session" => {
+                input.producer_request.as_mut().unwrap().range.session = "foreign".into()
+            }
+            "decode" => input.producer_request.as_mut().unwrap().range.sample_start += 960,
+            "timing" => input.timing = "unknown".into(),
+            "finality" => input.finality = "interim".into(),
+            "changed_word" => {
+                input.publication.as_mut().unwrap().decoded_words[6].original_text =
+                    Some("foreign".into())
+            }
+            "no_right_context" => input
+                .publication
+                .as_mut()
+                .unwrap()
+                .decoded_words
+                .truncate(7),
+            "terminal_tail" => input.publication.as_mut().unwrap().terminal_tail = true,
+            "overlapping_context" => {
+                input.publication.as_mut().unwrap().decoded_words[7].sample_start = 590_000
+            }
+            "foreign_context_decode" => {
+                input.publication.as_mut().unwrap().decoded_words[7].decode = Some((0, 720_000))
+            }
+            "empty_context_word" => {
+                input.publication.as_mut().unwrap().decoded_words[7].sample_end = 592_320
+            }
+            "widened_band" => {
+                let band = input.publication.as_mut().unwrap();
+                band.sample_start = 288_001;
+                band.sample_end = 719_999;
+            }
+            "shifted_band" => input.publication.as_mut().unwrap().sample_start += 1,
+            "missing_rate" => ledger.capture_rate_hz = None,
+            "zero_rate" => ledger.capture_rate_hz = Some(0),
+            "wrong_rate" => ledger.capture_rate_hz = Some(16_000),
+            _ => unreachable!(),
+        }
+        ledger.restore_word_evidence(input);
+        assert!(
+            ledger
+                .defer_edge_cut_words(&observation, selected, &anchors)
+                .is_empty(),
+            "{fault}"
+        );
+    }
+}
+
+#[test]
+fn recorded_1178_rewritten_surface_cannot_release_an_edge_debt() {
+    for fault in [
+        "selected_flag",
+        "raw_flag",
+        "selected_surface",
+        "raw_surface",
+        "both_surfaces",
+    ] {
+        let (mut ledger, owner) = recorded_1178_short_burst_fixture();
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 1, 2, owner.clone());
+        let mut selected = recorded_1178_words()[3..4].to_vec();
+        recorded_1178_stage_publication(&mut ledger, &observation, &selected);
+        let mut input = ledger.word_evidence_input(&observation).unwrap().clone();
+        match fault {
+            "selected_flag" => selected[0].surface_rewritten = true,
+            "raw_flag" => {
+                input.publication.as_mut().unwrap().decoded_words[6].surface_rewritten = true
+            }
+            "selected_surface" => selected[0].text = "przepisane".into(),
+            "raw_surface" => {
+                input.publication.as_mut().unwrap().decoded_words[6].surface = "przepisane".into()
+            }
+            "both_surfaces" => {
+                selected[0].text = "przepisane".into();
+                input.publication.as_mut().unwrap().decoded_words[6].surface = "przepisane".into();
+            }
+            _ => unreachable!(),
+        }
+        ledger.restore_word_evidence(input);
+        let anchors = ledger.measured_word_anchors(&owner).unwrap();
+        assert!(
+            ledger
+                .defer_edge_cut_words(&observation, &selected, &anchors)
+                .is_empty(),
+            "{fault}"
+        );
+    }
+}
+
+#[test]
+fn recorded_1178_owned_batch_preserves_prefix_and_does_not_publish_context() {
+    let (mut ledger, owner) = recorded_1178_short_burst_fixture();
+    ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+    assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+    for (generation, words) in [
+        decoded(
+            &[
+                ("więc", 247_296, 261_120),
+                ("przywróć", 261_120, 278_400),
+                ("sobie", 278_400, 288_000),
+            ],
+            (0, 432_000),
+        ),
+        decoded(
+            &[
+                ("do", 288_000, 302_400),
+                ("towarzystwa", 302_400, 375_360),
+                ("na", 375_360, 441_600),
+            ],
+            (144_000, 576_000),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Whisper,
+            1,
+            generation as u64,
+            owner.clone(),
+        );
+        let receipt = ledger.admit_word_slots(&observation, &words);
+        assert!(
+            receipt.grants_mutation(),
+            "native prefix setup: {receipt:?}"
+        );
+    }
+    let prefix = ledger.slots_of(&owner).unwrap().to_vec();
+    assert_eq!(prefix.len(), 6);
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 2, owner.clone());
+    let words = recorded_1178_words();
+    recorded_1178_stage_publication(&mut ledger, &observation, &words);
+    // Ordinal32 starts with recovery_pending=true: earlier owners have not
+    // covered the remaining speech. Publishing this band must preserve it.
+    ledger.require_text_recovery(&owner);
+    assert!(ledger.text_recovery_pending(&owner));
+    let receipt = ledger.admit_word_slots(&observation, &words);
+    assert!(receipt.grants_mutation(), "owned names: {receipt:?}");
+    let after = ledger.slots_of(&owner).unwrap();
+    assert!(prefix.iter().all(|source| after.contains(source)));
+    assert_eq!(after.len(), 10);
+    assert_eq!(
+        after
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "więc",
+            "przywróć",
+            "sobie",
+            "do",
+            "towarzystwa",
+            "na",
+            "kanały:",
+            "Lenę,",
+            "Romana,",
+            "Explorka,"
+        ]
+    );
+    assert!(
+        !after
+            .iter()
+            .any(|word| word.text == "Tomka" || word.text == "potrzebujesz.")
+    );
+    assert!(
+        ledger.text_recovery_pending(&owner),
+        "context cannot discharge unpublished speech"
+    );
+    assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn recorded_1178_owned_prefix_can_close_while_the_actual_tail_stays_deferred() {
+    let (mut ledger, owner) = recorded_1178_short_burst_fixture();
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 1, 2, owner.clone());
+    let mut words = recorded_1178_words();
+    words.push(WordPin::new(719_040, 720_000, "urwane").with_decode_window(288_000, 720_000));
+    recorded_1178_stage_publication(&mut ledger, &observation, &words);
+    let anchors = ledger.measured_word_anchors(&owner).unwrap();
+    let closed = ledger.defer_edge_cut_words(&observation, &words, &anchors);
+    assert_eq!(
+        closed
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>(),
+        ["kanały:", "Lenę,", "Romana,", "Explorka,"]
+    );
+    assert!(
+        ledger
+            .word_finality(&owner)
+            .iter()
+            .any(|word| word.unresolved && word.selected.surface == "urwane")
+    );
+}
+
+#[test]
+fn recorded_1178_owned_names_do_not_depend_on_an_earlier_short_gap() {
+    for gap_ms in [59, 60, 61, 80] {
+        let (mut ledger, owner) = recorded_1178_short_burst_fixture();
+        ledger.speech_anchors.as_mut().unwrap().anchors[2]
+            .range
+            .sample_start = 429_120 + gap_ms * 48;
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 1, 2, owner.clone());
+        let words = recorded_1178_words();
+        recorded_1178_stage_publication(&mut ledger, &observation, &words);
+        let anchors = ledger.measured_word_anchors(&owner).unwrap();
+        assert_eq!(
+            ledger
+                .defer_edge_cut_words(&observation, &words, &anchors)
+                .len(),
+            4,
+            "gap{gap_ms}ms"
+        );
+    }
+}
+
+#[test]
+fn recorded_1178_word_at_the_actual_decode_fence_stays_deferred() {
+    let (mut ledger, owner) = recorded_1178_short_burst_fixture();
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 3, 0, owner.clone());
+    let words = decoded(&[("urwane", 719_040, 720_000)], (288_000, 720_000));
+    assert!(ledger.decode_word_fence_incomplete(
+        &owner,
+        288_000,
+        720_000,
+        words[0].sample_start,
+        words[0].sample_end,
+    ));
+    let anchors = ledger.measured_word_anchors(&owner).unwrap();
+    assert!(
+        ledger
+            .defer_edge_cut_words(&observation, &words, &anchors)
+            .is_empty()
+    );
+    assert!(
+        ledger
+            .word_finality(&owner)
+            .iter()
+            .any(|word| word.unresolved)
+    );
+}
+
 fn recorded_1011_boundary_fixture(
     quiet_fence: bool,
 ) -> (AcousticLedger, OccurrenceIdentity, OccurrenceIdentity) {
@@ -833,6 +1267,50 @@ const PUMPY_STOP_WINDOW: [(&str, u64, u64); 7] = [
     ("Computer", 385_920, 412_800),
     ("Use.", 412_800, 444_480),
 ];
+
+#[test]
+fn real_take_36de5e98_forged_middle_band_cannot_publish_pumpy() {
+    let pcm = take_pcm(PUMPY_TAKE);
+    let owner = OccurrenceIdentity::new("forged-pumpy-band", 1, PUMPY_OWNER.0, PUMPY_OWNER.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let observation = ObservationIdentity::new(ObservationProducer::Whisper, 5, 2, owner.clone());
+    let context = decoded(&PUMPY_LIVE_WINDOW_6, PUMPY_LIVE_DECODE);
+    let selected = &context[11..12];
+    assert!(!ledger.decode_word_fence_incomplete(
+        &owner,
+        0,
+        432_000,
+        selected[0].sample_start,
+        selected[0].sample_end
+    ));
+    ledger.stage_word_evidence(&observation, selected, Some("inprocess:whisper"), "final");
+    ledger.stage_word_publication(&observation, (1, 431_999), false, &context);
+    let mut input = ledger.word_evidence_input(&observation).unwrap().clone();
+    input.producer_request = Some(crate::stt::tail_provider::TailRequestIdentity {
+        request_id: 6,
+        range: crate::stt::tail_provider::TailSampleRange {
+            session: owner.session.clone(),
+            capture_epoch: owner.capture_epoch,
+            sample_start: 0,
+            sample_end: 432_000,
+        },
+    });
+    input.timing = "exact_sample_range".into();
+    ledger.restore_word_evidence(input);
+    let anchors = ledger.measured_word_anchors(&owner).unwrap();
+    assert!(
+        ledger
+            .defer_edge_cut_words(&observation, selected, &anchors)
+            .is_empty(),
+        "a hand-made interior band cannot release a genuine cut word"
+    );
+    assert!(
+        ledger
+            .word_finality(&owner)
+            .iter()
+            .any(|word| word.unresolved && word.selected.surface == "pumpy")
+    );
+}
 
 #[test]
 fn fixture_36de5e98_the_speech_under_pumpy_to_runs_through_the_live_fence() {
@@ -1675,4 +2153,296 @@ fn recorded_1021_a_recovery_pin_over_the_neighbours_word_is_that_word_whatever_i
         alternative.observation == plain
             && alternative.reason == "cross_owner_sequence_correspondence"
     }));
+}
+
+#[test]
+fn recorded_3298e023_multiword_apple_dictation_refines_coarse_apple_after_whisper_polarity_deferral()
+ {
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+    };
+    use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+    use crate::stt::tail_provider::TailSampleRange;
+
+    let owner = OccurrenceIdentity::new("3298e023-oj-nie", 1, 1_109_760, 1_187_328);
+    let mut pcm = vec![0.0; 1_373_184];
+    pcm[1_125_888..1_162_752].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+        CaptureEvidenceIdentity::new(&owner.session, owner.capture_epoch),
+        SILERO_BOUNDARIES_PRODUCER,
+        AcousticAvailability::Observed {
+            observed_samples: pcm.len() as u64,
+        },
+        vec![TailSampleRange {
+            session: owner.session.clone(),
+            capture_epoch: owner.capture_epoch,
+            sample_start: 1_125_888,
+            sample_end: 1_162_752,
+        }],
+    ));
+
+    // Ordinal 8: coarse Apple live hypothesis "spoko" (unpinned utterance span).
+    let apple_live = ObservationIdentity::new(ObservationProducer::Apple, 6, 0, owner.clone());
+    assert!(ledger.admit(&apple_live, "spoko").grants_mutation());
+    assert_eq!(ledger.committed.get(&owner).unwrap().label, "spoko");
+
+    // Ordinal 9: Whisper offers ["oj", "nie"] which disagrees in polarity with
+    // coarse "spoko" and defers until independent lexical evidence arrives.
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 7, 0, owner.clone());
+    let whisper_receipt = ledger.admit_word_slots(
+        &whisper,
+        &decoded(
+            &[("oj", 1_123_200, 1_139_520), ("nie", 1_139_520, 1_163_520)],
+            (1_008_000, 1_373_184),
+        ),
+    );
+    assert!(!whisper_receipt.grants_mutation());
+    assert_eq!(ledger.committed.get(&owner).unwrap().label, "spoko");
+
+    // Ordinal 10: AppleDictation arrives with two words ["Oj", "nie"] confirming
+    // the multi-word negation over the coarse Apple slot.
+    let dictation =
+        ObservationIdentity::new(ObservationProducer::AppleDictation, 10, 0, owner.clone());
+    let dictation_receipt = ledger.admit_word_slots(
+        &dictation,
+        &decoded(
+            &[("Oj", 1_123_200, 1_139_520), ("nie", 1_139_520, 1_163_520)],
+            (965_760, 1_373_184),
+        ),
+    );
+    assert!(
+        dictation_receipt.grants_mutation(),
+        "multi-word AppleDictation must refine a coarse Apple slot instead of returning early: {dictation_receipt:?}"
+    );
+    assert_eq!(ledger.committed.get(&owner).unwrap().label, "Oj nie");
+    assert_eq!(
+        ledger
+            .slots_of(&owner)
+            .unwrap()
+            .iter()
+            .map(|slot| slot.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Oj", "nie"]
+    );
+}
+
+#[test]
+fn recorded_b1a679a9_witness_absence_preserves_multiword_whisper_owner_over_speech() {
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+    };
+    use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+    use crate::stt::tail_provider::{TailRequestIdentity, TailSampleRange};
+
+    let owner = OccurrenceIdentity::new("b1a679a9-o-co", 1, 530_688, 591_360);
+    let mut pcm = vec![0.0; 960_000];
+    pcm[546_816..566_784].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+        CaptureEvidenceIdentity::new(&owner.session, owner.capture_epoch),
+        SILERO_BOUNDARIES_PRODUCER,
+        AcousticAvailability::Observed {
+            observed_samples: pcm.len() as u64,
+        },
+        vec![TailSampleRange {
+            session: owner.session.clone(),
+            capture_epoch: owner.capture_epoch,
+            sample_start: 546_816,
+            sample_end: 566_784,
+        }],
+    ));
+
+    // Whisper holds ["O", "co?"] where "O" precedes the Silero speech span and
+    // "co?" overlaps the Silero speech span.
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 18, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[("O", 531_840, 539_520), ("co?", 539_520, 569_280)],
+                    (530_688, 960_000),
+                ),
+            )
+            .grants_mutation()
+    );
+    assert_eq!(ledger.committed.get(&owner).unwrap().label, "O co?");
+    assert_eq!(
+        ledger.committed.get(&owner).unwrap().producer,
+        ObservationProducer::Whisper
+    );
+
+    // AppleDictation returns an empty witness over the same decode window.
+    // Stamping SlotWitness::Absent must preserve both words, the "O co?" label,
+    // and the Whisper producer without withholding "co?" as lower_authority_over_speech.
+    let absent_witness =
+        ObservationIdentity::new(ObservationProducer::AppleDictation, 21, 0, owner.clone());
+    ledger.word_adjudication.provider = Some((
+        TailRequestIdentity {
+            request_id: 21,
+            range: TailSampleRange {
+                session: owner.session.clone(),
+                capture_epoch: owner.capture_epoch,
+                sample_start: 530_688,
+                sample_end: 591_360,
+            },
+        },
+        "apple:apple_dictation".into(),
+        "final".into(),
+        "exact_sample_range".into(),
+    ));
+    ledger.stage_word_evidence(&absent_witness, &[], Some("apple:apple_dictation"), "final");
+    let receipt = ledger.record_witness_absence(&absent_witness);
+    assert!(
+        matches!(
+            receipt,
+            Some(MutationReceipt::Preserve {
+                held_by: ObservationProducer::Whisper,
+                ..
+            })
+        ),
+        "empty AppleDictation witness must preserve Whisper ownership: {receipt:?}"
+    );
+    let held = ledger.committed.get(&owner).unwrap();
+    assert_eq!(held.label, "O co?");
+    assert_eq!(held.producer, ObservationProducer::Whisper);
+    let slots = ledger.slots_of(&owner).unwrap();
+    assert_eq!(
+        slots
+            .iter()
+            .map(|slot| slot.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["O", "co?"]
+    );
+    assert!(
+        slots
+            .iter()
+            .all(|slot| matches!(slot.witness, SlotWitness::Absent { .. }))
+    );
+    assert!(
+        !ledger.slot_alternatives.iter().any(|alt| {
+            alt.observation == absent_witness && alt.reason == "lower_authority_over_speech"
+        }),
+        "witness absence must not record a lower_authority_over_speech refusal"
+    );
+
+    // Negative falsifier: an actual lower-authority replacement over the
+    // speech-bearing slot ("co?" -> "coś") without DT partition debt is still withheld.
+    let lower_replacement =
+        ObservationIdentity::new(ObservationProducer::Apple, 22, 0, owner.clone());
+    let replacement_receipt = ledger.admit_word_slots(
+        &lower_replacement,
+        &decoded(
+            &[("O", 531_840, 539_520), ("coś", 539_520, 569_280)],
+            (530_688, 591_360),
+        ),
+    );
+    assert!(!replacement_receipt.grants_mutation());
+    assert_eq!(ledger.committed.get(&owner).unwrap().label, "O co?");
+}
+
+#[test]
+fn recorded_b1a679a9_word_owner_index_routes_silence_padded_boundary_word_to_unique_speech_owner() {
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+    };
+    use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+    use crate::stt::tail_provider::TailSampleRange;
+
+    let left = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_587_136, 6_955_008);
+    let right = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_966_528, 7_483_392);
+    // Ambient room noise in b1a679a9.wav sits around 0.0005..0.0014 (> 1e-4 uncalibrated floor),
+    // which previously caused voiced_hops_in to mark silent gap hops as active speech.
+    let mut pcm = vec![0.0007; 7_500_000];
+    pcm[6_610_944..6_938_000].fill(0.1);
+    pcm[6_982_656..7_465_984].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&left, &pcm, RATE);
+    let calibration = EnergyCalibration::new("word-fixture-pcm", 1.0, 1);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: right.clone(),
+                    duration_ms: (right.sample_end - right.sample_start) as f64 / 48.0,
+                    energy_integral: (right.sample_end - right.sample_start) as f64 * 0.01,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -20.0,
+                    vad_open_sample: Some(right.sample_start),
+                    vad_close_sample: Some(right.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration,
+            )
+            .is_qualified()
+    );
+    ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+        CaptureEvidenceIdentity::new(&left.session, left.capture_epoch),
+        SILERO_BOUNDARIES_PRODUCER,
+        AcousticAvailability::Observed {
+            observed_samples: pcm.len() as u64,
+        },
+        vec![
+            TailSampleRange {
+                session: left.session.clone(),
+                capture_epoch: left.capture_epoch,
+                sample_start: 6_610_944,
+                sample_end: 6_938_000,
+            },
+            TailSampleRange {
+                session: right.session.clone(),
+                capture_epoch: right.capture_epoch,
+                sample_start: 6_982_656,
+                sample_end: 7_465_984,
+            },
+        ],
+    ));
+    let owners = vec![left.clone(), right.clone()];
+
+    // "Nie" (6938880..6988800): raw midpoint is 6963840 inside the silent gap
+    // 6955008..6966528, but 100% of its speech (6982656..6988800) lies inside `right`.
+    let nie_pin = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_938_880, 6_988_800);
+    assert_eq!(ledger.word_owner_index(&nie_pin, &owners), Some(1));
+    assert_eq!(
+        ledger.classify_overlap_pin(&nie_pin, 6_587_136, 7_483_392, &owners, true),
+        OverlapPinClass::ExclusiveTail { member_index: 1 }
+    );
+
+    // Negative falsifier: if a boundary pin's raw midpoint is in the gap and
+    // its active speech spans both owners, `word_owner_index` must refuse (None).
+    let bridging_pin = OccurrenceIdentity::new("b1a679a9-boundary", 1, 6_935_000, 6_988_800);
+    assert_eq!(ledger.word_owner_index(&bridging_pin, &owners), None);
+}
+
+#[test]
+fn recorded_b1a679a9_late_apple_dictation_pin_overlapping_complete_whisper_word_requires_partition()
+{
+    let owner = OccurrenceIdentity::new("b1a679a9-apple-dt", 1, 6_966_528, 7_483_392);
+    let mut pcm = vec![0.0007; 7_500_000];
+    pcm[6_982_656..7_465_984].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+    ledger.admit_word_slots(
+        &whisper,
+        &decoded(
+            &[
+                ("w", 7_165_440, 7_177_920),
+                ("kodeksie", 7_177_920, 7_223_040),
+            ],
+            (6_966_528, 7_483_392),
+        ),
+    );
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+
+    // Late AppleDictation pin "w" (7188288..7189728) falls inside the complete
+    // Whisper word "kodeksie" (7177920..7223040). It must be recorded as
+    // late_apple_overlap_requires_partition recovery debt instead of minting a
+    // third duplicate "w" slot ("w w kodeksie").
+    let dt = ObservationIdentity::new(ObservationProducer::AppleDictation, 2, 0, owner.clone());
+    ledger.admit_word_slots(
+        &dt,
+        &decoded(&[("w", 7_188_288, 7_189_728)], (6_966_528, 7_483_392)),
+    );
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
 }

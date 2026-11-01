@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 
 /// Maciej (2026-10-16): no outline on the bubble's agent name — hovering
@@ -57,6 +58,7 @@ enum OverlayConversationPresentation: Equatable, Sendable {
 /// The same rich body and attachment chips on a conversation bubble or a
 /// larger Intercom preview. Document and capture state stay in their owners.
 struct OverlayConversationMessageContent: View {
+  static let bodyFontSize: CGFloat = 10
   @Environment(\.csTextScale) private var textScale
   let message: OverlayConversationMessage
   let palette: OverlayAppearancePalette
@@ -68,17 +70,17 @@ struct OverlayConversationMessageContent: View {
         if OversizedBubblePolicy.isOversized(message.bodyText) {
           OversizedMessageBody(fullText: message.bodyText) { head in
             MarkdownText(
-              raw: head, size: 13, bodyColor: palette.primaryText.color,
+              raw: head, size: Self.bodyFontSize, bodyColor: palette.primaryText.color,
               showsUnderlineCaret: showsActivity)
           }
         } else {
           MarkdownText(
-            raw: message.bodyText, size: 13, bodyColor: palette.primaryText.color,
+            raw: message.bodyText, size: Self.bodyFontSize, bodyColor: palette.primaryText.color,
             showsUnderlineCaret: showsActivity)
         }
       }
       .fixedSize(horizontal: false, vertical: true)
-      .background(OverlaySelectableTextRegion())
+      .background(OverlaySelectableTextRegion(copyText: message.text))
       .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
       if let attachments = message.attachments, !attachments.isEmpty {
         WrapLayout(spacing: 6) {
@@ -110,6 +112,8 @@ struct OverlayConversationMessageContent: View {
 struct OverlayConversationView: View {
   @Environment(\.displayScale) private var displayScale
   @Environment(\.csTextScale) private var textScale
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   let conversation: OverlayConversation
   let palette: OverlayAppearancePalette
   let topInset: CGFloat
@@ -146,17 +150,17 @@ struct OverlayConversationView: View {
   var onOpenOwnerConversation: ((OverlayConversationOwner) -> Void)? = nil
   /// Presentations may hide navigation when their own chrome replaces it.
   var hidesNavigation = false
+  /// Supplied only after the caller verifies the current frozen owner.
+  var navigationMenu: OverlayBroadcastPolicyMenu? = nil
   /// Optional controls for the horizontal bus window only.
   var navigationActions: AnyView? = nil
   var navigationIndicators: AnyView? = nil
-  /// Standard window may compose for a different frozen conversation.
+  /// The recipient may differ; draft state always belongs to `conversation`.
   var composerConversation: OverlayConversation? = nil
   var composerAvailable = true
   var composerMicrophoneOpen: Bool? = nil
-  var composerRouting: AnyView? = nil
   var onPrepareHeldEdit: ((OverlayConversationMessage) -> UUID)? = nil
   var onReturnHeldText: ((OverlayConversationMessage, String, UUID) -> Bool)? = nil
-  var onNavigateComposerReply: (() -> Void)? = nil
   var conversationNavigationRequest: OverlayState.ConversationNavigationRequest? = nil
   /// Intercom only tightens the container and composer insets. Messages keep
   /// the same formatted bubbles in attached, main and detached conversations.
@@ -209,6 +213,7 @@ struct OverlayConversationView: View {
   /// row above someone reading; "Show earlier" moves it back a window.
   @State private var windowStartID: String?
   @State private var windowConversationID: String?
+  @State private var sendErrorNotice = ComposerSendErrorNoticeState()
 
   var onDeliveryControl:
     (OverlayDeliveryControl, OverlayConversationMessage, OverlayConversationOwner?, String?)
@@ -267,6 +272,13 @@ struct OverlayConversationView: View {
         ])
 
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
+        // Nothing above the rows is viewport space: the window's inset and
+        // the header card are glass floating over the scrolling text, as the
+        // composer is. The rows take both as a content margin and scroll
+        // under them (Maciej, 2026-10-30 on build 2981: "nie zrobiliście z
+        // tego tafli ponad tekstem tylko położyliście na desce pod spodem";
+        // the acceptance tests' "messages must scroll beneath the fixed
+        // header and composer, without a clipped middle strip").
         .transaction { transaction in
           // Keep retained message geometry stable during the panel's transition.
           transaction.animation = nil
@@ -285,6 +297,11 @@ struct OverlayConversationView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
           if showsComposer && presentation == .standard {
             composer
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                composerHeight = $0
+              }
           }
         }
         .overlay(alignment: .bottom) {
@@ -306,7 +323,9 @@ struct OverlayConversationView: View {
               )
               .accessibilityHint(Text("Jump to the current reply"))
               .accessibilityIdentifier("overlay-conversation-jump-to-current")
-              .padding(.bottom, (presentation == .intercom ? visibleComposerHeight : 0) + 10)
+              // The overlay spans the composer in both presentations: the
+              // button rests just above it, never on it.
+              .padding(.bottom, visibleComposerHeight + 10)
               .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
@@ -421,9 +440,11 @@ struct OverlayConversationView: View {
 
   private var composer: some View {
     VStack(spacing: 8) {
-      if let composerRouting { composerRouting }
       let target = composerConversation ?? conversation
-      if composerAvailable && (target.owner != nil || target.channel == "0") {
+      // The inbox has no owner and no digit; it composes to its linked agents.
+      if composerAvailable
+        && (target.owner != nil || target.channel == "0" || conversation.isDraftSyncSource)
+      {
         OverlayConversationComposer(
           palette: palette, draft: $draft, maximumEditorHeight: composerEditorHeightLimit,
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
@@ -441,28 +462,49 @@ struct OverlayConversationView: View {
           onRemoveCaptureAttachment: onRemoveCaptureAttachment,
           captureAttachmentError: captureAttachmentError,
           onRetryCaptureAttachments: onRetryCaptureAttachments,
-          onNavigateReply: {
-            if let onNavigateComposerReply {
-              onNavigateComposerReply()
-            } else {
-              navigateToReply(replySelection?.messageID)
-            }
-          },
+          onNavigateReply: { navigateToReply(replySelection?.messageID) },
           draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
           draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
           onActivateDraftSync: onActivateDraftSync,
           onProseEdit: onProseEdit,
-          onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync
+          onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync,
+          recipientsOnSend: true,
+          clearRecipientsTitle: (composerConversation ?? conversation).channel == "0"
+            ? String(localized: "Send to everyone") : String(localized: "Stop syncing")
         )
         // A reused native coordinator must never redirect an old owner's
         // proposal or undo history into a different conversation's binding.
-        .id([target.id, target.owner?.id ?? ""])
-        if let sendError { composerError(sendError) }
+        .id([conversation.id, conversation.owner?.id ?? ""])
+        if let transientSendError = sendErrorNotice.message {
+          composerError(transientSendError)
+            .transition(.opacity)
+            .accessibilityIdentifier("overlay-conversation-send-error")
+        }
         if let playbackError {
           composerError(playbackError)
             .accessibilityIdentifier("overlay-conversation-playback-error")
         }
       }
+    }
+    .onAppear {
+      sendErrorNotice.reconcile(
+        sendError: sendError, sending: sending, reduceMotion: reduceMotion)
+    }
+    .onChange(of: sendError) { _, newValue in
+      sendErrorNotice.reconcile(
+        sendError: newValue, sending: sending, reduceMotion: reduceMotion)
+    }
+    .onChange(of: sending) { wasSending, isSending in
+      if isSending {
+        sendErrorNotice.dismiss(reduceMotion: reduceMotion)
+      } else if wasSending {
+        sendErrorNotice.reconcile(
+          sendError: sendError, sending: false, reduceMotion: reduceMotion)
+      }
+    }
+    .onChange(of: conversation.id) { _, _ in
+      sendErrorNotice.reconcile(
+        sendError: sendError, sending: sending, reduceMotion: reduceMotion)
     }
     .padding(.horizontal, contentInset)
     .padding(.top, 6)
@@ -470,9 +512,22 @@ struct OverlayConversationView: View {
     .frame(maxWidth: .infinity)
   }
 
+  /// A source's placeholder names its set, since the set is sticky and the
+  /// send chevron alone does not show it: the inbox alone has no recipient,
+  /// 0 · All alone is everyone.
   private var composerPlaceholder: String {
-    (composerConversation ?? conversation).channel == "0"
-      ? String(localized: "Send to everyone") : String(localized: "Message the Agent")
+    let names = draftSyncNames.filter { $0 != conversation.name }
+    if conversation.isHumanInbox {
+      return names.isEmpty
+        ? String(localized: "Choose recipients")
+        : String(localized: "To:") + " " + names.joined(separator: ", ")
+    }
+    if (composerConversation ?? conversation).channel == "0" {
+      return names.isEmpty
+        ? String(localized: "Send to everyone")
+        : String(localized: "Only to: \(names.joined(separator: ", "))")
+    }
+    return String(localized: "Message the Agent")
   }
 
   private func composerError(_ text: String) -> some View {
@@ -501,6 +556,7 @@ struct OverlayConversationView: View {
             }
             navigationIndicators
             conversationNamePill
+              .modifier(navigationLabelMenu)
               .onGeometryChange(for: CGFloat.self) {
                 $0.size.height
               } action: {
@@ -544,6 +600,7 @@ struct OverlayConversationView: View {
         .help(Text(verbatim: conversation.displayTitle))
         .accessibilityAddTraits(.isHeader)
         .accessibilityIdentifier("overlay-conversation-name")
+        .modifier(navigationLabelMenu)
         if let navigationActions {
           navigationActions
             .fixedSize()
@@ -553,15 +610,34 @@ struct OverlayConversationView: View {
             microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
             palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
             broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
-            diameter: navigationPillHeight
+            // The header is a glass card: flat glyphs on it, as on the composer.
+            chrome: false, diameter: navigationPillHeight
           )
           .fixedSize()
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .background {
+        if reduceTransparency {
+          RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+            .fill(palette.desktopBackground.color)
+        }
+      }
+      .modifier(
+        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
+      )
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-conversation-navigation")
     }
+  }
+
+  private var navigationLabelMenu: OverlayBroadcastPolicyMenu {
+    guard allowsLiveActions, let navigationMenu else {
+      return OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
+    }
+    return navigationMenu
   }
 
   @ViewBuilder
@@ -752,29 +828,26 @@ struct OverlayConversationView: View {
       }
       .csAutohidingScrollers()
     }
+    // Keep the existing viewport and resting insets, but let moving rows reach
+    // the pane's outer clip behind the header, label and composer. Their glass
+    // samples the rows; the gaps between those surfaces stay fully sharp.
+    .scrollClipDisabled()
     .contentMargins(
       .bottom,
       presentation == .intercom && showsComposer
-        ? (visibleComposerHeight > 0 ? visibleComposerHeight : bottomInset + 54) : bottomInset)
+        ? (visibleComposerHeight > 0 ? visibleComposerHeight : bottomInset + 54) : bottomInset
+    )
+    // The window inset and the header card's height: the newest rows rest
+    // under them and scroll through the glass, the way they do under the composer.
+    .contentMargins(.top, topInset + visibleNavigationHeight)
     if #available(macOS 26.0, *) {
-      // The header's glass alone is not a shade: bubbles stayed readable right
-      // behind the mark (Founder, 2026-10-18). Apple pairs a glass bar with the
-      // scroll edge effect, so the pinned header becomes a safe-area bar — an
-      // empty one, since the window's own header paints it — and the system's
-      // soft effect fades whatever runs under it. The bar replaces the top
-      // content margin; both named the same height.
+      // Only the actual glass surfaces soften the rows. A viewport-wide edge
+      // treatment would also blur the clear gaps between floating controls.
       list
-        .safeAreaBar(edge: .top, spacing: 0) {
-          Color.clear
-            .frame(height: topInset + visibleNavigationHeight)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
-        .scrollEdgeEffectStyle(.soft, for: .top)
-        // The composer's glass sits on the floor with nothing pinned behind it.
+        .scrollEdgeEffectHidden(true, for: .top)
         .scrollEdgeEffectHidden(true, for: .bottom)
     } else {
-      list.contentMargins(.top, topInset + visibleNavigationHeight)
+      list
     }
   }
 
@@ -1257,5 +1330,48 @@ enum HeldDeliveryCopy {
   static func countdown(seconds: Int, bundle: Bundle = .main) -> String {
     let format = bundle.localizedString(forKey: "Sending in %lld s", value: nil, table: nil)
     return String(format: format, Int64(max(0, seconds)))
+  }
+}
+
+/// Transient send-error notice under a conversation composer: appears when a
+/// send or partial linked send fails, then dismisses itself after a short
+/// display window instead of lingering until the next send.
+@MainActor @Observable
+final class ComposerSendErrorNoticeState {
+  static let defaultDuration: Duration = .seconds(4)
+  private(set) var message: String?
+  @ObservationIgnored private var dismissal: Task<Void, Never>?
+
+  func reconcile(
+    sendError: String?, sending: Bool, reduceMotion: Bool = false,
+    duration: Duration = ComposerSendErrorNoticeState.defaultDuration
+  ) {
+    guard !sending, let sendError, !sendError.isEmpty else {
+      dismiss(reduceMotion: reduceMotion)
+      return
+    }
+    show(sendError, reduceMotion: reduceMotion, duration: duration)
+  }
+
+  func show(
+    _ text: String, reduceMotion: Bool = false,
+    duration: Duration = ComposerSendErrorNoticeState.defaultDuration
+  ) {
+    dismissal?.cancel()
+    let animation: Animation? = reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover)
+    withAnimation(animation) { message = text }
+    dismissal = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: duration)
+      guard !Task.isCancelled else { return }
+      withAnimation(animation) { self?.message = nil }
+    }
+  }
+
+  func dismiss(reduceMotion: Bool = false) {
+    dismissal?.cancel()
+    dismissal = nil
+    guard message != nil else { return }
+    let animation: Animation? = reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover)
+    withAnimation(animation) { message = nil }
   }
 }

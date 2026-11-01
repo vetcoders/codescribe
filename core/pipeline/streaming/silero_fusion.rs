@@ -168,6 +168,10 @@ impl UtteranceLedger {
         &self.utterances
     }
 
+    pub(crate) fn utterances_mut(&mut self) -> &mut [SileroUtterance] {
+        &mut self.utterances
+    }
+
     /// Utterance whose range contains `sample` (half-open). Prefers the
     /// tightest closed span; falls back to the open span.
     pub fn utterance_covering(&self, sample: u64) -> Option<&SileroUtterance> {

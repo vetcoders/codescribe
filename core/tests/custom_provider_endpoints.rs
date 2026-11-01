@@ -88,6 +88,9 @@ fn valid_authorities_keep_their_origin_and_normalize_each_wire_idempotently() {
             let suffix = match wire {
                 WireFamily::OpenAiResponses => "/v1/responses",
                 WireFamily::AnthropicMessages => "/v1/messages",
+                WireFamily::GoogleGenerateContent => {
+                    unreachable!("Google is intentionally excluded from WIRES")
+                }
             };
             assert_eq!(row.endpoint, format!("{base}{suffix}{tail}"));
             assert_eq!(row.wire, wire);
