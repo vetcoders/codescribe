@@ -418,31 +418,62 @@ final class OverlayRecipientRoutingTests: XCTestCase {
     XCTAssertTrue(composer.contains("\"overlay-conversation-attach\""))
   }
 
-  /// The chevron is a narrower action beside Send; the trailing exclusion of
-  /// the text grows by its width plus one spacing when it shows, and by
-  /// nothing otherwise. The layout type is private to the composer, so the
-  /// arithmetic is pinned at the source.
-  func testTheRecipientChevronWidensTheTrailingCornerByItsWidthAndOneSpacing() throws {
-    let composer = try overlaySource("OverlayConversationComposer.swift")
-    XCTAssertTrue(composer.contains("let recipientShare: CGFloat = showsRecipientMenu ? 0.45 : 0"))
-    XCTAssertTrue(
-      composer.contains(
-        ".font(.system(size: min(controlGlyphSize, corners.glyphSize) * 0.55, weight: .semibold))"
-      ))
-    XCTAssertTrue(
-      composer.contains(
-        "recipientWidth = showsRecipientMenu ? ceil(actionWidth * recipientShare) : 0"))
-    XCTAssertTrue(
-      composer.contains(
-        "trailingWidth = trailingActions * actionWidth + recipientWidth "
-          + "+ (trailingActions - 1 + (showsRecipientMenu ? 1 : 0)) * spacing"))
-    XCTAssertTrue(
-      composer.contains(
-        "x: viewport.width - trailingWidth - clearance - textOrigin.x, y: y, width: trailingWidth + clearance"
-      ), "the trailing exclusion is the trailing width")
-    XCTAssertTrue(
-      composer.contains(".frame(width: corners.recipientWidth, height: corners.actionHeight)"),
-      "the chevron is drawn at the width the layout reserved")
+  /// The split-button tail uses a third of Send's width with no added gap.
+  /// Measure TextKit's real exclusions so formatting changes cannot break this
+  /// contract, and verify that adding recipients does not move the editor.
+  func testRecipientChevronReservesItsWidthWithoutMovingTheEditor() throws {
+    func measure(width: CGFloat, microphone: Bool, recipients: Bool) throws -> (
+      viewport: NSRect, exclusions: [NSRect]
+    ) {
+      let host = NSHostingView(
+        rootView: OverlayConversationComposer(
+          palette: .dark, draft: .constant("A short draft"), sending: false, onSubmit: {},
+          onToggleDraftMicrophone: microphone ? {} : nil,
+          draftSyncChoices: recipients
+            ? [.init(id: "peer", title: "Peer", selected: false, enabled: true)] : [],
+          onToggleDraftSync: { _ in }, recipientsOnSend: true
+        ).environment(\.csTextScale, 1))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: width, height: 120)
+      let window = NSWindow(
+        contentRect: NSRect(x: -10000, y: -10000, width: width, height: 120),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      for _ in 0..<3 {
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+      }
+      func editor(in view: NSView) -> NSTextView? {
+        if let text = view as? NSTextView, text.isEditable { return text }
+        return view.subviews.lazy.compactMap { editor(in: $0) }.first
+      }
+      let text = try XCTUnwrap(editor(in: host))
+      let scroll = try XCTUnwrap(text.enclosingScrollView)
+      let container = try XCTUnwrap(text.textContainer)
+      let exclusions = container.exclusionPaths.map(\.bounds).sorted { $0.minX < $1.minX }
+      XCTAssertEqual(exclusions.count, 2, "only the two bottom control corners reserve prose")
+      return (scroll.convert(scroll.bounds, to: host), exclusions)
+    }
+
+    for width in [CGFloat(360), 520] {
+      for microphone in [false, true] {
+        let plain = try measure(width: width, microphone: microphone, recipients: false)
+        let picker = try measure(width: width, microphone: microphone, recipients: true)
+        XCTAssertEqual(picker.viewport, plain.viewport)
+        let leading = try XCTUnwrap(picker.exclusions.first)
+        XCTAssertEqual(leading, try XCTUnwrap(plain.exclusions.first))
+        let oldTrailing = try XCTUnwrap(plain.exclusions.last)
+        let newTrailing = try XCTUnwrap(picker.exclusions.last)
+        let chevronWidth = ceil(ComposerControlMetrics.hitTargetSize / 3)
+        XCTAssertEqual(newTrailing.width - oldTrailing.width, chevronWidth, accuracy: 0.5)
+        XCTAssertEqual(oldTrailing.minX - newTrailing.minX, chevronWidth, accuracy: 0.5)
+        XCTAssertEqual(newTrailing.maxX, oldTrailing.maxX, accuracy: 0.5)
+        XCTAssertEqual(newTrailing.minY, oldTrailing.minY, accuracy: 0.5)
+        XCTAssertEqual(newTrailing.height, oldTrailing.height, accuracy: 0.5)
+      }
+    }
   }
 
   func testSyncStateShowsSubtleComposerTintInSyncAccentColor() throws {
