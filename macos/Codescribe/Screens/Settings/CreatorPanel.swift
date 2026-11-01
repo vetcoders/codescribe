@@ -78,21 +78,20 @@ struct CreatorPanel: View {
           title: String(localized: "Intercom layout"),
           subtitle: String(
             localized:
-              "Classic overlay, the horizontal agent strip, or floating vertical agent pills. The strip and pills are experimental."
+              "Classic overlay, a horizontal bar, or agent cards. Bar and Cards are in beta."
           )
         ) {
-          // Classic ships as the default. The subtitle keeps the experimental
-          // status of the two mapped layouts outside the short pills label.
+          // Keep the default first and label both optional layouts as beta.
           Picker(
             "Intercom layout",
             selection: Binding(
               get: { model.overlayIntercomMode },
               set: { model.selectOverlayIntercomMode($0) })
           ) {
-            Text("Classic").tag(OverlayIntercomPresentationMode.classic)
-            Text("Horizontal strip (experimental)")
+            Text("Classic (default)").tag(OverlayIntercomPresentationMode.classic)
+            Text("Bar (beta)")
               .tag(OverlayIntercomPresentationMode.horizontal)
-            Text("Floating pills")
+            Text("Cards (beta)")
               .tag(OverlayIntercomPresentationMode.vertical)
           }
           .labelsHidden()

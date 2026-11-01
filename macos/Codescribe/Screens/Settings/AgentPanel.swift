@@ -307,7 +307,7 @@ private struct LLMLaneEditor: View {
           Text("Model default", comment: "Agent reasoning level: the model's own").tag("default")
         }
         ForEach(ReasoningLevel.all) { level in
-          Text(level.title).tag(level.id)
+          Text(verbatim: level.title).tag(level.id)
         }
       }
       .labelsHidden()

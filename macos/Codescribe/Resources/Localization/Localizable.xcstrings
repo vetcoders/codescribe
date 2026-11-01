@@ -5174,24 +5174,24 @@
         }
       }
     },
-    "Classic" : {
+    "Classic (default)" : {
       "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Klasyczny"
+            "value" : "Klasyczny (default)"
           }
         }
       }
     },
-    "Classic overlay, the horizontal agent strip, or floating vertical agent pills. The strip and pills are experimental." : {
+    "Classic overlay, a horizontal bar, or agent cards. Bar and Cards are in beta." : {
       "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Klasyczna nakładka, poziomy pasek agentów lub pionowe, lewitujące pigułki agentów. Pasek i pigułki są eksperymentalne."
+            "state" : "translated",
+            "value" : "Klasyczna nakładka, pozioma belka lub fiszki agentów. Belka i Fiszki są w wersji beta."
           }
         }
       }
@@ -8728,13 +8728,13 @@
         }
       }
     },
-    "Floating pills" : {
+    "Cards (beta)" : {
       "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Lewitujące pigułki"
+            "state" : "translated",
+            "value" : "Fiszki (beta)"
           }
         }
       }
@@ -9448,13 +9448,13 @@
         }
       }
     },
-    "Horizontal strip (experimental)" : {
+    "Bar (beta)" : {
       "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poziomy pasek (eksperymentalny)"
+            "value" : "Belka (beta)"
           }
         }
       }

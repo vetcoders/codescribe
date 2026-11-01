@@ -870,20 +870,14 @@ final class SettingsDeepLink {
   }
 }
 
-/// Reasoning levels a lane can ask for, lowest first; the ids are the core's
-/// `ReasoningEffort` words (oh-my-pi's thinking levels, `none` for its `off`).
+/// Reasoning levels a lane can ask for, lowest first. Their protocol names
+/// are displayed verbatim in every interface language.
 struct ReasoningLevel: Identifiable, Hashable {
   let id: String
-  let title: String
+  var title: String { id }
 
-  static let all: [ReasoningLevel] = [
-    ReasoningLevel(id: "none", title: String(localized: "None", comment: "Reasoning level")),
-    ReasoningLevel(id: "minimal", title: String(localized: "Minimal", comment: "Reasoning level")),
-    ReasoningLevel(id: "low", title: String(localized: "Low", comment: "Reasoning level")),
-    ReasoningLevel(id: "medium", title: String(localized: "Medium", comment: "Reasoning level")),
-    ReasoningLevel(id: "high", title: String(localized: "High", comment: "Reasoning level")),
-    ReasoningLevel(id: "xhigh", title: String(localized: "Extra high", comment: "Reasoning level")),
-  ]
+  static let all = ["none", "minimal", "low", "medium", "high", "xhigh"]
+    .map { ReasoningLevel(id: $0) }
 }
 
 /// The two request lanes (D4: no Main fallback lane). A lane binds a provider
