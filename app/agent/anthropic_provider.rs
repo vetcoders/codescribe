@@ -2084,9 +2084,9 @@ mod tests {
         None
     }
 
-    /// Fix 6486e049f / 61e3a19f3; kills M3a-04 using literal 31/30/90 s.
-    #[tokio::test(start_paused = true)]
-    async fn m3a_anthropic_headers_at_31_seconds_survive() {
+    async fn m3a_anthropic_delayed_headers(
+        first_event_timeout: Duration,
+    ) -> (Vec<AgentEvent>, Duration) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}/v1/messages", listener.local_addr().unwrap());
@@ -2127,30 +2127,77 @@ mod tests {
         provider.client = Client::builder().no_proxy().build().unwrap();
         provider.initial_response_timeout = Duration::from_secs(30);
         provider.inter_chunk_timeout = Duration::from_secs(30);
-        provider.first_event_timeout = Duration::from_secs(90);
-        let task = tokio::spawn(async move { run_scripted(&provider).await });
+        provider.first_event_timeout = first_event_timeout;
+        let task = tokio::spawn(async move {
+            let mut rx = provider
+                .stream(
+                    &[text_message(Role::User, "ping")],
+                    &[],
+                    &StreamOptions::default(),
+                )
+                .await
+                .unwrap();
+            let mut events = Vec::new();
+            // This case deliberately advances beyond the generic drain helper's
+            // five-second receive limit. The provider owns the header deadline;
+            // m3a_ticks bounds this test's scheduler turns without another timer.
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        });
         m3a_ticks(seen_rx)
             .await
             .expect("request reached server")
             .unwrap();
         let before = tokio::time::Instant::now();
         tokio::time::advance(Duration::from_secs(31)).await;
-        release_tx.send(()).unwrap();
-        let events = m3a_ticks(task)
-            .await
-            .expect("late headers complete without a timer")
-            .unwrap();
-        assert_eq!(delta_text(&events), "exam");
+        let events = if first_event_timeout < Duration::from_secs(31) {
+            // Observe the expired deadline while headers are still withheld;
+            // releasing them first would race timeout against successful I/O.
+            let events = m3a_ticks(task)
+                .await
+                .expect("the header deadline expires before the server replies")
+                .unwrap();
+            release_tx.send(()).unwrap();
+            events
+        } else {
+            release_tx.send(()).unwrap();
+            m3a_ticks(task)
+                .await
+                .expect("late headers complete without another timer")
+                .unwrap()
+        };
+        let elapsed = tokio::time::Instant::now() - before;
+        m3a_ticks(server).await.unwrap().unwrap();
+        (events, elapsed)
+    }
+
+    /// Fix 6486e049f / 61e3a19f3; kills M3a-04 using literal 31/30/90 s.
+    #[tokio::test(start_paused = true)]
+    async fn m3a_anthropic_headers_at_31_seconds_survive() {
+        let (events, elapsed) = m3a_anthropic_delayed_headers(Duration::from_secs(90)).await;
+        assert_eq!(delta_text(&events), "exam", "{events:?}");
         assert!(has_clean_done(&events), "{events:?}");
         assert!(
             !events.iter().any(|e| matches!(e, AgentEvent::Error(_))),
             "{events:?}"
         );
-        assert_eq!(
-            tokio::time::Instant::now() - before,
-            Duration::from_secs(31)
+        assert_eq!(elapsed, Duration::from_secs(31));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn m3a_anthropic_headers_still_respect_first_event_deadline() {
+        let (events, elapsed) = m3a_anthropic_delayed_headers(Duration::from_secs(30)).await;
+        assert_eq!(delta_text(&events), "", "{events:?}");
+        assert!(!has_clean_done(&events), "{events:?}");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Error(_))),
+            "the delayed response must exceed the configured header deadline: {events:?}"
         );
-        m3a_ticks(server).await.unwrap().unwrap();
+        assert_eq!(elapsed, Duration::from_secs(31));
     }
 
     async fn m3a_cancel_anthropic_phase(status: Option<u16>) {
