@@ -1232,6 +1232,24 @@ private struct ConversationMessageField: NSViewRepresentable {
     private let cornerClip = CAShapeLayer()
     private var arranging = false
 
+    override func tile() {
+      super.tile()
+      guard rowReleasedForDraft else { return }
+      // Text-container padding scrolls away. Keep the actual viewport and its
+      // scroller below the rounded glass edge, including midway through a draft.
+      let inset = ComposerControlMetrics.textVerticalInset
+      var viewport = contentView.frame
+      viewport.size.height = max(0, viewport.height - inset)
+      if isFlipped { viewport.origin.y += inset }
+      contentView.frame = viewport
+      if let scroller = verticalScroller {
+        var frame = scroller.frame
+        frame.size.height = max(0, frame.height - inset)
+        if isFlipped { frame.origin.y += inset }
+        scroller.frame = frame
+      }
+    }
+
     func invalidateContentMeasurement() {
       needsContentMeasurement = true
       needsLayout = true
@@ -1411,7 +1429,7 @@ private struct ConversationMessageField: NSViewRepresentable {
         let container = editor.textContainer, let textLayout = editor.layoutManager,
         contentView.bounds.width > 0
       else { return }
-      let viewport = contentView.bounds.size
+      var viewport = contentView.bounds.size
       if previousViewport != viewport {
         // Preserve a visible caret on resize, but never jump from a manually
         // scrolled passage to an offscreen selection.
@@ -1438,7 +1456,11 @@ private struct ConversationMessageField: NSViewRepresentable {
         container.exclusionPaths = []
         container.containerSize = NSSize(
           width: max(1, viewport.width), height: .greatestFiniteMagnitude)
-        if (editor.textStorage?.length ?? 0) == 0 { rowReleasedForDraft = false }
+        if (editor.textStorage?.length ?? 0) == 0, rowReleasedForDraft {
+          rowReleasedForDraft = false
+          tile()
+          viewport = contentView.bounds.size
+        }
         var measuredHeight: CGFloat
         if !rowReleasedForDraft {
           // The controls are at the CURRENT viewport bottom, not the height
@@ -1451,6 +1473,8 @@ private struct ConversationMessageField: NSViewRepresentable {
           measuredHeight = documentHeight()
           if measuredHeight > minimum {
             rowReleasedForDraft = true
+            tile()
+            viewport = contentView.bounds.size
           }
         } else {
           measuredHeight = 0
