@@ -357,7 +357,7 @@ struct OverlayConversationComposer: View {
   /// set lives in a popover instead.
   private func recipientMenu(_ corners: ConversationComposerCornerLayout) -> some View {
     let sendGlyph = min(controlGlyphSize, corners.glyphSize)
-    Button {
+    return Button {
       recipientPickerShown.toggle()
     } label: {
       Image(systemName: "chevron.down")
