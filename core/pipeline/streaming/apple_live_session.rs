@@ -2061,6 +2061,15 @@ pub(crate) async fn apple_stream_transcription_session(
 /// Grouped into one struct so `emit_stream_events` keeps a readable signature
 /// while the worker and the event mapper stay on the same postprocessor
 /// instance (one lexicon reload cadence, one drop counter).
+/// Cached speech anchors for one `(capture_epoch, observed_samples, floor_bits)`
+/// snapshot on `AppleSealState`.
+struct VoicedOnsetAnchorCache {
+    capture_epoch: u64,
+    observed_samples: u64,
+    floor_bits: u32,
+    anchors: Arc<[SpeechAnchor]>,
+}
+
 struct PendingAppleSeal {
     /// Exact physical occurrence selected before any observer was launched.
     occurrence: OccurrenceIdentity,
@@ -2237,7 +2246,7 @@ struct AppleSealState {
     /// Cached speech anchors keyed by `(capture_epoch, observed_samples, floor_bits)`
     /// so voiced-onset clamping does not rescan the hop clock per Silero range
     /// or per Whisper word.
-    voiced_onset_anchor_cache: Mutex<Option<((u64, u64, u32), Arc<[SpeechAnchor]>)>>,
+    voiced_onset_anchor_cache: Mutex<Option<VoicedOnsetAnchorCache>>,
     /// Present only when this take opened a live cloud session. Local power
     /// leaves it empty, so no commit is sent and no cloud observer is scheduled.
     cloud_commit_tx: Option<mpsc::Sender<u64>>,
@@ -2994,15 +3003,17 @@ impl AppleSealState {
             .existence_floor_rms
             .filter(|floor| floor.is_finite() && *floor > 0.0)?;
         let observed_samples = self.capture_energy.observed_samples();
-        let key = (self.capture_epoch, observed_samples, floor.to_bits());
-        if let Some((cached_key, anchors)) = self
+        let floor_bits = floor.to_bits();
+        if let Some(cached) = self
             .voiced_onset_anchor_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            && *cached_key == key
+            && cached.capture_epoch == self.capture_epoch
+            && cached.observed_samples == observed_samples
+            && cached.floor_bits == floor_bits
         {
-            return Some(Arc::clone(anchors));
+            return Some(Arc::clone(&cached.anchors));
         }
         let evidence = self.capture_energy.session_speech_anchors(
             &self.session_id,
@@ -3017,10 +3028,12 @@ impl AppleSealState {
         *self
             .voiced_onset_anchor_cache
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
-            (self.capture_epoch, observed_samples, floor.to_bits()),
-            Arc::clone(&anchors),
-        ));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(VoicedOnsetAnchorCache {
+            capture_epoch: self.capture_epoch,
+            observed_samples,
+            floor_bits,
+            anchors: Arc::clone(&anchors),
+        });
         Some(anchors)
     }
 
