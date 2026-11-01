@@ -845,14 +845,16 @@ struct OverlayComposerAttachmentPill: View {
   private func presentPreviewWindow() {
     let remove = onRemove
     let detach = onDetach
+    var onAnnotated: ((URL, URL) -> Void)? = nil
+    if let replace = onReplace {
+      onAnnotated = { current, annotated in replace(current.path, annotated.path) }
+    }
     AttachmentPreviewWindowController.present(
       attachment,
       onRemove: { current in
         if let detach, let current { detach(current.path) } else { remove() }
       },
-      onAnnotated: onReplace.map { replace in
-        { current, annotated in replace(current.path, annotated.path) }
-      })
+      onAnnotated: onAnnotated)
   }
 }
 

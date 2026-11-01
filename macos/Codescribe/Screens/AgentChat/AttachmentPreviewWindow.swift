@@ -265,6 +265,8 @@ final class AttachmentMarkupContainerController: NSViewController {
 
   override func viewDidAppear() {
     super.viewDidAppear()
-    view.window?.makeFirstResponder(session.paper.view)
+    // PaperKit takes keys on the controller (it overrides
+    // `acceptsFirstResponder`), not on its view.
+    view.window?.makeFirstResponder(session.paper)
   }
 }
