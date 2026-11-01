@@ -1795,13 +1795,13 @@ struct OverlayChannelStatusView: View {
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
     OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
-      showsHeader: !foldRidesOnAllCard && sidebarControls != nil,
       focusRevision: focusRevision, focusedRowID: selectedConversationID,
       scrollTargetID: gestureFocusID.flatMap { id in
         currentConversations.contains(where: {
           $0.id == id && ($0.channel == "0" || $0.isHumanInbox)
         }) ? nil : id
-      }
+      },
+      showsHeader: !foldRidesOnAllCard && sidebarControls != nil
     ) {
       // Maciej, 2026-11-01: the "Agents" row goes; the list says what it is.
       // Only without the All card does the fold keep a slim row of its own.
