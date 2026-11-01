@@ -467,8 +467,14 @@ struct ChatMessage: Identifiable {
 /// file URL (NSOpenPanel / clipboard-saved temp file); the send path forwards the
 /// path to the bridge, which loads + validates the bytes.
 struct PendingAttachment: Identifiable, Hashable {
-  let id = UUID()
+  let id: UUID
   let url: URL
+
+  init(id: UUID = UUID(), url: URL) {
+    self.id = id
+    self.url = url
+  }
+
   var name: String { url.lastPathComponent }
   var type: String { MessageAttachment.inferredType(name: name, url: url) }
   var previewAttachment: MessageAttachment { MessageAttachment(name: name, url: url, type: type) }
@@ -1961,6 +1967,22 @@ final class AgentChatStore: ObservableObject {
   /// Remove a staged attachment before it is sent.
   func removeAttachment(_ id: UUID) {
     pendingAttachments.removeAll { $0.id == id }
+  }
+
+  /// Point a staged attachment at another file in place, keeping its slot and
+  /// id in the row. Markup saves the annotated image as a new asset and lands
+  /// here; the original file stays on disk. A URL already staged elsewhere
+  /// drops the old slot instead of duplicating the image.
+  @discardableResult
+  func replaceAttachment(_ id: UUID, with url: URL) -> PendingAttachment? {
+    guard let index = pendingAttachments.firstIndex(where: { $0.id == id }) else { return nil }
+    if pendingAttachments.contains(where: { $0.url == url && $0.id != id }) {
+      pendingAttachments.remove(at: index)
+      return pendingAttachments.first { $0.url == url }
+    }
+    let replacement = PendingAttachment(id: id, url: url)
+    pendingAttachments[index] = replacement
+    return replacement
   }
 
   /// True when there is something to send: text, at least one staged image, or

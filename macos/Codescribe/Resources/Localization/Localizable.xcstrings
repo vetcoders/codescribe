@@ -3306,6 +3306,23 @@
         }
       }
     },
+    "Annotate this image with Markup" : {
+      "comment" : "Attachment preview window: tooltip of the Markup button",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Annotate this image with Markup"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj oznaczenia do tego obrazu"
+          }
+        }
+      }
+    },
     "Another recording is still running." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -6594,6 +6611,23 @@
         }
       }
     },
+    "Could not open this image for Markup" : {
+      "comment" : "Attachment preview window: the image could not be loaded into Markup",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not open this image for Markup"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się otworzyć tego obrazu do oznaczania"
+          }
+        }
+      }
+    },
     "Could not open this transcript." : {
       "localizations" : {
         "pl" : {
@@ -6657,6 +6691,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "nie udało się zapisać notatki"
+          }
+        }
+      }
+    },
+    "Could not save the annotated image" : {
+      "comment" : "Attachment preview window: Markup save failed; the original attachment is unchanged",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not save the annotated image"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zapisać obrazu z oznaczeniami"
           }
         }
       }
@@ -10856,6 +10907,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Oznacz tekst przekazywany do innych aplikacji"
+          }
+        }
+      }
+    },
+    "Markup" : {
+      "comment" : "Attachment preview window: opens the system Markup tools on the image",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Markup"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oznaczenia"
           }
         }
       }
@@ -16534,6 +16602,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisz model %@"
+          }
+        }
+      }
+    },
+    "Save Markup" : {
+      "comment" : "Attachment preview window: saves the annotated copy and attaches it in place of the original",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save Markup"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zapisz oznaczenia"
           }
         }
       }

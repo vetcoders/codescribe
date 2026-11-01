@@ -176,6 +176,17 @@ struct OverlayConversationComposer: View {
     draft = ConversationDraft.compose(
       text: parts.text, attachments: parts.attachments.filter { $0 != path })
   }
+  /// Markup's annotated copy takes the original's slot; the original file
+  /// stays on disk. Already attached elsewhere: the old slot just goes.
+  private func replaceAttachment(_ path: String, with annotated: String) {
+    let parts = ConversationDraft.split(draft)
+    guard parts.attachments.contains(path) else { return }
+    let replaced: [String] =
+      parts.attachments.contains(annotated)
+      ? parts.attachments.filter { $0 != path }
+      : parts.attachments.map { $0 == path ? annotated : $0 }
+    draft = ConversationDraft.compose(text: parts.text, attachments: replaced)
+  }
 
   private func pickAttachments() {
     let picker = NSOpenPanel()
@@ -302,7 +313,11 @@ struct OverlayConversationComposer: View {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 6) {
             ForEach(attached, id: \.self) { path in
-              OverlayComposerAttachmentPill(path: path, palette: palette) { detach(path) }
+              OverlayComposerAttachmentPill(
+                path: path, palette: palette,
+                onReplace: { current, annotated in replaceAttachment(current, with: annotated) },
+                onDetach: { current in detach(current) }
+              ) { detach(path) }
             }
           }
           // The chips keep their own sideways scrolling; the pin only makes
@@ -735,6 +750,13 @@ enum ConversationAttachmentLabel {
 struct OverlayComposerAttachmentPill: View {
   let path: String
   let palette: OverlayAppearancePalette
+  /// Repoints the draft from the path the preview window currently shows to
+  /// Markup's annotated copy. Nil where the attachment is owned elsewhere (an
+  /// active recording's captures), which leaves the window without Markup.
+  var onReplace: ((_ current: String, _ annotated: String) -> Void)? = nil
+  /// Removes the path the preview window currently shows; after a Markup
+  /// save that is the annotated copy, not `path`. Nil falls back to `onRemove`.
+  var onDetach: ((_ current: String) -> Void)? = nil
   let onRemove: () -> Void
   @State private var thumbnail: NSImage?
   @State private var bytes = 0
@@ -752,7 +774,11 @@ struct OverlayComposerAttachmentPill: View {
   var body: some View {
     HStack(spacing: 6) {
       Button {
-        showPreview = true
+        if AttachmentPreviewPresentation.usesWindow() {
+          presentPreviewWindow()
+        } else {
+          showPreview = true
+        }
       } label: {
         HStack(spacing: 6) {
           if let thumbnail {
@@ -812,6 +838,21 @@ struct OverlayComposerAttachmentPill: View {
         onRemove()
       }
     }
+  }
+
+  /// Nightly: the preview as its own window above the chat, with Markup when
+  /// the draft can be repointed to the annotated copy.
+  private func presentPreviewWindow() {
+    let remove = onRemove
+    let detach = onDetach
+    AttachmentPreviewWindowController.present(
+      attachment,
+      onRemove: { current in
+        if let detach, let current { detach(current.path) } else { remove() }
+      },
+      onAnnotated: onReplace.map { replace in
+        { current, annotated in replace(current.path, annotated.path) }
+      })
   }
 }
 
