@@ -35,6 +35,44 @@ final class ComposerCornerAcceptanceTests: XCTestCase {
     }
   }
 
+  func testViewportInsetResetsWithTheDraftAndDoesNotAccumulateWhenRetiled() throws {
+    let store = DraftStore()
+    let fixture = try Fixture(text: "", root: AnyView(EditableComposer(store: store)))
+    defer { fixture.window.close() }
+    let editor = fixture.editor
+    let initialHeight = fixture.scroll.frame.height
+    let multiline = (1...30).map { "Line \($0): a long editable draft." }.joined(separator: "\n")
+
+    for text in ["", multiline, "", "One line", multiline] {
+      store.text = text
+      fixture.refresh()
+      let scroll = fixture.scroll
+      let clip = scroll.contentView
+      let multilineDraft = text.contains("\n")
+      XCTAssertTrue(scroll.documentView === editor, "the same native editor survives each transition")
+      XCTAssertEqual(editor.string, text)
+      XCTAssertEqual(
+        clip.frame.minY - scroll.bounds.minY,
+        multilineDraft ? ComposerControlMetrics.textVerticalInset : 0, accuracy: 0.5)
+      if !multilineDraft {
+        XCTAssertEqual(scroll.frame.height, initialHeight, accuracy: 0.5)
+      }
+      for fraction in [CGFloat(0.5), 1] {
+        fixture.scrollTo(max(0, editor.frame.height - clip.bounds.height) * fraction)
+        let frame = clip.frame
+        let origin = clip.bounds.origin
+        for _ in 0..<3 {
+          scroll.tile()
+          fixture.settle()
+          XCTAssertEqual(clip.frame, frame, "tiling must not add another inset")
+          XCTAssertEqual(
+            clip.bounds.origin.y, origin.y, accuracy: 0.5,
+            "tiling must not drift away from the passage being read")
+        }
+      }
+    }
+  }
+
   @MainActor
   private final class Fixture {
     let host: NSHostingView<AnyView>
