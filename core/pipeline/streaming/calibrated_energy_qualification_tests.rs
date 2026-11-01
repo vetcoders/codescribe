@@ -352,3 +352,128 @@ fn continuous_voiced_onset_before_silero_warmup_admits_leading_whisper_words() {
         .collect();
     assert_eq!(routed_texts, vec!["A", "nie", "dałoby", "się"]);
 }
+
+/// Runs the take-69de62f8 onset geometry (48 kHz, existence floor 0.003, a
+/// Silero range that starts late) over `pcm` and returns the Whisper words the
+/// own-speech gate keeps. The negative falsifiers below share it so that each
+/// differs from the admitting regression above only in the energy in front of
+/// the Silero range.
+fn whisper_words_kept_before_late_silero_start(
+    session: &str,
+    pcm: &[f32],
+    candidates: &[(&str, u64, u64)],
+) -> Vec<String> {
+    use super::super::silero_fusion::{SileroIngress, UtteranceLedger};
+    use super::{reconcile_silero_ledger, retain_whisper_words_with_own_speech};
+    use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+
+    const SAMPLE_RATE: u32 = 48_000;
+    let total = pcm.len() as u64;
+    let mut state = AppleSealState::new_for_session(SAMPLE_RATE, session.into(), 1);
+    state.seal_ledger_enabled = true;
+    state.existence_floor_rms = Some(0.003);
+    state.energy_calibration = Some(EnergyCalibration::new(
+        "negative-onset-calibration",
+        1.0,
+        960,
+    ));
+    state.audio.push(pcm);
+    let mut capture = CaptureLevelAccumulator::bound_to_at_rate(&state.capture_energy, SAMPLE_RATE);
+    for chunk in pcm.chunks(960) {
+        capture.push_samples(chunk);
+    }
+
+    let mut ingress = SileroIngress::new(SAMPLE_RATE, session, 1);
+    ingress.note_observed_pcm(total, total);
+    ingress.observe_boundaries(&[
+        VadBoundaryEvidence {
+            kind: VadBoundaryKind::SpeechStart,
+            sample: 109_056,
+            speech_probability: 0.85,
+        },
+        VadBoundaryEvidence {
+            kind: VadBoundaryKind::SpeechEnd,
+            sample: 517_632,
+            speech_probability: 0.12,
+        },
+    ]);
+    state.fusion = Some(ingress);
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tail_tx, _tail_rx) = tokio::sync::mpsc::channel(8);
+    state.tail_patch = Some(tail_tx);
+
+    let mut physical = UtteranceLedger::new();
+    physical.open_or_extend(session, 1, 89_856, 545_280);
+    physical.close_open(545_280);
+    assert!(reconcile_silero_ledger(&mut state, &tx, &physical, &[]));
+
+    let words: Vec<TimedTailSegment> = candidates
+        .iter()
+        .map(|&(text, sample_start, sample_end)| TimedTailSegment {
+            text: text.into(),
+            range: TailSampleRange {
+                session: session.into(),
+                capture_epoch: 1,
+                sample_start,
+                sample_end,
+            },
+            grain: TailSegmentGrain::Word,
+            confidence: None,
+        })
+        .collect();
+    retain_whisper_words_with_own_speech(&mut state, &tx, 1, &words)
+        .into_iter()
+        .map(|word| word.text)
+        .collect()
+}
+
+#[test]
+fn energy_running_since_before_the_warmup_window_lends_no_speech_to_leading_words() {
+    // A source above the floor has run since the take began (a voice or a TV in
+    // the room), 2.2 s before Silero's range: far older than any warm-up Silero
+    // can miss. The words in front of Silero stay refused; only the word on the
+    // Silero range is kept.
+    let mut pcm = vec![0.0001_f32; 600_000];
+    pcm[..520_704].fill(0.08);
+    let kept = whisper_words_kept_before_late_silero_start(
+        "negative-onset-running-source",
+        &pcm,
+        &[
+            ("A", 74_880, 81_600),
+            ("nie", 81_600, 92_160),
+            ("się", 108_480, 113_280),
+        ],
+    );
+    assert_eq!(
+        kept,
+        vec!["się"],
+        "energy that began long before the utterance is not a voiced onset Silero missed"
+    );
+}
+
+#[test]
+fn room_noise_under_the_floor_up_to_silero_admits_no_leading_word() {
+    // Steady room noise below the existence floor starts exactly where the
+    // admitted onset starts in the regression above (73920, 668 ms before the
+    // Silero range, inside the warm-up window) and runs up to Silero, where the
+    // voice begins. Only the floor separates it from a voiced onset, so the
+    // Whisper words over it have nothing to borrow and stay refused.
+    let mut pcm = vec![0.0001_f32; 600_000];
+    pcm[73_920..105_984].fill(0.002);
+    pcm[105_984..520_704].fill(0.08);
+    let kept = whisper_words_kept_before_late_silero_start(
+        "negative-onset-sub-floor-noise",
+        &pcm,
+        &[
+            ("A", 74_880, 81_600),
+            ("nie", 81_600, 92_160),
+            ("się", 108_480, 113_280),
+        ],
+    );
+    assert_eq!(
+        kept,
+        vec!["się"],
+        "room noise under the floor never becomes the onset of the words in front of Silero"
+    );
+}
