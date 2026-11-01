@@ -1647,6 +1647,10 @@ enum OverlayPresencePolicy: Equatable {
     }
   }
 
+  func shouldOrderFront(after previousPolicy: OverlayPresencePolicy?, isVisible: Bool) -> Bool {
+    isVisible && (self == .capture || (previousPolicy == .rest && self == .unpinned))
+  }
+
   static let yieldBundleIds: Set<String> = [
     "com.apple.SecurityAgent",
     "com.apple.UserNotificationCenter",
@@ -1685,6 +1689,7 @@ final class OverlayPresence {
   private var workspaceObserver: NSObjectProtocol?
   private var captureUntil: Date?
   private var captureTimer: Timer?
+  private var appliedPolicy: OverlayPresencePolicy?
 
   init(panel: NSPanel, pinned: @escaping @MainActor () -> Bool = { true }) {
     self.panel = panel
@@ -1755,12 +1760,15 @@ final class OverlayPresence {
       ),
       pinned: pinned()
     )
+    let previousPolicy = appliedPolicy
+    appliedPolicy = policy
     if panel.level != policy.windowLevel {
       panel.level = policy.windowLevel
     }
-    // A screenshot lifts the overlay only when it is already on screen. An
-    // ordered-out panel stays hidden: the chord is not a reason to show it.
-    if policy == .capture, panel.isVisible {
+    // Unpinning keeps a visible overlay at the front of the normal band once.
+    // Later app activations leave its order alone; screenshot lifting is unchanged.
+    // Neither transition brings an ordered-out panel back on screen.
+    if policy.shouldOrderFront(after: previousPolicy, isVisible: panel.isVisible) {
       panel.orderFrontRegardless()
     }
   }
