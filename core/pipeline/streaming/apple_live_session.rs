@@ -69,7 +69,7 @@ use crate::asr_session::recorder::{
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::audio::capture_receipt::{
     AcousticAvailability, AcousticSpeechEvidence, CaptureEnergyOwner, CaptureLevelAccumulator,
-    CapturePathMeta, DIGITAL_ZERO_ABS, emit_capture_level_receipt,
+    CapturePathMeta, DIGITAL_ZERO_ABS, SpeechAnchor, emit_capture_level_receipt,
 };
 use crate::audio::speech_input::{
     SpeechInputArchive, SpeechInputFrame, SpeechInputPlan, SpeechInputStream,
@@ -2234,6 +2234,10 @@ struct AppleSealState {
     /// This take's capture energy ladder, bound to session and capture epoch.
     /// The live writer is the async capture arm; this is its reader handle.
     capture_energy: CaptureEnergyOwner,
+    /// Cached speech anchors keyed by `(capture_epoch, observed_samples, floor_bits)`
+    /// so voiced-onset clamping does not rescan the hop clock per Silero range
+    /// or per Whisper word.
+    voiced_onset_anchor_cache: Mutex<Option<((u64, u64, u32), Arc<[SpeechAnchor]>)>>,
     /// Present only when this take opened a live cloud session. Local power
     /// leaves it empty, so no commit is sent and no cloud observer is scheduled.
     cloud_commit_tx: Option<mpsc::Sender<u64>>,
@@ -2930,6 +2934,7 @@ impl AppleSealState {
             energy_calibration: None,
             existence_floor_rms: None,
             capture_energy: CaptureEnergyOwner::bind(session_id_for_energy, capture_epoch),
+            voiced_onset_anchor_cache: Mutex::new(None),
             cloud_commit_tx: None,
             cloud_uncommitted: BTreeSet::new(),
             cloud_last_commit_sample: 0,
@@ -2977,7 +2982,46 @@ impl AppleSealState {
                 .matches(&self.session_id, self.capture_epoch),
             "the capture owner must name this take"
         );
+        *self
+            .voiced_onset_anchor_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.capture_energy = owner;
+    }
+
+    fn voiced_onset_anchors(&self) -> Option<Arc<[SpeechAnchor]>> {
+        let floor = self
+            .existence_floor_rms
+            .filter(|floor| floor.is_finite() && *floor > 0.0)?;
+        let observed_samples = self.capture_energy.observed_samples();
+        let key = (self.capture_epoch, observed_samples, floor.to_bits());
+        if let Some((cached_key, anchors)) = self
+            .voiced_onset_anchor_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            && *cached_key == key
+        {
+            return Some(Arc::clone(anchors));
+        }
+        let evidence = self.capture_energy.session_speech_anchors(
+            &self.session_id,
+            self.capture_epoch,
+            self.sample_rate,
+            floor,
+        );
+        let AcousticAvailability::Observed { observed_samples } = evidence.availability else {
+            return None;
+        };
+        let anchors: Arc<[SpeechAnchor]> = Arc::from(evidence.anchors);
+        *self
+            .voiced_onset_anchor_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+            (self.capture_epoch, observed_samples, floor.to_bits()),
+            Arc::clone(&anchors),
+        ));
+        Some(anchors)
     }
 
     fn new_for_session_with_ledger(
@@ -7873,31 +7917,30 @@ fn silence_under_span(state: &AppleSealState, start: u64, end: u64) -> SilenceUn
 const SILERO_VOICED_ONSET_MAX_MS: u64 = 2 * crate::pipeline::speech_islands::SPEECH_ISLAND_GAP_MS;
 
 fn extend_silero_start_to_voiced_onset(
-    state: &AppleSealState,
+    anchors: &[SpeechAnchor],
+    anchor_cursor: &mut usize,
+    sample_rate: u32,
     start: u64,
     previous_end: u64,
 ) -> u64 {
-    let Some(floor) = state
-        .existence_floor_rms
-        .filter(|floor| floor.is_finite() && *floor > 0.0)
-    else {
-        return start;
-    };
-    let anchors = state.capture_energy.session_speech_anchors(
-        &state.session_id,
-        state.capture_epoch,
-        state.sample_rate,
-        floor,
-    );
-    if !matches!(anchors.availability, AcousticAvailability::Observed { .. }) {
-        return start;
+    if *anchor_cursor > 0
+        && anchors
+            .get(*anchor_cursor - 1)
+            .is_some_and(|anchor| anchor.range.sample_end > start)
+    {
+        *anchor_cursor = 0;
+    }
+    while anchors
+        .get(*anchor_cursor)
+        .is_some_and(|anchor| anchor.range.sample_end <= start)
+    {
+        *anchor_cursor += 1;
     }
     let max_onset_samples =
-        u64::from(state.sample_rate.max(1)).saturating_mul(SILERO_VOICED_ONSET_MAX_MS) / 1_000;
+        u64::from(sample_rate.max(1)).saturating_mul(SILERO_VOICED_ONSET_MAX_MS) / 1_000;
     anchors
-        .anchors
-        .iter()
-        .find(|anchor| {
+        .get(*anchor_cursor)
+        .filter(|anchor| {
             anchor.range.sample_start < start
                 && anchor.range.sample_end > start
                 && start.saturating_sub(anchor.range.sample_start) <= max_onset_samples
@@ -7907,31 +7950,51 @@ fn extend_silero_start_to_voiced_onset(
         })
 }
 
-fn ledger_with_voiced_onsets(
+fn ledger_with_voiced_onsets<'a>(
     state: &AppleSealState,
-    ledger: &super::silero_fusion::UtteranceLedger,
-) -> super::silero_fusion::UtteranceLedger {
+    ledger: &'a super::silero_fusion::UtteranceLedger,
+) -> std::borrow::Cow<'a, super::silero_fusion::UtteranceLedger> {
+    let Some(anchors) = state.voiced_onset_anchors() else {
+        return std::borrow::Cow::Borrowed(ledger);
+    };
+    if anchors.is_empty() {
+        return std::borrow::Cow::Borrowed(ledger);
+    }
     let mut adjusted = ledger.clone();
     let mut previous_end = 0u64;
+    let mut anchor_cursor = 0usize;
     for utterance in adjusted.utterances_mut() {
-        utterance.range.sample_start =
-            extend_silero_start_to_voiced_onset(state, utterance.range.sample_start, previous_end);
+        utterance.range.sample_start = extend_silero_start_to_voiced_onset(
+            &anchors,
+            &mut anchor_cursor,
+            state.sample_rate,
+            utterance.range.sample_start,
+            previous_end,
+        );
         previous_end = previous_end.max(utterance.range.sample_end);
     }
-    adjusted
+    std::borrow::Cow::Owned(adjusted)
 }
 
 fn voiced_onset_silero_ranges(
     state: &AppleSealState,
     evidence: &AcousticSpeechEvidence,
 ) -> Vec<(u64, u64)> {
+    let anchors = state.voiced_onset_anchors();
+    let anchors = anchors.as_deref().unwrap_or(&[]);
     let mut previous_end = 0u64;
+    let mut anchor_cursor = 0usize;
     evidence
         .ranges()
         .iter()
         .map(|range| {
-            let start =
-                extend_silero_start_to_voiced_onset(state, range.sample_start, previous_end);
+            let start = extend_silero_start_to_voiced_onset(
+                anchors,
+                &mut anchor_cursor,
+                state.sample_rate,
+                range.sample_start,
+                previous_end,
+            );
             previous_end = previous_end.max(range.sample_end);
             (start, range.sample_end)
         })

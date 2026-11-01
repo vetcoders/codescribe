@@ -319,6 +319,14 @@ impl CaptureEnergyOwner {
         &self.identity
     }
 
+    /// Extent of the capture hop clock observed so far, in samples.
+    pub fn observed_samples(&self) -> u64 {
+        self.clock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .observed_samples
+    }
+
     fn record_hop(
         &self,
         sample_start: u64,
