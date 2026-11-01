@@ -2200,7 +2200,7 @@ fn terminal_user_revision_survives_failure_without_reopening_delivery() {
 
 #[test]
 fn evidence_v1_without_additive_seal_receipts_still_decodes() {
-    let legacy = serde_json::json!({
+    let earlier_payload = serde_json::json!({
         "schema": "codescribe.transcript-evidence.v1",
         "sequence": 12,
         "emitted_at": "2026-08-27T22:36:00Z",
@@ -2217,7 +2217,7 @@ fn evidence_v1_without_additive_seal_receipts_still_decodes() {
         "rendered_text": "Kurde",
         "acoustic_receipts": []
     });
-    let mut decoded: TranscriptBusEvidenceEvent = serde_json::from_value(legacy).unwrap();
+    let mut decoded: TranscriptBusEvidenceEvent = serde_json::from_value(earlier_payload).unwrap();
     assert_eq!(decoded.phase, TranscriptProjectionPhase::Listening);
     assert!(!decoded.can_paste);
     assert!(!decoded.can_insert);
@@ -2402,19 +2402,19 @@ fn a_take_with_no_delivery_attempt_claims_no_destination() {
     assert_eq!(terminal.delivery, TranscriptDelivery::Unattempted);
 }
 
-/// A legacy row without the additive fields decodes to the honest defaults:
+/// A row without the additive fields decodes to the honest defaults:
 /// no destination claimed, and not a lifecycle line.
 #[test]
-fn legacy_rows_default_to_no_destination_and_no_lifecycle_claim() {
-    let legacy = serde_json::json!({
+fn rows_without_additive_fields_default_to_no_destination_and_no_lifecycle_claim() {
+    let earlier_payload = serde_json::json!({
         "schema": "codescribe.transcript-evidence.v1",
         "sequence": 1,
         "emitted_at": "2026-09-09T20:00:00Z",
-        "session_id": "legacy",
+        "session_id": "prior",
         "mode": "dictation",
         "reducer_revision": 1,
         "reducer_action": "apply_ledger_decision",
-        "occurrence_session_id": "legacy",
+        "occurrence_session_id": "prior",
         "capture_epoch": 1,
         "sample_start": 0,
         "sample_end": 16000,
@@ -2423,7 +2423,7 @@ fn legacy_rows_default_to_no_destination_and_no_lifecycle_claim() {
         "rendered_text": "Kurde",
         "acoustic_receipts": []
     });
-    let decoded: TranscriptBusEvidenceEvent = serde_json::from_value(legacy).unwrap();
+    let decoded: TranscriptBusEvidenceEvent = serde_json::from_value(earlier_payload).unwrap();
     assert_eq!(decoded.delivery, TranscriptDelivery::Unattempted);
     assert!(!decoded.lifecycle_terminal);
 }

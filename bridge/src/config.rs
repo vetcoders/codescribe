@@ -220,7 +220,7 @@ pub struct CsSettings {
     pub llm_assistive_model: Option<String>,
     /// Agent reasoning level: `default` (the model's own) or a chosen level.
     pub llm_assistive_reasoning: String,
-    /// Automatic formatting policy: off, correction or smart. A stored legacy
+    /// Automatic formatting policy: off, correction or smart. A stored earlier
     /// `max`/`creative` reads as smart here; Max is invoked through Format.
     pub formatting_level: Option<String>,
     /// Formatter Keywords: preferred vocabulary given as context to
@@ -866,7 +866,7 @@ pub struct CsTrayToggles {
     /// Never persisted; `paste_mode` is the one stored choice.
     pub auto_paste_enabled: bool,
     /// Normalized automatic formatting policy: off, correction or smart.
-    /// A stored legacy `max`/`creative` reads as smart.
+    /// A stored earlier `max`/`creative` value reads as smart.
     pub formatting_level: String,
     /// UI-initiated recording starts in the assistive lane when enabled.
     pub start_assistive: bool,

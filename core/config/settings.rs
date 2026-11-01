@@ -1480,7 +1480,7 @@ impl RuntimeSettingsSnapshot {
 
     /// Policy for automatic formatting (capture, grouped live and Stop, and the
     /// automatic selectors): Off, Correction or Smart only. A stored Max (or
-    /// its legacy `creative` alias) resolves to Smart here, because Max is the
+    /// its earlier `creative` alias) resolves to Smart here, because Max is the
     /// manually invoked Agent. Nothing is written back to disk; explicit
     /// requests keep the full policy via [`Self::with_formatting_level`].
     pub const fn automatic_formatting_policy(&self) -> FormattingPolicy {

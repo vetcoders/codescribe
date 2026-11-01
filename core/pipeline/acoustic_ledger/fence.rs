@@ -28,7 +28,7 @@ pub enum CumulativeFinalAdmission {
         /// overlapped occurrences account for.
         canvas_words_under_authority: usize,
     },
-    /// No usable anchor on either side. Legacy text behaviour stands, because
+    /// No usable anchor on either side. Text-only behaviour stands, because
     /// there is no acoustic authority for it to violate.
     NoAnchor {
         /// Why authority is absent.
@@ -54,7 +54,7 @@ impl CumulativeFinalAdmission {
             .filter(|(occurrence, _)| occurrence.is_anchored() && occurrence.same_capture(window))
             .collect();
         if comparable.is_empty() {
-            // Nothing anchored to compare against. The legacy text lane keeps
+            // Nothing anchored to compare against. The text-only lane keeps
             // its behaviour rather than being handed a false verdict.
             return Self::NoAnchor {
                 reason: NoAuthorityReason::NoRange,

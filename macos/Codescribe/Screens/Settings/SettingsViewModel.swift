@@ -194,7 +194,7 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
   /// `allCases` keeps Max for manual requests and version history.
   static let automaticCases: [Self] = [.off, .correction, .smart]
 
-  /// The automatic level a stored choice runs at. A stored Max (or legacy
+  /// The automatic level a stored choice runs at. A stored Max (or earlier
   /// `creative`) runs Smart at the automatic boundary in the core, so every
   /// automatic selector shows Smart for it instead of a level that never runs.
   var automaticLevel: Self { self == .max ? .smart : self }
@@ -284,7 +284,7 @@ enum DeferredInsertShortcutOption: String, CaseIterable, Identifiable, Equatable
   var wireId: String { rawValue }
 
   /// Reads the canonical bridge value defensively. The core always emits one
-  /// of these four ids, while an unknown legacy/corrupt value renders as the
+  /// of these four ids, while an unknown earlier/corrupt value renders as the
   /// safe opt-in default instead of causing a passive write.
   init(wireId: String) {
     self = Self(rawValue: wireId) ?? .disabled

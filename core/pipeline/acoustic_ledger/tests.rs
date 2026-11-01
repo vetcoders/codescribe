@@ -2327,10 +2327,10 @@ fn alignment_may_not_claim_more_words_than_the_canvas_holds() {
     );
 }
 
-/// With nothing anchored to compare against, the legacy text lane keeps its
+/// With nothing anchored to compare against, the text-only lane keeps its
 /// behaviour — it is demoted, not replaced by a fabricated verdict.
 #[test]
-fn without_an_anchor_the_text_matcher_keeps_its_legacy_answer() {
+fn without_an_anchor_the_text_matcher_keeps_its_existing_answer() {
     let decision = CumulativeFinalAdmission::decide(&occ(0, 16_000), &[]);
     assert_eq!(
         decision,
@@ -2392,7 +2392,7 @@ fn a_cumulative_restatement_is_bounded_by_the_open_occurrences() {
     );
 }
 
-/// With nothing open, a cumulative final restates nothing and the legacy
+/// With nothing open, a cumulative final restates nothing and the text-only
 /// text lane is left exactly as it was.
 #[test]
 fn a_cumulative_restatement_with_nothing_open_has_no_anchor() {
@@ -2430,7 +2430,7 @@ fn the_authorized_canvas_hides_text_outside_the_authorized_span() {
         }
         .authorized_canvas(&canvas),
         canvas.as_slice(),
-        "with no anchor the legacy matcher keeps the whole canvas"
+        "with no anchor the text matcher keeps the whole canvas"
     );
 }
 
