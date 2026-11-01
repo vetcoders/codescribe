@@ -1669,7 +1669,10 @@ mod tests {
             .confirm_targets(WRITE_TOOL, &input, &decided_targets)
             .expect("registry target confirmation must still accept the same canonical path");
         retained_parent
-            .write("created-during-approval/capability-probe.txt", b"still writable")
+            .write(
+                "created-during-approval/capability-probe.txt",
+                b"still writable",
+            )
             .expect("retained capability must independently permit a write to this parent");
         assert!(matches!(
             result,

@@ -136,9 +136,7 @@ fn formatter_keywords_snapshot_freezes_per_generation() {
 /// public boundaries, independent of the implementation's limit constants.
 #[test]
 fn formatter_keywords_accept_exactly_100_and_refuse_101() {
-    let at_limit: Vec<String> = (0..100)
-        .map(|index| format!("term-{index:03}"))
-        .collect();
+    let at_limit: Vec<String> = (0..100).map(|index| format!("term-{index:03}")).collect();
     assert_eq!(normalize_formatter_keywords(&at_limit).unwrap(), at_limit);
     let sealed = FormatterKeywordsContext::seal(Some(&at_limit));
     assert_eq!(sealed.terms(), at_limit.as_slice());

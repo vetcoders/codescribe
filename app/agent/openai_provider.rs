@@ -2704,7 +2704,9 @@ mod tests {
         tokio::pin!(future);
         for _ in 0..10_000 {
             let polled = std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await;
-            if let Poll::Ready(value) = polled { return Some(value); }
+            if let Poll::Ready(value) = polled {
+                return Some(value);
+            }
             tokio::task::yield_now().await;
         }
         None
@@ -2717,14 +2719,28 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(1);
         let chain = Arc::new(Mutex::new(Some("resp_before_exam".into())));
         let task = tokio::spawn(super::forward_events_and_track_chain(
-            upstream_rx, tx, Some(Arc::clone(&chain)), None,
+            upstream_rx,
+            tx,
+            Some(Arc::clone(&chain)),
+            None,
         ));
-        upstream_tx.send(AgentEvent::TextDelta("forwarded".into())).await.unwrap();
-        assert_eq!(m3a_ticks(rx.recv()).await.unwrap(), Some(AgentEvent::TextDelta("forwarded".into())));
+        upstream_tx
+            .send(AgentEvent::TextDelta("forwarded".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            m3a_ticks(rx.recv()).await.unwrap(),
+            Some(AgentEvent::TextDelta("forwarded".into()))
+        );
         let before = tokio::time::Instant::now();
         drop(rx);
-        m3a_ticks(upstream_tx.closed()).await.expect("silent upstream receiver retained");
-        m3a_ticks(task).await.expect("forwarder retained the turn").unwrap();
+        m3a_ticks(upstream_tx.closed())
+            .await
+            .expect("silent upstream receiver retained");
+        m3a_ticks(task)
+            .await
+            .expect("forwarder retained the turn")
+            .unwrap();
         assert_eq!(chain.lock().await.as_deref(), Some("resp_before_exam"));
         assert_eq!(tokio::time::Instant::now(), before);
     }
@@ -2735,12 +2751,16 @@ mod tests {
     async fn m3a_reasoning_prefix_cancellation_releases_the_entire_delivery_chain() {
         let (upstream_tx, upstream_rx) = mpsc::channel(1);
         let prefixed = super::prepend_event(
-            Some(AgentEvent::ReasoningDelta("independent-exam-prefix".into())), upstream_rx,
+            Some(AgentEvent::ReasoningDelta("independent-exam-prefix".into())),
+            upstream_rx,
         );
         let (final_tx, mut final_rx) = mpsc::channel(1);
         let chain = Arc::new(Mutex::new(Some("resp_before_prefix".into())));
         let forwarder = tokio::spawn(super::forward_events_and_track_chain(
-            prefixed, final_tx, Some(Arc::clone(&chain)), None,
+            prefixed,
+            final_tx,
+            Some(Arc::clone(&chain)),
+            None,
         ));
         assert_eq!(
             m3a_ticks(final_rx.recv()).await.unwrap(),
@@ -2748,8 +2768,13 @@ mod tests {
         );
         let before = tokio::time::Instant::now();
         drop(final_rx);
-        m3a_ticks(upstream_tx.closed()).await.expect("reasoning prefix retained the provider receiver");
-        m3a_ticks(forwarder).await.expect("delivery chain retained the turn").unwrap();
+        m3a_ticks(upstream_tx.closed())
+            .await
+            .expect("reasoning prefix retained the provider receiver");
+        m3a_ticks(forwarder)
+            .await
+            .expect("delivery chain retained the turn")
+            .unwrap();
         assert_eq!(chain.lock().await.as_deref(), Some("resp_before_prefix"));
         assert_eq!(tokio::time::Instant::now(), before);
     }

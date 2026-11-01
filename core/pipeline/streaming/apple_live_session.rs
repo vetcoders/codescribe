@@ -16700,7 +16700,13 @@ mod rc_w2_acoustic_tests {
         let mut state = one_burst_in_a_ten_second_take("m3b-settled-stop");
         let (events, mut receiver) = mpsc::unbounded_channel();
         let owner = commit_the_burst(&mut state, &events);
-        let seal = state.acoustic_ledger.lock().unwrap().seal_of(&owner).unwrap().clone();
+        let seal = state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .seal_of(&owner)
+            .unwrap()
+            .clone();
         assert_eq!(state.acoustic_ledger.lock().unwrap().rendered_text(), "Iwo");
 
         let request = TailProviderRequest {
@@ -16740,7 +16746,9 @@ mod rc_w2_acoustic_tests {
             assert_eq!(coverage.status, SealCoverageStatus::Complete);
             let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
             assert!(
-                !emitted.iter().any(|event| matches!(event, EngineEvent::LedgerMutation { .. })),
+                !emitted
+                    .iter()
+                    .any(|event| matches!(event, EngineEvent::LedgerMutation { .. })),
                 "Stop re-offered a settled historical frame, even if the ledger refused it"
             );
             let ledger = state.acoustic_ledger.lock().unwrap();
@@ -24545,7 +24553,9 @@ mod live_refinement_admission_tests {
                 state.pending_events.get_mut(&id).unwrap().layer1_baseline = label.into();
             }
             state.pump_capture_windows(&events);
-            let request = requests.try_recv().expect("live decode request for all three owners");
+            let request = requests
+                .try_recv()
+                .expect("live decode request for all three owners");
             assert_eq!(request.member_occurrences.len(), 3);
             assert_eq!(request.committed_text, expected);
             assert!(!state.capture_stopping);

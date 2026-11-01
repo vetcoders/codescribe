@@ -2076,7 +2076,9 @@ mod tests {
         tokio::pin!(future);
         for _ in 0..10_000 {
             let polled = std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await;
-            if let Poll::Ready(value) = polled { return Some(value); }
+            if let Poll::Ready(value) = polled {
+                return Some(value);
+            }
             tokio::task::yield_now().await;
         }
         None
@@ -2100,14 +2102,24 @@ mod tests {
                 request.extend_from_slice(&chunk[..n]);
                 if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
                     let headers = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
-                    let len = headers.lines().find_map(|line| line.strip_prefix("content-length:"))
-                        .unwrap().trim().parse::<usize>().unwrap();
-                    if request.len() >= end + 4 + len { break; }
+                    let len = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .unwrap()
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap();
+                    if request.len() >= end + 4 + len {
+                        break;
+                    }
                 }
             }
             seen_tx.send(()).unwrap();
             release_rx.await.unwrap();
-            let body = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{}data: {{\"type\":\"message_stop\"}}\n\n", text_block_frames("exam"));
+            let body = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{}data: {{\"type\":\"message_stop\"}}\n\n",
+                text_block_frames("exam")
+            );
             let _ = socket.write_all(body.as_bytes()).await;
             let _ = socket.shutdown().await;
         });
@@ -2117,35 +2129,71 @@ mod tests {
         provider.inter_chunk_timeout = Duration::from_secs(30);
         provider.first_event_timeout = Duration::from_secs(90);
         let task = tokio::spawn(async move { run_scripted(&provider).await });
-        m3a_ticks(seen_rx).await.expect("request reached server").unwrap();
+        m3a_ticks(seen_rx)
+            .await
+            .expect("request reached server")
+            .unwrap();
         let before = tokio::time::Instant::now();
         tokio::time::advance(Duration::from_secs(31)).await;
         release_tx.send(()).unwrap();
-        let events = m3a_ticks(task).await.expect("late headers complete without a timer").unwrap();
+        let events = m3a_ticks(task)
+            .await
+            .expect("late headers complete without a timer")
+            .unwrap();
         assert_eq!(delta_text(&events), "exam");
         assert!(has_clean_done(&events), "{events:?}");
-        assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error(_))), "{events:?}");
-        assert_eq!(tokio::time::Instant::now() - before, Duration::from_secs(31));
+        assert!(
+            !events.iter().any(|e| matches!(e, AgentEvent::Error(_))),
+            "{events:?}"
+        );
+        assert_eq!(
+            tokio::time::Instant::now() - before,
+            Duration::from_secs(31)
+        );
         m3a_ticks(server).await.unwrap().unwrap();
     }
 
     async fn m3a_cancel_anthropic_phase(status: Option<u16>) {
-        let prefix = if status == Some(200) { text_block_frames("body-entered") } else { String::new() };
-        let (endpoint, seen, closed) = scripted_sse::held_response("/v1/messages", status, prefix).await;
+        let prefix = if status == Some(200) {
+            text_block_frames("body-entered")
+        } else {
+            String::new()
+        };
+        let (endpoint, seen, closed) =
+            scripted_sse::held_response("/v1/messages", status, prefix).await;
         let mut provider = provider_for(&endpoint);
         provider.client = Client::builder().no_proxy().build().unwrap();
         provider.initial_response_timeout = Duration::from_secs(30);
         provider.inter_chunk_timeout = Duration::from_secs(30);
         provider.first_event_timeout = Duration::from_secs(90);
-        let mut rx = provider.stream(&[text_message(Role::User, "exam")], &[], &StreamOptions::default()).await.unwrap();
+        let mut rx = provider
+            .stream(
+                &[text_message(Role::User, "exam")],
+                &[],
+                &StreamOptions::default(),
+            )
+            .await
+            .unwrap();
         m3a_ticks(seen).await.expect("request pending").unwrap();
         if status == Some(200) {
-            assert_eq!(m3a_ticks(rx.recv()).await.unwrap(), Some(AgentEvent::TextDelta("body-entered".into())));
+            assert_eq!(
+                m3a_ticks(rx.recv()).await.unwrap(),
+                Some(AgentEvent::TextDelta("body-entered".into()))
+            );
         }
         let before = tokio::time::Instant::now();
         drop(rx);
-        let result = m3a_ticks(closed).await.expect("cancellation releases socket without advancing time").unwrap();
-        assert!(matches!(result, Ok(0)) || result.is_err_and(|e| matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted)));
+        let result = m3a_ticks(closed)
+            .await
+            .expect("cancellation releases socket without advancing time")
+            .unwrap();
+        assert!(
+            matches!(result, Ok(0))
+                || result.is_err_and(|e| matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ))
+        );
         assert_eq!(tokio::time::Instant::now(), before);
     }
 

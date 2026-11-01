@@ -887,10 +887,18 @@ mod tests {
             {"type":"string","enum":["approved"]},
             {"const":null,"allOf":[{"const":"forbidden"}]}
         ]});
-        assert!(normalize_schema_for_gemini(&schema).unwrap_err().contains("allOf"));
-        assert_eq!(normalize_schema_for_gemini(&json!({"anyOf":[
-            {"type":"string","enum":["approved"]}, {"const":null}
-        ]})).unwrap(), json!({"type":"string","enum":["approved"],"nullable":true}));
+        assert!(
+            normalize_schema_for_gemini(&schema)
+                .unwrap_err()
+                .contains("allOf")
+        );
+        assert_eq!(
+            normalize_schema_for_gemini(&json!({"anyOf":[
+                {"type":"string","enum":["approved"]}, {"const":null}
+            ]}))
+            .unwrap(),
+            json!({"type":"string","enum":["approved"],"nullable":true})
+        );
     }
 
     /// Fix fcbeaf125; kills M3a-14: enum [null] must not bypass allOf.
@@ -900,9 +908,17 @@ mod tests {
             {"type":"string","enum":["approved"]},
             {"enum":[null],"allOf":[{"type":"integer"}]}
         ]});
-        assert!(normalize_schema_for_gemini(&schema).unwrap_err().contains("allOf"));
-        assert_eq!(normalize_schema_for_gemini(&json!({"oneOf":[
-            {"type":"string","enum":["approved"]}, {"enum":[null]}
-        ]})).unwrap(), json!({"type":"string","enum":["approved"],"nullable":true}));
+        assert!(
+            normalize_schema_for_gemini(&schema)
+                .unwrap_err()
+                .contains("allOf")
+        );
+        assert_eq!(
+            normalize_schema_for_gemini(&json!({"oneOf":[
+                {"type":"string","enum":["approved"]}, {"enum":[null]}
+            ]}))
+            .unwrap(),
+            json!({"type":"string","enum":["approved"],"nullable":true})
+        );
     }
 }

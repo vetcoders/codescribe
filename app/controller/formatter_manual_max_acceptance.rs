@@ -97,30 +97,38 @@ async fn m3b_persisted_max_never_prepares_until_explicit_consultation_request() 
     let entered = Arc::new(tokio::sync::Notify::new());
     let count = Arc::clone(&preparations);
     let signal = Arc::clone(&entered);
-    let consultation = Arc::new(crate::agent::max_consultation::MaxConsultation::start_deferred(
-        "m3b-preparation-probe".into(),
-        &settings,
-        Box::new(move || {
-            count.fetch_add(1, Ordering::SeqCst);
-            signal.notify_one();
-            panic!("M3b preparation probe: stop before provider construction");
-        }),
-        None,
-        ThreadDeliveryGateway::new_in(root.path().join("threads")).unwrap(),
-        Arc::new(|_, _, _| {}),
-        root.path().join("agent-turn.lease"),
-    ));
+    let consultation = Arc::new(
+        crate::agent::max_consultation::MaxConsultation::start_deferred(
+            "m3b-preparation-probe".into(),
+            &settings,
+            Box::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                signal.notify_one();
+                panic!("M3b preparation probe: stop before provider construction");
+            }),
+            None,
+            ThreadDeliveryGateway::new_in(root.path().join("threads")).unwrap(),
+            Arc::new(|_, _, _| {}),
+            root.path().join("agent-turn.lease"),
+        ),
+    );
     *controller.max_consultation.lock().await = Some(Arc::clone(&consultation));
     *controller.runtime_settings.write().await = Arc::new(settings.clone());
 
     // Startup calls the real controller entrypoint with a usable persisted Max.
     let startup = controller.prepare_max_consultation().await;
-    assert_eq!(preparations.load(Ordering::SeqCst), 0, "startup prepared Max");
+    assert_eq!(
+        preparations.load(Ordering::SeqCst),
+        0,
+        "startup prepared Max"
+    );
     assert!(startup.unwrap().is_none());
 
     {
         let _serial = controller.serial_lock.lock().await;
-        controller.install_runtime_settings_generation(settings.clone()).await;
+        controller
+            .install_runtime_settings_generation(settings.clone())
+            .await;
     }
     // The removed reload path spawned a task. A notification catches it even
     // after install returns; the positive probe below rules out a dead counter.
@@ -136,7 +144,13 @@ async fn m3b_persisted_max_never_prepares_until_explicit_consultation_request() 
     assert_eq!(take.formatting_policy(), FormattingPolicy::Smart);
     assert_eq!(source.formatting_policy(), FormattingPolicy::Max);
     assert_eq!(take.formatter_keywords(), &["Vetcoders".to_string()]);
-    assert!(controller.selected_max_consultation(&take).await.unwrap().is_none());
+    assert!(
+        controller
+            .selected_max_consultation(&take)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(preparations.load(Ordering::SeqCst), 0);
 
     // The real archived Format action reaches the same retained owner. The
@@ -155,7 +169,10 @@ async fn m3b_persisted_max_never_prepares_until_explicit_consultation_request() 
         .unwrap();
     assert!(matches!(receipt.outcome, ArchivedFormatOutcome::Failed));
     assert!(receipt.revision.is_none());
-    assert_eq!(std::fs::read_to_string(archive).unwrap(), "Pacjent czuje się dobrze.");
+    assert_eq!(
+        std::fs::read_to_string(archive).unwrap(),
+        "Pacjent czuje się dobrze."
+    );
     assert_eq!(preparations.load(Ordering::SeqCst), 1);
 }
 

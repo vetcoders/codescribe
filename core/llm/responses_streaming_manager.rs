@@ -4183,50 +4183,104 @@ mod tests {
             let task = tokio::spawn(async move {
                 let client = Client::builder().no_proxy().build().unwrap();
                 let manager = ResponsesStreamingManager::new(
-                    &client, &endpoint, "exam-key",
-                    StreamCallbacks { assistant: None, reasoning: None },
-                    Duration::from_secs(30), Duration::from_secs(30),
-                ).with_first_event_timeout(Duration::from_secs(90));
+                    &client,
+                    &endpoint,
+                    "exam-key",
+                    StreamCallbacks {
+                        assistant: None,
+                        reasoning: None,
+                    },
+                    Duration::from_secs(30),
+                    Duration::from_secs(30),
+                )
+                .with_first_event_timeout(Duration::from_secs(90));
                 match route {
-                    "ordinary" => assert_eq!(manager.stream(&json!({})).await.unwrap().assistant_text, "exam"),
-                    "resume" => assert_eq!(manager.resume_stream("resp_exam", 1, "", "").await.unwrap().assistant_text, "exam"),
+                    "ordinary" => assert_eq!(
+                        manager.stream(&json!({})).await.unwrap().assistant_text,
+                        "exam"
+                    ),
+                    "resume" => assert_eq!(
+                        manager
+                            .resume_stream("resp_exam", 1, "", "")
+                            .await
+                            .unwrap()
+                            .assistant_text,
+                        "exam"
+                    ),
                     _ => {
                         let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
                         assert_eq!(delta_text(&events), "exam");
                         assert!(has_clean_done(&events), "{events:?}");
-                        assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error(_))), "{events:?}");
+                        assert!(
+                            !events.iter().any(|e| matches!(e, AgentEvent::Error(_))),
+                            "{events:?}"
+                        );
                     }
                 }
             });
-            m3a_ticks(seen).await.expect("request reached loopback").unwrap();
+            m3a_ticks(seen)
+                .await
+                .expect("request reached loopback")
+                .unwrap();
             let before = tokio::time::Instant::now();
             tokio::time::advance(Duration::from_secs(31)).await;
             let _ = release.send(());
-            m3a_ticks(task).await.expect("headers completed without another timer").unwrap();
-            assert_eq!(tokio::time::Instant::now() - before, Duration::from_secs(31));
+            m3a_ticks(task)
+                .await
+                .expect("headers completed without another timer")
+                .unwrap();
+            assert_eq!(
+                tokio::time::Instant::now() - before,
+                Duration::from_secs(31)
+            );
         }
     }
 
     async fn m3a_cancel_responses_phase(status: Option<u16>) {
         let prefix = if status == Some(200) {
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"body-entered\"}\n\n"
-        } else { "" };
-        let (endpoint, seen, closed) = scripted_sse::held_response("/v1/responses", status, prefix.into()).await;
+        } else {
+            ""
+        };
+        let (endpoint, seen, closed) =
+            scripted_sse::held_response("/v1/responses", status, prefix.into()).await;
         let client = Client::builder().no_proxy().build().unwrap();
         let manager = ResponsesStreamingManager::new(
-            &client, &endpoint, "exam-key",
-            StreamCallbacks { assistant: None, reasoning: None },
-            Duration::from_secs(30), Duration::from_secs(30),
-        ).with_first_event_timeout(Duration::from_secs(90));
+            &client,
+            &endpoint,
+            "exam-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+        )
+        .with_first_event_timeout(Duration::from_secs(90));
         let mut rx = manager.stream_agent(&json!({})).await.unwrap();
-        m3a_ticks(seen).await.expect("request must be pending").unwrap();
+        m3a_ticks(seen)
+            .await
+            .expect("request must be pending")
+            .unwrap();
         if status == Some(200) {
-            assert_eq!(m3a_ticks(rx.recv()).await.unwrap(), Some(AgentEvent::TextDelta("body-entered".into())));
+            assert_eq!(
+                m3a_ticks(rx.recv()).await.unwrap(),
+                Some(AgentEvent::TextDelta("body-entered".into()))
+            );
         }
         let before = tokio::time::Instant::now();
         drop(rx);
-        let result = m3a_ticks(closed).await.expect("receiver drop must disconnect before any timeout").unwrap();
-        assert!(matches!(result, Ok(0)) || result.is_err_and(|e| matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted)));
+        let result = m3a_ticks(closed)
+            .await
+            .expect("receiver drop must disconnect before any timeout")
+            .unwrap();
+        assert!(
+            matches!(result, Ok(0))
+                || result.is_err_and(|e| matches!(
+                    e.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ))
+        );
         assert_eq!(tokio::time::Instant::now(), before);
     }
 
@@ -4282,11 +4336,19 @@ mod tests {
             let endpoint = m3a_two_transfer_chunks(complete).await;
             let client = Client::builder().no_proxy().http1_only().build().unwrap();
             let manager = ResponsesStreamingManager::new(
-                &client, &endpoint, "exam-key",
-                StreamCallbacks { assistant: None, reasoning: None },
-                Duration::from_secs(30), Duration::from_secs(30),
+                &client,
+                &endpoint,
+                "exam-key",
+                StreamCallbacks {
+                    assistant: None,
+                    reasoning: None,
+                },
+                Duration::from_secs(30),
+                Duration::from_secs(30),
             );
-            let result = m3a_ticks(manager.stream(&json!({}))).await.expect("two transfer frames settle without time");
+            let result = m3a_ticks(manager.stream(&json!({})))
+                .await
+                .expect("two transfer frames settle without time");
             if complete {
                 assert_eq!(result.unwrap().assistant_text, "literal-exam");
             } else {
@@ -4303,17 +4365,27 @@ mod tests {
             let endpoint = m3a_two_transfer_chunks(complete).await;
             let client = Client::builder().no_proxy().http1_only().build().unwrap();
             let manager = ResponsesStreamingManager::new(
-                &client, &endpoint, "exam-key",
-                StreamCallbacks { assistant: None, reasoning: None },
-                Duration::from_secs(30), Duration::from_secs(30),
+                &client,
+                &endpoint,
+                "exam-key",
+                StreamCallbacks {
+                    assistant: None,
+                    reasoning: None,
+                },
+                Duration::from_secs(30),
+                Duration::from_secs(30),
             );
-            let events = m3a_ticks(async {
-                drain(manager.stream_agent(&json!({})).await.unwrap()).await
-            }).await.expect("two transfer frames settle without time");
+            let events =
+                m3a_ticks(async { drain(manager.stream_agent(&json!({})).await.unwrap()).await })
+                    .await
+                    .expect("two transfer frames settle without time");
             assert_eq!(delta_text(&events), "literal-exam");
             if complete {
                 assert!(has_clean_done(&events), "{events:?}");
-                assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error(_))), "{events:?}");
+                assert!(
+                    !events.iter().any(|e| matches!(e, AgentEvent::Error(_))),
+                    "{events:?}"
+                );
             } else {
                 assert!(!has_clean_done(&events), "{events:?}");
                 assert!(events.iter().any(|e| matches!(e, AgentEvent::Error(message) if message.contains("incomplete UTF-8"))), "{events:?}");
