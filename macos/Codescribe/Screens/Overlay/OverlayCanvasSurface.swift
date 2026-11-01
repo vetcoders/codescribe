@@ -150,7 +150,9 @@ struct OverlayControlGlass: ViewModifier {
   func body(content: Content) -> some View {
     let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     if #available(macOS 26.0, *) {
+      // Control glass does not dim with the window (Maciej, 2026-11-01).
       content.glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
+        .environment(\.controlActiveState, .key)
     } else {
       content.background {
         if isEnabled { shape.fill(.regularMaterial) }
