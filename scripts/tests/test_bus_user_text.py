@@ -342,10 +342,13 @@ class ChannelCaptureMessageTests(unittest.TestCase):
 
     def test_handover_uses_source_closure_without_erasing_pending_history(self):
         row = self.evidence()
+        owner = {"provider": self.lease.provider, "provider_session_id": self.lease.provider_session_id,
+                 "lease_id": self.lease.lease_id, "bus": self.lease.bus}
+        row["recipients"] = [owner]
         preview = self.envelopes(DEMUX.normalized_revision_events(json.dumps(row), self.normalizer))[0]
         self.lease.queue_delivery(preview)
         close = {"schema": DEMUX.CLEAN_SCHEMA, "session_id": row["session_id"],
-                 "status": DEMUX.SESSION_ENDED}
+                 "status": DEMUX.SESSION_ENDED, "recipients": [owner]}
         self.bus.write_text(json.dumps(row) + "\n" + json.dumps(close) + "\n")
         self.lease.unclosed_channel_messages = self.normalizer.channel_documents()
         self.lease.persist(active=True, cursor=self.bus.stat().st_size)
