@@ -239,7 +239,7 @@ struct OverlayConversationView: View {
   /// and left an empty band beside the docked drawer (Founder, 2026-10-18).
   /// 0.92 of the text column is the same cue at a tenth of the width. The
   /// absolute 660 pt is a reading measure, not a margin, and does not move.
-  static func bubbleCap(contentWidth: CGFloat, textScale: CGFloat) -> CGFloat {
+  nonisolated static func bubbleCap(contentWidth: CGFloat, textScale: CGFloat) -> CGFloat {
     max(0, min(660 * textScale, (contentWidth - 40) * 0.92))
   }
 

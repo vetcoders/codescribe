@@ -1919,7 +1919,7 @@ final class OverlayIntercomDragView: NSView {
 /// A fiszka is its own panel, outside `DictationOverlayView.overlayGlassContainer`.
 /// Zero merge distance is that container's recipe: the plate samples the rows
 /// and does not join the composer's own glass across the clear gap.
-@ViewBuilder
+@MainActor @ViewBuilder
 private func intercomGlassContainer<Content: View>(_ content: Content) -> some View {
   if #available(macOS 26.0, *) {
     GlassEffectContainer(spacing: 0) { content }
