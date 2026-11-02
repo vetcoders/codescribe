@@ -58,7 +58,7 @@ enum OverlayConversationPresentation: Equatable, Sendable {
 /// The same rich body and attachment chips on a conversation bubble or a
 /// larger Intercom preview. Document and capture state stay in their owners.
 struct OverlayConversationMessageContent: View {
-  static let bodyFontSize: CGFloat = 10
+  nonisolated static let bodyFontSize: CGFloat = 10
   @Environment(\.csTextScale) private var textScale
   let message: OverlayConversationMessage
   let palette: OverlayAppearancePalette

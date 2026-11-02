@@ -10918,7 +10918,7 @@
       }
     },
     "Max uses the Agent model. Set up the Agent endpoint to use Max." : {
-      "comment" : "Shown when the Max level is selected but the Agent lane is unavailable",
+      "comment" : "Shown when the Agent lane is unavailable, so the Max format cannot run",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
