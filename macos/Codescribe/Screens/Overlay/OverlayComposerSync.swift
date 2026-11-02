@@ -276,7 +276,10 @@ extension OverlayState {
   /// Exact owners of one group. The roster badge, the recipient menu, the
   /// tooltip and Send all mean this set — never raw membership of every group.
   private func owningDraftSyncMembers(_ group: OverlayDraftSyncGroup) -> [OverlayConversation] {
-    draftSyncConversations.filter { group.participants[$0.id]?.owns($0) == true }
+    let members = draftSyncConversations.filter { group.participants[$0.id]?.owns($0) == true }
+    // Reconciliation dissolves a group with fewer than two current owners.
+    // Its read-only projection must already show that same result.
+    return members.count >= 2 ? members : []
   }
 
   func draftSyncNames(for id: String) -> [String] {
@@ -336,11 +339,7 @@ extension OverlayState {
         note = String(localized: "This link no longer matches the agent on this channel. The message will not go to them.")
       } else if selected {
         enabled = homeLock == nil
-        if draftMembershipIsRecording(homeMembers) {
-          note = String(localized: "Included in this dictation. Stop it before changing recipients.")
-        } else {
-          note = homeLock
-        }
+        note = homeLock
       } else if let linkBlocked {
         enabled = false
         note = linkBlocked
@@ -357,17 +356,6 @@ extension OverlayState {
       return OverlayComposerSyncChoice(
         id: target.id, title: target.name, selected: selected, enabled: enabled, note: note)
     }
-  }
-
-  /// Who a live composer take will actually reach. Nil when this conversation
-  /// is not the take's destination or one of the recipients frozen at start.
-  func dictationAudienceLabel(for conversation: OverlayConversation) -> String? {
-    guard let audience = draftCapture.liveAudience, audience.contains(conversation.id) else {
-      return nil
-    }
-    let names = draftSyncConversations.filter { audience.contains($0.id) }.map(\.name)
-    guard !names.isEmpty else { return nil }
-    return String(localized: "This dictation goes to: \(names.joined(separator: " · "))")
   }
 
   /// Why the open conversation cannot change sync right now, if it cannot.

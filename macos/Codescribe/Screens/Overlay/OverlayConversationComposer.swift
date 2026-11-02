@@ -47,8 +47,6 @@ struct OverlayConversationComposer: View {
   var onNavigateReply: (() -> Void)? = nil
   var draftSyncChoices: [OverlayComposerSyncChoice] = []
   var draftSyncNames: [String] = []
-  /// Names the frozen audience while this composer's take is open.
-  var dictationAudienceLabel: String? = nil
   var draftSyncArmed: Bool = false
   var draftSyncEnabled: Bool = false
   var onActivateDraftSync: (() -> Void)? = nil
@@ -391,13 +389,6 @@ struct OverlayConversationComposer: View {
 
   private var recipientPicker: some View {
     VStack(alignment: .leading, spacing: 6) {
-      if let dictationAudienceLabel {
-        Text(verbatim: dictationAudienceLabel)
-          .font(CSFont.ui(11, .medium))
-          .foregroundStyle(palette.mutedText.color)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityIdentifier("overlay-dictation-audience")
-      }
       ForEach(draftSyncChoices) { choice in
         VStack(alignment: .leading, spacing: 2) {
           Toggle(
@@ -438,7 +429,6 @@ struct OverlayConversationComposer: View {
   private var recipientMenuHint: String {
     var parts = [String(localized: "Choose recipients")]
     if draftSyncActive { parts.append(draftSyncAccessibilityValue) }
-    if let dictationAudienceLabel { parts.append(dictationAudienceLabel) }
     return parts.joined(separator: " · ")
   }
 

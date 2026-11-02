@@ -188,7 +188,6 @@ struct OverlayConversationView: View {
   var onReply: ((OverlayConversationMessage) -> Void)? = nil
   var draftSyncChoices: [OverlayComposerSyncChoice] = []
   var draftSyncNames: [String] = []
-  var dictationAudienceLabel: String? = nil
   var draftSyncArmed: Bool = false
   var draftSyncEnabled: Bool = false
   var onActivateDraftSync: (() -> Void)? = nil
@@ -465,7 +464,6 @@ struct OverlayConversationView: View {
           onRetryCaptureAttachments: onRetryCaptureAttachments,
           onNavigateReply: { navigateToReply(replySelection?.messageID) },
           draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
-          dictationAudienceLabel: dictationAudienceLabel,
           draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
           onActivateDraftSync: onActivateDraftSync,
           onProseEdit: onProseEdit,

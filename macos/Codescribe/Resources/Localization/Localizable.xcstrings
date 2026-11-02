@@ -19411,30 +19411,6 @@
         }
       }
     },
-    "Included in this dictation. Stop it before changing recipients." : {
-      "comment" : "A recipient who is already in the take frozen at the microphone start",
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Jest w tym dyktowaniu. Zatrzymaj je, zanim zmienisz odbiorców."
-          }
-        }
-      }
-    },
-    "This dictation goes to: %@" : {
-      "comment" : "Send chevron while dictation is open. %@ is the frozen audience.",
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "To dyktowanie idzie do: %@"
-          }
-        }
-      }
-    },
     "This link no longer matches the agent on this channel. The message will not go to them." : {
       "comment" : "A sync seat whose owner identity no longer matches the live agent",
       "extractionState" : "manual",

@@ -34,17 +34,6 @@ final class OverlayDraftCapture {
     audiences[sessionID] ?? destinations[sessionID].map { [$0] } ?? []
   }
 
-  /// Recipients frozen for the take that is still requested. Speech spoken
-  /// before a later join is not theirs; the menu names this set while the
-  /// take is open so a refused checkbox is not the only signal.
-  var liveAudience: Set<String>? {
-    guard let destination = conversationID else { return nil }
-    if let captureID = handle?.captureId, let frozen = audiences[captureID] {
-      return frozen
-    }
-    return requestedAudience.union([destination])
-  }
-
   func ended(sessionID: String) {
     if awaitingStart { earlyTerminals.insert(sessionID) }
     guard handle?.captureId == sessionID else { return }

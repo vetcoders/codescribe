@@ -501,6 +501,111 @@ final class OverlayComposerSyncTests: XCTestCase {
     add(attachment)
   }
 
+  func testRosterProjectsTheOpenGroupRatherThanEveryLinkedAgent() throws {
+    let (state, agents) = try fixture(count: 4)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    XCTAssertTrue(state.toggleDraftSync(from: agents[2].id, with: agents[3].id))
+    state.selectConversation(agents[0].id)
+
+    XCTAssertEqual(state.draftSyncRosterIDs(), Set(agents.prefix(2).map(\.id)))
+    XCTAssertEqual(state.draftSyncOccupiedElsewhereIDs(), Set(agents.suffix(2).map(\.id)))
+    let choices = state.draftSyncChoices(for: agents[0])
+    XCTAssertEqual(choices.filter(\.selected).map(\.id), [agents[1].id])
+    let elsewhere = try XCTUnwrap(choices.first { $0.id == agents[2].id })
+    XCTAssertTrue(elsewhere.enabled, "An explicit choice may merge the two live groups")
+    XCTAssertTrue(try XCTUnwrap(elsewhere.note).contains(agents[3].name))
+
+    state.selectConversation(agents[2].id)
+    XCTAssertEqual(state.draftSyncRosterIDs(), Set(agents.suffix(2).map(\.id)))
+    XCTAssertEqual(state.draftSyncNames(for: agents[2].id), agents.suffix(2).map(\.name))
+    state.selectConversation(nil)
+    XCTAssertTrue(state.draftSyncRosterIDs().isEmpty)
+  }
+
+  func testPickerRosterAndPublicationAgreeWithoutLeakingAnUnrelatedGroup() async throws {
+    let (state, agents) = try fixture(count: 4)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    XCTAssertTrue(state.toggleDraftSync(from: agents[2].id, with: agents[3].id))
+    state.selectConversation(agents[0].id)
+    state.setConversationDraft("Private third", for: agents[2].id)
+    state.setConversationDraft("Private fourth", for: agents[3].id)
+    append("New shared words", to: agents[0].id, state: state)
+    let expected = Set(agents.prefix(2).map(\.id))
+    let selected = Set(state.draftSyncChoices(for: agents[0]).filter(\.selected).map(\.id))
+      .union([agents[0].id])
+    XCTAssertEqual(selected, expected)
+    XCTAssertEqual(state.draftSyncRosterIDs(), expected)
+    var delivered: [String] = []
+    state.publishConversationText = { owner, text, _, peers in
+      let owner = try XCTUnwrap(owner)
+      delivered.append(owner.id)
+      XCTAssertEqual(text, "New shared words")
+      XCTAssertEqual(Set(peers.map(\.id)), expected.subtracting([owner.id]))
+    }
+    await state.sendConversationText(agents[0])
+    XCTAssertEqual(Set(delivered), expected)
+    XCTAssertEqual(delivered.count, 2)
+    XCTAssertEqual(state.conversationDraft(for: agents[2].id), "Private third")
+    XCTAssertEqual(state.conversationDraft(for: agents[3].id), "Private fourth")
+  }
+
+  func testStaleChannelSeatIsExcludedFromThePickerRosterAndPublication() async throws {
+    let (state, agents) = try fixture(count: 3)
+    for peer in agents.dropFirst() {
+      XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: peer.id))
+    }
+    state.selectConversation(agents[0].id)
+    append("Keep exact owners", to: agents[0].id, state: state)
+    try staleChannelSeat(for: agents[1], in: state)
+    let expected = Set([agents[0].id, agents[2].id])
+    XCTAssertEqual(state.draftSyncRosterIDs(), expected)
+    let stale = try XCTUnwrap(state.draftSyncChoices(for: agents[0]).first { $0.id == agents[1].id })
+    XCTAssertFalse(stale.selected)
+    XCTAssertFalse(stale.enabled)
+    XCTAssertNotNil(stale.note)
+    var delivered: [String] = []
+    state.publishConversationText = { owner, _, _, peers in
+      let owner = try XCTUnwrap(owner)
+      delivered.append(owner.id)
+      XCTAssertEqual(Set(peers.map(\.id)), expected.subtracting([owner.id]))
+    }
+    await state.sendConversationText(agents[0])
+    XCTAssertEqual(Set(delivered), expected)
+    XCTAssertEqual(state.conversationDraft(for: agents[1].id), "Keep exact owners")
+  }
+
+  func testOneRemainingOwnerDoesNotLookSyncedBeforeReconciliation() throws {
+    let (state, agents) = try fixture(count: 2)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    state.selectConversation(agents[0].id)
+    try staleChannelSeat(for: agents[1], in: state)
+    XCTAssertTrue(state.draftSyncRosterIDs().isEmpty)
+    XCTAssertTrue(state.draftSyncNames(for: agents[0].id).isEmpty)
+    XCTAssertTrue(state.draftSyncChoices(for: agents[0]).allSatisfy { !$0.selected })
+  }
+
+  func testTheSameOwnerSnapshotRetainsTheExistingSync() throws {
+    let (state, agents) = try fixture(count: 2)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    apply(agents, to: state)
+    state.selectConversation(agents[0].id)
+    XCTAssertEqual(state.draftSyncRosterIDs(), Set(agents.map(\.id)))
+    XCTAssertEqual(state.draftSyncChoices(for: agents[0]).filter(\.selected).map(\.id), [agents[1].id])
+  }
+
+  private func staleChannelSeat(for conversation: OverlayConversation, in state: OverlayState) throws {
+    let owner = try XCTUnwrap(conversation.owner)
+    let stale = try XCTUnwrap(OverlayConversationOwner(row: [
+      "provider": owner.provider, "provider_session_id": owner.providerSessionID,
+      "lease_id": owner.leaseID, "channel": "7", "name": owner.name,
+    ]))
+    XCTAssertEqual(stale.id, owner.id, "The boundary is the channel coordinate, not a new session")
+    let index = try XCTUnwrap(state.draftGroupIndex(for: conversation.id))
+    let seat = try XCTUnwrap(state.conversationDraftGroups[index].participants[conversation.id])
+    state.conversationDraftGroups[index].participants[conversation.id] = OverlayDraftSyncMember(
+      owner: stale, proseAnchor: seat.proseAnchor, privateAttachments: seat.privateAttachments)
+  }
+
   // MARK: Draft microphone freezes Sync membership (Roman's pre-join leak)
 
   private final class MicrophoneFixture: ComposerCaptureControlling, @unchecked Sendable {
