@@ -829,6 +829,14 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
             finalizeRefused(session: origin.captureSession)
           }
         } else {
+          // A reused capture ID can carry a delayed close from its prior opening.
+          // Settle a predecessor's own receipt, but never retire a newer opening
+          // of this same session before the channel projection checks its fence.
+          if let openedAt = row["opened_at"] as? String,
+            let currentOpening = sessionOpenedAt[session], currentOpening != openedAt
+          {
+            return
+          }
           endedSessions.insert(session)
           // A predecessor close can settle its own receipt, never its successor's.
           finalizeRefused(

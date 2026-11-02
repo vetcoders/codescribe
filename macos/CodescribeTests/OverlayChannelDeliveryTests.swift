@@ -42,6 +42,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     defer { controller.stopIntercomPresentation() }
     let generation = state.captureGeneration
     controller.startIntercomPresentation()
+    let reconciledDesktop = store.load()
+    XCTAssertEqual(
+      reconciledDesktop.instances, desktop.instances,
+      "Initial tier measurement preserves saved cards")
     let windows = NSApp.windows.filter {
       $0 is OverlayIntercomPanel && !priorWindows.contains(ObjectIdentifier($0))
     }
@@ -70,7 +74,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertTrue(windows.allSatisfy(\.isVisible))
     controller.overlayPreferenceChanged()  // A rejected Off write still reads true.
     XCTAssertTrue(windows.allSatisfy(\.isVisible))
-    XCTAssertEqual(store.load(), desktop)
+    XCTAssertEqual(store.load(), reconciledDesktop)
     XCTAssertEqual(state.conversationDrafts["0"], "retained draft")
     XCTAssertEqual(state.captureGeneration, generation)
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
@@ -244,7 +248,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       onSelectConversation: { selected.append($0) })
     let display = roster.railPillDisplay(inbox, channel: nil)
     XCTAssertEqual(display.figure, "")
-    XCTAssertEqual(display.symbol, "tray")
+    XCTAssertEqual(display.symbol, "envelope")
     XCTAssertNil(display.dot, "the human has no agent presence status")
     XCTAssertTrue(display.selected)
     XCTAssertTrue(display.unread)
@@ -431,8 +435,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: store) }
     let image = store.appendingPathComponent("screenshot.png")
     let png = try XCTUnwrap(
-      Data(base64Encoded:
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN9kAAAAASUVORK5CYII="))
+      Data(
+        base64Encoded:
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN9kAAAAASUVORK5CYII="
+      ))
     try png.write(to: image)
     let imagePath = image.resolvingSymlinksInPath().path
     let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
@@ -2326,7 +2332,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let after = await reader.consumedMetadataBytes
     XCTAssertEqual(repeated, initial)
     XCTAssertEqual(
-      after, before, "The cache must retain bounded projections without retaining twelve MiB of payload")
+      after, before,
+      "The cache must retain bounded projections without retaining twelve MiB of payload")
   }
 
   func testLargePendingEvidencePreservesQueueChangesAndCanonicalMessageText() async throws {
@@ -2341,7 +2348,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let initial = try await reader.readSnapshot()
     XCTAssertEqual(initial.deliveries.first?.stage, .queued)
-    XCTAssertEqual(initial.conversations.first(where: { $0.owner?.leaseID == Fixture.leaseID })?.messages.map(\.text), ["Iwo"])
+    XCTAssertEqual(
+      initial.conversations.first(where: { $0.owner?.leaseID == Fixture.leaseID })?.messages.map(
+        \.text), ["Iwo"])
     let coldBytes = await reader.consumedMetadataBytes
     let coldOpens = await reader.metadataFileOpens
     for _ in 0..<3 {
@@ -2354,7 +2363,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(steadyOpens, coldOpens)
     try fixture.lease(pending: [])
     let changed = try await reader.readSnapshot()
-    XCTAssertEqual(changed.conversations.first(where: { $0.owner?.leaseID == Fixture.leaseID })?.messages.map(\.text), ["Iwo"])
+    XCTAssertEqual(
+      changed.conversations.first(where: { $0.owner?.leaseID == Fixture.leaseID })?.messages.map(
+        \.text), ["Iwo"])
     let changedOpens = await reader.metadataFileOpens
     XCTAssertGreaterThan(changedOpens, steadyOpens)
     let original = try Data(contentsOf: fixture.bus)
@@ -2915,7 +2926,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertFalse(header.contains("OverlayChannelStatusView("))
     let controls = try XCTUnwrap(
       view.range(of: "private func justifiedHeader(density: OverlayHeaderDensity)"))
-    XCTAssertTrue(view[controls.lowerBound...].contains("OverlayChannelStatusView("))
+    XCTAssertTrue(view[controls.lowerBound...].contains("channelStatusView"))
     XCTAssertFalse(header.contains("!state.isCollapsed"))
     let drag = try XCTUnwrap(header.range(of: "OverlayWindowDragRegion"))
     let glass = try XCTUnwrap(
@@ -2940,12 +2951,12 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     // The antenna belongs to the roster's 0 · All dot alone (Maciej,
     // 2026-10-17: "wyróżnić bardziej kanał ogólny"), never to the header.
     XCTAssertEqual(
-      status.components(separatedBy: "antenna.radiowaves").count - 1, 1,
+      status.components(separatedBy: "\"antenna.radiowaves.left.and.right\"").count - 1, 1,
       "one antenna in the status view: the shared channel's dot")
     let statusDot = try XCTUnwrap(status.range(of: "struct OverlayAgentStatusDot: View"))
     let dotEnd = try XCTUnwrap(
       status.range(of: "\n}\n", range: statusDot.upperBound..<status.endIndex))
-    let antenna = try XCTUnwrap(status.range(of: "antenna.radiowaves"))
+    let antenna = try XCTUnwrap(status.range(of: "\"antenna.radiowaves.left.and.right\""))
     XCTAssertTrue(
       statusDot.lowerBound < antenna.lowerBound && antenna.lowerBound < dotEnd.lowerBound,
       "the antenna is drawn by OverlayAgentStatusDot, not by the header")
@@ -4658,7 +4669,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     // 512 Characters would be 528+ scalars if truncated with `.prefix(512)`.
     let warningCluster = "\u{26A0}\u{FE0F}"
     let body = String(repeating: warningCluster, count: 20) + String(repeating: "a", count: 520)
-    let authorName = String(repeating: warningCluster, count: 10) + String(repeating: "b", count: 130)
+    let authorName =
+      String(repeating: warningCluster, count: 10) + String(repeating: "b", count: 130)
     let owner = OverlayConversationOwner(row: [
       "provider": "agy",
       "provider_session_id": "ses-1",
