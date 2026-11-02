@@ -74,6 +74,7 @@ struct CreatorPanel: View {
       VStack(spacing: 8) {
         AppearanceRow(model: model)
         SheetShadeRows(model: model)
+#if CHANNEL_nightly || CHANNEL_NIGHTLY
         SettingsControlRow(
           title: String(localized: "Intercom layout"),
           subtitle: String(
@@ -97,6 +98,7 @@ struct CreatorPanel: View {
           .labelsHidden()
           .accessibilityIdentifier("settings-overlay-intercom-layout")
         }
+#endif
       }
       .padding(.top, SettingsScale.headerGap)
 

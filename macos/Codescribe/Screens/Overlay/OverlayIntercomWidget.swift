@@ -1678,6 +1678,16 @@ private struct OverlayIntercomHeader: View {
         controller.restoreDockedLayout()
       }
     }
+    Button {
+      state.showAgentMonitor()
+    } label: {
+      Label {
+        Text("Agents")
+      } icon: {
+        Image(nsImage: OverlayHeaderGlyph.menuImage(OverlayHeaderGlyph.agents))
+      }
+    }
+    .accessibilityIdentifier("overlay-intercom-agents")
     Divider()
     mailboxMenuItem(
       broadcast, title: String(localized: "Shared conversation"),

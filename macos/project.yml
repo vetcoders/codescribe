@@ -127,9 +127,14 @@ targets:
           # compete with the installed Release application.
           PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe.dev
           LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
+          # Debug is the superset configuration used for test runs and String Catalog
+          # localization extraction; include CHANNEL_nightly so beta copy is extracted.
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) CHANNEL_nightly
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
           LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/release"
+          # Release uses the build channel (defaults to stable for release DMG, overridable to nightly).
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) CHANNEL_$(CS_BUILD_CHANNEL)
   CodescribeTests:
     type: bundle.unit-test
     platform: macOS
@@ -147,6 +152,11 @@ targets:
         SWIFT_VERSION: 6.0
         SWIFT_STRICT_CONCURRENCY: complete
         SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) CHANNEL_nightly
+        Release:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) CHANNEL_$(CS_BUILD_CHANNEL)
 # Without an explicit scheme the test bundle is unreachable: xcodegen emits no
 # scheme for bundle.unit-test targets, and old-style `-target` builds cannot
 # resolve SPM dependencies. `xcodebuild test -scheme Codescribe` is the entry.
