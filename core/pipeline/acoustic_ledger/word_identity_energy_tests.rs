@@ -562,7 +562,12 @@ fn cross_owner_correspondence_keeps_a_repeat_after_measured_quiet() {
         ),
     );
     assert_eq!(ledger.slots_of(&left).unwrap().len(), 1);
-    assert_eq!(ledger.slots_of(&right).unwrap().len(), 3);
+    assert_eq!(
+        ledger.slots_of(&right).unwrap().len(),
+        3,
+        "alternatives: {:?}",
+        ledger.slot_alternatives
+    );
     assert_eq!(ledger.conservation().residue(), 0);
 }
 
@@ -602,7 +607,12 @@ fn cross_owner_correspondence_needs_actual_decode_context() {
         ),
     );
     assert_eq!(ledger.slots_of(&left).unwrap().len(), 1);
-    assert_eq!(ledger.slots_of(&right).unwrap().len(), 3);
+    assert_eq!(
+        ledger.slots_of(&right).unwrap().len(),
+        3,
+        "alternatives: {:?}",
+        ledger.slot_alternatives
+    );
     assert_eq!(ledger.conservation().residue(), 0);
 }
 

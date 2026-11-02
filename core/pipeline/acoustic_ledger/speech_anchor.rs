@@ -1287,13 +1287,6 @@ impl AcousticLedger {
                 identities.push(WordAnchorIdentity::from_anchors(set, pin.declared()));
             }
         }
-        let repartitions_source = |index: usize, source: &WordSlot| {
-            pins.iter().enumerate().any(|(other_index, other)| {
-                other_index != index
-                    && other.sample_start < source.sample_end
-                    && source.sample_start < other.sample_end
-            })
-        };
         let dt_partition_preflight = pins.len() == 1 && self.dt_partition_preflight(observation);
         let dt_crosses_whisper = |index: usize| {
             dt_partition_preflight
@@ -1306,6 +1299,58 @@ impl AcousticLedger {
                     })
                     .count()
                     > 1
+        };
+        // A later sequence position authenticates the right edge of an
+        // independent prefix. Resolve that producer-clock overshoot before
+        // testing whether siblings repartition a held word; otherwise the
+        // raw overlap prevents the very correspondence that bounds it.
+        let first_in_owner =
+            correspondence
+                .iter()
+                .copied()
+                .enumerate()
+                .find_map(|(index, source)| {
+                    source
+                        .filter(|held| {
+                            &held.observation.occurrence == owner
+                                && (observation.producer != ObservationProducer::Whisper
+                                    || held.producer != ObservationProducer::Apple)
+                                && !dt_crosses_whisper(index)
+                        })
+                        .map(|held| (index, held.sample_start))
+                });
+        let mut declared_ranges = pins
+            .iter()
+            .map(|pin| {
+                let (start, end) = pin.declared();
+                (start.max(owner.sample_start), end.min(owner.sample_end))
+            })
+            .collect::<Vec<_>>();
+        if let Some((first_index, first_start)) = first_in_owner {
+            for index in 0..first_index {
+                let (start, end) = declared_ranges[index];
+                if correspondence[index].is_some() || !(start < first_start && first_start < end) {
+                    continue;
+                }
+                let prefix_anchors = anchors
+                    .iter()
+                    .filter(|anchor| start < anchor.sample_end && anchor.sample_start < first_start)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !prefix_anchors.is_empty() {
+                    declared_ranges[index].1 = first_start;
+                    identities[index] =
+                        WordAnchorIdentity::from_anchors(prefix_anchors, (start, first_start));
+                }
+            }
+        }
+        let repartitions_source = |index: usize, source: &WordSlot| {
+            declared_ranges
+                .iter()
+                .enumerate()
+                .any(|(other_index, (start, end))| {
+                    other_index != index && *start < source.sample_end && source.sample_start < *end
+                })
         };
         for (index, held) in correspondence.iter().enumerate() {
             if let Some(held) = held {
@@ -1324,20 +1369,6 @@ impl AcousticLedger {
                 }
             }
         }
-        let first_in_owner = correspondence
-            .iter()
-            .copied()
-            .enumerate()
-            .find_map(|(j, held)| {
-                held.filter(|source| {
-                    &source.observation.occurrence == owner
-                        && (observation.producer != ObservationProducer::Whisper
-                            || source.producer != ObservationProducer::Apple)
-                        && !repartitions_source(j, source)
-                        && !dt_crosses_whisper(j)
-                })
-                .map(|source| (j, source.sample_start))
-            });
         let mut output = Vec::new();
         for (index, pin) in pins.iter().enumerate() {
             if let Some(source) =
@@ -1385,39 +1416,10 @@ impl AcousticLedger {
                     && !repartitions_source(index, source)
                     && !dt_crosses_whisper(index)
             });
-            let (sample_start, mut sample_end) = inherited_geometry.map_or_else(
-                || {
-                    let (start, end) = pin.declared();
-                    (start.max(owner.sample_start), end.min(owner.sample_end))
-                },
-                |held| (held.sample_start, held.sample_end),
-            );
-            if inherited_geometry.is_none() {
-                if let Some((first_idx, first_start)) = first_in_owner {
-                    if index < first_idx
-                        && sample_start < first_start
-                        && first_start < sample_end
-                        && anchors.iter().any(|anchor| {
-                            sample_start < anchor.sample_end && anchor.sample_start < first_start
-                        })
-                    {
-                        sample_end = first_start;
-                        let prefix_anchors = anchors
-                            .iter()
-                            .filter(|anchor| {
-                                sample_start < anchor.sample_end && anchor.sample_start < sample_end
-                            })
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        if !prefix_anchors.is_empty() {
-                            identities[index] = WordAnchorIdentity::from_anchors(
-                                prefix_anchors,
-                                (sample_start, sample_end),
-                            );
-                        }
-                    }
-                }
-            }
+            let (sample_start, sample_end) = inherited_geometry
+                .map_or(declared_ranges[index], |held| {
+                    (held.sample_start, held.sample_end)
+                });
             let slot = WordSlot {
                 sample_start,
                 sample_end,
