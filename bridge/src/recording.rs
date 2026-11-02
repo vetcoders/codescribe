@@ -414,6 +414,22 @@ pub struct CsPresentationStatusEvent {
     pub calibration_version: Option<String>,
 }
 
+/// UTF-16 range within ephemeral canvas text for an uncommitted (pending) fragment.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsPendingRange {
+    pub utf16_start: u32,
+    pub utf16_end: u32,
+}
+
+impl From<codescribe::presentation::emitter::PendingRange> for CsPendingRange {
+    fn from(value: codescribe::presentation::emitter::PendingRange) -> Self {
+        Self {
+            utf16_start: value.utf16_start,
+            utf16_end: value.utf16_end,
+        }
+    }
+}
+
 /// Capture-bound ephemeral paint. No document or delivery mutation is exposed.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct CsCompactProjection {
@@ -427,6 +443,8 @@ pub struct CsCompactProjection {
     /// Read-only unanchored text beside the canvas, in PCM order. Swift paints
     /// it as secondary text; it is never canvas, Bus, or delivery bytes.
     pub evidence: Vec<CsUnanchoredEvidence>,
+    #[uniffi(default = [])]
+    pub pending_ranges: Vec<CsPendingRange>,
 }
 
 /// One unanchored text and the capture range it belongs to. `reason` is the
@@ -456,6 +474,11 @@ impl From<codescribe::presentation::emitter::CompactProjection> for CsCompactPro
                     text: item.text,
                     reason: item.reason,
                 })
+                .collect(),
+            pending_ranges: value
+                .pending_ranges
+                .into_iter()
+                .map(Into::into)
                 .collect(),
         }
     }

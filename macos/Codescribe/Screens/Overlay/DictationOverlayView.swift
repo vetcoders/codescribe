@@ -1688,6 +1688,7 @@ struct DictationOverlayView: View {
       LiveTranscriptTextView(
         text: state.canvasText,
         uncertainWords: state.canvasUncertainWords,
+        pendingRanges: state.canvasPendingRanges,
         isEditable: state.isTranscriptEditable && !state.isCollapsed,
         appearance: palette.appearance,
         showsDiagnostics: showsDiagnostics,

@@ -51,6 +51,13 @@ pub type ApplePreviewObserver = Arc<dyn Fn(&str) + Send + Sync>;
 /// Read-only measured speech edges from this emitter's opened capture.
 pub type SpeechActivityObserver = Arc<dyn Fn(&SidebandEvidence) + Send + Sync>;
 
+/// UTF-16 range within ephemeral canvas text for an uncommitted (pending) fragment.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingRange {
+    pub utf16_start: u32,
+    pub utf16_end: u32,
+}
+
 /// Passive paint from one opened capture. Sequence 1 binds the display before
 /// any transcription event; later values replace paint, never document truth.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -62,6 +69,9 @@ pub struct CompactProjection {
     /// their own paint boundary; no consumer may use it as committed delivery.
     pub text: String,
     pub degraded: bool,
+    /// Explicit in-progress text spans in UTF-16 coordinates within `text`.
+    #[serde(default)]
+    pub pending_ranges: Vec<PendingRange>,
     /// What the cursor dot says about the voice right now.
     #[serde(default)]
     pub voice: CursorVoice,
@@ -1047,6 +1057,7 @@ fn coalesced_overlay_document(
 struct PaintedCanvas {
     text: String,
     preview_only_words: usize,
+    pending_ranges: Vec<PendingRange>,
     visible_words: Vec<VisibleWord>,
     committed_sources: BTreeMap<OccurrenceIdentity, CommittedPaintSource>,
     untimed_final_words: usize,
@@ -1620,13 +1631,41 @@ impl TranscriptReducer {
     fn read_paint(&self) -> PaintedCanvas {
         let fragments = self.read_paint_fragments();
         let mut paint = PaintedCanvas::default();
+        let mut utf16_len = 0usize;
         for (_, text, source, is_evidence) in fragments {
             for member in source.committed_members() {
                 paint
                     .committed_sources
                     .insert(member.occurrence.clone(), member.clone());
             }
-            append_exact_fragment(&mut paint.text, &text);
+            let needs_space = !paint.text.is_empty()
+                && !text.is_empty()
+                && !paint.text.ends_with(char::is_whitespace)
+                && !text.starts_with(char::is_whitespace)
+                && !text.starts_with(". ");
+            if needs_space {
+                paint.text.push(' ');
+                utf16_len += 1;
+            }
+            let start_utf16 = utf16_len as u32;
+            paint.text.push_str(&text);
+            let fragment_utf16_len = text.encode_utf16().count();
+            utf16_len += fragment_utf16_len;
+            let end_utf16 = utf16_len as u32;
+
+            if is_evidence && end_utf16 > start_utf16 {
+                if let Some(last) = paint.pending_ranges.last_mut()
+                    && (last.utf16_end == start_utf16
+                        || (needs_space && last.utf16_end == start_utf16 - 1))
+                {
+                    last.utf16_end = end_utf16;
+                } else {
+                    paint.pending_ranges.push(PendingRange {
+                        utf16_start: start_utf16,
+                        utf16_end: end_utf16,
+                    });
+                }
+            }
             if is_evidence {
                 paint.preview_only_words += text.split_whitespace().count();
             }
@@ -3941,6 +3980,12 @@ impl VisibleCanvasSnapshot {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+struct StoredCursorPaint {
+    text: String,
+    pending_ranges: Vec<PendingRange>,
+}
+
 /// All target mutations are serialized through one mpsc worker, guaranteeing
 /// that overlay deltas and the shared transcript snapshot see identical order.
 pub struct PresentationEmitter {
@@ -3953,7 +3998,7 @@ pub struct PresentationEmitter {
     cursor_sequence: std::sync::Mutex<u64>,
     cursor_integrity: std::sync::Mutex<Option<SpeechIntegrity>>,
     /// Last full paint, not a document or independently reconstructed delta.
-    cursor_paint: std::sync::Mutex<String>,
+    cursor_paint: std::sync::Mutex<StoredCursorPaint>,
     active_presentation: Arc<std::sync::Mutex<bool>>,
     cmd_tx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<EmitterCmd>>>,
     cmd_handle: Option<tokio::task::JoinHandle<()>>,
@@ -4317,7 +4362,7 @@ impl PresentationEmitter {
             cursor_capture: std::sync::OnceLock::new(),
             cursor_sequence: std::sync::Mutex::new(0),
             cursor_integrity: std::sync::Mutex::new(None),
-            cursor_paint: std::sync::Mutex::new(String::new()),
+            cursor_paint: std::sync::Mutex::new(StoredCursorPaint::default()),
             active_presentation,
             #[cfg(test)]
             paint_commands: std::sync::Mutex::new(Vec::new()),
@@ -4395,10 +4440,17 @@ impl PresentationEmitter {
     }
 
     fn paint_cursor(&self, rendered: &str) {
+        self.paint_cursor_with_ranges(rendered, Vec::new());
+    }
+
+    fn paint_cursor_with_ranges(&self, rendered: &str, pending_ranges: Vec<PendingRange>) {
         if self.cursor_observer.is_none() {
             return;
         }
-        *self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner()) = rendered.to_owned();
+        *self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner()) = StoredCursorPaint {
+            text: rendered.to_owned(),
+            pending_ranges,
+        };
         self.repaint_cursor();
     }
 
@@ -4431,7 +4483,9 @@ impl PresentationEmitter {
             )
         });
         let voice = CursorVoice::from_integrity(integrity.as_ref());
-        let paint = self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner());
+        let stored_paint = self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner());
+        let paint_text = stored_paint.text.clone();
+        let pending_ranges = stored_paint.pending_ranges.clone();
         // Snapshot under the sequence lock so a later sequence can never carry
         // older evidence. Callers never hold the reducer lock while painting.
         let state = self
@@ -4469,12 +4523,17 @@ impl PresentationEmitter {
                 sequence: next,
                 // Earlier recovery debt must not hide words arriving now. Amber
                 // stays authoritative until that debt is actually resolved.
-                text: if degraded && paint.is_empty() {
+                text: if degraded && paint_text.is_empty() {
                     "…".into()
                 } else {
-                    paint.clone()
+                    paint_text
                 },
                 degraded,
+                pending_ranges: if degraded && stored_paint.text.is_empty() {
+                    Vec::new()
+                } else {
+                    pending_ranges
+                },
                 voice,
                 evidence,
             })
@@ -4517,7 +4576,7 @@ impl PresentationEmitter {
                 *paint = canvas.text;
                 #[cfg(test)]
                 self.paint_commands.lock().unwrap().push(paint.clone());
-                self.paint_cursor(paint);
+                self.paint_cursor_with_ranges(paint, canvas.pending_ranges);
             }
             EmitterCmd::PaintBarrier(_) | EmitterCmd::Finish => {}
         }

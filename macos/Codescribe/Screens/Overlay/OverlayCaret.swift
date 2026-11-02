@@ -8,12 +8,14 @@ struct TranscriptActivityText: NSViewRepresentable {
   let text: String
   let fontSize: CGFloat
   let color: Color
+  let active: Bool
   private let utf8Identity: [UInt8]
 
-  init(text: String, fontSize: CGFloat, color: Color) {
+  init(text: String, fontSize: CGFloat, color: Color, active: Bool = true) {
     self.text = text
     self.fontSize = fontSize
     self.color = color
+    self.active = active
     self.utf8Identity = Array(text.utf8)
   }
 
@@ -43,7 +45,7 @@ struct TranscriptActivityText: NSViewRepresentable {
         LiveTranscriptSelectionPolicy.preservedRange(selection, updatedLength: incoming.length))
     }
     view.typingAttributes = attributes
-    view.setTranscriptActivity(true)
+    view.setTranscriptActivity(active, subdued: !text.isEmpty)
     view.needsLayout = true
   }
 

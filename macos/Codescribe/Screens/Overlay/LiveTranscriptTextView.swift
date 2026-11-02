@@ -98,6 +98,8 @@ struct LiveTranscriptTextView: NSViewRepresentable {
   /// A6 uncertain (or lexicon-rewritten) words to paint. Ranges are UTF-16
   /// into `text`, already clamped and edge-trimmed by `OverlayState`.
   let uncertainWords: [OverlayUncertainWord]
+  /// In-progress text ranges to dim slightly until settled. Settled text retains full saturation.
+  let pendingRanges: [NSRange]
   let isEditable: Bool
   let appearance: OverlayAppearance
   /// Power-mode diagnostics: the popover shows the raw source-scale value.
@@ -114,6 +116,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
   init(
     text: String,
     uncertainWords: [OverlayUncertainWord] = [],
+    pendingRanges: [NSRange] = [],
     isEditable: Bool = false,
     appearance: OverlayAppearance,
     showsDiagnostics: Bool = false,
@@ -128,6 +131,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     self.text = text
     self.utf8Identity = Array(text.utf8)
     self.uncertainWords = uncertainWords
+    self.pendingRanges = pendingRanges
     self.isEditable = isEditable
     self.appearance = appearance
     self.showsDiagnostics = showsDiagnostics
@@ -245,10 +249,11 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     // The uncertain-word signature is part of the attribute diff: a range
     // change with identical bytes must never leave stale paint behind.
     let sameUncertain = coordinator.renderedUncertainWords == uncertainWords
+    let samePending = coordinator.renderedPendingRanges == pendingRanges
     // While the caret is in the canvas the bytes we are handed are the bytes
     // the user just typed; repainting storage would throw the caret away.
     if sameBytes, coordinator.isEditing { return }
-    guard !sameBytes || !sameAttributes || !sameUncertain else { return }
+    guard !sameBytes || !sameAttributes || !sameUncertain || !samePending else { return }
 
     let previousSelection = textView.selectedRange()
     let wasFollowingTail = coordinator.followsTail
@@ -257,7 +262,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     let previous = textView.string as NSString
     let incoming = text as NSString
     let palette = OverlayAppearancePalette.resolve(appearance)
-    if sameAttributes, sameUncertain {
+    if sameAttributes, sameUncertain, samePending {
       // Preserve the recorded prefix in TextKit. Replacing the whole storage
       // invalidates every paragraph on each live append or open-tail revision.
       // Compare UTF-16 units, not Characters: canonical Unicode equivalence
@@ -277,18 +282,21 @@ struct LiveTranscriptTextView: NSViewRepresentable {
         string: incoming.substring(from: prefix), attributes: attributes)
       textView.textStorage?.replaceCharacters(
         in: NSRange(location: prefix, length: previous.length - prefix), with: tail)
-      // The replaced tail carried base attributes only; re-apply the uncertain
+      // The replaced tail carried base attributes only; re-apply the pending and uncertain
       // ranges that intersect it. Ranges before the prefix kept their paint.
+      applyPendingAttributes(to: textView, palette: palette, pendingRanges: pendingRanges)
       applyUncertainAttributes(to: textView, palette: palette, tailStart: prefix)
     } else {
-      // Base attributes or the uncertain ranges themselves changed: repaint
-      // the whole storage so stale uncertainty paint cannot survive a revision.
+      // Base attributes, pending range, or the uncertain ranges themselves changed: repaint
+      // the whole storage so stale paint cannot survive a revision.
       textView.textStorage?.setAttributedString(
         NSAttributedString(string: text, attributes: attributes))
+      applyPendingAttributes(to: textView, palette: palette, pendingRanges: pendingRanges)
       applyUncertainAttributes(to: textView, palette: palette, tailStart: nil)
     }
     coordinator.renderedAttributes = attributes
     coordinator.renderedUncertainWords = uncertainWords
+    coordinator.renderedPendingRanges = pendingRanges
 
     let updatedLength = incoming.length
     if previousSelection.length > 0 || !wasFollowingTail {
@@ -378,6 +386,24 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     }
   }
 
+  private func applyPendingAttributes(
+    to textView: LiveTranscriptNativeTextView,
+    palette: OverlayAppearancePalette,
+    pendingRanges: [NSRange]
+  ) {
+    guard let storage = textView.textStorage, !pendingRanges.isEmpty else { return }
+    let length = storage.length
+    let pendingColor = palette.mutedText.nsColor
+    for pendingRange in pendingRanges {
+      let start = min(max(0, pendingRange.location), length)
+      let end = min(max(start, NSMaxRange(pendingRange)), length)
+      guard end > start else { continue }
+      // Text in progress is slightly dimmed; settled text regains full saturation
+      storage.addAttribute(
+        .foregroundColor, value: pendingColor, range: NSRange(location: start, length: end - start))
+    }
+  }
+
   @MainActor
   final class Coordinator: NSObject, NSTextViewDelegate {
     private(set) var scrollFollowState = LiveTranscriptScrollFollowState()
@@ -386,6 +412,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     var isEditing = false
     var renderedAttributes: [NSAttributedString.Key: Any]?
     var renderedUncertainWords: [OverlayUncertainWord]?
+    var renderedPendingRanges: [NSRange]?
     var uncertainWords: [OverlayUncertainWord] = []
     var showsDiagnostics = false
     var popoverPalette = OverlayAppearancePalette.dark
@@ -627,8 +654,11 @@ final class LiveTranscriptNativeTextView: NSTextView {
   /// a character, attributed-string attachment, selection or document revision.
   func setTranscriptActivity(_ active: Bool, subdued: Bool = false) {
     guard active else {
-      activityUnderline?.removeFromSuperview()
-      activityUnderline = nil
+      if activityUnderline != nil {
+        activityUnderline?.removeFromSuperview()
+        activityUnderline = nil
+        needsLayout = true
+      }
       return
     }
     if let underline = activityUnderline {

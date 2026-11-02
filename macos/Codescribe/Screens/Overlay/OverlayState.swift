@@ -3829,10 +3829,49 @@ final class OverlayState {
       && (transcribing || mode == .finalizing || (!recording && dictationClockOpen))
   }
 
-  /// The visible dictation canvas stays ready even before a take starts.
-  /// This decoration conveys readiness, not microphone or engine activity.
+  /// True while dictation capture or delayed finalization is actively transcribing.
+  /// The underscore marks active transcription and disappears when text settles.
+  var isTranscribingDictationActive: Bool {
+    guard !terminal,
+      mode != .error,
+      mode != .noSpeech,
+      mode != .coverageRefused,
+      errorMessage == nil,
+      coverageRefusalNotice == nil
+    else { return false }
+    return recording || warmingUp || transcribing || isFinalizingDictation || isFinalPass
+  }
+
+  /// Active transcription marker (underscore): marks active transcription activity
+  /// and clears after lifecycle completion (terminal success, no-speech, refusal,
+  /// cancellation, or error). It stays false when idle.
   var animatesTranscriptCaret: Bool {
-    !isCollapsed && showsMyDictation && !isEditingTranscript
+    !isCollapsed && showsMyDictation && !isEditingTranscript && archivedTranscript == nil
+      && isTranscribingDictationActive
+  }
+
+  /// Explicit pending text spans in UTF-16 coordinates within `canvasText`.
+  ///
+  /// Text still in progress is slightly dimmed; settled text regains full saturation.
+  /// Derived presentations (like live formatted presentations, revision drafts,
+  /// or archived transcripts) do not project raw uncommitted ranges.
+  var canvasPendingRanges: [NSRange] {
+    guard !terminal, !finalized,
+      recording || transcribing,
+      archivedTranscript == nil,
+      !isRevisionDraftDirty,
+      !showsLiveFormattedPresentation,
+      let compact = compactProjection
+    else { return [] }
+
+    let textLength = (compact.text as NSString).length
+    return compact.pendingRanges.compactMap { range in
+      let start = Int(range.utf16Start)
+      let end = Int(range.utf16End)
+      guard start >= 0, end > start, start < textLength else { return nil }
+      let safeEnd = min(end, textLength)
+      return NSRange(location: start, length: safeEnd - start)
+    }
   }
 
   /// Frozen durations stay readable without scheduling another render tick.
