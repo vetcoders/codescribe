@@ -1556,39 +1556,7 @@ private struct OverlayIntercomHeader: View {
       width: controller.groupWidth, paging: controller.headerNeedsPaging)
     HStack(spacing: IntercomHeaderMetrics.spacing) {
       Menu {
-        // Frequent actions sit on the first menu. Saved conversations stays
-        // one named submenu; it is a list, not a layout command.
-        Button(
-          controller.presentation.folded
-            ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom")
-        ) { controller.toggleGroup() }
-        Button("Dock all agents", systemImage: "rectangle.stack") { controller.dockAll() }
-          .accessibilityIdentifier("overlay-intercom-dock-all")
-        if controller.canRestoreDockedLayout {
-          Button("Restore window layout", systemImage: "arrow.uturn.backward") {
-            controller.restoreDockedLayout()
-          }
-        }
-        Divider()
-        mailboxMenuItem(
-          broadcast, title: String(localized: "Shared conversation"),
-          symbol: "bubble.left.and.bubble.right", identifier: "overlay-intercom-all")
-        mailboxMenuItem(
-          inbox, title: String(localized: "Your Inbox"), symbol: "envelope",
-          identifier: "overlay-intercom-inbox")
-        let closed = controller.closedInstances
-        if !closed.isEmpty {
-          Divider()
-          Menu("Saved conversations") {
-            ForEach(closed) { instance in
-              Button {
-                controller.reopenInstance(instance.id)
-              } label: {
-                Text(verbatim: instance.displayTitle)
-              }
-            }
-          }
-        }
+        intercomMenuActions(broadcast: broadcast, inbox: inbox)
       } label: {
         Image(systemName: "circle.grid.2x2.fill")
           .csFont(10, .semibold)
@@ -1688,6 +1656,48 @@ private struct OverlayIntercomHeader: View {
         controller.presentation.folded
           ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom"))
     ) { controller.toggleGroup() }
+    .contextMenu {
+      intercomMenuActions(broadcast: broadcast, inbox: inbox)
+    }
+  }
+
+  @ViewBuilder
+  private func intercomMenuActions(
+    broadcast: OverlayConversation?, inbox: OverlayConversation?
+  ) -> some View {
+    // Frequent actions sit on the first menu. Saved conversations stays
+    // one named submenu; it is a list, not a layout command.
+    Button(
+      controller.presentation.folded
+        ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom")
+    ) { controller.toggleGroup() }
+    Button("Dock all agents", systemImage: "rectangle.stack") { controller.dockAll() }
+      .accessibilityIdentifier("overlay-intercom-dock-all")
+    if controller.canRestoreDockedLayout {
+      Button("Restore window layout", systemImage: "arrow.uturn.backward") {
+        controller.restoreDockedLayout()
+      }
+    }
+    Divider()
+    mailboxMenuItem(
+      broadcast, title: String(localized: "Shared conversation"),
+      symbol: "bubble.left.and.bubble.right", identifier: "overlay-intercom-all")
+    mailboxMenuItem(
+      inbox, title: String(localized: "Your Inbox"), symbol: "envelope",
+      identifier: "overlay-intercom-inbox")
+    let closed = controller.closedInstances
+    if !closed.isEmpty {
+      Divider()
+      Menu("Saved conversations") {
+        ForEach(closed) { instance in
+          Button {
+            controller.reopenInstance(instance.id)
+          } label: {
+            Text(verbatim: instance.displayTitle)
+          }
+        }
+      }
+    }
   }
 
   private func mailboxMenuItem(
@@ -1943,7 +1953,7 @@ private struct OverlayIntercomCard: View {
     return identity.digit == "0" || identity.isHumanInbox || conversation.owner != nil
   }
 
-  /// Dragging a collapsed row moves the group; a click still unrolls it.
+  /// Dragging a row moves the group; a click toggles its expansion.
   private var moveGesture: some Gesture {
     DragGesture(minimumDistance: 4)
       .onChanged { _ in controller.moveGroup() }
@@ -2299,7 +2309,11 @@ private struct OverlayIntercomCard: View {
               palette: palette)
           }
           Button {
-            controller.expand(identity)
+            if expanded {
+              controller.close(identity)
+            } else {
+              controller.expand(identity)
+            }
           } label: {
             HStack(spacing: 6) {
               Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
@@ -2334,9 +2348,12 @@ private struct OverlayIntercomCard: View {
               : speaking ? palette.primaryText.color : palette.bodyText.color,
             hoverColor: inactive ? palette.mutedText.color : palette.primaryText.color
           )
-          .disabled(!canOpenConversation)
+          .disabled(!expanded && !canOpenConversation)
           .modifier(OverlayDetachedRosterValue(detached: detached))
-          .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
+          .accessibilityLabel(
+            (expanded ? String(localized: "Collapse into the group") : String(localized: "Open conversation"))
+              + ": " + name
+          )
           .accessibilityActions {
             if identity.canExpand {
               Button("Detach conversation") { controller.detach(identity) }
@@ -2349,7 +2366,7 @@ private struct OverlayIntercomCard: View {
         .opacity(detached ? 0.72 : 1)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
-        .simultaneousGesture(moveGesture, including: expanded ? .subviews : .all)
+        .simultaneousGesture(moveGesture)
         if current, let conversation, state.hasSynchronizedDraft(conversation.id) {
           OverlayIntercomSyncIndicator(
             state: state, conversationID: conversation.id, palette: palette)
@@ -3097,12 +3114,18 @@ private struct OverlayIntercomInstanceCard: View {
           .accessibilityLabel(String(localized: "Restore fiszka") + ": " + instance.name)
           .allowsHitTesting(false)
         } else {
-          // Glyphs would otherwise take the hit from the drag surface below:
-          // the hosting view hands only text and buttons to SwiftUI.
-          nameRow
-            .foregroundStyle(speaking ? palette.primaryText.color : palette.bodyText.color)
-            .allowsHitTesting(false)
-            .accessibilityLabel(Text(verbatim: instance.name))
+          Button {
+            controller.setInstanceMinimized(instanceID, true)
+          } label: {
+            nameRow
+          }
+          .buttonStyle(.plain)
+          .conversationActionHover(
+            restingColor: speaking ? palette.primaryText.color : palette.bodyText.color,
+            hoverColor: palette.primaryText.color
+          )
+          .accessibilityLabel(String(localized: "Collapse") + ": " + instance.name)
+          .allowsHitTesting(false)
         }
       }
       // The client focus button follows the name cluster, before sync and
@@ -3123,23 +3146,6 @@ private struct OverlayIntercomInstanceCard: View {
             palette: palette,
             open: open, speaking: speaking, shared: layout.controls.slots == 1)
         }
-      }
-      // Mini rests with the name, activity and the audio pair (Astra):
-      // clicking the fiszka itself restores it, so no extra Restore button.
-      if !mini {
-        Button {
-          controller.setInstanceMinimized(instanceID, true)
-        } label: {
-          Label("Minimize", systemImage: "minus")
-            .labelStyle(.iconOnly)
-            .frame(width: 22 * max(1, scale), height: 30 * max(1, scale))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .conversationActionHover(
-          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-        )
-        .accessibilityIdentifier("overlay-intercom-instance-mini-\(instance.digit)")
       }
       // The X keeps a fixed place so the audio slot never moves: a hover
       // only changes its visibility, never the row's geometry (Astra, V1 —
@@ -3190,7 +3196,7 @@ private struct OverlayIntercomInstanceCard: View {
     .background(
       OverlayIntercomDragHandle(
         onClick: {
-          if mini { controller.setInstanceMinimized(instanceID, false) }
+          controller.setInstanceMinimized(instanceID, !mini)
         },
         onDrag: { controller.beginInstanceDrag(instanceID) },
         onDragEnded: { controller.finishInstanceDrag() }, cursorHint: false)
@@ -3225,7 +3231,7 @@ private struct OverlayIntercomInstanceCard: View {
   {
     let metrics = IntercomContentMetrics(
       names: [instance.name], digits: [instance.displayDigit], scale: scale)
-    let windowSlots = (instance.minimized ? 26 : 48) * max(1, scale)
+    let windowSlots = 26 * max(1, scale)
     let width = CGFloat(instance.width) - windowSlots
     let height = instance.minimized ? metrics.iconSide : CGFloat(instance.height)
     return (metrics.tier(width: width, cardHeight: height), metrics.rowControls(width: width))
@@ -3235,7 +3241,7 @@ private struct OverlayIntercomInstanceCard: View {
     let metrics = IntercomContentMetrics(
       names: [instance.name], digits: [instance.displayDigit], scale: scale)
     return metrics.audioFooterHeight(
-      width: CGFloat(instance.width) - 48 * max(1, scale), cardHeight: CGFloat(instance.height))
+      width: CGFloat(instance.width) - 26 * max(1, scale), cardHeight: CGFloat(instance.height))
   }
 
 }
