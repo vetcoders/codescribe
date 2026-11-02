@@ -1063,6 +1063,25 @@ codescribe transcribe --apple --inspect --raw --no-bus --no-truth recording.wav
 codescribe transcribe --whisper --inspect --raw --no-bus --no-truth recording.wav
 ```
 
+## Pending canvas paint
+
+`TranscriptReducer::read_paint` assembles ephemeral canvas bytes once and records
+`CompactProjection.pending_ranges` at the same append boundaries. Each range is
+an exclusive-end UTF-16 interval from the existing uncommitted paint provenance.
+The vector permits pending evidence between committed fragments; neither a text
+prefix nor word equality determines commitment. Text, capture identity, sequence
+and ranges cross the compact projection together (`CsPendingRange` in the bridge).
+
+The native canvas dims only these ranges. Settling can restore full ink while
+leaving every text byte unchanged. Invalid or partial composed-character ranges
+are ignored. Styling does not edit selection, copied text, the transcript document,
+Bus events or delivery. Derived presentations and archived/edited text do not
+borrow raw paint offsets. Pending paint is independent of acoustic confidence.
+
+The underscore marks active dictation transcription, including preparation and
+outstanding finalization. Idle and terminal success, error, no-speech or coverage
+refusal remove it; a late event from a retired capture cannot settle a newer one.
+
 ## Word confidence (A6, 2026-09-30)
 
 Every word pin may carry **raw per-word acoustic confidence** from the engine
