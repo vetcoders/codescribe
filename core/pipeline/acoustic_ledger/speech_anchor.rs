@@ -524,9 +524,19 @@ impl AcousticLedger {
             confidence: pin.confidence,
             surface_rewritten: pin.surface_rewritten,
         };
+        let first_in_owner = correspondence
+            .iter()
+            .copied()
+            .enumerate()
+            .find_map(|(j, index)| {
+                index
+                    .map(|idx| &held[idx])
+                    .filter(|source| source.observation.occurrence == owner)
+                    .map(|source| (j, source.sample_start))
+            });
         let mut output = Vec::with_capacity(words.len());
         let mut refused = Vec::new();
-        for (pin, index) in words.into_iter().zip(correspondence) {
+        for (i, (pin, index)) in words.into_iter().zip(correspondence).enumerate() {
             match index.map(|index| &held[index]) {
                 Some(source) if source.observation.occurrence != owner => {
                     refused.push((declared(pin), source.clone()));
@@ -539,7 +549,27 @@ impl AcousticLedger {
                     },
                     pin,
                 )),
-                None => output.push((declared(pin), pin)),
+                None => {
+                    let mut slot = declared(pin);
+                    if let Some((first_idx, first_start)) = first_in_owner {
+                        let over_speech = self.speech_evidence.as_ref().is_some_and(|evidence| {
+                            evidence.ranges().iter().any(|range| {
+                                range.session == owner.session
+                                    && range.capture_epoch == owner.capture_epoch
+                                    && range.sample_start < first_start
+                                    && slot.sample_start < range.sample_end
+                            })
+                        });
+                        if i < first_idx
+                            && slot.sample_start < first_start
+                            && first_start < slot.sample_end
+                            && over_speech
+                        {
+                            slot.sample_end = first_start;
+                        }
+                    }
+                    output.push((slot, pin));
+                }
             }
         }
         for (word, source) in refused {
@@ -1294,6 +1324,20 @@ impl AcousticLedger {
                 }
             }
         }
+        let first_in_owner = correspondence
+            .iter()
+            .copied()
+            .enumerate()
+            .find_map(|(j, held)| {
+                held.filter(|source| {
+                    &source.observation.occurrence == owner
+                        && (observation.producer != ObservationProducer::Whisper
+                            || source.producer != ObservationProducer::Apple)
+                        && !repartitions_source(j, source)
+                        && !dt_crosses_whisper(j)
+                })
+                .map(|source| (j, source.sample_start))
+            });
         let mut output = Vec::new();
         for (index, pin) in pins.iter().enumerate() {
             if let Some(source) =
@@ -1341,13 +1385,39 @@ impl AcousticLedger {
                     && !repartitions_source(index, source)
                     && !dt_crosses_whisper(index)
             });
-            let (sample_start, sample_end) = inherited_geometry.map_or_else(
+            let (sample_start, mut sample_end) = inherited_geometry.map_or_else(
                 || {
                     let (start, end) = pin.declared();
                     (start.max(owner.sample_start), end.min(owner.sample_end))
                 },
                 |held| (held.sample_start, held.sample_end),
             );
+            if inherited_geometry.is_none() {
+                if let Some((first_idx, first_start)) = first_in_owner {
+                    if index < first_idx
+                        && sample_start < first_start
+                        && first_start < sample_end
+                        && anchors.iter().any(|anchor| {
+                            sample_start < anchor.sample_end && anchor.sample_start < first_start
+                        })
+                    {
+                        sample_end = first_start;
+                        let prefix_anchors = anchors
+                            .iter()
+                            .filter(|anchor| {
+                                sample_start < anchor.sample_end && anchor.sample_start < sample_end
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if !prefix_anchors.is_empty() {
+                            identities[index] = WordAnchorIdentity::from_anchors(
+                                prefix_anchors,
+                                (sample_start, sample_end),
+                            );
+                        }
+                    }
+                }
+            }
             let slot = WordSlot {
                 sample_start,
                 sample_end,
