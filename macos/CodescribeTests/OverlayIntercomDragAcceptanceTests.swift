@@ -89,6 +89,51 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     }
   }
 
+  func testDockedTitleClickExpandsAndThenCollapsesTheSameCard() throws {
+    let rig = try Rig()
+    defer { rig.cleanup() }
+    for expected in [true, false] {
+      try sendTitleGesture(rig.card, dragDistance: 0)
+      XCTAssertEqual(rig.controller.presentation.expanded.contains(rig.identity), expected)
+      rig.verifyTruth()
+    }
+  }
+
+  func testDockedTitleDragDoesNotAlsoToggleExpansionOnMouseUp() throws {
+    for expanded in [false, true] {
+      let rig = try Rig(expanded: expanded)
+      defer { rig.cleanup() }
+      try sendTitleGesture(rig.card, dragDistance: 12)
+      XCTAssertEqual(
+        rig.controller.presentation.expanded.contains(rig.identity), expanded,
+        "A recognized group drag must suppress the title button on release")
+      rig.verifyTruth()
+    }
+  }
+
+  /// Send the real hosted card a title gesture. Synthetic event coordinates
+  /// exercise gesture arbitration; they do not prove physical pointer motion.
+  private func sendTitleGesture(_ window: NSWindow, dragDistance: CGFloat) throws {
+    let root = try XCTUnwrap(window.contentView)
+    root.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+    let y = root.isFlipped ? 16.0 : root.bounds.height - 16.0
+    let start = root.convert(NSPoint(x: 120, y: y), to: nil)
+    let end = NSPoint(x: start.x + dragDistance, y: start.y)
+    var events: [(NSEvent.EventType, NSPoint)] = [(.leftMouseDown, start)]
+    if dragDistance > 0 { events.append((.leftMouseDragged, end)) }
+    events.append((.leftMouseUp, end))
+    for (index, item) in events.enumerated() {
+      let event = try XCTUnwrap(NSEvent.mouseEvent(
+        with: item.0, location: item.1, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: window.windowNumber, context: nil, eventNumber: index + 1,
+        clickCount: 1, pressure: item.0 == .leftMouseUp ? 0 : 1))
+      window.sendEvent(event)
+      RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+    }
+  }
+
   func testCompactAndExpandedDetachPreserveNativeSurfaceUntilRelease() throws {
     for expanded in [false, true] {
       let rig = try Rig(expanded: expanded)

@@ -2274,7 +2274,9 @@ private struct OverlayIntercomCard: View {
         .buttonStyle(.plain)
         .opacity(detached ? 0.72 : 1)
         .modifier(nameHint)
-        .simultaneousGesture(moveGesture)
+        // Once the threshold is crossed, moving the group owns this gesture;
+        // mouse-up must not also activate the title's collapse button.
+        .highPriorityGesture(moveGesture)
         .modifier(OverlayDisconnectedRowDim(disconnected: !current))
         .modifier(OverlayDetachedRosterValue(detached: detached))
         .accessibilityLabel(
@@ -2366,7 +2368,7 @@ private struct OverlayIntercomCard: View {
         .opacity(detached ? 0.72 : 1)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
-        .simultaneousGesture(moveGesture)
+        .highPriorityGesture(moveGesture)
         if current, let conversation, state.hasSynchronizedDraft(conversation.id) {
           OverlayIntercomSyncIndicator(
             state: state, conversationID: conversation.id, palette: palette)
