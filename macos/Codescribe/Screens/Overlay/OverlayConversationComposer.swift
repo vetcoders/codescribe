@@ -47,6 +47,8 @@ struct OverlayConversationComposer: View {
   var onNavigateReply: (() -> Void)? = nil
   var draftSyncChoices: [OverlayComposerSyncChoice] = []
   var draftSyncNames: [String] = []
+  /// Names the frozen audience while this composer's take is open.
+  var dictationAudienceLabel: String? = nil
   var draftSyncArmed: Bool = false
   var draftSyncEnabled: Bool = false
   var onActivateDraftSync: (() -> Void)? = nil
@@ -389,16 +391,33 @@ struct OverlayConversationComposer: View {
 
   private var recipientPicker: some View {
     VStack(alignment: .leading, spacing: 6) {
+      if let dictationAudienceLabel {
+        Text(verbatim: dictationAudienceLabel)
+          .font(CSFont.ui(11, .medium))
+          .foregroundStyle(palette.mutedText.color)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("overlay-dictation-audience")
+      }
       ForEach(draftSyncChoices) { choice in
-        Toggle(
-          isOn: Binding(
-            get: { choice.selected },
-            set: { _ in onToggleDraftSync?(choice.id) })
-        ) {
-          Text(verbatim: choice.title)
+        VStack(alignment: .leading, spacing: 2) {
+          Toggle(
+            isOn: Binding(
+              get: { choice.selected },
+              set: { _ in onToggleDraftSync?(choice.id) })
+          ) {
+            Text(verbatim: choice.title)
+          }
+          .toggleStyle(.checkbox)
+          .disabled(!choice.enabled)
+          .help(choice.note ?? recipientChoiceHelp(enabled: choice.enabled))
+          if let note = choice.note {
+            Text(verbatim: note)
+              .font(CSFont.ui(11, .regular))
+              .foregroundStyle(palette.mutedText.color)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("overlay-recipient-note-\(choice.id)")
+          }
         }
-        .toggleStyle(.checkbox)
-        .disabled(!choice.enabled)
       }
       if draftSyncActive, let onStopDraftSync {
         Divider()
@@ -417,9 +436,16 @@ struct OverlayConversationComposer: View {
   }
 
   private var recipientMenuHint: String {
-    let base = String(localized: "Choose recipients")
-    guard draftSyncActive else { return base }
-    return base + " · " + draftSyncAccessibilityValue
+    var parts = [String(localized: "Choose recipients")]
+    if draftSyncActive { parts.append(draftSyncAccessibilityValue) }
+    if let dictationAudienceLabel { parts.append(dictationAudienceLabel) }
+    return parts.joined(separator: " · ")
+  }
+
+  private func recipientChoiceHelp(enabled: Bool) -> String {
+    enabled
+      ? String(localized: "Share future typing and pasted attachments with this composer")
+      : String(localized: "This composer has a pending delivery or recording attachments.")
   }
 
   private func plusGlyph(_ corners: ConversationComposerCornerLayout) -> some View {
@@ -471,10 +497,7 @@ struct OverlayConversationComposer: View {
             Text(verbatim: choice.title)
           }
           .disabled(sending || !choice.enabled)
-          .help(
-            choice.enabled
-              ? String(localized: "Share future typing and pasted attachments with this composer")
-              : String(localized: "This composer has a pending delivery or recording attachments."))
+          .help(choice.note ?? recipientChoiceHelp(enabled: choice.enabled))
         }
         if draftSyncNames.count > 1 {
           Button("Stop syncing") { onStopDraftSync?() }

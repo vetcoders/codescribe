@@ -19363,6 +19363,90 @@
         }
       }
     },
+    "A delivery is still going out. Wait for it to finish before changing recipients." : {
+      "comment" : "Recipient row and roster chain while a synced send or attachment delivery is in flight",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wysyłka jeszcze trwa. Poczekaj, aż się skończy, zanim zmienisz odbiorców."
+          }
+        }
+      }
+    },
+    "Already in a sync with %@. Choosing them joins the two syncs." : {
+      "comment" : "Recipient row when that agent already belongs to a different sync. %@ is the other group's names.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jest już w synchronizacji z %@. Wybranie łączy obie grupy."
+          }
+        }
+      }
+    },
+    "Already in another sync. Choosing them joins the two syncs." : {
+      "comment" : "Roster chain when the agent is linked in a sync other than the open conversation",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jest już w innej synchronizacji. Wybranie łączy obie grupy."
+          }
+        }
+      }
+    },
+    "Dictation is in progress. This take keeps the recipients it started with. Stop it to add or remove someone." : {
+      "comment" : "Recipient row and roster chain while a composer dictation take is open",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trwa dyktowanie. Ta wypowiedź idzie do odbiorców z jej startu. Zatrzymaj je, żeby dodać albo usunąć kogoś."
+          }
+        }
+      }
+    },
+    "Included in this dictation. Stop it before changing recipients." : {
+      "comment" : "A recipient who is already in the take frozen at the microphone start",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jest w tym dyktowaniu. Zatrzymaj je, zanim zmienisz odbiorców."
+          }
+        }
+      }
+    },
+    "This dictation goes to: %@" : {
+      "comment" : "Send chevron while dictation is open. %@ is the frozen audience.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To dyktowanie idzie do: %@"
+          }
+        }
+      }
+    },
+    "This link no longer matches the agent on this channel. The message will not go to them." : {
+      "comment" : "A sync seat whose owner identity no longer matches the live agent",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To powiązanie nie pasuje już do agenta na tym kanale. Wiadomość do niego nie pójdzie."
+          }
+        }
+      }
+    },
     "System" : {
       "comment" : "Appearance choice: follow macOS",
       "localizations" : {

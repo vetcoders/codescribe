@@ -1124,6 +1124,11 @@ struct OverlayChannelStatusView: View {
   /// inbox included (Maciej, 2026-10-30 14:12: the chain is the sync toggle,
   /// as on the fiszki).
   var syncedConversationIDs: Set<String> = []
+  /// Set while the open conversation's sync cannot change. The chain and the
+  /// row menu say this instead of acting and staying silent.
+  var syncLockReason: String? = nil
+  /// Live owners of a sync that is not the open conversation's.
+  var syncOccupiedElsewhere: Set<String> = []
   var onToggleDraftSync: ((String) -> Void)? = nil
   let onShowMonitor: (() -> Void)?
   /// Explicitly show this agent in the list. Unlike the header toggle, this
@@ -1258,15 +1263,28 @@ struct OverlayChannelStatusView: View {
       })
     view.pendingArchives = state.pendingAgentArchives
     view.archivedOwners = state.archivedAgentOwners
-    view.syncedConversationIDs = Set(state.conversationDraftGroups.flatMap(\.members))
+    view.syncedConversationIDs = state.draftSyncRosterIDs()
+    view.syncOccupiedElsewhere = state.draftSyncOccupiedElsewhereIDs()
+    view.syncLockReason = state.selectedConversation.flatMap {
+      state.draftSyncLockReason(anchoredAt: $0.id)
+    }
     view.onToggleDraftSync = { id in
       // The open conversation anchors the set; on its own row the chain
       // unlinks it. Without an open conversation there is nothing to link to.
       guard let source = state.selectedConversation else { return }
       if source.id == id {
+        let wasLinked = state.draftSyncLinkedIDs(anchoredAt: source.id).contains(id)
         state.stopDraftSync(for: id)
-      } else {
-        state.toggleDraftSync(from: source.id, with: id)
+        if wasLinked, state.hasSynchronizedDraft(id),
+          let reason = state.draftSyncLockReason(anchoredAt: source.id)
+        {
+          state.showFooterNotice(reason)
+        }
+      } else if !state.toggleDraftSync(from: source.id, with: id),
+        let reason = state.draftSyncLockReason(anchoredAt: source.id)
+          ?? state.draftSyncLockReason(anchoredAt: id)
+      {
+        state.showFooterNotice(reason)
       }
     }
     view.onArchiveAgent = { owner in Task { await state.archiveAgent(owner) } }
@@ -1724,10 +1742,22 @@ struct OverlayChannelStatusView: View {
   ) -> OverlayAgentPillMenuAction? {
     guard let conversation = conversation(for: channel), let onToggleDraftSync else { return nil }
     let linked = syncedConversationIDs.contains(conversation.id)
+    let occupied = syncOccupiedElsewhere.contains(conversation.id)
     return OverlayAgentPillMenuAction(
-      title: linked ? String(localized: "Stop syncing") : String(localized: "Sync draft"),
-      symbol: "link", identifier: "overlay-agent-menu-sync-\(digit)", enabled: true,
+      title: syncControlTitle(linked: linked, occupied: occupied),
+      symbol: "link", identifier: "overlay-agent-menu-sync-\(digit)",
+      enabled: syncLockReason == nil,
       perform: { onToggleDraftSync(conversation.id) })
+  }
+
+  /// The chain, the row menu and the send chevron name the same fact.
+  private func syncControlTitle(linked: Bool, occupied: Bool) -> String {
+    if let syncLockReason { return syncLockReason }
+    if linked { return String(localized: "Stop syncing") }
+    if occupied {
+      return String(localized: "Already in another sync. Choosing them joins the two syncs.")
+    }
+    return String(localized: "Sync draft")
   }
 
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
@@ -2172,6 +2202,8 @@ struct OverlayChannelStatusView: View {
     let showsFocus = showsPanelFocusButton(for: channel)
     guard showsChain || showsFocus else { return nil }
     let linked = conversation.map { syncedConversationIDs.contains($0.id) } ?? false
+    let occupied = conversation.map { syncOccupiedElsewhere.contains($0.id) } ?? false
+    let syncTitle = syncControlTitle(linked: linked, occupied: occupied)
     let focusState = panelFocusStates[channel.channel]
     let focusHelp = panelFocusHelp(for: channel, state: focusState)
     let unreachable = panelFocusUnreachable(channel)
@@ -2184,11 +2216,8 @@ struct OverlayChannelStatusView: View {
             OverlayRosterSyncMark(linked: linked, palette: palette, textScale: textScale)
           }
           .buttonStyle(.plain)
-          .overlayFastHint(
-            linked ? String(localized: "Stop syncing") : String(localized: "Sync draft"),
-            palette: palette
-          )
-          .accessibilityLabel(Text(linked ? "Stop syncing" : "Sync draft"))
+          .overlayFastHint(syncTitle, palette: palette)
+          .accessibilityLabel(Text(verbatim: syncTitle))
           .accessibilityIdentifier("overlay-agent-sync-\(channel.channel)")
         }
         if showsFocus {

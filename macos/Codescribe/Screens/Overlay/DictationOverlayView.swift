@@ -742,6 +742,7 @@ struct DictationOverlayView: View {
                 // attach button (Maciej, 2026-10-31 01:13Z).
                 draftSyncChoices: state.draftSyncChoices(for: conversation),
                 draftSyncNames: state.draftSyncNames(for: conversation.id),
+                dictationAudienceLabel: state.dictationAudienceLabel(for: conversation),
                 draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
                 draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
                 onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },

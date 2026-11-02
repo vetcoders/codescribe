@@ -86,6 +86,10 @@ struct OverlayComposerSyncChoice: Identifiable {
   let title: String
   let selected: Bool
   let enabled: Bool
+  /// Why this row is not a free checkbox: another sync, a live take, or a
+  /// seat whose owner no longer matches the channel. Nil when the row can
+  /// change with no extra fact to show.
+  var note: String? = nil
 }
 
 extension OverlayState {
@@ -269,39 +273,133 @@ extension OverlayState {
     conversationDraftGroups[index] = group
   }
 
+  /// Exact owners of one group. The roster badge, the recipient menu, the
+  /// tooltip and Send all mean this set — never raw membership of every group.
+  private func owningDraftSyncMembers(_ group: OverlayDraftSyncGroup) -> [OverlayConversation] {
+    draftSyncConversations.filter { group.participants[$0.id]?.owns($0) == true }
+  }
+
   func draftSyncNames(for id: String) -> [String] {
     guard let index = draftGroupIndex(for: id) else { return [] }
-    let group = conversationDraftGroups[index]
-    return draftSyncConversations.filter { group.participants[$0.id]?.owns($0) == true }.map(\.name)
+    return owningDraftSyncMembers(conversationDraftGroups[index]).map(\.name)
+  }
+
+  /// Owners of the open conversation's group. An agent linked only somewhere
+  /// else stays dark here: the badge answers the same question as the menu.
+  func draftSyncRosterIDs() -> Set<String> {
+    guard let selected = selectedConversation else { return [] }
+    return draftSyncLinkedIDs(anchoredAt: selected.id)
+  }
+
+  func draftSyncLinkedIDs(anchoredAt id: String) -> Set<String> {
+    guard let index = draftGroupIndex(for: id) else { return [] }
+    return Set(owningDraftSyncMembers(conversationDraftGroups[index]).map(\.id))
+  }
+
+  /// Live owners of every group except the open conversation's.
+  func draftSyncOccupiedElsewhereIDs() -> Set<String> {
+    guard let selected = selectedConversation else { return [] }
+    let home = draftGroupIndex(for: selected.id)
+    var occupied: Set<String> = []
+    for (index, group) in conversationDraftGroups.enumerated() where index != home {
+      occupied.formUnion(owningDraftSyncMembers(group).map(\.id))
+    }
+    return occupied
   }
 
   func draftSyncChoices(for conversation: OverlayConversation) -> [OverlayComposerSyncChoice] {
     let current = draftSyncConversations
     guard current.contains(where: { $0.id == conversation.id && $0.owner == conversation.owner })
     else { return [] }
-    let group = draftGroupIndex(for: conversation.id).map { conversationDraftGroups[$0] }
+    let home = draftGroupIndex(for: conversation.id)
+    let group = home.map { conversationDraftGroups[$0] }
+    let homeMembers = group?.members ?? [conversation.id]
+    let homeLock = draftSyncBlockReason(homeMembers)
     // Agents only: the inbox and 0 · All are chosen from, never offered.
     return current.filter { $0.id != conversation.id && $0.owner != nil }.map { target in
-      let selected = group?.participants[target.id]?.owns(target) == true
+      let seat = group?.participants[target.id]
+      let selected = seat?.owns(target) == true
+      let staleSeat = seat != nil && !selected
+      let elsewhere = draftGroupIndex(for: target.id)
+      let occupiedElsewhere = !selected && !staleSeat && elsewhere != nil && elsewhere != home
+      let peers = elsewhere.map {
+        owningDraftSyncMembers(conversationDraftGroups[$0]).filter { $0.id != target.id }.map(\.name)
+      } ?? []
+      let linkBlocked = draftSyncBlockReason(
+        homeMembers.union(elsewhere.map { conversationDraftGroups[$0].members } ?? [target.id]))
+      let enabled: Bool
+      let note: String?
+      if staleSeat {
+        // A successor on this channel is a different owner. The seat must not
+        // look selectable, and the click must not retarget the old group.
+        enabled = false
+        note = String(localized: "This link no longer matches the agent on this channel. The message will not go to them.")
+      } else if selected {
+        enabled = homeLock == nil
+        if draftMembershipIsRecording(homeMembers) {
+          note = String(localized: "Included in this dictation. Stop it before changing recipients.")
+        } else {
+          note = homeLock
+        }
+      } else if let linkBlocked {
+        enabled = false
+        note = linkBlocked
+      } else if occupiedElsewhere {
+        enabled = canLinkDraft(conversation.id, with: target.id)
+        let list = peers.joined(separator: " · ")
+        note = list.isEmpty
+          ? String(localized: "Already in another sync. Choosing them joins the two syncs.")
+          : String(localized: "Already in a sync with \(list). Choosing them joins the two syncs.")
+      } else {
+        enabled = canLinkDraft(conversation.id, with: target.id)
+        note = nil
+      }
       return OverlayComposerSyncChoice(
-        id: target.id, title: target.name, selected: selected,
-        enabled: selected
-          ? !groupIsBusy(group?.members ?? [])
-          : canLinkDraft(conversation.id, with: target.id))
+        id: target.id, title: target.name, selected: selected, enabled: enabled, note: note)
     }
+  }
+
+  /// Who a live composer take will actually reach. Nil when this conversation
+  /// is not the take's destination or one of the recipients frozen at start.
+  func dictationAudienceLabel(for conversation: OverlayConversation) -> String? {
+    guard let audience = draftCapture.liveAudience, audience.contains(conversation.id) else {
+      return nil
+    }
+    let names = draftSyncConversations.filter { audience.contains($0.id) }.map(\.name)
+    guard !names.isEmpty else { return nil }
+    return String(localized: "This dictation goes to: \(names.joined(separator: " · "))")
+  }
+
+  /// Why the open conversation cannot change sync right now, if it cannot.
+  func draftSyncLockReason(anchoredAt id: String) -> String? {
+    let members = draftGroupIndex(for: id).map { conversationDraftGroups[$0].members } ?? [id]
+    return draftSyncBlockReason(members)
   }
 
   /// A draft microphone take freezes its audience at request. Membership
   /// cannot change while its words are still being spoken or projected.
   private func groupIsBusy(_ members: Set<String>) -> Bool {
-    !pendingTextMessages.isDisjoint(with: members)
-      || !pendingCaptureAttachmentSends.isDisjoint(with: members)
-      || members.contains { captureAttachmentDrafts[$0] != nil }
-      || (draftCapture.hasRequest
-        && draftCapture.conversationID.map { members.contains($0) } == true)
+    draftSyncBlockReason(members) != nil
+  }
+
+  private func draftMembershipIsRecording(_ members: Set<String>) -> Bool {
+    (draftCapture.hasRequest && draftCapture.conversationID.map { members.contains($0) } == true)
       || pendingDraftProjections.values.contains { projection in
         draftCapture.destination(for: projection.sessionId).map { members.contains($0) } == true
       }
+  }
+
+  private func draftSyncBlockReason(_ members: Set<String>) -> String? {
+    if draftMembershipIsRecording(members) {
+      return String(localized: "Dictation is in progress. This take keeps the recipients it started with. Stop it to add or remove someone.")
+    }
+    if !pendingTextMessages.isDisjoint(with: members)
+      || !pendingCaptureAttachmentSends.isDisjoint(with: members)
+      || members.contains(where: { captureAttachmentDrafts[$0] != nil })
+    {
+      return String(localized: "A delivery is still going out. Wait for it to finish before changing recipients.")
+    }
+    return nil
   }
 
   private func canLinkDraft(_ source: String, with target: String) -> Bool {
@@ -391,7 +489,11 @@ extension OverlayState {
     }
   }
 
-  /// Retirement changes membership only; successors never inherit old drafts.
+  /// Retirement changes membership only. A new session or lease is a new
+  /// `OverlayConversationOwner.id` (provider, session, lease). The same name
+  /// on the same channel does not inherit the group: Send must not reach
+  /// whoever took the channel. The seat leaves the badge, the menu and the
+  /// group together on the next snapshot, edit or toggle.
   func reconcileDraftSyncOwners() {
     let current = draftSyncConversations
     if let armed = armedDraftSyncConversationID, !current.contains(where: { $0.id == armed }) {
