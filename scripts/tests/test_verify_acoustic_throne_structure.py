@@ -630,6 +630,62 @@ class SubstringResidueTests(unittest.TestCase):
             VERIFIER.validate_receipt_shape(inconsistent)
 
 
+class LiteralTestScopeProofTests(unittest.TestCase):
+    def prove(self, regex_row, literal_row, mutate=None):
+        identifier = "OverlayPasteResult"
+        literal = literal_payload(identifier, literal_row)
+        if mutate:
+            mutate(literal)
+        class Reader:
+            def literal_occurrences(self, query):
+                if query != identifier:
+                    raise AssertionError(query)
+                return literal
+        payload = regex_payload(regex_row, query=VERIFIER.substring_identifier_pattern("overlay_paste"))
+        return VERIFIER.literal_test_scope_keys(Reader(), {"overlay_paste": payload}), payload
+
+    def test_exact_test_scope_resolves_regex_module_scope_without_hiding_exact_hits(self):
+        row = occurrence("OverlayPasteResult", file="app/controller/acceptance.rs", line=20, column=8)
+        typed = {**row, "scope_classification": "test"}
+        keys, payload = self.prove(row, typed)
+        residue = VERIFIER.residue_occurrences(payload, exact_payload(), "overlay_paste", literal_test_scopes=keys)
+        self.assertEqual(residue[0]["class"], "test_only_mutant")
+        self.assertIn("complete Loctree literal", residue[0]["reason"])
+        self.assertEqual(residue[0]["scope_classification"], "production", "retain the provider disagreement")
+        self.assertEqual(VERIFIER.residue_occurrences(payload, exact_payload(row), "overlay_paste", literal_test_scopes=keys), [])
+        self.assertEqual(VERIFIER.forbidden_occurrences(exact_payload(row)), [row])
+
+    def test_wrong_row_role_identifier_or_production_scope_cannot_prove_test_scope(self):
+        row = occurrence("OverlayPasteResult", file="app/controller/acceptance.rs", line=20, column=8)
+        for field, value in [("file", "other.rs"), ("line", 21), ("column", 9),
+                             ("match_role", "definition"),
+                             ("scope_classification", "production")]:
+            with self.subTest(field=field):
+                typed = {**row, "scope_classification": "test", field: value}
+                keys, payload = self.prove(row, typed)
+                self.assertEqual(keys, set())
+                residue = VERIFIER.residue_occurrences(payload, exact_payload(), "overlay_paste", literal_test_scopes=keys)
+                self.assertEqual(residue[0]["class"], "unclassified_requires_review")
+
+    def test_unknown_role_never_authenticates_test_scope(self):
+        row = occurrence("OverlayPasteResult", file="app/controller/acceptance.rs", match_role="unknown")
+        keys, payload = self.prove(row, {**row, "scope_classification": "test"})
+        self.assertEqual(keys, set())
+        residue = VERIFIER.residue_occurrences(payload, exact_payload(), "overlay_paste", literal_test_scopes=keys)
+        self.assertEqual(residue[0]["class"], "unclassified_requires_review")
+
+    def test_truncated_or_untrusted_literal_proof_is_refused(self):
+        row = occurrence("OverlayPasteResult", file="app/controller/acceptance.rs", line=20, column=8)
+        typed = {**row, "scope_classification": "test"}
+        for mutate in [lambda p: p["matches"].update(truncated=True),
+                       lambda p: p["literal_trust"].update(file_scope_resolved=False),
+                       lambda p: p.update(query="Other"),
+                       lambda p: p["matches"]["occurrences"][0].update(matched_text="OverlayPasteDelivery")]:
+            with self.subTest(mutate=mutate):
+                with self.assertRaises(RuntimeError):
+                    self.prove(row, typed, mutate)
+
+
 class CorridorProofTests(unittest.TestCase):
     def contract(self) -> list[dict[str, object]]:
         return [
