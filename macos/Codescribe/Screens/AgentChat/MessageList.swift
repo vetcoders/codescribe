@@ -1054,7 +1054,7 @@ struct AttachmentPreviewSheet: View {
           }
           // The image yields before the title, Close and file actions. A
           // 280 pt minimum pushed those controls outside small overlay sheets.
-          .frame(minHeight: 120, idealHeight: 280, maxHeight: 480)
+          .frame(minHeight: 120, idealHeight: 280, maxHeight: onClose != nil ? .infinity : 480)
           .layoutPriority(-1)
           .background(Color.primary.opacity(CSAlpha.subtle))
           .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
@@ -1100,21 +1100,23 @@ struct AttachmentPreviewSheet: View {
           .accessibilityIdentifier("attachment-preview-markup-error")
       }
 
-      VStack(alignment: .leading, spacing: 4) {
-        Text("Path")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textTertiary)
-        Text(pathText)
-          .font(CSFont.mono(11))
-          .foregroundStyle(Color.primary)
-          .textSelection(.enabled)
-          .lineLimit(3)
-          .truncationMode(.middle)
+      if markup == nil {
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Path")
+            .font(CSFont.mono(10, .medium))
+            .foregroundStyle(CSColor.textTertiary)
+          Text(pathText)
+            .font(CSFont.mono(11))
+            .foregroundStyle(Color.primary)
+            .textSelection(.enabled)
+            .lineLimit(3)
+            .truncationMode(.middle)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(CSAlpha.subtle))
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       }
-      .padding(10)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(Color.primary.opacity(CSAlpha.subtle))
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
 
       if markup != nil {
         markupActions

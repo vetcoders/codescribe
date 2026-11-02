@@ -161,6 +161,7 @@ final class AttachmentMarkupSession {
   /// Image pixels; the markup canvas, the editor's content view and the
   /// flattened PNG all share this coordinate space.
   let canvas: CGRect
+  let pointSize: CGSize
   let paper: PaperMarkupViewController
   let toolbar: MarkupToolbarViewController
   private let initialMarkup: PaperMarkup
@@ -174,8 +175,22 @@ final class AttachmentMarkupSession {
     let initialMarkup = PaperMarkup(bounds: canvas)
     let paper = PaperMarkupViewController(markup: initialMarkup, supportedFeatureSet: .latest)
     let toolbar = MarkupToolbarViewController(supportedFeatureSet: .latest)
+
+    // Resolve point size from DPI metadata or NSImage to preserve Retina 2x scale on export.
+    var resolvedPointSize = NSImage(contentsOf: url)?.size ?? CGSize(width: image.width, height: image.height)
+    if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
+      let dpiW = (props[kCGImagePropertyDPIWidth] as? NSNumber)?.doubleValue
+      let dpiH = (props[kCGImagePropertyDPIHeight] as? NSNumber)?.doubleValue
+      if let dpiW, let dpiH, dpiW > 0, dpiH > 0 {
+        let ptW = CGFloat(image.width) * 72.0 / CGFloat(dpiW)
+        let ptH = CGFloat(image.height) * 72.0 / CGFloat(dpiH)
+        resolvedPointSize = CGSize(width: ptW, height: ptH)
+      }
+    }
+
     self.image = image
     self.canvas = canvas
+    self.pointSize = resolvedPointSize
     self.initialMarkup = initialMarkup
     self.paper = paper
     self.toolbar = toolbar
@@ -206,12 +221,28 @@ final class AttachmentMarkupSession {
         space: space,
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
     else { return nil }
+
+    // 1. Draw the untouched original pixels. In default CGContext coordinate space
+    //    (origin at bottom-left), drawing `image` in `canvas` maps the image upright
+    //    into bitmap memory (top of image at row 0).
     context.draw(image, in: canvas)
+
+    // 2. PaperMarkup records and renders strokes in top-left-origin coordinates (y=0
+    //    at top, y increasing downwards). To render annotations in the exact geometry
+    //    where drawn without vertical inversion or offset, flip the graphics context's
+    //    CTM so (0,0) is at the top-left of the canvas.
+    context.saveGState()
+    context.translateBy(x: 0, y: CGFloat(image.height))
+    context.scaleBy(x: 1.0, y: -1.0)
     // The canvas is a screenshot, not app chrome: render light-style markup.
     await markup.draw(
       in: context, frame: canvas, options: RenderingOptions(darkUserInterfaceStyle: false))
+    context.restoreGState()
+
     guard let flattened = context.makeImage() else { return nil }
-    return NSBitmapImageRep(cgImage: flattened).representation(using: .png, properties: [:])
+    let rep = NSBitmapImageRep(cgImage: flattened)
+    rep.size = pointSize
+    return rep.representation(using: .png, properties: [:])
   }
 }
 
