@@ -18,7 +18,10 @@
     "projection_authority_witness",
     "rustProjectionAuthorityWitness"
   ],
-  "forbidden_executable_literals": ["#if false", "if false"],
+  "forbidden_executable_literals": [
+    "#if false",
+    "if false"
+  ],
   "stages": {
     "demolished": {
       "required_absent": [
@@ -169,19 +172,27 @@
       "required_unwired": [
         {
           "symbol": "AcousticSerial",
-          "owner_files": ["core/pipeline/acoustic_ledger/anchors.rs"]
+          "owner_files": [
+            "core/pipeline/acoustic_ledger/anchors.rs"
+          ]
         },
         {
           "symbol": "TranscriptRevision",
-          "owner_files": ["app/presentation/emitter.rs"]
+          "owner_files": [
+            "app/presentation/emitter.rs"
+          ]
         },
         {
           "symbol": "RuntimeSettingsSnapshot",
-          "owner_files": ["core/config/settings.rs"]
+          "owner_files": [
+            "core/config/settings.rs"
+          ]
         },
         {
           "symbol": "OccurrenceLabelProposal",
-          "owner_files": ["core/llm/inline_format.rs"]
+          "owner_files": [
+            "core/llm/inline_format.rs"
+          ]
         }
       ]
     },
@@ -218,12 +229,6 @@
               "file": "core/pipeline/streaming/apple_live_session.rs",
               "kind": "function",
               "symbol": "pump_capture_windows",
-              "count": 1
-            },
-            {
-              "file": "core/pipeline/streaming/apple_live_session.rs",
-              "kind": "function",
-              "symbol": "schedule_bounded_word_trial",
               "count": 1
             }
           ]
@@ -350,7 +355,9 @@
         },
         {
           "symbol": "CaptureWindowPlan",
-          "consumers": ["core/pipeline/streaming/apple_live_session.rs"]
+          "consumers": [
+            "core/pipeline/streaming/apple_live_session.rs"
+          ]
         },
         {
           "symbol": "AcousticSerial",
@@ -361,7 +368,9 @@
         },
         {
           "symbol": "TranscriptRevision",
-          "consumers": ["app/presentation/transcript_bus.rs"]
+          "consumers": [
+            "app/presentation/transcript_bus.rs"
+          ]
         },
         {
           "symbol": "RuntimeSettingsSnapshot",
@@ -373,12 +382,18 @@
         },
         {
           "symbol": "OccurrenceLabelProposal",
-          "consumers": ["app/presentation/emitter.rs"],
-          "forbidden_consumers": ["app/controller/delivery_route.rs"]
+          "consumers": [
+            "app/presentation/emitter.rs"
+          ],
+          "forbidden_consumers": [
+            "app/controller/delivery_route.rs"
+          ]
         },
         {
           "symbol": "DeliveryRoute",
-          "consumers": ["app/controller/mod.rs"]
+          "consumers": [
+            "app/controller/mod.rs"
+          ]
         }
       ],
       "required_corridors": [
@@ -997,11 +1012,19 @@
               "symbol": "admit_completed_window",
               "file": "core/pipeline/streaming/apple_live_session.rs",
               "required_code": [
+                "let band = whisper_publication_band(self, &returned.identity.range);",
+                "self.admit_window_publication(ev_tx, returned, fresh, band, false);"
+              ]
+            },
+            {
+              "symbol": "admit_window_publication",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
                 "let identity = &returned.identity;",
                 "range_overlaps_occurrence(&identity.range, owner)",
                 "self.replayed_window_owners",
                 ".insert((request_id, occurrence.clone()))",
-                "self.admit_routed_words_with_decode_window(",
+                "self.admit_routed_words_with_publication(",
                 "admit_ledger_label(",
                 "self.publish_resolved_word_seals(ev_tx);",
                 "if fresh && mutation_admitted {",
@@ -1177,7 +1200,9 @@
             {
               "symbol": "decide_observation",
               "file": "core/pipeline/acoustic_ledger/reducer.rs",
-              "required_code": ["if overlaps && !has_word_pins {"]
+              "required_code": [
+                "if overlaps && !has_word_pins {"
+              ]
             },
             {
               "symbol": "qualify",
@@ -1365,9 +1390,16 @@
               "minimum_count": 1
             },
             {
-              "callee": "admit_ledger_label",
+              "callee": "admit_window_publication",
               "callee_file": "core/pipeline/streaming/apple_live_session.rs",
               "caller": "admit_completed_window",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "admit_ledger_label",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "admit_window_publication",
               "caller_file": "core/pipeline/streaming/apple_live_session.rs",
               "minimum_count": 1
             },
@@ -1461,6 +1493,20 @@
               "caller": "start_toggle_recording",
               "caller_file": "app/controller/mod.rs",
               "minimum_count": 1
+            },
+            {
+              "callee": "seal_sliced_by_silero",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "seal_utterance_final",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "admit_ledger_label",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "seal_utterance_final",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 2
             }
           ],
           "ordering": [
@@ -1646,7 +1692,9 @@
               "symbol": "activeText",
               "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "signature_contains": "var activeText",
-              "required_code": ["formattedText"]
+              "required_code": [
+                "formattedText"
+              ]
             },
             {
               "symbol": "DictationOverlayView",
@@ -2182,7 +2230,10 @@
                 "|| !self.refinement_submitted.is_empty()",
                 "|| !self.refinement_pending.is_empty()"
               ],
-              "forbidden_code": ["TailPatchRequest {", "transcribe_controlled("]
+              "forbidden_code": [
+                "TailPatchRequest {",
+                "transcribe_controlled("
+              ]
             },
             {
               "symbol": "return_outstanding_whisper_without_label",
@@ -2195,7 +2246,10 @@
                 "self.window_plan.account(&range);",
                 "self.close_admission_horizon(ev_tx, u64::MAX);"
               ],
-              "forbidden_code": ["TailPatchRequest {", "transcribe_controlled("]
+              "forbidden_code": [
+                "TailPatchRequest {",
+                "transcribe_controlled("
+              ]
             },
             {
               "symbol": "reconcile_terminal_coverage",
@@ -2791,7 +2845,9 @@
   },
   "tool_contract": {
     "receipt_version": "codescribe.acoustic-structure-receipt.v3",
-    "superseded_versions": ["codescribe.acoustic-structure-receipt.v2"],
+    "superseded_versions": [
+      "codescribe.acoustic-structure-receipt.v2"
+    ],
     "legacy_schema": "tests/fixtures/acoustic_structure_receipt.schema.json",
     "neutral_ast_command": [
       "cargo",
@@ -2895,7 +2951,9 @@
                     "const": "unclassified_requires_review"
                   }
                 },
-                "required": ["class"]
+                "required": [
+                  "class"
+                ]
               },
               "then": {
                 "properties": {
@@ -3031,7 +3089,12 @@
         "neutralContract": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["symbol", "accepted", "events", "failures"],
+          "required": [
+            "symbol",
+            "accepted",
+            "events",
+            "failures"
+          ],
           "properties": {
             "symbol": {
               "enum": [
@@ -3131,7 +3194,10 @@
                 },
                 {
                   "type": "integer",
-                  "enum": [0, 1]
+                  "enum": [
+                    0,
+                    1
+                  ]
                 }
               ]
             }
@@ -3230,12 +3296,21 @@
           "const": "codescribe.acoustic-structure-receipt.v3"
         },
         "stage": {
-          "enum": ["demolished", "assembled", "wired"]
+          "enum": [
+            "demolished",
+            "assembled",
+            "wired"
+          ]
         },
         "scope": {
           "oneOf": [
             {
-              "enum": ["settings", "acoustic", "document", "text-delivery"]
+              "enum": [
+                "settings",
+                "acoustic",
+                "document",
+                "text-delivery"
+              ]
             },
             {
               "type": "null"
@@ -3261,22 +3336,40 @@
           "type": "boolean"
         },
         "repo": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "branch": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "head": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "dirty_fingerprint": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "loctree_version": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "loctree_snapshot_fingerprint": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "expected_parts": {
           "type": "array",
@@ -3320,7 +3413,9 @@
         },
         "residue_by_substring": {
           "type": "object",
-          "required": ["summary"],
+          "required": [
+            "summary"
+          ],
           "properties": {
             "summary": {
               "$ref": "#/$defs/residueSummary"
@@ -3338,7 +3433,10 @@
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["hops", "invocations"],
+            "required": [
+              "hops",
+              "invocations"
+            ],
             "properties": {
               "hops": {
                 "type": "array",
@@ -3369,14 +3467,20 @@
                       "minLength": 1
                     },
                     "signature_contains": {
-                      "type": ["string", "null"]
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "body_count": {
                       "type": "integer",
                       "minimum": 0
                     },
                     "start_line": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1
                     },
                     "production_definition": {
@@ -3412,7 +3516,10 @@
                       "items": {
                         "type": "object",
                         "additionalProperties": false,
-                        "required": ["required_code", "reason"],
+                        "required": [
+                          "required_code",
+                          "reason"
+                        ],
                         "properties": {
                           "required_code": {
                             "type": "string",
@@ -3446,7 +3553,9 @@
                         }
                       },
                       "then": {
-                        "required": ["ast_contract"],
+                        "required": [
+                          "ast_contract"
+                        ],
                         "properties": {
                           "ast_contract": {
                             "$ref": "#/$defs/neutralContract"
@@ -3562,7 +3671,13 @@
         "assessment": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["build", "lint", "unit", "swift", "runtime"],
+          "required": [
+            "build",
+            "lint",
+            "unit",
+            "swift",
+            "runtime"
+          ],
           "properties": {
             "build": {
               "const": "NOT_ASSESSED"

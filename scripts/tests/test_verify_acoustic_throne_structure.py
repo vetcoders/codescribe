@@ -3080,8 +3080,8 @@ class CurrentChainMutantTests(unittest.TestCase):
              [("utterance.range.session != state.session_id", "false")]),
             # The identity refusal warns and then continues anyway.
             ("identity_refusal_falls_through", "reconcile_silero_ledger",
-             [("        });\n        return false;\n    }\n    let apple_words",
-               "        });\n    }\n    let apple_words")]),
+             [("        });\n        return false;\n    }\n    let ledger = ledger_with_voiced_onsets(state, ledger);",
+               "        });\n    }\n    let ledger = ledger_with_voiced_onsets(state, ledger);")]),
             # Ownership is minted from the padded recognition context instead of
             # the exclusive closed span.
             ("ownership_minted_from_padded_range", "reconcile_silero_ledger",
@@ -3619,42 +3619,37 @@ class CaptureOrderingProofTests(unittest.TestCase):
                 self.assertNotIn("min_calls", invocation, invocation)
                 self.assertIn("minimum_count", invocation, invocation)
 
-    def test_local_const_callsite_attribution_limit_is_declared(self):
-        """A declared instrument limit, pinned so it cannot rot silently.
-
-        `seal_utterance_final` opens with a function-local `const`, and
-        Loctree attributes every callsite in that function to the constant
-        instead of the function. Its two real `admit_ledger_label` calls and
-        its `seal_sliced_by_silero` call therefore observe zero production
-        callsites, so those edges are deliberately NOT declared — declaring
-        them would be a red obligation caused by the provider, not the product.
-
-        The bodies below prove the calls exist. When the provider is fixed this
-        test goes red and forces the corridor to gain the missing edges, which
-        is exactly the behaviour a silent limit does not have.
-        """
+    def test_local_const_caller_edges_are_declared_and_proven(self):
+        """The repaired provider exposes all three calls despite a local const."""
         body = VERIFIER.corridor_body_rows(
             self.seed.body("seal_utterance_final", self.APPLE),
-            symbol="seal_utterance_final",
-            file=self.APPLE,
+            symbol="seal_utterance_final", file=self.APPLE,
             signature_contains=None,
         )
         self.assertEqual(len(body), 1)
         source = VERIFIER.code_without_comments_or_strings(body[0]["source"])
-        for present in ("admit_ledger_label(", "seal_sliced_by_silero(state,ev_tx,&segments)"):
-            self.assertIn(present, source, present)
+        self.assertIn("admit_ledger_label(", source)
+        self.assertIn("seal_sliced_by_silero(state,ev_tx,&segments)", source)
+        corridor = next(row for row in self.contracts if row["name"] == self.CORRIDOR)
+        for callee, minimum in (("admit_ledger_label", 2), ("seal_sliced_by_silero", 1)):
+            with self.subTest(callee=callee):
+                self.assertGreaterEqual(len(self.callsites(self.seed, callee, "seal_utterance_final")), minimum)
+                declared = [edge for edge in corridor["required_invocations"]
+                            if edge["caller"] == "seal_utterance_final" and edge["callee"] == callee]
+                self.assertEqual(len(declared), 1)
+                self.assertEqual(declared[0]["minimum_count"], minimum)
+
+    def test_missing_local_const_caller_edges_are_rejected(self):
         for callee in ("admit_ledger_label", "seal_sliced_by_silero"):
             with self.subTest(callee=callee):
-                self.assertEqual(
-                    self.callsites(self.seed, callee, "seal_utterance_final"), [],
-                    f"{callee}: provider now attributes this caller; declare the edge")
-        corridor = next(
-            row for row in self.contracts if row["name"] == self.CORRIDOR
-        )
-        for invocation in corridor["required_invocations"]:
-            self.assertNotEqual(
-                invocation["caller"], "seal_utterance_final",
-                "an edge is declared on a caller the provider cannot attribute")
+                clone = self.clone()
+                removed = self.callsites(clone, callee, "seal_utterance_final")
+                self.assertTrue(removed, "negative control must remove real evidence")
+                clone._occurrences[callee]["occurrences"] = [
+                    row for row in clone._occurrences[callee]["occurrences"] if row not in removed]
+                _, failures = VERIFIER.verify_code_corridors(clone, self.contracts)
+                self.assertTrue(any("seal_utterance_final" in failure and callee in failure
+                                    for failure in failures), failures)
 
 
 class OverlayRailCallsiteLimitTests(unittest.TestCase):
