@@ -14455,7 +14455,7 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var llmAssistiveReasoning: String
     /**
-     * Automatic formatting policy: off, correction or smart. A stored legacy
+     * Automatic formatting policy: off, correction or smart. A stored earlier
      * `max`/`creative` reads as smart here; Max is invoked through Format.
      */
     public var formattingLevel: String?
@@ -14626,7 +14626,7 @@ public struct CsSettings: Equatable, Hashable {
          * Agent reasoning level: `default` (the model's own) or a chosen level.
          */llmAssistiveReasoning: String,
         /**
-         * Automatic formatting policy: off, correction or smart. A stored legacy
+         * Automatic formatting policy: off, correction or smart. A stored earlier
          * `max`/`creative` reads as smart here; Max is invoked through Format.
          */formattingLevel: String?,
         /**
@@ -16265,7 +16265,7 @@ public struct CsTrayToggles: Equatable, Hashable {
     public var autoPasteEnabled: Bool
     /**
      * Normalized automatic formatting policy: off, correction or smart.
-     * A stored legacy `max`/`creative` reads as smart.
+     * A stored earlier `max`/`creative` value reads as smart.
      */
     public var formattingLevel: String
     /**
@@ -16299,7 +16299,7 @@ public struct CsTrayToggles: Equatable, Hashable {
          */autoPasteEnabled: Bool,
         /**
          * Normalized automatic formatting policy: off, correction or smart.
-         * A stored legacy `max`/`creative` reads as smart.
+         * A stored earlier `max`/`creative` value reads as smart.
          */formattingLevel: String,
         /**
          * UI-initiated recording starts in the assistive lane when enabled.
