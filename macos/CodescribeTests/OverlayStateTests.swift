@@ -3644,26 +3644,25 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.isFinalizingDictation, "the terminal projection closes the take")
   }
 
-  func testReadinessMarkerPersistsOnIdleAndCompletedCanvas() {
+  func testTranscriptionMarkerIsAbsentOnIdleAndCompletedCanvas() {
     let state = OverlayState()
     state.setPresentationMode(.expanded)
-    XCTAssertTrue(state.animatesTranscriptCaret, "Visible empty canvas conveys readiness")
+    XCTAssertFalse(state.animatesTranscriptCaret, "Idle is not active transcription")
     projectText("Iwo Iwo Iwo Iwo Iwo", to: state, phase: "formatted", terminal: true)
-    XCTAssertTrue(state.animatesTranscriptCaret, "Completed text retains a quiet marker")
+    XCTAssertFalse(state.animatesTranscriptCaret, "Settlement removes the marker")
     XCTAssertEqual(state.canvasText, "Iwo Iwo Iwo Iwo Iwo")
     state.setPresentationMode(.mini)
     XCTAssertFalse(state.animatesTranscriptCaret)
     state.setPresentationMode(.expanded)
-    XCTAssertTrue(state.animatesTranscriptCaret)
+    XCTAssertFalse(state.animatesTranscriptCaret)
   }
 
-  // IDLE-1: authored under W1; execution belongs to the integrator after close.
-  func testReadinessCaretOutlivesCaptureWithoutKeepingTimerRunning() {
+  func testTranscriptionCaretWaitsForFinalTextWithoutKeepingTimerRunning() {
     let state = OverlayState()
     state.setPresentationMode(.expanded)
-    XCTAssertTrue(state.animatesTranscriptCaret)
+    XCTAssertFalse(state.animatesTranscriptCaret)
     state.handleRecordingPreparing()
-    XCTAssertTrue(state.animatesTranscriptCaret, "Readiness does not imply live audio")
+    XCTAssertTrue(state.animatesTranscriptCaret, "Preparing starts transcription activity")
     state.handleRecordingStarted()
     XCTAssertTrue(state.animatesTranscriptCaret)
 
@@ -3687,10 +3686,12 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.sessionTimerPaused)
     state.finishControllerRecording()
     XCTAssertEqual(state.mode, .listening)
-    XCTAssertTrue(state.animatesTranscriptCaret, "Readiness is independent of capture")
+    XCTAssertTrue(state.animatesTranscriptCaret, "Stop still awaits its terminal result")
+    projectText("settled", to: state, terminal: true)
+    XCTAssertFalse(state.animatesTranscriptCaret)
   }
 
-  func testTerminalOverlayPhasesKeepReadinessButStopTimer() {
+  func testTerminalOverlayPhasesRemoveActivityAndStopTimer() {
     for phase in ["formatted", "no_speech", "error", "coverage_refused"] {
       let clock = OverlayStateTestClock()
       let state = OverlayState(nowProvider: { clock.now })
@@ -3701,7 +3702,7 @@ final class OverlayStateTests: XCTestCase {
       clock.now += 12
       projectText("kept words", to: state, phase: phase, terminal: true)
 
-      XCTAssertTrue(state.animatesTranscriptCaret, phase)
+      XCTAssertFalse(state.animatesTranscriptCaret, phase)
       XCTAssertTrue(state.sessionTimerPaused, phase)
       XCTAssertTrue(state.showsSessionTimer, "Frozen duration remains readable")
       let frozen = state.sessionTimerText
@@ -3710,13 +3711,13 @@ final class OverlayStateTests: XCTestCase {
     }
   }
 
-  func testErrorBeforeTerminalProjectionKeepsReadinessButStopsTimer() {
+  func testErrorBeforeTerminalProjectionRemovesActivityAndStopsTimer() {
     let state = OverlayState()
     state.setPresentationMode(.expanded)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     state.handleError(message: "Capture failed")
-    XCTAssertTrue(state.animatesTranscriptCaret)
+    XCTAssertFalse(state.animatesTranscriptCaret)
     XCTAssertTrue(state.sessionTimerPaused)
   }
 
@@ -4934,6 +4935,37 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.isTranscriptEditable)
     XCTAssertEqual(state.revisionDraft, "sealed words", "the seal seeds the draft")
     XCTAssertEqual(state.canvasText, "sealed words")
+  }
+
+  func testPendingPaintRangesUseTheirOwnUnicodeBytesAndClearOnSettlement() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    let text = "A 🐢 e\u{301} Z"
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "pending-ranges", captureEpoch: 1, sequence: 1,
+        text: text, degraded: false, evidence: [], pendingRanges: [
+          CsPendingRange(utf16Start: 2, utf16End: 4),
+          CsPendingRange(utf16Start: 5, utf16End: 7),
+          CsPendingRange(utf16Start: 3, utf16End: 4),
+          CsPendingRange(utf16Start: 8, utf16End: UInt32.max),
+          CsPendingRange(utf16Start: 40, utf16End: 45),
+          CsPendingRange(utf16Start: 7, utf16End: 2),
+        ]))
+    XCTAssertEqual(state.canvasPendingRanges, [
+      NSRange(location: 2, length: 2), NSRange(location: 5, length: 2),
+      NSRange(location: 8, length: 1),
+    ])
+    XCTAssertEqual(Array(state.canvasText.utf8), Array(text.utf8))
+    XCTAssertEqual(state.activeText, "", "Paint metadata grants no document authority")
+    projectText(text, to: state, terminal: true, sessionId: "pending-ranges")
+    XCTAssertTrue(state.canvasPendingRanges.isEmpty)
+    XCTAssertFalse(state.animatesTranscriptCaret)
+    XCTAssertEqual(Array(state.canvasText.utf8), Array(text.utf8))
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("edited")
+    XCTAssertTrue(state.canvasPendingRanges.isEmpty)
   }
 
   func testLivePreviewPaintDoesNotBecomeDocumentOrSurviveItsTerminal() {

@@ -395,12 +395,16 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     let length = storage.length
     let pendingColor = palette.mutedText.nsColor
     for pendingRange in pendingRanges {
-      let start = min(max(0, pendingRange.location), length)
-      let end = min(max(start, NSMaxRange(pendingRange)), length)
-      guard end > start else { continue }
+      guard pendingRange.location >= 0, pendingRange.location < length,
+        pendingRange.length > 0
+      else { continue }
+      let safeRange = NSRange(
+        location: pendingRange.location,
+        length: min(pendingRange.length, length - pendingRange.location))
+      guard Range(safeRange, in: textView.string) != nil else { continue }
       // Text in progress is slightly dimmed; settled text regains full saturation
       storage.addAttribute(
-        .foregroundColor, value: pendingColor, range: NSRange(location: start, length: end - start))
+        .foregroundColor, value: pendingColor, range: safeRange)
     }
   }
 

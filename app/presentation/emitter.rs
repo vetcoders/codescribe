@@ -1638,31 +1638,26 @@ impl TranscriptReducer {
                     .committed_sources
                     .insert(member.occurrence.clone(), member.clone());
             }
-            let needs_space = !paint.text.is_empty()
-                && !text.is_empty()
-                && !paint.text.ends_with(char::is_whitespace)
-                && !text.starts_with(char::is_whitespace)
-                && !text.starts_with(". ");
-            if needs_space {
-                paint.text.push(' ');
-                utf16_len += 1;
-            }
-            let start_utf16 = utf16_len as u32;
-            paint.text.push_str(&text);
-            let fragment_utf16_len = text.encode_utf16().count();
-            utf16_len += fragment_utf16_len;
-            let end_utf16 = utf16_len as u32;
-
-            if is_evidence && end_utf16 > start_utf16 {
+            // Offset metadata follows the one byte-preserving assembler.
+            let previous_bytes = paint.text.len();
+            append_exact_fragment(&mut paint.text, &text);
+            let fragment_units = text.encode_utf16().count();
+            let appended_units = paint.text[previous_bytes..].encode_utf16().count();
+            let separator_units = appended_units - fragment_units;
+            utf16_len += separator_units;
+            let start = utf16_len;
+            utf16_len += fragment_units;
+            if is_evidence && fragment_units > 0
+                && let (Ok(start), Ok(end)) = (u32::try_from(start), u32::try_from(utf16_len))
+            {
                 if let Some(last) = paint.pending_ranges.last_mut()
-                    && (last.utf16_end == start_utf16
-                        || (needs_space && last.utf16_end == start_utf16 - 1))
+                    && usize::try_from(last.utf16_end).ok() == Some(start as usize - separator_units)
                 {
-                    last.utf16_end = end_utf16;
+                    last.utf16_end = end;
                 } else {
                     paint.pending_ranges.push(PendingRange {
-                        utf16_start: start_utf16,
-                        utf16_end: end_utf16,
+                        utf16_start: start,
+                        utf16_end: end,
                     });
                 }
             }
@@ -4439,6 +4434,7 @@ impl PresentationEmitter {
         }
     }
 
+    #[cfg(test)]
     fn paint_cursor(&self, rendered: &str) {
         self.paint_cursor_with_ranges(rendered, Vec::new());
     }
@@ -6899,6 +6895,52 @@ mod tests {
             compression_ratio: None,
             confidence_flags: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn pending_ranges_follow_paint_provenance_and_settle_without_changing_bytes() {
+        let (emitter, ledger) = mirror_take();
+        let paints = Arc::new(StdMutex::new(Vec::new()));
+        let observed = Arc::clone(&paints);
+        let mut emitter = emitter.with_cursor_observer(Arc::new(move |paint| {
+            observed.lock().unwrap().push(paint.clone());
+        }));
+        let first = OccurrenceIdentity::new("take", 7, 0, 8_000);
+        let unanchored = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, first);
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &unanchored, "🐢 e\u{301}", super::NoAuthorityReason::NoRange,
+        );
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation: unanchored, label: "🐢 e\u{301}".into(), receipt,
+        });
+        let middle = OccurrenceIdentity::new("take", 7, 8_000, 16_000);
+        let mutation = admitted_mutation(&mut ledger.lock().unwrap(), middle, 2, "Iwo");
+        emitter.on_event(&mutation);
+        emitter.on_event(&mirror(1, mirror_words(
+            "🐢 e\u{301}", 24_000, 32_000,
+            UnadmittedAppleWordSource::Pending { utterance_id: 3 },
+        )));
+        assert!(emitter.wait_paint_published().await);
+        let before = paints.lock().unwrap().last().unwrap().clone();
+        assert_eq!(before.text, "🐢 e\u{301} Iwo 🐢 e\u{301}");
+        assert_eq!(before.pending_ranges, vec![
+            super::PendingRange { utf16_start: 0, utf16_end: 5 },
+            super::PendingRange { utf16_start: 10, utf16_end: 15 },
+        ]);
+        assert_eq!(emitter.session_state.lock().unwrap().committed_rendered_text(), "Iwo");
+
+        let last = OccurrenceIdentity::new("take", 7, 24_000, 32_000);
+        let mutation = admitted_mutation(&mut ledger.lock().unwrap(), last, 3, "🐢 e\u{301}");
+        emitter.on_event(&mutation);
+        emitter.on_event(&mirror(2, Vec::new()));
+        assert!(emitter.wait_paint_published().await);
+        let after = paints.lock().unwrap().last().unwrap().clone();
+        assert_eq!(after.text.as_bytes(), before.text.as_bytes());
+        assert_eq!(after.pending_ranges, vec![super::PendingRange { utf16_start: 0, utf16_end: 5 }]);
+        assert!(after.sequence > before.sequence);
+        assert_eq!((&after.session_id, after.capture_epoch), (&before.session_id, before.capture_epoch));
+        assert_eq!(emitter.session_state.lock().unwrap().committed_rendered_text(), "Iwo 🐢 e\u{301}");
+        emitter.finish().await;
     }
 
     #[tokio::test]

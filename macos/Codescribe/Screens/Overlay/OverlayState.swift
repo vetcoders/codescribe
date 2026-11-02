@@ -3870,7 +3870,9 @@ final class OverlayState {
       let end = Int(range.utf16End)
       guard start >= 0, end > start, start < textLength else { return nil }
       let safeEnd = min(end, textLength)
-      return NSRange(location: start, length: safeEnd - start)
+      let safeRange = NSRange(location: start, length: safeEnd - start)
+      guard Range(safeRange, in: compact.text) != nil else { return nil }
+      return safeRange
     }
   }
 
