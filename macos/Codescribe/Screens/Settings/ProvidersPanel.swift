@@ -492,8 +492,12 @@ struct CustomProviderForm: View {
           Text("Messages (/v1/messages)").tag("messages")
           Text("Gemini (GenerateContent)").tag("google-generate-content")
         }
-        .pickerStyle(.segmented)
+        // Protocol names include their API paths. A segmented control gives
+        // them one unbreakable intrinsic width and pushes the whole form past
+        // the sheet's edges; a native pop-up keeps all choices within the form.
+        .pickerStyle(.menu)
         .labelsHidden()
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityLabel("Custom provider wire")
       }
       field("Endpoint") {
