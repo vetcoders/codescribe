@@ -12821,6 +12821,22 @@
         }
       }
     },
+    "Not played while the transcript history was being read" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Not played while the transcript history was being read"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie odtworzono, bo historia transkrypcji jeszcze się wczytywała"
+          }
+        }
+      }
+    },
     "Not reading" : {
       "comment" : "Agent alive, backlog unread for long",
       "localizations" : {

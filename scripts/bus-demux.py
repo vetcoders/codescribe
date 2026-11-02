@@ -328,12 +328,18 @@ def generation_sources(path: Path) -> tuple[list[dict[str, Any]], int, int, floa
 
 def generation_metadata(path: Path) -> Any:
     segments, dev, ino, birth = generation_sources(path)
+    # Size and mtime come from one stat of the active file. An append between
+    # two stats used to pair an old size with a new mtime, which the scan read
+    # as a same-size rewrite and rewound to offset zero.
     current = path.stat()
-    last = next((s for s in reversed(segments) if s["length"]), segments[-1])
-    modified = Path(last["path"]).stat()
+    if current.st_size:
+        modified_ns = current.st_mtime_ns
+    else:
+        last = next((segment for segment in reversed(segments) if segment["length"]), segments[-1])
+        modified_ns = Path(last["path"]).stat().st_mtime_ns
     return SimpleNamespace(st_dev=dev, st_ino=ino,
-        st_size=segments[-1]["start"] + segments[-1]["length"],
-        st_mode=current.st_mode, st_mtime_ns=modified.st_mtime_ns,
+        st_size=segments[-1]["start"] + current.st_size,
+        st_mode=current.st_mode, st_mtime_ns=modified_ns,
         st_birthtime=birth)
 
 
@@ -7203,22 +7209,80 @@ def _save_lifecycle_cursor(bus: Path, root: Path, cursor: dict[str, Any]) -> Non
         pass
 
 
-def installation_idle_with_checkpoint(bus: Path, *, bridge_root: Path) -> bool:
-    """Reuse the existing lifecycle observer, then verify its current suffix.
+def _lifecycle_offsets(cursor: dict[str, Any]) -> tuple[Any, dict[Any, Any]]:
+    return (cursor.get("offset"), {
+        source: state.get("offset")
+        for source, state in cursor.get("channel_buses", {}).items()
+    })
 
-    Its session-ended predicate is sufficient for installation. A busy or
-    incomplete retained cursor grants nothing; keep its open identities.
+
+def _lifecycle_cursor_caught_up(cursor: dict[str, Any]) -> bool:
+    """True only when every retained source was read to its own end.
+
+    A prefix can show an open start that a later row ends. That prefix is
+    not evidence of a live take.
+    """
+    if cursor.get("caught_up") is not True:
+        return False
+    return all(
+        state.get("caught_up") is True
+        for state in cursor.get("channel_buses", {}).values()
+    )
+
+
+def _save_lifecycle_cursor_unless_locked(
+    lock: int, bus: Path, root: Path, cursor: dict[str, Any],
+) -> None:
+    """Write the checkpoint only when playback.lock is free. Never wait."""
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return
+    try:
+        _save_lifecycle_cursor(bus, root, cursor)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def installation_idle_with_checkpoint(bus: Path, *, bridge_root: Path) -> bool:
+    """Reuse the existing lifecycle observer until the deadline.
+
+    A loaded cursor is read in bounded passes. The check returns as soon as
+    a pass is idle, as soon as every source has been read and still holds a
+    take, or when the deadline passes. Progress is stored only when
+    playback.lock can be taken without waiting, and that lock is never held
+    across a scan. An empty checkpoint keeps the single uncached probe.
     """
     deadline = time.monotonic() + TAKE_WAIT_SECONDS
     cursor = _load_lifecycle_cursor(bus, bridge_root, deadline)
-    if cursor:
-        idle = installation_idle(
-            bus, sealed_is_idle=False, cursor=cursor, bridge_root=bridge_root,
-            deadline=deadline,
-        )
-        _save_lifecycle_cursor(bus, bridge_root, cursor)
-        return idle
-    return installation_idle(bus, bridge_root=bridge_root)
+    if not cursor:
+        return installation_idle(bus, bridge_root=bridge_root)
+    runtime = bridge_root / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    # Same inode as playback. Never unlink it: waiters share this file.
+    lock = os.open(runtime / "playback.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        while time.monotonic() < deadline:
+            previous = _lifecycle_offsets(cursor)
+            idle = installation_idle(
+                bus, sealed_is_idle=False, cursor=cursor, bridge_root=bridge_root,
+                deadline=deadline,
+            )
+            _save_lifecycle_cursor_unless_locked(lock, bus, bridge_root, cursor)
+            if idle:
+                return True
+            if _lifecycle_cursor_caught_up(cursor) and _cursor_holds_take(
+                cursor, lambda channel, session: False,
+            ):
+                return False
+            if _lifecycle_offsets(cursor) == previous:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                time.sleep(min(PLAYBACK_POLL_SECONDS, remaining))
+        return False
+    finally:
+        os.close(lock)
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -7384,8 +7448,16 @@ def _wait_for_take_end(
     bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None,
     control: ReplyPlaybackControl | None = None,
     channel_released: Callable[[str, str], bool] | None = None,
-    save_cursor: bool = True,
+    checkpoint_lock: int | None = None,
 ) -> bool:
+    """Read until idle, the deadline, or a stop.
+
+    With no lock descriptor, every pass writes the checkpoint. A descriptor
+    is the caller's already-open playback.lock: after a pass that advanced,
+    try a non-blocking exclusive lock, save, and release it at once. A busy
+    lock skips that save. The lock is never waited on and never held during
+    a scan. Last writer wins; a stored offset is not compared or adopted.
+    """
     deadline = time.monotonic() + TAKE_WAIT_SECONDS
     root = bridge_root if bridge_root is not None else bridge_home()
     if not cursor:
@@ -7393,25 +7465,21 @@ def _wait_for_take_end(
     while time.monotonic() < deadline:
         if control is not None and control.stopped():
             return False
-        previous = (cursor.get("offset"), {
-            source: state.get("offset")
-            for source, state in cursor.get("channel_buses", {}).items()
-        })
+        previous = _lifecycle_offsets(cursor)
         idle = installation_idle(
             bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
             deadline=deadline, channel_released=channel_released,
         )
-        if save_cursor:
+        current = _lifecycle_offsets(cursor)
+        if checkpoint_lock is None:
             _save_lifecycle_cursor(bus, root, cursor)
+        elif current != previous:
+            _save_lifecycle_cursor_unless_locked(checkpoint_lock, bus, root, cursor)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
         if idle:
             return True
-        current = (cursor.get("offset"), {
-            source: state.get("offset")
-            for source, state in cursor.get("channel_buses", {}).items()
-        })
         # Continue a cold scan without adding a poll delay to each slice.
         # A live take or a stalled malformed row uses the normal poll cadence.
         if current != previous:
@@ -7485,15 +7553,22 @@ def _play_pcm_24k(
         speech_bus = bus if bus is not None else bus_path()
         cursor: dict[str, Any] = {}
         released = channel_quiet_for_playback(runtime, root, control)
-        # Eligibility waits keep their parser progress private. Only the player
-        # lock holder writes the shared lifecycle checkpoint.
+        # A waiting reply saves how far it read when playback.lock is free,
+        # then releases that lock before the next scan. A holder of the lock
+        # keeps the checkpoint. The reply plays only after a pass that read
+        # every source to its end.
         admission_deadline = time.monotonic() + TAKE_WAIT_SECONDS + PLAYBACK_WAIT_SECONDS
         while True:
             if time.monotonic() >= admission_deadline or not _wait_for_take_end(
                 speech_bus, cursor, bridge_root=root, control=control,
-                channel_released=released, save_cursor=False,
+                channel_released=released, checkpoint_lock=lock_descriptor,
             ):
-                return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
+                if control is not None and control.stopped():
+                    return False, "playback stopped", "stopped"
+                # An open start in a partly read prefix is not a live take.
+                if _lifecycle_cursor_caught_up(cursor) and _cursor_holds_take(cursor, released):
+                    return False, "live take wait timed out", "take_live"
+                return False, "lifecycle history unread", "history_unread"
             if not _acquire_playback_lock(lock_descriptor, control):
                 return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "playback wait timed out", "playback_busy")
             # Revalidate after lock contention; a new take or a changed binding
@@ -9054,7 +9129,7 @@ def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, 
         if not spoken and playback["effective_muted"]:
             error, reason = None, "muted"
         state = ("spoken" if spoken else "stopped" if reason == "stopped" else
-                 "refused" if reason in ("take_live", "take_started", "playback_busy", "muted") else "failed")
+                 "refused" if reason in ("take_live", "take_started", "playback_busy", "history_unread", "muted") else "failed")
         control.publish(state, error=error, reason=reason, playback=playback)
         return 0 if spoken or reason == "muted" else 5
     except Exception as error:

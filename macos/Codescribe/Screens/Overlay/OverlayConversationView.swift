@@ -1302,6 +1302,8 @@ enum ReplyPlaybackCopy {
       return String(localized: "Speech stopped when a take began")
     case "take_live":
       return String(localized: "Not played while a take was live")
+    case "history_unread":
+      return String(localized: "Not played while the transcript history was being read")
     case "playback_busy":
       return String(localized: "Not played while another reply was speaking")
     case "credential_missing":

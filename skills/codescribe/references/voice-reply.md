@@ -78,7 +78,7 @@ cs-bus --receipts MESSAGE_ID --provider PROVIDER --session SESSION
 
 Its `spoken` object is the completed playback of that message when there was
 one (`state: spoken`, `spoken: true`), otherwise the latest terminal attempt
-with its `reason` (`take_live`, `muted`, `playback_busy`, `stopped`, …), and
+with its `reason` (`take_live`, `history_unread`, `muted`, `playback_busy`, `stopped`, …), and
 `null` when nobody played it. Do not read the `spoken` field of the
 `agent_reply` row for this: it stays `false` after a Play.
 
@@ -145,7 +145,9 @@ bounded to 120 seconds; timeout leaves a text-only bus reply with
 `spoken: false` and `reason: playback_busy`. Immediately after acquiring the
 lock, the helper checks the canonical application bus, even when the reply uses a
 channel bus. A live take waits up to another 120 seconds, then refuses playback
-with `reason: take_live`; an utterance seal alone does not end that take.
+with `reason: take_live`. A wait that ends before every source has been read
+refuses with `reason: history_unread`. An utterance seal alone does not end
+that take.
 If a take starts while afplay is still playing, the helper stops it and reports
 `reason: take_started`. Continue the reply in text. A take that starts after
 the last sample keeps `spoken: true`: the helper asks the player whether it has
@@ -167,6 +169,7 @@ A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 | `muted`                      | Muted on purpose; the text landed, never unmute          |
 | `playback_busy`              | Another reply held playback beyond the 120-second wait   |
 | `take_live`                  | Take did not end within the 120-second wait              |
+| `history_unread`             | Journal was not read to its end before the wait ended    |
 | `take_started`               | Take started while audio still played; audio stopped     |
 | `playback_failed`            | Audio arrived, `afplay` failed                           |
 
