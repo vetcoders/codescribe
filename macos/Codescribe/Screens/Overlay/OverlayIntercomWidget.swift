@@ -1905,6 +1905,19 @@ final class OverlayIntercomDragView: NSView {
   }
 }
 
+/// One sampling region for a fiszka title plate and the rows under it.
+/// A fiszka is its own panel, outside `DictationOverlayView.overlayGlassContainer`.
+/// Zero merge distance is that container's recipe: the plate samples the rows
+/// and does not join the composer's own glass across the clear gap.
+@ViewBuilder
+private func intercomGlassContainer<Content: View>(_ content: Content) -> some View {
+  if #available(macOS 26.0, *) {
+    GlassEffectContainer(spacing: 0) { content }
+  } else {
+    content
+  }
+}
+
 private struct OverlayIntercomCard: View {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.csTextScale) private var scale
@@ -1964,88 +1977,102 @@ private struct OverlayIntercomCard: View {
       expanded
       ? OverlayIntercomWidgetLayout.conversationCornerRadius
       : OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
-    VStack(spacing: 0) {
-      cardHeader(
-        palette: palette, expanded: expanded, roster: roster, inactive: inactive,
-        audioBelowName: audioBelowName)
-        .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-        .background {
-          if reduceTransparency {
-            RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-              .fill(palette.desktopBackground.color)
-          }
-        }
-        .modifier(
-          OverlayControlGlass(
-            cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency))
-      if expanded || content != .header, let conversation {
-        // One physical metadata line uses the card width, not the narrow name
-        // button between status marks and audio controls. The complete card
-        // shares the exact owner's activity state, including this metadata.
-        OverlayIntercomConversationContext(
-          descriptor: state.conversationAgentDescriptor(conversation)
-            ?? conversation.owner?.provider,
-          palette: palette
-        )
-        .frame(
-          height: OverlayIntercomWidgetLayout.contextStripHeight(scale: scale), alignment: .top)
-      }
-      if expanded {
-        if let conversation {
-          conversationBody(conversation, palette: palette)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-          Text("Conversation unavailable").csFont(12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-      } else if let preview, preview.showsComposer, let conversation {
-        OverlayIntercomConversationBody(
-          state: state, conversation: conversation, palette: palette, focusRevision: 0,
-          presentation: .intercom, showsComposer: true, messageWindowLimit: 8,
-          composerEditorHeightLimit: preview.composerEditorHeightLimit,
-          onActivity: { controller.noteGroupedActivity() },
-          onEditingChanged: { _ in controller.noteGroupedActivity() }
-        )
-        .frame(height: preview.height)
-      } else {
-        Group {
-          if let preview, let conversation {
-            OverlayIntercomMessagePreview(conversation: conversation, palette: palette)
-              .frame(height: preview.height)
+    let showsContext = (expanded || content != .header) && conversation != nil
+    let titleBarHeight =
+      OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      + (showsContext ? OverlayIntercomWidgetLayout.contextStripHeight(scale: scale) : 0)
+    intercomGlassContainer(
+      ZStack(alignment: .top) {
+        VStack(spacing: 0) {
+          // Resting rows stay below the plate. scrollClipDisabled on the
+          // message list still paints a scrolled row up through this gap.
+          Color.clear
+            .frame(height: titleBarHeight)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+          if expanded {
+            if let conversation {
+              conversationBody(conversation, palette: palette)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+              Text("Conversation unavailable").csFont(12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+          } else if let preview, preview.showsComposer, let conversation {
+            OverlayIntercomConversationBody(
+              state: state, conversation: conversation, palette: palette, focusRevision: 0,
+              presentation: .intercom, showsComposer: true, messageWindowLimit: 8,
+              composerEditorHeightLimit: preview.composerEditorHeightLimit,
+              onActivity: { controller.noteGroupedActivity() },
+              onEditingChanged: { _ in controller.noteGroupedActivity() }
+            )
+            .frame(height: preview.height)
           } else {
-            Color.clear
-              .contentShape(Rectangle())
-              .onTapGesture {
-                if canOpenConversation { controller.expand(identity) }
+            Group {
+              if let preview, let conversation {
+                OverlayIntercomMessagePreview(conversation: conversation, palette: palette)
+                  .frame(height: preview.height)
+              } else {
+                Color.clear
+                  .contentShape(Rectangle())
+                  .onTapGesture {
+                    if canOpenConversation { controller.expand(identity) }
+                  }
               }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .contentShape(Rectangle())
+            .contextMenu {
+              if let message = conversation?.messages.last {
+                CopyMessageButton(text: message.text, palette: palette)
+              }
+              Button("Open conversation") { controller.expand(identity) }
+                .disabled(!canOpenConversation)
+            }
+            .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
+            .accessibilityAction(named: Text("Open conversation")) {
+              if canOpenConversation { controller.expand(identity) }
+            }
+            .accessibilityIdentifier("overlay-intercom-preview-open-\(identity.digit)")
+          }
+          if audioBelowName {
+            audioSlot(
+              current ? conversation : nil, palette: palette,
+              speaking: current && conversation?.replySpeaking == true,
+              open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false))
+              .frame(maxWidth: .infinity, alignment: .trailing)
+              .padding(.horizontal, 6)
+              .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+              .accessibilityIdentifier("overlay-intercom-audio-footer-\(identity.digit)")
           }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .contentShape(Rectangle())
-        .contextMenu {
-          if let message = conversation?.messages.last {
-            CopyMessageButton(text: message.text, palette: palette)
+        .accessibilitySortPriority(0)
+        VStack(spacing: 0) {
+          cardHeader(
+            palette: palette, expanded: expanded, roster: roster, inactive: inactive,
+            audioBelowName: audioBelowName)
+            .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+          if showsContext, let conversation {
+            // One physical metadata line uses the card width, not the narrow name
+            // button between status marks and audio controls. The complete card
+            // shares the exact owner's activity state, including this metadata.
+            OverlayIntercomConversationContext(
+              descriptor: state.conversationAgentDescriptor(conversation)
+                ?? conversation.owner?.provider,
+              palette: palette
+            )
+            .frame(
+              height: OverlayIntercomWidgetLayout.contextStripHeight(scale: scale),
+              alignment: .top)
           }
-          Button("Open conversation") { controller.expand(identity) }
-            .disabled(!canOpenConversation)
         }
-        .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
-        .accessibilityAction(named: Text("Open conversation")) {
-          if canOpenConversation { controller.expand(identity) }
-        }
-        .accessibilityIdentifier("overlay-intercom-preview-open-\(identity.digit)")
+        // Later than the rows, so scrolled text stays under the plate. The
+        // title bar carries the composer's glass, not a glass of its own
+        // (Maciej, 2026-10-23). Reduce Transparency makes this plate opaque.
+        .modifier(OverlayComposerSurface(palette: palette))
+        .accessibilitySortPriority(1)
       }
-      if audioBelowName {
-        audioSlot(
-          current ? conversation : nil, palette: palette,
-          speaking: current && conversation?.replySpeaking == true,
-          open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false))
-          .frame(maxWidth: .infinity, alignment: .trailing)
-          .padding(.horizontal, 6)
-          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-          .accessibilityIdentifier("overlay-intercom-audio-footer-\(identity.digit)")
-      }
-    }
+    )
     .foregroundStyle(palette.primaryText.color)
     .modifier(OverlayDisconnectedRowDim(disconnected: current && inactive))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -2899,49 +2926,69 @@ private struct OverlayIntercomInstanceCard: View {
       mini
       ? OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
       : OverlayIntercomWidgetLayout.conversationCornerRadius
-    return VStack(spacing: 0) {
-      headerRow(
-        instance, conversation: conversation, palette: palette, roster: roster,
-        audioBelowName: audioBelowName)
-        .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-      // The detached fiszka keeps the same metadata line as its group card;
-      // the agent's provider, model and repository must not vanish with the
-      // detach (Maciej, 2026-10-28).
-      if !mini, let conversation {
-        OverlayIntercomConversationContext(
-          descriptor: state.conversationAgentDescriptor(conversation)
-            ?? conversation.owner?.provider,
-          palette: palette
-        )
-        .frame(
-          height: OverlayIntercomWidgetLayout.contextStripHeight(scale: scale), alignment: .top)
-      }
-      if !mini {
-        if let conversation {
-          OverlayIntercomConversationBody(
-            state: state, conversation: conversation, palette: palette,
-            focusRevision: controller.instanceFocusRevisions[instanceID] ?? 0
-          )
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-          // The exact owner is gone from the roster. The saved words stay
-          // readable; live actions withdraw instead of guessing a successor.
-          Text("Conversation unavailable").csFont(12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    let showsContext = !mini && conversation != nil
+    let titleBarHeight =
+      OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      + (showsContext ? OverlayIntercomWidgetLayout.contextStripHeight(scale: scale) : 0)
+    return intercomGlassContainer(
+      ZStack(alignment: .top) {
+        VStack(spacing: 0) {
+          Color.clear
+            .frame(height: titleBarHeight)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+          if !mini {
+            if let conversation {
+              OverlayIntercomConversationBody(
+                state: state, conversation: conversation, palette: palette,
+                focusRevision: controller.instanceFocusRevisions[instanceID] ?? 0
+              )
+              .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+              // The exact owner is gone from the roster. The saved words stay
+              // readable; live actions withdraw instead of guessing a successor.
+              Text("Conversation unavailable").csFont(12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+          }
+          if audioBelowName {
+            OverlayIntercomAudioControls(
+              state: state, conversation: current ? conversation : nil, digit: instance.digit,
+              palette: palette,
+              open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false),
+              speaking: current && conversation?.replySpeaking == true, shared: false)
+              .frame(maxWidth: .infinity, alignment: .trailing)
+              .padding(.horizontal, 6)
+              .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+              .accessibilityIdentifier("overlay-intercom-instance-audio-footer-\(instance.digit)")
+          }
         }
+        .accessibilitySortPriority(0)
+        VStack(spacing: 0) {
+          headerRow(
+            instance, conversation: conversation, palette: palette, roster: roster,
+            audioBelowName: audioBelowName)
+            .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+          // The detached fiszka keeps the same metadata line as its group card;
+          // the agent's provider, model and repository must not vanish with the
+          // detach (Maciej, 2026-10-28).
+          if showsContext, let conversation {
+            OverlayIntercomConversationContext(
+              descriptor: state.conversationAgentDescriptor(conversation)
+                ?? conversation.owner?.provider,
+              palette: palette
+            )
+            .frame(
+              height: OverlayIntercomWidgetLayout.contextStripHeight(scale: scale),
+              alignment: .top)
+          }
+        }
+        // Same plate as the docked card: composer glass above the rows, opaque
+        // when Reduce Transparency is on. The header's drag grip stays inside it.
+        .modifier(OverlayComposerSurface(palette: palette))
+        .accessibilitySortPriority(1)
       }
-      if audioBelowName {
-        OverlayIntercomAudioControls(
-          state: state, conversation: current ? conversation : nil, digit: instance.digit,
-          palette: palette,
-          open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false),
-          speaking: current && conversation?.replySpeaking == true, shared: false)
-          .frame(maxWidth: .infinity, alignment: .trailing)
-          .padding(.horizontal, 6)
-          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-          .accessibilityIdentifier("overlay-intercom-instance-audio-footer-\(instance.digit)")
-      }
-    }
+    )
     .foregroundStyle(palette.primaryText.color)
     // Saved history keeps readable words; only its header marks the old owner.
     .modifier(OverlayDisconnectedRowDim(disconnected: current && inactive))
@@ -3148,19 +3195,9 @@ private struct OverlayIntercomInstanceCard: View {
         onDrag: { controller.beginInstanceDrag(instanceID) },
         onDragEnded: { controller.finishInstanceDrag() }, cursorHint: false)
     )
-    // The title bar carries the control glass of the composer and the name
-    // pill, not a glass of its own (Maciej, 2026-10-23). The drag surface
-    // sits inside the glass: outside it, the glass takes the hit and no
-    // drag reaches the window (Klaudiusz-div0's HID probe).
-    .background {
-      if reduceTransparency {
-        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-          .fill(palette.desktopBackground.color)
-      }
-    }
-    .modifier(
-      OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
-    )
+    // The drag surface stays inside the title plate. `content` wraps this
+    // header in OverlayComposerSurface; glass outside the grip takes the hit
+    // and the window never moves (Klaudiusz-div0's HID probe).
     // The wheel reaches an agent in its own window: the same ring as its row.
     .modifier(
       OverlayGestureFocusRing(
