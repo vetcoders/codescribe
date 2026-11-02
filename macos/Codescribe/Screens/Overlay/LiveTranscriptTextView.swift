@@ -401,7 +401,9 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       let safeRange = NSRange(
         location: pendingRange.location,
         length: min(pendingRange.length, length - pendingRange.location))
-      guard Range(safeRange, in: textView.string) != nil else { continue }
+      guard
+        (textView.string as NSString).rangeOfComposedCharacterSequences(for: safeRange) == safeRange
+      else { continue }
       // Text in progress is slightly dimmed; settled text regains full saturation
       storage.addAttribute(
         .foregroundColor, value: pendingColor, range: safeRange)

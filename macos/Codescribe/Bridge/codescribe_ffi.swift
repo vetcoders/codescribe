@@ -10161,6 +10161,7 @@ public struct CsCompactProjection: Equatable, Hashable {
      * it as secondary text; it is never canvas, Bus, or delivery bytes.
      */
     public var evidence: [CsUnanchoredEvidence]
+    public var pendingRanges: [CsPendingRange]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -10172,13 +10173,14 @@ public struct CsCompactProjection: Equatable, Hashable {
         /**
          * Read-only unanchored text beside the canvas, in PCM order. Swift paints
          * it as secondary text; it is never canvas, Bus, or delivery bytes.
-         */evidence: [CsUnanchoredEvidence]) {
+         */evidence: [CsUnanchoredEvidence], pendingRanges: [CsPendingRange] = []) {
         self.sessionId = sessionId
         self.captureEpoch = captureEpoch
         self.sequence = sequence
         self.text = text
         self.degraded = degraded
         self.evidence = evidence
+        self.pendingRanges = pendingRanges
     }
 
 
@@ -10200,7 +10202,8 @@ public struct FfiConverterTypeCsCompactProjection: FfiConverterRustBuffer {
                 sequence: FfiConverterUInt64.read(from: &buf),
                 text: FfiConverterString.read(from: &buf),
                 degraded: FfiConverterBool.read(from: &buf),
-                evidence: FfiConverterSequenceTypeCsUnanchoredEvidence.read(from: &buf)
+                evidence: FfiConverterSequenceTypeCsUnanchoredEvidence.read(from: &buf),
+                pendingRanges: FfiConverterSequenceTypeCsPendingRange.read(from: &buf)
         )
     }
 
@@ -10211,6 +10214,7 @@ public struct FfiConverterTypeCsCompactProjection: FfiConverterRustBuffer {
         FfiConverterString.write(value.text, into: &buf)
         FfiConverterBool.write(value.degraded, into: &buf)
         FfiConverterSequenceTypeCsUnanchoredEvidence.write(value.evidence, into: &buf)
+        FfiConverterSequenceTypeCsPendingRange.write(value.pendingRanges, into: &buf)
     }
 }
 
@@ -12869,6 +12873,61 @@ public func FfiConverterTypeCsPasteResult_lift(_ buf: RustBuffer) throws -> CsPa
 #endif
 public func FfiConverterTypeCsPasteResult_lower(_ value: CsPasteResult) -> RustBuffer {
     return FfiConverterTypeCsPasteResult.lower(value)
+}
+
+
+/**
+ * UTF-16 range within ephemeral canvas text for an uncommitted (pending) fragment.
+ */
+public struct CsPendingRange: Equatable, Hashable {
+    public var utf16Start: UInt32
+    public var utf16End: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(utf16Start: UInt32, utf16End: UInt32) {
+        self.utf16Start = utf16Start
+        self.utf16End = utf16End
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsPendingRange: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsPendingRange: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsPendingRange {
+        return
+            try CsPendingRange(
+                utf16Start: FfiConverterUInt32.read(from: &buf),
+                utf16End: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsPendingRange, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.utf16Start, into: &buf)
+        FfiConverterUInt32.write(value.utf16End, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPendingRange_lift(_ buf: RustBuffer) throws -> CsPendingRange {
+    return try FfiConverterTypeCsPendingRange.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPendingRange_lower(_ value: CsPendingRange) -> RustBuffer {
+    return FfiConverterTypeCsPendingRange.lower(value)
 }
 
 
@@ -21477,6 +21536,31 @@ fileprivate struct FfiConverterSequenceTypeCsModelOption: FfiConverterRustBuffer
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCsModelOption.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsPendingRange: FfiConverterRustBuffer {
+    typealias SwiftType = [CsPendingRange]
+
+    public static func write(_ value: [CsPendingRange], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsPendingRange.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsPendingRange] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsPendingRange]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsPendingRange.read(from: &buf))
         }
         return seq
     }

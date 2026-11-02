@@ -3871,7 +3871,9 @@ final class OverlayState {
       guard start >= 0, end > start, start < textLength else { return nil }
       let safeEnd = min(end, textLength)
       let safeRange = NSRange(location: start, length: safeEnd - start)
-      guard Range(safeRange, in: compact.text) != nil else { return nil }
+      guard
+        (compact.text as NSString).rangeOfComposedCharacterSequences(for: safeRange) == safeRange
+      else { return nil }
       return safeRange
     }
   }

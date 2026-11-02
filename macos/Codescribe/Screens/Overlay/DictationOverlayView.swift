@@ -511,28 +511,29 @@ struct DictationOverlayView: View {
     OverlayCanvasSurface(palette: palette) {
       // The rail reads the live transcript (intents, versions, history
       // refusal). Scoped, a capture tick re-renders the rail, not the root.
-      overlayGlassContainer(canvasStack(
-        OverlayObservationScope {
-          OverlayIntentRail(
-            phase: state.statusText,
-            intents: railIntents,
-            palette: palette,
-            formatLevel: state.autoFormatLevel,
-            cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
-            retranscribeUnavailableReason: state.retranscribeUnavailableReason,
-            historyOpenRefusal: state.archiveOpenRefusal,
-            recoverSupersededLabel: state.supersededRecoveryActionLabel,
-            admitHistoryOpen: { state.admitHistoryOpen() },
-            onOpenArchive: { state.openArchivedTranscript($0, admission: $1) },
-            onHistoryDismiss: { state.invalidateHistoryOpens() },
-            versions: state.transcriptVersions,
-            onVersionsOpened: { state.refreshTranscriptVersions() },
-            onSelectVersion: { state.selectDocumentVersion($0) },
-            onIntent: state.relayIntent,
-            onRetranscribe: { state.retranscribe(pass: $0) },
-            onFormatOnce: { state.formatTranscript(at: $0) }
-          )
-        }))
+      overlayGlassContainer(
+        canvasStack(
+          OverlayObservationScope {
+            OverlayIntentRail(
+              phase: state.statusText,
+              intents: railIntents,
+              palette: palette,
+              formatLevel: state.autoFormatLevel,
+              cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
+              retranscribeUnavailableReason: state.retranscribeUnavailableReason,
+              historyOpenRefusal: state.archiveOpenRefusal,
+              recoverSupersededLabel: state.supersededRecoveryActionLabel,
+              admitHistoryOpen: { state.admitHistoryOpen() },
+              onOpenArchive: { state.openArchivedTranscript($0, admission: $1) },
+              onHistoryDismiss: { state.invalidateHistoryOpens() },
+              versions: state.transcriptVersions,
+              onVersionsOpened: { state.refreshTranscriptVersions() },
+              onSelectVersion: { state.selectDocumentVersion($0) },
+              onIntent: state.relayIntent,
+              onRetranscribe: { state.retranscribe(pass: $0) },
+              onFormatOnce: { state.formatTranscript(at: $0) }
+            )
+          }))
     }
     .coordinateSpace(name: "overlay-canvas")
     .csFocusPolicy()
@@ -801,8 +802,9 @@ struct DictationOverlayView: View {
           if railShown {
             agentRail(
               maximumHeight: geometry.size.height, width: railWidth,
-              windowWidth: geometry.size.width)
-              .transition(.move(edge: .trailing).combined(with: .opacity))
+              windowWidth: geometry.size.width
+            )
+            .transition(.move(edge: .trailing).combined(with: .opacity))
           }
           if transcriptActionsShown {
             transcriptActionsColumn(
@@ -1215,7 +1217,7 @@ struct DictationOverlayView: View {
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
     controls.onShowDictation = state.showTranscription
-    controls.onShowAgents = state.showAgentMonitor
+    controls.onShowAgents = { state.showAgentMonitor() }
     controls.onPresentationSelect = state.setPresentationMode
     return controls
   }

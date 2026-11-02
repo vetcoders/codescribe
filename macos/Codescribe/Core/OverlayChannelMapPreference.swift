@@ -49,9 +49,9 @@ final class OverlayChannelMapPreference {
   var enabled: Bool {
     access(keyPath: \.enabled)
     #if CHANNEL_nightly
-    return defaults.bool(forKey: Self.key)
+      return defaults.bool(forKey: Self.key)
     #else
-    return false
+      return false
     #endif
   }
 
@@ -65,19 +65,19 @@ final class OverlayChannelMapPreference {
 
   func selectLayout(_ layout: OverlayIntercomLayout) {
     #if CHANNEL_nightly
-    guard layout != self.layout else { return }
-    withMutation(keyPath: \.layout) {
-      defaults.set(layout.rawValue, forKey: Self.layoutKey)
-    }
+      guard layout != self.layout else { return }
+      withMutation(keyPath: \.layout) {
+        defaults.set(layout.rawValue, forKey: Self.layoutKey)
+      }
     #endif
   }
 
   func select(_ enabled: Bool) {
     #if CHANNEL_nightly
-    guard enabled != self.enabled else { return }
-    withMutation(keyPath: \.enabled) {
-      defaults.set(enabled, forKey: Self.key)
-    }
+      guard enabled != self.enabled else { return }
+      withMutation(keyPath: \.enabled) {
+        defaults.set(enabled, forKey: Self.key)
+      }
     #endif
   }
 
@@ -85,16 +85,16 @@ final class OverlayChannelMapPreference {
   /// layout survives, so returning to a mapped mode restores the last one.
   var mode: OverlayIntercomPresentationMode {
     #if CHANNEL_nightly
-    OverlayIntercomPresentationMode(enabled: enabled, layout: layout)
+      OverlayIntercomPresentationMode(enabled: enabled, layout: layout)
     #else
-    .classic
+      .classic
     #endif
   }
 
   func selectMode(_ mode: OverlayIntercomPresentationMode) {
     #if CHANNEL_nightly
-    if let layout = mode.layout { selectLayout(layout) }
-    select(mode != .classic)
+      if let layout = mode.layout { selectLayout(layout) }
+      select(mode != .classic)
     #endif
   }
 }

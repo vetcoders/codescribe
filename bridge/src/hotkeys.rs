@@ -4076,6 +4076,10 @@ mod preparing_compensation_tests {
             sequence: 2,
             text: "…".into(),
             degraded: true,
+            pending_ranges: vec![codescribe::presentation::emitter::PendingRange {
+                utf16_start: 0,
+                utf16_end: 1,
+            }],
             voice: codescribe::presentation::emitter::CursorVoice::Lagging,
             evidence: vec![codescribe::presentation::emitter::UnanchoredEvidence {
                 sample_start: 16_000,

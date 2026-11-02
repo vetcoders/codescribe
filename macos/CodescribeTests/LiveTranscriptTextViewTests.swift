@@ -889,7 +889,10 @@ final class LiveTranscriptTextViewTests: XCTestCase {
 
   func testPendingPaintDimsOnlyItsRangesAndSettlementRestoresInkWithoutChangingCopy() async throws {
     let fixture = makeScrollFixture()
-    defer { fixture.coordinator.detach(); fixture.window.close() }
+    defer {
+      fixture.coordinator.detach()
+      fixture.window.close()
+    }
     let board = NSPasteboard.withUniqueName()
     defer { board.releaseGlobally() }
     let restoreClipboard = ClipboardCapture.route(into: board)
@@ -902,20 +905,25 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     }
     update([])
     let storage = try XCTUnwrap(fixture.textView.textStorage)
-    let ink = try XCTUnwrap(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+    let ink = try XCTUnwrap(
+      storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
     fixture.textView.setSelectedRange(NSRange(location: 0, length: storage.length))
     let selection = fixture.textView.selectedRange()
     update([pending])
-    let dim = try XCTUnwrap(storage.attribute(.foregroundColor, at: pending.location, effectiveRange: nil) as? NSColor)
+    let dim = try XCTUnwrap(
+      storage.attribute(.foregroundColor, at: pending.location, effectiveRange: nil) as? NSColor)
     XCTAssertNotEqual(dim, ink)
     XCTAssertEqual(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, ink)
-    XCTAssertEqual(storage.attribute(.foregroundColor, at: storage.length - 1, effectiveRange: nil) as? NSColor, ink)
+    XCTAssertEqual(
+      storage.attribute(.foregroundColor, at: storage.length - 1, effectiveRange: nil) as? NSColor,
+      ink)
     XCTAssertEqual(fixture.textView.selectedRange(), selection)
     try await settle(fixture.textView.copySelection())
     XCTAssertEqual(Array(try XCTUnwrap(board.string(forType: .string)).utf8), Array(text.utf8))
     update([])
     for index in 0..<storage.length {
-      XCTAssertEqual(storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor, ink)
+      XCTAssertEqual(
+        storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor, ink)
     }
     XCTAssertEqual(fixture.textView.selectedRange(), selection)
     XCTAssertEqual(Array(fixture.textView.string.utf8), Array(text.utf8))
@@ -923,23 +931,34 @@ final class LiveTranscriptTextViewTests: XCTestCase {
 
   func testMalformedPendingRangesCannotOverflowOrSplitUnicode() throws {
     let fixture = makeScrollFixture()
-    defer { fixture.coordinator.detach(); fixture.window.close() }
+    defer {
+      fixture.coordinator.detach()
+      fixture.window.close()
+    }
     let text = "A 🐢 Z"
     LiveTranscriptTextView(text: text, appearance: .dark).update(
       fixture.textView, coordinator: fixture.coordinator)
     let storage = try XCTUnwrap(fixture.textView.textStorage)
-    let ink = try XCTUnwrap(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
-    LiveTranscriptTextView(text: text, pendingRanges: [
-      NSRange(location: NSNotFound, length: Int.max),
-      NSRange(location: 3, length: 1), NSRange(location: -1, length: 3),
-      NSRange(location: 0, length: 0),
-    ], appearance: .dark).update(fixture.textView, coordinator: fixture.coordinator)
+    let ink = try XCTUnwrap(
+      storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+    LiveTranscriptTextView(
+      text: text,
+      pendingRanges: [
+        NSRange(location: NSNotFound, length: Int.max),
+        NSRange(location: 3, length: 1), NSRange(location: -1, length: 3),
+        NSRange(location: 0, length: 0),
+      ], appearance: .dark
+    ).update(fixture.textView, coordinator: fixture.coordinator)
     for index in 0..<storage.length {
-      XCTAssertEqual(storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor, ink)
+      XCTAssertEqual(
+        storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor, ink)
     }
-    LiveTranscriptTextView(text: text, pendingRanges: [NSRange(location: 5, length: Int.max)], appearance: .dark).update(
+    LiveTranscriptTextView(
+      text: text, pendingRanges: [NSRange(location: 5, length: Int.max)], appearance: .dark
+    ).update(
       fixture.textView, coordinator: fixture.coordinator)
-    XCTAssertNotEqual(storage.attribute(.foregroundColor, at: 5, effectiveRange: nil) as? NSColor, ink)
+    XCTAssertNotEqual(
+      storage.attribute(.foregroundColor, at: 5, effectiveRange: nil) as? NSColor, ink)
     XCTAssertEqual(Array(fixture.textView.string.utf8), Array(text.utf8))
   }
 

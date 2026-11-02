@@ -473,7 +473,8 @@ final class OverlayStateTests: XCTestCase {
     projectText(
       "Prywatne zdanie", to: state, terminal: true, delivery: .composerPending,
       sessionId: "draft-capture", reducerAction: "session_ended")
-    XCTAssertEqual(ConversationDraft.split(state.conversationDraft(for: a.id)).text,
+    XCTAssertEqual(
+      ConversationDraft.split(state.conversationDraft(for: a.id)).text,
       "Mine\nPrywatne zdanie")
     XCTAssertEqual(state.conversationDraft(for: b.id), "", "B joined after the words")
 
@@ -3687,7 +3688,9 @@ final class OverlayStateTests: XCTestCase {
     state.finishControllerRecording()
     XCTAssertEqual(state.mode, .listening)
     XCTAssertTrue(state.animatesTranscriptCaret, "Stop still awaits its terminal result")
-    projectText("settled", to: state, terminal: true)
+    projectText("late old take", to: state, terminal: true)
+    XCTAssertTrue(state.animatesTranscriptCaret, "A retired take cannot settle the current marker")
+    projectText("settled", to: state, terminal: true, sessionId: "next-take")
     XCTAssertFalse(state.animatesTranscriptCaret)
   }
 
@@ -4945,7 +4948,8 @@ final class OverlayStateTests: XCTestCase {
     state.applyCompactProjection(
       CsCompactProjection(
         sessionId: "pending-ranges", captureEpoch: 1, sequence: 1,
-        text: text, degraded: false, evidence: [], pendingRanges: [
+        text: text, degraded: false, evidence: [],
+        pendingRanges: [
           CsPendingRange(utf16Start: 2, utf16End: 4),
           CsPendingRange(utf16Start: 5, utf16End: 7),
           CsPendingRange(utf16Start: 3, utf16End: 4),
@@ -4953,10 +4957,12 @@ final class OverlayStateTests: XCTestCase {
           CsPendingRange(utf16Start: 40, utf16End: 45),
           CsPendingRange(utf16Start: 7, utf16End: 2),
         ]))
-    XCTAssertEqual(state.canvasPendingRanges, [
-      NSRange(location: 2, length: 2), NSRange(location: 5, length: 2),
-      NSRange(location: 8, length: 1),
-    ])
+    XCTAssertEqual(
+      state.canvasPendingRanges,
+      [
+        NSRange(location: 2, length: 2), NSRange(location: 5, length: 2),
+        NSRange(location: 8, length: 1),
+      ])
     XCTAssertEqual(Array(state.canvasText.utf8), Array(text.utf8))
     XCTAssertEqual(state.activeText, "", "Paint metadata grants no document authority")
     projectText(text, to: state, terminal: true, sessionId: "pending-ranges")
@@ -5805,7 +5811,9 @@ final class OverlayStateTests: XCTestCase {
     let text = state.activeText
     let mode = state.mode
     let terminal = state.terminal
-    let commands = [state.canPaste, state.canInsert, state.canCopy, state.canRetranscribe, state.canFormat]
+    let commands = [
+      state.canPaste, state.canInsert, state.canCopy, state.canRetranscribe, state.canFormat,
+    ]
     var callbacks = 0
     state.onPresentationStatus = { callbacks += 1 }
     state.applyPresentationStatus(formattingNotice(sessionID: "formatter-current"))

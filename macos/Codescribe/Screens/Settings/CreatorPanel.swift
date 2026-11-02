@@ -74,31 +74,31 @@ struct CreatorPanel: View {
       VStack(spacing: 8) {
         AppearanceRow(model: model)
         SheetShadeRows(model: model)
-#if CHANNEL_nightly
-        SettingsControlRow(
-          title: String(localized: "Intercom layout"),
-          subtitle: String(
-            localized:
-              "Classic overlay, a horizontal bar, or agent cards. Bar and Cards are in beta."
-          )
-        ) {
-          // Keep the default first and label both optional layouts as beta.
-          Picker(
-            "Intercom layout",
-            selection: Binding(
-              get: { model.overlayIntercomMode },
-              set: { model.selectOverlayIntercomMode($0) })
+        #if CHANNEL_nightly
+          SettingsControlRow(
+            title: String(localized: "Intercom layout"),
+            subtitle: String(
+              localized:
+                "Classic overlay, a horizontal bar, or agent cards. Bar and Cards are in beta."
+            )
           ) {
-            Text("Classic (default)").tag(OverlayIntercomPresentationMode.classic)
-            Text("Bar (beta)")
-              .tag(OverlayIntercomPresentationMode.horizontal)
-            Text("Cards (beta)")
-              .tag(OverlayIntercomPresentationMode.vertical)
+            // Keep the default first and label both optional layouts as beta.
+            Picker(
+              "Intercom layout",
+              selection: Binding(
+                get: { model.overlayIntercomMode },
+                set: { model.selectOverlayIntercomMode($0) })
+            ) {
+              Text("Classic (default)").tag(OverlayIntercomPresentationMode.classic)
+              Text("Bar (beta)")
+                .tag(OverlayIntercomPresentationMode.horizontal)
+              Text("Cards (beta)")
+                .tag(OverlayIntercomPresentationMode.vertical)
+            }
+            .labelsHidden()
+            .accessibilityIdentifier("settings-overlay-intercom-layout")
           }
-          .labelsHidden()
-          .accessibilityIdentifier("settings-overlay-intercom-layout")
-        }
-#endif
+        #endif
       }
       .padding(.top, SettingsScale.headerGap)
 

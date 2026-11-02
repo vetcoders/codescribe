@@ -15,20 +15,20 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     defaults.set("vertical", forKey: OverlayChannelMapPreference.layoutKey)
     let preference = OverlayChannelMapPreference(defaults: defaults)
     #if CHANNEL_nightly
-    XCTAssertTrue(preference.enabled)
-    XCTAssertEqual(preference.mode, .vertical)
-    preference.selectMode(.horizontal)
-    XCTAssertEqual(preference.mode, .horizontal)
+      XCTAssertTrue(preference.enabled)
+      XCTAssertEqual(preference.mode, .vertical)
+      preference.selectMode(.horizontal)
+      XCTAssertEqual(preference.mode, .horizontal)
     #else
-    XCTAssertFalse(preference.enabled)
-    XCTAssertEqual(preference.mode, .classic)
-    let original = defaults.dictionaryRepresentation() as NSDictionary
-    preference.select(true)
-    preference.selectLayout(.horizontal)
-    preference.selectMode(.vertical)
-    XCTAssertEqual(defaults.dictionaryRepresentation() as NSDictionary, original)
-    XCTAssertFalse(preference.enabled)
-    XCTAssertEqual(OverlayChannelMapPreference(defaults: defaults).mode, .classic)
+      XCTAssertFalse(preference.enabled)
+      XCTAssertEqual(preference.mode, .classic)
+      let original = defaults.dictionaryRepresentation() as NSDictionary
+      preference.select(true)
+      preference.selectLayout(.horizontal)
+      preference.selectMode(.vertical)
+      XCTAssertEqual(defaults.dictionaryRepresentation() as NSDictionary, original)
+      XCTAssertFalse(preference.enabled)
+      XCTAssertEqual(OverlayChannelMapPreference(defaults: defaults).mode, .classic)
     #endif
   }
 

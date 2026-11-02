@@ -475,11 +475,7 @@ impl From<codescribe::presentation::emitter::CompactProjection> for CsCompactPro
                     reason: item.reason,
                 })
                 .collect(),
-            pending_ranges: value
-                .pending_ranges
-                .into_iter()
-                .map(Into::into)
-                .collect(),
+            pending_ranges: value.pending_ranges.into_iter().map(Into::into).collect(),
         }
     }
 }
