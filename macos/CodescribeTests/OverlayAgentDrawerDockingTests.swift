@@ -1087,7 +1087,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   /// Write, microphone, playback and Show in Agents stay out of card menus.
   /// Both the permitted card menu and the full pill sentinel are required
   /// positive controls; inline metadata still has no system tooltip.
-  func testFullRosterResolvesNoBigAgentMenuAndCarriesNoSystemTooltips() throws {
+  func testFullRosterRetainsLabelActionsAndCarriesNoSystemTooltips() async throws {
     let (broadcast, lena, astra) = try rosterFixture()
     let channels = [
       OverlayChannelDelivery(
@@ -1126,18 +1126,18 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     BackgroundTestWindow.present(window)
     host.layoutSubtreeIfNeeded()
 
-    // The same localization keys the production menu uses, so the markers
-    // survive a Polish (or any) runtime language (Astra, T4).
-    let forbidden = [
+    // e82fb21 deliberately restored full guarded actions on labels while
+    // More retained the compact secondary menu. Test both surfaces at their owners.
+    let labelActions = [
       String(localized: "Write / Forward…"), String(localized: "Speak to agent"),
-      String(localized: "Stop speaking to agent"), String(localized: "Mute agent replies"),
-      String(localized: "Unmute agent replies"), String(localized: "Show in Agents"),
+      String(localized: "Mute agent replies"), String(localized: "Show in Agents"),
     ]
     func titles(of menu: NSMenu) -> [String] {
       menu.items.flatMap { [$0.title] + ($0.submenu.map(titles(of:)) ?? []) }
     }
     var resolvedMenus = 0
     var cardMenus = 0
+    var labelMenus = 0
     let step: CGFloat = 12
     for x in stride(from: CGFloat(6), to: host.bounds.width, by: step) {
       for y in stride(from: CGFloat(6), to: host.bounds.height, by: step) {
@@ -1164,18 +1164,27 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
           XCTAssertTrue(resolved.contains(String(localized: "Channel 0")))
           XCTAssertTrue(resolved.contains(String(localized: "Do not disturb")))
         }
-        for title in resolved {
-          for marker in forbidden {
-            XCTAssertFalse(
-              title.contains(marker),
-              "the big agent menu leaked into the full roster at \(point): \(resolved)")
+        if resolved.contains(String(localized: "Write / Forward…")) {
+          labelMenus += 1
+          for action in labelActions {
+            XCTAssertTrue(
+              resolved.contains(action), "Incomplete label menu at \(point): \(resolved)")
           }
+          let expected = Set(
+            labelActions + [
+              String(localized: "Channel 0"), String(localized: "Do not disturb"),
+              String(localized: "Disconnect and archive agent"),
+            ])
+          XCTAssertEqual(
+            Set(resolved.filter { !$0.isEmpty }), expected,
+            "The label menu must contain exactly its guarded actions and reception/archive policy")
         }
       }
     }
     XCTAssertGreaterThan(
       resolvedMenus, 0, "the scan resolved no menu at all, so absence proves nothing")
-    XCTAssertGreaterThan(cardMenus, 0, "the roster must expose its permitted secondary menu")
+    XCTAssertGreaterThan(cardMenus, 0, "the roster must retain its reception/archive policy")
+    XCTAssertGreaterThan(labelMenus, 0, "the label's full action menu must be reachable")
 
     var tooltips: [String] = []
     func walk(_ view: NSView) {
@@ -1187,8 +1196,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       tooltips.isEmpty,
       "the full roster shows its information inline, never as system tooltips: \(tooltips)")
 
-    // The matcher itself is proven on a sentinel first: a probe carrying the
-    // REAL agentPillMenu(for: "2") must expose the forbidden commands, and
+    // A sentinel carrying the real action modifier proves the complete label
+    // command set and its guarded write route independently of roster layout.
     // performing its write item must reach the spied conversation target.
     var sentinelSelected: String?
     var sentinel = OverlayChannelStatusView(
@@ -1198,6 +1207,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       conversations: [broadcast, lena, astra], selectedConversationID: broadcast.id,
       onSelectConversation: { sentinelSelected = $0 })
     sentinel.onTogglePlayback = { _ in }
+    sentinel.onShowAgentInMonitor = { _ in }
     sentinel.mutedChannels = ["2": false]
     let probeHost = NSHostingView(
       rootView: VStack {
@@ -1215,7 +1225,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     probeWindow.contentView = probeHost
     BackgroundTestWindow.present(probeWindow)
     probeHost.layoutSubtreeIfNeeded()
-    RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+    try await Task.sleep(for: .milliseconds(80))
     probeHost.layoutSubtreeIfNeeded()
 
     func resolvedMenu(in container: NSView, of window: NSWindow, at point: NSPoint) -> NSMenu? {
@@ -1249,11 +1259,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     }
     let probeTitles = probeMenu.map(titles(of:)) ?? []
     XCTAssertTrue(
-      forbidden.contains { marker in probeTitles.contains { $0.contains(marker) } },
-      "the sentinel agent menu must trip the matcher, or absence proves nothing: \(probeTitles)")
-    // Required, never conditional (Astra and Olga on bdadd84fc): another
-    // forbidden command could satisfy the matcher while a missing Write
-    // silently skipped the spy.
+      labelActions.allSatisfy { probeTitles.contains($0) },
+      "the sentinel must expose the same complete label action set: \(probeTitles)")
+    // Require Write directly; another action cannot satisfy the route spy.
     let requiredMenu = try XCTUnwrap(probeMenu, "the sentinel resolves a real menu")
     let writeIndex = try XCTUnwrap(
       requiredMenu.items.firstIndex(where: {
@@ -1274,20 +1282,26 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       for child in view.subviews { found.append(contentsOf: regions(in: child)) }
       return found
     }
+    func hover(_ region: OverlayMenuCursorRegionView, at point: NSPoint) async throws {
+      region.updateHover(at: point)
+      // Production coalesces callbacks to a display beat. Observe that callback,
+      // preserving coalescing instead of asserting against the pre-delivery state.
+      try await Task.sleep(for: .milliseconds(40))
+    }
     let probeRegions = regions(in: probeHost)
     XCTAssertFalse(probeRegions.isEmpty, "the hint probe composes a hover region")
     var sawProbeHint = false
     for region in probeRegions {
       let center = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
-      region.updateHover(at: center)
+      try await hover(region, at: center)
       if OverlayHintPanel.shared.presentedTitle == "probe-hint" {
         sawProbeHint = true
-        region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+        try await hover(region, at: NSPoint(x: -1_000, y: -1_000))
         XCTAssertNil(
           OverlayHintPanel.shared.presentedTitle,
           "leaving the control must withdraw its hint")
       } else {
-        region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+        try await hover(region, at: NSPoint(x: -1_000, y: -1_000))
       }
     }
     XCTAssertTrue(sawProbeHint, "hover must present the probe hint, or absence proves nothing")
@@ -1297,14 +1311,14 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertFalse(rosterRegions.isEmpty, "the roster composes hover regions")
     for region in rosterRegions {
       let center = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
-      region.updateHover(at: center)
+      try await hover(region, at: center)
       if let hint = OverlayHintPanel.shared.presentedTitle {
         for marker in metadata {
           XCTAssertFalse(
             hint.contains(marker), "a hover hint duplicates inline roster metadata: \(hint)")
         }
       }
-      region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+      try await hover(region, at: NSPoint(x: -1_000, y: -1_000))
     }
   }
 
@@ -1752,7 +1766,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       column.contains(".frame(width: max(width, contentMinimum))"),
       "rows retain their readable layout while the divider narrows their viewport")
     XCTAssertTrue(
-      column.contains(".frame(width: width, alignment: width < contentMinimum ? .leading : .trailing)"),
+      column.contains(
+        ".frame(width: width, alignment: width < contentMinimum ? .leading : .trailing)"),
       "a narrow viewport preserves the leading pills; a full column anchors to the window edge")
     let stack = try section(
       of: overlay, from: "private func canvasStack", to: "private func agentDrawerColumn")
