@@ -34,7 +34,9 @@ final class OverlayIntercomMetadataTests: XCTestCase {
       let width = max(metrics.actionsWidth, 500 * scale)
       let header = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       let metadata = ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
-      let body = ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 13 * scale)))
+      let body = ceil(
+        NSLayoutManager().defaultLineHeight(
+          for: .systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)))
       let contextHeight = header + metadata + 6
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: contextHeight - 0.5), .header)
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: contextHeight), .context)

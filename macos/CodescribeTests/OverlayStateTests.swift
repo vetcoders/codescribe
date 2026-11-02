@@ -1545,7 +1545,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.unreadReplies(in: newer), 0)
   }
 
-  func testAgentsPressReturnsToTheLastConversationThenOffersTheDrawer() throws {
+  func testAgentsPressReturnsToTheLastConversationThenFocusesPinnedRoster() throws {
     let state = OverlayState()
     let lena = try navigationConversation()
     let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
@@ -1558,11 +1558,16 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, astra.id, "back where the user left")
     XCTAssertFalse(state.showsAgentMonitor)
 
+    let focus = state.agentDrawerFocusRevision
     state.toggleAgentSidebar()
-    XCTAssertTrue(state.showsAgentMonitor, "in a conversation the press changes agents")
+    XCTAssertTrue(state.agentListPinned, "The split layout already pins the roster")
+    XCTAssertFalse(state.showsAgentMonitor, "No floating drawer competes with the pinned roster")
+    XCTAssertEqual(state.agentDrawerFocusRevision, focus + 1)
 
     state.toggleAgentSidebar()
-    XCTAssertFalse(state.showsAgentMonitor, "and a press on the drawer closes it")
+    XCTAssertTrue(state.agentListPinned)
+    XCTAssertFalse(state.showsAgentMonitor)
+    XCTAssertEqual(state.agentDrawerFocusRevision, focus + 2)
     XCTAssertEqual(state.selectedConversationID, astra.id)
   }
 
@@ -1630,8 +1635,11 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, lena.id)
     XCTAssertNil(state.recordingAgentConversationID)
 
+    let focus = state.agentDrawerFocusRevision
     state.toggleAgentSidebar()
-    XCTAssertTrue(state.showsAgentMonitor, "with nothing recording the press changes agents")
+    XCTAssertTrue(state.agentListPinned)
+    XCTAssertFalse(state.showsAgentMonitor, "The stopped agent keeps the split roster pinned")
+    XCTAssertEqual(state.agentDrawerFocusRevision, focus + 1)
   }
 
   /// Maciej, 2026-10-20: a press on the mini megaphone while he talks to
@@ -3822,11 +3830,15 @@ final class OverlayStateTests: XCTestCase {
     )
     // Maciej (2026-10-17): pinned stays on top, unpinned slips under other
     // windows; alerts and screenshots still win over either.
-    XCTAssertEqual(
-      OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: false, pinned: true)
-        .windowLevel,
-      .floating
-    )
+    let pinned = OverlayPresencePolicy.resolve(
+      screenshotChord: false, shouldYield: false, pinned: true
+    ).windowLevel
+    XCTAssertGreaterThan(
+      pinned.rawValue, NSWindow.Level.floating.rawValue,
+      "Pinned transcription stays above ordinary floating agent cards")
+    XCTAssertLessThan(
+      pinned.rawValue, NSWindow.Level.modalPanel.rawValue,
+      "Modal alerts remain above the resting pinned overlay")
     XCTAssertEqual(
       OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: false, pinned: false),
       .unpinned
