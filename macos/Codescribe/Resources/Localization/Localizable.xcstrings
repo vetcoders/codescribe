@@ -8473,17 +8473,6 @@
         }
       }
     },
-    "Extra high" : {
-      "comment" : "Reasoning level",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bardzo wysoki"
-          }
-        }
-      }
-    },
     "Extra shortcuts" : {
       "localizations" : {
         "pl" : {
@@ -9401,17 +9390,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ukryj pełne porównanie"
-          }
-        }
-      }
-    },
-    "High" : {
-      "comment" : "Reasoning level",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wysoki"
           }
         }
       }
@@ -10805,17 +10783,6 @@
         }
       }
     },
-    "Low" : {
-      "comment" : "Reasoning level",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Niski"
-          }
-        }
-      }
-    },
     "Low confidence" : {
       "comment" : "Dictionary badge: the engine was unsure here",
       "localizations" : {
@@ -11008,17 +10975,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Trwa pomiar…"
-          }
-        }
-      }
-    },
-    "Medium" : {
-      "comment" : "Reasoning level",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Średni"
           }
         }
       }
@@ -11331,17 +11287,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Środkowy przycisk myszy jako Fn"
-          }
-        }
-      }
-    },
-    "Minimal" : {
-      "comment" : "Reasoning level",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Minimalny"
           }
         }
       }
@@ -12732,17 +12677,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Do tego nagrania nie dopuszczono żadnych słów."
-          }
-        }
-      }
-    },
-    "None" : {
-      "comment" : "Reasoning level",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Brak"
           }
         }
       }
