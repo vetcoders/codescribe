@@ -7,6 +7,31 @@ import XCTest
 
 @MainActor
 final class OverlayChannelMapPreferenceTests: XCTestCase {
+  func testSavedBetaChoiceFollowsCompiledChannelWithoutRewritingPreferences() throws {
+    let name = "CodescribeTests.channel-lane.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+    defer { defaults.removePersistentDomain(forName: name) }
+    defaults.set(true, forKey: OverlayChannelMapPreference.key)
+    defaults.set("vertical", forKey: OverlayChannelMapPreference.layoutKey)
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    #if CHANNEL_nightly
+    XCTAssertTrue(preference.enabled)
+    XCTAssertEqual(preference.mode, .vertical)
+    preference.selectMode(.horizontal)
+    XCTAssertEqual(preference.mode, .horizontal)
+    #else
+    XCTAssertFalse(preference.enabled)
+    XCTAssertEqual(preference.mode, .classic)
+    let original = defaults.dictionaryRepresentation() as NSDictionary
+    preference.select(true)
+    preference.selectLayout(.horizontal)
+    preference.selectMode(.vertical)
+    XCTAssertEqual(defaults.dictionaryRepresentation() as NSDictionary, original)
+    XCTAssertFalse(preference.enabled)
+    XCTAssertEqual(OverlayChannelMapPreference(defaults: defaults).mode, .classic)
+    #endif
+  }
+
   func testAbsentChoiceIsOffAndExplicitChoiceSurvivesReopening() throws {
     let name = "CodescribeTests.channel-map.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: name))

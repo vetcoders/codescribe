@@ -74,7 +74,7 @@ struct CreatorPanel: View {
       VStack(spacing: 8) {
         AppearanceRow(model: model)
         SheetShadeRows(model: model)
-#if CHANNEL_nightly || CHANNEL_NIGHTLY
+#if CHANNEL_nightly
         SettingsControlRow(
           title: String(localized: "Intercom layout"),
           subtitle: String(

@@ -59,6 +59,7 @@ struct OverlayRecordingControls: View {
   var showsRecordingButton = true
   var showsPreviewButton = true
   var onShowDictation: (() -> Void)?
+  var onShowAgents: (() -> Void)?
   var onPresentationSelect: ((OverlayPresentationMode) -> Void)?
 
   /// Recording and preview keep fixed hairline circles, leaving the remaining
@@ -130,7 +131,21 @@ struct OverlayRecordingControls: View {
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-recording-controls")
     .contextMenu {
+      agentsMenuItem
       Button("My dictation", systemImage: "waveform") { onShowDictation?() }
+    }
+  }
+
+  @ViewBuilder private var agentsMenuItem: some View {
+    if let onShowAgents {
+      Button(action: onShowAgents) {
+        Label {
+          Text("Agents")
+        } icon: {
+          Image(nsImage: OverlayHeaderGlyph.menuImage(OverlayHeaderGlyph.agents))
+        }
+      }
+      .accessibilityIdentifier("overlay-recording-agents")
     }
   }
 
@@ -249,6 +264,7 @@ struct OverlayRecordingControls: View {
         }
     }
     .contextMenu {
+      agentsMenuItem
       if let onPresentationSelect {
         Picker(
           "Widget size",
@@ -1199,6 +1215,7 @@ struct DictationOverlayView: View {
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
     controls.onShowDictation = state.showTranscription
+    controls.onShowAgents = state.showAgentMonitor
     controls.onPresentationSelect = state.setPresentationMode
     return controls
   }

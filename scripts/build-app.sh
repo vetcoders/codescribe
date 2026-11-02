@@ -219,10 +219,11 @@ if [[ "$PROFILE" == "release" ]]; then
 else
   CS_BUILD_CHANNEL="${CODESCRIBE_BUILD_CHANNEL:-nightly}"
 fi
-CS_BUILD_CHANNEL="$(echo "$CS_BUILD_CHANNEL" | tr '[:upper:]' '[:lower:]' | xargs)"
-if [[ "$CS_BUILD_CHANNEL" != "nightly" ]]; then
-  CS_BUILD_CHANNEL="stable"
-fi
+CS_BUILD_CHANNEL="$(printf '%s' "$CS_BUILD_CHANNEL" | tr '[:upper:]' '[:lower:]')"
+case "$CS_BUILD_CHANNEL" in
+  stable|nightly) ;;
+  *) echo "error: CODESCRIBE_BUILD_CHANNEL must be stable or nightly" >&2; exit 2 ;;
+esac
 
 # ── Preflight: a clean checkout on a fresh Mac otherwise dies deep in the
 # pipeline with a cryptic "command not found". Fail early, actionably.
@@ -454,7 +455,6 @@ run_app_xcodebuild() {
     SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}" \
     CS_DEVELOPER_SURFACE="${CS_DEVELOPER_SURFACE:-0}" \
     CS_BUILD_CHANNEL="$CS_BUILD_CHANNEL" \
-    SWIFT_ACTIVE_COMPILATION_CONDITIONS="CHANNEL_${CS_BUILD_CHANNEL}" \
     build
 }
 

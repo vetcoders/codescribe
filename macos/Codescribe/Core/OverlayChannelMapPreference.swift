@@ -48,7 +48,7 @@ final class OverlayChannelMapPreference {
   /// a saved experimental choice from a nightly build cannot reactivate beta UI.
   var enabled: Bool {
     access(keyPath: \.enabled)
-    #if CHANNEL_nightly || CHANNEL_NIGHTLY
+    #if CHANNEL_nightly
     return defaults.bool(forKey: Self.key)
     #else
     return false
@@ -64,7 +64,7 @@ final class OverlayChannelMapPreference {
   }
 
   func selectLayout(_ layout: OverlayIntercomLayout) {
-    #if CHANNEL_nightly || CHANNEL_NIGHTLY
+    #if CHANNEL_nightly
     guard layout != self.layout else { return }
     withMutation(keyPath: \.layout) {
       defaults.set(layout.rawValue, forKey: Self.layoutKey)
@@ -73,7 +73,7 @@ final class OverlayChannelMapPreference {
   }
 
   func select(_ enabled: Bool) {
-    #if CHANNEL_nightly || CHANNEL_NIGHTLY
+    #if CHANNEL_nightly
     guard enabled != self.enabled else { return }
     withMutation(keyPath: \.enabled) {
       defaults.set(enabled, forKey: Self.key)
@@ -84,7 +84,7 @@ final class OverlayChannelMapPreference {
   /// The one Settings control. Classic only disables the map; the stored
   /// layout survives, so returning to a mapped mode restores the last one.
   var mode: OverlayIntercomPresentationMode {
-    #if CHANNEL_nightly || CHANNEL_NIGHTLY
+    #if CHANNEL_nightly
     OverlayIntercomPresentationMode(enabled: enabled, layout: layout)
     #else
     .classic
@@ -92,7 +92,7 @@ final class OverlayChannelMapPreference {
   }
 
   func selectMode(_ mode: OverlayIntercomPresentationMode) {
-    #if CHANNEL_nightly || CHANNEL_NIGHTLY
+    #if CHANNEL_nightly
     if let layout = mode.layout { selectLayout(layout) }
     select(mode != .classic)
     #endif
