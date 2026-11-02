@@ -1840,6 +1840,25 @@ class GenerationReceiptTests(unittest.TestCase):
         self.assertEqual(self.bus.read_bytes(), before)
 
 
+@contextlib.contextmanager
+def one_second_per_parsed_row():
+    """Turn a wait budget into a row count: each parsed row costs one second."""
+    clock = [0.0]
+    loads = DEMUX.json.loads
+
+    def parse(value, *args, **kwargs):
+        clock[0] += 1.0
+        return loads(value, *args, **kwargs)
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    with (patch.object(DEMUX.time, "monotonic", side_effect=lambda: clock[0]),
+          patch.object(DEMUX.time, "sleep", side_effect=sleep),
+          patch.object(DEMUX.json, "loads", side_effect=parse)):
+        yield
+
+
 class InstallCheckpointTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -1956,6 +1975,186 @@ class InstallCheckpointTests(unittest.TestCase):
         self.append(DEMUX.SEALED)
         self.assertTrue(self.idle())
 
+    def test_install_check_reads_past_one_scan_slice(self):
+        # One scan slice is half a second. A quiet suffix longer than that is
+        # not a busy machine, and refusing it reads as a take to the installer.
+        self.checkpoint()
+        for _ in range(50):
+            self.append("revision")
+        with one_second_per_parsed_row():
+            self.assertTrue(self.idle())
+
+    def test_install_check_resumes_a_suffix_longer_than_its_budget(self):
+        self.checkpoint()
+        for _ in range(200):
+            self.append("revision")
+        with one_second_per_parsed_row():
+            self.assertFalse(self.idle())
+            self.assertTrue(self.idle())
+
+    def test_install_check_still_finds_a_take_in_a_long_suffix(self):
+        self.checkpoint()
+        self.append("session_started")
+        for _ in range(50):
+            self.append("revision")
+        with one_second_per_parsed_row():
+            self.assertFalse(self.idle())
+
+    def test_install_check_leaves_the_checkpoint_to_a_lock_holder(self):
+        self.checkpoint()
+        checkpoint = DEMUX._lifecycle_checkpoint(self.bus, self.root)
+        before = checkpoint.read_bytes()
+        self.append("revision")
+        lock = os.open(self.root / "runtime" / "playback.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        self.assertTrue(self.idle())
+        self.assertEqual(checkpoint.read_bytes(), before)
+
+
+class ColdLifecycleScanTests(unittest.TestCase):
+    """A history longer than one reply's budget must not silence every reply.
+
+    One wait reads a bounded part of the journal. Progress it keeps to itself
+    makes every later reply start from the same place and refuse the same way.
+    These tests go through ``_play_pcm_24k``: the wait helper's default
+    arguments save progress, and production does not call it with them.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        fixture = Path(temporary.name).resolve()
+        self.root = fixture / "agent-bridge"
+        (self.root / "runtime").mkdir(parents=True)
+        self.bus = fixture / "events.jsonl"
+        # 300 rows at one second each, against a 120-second wait.
+        self.write_rows([self.row("diagnostic") for _ in range(300)])
+
+    @staticmethod
+    def row(status, session="history"):
+        return {"status": status, "session_id": session}
+
+    def write_rows(self, rows):
+        self.bus.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    def speak(self):
+        player = MagicMock()
+        player.poll.return_value = 0
+        with one_second_per_parsed_row(), patch.object(subprocess, "Popen", return_value=player) as popen:
+            result = DEMUX._play_pcm_24k(b"\0\0" * 2400, playback_root=self.root, bus=self.bus)
+        return result, popen
+
+    def saved_offset(self):
+        saved = json.loads(DEMUX._lifecycle_checkpoint(self.bus, self.root).read_text())
+        return saved["sources"][str(self.bus)]["offset"]
+
+    def test_refused_reply_leaves_its_progress_for_the_next_reply(self):
+        (spoken, _, _), popen = self.speak()
+        self.assertFalse(spoken)
+        popen.assert_not_called()
+        first = self.saved_offset()
+        self.assertGreater(first, 0)
+        (spoken, _, _), popen = self.speak()
+        self.assertFalse(spoken)
+        popen.assert_not_called()
+        self.assertGreater(self.saved_offset(), first)
+
+    def test_replies_read_a_cold_history_to_its_end_and_then_play(self):
+        for _ in range(4):
+            result, popen = self.speak()
+            if result[0]:
+                break
+        self.assertEqual(result, (True, None, None))
+        popen.assert_called_once()
+
+    def test_unread_history_is_not_reported_as_a_live_take(self):
+        # The unread part ends this session, so there is no take anywhere,
+        # although the part read so far shows an open start.
+        self.write_rows([
+            self.row("session_started", "finished"),
+            *[self.row("diagnostic") for _ in range(300)],
+            self.row("session_ended", "finished"),
+        ])
+        (spoken, error, reason), popen = self.speak()
+        self.assertFalse(spoken)
+        popen.assert_not_called()
+        self.assertEqual(reason, "history_unread")
+        self.assertNotIn("take", error)
+
+    def test_a_take_found_after_reading_everything_stays_take_live(self):
+        self.write_rows([self.row("session_started", "live")])
+        (spoken, _, reason), popen = self.speak()
+        self.assertFalse(spoken)
+        popen.assert_not_called()
+        self.assertEqual(reason, "take_live")
+
+    def test_a_take_in_a_saved_prefix_still_refuses_the_next_reply(self):
+        # Saved progress keeps the open identity: resuming must not forget it.
+        self.write_rows([
+            self.row("session_started", "live"),
+            *[self.row("diagnostic") for _ in range(150)],
+        ])
+        for _ in range(3):
+            (spoken, _, _), popen = self.speak()
+            self.assertFalse(spoken)
+            popen.assert_not_called()
+        (_, _, reason), _ = self.speak()
+        self.assertEqual(reason, "take_live")
+
+    def test_waiting_reply_leaves_the_checkpoint_to_the_lock_holder(self):
+        lock = os.open(self.root / "runtime" / "playback.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        (spoken, _, _), popen = self.speak()
+        self.assertFalse(spoken)
+        popen.assert_not_called()
+        self.assertFalse(DEMUX._lifecycle_checkpoint(self.bus, self.root).exists())
+
+    def test_append_inside_the_scan_snapshot_does_not_rewind_the_scan(self):
+        # Size and mtime of one snapshot must describe one moment. A later
+        # mtime on an earlier size reads as a same-size rewrite and sends the
+        # whole journal back to offset zero.
+        metadata = DEMUX.GenerationFile.metadata
+        sources = DEMUX.generation_sources
+
+        def then_append(path):
+            found = sources(path)
+            with self.bus.open("a") as handle:
+                handle.write(json.dumps(self.row("diagnostic", "late")) + "\n")
+            later = self.bus.stat().st_mtime_ns + 1_000_000
+            os.utime(self.bus, ns=(later, later))
+            return found
+
+        def racing(handle, refresh=False):
+            if not refresh:
+                return metadata(handle, refresh)
+            with patch.object(DEMUX, "generation_sources", then_append):
+                return metadata(handle, refresh)
+
+        cursor = {}
+        with patch.object(DEMUX.GenerationFile, "metadata", racing):
+            DEMUX.installation_idle(
+                self.bus, sealed_is_idle=False, cursor=cursor, bridge_root=self.root
+            )
+        self.assertGreater(cursor["offset"], 0)
+
+    def test_unread_history_publishes_a_refusal_not_a_failure(self):
+        states = []
+        reply = {'reply_id': 'a' * 24, 'provider': 'codex', 'provider_session_id': 'fixture',
+                 'lease_id': DEMUX.lease_identifier('codex', 'fixture'), 'tts_vendor': 'xai',
+                 'text': 'Sprawdzam.', 'voice': 'carina', 'speed': 1.0}
+        with (patch.object(DEMUX, 'bus_path', return_value=self.bus),
+              patch.object(DEMUX, '_speak_xai',
+                           return_value=(False, 'lifecycle history unread', 'history_unread')),
+              patch.object(DEMUX, 'publish_reply_event', side_effect=fixture_publish),
+              patch.object(DEMUX, 'emit', side_effect=states.append)):
+            code = DEMUX.speak_published_reply(
+                DEMUX.argparse.Namespace(bridge_home=self.root), self.bus, reply, 'b' * 24
+            )
+        self.assertEqual(code, 5)
+        self.assertEqual(states[-1]['state'], 'refused')
+        self.assertEqual(states[-1]['reason'], 'history_unread')
 
 
 class StreamingSpeechTests(unittest.TestCase):

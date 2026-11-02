@@ -10,7 +10,7 @@ final class OverlayPlaybackOwnerTests: XCTestCase {
   /// warning. A stop he caused reads as a stop, in words, never as a code.
   func testPlaybackOutcomesReadAsSentencesAndAStopIsNotAFailure() {
     let codes = [
-      "muted", "stopped", "take_started", "take_live", "playback_busy",
+      "muted", "stopped", "take_started", "take_live", "history_unread", "playback_busy",
       "credential_missing", "credential_rejected", "quota_exhausted", "network",
     ]
     var labels: Set<String> = []
