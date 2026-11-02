@@ -713,6 +713,9 @@ final class OverlayStateTests: XCTestCase {
   func testReplyPublicationFreezesReferenceAndPreservesNewerSelectionAndDraft() async throws {
     let state = OverlayState()
     let origin = try navigationConversation()
+    state.applyChannelRoster([navigationRoster()])
+    state.applyConversationSnapshot(
+      OverlayChannelDeliverySnapshot(deliveries: [], conversations: [origin]))
     let first = try XCTUnwrap(
       OverlayUserReplyReference(row: ["message_id": "parent-A", "author": "Lena", "text": "First"]))
     let newer = try XCTUnwrap(
@@ -2146,6 +2149,9 @@ final class OverlayStateTests: XCTestCase {
       ]))
     let conversation = OverlayConversation(
       id: owner.id, channel: "2", name: "Lena", owner: owner, messages: [])
+    state.applyChannelRoster([navigationRoster(session: "agent-a")])
+    state.applyConversationSnapshot(
+      OverlayChannelDeliverySnapshot(deliveries: [], conversations: [conversation]))
     state.conversationDrafts[owner.id] = "Pierwszy szkic"
     state.publishConversationText = { _, _, _, _ in throw CocoaError(.fileWriteUnknown) }
     await state.sendConversationText(conversation)
@@ -2176,6 +2182,8 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     let conversation = OverlayConversation(
       id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.applyConversationSnapshot(
+      OverlayChannelDeliverySnapshot(deliveries: [], conversations: [conversation]))
     state.conversationDrafts["0"] = "Do wszystkich"
     state.publishConversationText = { owner, _, _, _ in
       XCTAssertNil(owner)
