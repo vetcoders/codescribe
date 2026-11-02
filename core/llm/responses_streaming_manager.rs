@@ -4208,8 +4208,15 @@ mod tests {
                         "exam"
                     ),
                     _ => {
-                        let events = drain(manager.stream_agent(&json!({})).await.unwrap()).await;
-                        assert_eq!(delta_text(&events), "exam");
+                        // The agent receiver opens before HTTP headers. The generic
+                        // drain helper's 5 s clock would expire during the deliberate
+                        // 31 s header delay. m3a_ticks bounds this whole task instead.
+                        let mut rx = manager.stream_agent(&json!({})).await.unwrap();
+                        let mut events = Vec::new();
+                        while let Some(event) = rx.recv().await {
+                            events.push(event);
+                        }
+                        assert_eq!(delta_text(&events), "exam", "{route}: {events:?}");
                         assert!(has_clean_done(&events), "{events:?}");
                         assert!(
                             !events.iter().any(|e| matches!(e, AgentEvent::Error(_))),
