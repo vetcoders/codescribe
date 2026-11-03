@@ -153,12 +153,33 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' 2>/dev/null || true)"
-          if [[ -n "$assets" ]]; then
-            echo "Release $RELEASE_TAG already carries assets:"
-            printf '%s\n' "$assets" | sed 's/^/  /'
-            exit 1
-          fi
+          release_lookup="$(mktemp)"
+          trap 'rm -f "$release_lookup"' EXIT
+          lookup_exit=0
+          gh api --include "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > "$release_lookup" || lookup_exit=$?
+          python3 - "$release_lookup" "$lookup_exit" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          try:
+              lines = Path(sys.argv[1]).read_text().splitlines()
+              protocol, status, *_ = lines[0].split()
+              if not protocol.startswith("HTTP/"):
+                  raise ValueError("missing HTTP status")
+              metadata = json.loads("\n".join(lines[lines.index("") + 1:]))
+              if not isinstance(metadata, dict):
+                  raise ValueError("invalid release metadata")
+              if status == "404" and sys.argv[2] != "0" and metadata.get("message") == "Not Found":
+                  print("Release tag has no existing release.")
+              elif (status == "200" and sys.argv[2] == "0"
+                      and metadata.get("draft") is True and metadata.get("assets") == []):
+                  print("Existing release is an empty draft.")
+              else:
+                  raise ValueError("lookup failed or existing release is not an empty draft")
+          except (OSError, ValueError, IndexError) as error:
+              sys.exit(f"Release publication refused: {error}")
+          PY
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

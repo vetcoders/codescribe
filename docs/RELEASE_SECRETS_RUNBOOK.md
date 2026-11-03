@@ -312,9 +312,21 @@ The release job then signs, notarizes, staples and gates the DMG exactly as a
 tag run would, stands down the two tag guards, takes the version from Cargo,
 publishes nothing and keeps the DMG, its checksum and the signed appcast as the
 `codescribe-rehearsal-dmg` run artifact for seven days. The `release`
-environment gate applies, so the rehearsal waits for the same reviewer. Install
-the rehearsal DMG with `make install-app-release` and run the cold-path check
-on it; the first real tag then repeats a path that has already been observed.
+environment gate applies, so the rehearsal waits for the same reviewer. Download
+that run's `codescribe-rehearsal-dmg` artifact into a fresh directory, verify its
+checksum and DMG payload, then mount that verified DMG read-only. Install the
+app from the mounted volume through the guarded prebuilt path:
+
+```bash
+make install-if-idle INSTALL_APP_SOURCE="/Volumes/<verified-rehearsal-volume>/Codescribe.app"
+```
+
+Use the mounted app's exact path; a local build directory does not establish
+anything about the hosted artifact. Never replace an active capture. Follow
+the installed provenance, launch and cold-path checks in
+[`PUBLIC_RELEASE_CHECKLIST.md`](PUBLIC_RELEASE_CHECKLIST.md#publish-and-check-the-cold-path),
+then unmount the volume. The first real tag repeats a path that has already
+been observed.
 
 The job builds the commit the run page shows: a dispatch checks out `github.sha`
 as resolved when the run was created, not the branch tip at the moment the

@@ -9,8 +9,11 @@ nothing about hosted execution; that is observed only on GitHub, cheapest
 through a smoke dispatch.
 """
 
+import json
 import os
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -161,6 +164,47 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                 self.assertIn("${{ secrets.%s }}" % secret, text)
                 if env_name != secret:
                     self.assertNotIn("${{ secrets.%s }}" % env_name, text)
+
+    def test_release_lookup_allows_only_missing_tag_or_empty_draft(self):
+        script = self.step("Refuse to publish over existing release assets")["run"]
+        cases = [
+            ("missing", 404, {"message": "Not Found"}, 1, True),
+            ("empty draft", 200, {"draft": True, "assets": []}, 0, True),
+            ("published empty release", 200, {"draft": False, "assets": []}, 0, False),
+            ("draft with assets", 200, {"draft": True, "assets": [{"name": "old.dmg"}]}, 0, False),
+            ("missing draft state", 200, {"assets": []}, 0, False),
+            ("missing assets state", 200, {"draft": True}, 0, False),
+            ("invalid assets", 200, {"draft": True, "assets": None}, 0, False),
+            ("authentication failure", 401, {"message": "Bad credentials"}, 1, False),
+            ("permission failure", 403, {"message": "Not Found"}, 1, False),
+            ("server failure", 503, {"message": "Unavailable"}, 1, False),
+            ("transport failure", None, None, 1, False),
+            ("invalid metadata", 200, "not JSON", 0, False),
+            ("inconsistent command status", 404, {"message": "Not Found"}, 0, False),
+        ]
+        scratch = ROOT / "build/test-scratch"
+        scratch.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="release-lookup-", dir=scratch) as temporary:
+            binary = Path(temporary) / "gh"
+            binary.write_text(
+                '#!/bin/sh\n'
+                '[ "$1" = api ] && [ "$2" = --include ] || exit 97\n'
+                '[ "$3" = "repos/$GH_REPO/releases/tags/$RELEASE_TAG" ] || exit 97\n'
+                'printf "%s" "$LOOKUP_RESPONSE"\n'
+                'exit "$LOOKUP_EXIT"\n'
+            )
+            binary.chmod(0o700)
+            for label, status, metadata, command_exit, allowed in cases:
+                with self.subTest(case=label):
+                    body = metadata if isinstance(metadata, str) else json.dumps(metadata)
+                    response = "" if status is None else f"HTTP/2.0 {status} fixture\r\n\r\n{body}\n"
+                    result = subprocess.run(
+                        ["bash", "-e", "-c", script], capture_output=True, text=True, timeout=10,
+                        env={"PATH": temporary + os.pathsep + os.environ["PATH"],
+                             "GH_REPO": "vetcoders/codescribe", "RELEASE_TAG": "v0.18.0",
+                             "LOOKUP_RESPONSE": response, "LOOKUP_EXIT": str(command_exit)},
+                    )
+                    self.assertEqual(result.returncode == 0, allowed, result.stdout + result.stderr)
 
     def test_rehearsal_stands_down_the_tag_guards_but_keeps_the_signing_path(self):
         for name in ("Refuse anything but a vX.Y.Z tag", "Refuse to publish over existing release assets"):
