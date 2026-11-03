@@ -447,8 +447,10 @@ struct OverlayConversationView: View {
       {
         OverlayConversationComposer(
           palette: palette, draft: $draft, maximumEditorHeight: composerEditorHeightLimit,
-          sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
+          sending: sending, onSubmit: submit,
+          submissionBlocked: !pendingDeliveryControls.isEmpty,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
+          onEmptySubmit: sendHeldNow,
           focusRevision: revisionFocus &+ composerFocusRevision,
           isCovered: isCovered || !isPresented,
           placeholder: composerPlaceholder,
@@ -884,6 +886,21 @@ struct OverlayConversationView: View {
     guard allowsLiveActions else { return }
     _ = scrollFollow.handle(.jumpToCurrent)
     onSend()
+  }
+
+  /// Return on an empty composer is the keyboard equivalent of the held
+  /// bubble's Send now. A new draft always remains an ordinary new send.
+  private func sendHeldNow() {
+    guard !sending, pendingDeliveryControls.isEmpty,
+      draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      pendingCaptureAttachments.isEmpty, !conversation.isHumanInbox,
+      composerConversation == nil || composerConversation?.id == conversation.id,
+      let message = conversation.messages.last(where: {
+        $0.kind == .user && $0.controlIdentity != nil && $0.holdingSeconds(at: Date()) != nil
+          && ($0.sourceChannel == "0") == (conversation.channel == "0")
+      })
+    else { return }
+    performDeliveryControl(.release, message: message)
   }
 
   /// Pulls a held message off the clock, then returns its text to the ordinary

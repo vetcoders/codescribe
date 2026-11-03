@@ -17282,6 +17282,24 @@
         }
       }
     },
+    "Sending" : {
+      "comment" : "Composer feedback while the bus publisher is accepting a message",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sending"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wysyłanie"
+          }
+        }
+      }
+    },
     "Sending in %lld s" : {
       "comment" : "Countdown until a held agent message becomes eligible for sending",
       "extractionState" : "manual",
