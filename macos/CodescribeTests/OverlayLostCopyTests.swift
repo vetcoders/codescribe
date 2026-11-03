@@ -196,7 +196,7 @@ final class OverlayLostCopyTests: XCTestCase {
   func testExplicitTextInteractionOpensOnlyTheTemporaryGateAndResignClearsIt() throws {
     let source = try OverlayLostBehaviorSource.overlay("OverlayIntercomWidget.swift")
     let panel = try OverlayLostBehaviorSource.section(
-      source, from: "final class OverlayIntercomPanel: NSPanel {",
+      source, from: "class OverlayIntercomPanel: NSPanel {",
       to: "private struct OverlayIntercomHeader: View {")
     try OverlayLostBehaviorSource.ordered(
       ["if event.type == .leftMouseDown", "selectableTextRegions.allObjects",
