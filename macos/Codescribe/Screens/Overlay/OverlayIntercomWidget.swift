@@ -2717,10 +2717,11 @@ private struct OverlayIntercomConversationBody: View {
 }
 
 /// The agent's name and, when it can be read, its descriptor on one line.
-/// The name always keeps its letters. The descriptor shows in full, then
-/// truncated in the middle down to a readable minimum, then not at all — never
-/// as a sliver that costs the name its width (a 220 pt fiszka rendered
-/// "Klau…" beside a one-glyph descriptor).
+/// The name always keeps its letters. The descriptor steps down in readable
+/// forms — in full, provider · repository, truncated in the middle to a
+/// readable minimum, the repository alone — before it goes, never as a sliver
+/// that costs the name its width (a 220 pt fiszka rendered "Klau…" beside a
+/// one-glyph descriptor). Maciej, 2026-11-03: the metadata must stay visible.
 private struct OverlayIntercomNameLine: View {
   @Environment(\.csTextScale) private var scale
   let name: String
@@ -2730,11 +2731,19 @@ private struct OverlayIntercomNameLine: View {
 
   var body: some View {
     if let descriptor {
+      // `AgentPlaybackBinding.descriptor` joins provider, model and repository
+      // with " · ". A shorter descriptor repeats a form; a repeat never fits
+      // where its first try did not, so ViewThatFits just moves on.
+      let parts = descriptor.components(separatedBy: " · ")
+      let edges =
+        parts.count > 2 ? [parts[0], parts[parts.count - 1]].joined(separator: " · ") : descriptor
       ViewThatFits(in: .horizontal) {
         line(descriptor, idealWidth: nil)
+        line(edges, idealWidth: nil)
         line(
           descriptor,
           idealWidth: OverlayIntercomWidgetLayout.minimumReadableDescriptorWidth(scale: scale))
+        line(parts.last ?? descriptor, idealWidth: nil)
         nameText
       }
     } else {
