@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Agent voice replies: a reply refused during a live take reports `take_live` even when the wait's deadline cut its last read short. The helper finishes one bounded read (0.5 s) before naming the reason; under load it used to say `history_unread` instead.
 - Settings › Shortcuts: the recording indicator legend shows the colours the dot next to the cursor really draws and all six of its states — Recording, Words still arriving, Processing, Agent, Agent between phrases and Shortcut refused. Before, it showed terracotta, violet and amber for three states the dot paints red, purple and orange, and left out the rest. Recording has one red, `#FF3B30`, on the cursor dot, the overlay lamp and the menu-bar dot; the cursor dot used to draw a pure `#FF0000`.
 - Settings: the prompt segment is named **Agent**. The Intercom menu reads **Classic (default)**, **Bar (beta)** and **Cards (beta)** in that order (PL **Klasyczny (default)**, **Belka (beta)**, **Fiszki (beta)**). Reasoning levels keep their protocol names in every interface language; **Model default** remains localized. The shared Whisper download card shows the model ID in muted ink and only its location in monospace.
 - Settings: Creator explains the selected formatting level, and Agent › AI models explains the selected cloud or Apple engine. With Max selected, the Formatting lane says that Max uses the Agent model instead of suggesting a cloud fallback.
