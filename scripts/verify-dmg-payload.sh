@@ -479,19 +479,23 @@ PY
   fi
 
   PUBLISHER="$APP_PATH/Contents/Resources/agent-bridge/bin/codescribe"
-  if [[ $UNSIGNED -eq 1 ]]; then
-    # The linker's ad-hoc signature verifies, but the Developer ID team,
-    # hardened runtime flag and timestamp exist only on a signed release build.
-    echo "  – publisher signature skipped: --unsigned smoke build (never a release artifact)"
-  elif codesign --verify --strict "$PUBLISHER" >/dev/null 2>&1; then
-    PUBLISHER_SIGNATURE="$(codesign -dv --verbose=4 "$PUBLISHER" 2>&1)"
-    if printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^TeamIdentifier=MW223P3NPX$' \
-      && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Authority=Developer ID Application:' \
-      && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q 'flags=.*runtime' \
-      && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Timestamp='; then
-      ok "canonical publisher has its own timestamped hardened Developer ID signature"
+  if codesign --verify --strict "$PUBLISHER" >/dev/null 2>&1; then
+    if [[ $UNSIGNED -eq 1 ]]; then
+      # The linker's ad-hoc signature still proves the binary is intact; the
+      # Developer ID team, hardened runtime flag and timestamp exist only on a
+      # signed release build.
+      ok "canonical publisher signature verifies (strict)"
+      echo "  – publisher identity skipped: --unsigned smoke build (never a release artifact)"
     else
-      fail "canonical publisher signature lacks the release identity, runtime or timestamp"
+      PUBLISHER_SIGNATURE="$(codesign -dv --verbose=4 "$PUBLISHER" 2>&1)"
+      if printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^TeamIdentifier=MW223P3NPX$' \
+        && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Authority=Developer ID Application:' \
+        && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q 'flags=.*runtime' \
+        && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Timestamp='; then
+        ok "canonical publisher has its own timestamped hardened Developer ID signature"
+      else
+        fail "canonical publisher signature lacks the release identity, runtime or timestamp"
+      fi
     fi
   else
     fail "canonical publisher strict signature verification failed"
