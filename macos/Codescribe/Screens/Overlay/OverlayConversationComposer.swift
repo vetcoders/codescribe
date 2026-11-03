@@ -17,9 +17,11 @@ struct OverlayConversationComposer: View {
   var maximumEditorHeight: CGFloat? = nil
   let sending: Bool
   let onSubmit: () -> Void
+  var submissionBlocked = false
   var onEditorActive: (Bool) -> Void = { _ in }
   var onTypingActivity: () -> Void = {}
   var onCancel: (() -> Void)? = nil
+  var onEmptySubmit: (() -> Void)? = nil
   var focusRevision: UInt64 = 0
   /// Out of sight under the agents list or a folded bar.
   var isCovered = false
@@ -157,8 +159,13 @@ struct OverlayConversationComposer: View {
   /// The editor holds the prose; pasted attachments ride as pills.
   private var prose: Binding<String> {
     Binding(
-      get: { ConversationDraft.split(draft).text },
-      set: { draft = ConversationDraft.compose(text: $0, attachments: attachments) })
+      // Publication retains the frozen draft until its receipt, so a refusal
+      // can restore it. It must not also remain painted in the input field.
+      get: { sending ? "" : ConversationDraft.split(draft).text },
+      set: {
+        guard !sending else { return }
+        draft = ConversationDraft.compose(text: $0, attachments: attachments)
+      })
   }
 
   private var attachments: [String] { ConversationDraft.split(draft).attachments }
@@ -222,8 +229,9 @@ struct OverlayConversationComposer: View {
 
   private var composerContent: some View {
     VStack(alignment: .leading, spacing: isCompact ? ComposerControlMetrics.intercomSpacing : 6) {
-      if replySelection != nil || !pendingCaptureAttachments.isEmpty || !attachments.isEmpty
-        || pasteError != nil
+      if !sending
+        && (replySelection != nil || !pendingCaptureAttachments.isEmpty
+          || !attachments.isEmpty || pasteError != nil)
       {
         if isCompact {
           ScrollView(.vertical, showsIndicators: false) {
@@ -369,7 +377,8 @@ struct OverlayConversationComposer: View {
           hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
         )
         .frame(
-          width: corners.recipientWidth, height: corners.actionHeight, alignment: .leading)
+          width: corners.recipientWidth, height: corners.actionHeight, alignment: .leading
+        )
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -550,10 +559,12 @@ struct OverlayConversationComposer: View {
         fontSize: ComposerControlMetrics.textSize * textScale,
         maximumEditorHeight: maximumEditorHeight,
         corners: corners,
-        sending: sending, placeholder: placeholder, onSubmit: onSubmit,
+        sending: sending, placeholder: sending ? String(localized: "Sending") : placeholder,
+        onSubmit: onSubmit, submissionBlocked: submissionBlocked,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
-        onCancel: onCancel, focusRevision: focusRevision &+ recipientFocusNudge,
+        onCancel: onCancel, onEmptySubmit: onEmptySubmit,
+        focusRevision: focusRevision &+ recipientFocusNudge,
         isCovered: isCovered,
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
@@ -570,7 +581,7 @@ struct OverlayConversationComposer: View {
       .accessibilityIdentifier("overlay-conversation-composer")
       .overlay(alignment: .topLeading) {
         if prose.wrappedValue.isEmpty {
-          Text(verbatim: placeholder)
+          Text(verbatim: sending ? String(localized: "Sending") : placeholder)
             .font(.system(size: ComposerControlMetrics.textSize * textScale))
             .lineLimit(1)
             .foregroundStyle(palette.mutedText.color)
@@ -587,6 +598,7 @@ struct OverlayConversationComposer: View {
       }
       .overlay(alignment: .bottomLeading) {
         composerPlusMenu(corners)
+          .disabled(sending)
           .background { OverlayMenuCursorRegion() }
       }
       .overlay(alignment: .bottomTrailing) {
@@ -628,7 +640,7 @@ struct OverlayConversationComposer: View {
                 hoverColor: palette.primaryText.color
               )
               .disabled(
-                sending
+                sending || submissionBlocked
                   || (draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     && pendingCaptureAttachments.isEmpty)
               )
@@ -896,9 +908,11 @@ private struct ConversationMessageField: NSViewRepresentable {
   let sending: Bool
   let placeholder: String
   let onSubmit: () -> Void
+  var submissionBlocked = false
   var onEditorActive: (Bool) -> Void = { _ in }
   var onTypingActivity: () -> Void = {}
   var onCancel: (() -> Void)? = nil
+  var onEmptySubmit: (() -> Void)? = nil
   var focusRevision: UInt64 = 0
   var isCovered = false
   var onFocusChange: (Bool) -> Void = { _ in }
@@ -969,6 +983,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.autoresizingMask = [.width]
     editor.delegate = context.coordinator
     editor.setAccessibilityLabel(placeholder)
+    editor.setAccessibilityIdentifier("overlay-conversation-editor")
     editor.onFocusChange = { [weak coordinator = context.coordinator] in
       coordinator?.noteFocusChange($0)
     }
@@ -1009,6 +1024,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.textColor = textColor
     editor.insertionPointColor = textColor
     editor.sending = sending
+    editor.submissionBlocked = submissionBlocked
+    if editor.isEditable == sending { editor.isEditable = !sending }
     editor.submit = { context.coordinator.submit($0) }
     editor.onEditorActive = { context.coordinator.noteEditorActive($0) }
     editor.onTypingActivity = { context.coordinator.noteTyping() }
@@ -1026,6 +1043,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.hasAttachments = hasAttachments
     editor.onAttach = onAttach
     editor.onCancel = onCancel
+    editor.onEmptySubmit = onEmptySubmit
     if !editor.string.utf16.elementsEqual(text.utf16) {
       context.coordinator.applyingExternalText = true
       context.coordinator.pendingProseEdit = nil
@@ -1544,8 +1562,10 @@ private struct ConversationMessageField: NSViewRepresentable {
   private final class MessageTextView: NSTextView, ComposerMicrophoneRedirecting {
     var onMicrophoneRedirect: (() -> Void)?
     var sending = false
+    var submissionBlocked = false
     var submit: ((String) -> Void)?
     var onCancel: (() -> Void)?
+    var onEmptySubmit: (() -> Void)?
     var onEditorActive: (Bool) -> Void = { _ in }
     var onTypingActivity: () -> Void = {}
     var pastedText: (() throws -> String?)?
@@ -1668,6 +1688,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
 
     override func paste(_ sender: Any?) {
+      guard !sending else { return }
       do {
         if let text = try pastedText?() {
           // Store pointers become pills; only the prose enters the editor.
@@ -1765,10 +1786,11 @@ private struct ConversationMessageField: NSViewRepresentable {
         return
       }
       if [36, 76].contains(event.keyCode), alternate.isEmpty, !hasMarkedText() {
-        if !sending
-          && (hasAttachments() || !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        {
+        guard !sending, !submissionBlocked, !event.isARepeat else { return }
+        if hasAttachments() || !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           submit?(string)
+        } else {
+          onEmptySubmit?()
         }
         return
       }

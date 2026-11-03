@@ -1132,6 +1132,11 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         draft: Binding(get: { draft }, set: { draft = $0 }), sending: pending,
         onSend: onSend
       ) { _, editor in
+        if pending {
+          XCTAssertEqual(
+            editor.string, "", "Pending publication no longer paints the outgoing draft")
+          XCTAssertFalse(editor.isEditable)
+        }
         editor.keyDown(with: try returnEvent())
         XCTAssertEqual(sends, 0)
       }
@@ -1894,11 +1899,15 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     defer { window.close() }
     host.layoutSubtreeIfNeeded()
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
-    func editableTextView(_ root: NSView) -> NSTextView? {
-      if let editor = root as? NSTextView, editor.isEditable { return editor }
-      return root.subviews.lazy.compactMap(editableTextView).first
+    func composerTextView(_ root: NSView) -> NSTextView? {
+      if let editor = root as? NSTextView,
+        editor.accessibilityIdentifier() == "overlay-conversation-editor"
+      {
+        return editor
+      }
+      return root.subviews.lazy.compactMap(composerTextView).first
     }
-    let editor = try XCTUnwrap(editableTextView(host))
+    let editor = try XCTUnwrap(composerTextView(host))
     let scroll = try XCTUnwrap(editor.enclosingScrollView)
     XCTAssertTrue(window.makeFirstResponder(editor))
     try inspect(scroll, editor)

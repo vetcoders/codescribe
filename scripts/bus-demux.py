@@ -9680,6 +9680,50 @@ def send_text_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def delivery_control_sources(root: Path, owner: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Read the follower's retained messages and only its unread journal tail.
+
+    The lease is the owner of held/delivered state. Replaying every historical
+    generation here made a click five seconds before expiry arrive too late.
+    The unread tail also admits controls before the follower has parked a new
+    message, without inventing a second index or changing its cursor.
+    """
+    state = read_json(root / "leases" / f"{owner['lease_id']}.json") or {}
+    identity_keys = ("provider", "provider_session_id", "lease_id", "bus")
+    if state.get("schema") != LEASE_SCHEMA or any(state.get(key) != owner[key] for key in identity_keys):
+        raise ValueError("selected conversation owner no longer matches")
+    held = state.get("held", {})
+    pending = state.get("pending", [])
+    cursor = state.get("cursor")
+    if not isinstance(held, dict) or not isinstance(pending, list) or type(cursor) is not int or cursor < 0:
+        raise ValueError("invalid held delivery checkpoint")
+    for handed_over, rows in ((False, held.values()), (True, pending)):
+        for payload in rows:
+            if not isinstance(payload, dict) or any(payload.get(key) != owner[key] for key in identity_keys):
+                raise ValueError("invalid held delivery owner")
+            if payload.get("kind") not in TERMINAL_KINDS:
+                continue
+            yield {**payload, "schema": payload.get("producer_schema", payload.get("schema"))}
+            if handed_over or payload.get("hold_released"):
+                yield {"schema": DELIVERY_CONTROL_SCHEMA, "kind": "release",
+                       "identity": held_identity(payload), "session_id": payload.get("session_id"),
+                       "lease_id": owner["lease_id"]}
+    storage = ChunkDecoder()
+    with GenerationFile(Path(owner["bus"])) as handle:
+        if cursor > handle.size:
+            raise ValueError("held delivery checkpoint exceeds journal")
+        handle.seek(cursor)
+        while raw := handle.readline():
+            if not raw.endswith(b"\n"):
+                # The append owner may still be writing this last record.
+                # Do not interpret its partial bytes or rewind the checkpoint.
+                break
+            source = parse_line(raw.decode("utf-8", errors="strict"))
+            source = storage.feed(source) if source is not None else None
+            if source is not None:
+                yield source
+
+
 def delivery_control_command(args: argparse.Namespace) -> int:
     kind, identity = next((kind, getattr(args, kind)) for kind in ("revise", "withdraw", "release")
                           if getattr(args, kind, None) is not None)
@@ -9737,11 +9781,9 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             source_identity = identity
             voice_sessions: set[str] = set()
             deadline: float | None = None
+            matched = False
             releases: list[tuple[str, Any]] = []
-            storage = ChunkDecoder()
-            for raw in replay(Path(owner["bus"])):
-                source = parse_line(raw)
-                source = storage.feed(source) if source is not None else None
+            for source in delivery_control_sources(root, owner):
                 if source and source.get("schema") == DELIVERY_CONTROL_SCHEMA:
                     if source.get("kind") == "release" and source.get("lease_id") == owner["lease_id"]:
                         releases.append((str(source.get("identity", "")), source.get("session_id")))
@@ -9749,6 +9791,7 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                 if source and source.get("schema") in (AGENT_USER_MESSAGE_SCHEMA, CLEAN_SCHEMA, EVIDENCE_SCHEMA):
                     key = "message_id" if source["schema"] == AGENT_USER_MESSAGE_SCHEMA else "utterance_id"
                     if str(source.get(key, "")) == identity or (key == "utterance_id" and source.get("session_id") == identity):
+                        matched = True
                         deadline = hold_timestamp(source.get("hold_until")) or deadline
                         if key == "message_id":
                             target = {key: source[key]}
@@ -9761,6 +9804,12 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                             source_identity = str(source[key])
             if len(voice_sessions) > 1:
                 raise ValueError("voice identity is ambiguous; select its capture session")
+            if not matched:
+                if broadcast:
+                    skipped.append(note_skipped_broadcast_channel(
+                        owner["channel"], {**owner, "name": owner["audience"]}, "not_held"))
+                    continue
+                raise ValueError("message is no longer held by this conversation")
             # A release already handed the message over; nothing is held any more.
             # Voice captures reuse numeric labels, so a release counts only for the
             # capture session it names, as the follower's control_delivery matches it.
@@ -9775,6 +9824,8 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                     and time.time() >= deadline - HOLD_CONTROL_MARGIN_SECONDS):
                 raise ValueError("message already delivered; it can no longer be changed")
             plans.append((owner, target, source_identity))
+        if not plans:
+            raise ValueError("message is no longer held by any listening agent")
         receipts = []
         for owner, target, source_identity in plans:
             event = {"schema": DELIVERY_CONTROL_SCHEMA, "kind": kind, **owner, **target,
