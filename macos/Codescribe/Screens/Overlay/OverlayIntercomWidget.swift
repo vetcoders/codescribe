@@ -2002,7 +2002,10 @@ private struct OverlayIntercomCard: View {
       expanded
       ? OverlayIntercomWidgetLayout.conversationCornerRadius
       : OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
-    let showsContext = (expanded || content != .header) && conversation != nil
+    // An open conversation's bar is one row (Maciej, 2026-11-03: "jest za
+    // gruby … żeby on był jednorzędowy"). Its descriptor rides the name line;
+    // only a resting card's context tier keeps the separate metadata line.
+    let showsContext = !expanded && content != .header && conversation != nil
     let titleBarHeight =
       OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       + (showsContext ? OverlayIntercomWidgetLayout.contextStripHeight(scale: scale) : 0)
@@ -2185,8 +2188,10 @@ private struct OverlayIntercomCard: View {
     // A header-only card has no context strip below it, so the metadata joins
     // the name line instead of vanishing with the card height (Maciej,
     // 2026-10-28: "meta … na niskim … powinien wchodzić w skład linii").
+    // An expanded card's one-row bar carries it the same way (Maciej,
+    // 2026-11-03): visible, never on a second strip of the plate.
     let inlineDescriptor: String? = {
-      guard !expanded, row.marks, contentTier == .header, let conversation else { return nil }
+      guard row.marks, expanded || contentTier == .header, let conversation else { return nil }
       let text =
         (state.conversationAgentDescriptor(conversation)
         ?? conversation.owner?.provider)?
@@ -2335,15 +2340,11 @@ private struct OverlayIntercomCard: View {
             }
           } label: {
             HStack(spacing: 6) {
-              Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
-                .layoutPriority(1)
-              if let inlineDescriptor {
-                Text(verbatim: inlineDescriptor).csFont(10)
-                  .foregroundStyle(palette.mutedText.color)
-                  .lineLimit(1)
-                  .truncationMode(.middle)
-                  .accessibilityIdentifier("overlay-intercom-context-\(identity.digit)")
-              }
+              OverlayIntercomNameLine(
+                name: name, descriptor: inlineDescriptor, palette: palette,
+                descriptorIdentifier: "overlay-intercom-context-\(identity.digit)"
+              )
+              .layoutPriority(1)
               // The client focus button lives beside the name, not out with
               // the audio pair (Maciej, 2026-10-28).
               if row.slots >= 3 {
@@ -2715,6 +2716,60 @@ private struct OverlayIntercomConversationBody: View {
   }
 }
 
+/// The agent's name and, when it can be read, its descriptor on one line.
+/// The name always keeps its letters. The descriptor steps down in readable
+/// forms — in full, provider · repository, truncated in the middle to a
+/// readable minimum, the repository alone — before it goes, never as a sliver
+/// that costs the name its width (a 220 pt fiszka rendered "Klau…" beside a
+/// one-glyph descriptor). Maciej, 2026-11-03: the metadata must stay visible.
+private struct OverlayIntercomNameLine: View {
+  @Environment(\.csTextScale) private var scale
+  let name: String
+  let descriptor: String?
+  let palette: OverlayAppearancePalette
+  let descriptorIdentifier: String
+
+  var body: some View {
+    if let descriptor {
+      // `AgentPlaybackBinding.descriptor` joins provider, model and repository
+      // with " · ". A shorter descriptor repeats a form; a repeat never fits
+      // where its first try did not, so ViewThatFits just moves on.
+      let parts = descriptor.components(separatedBy: " · ")
+      let edges =
+        parts.count > 2 ? [parts[0], parts[parts.count - 1]].joined(separator: " · ") : descriptor
+      ViewThatFits(in: .horizontal) {
+        line(descriptor, idealWidth: nil)
+        line(edges, idealWidth: nil)
+        line(
+          descriptor,
+          idealWidth: OverlayIntercomWidgetLayout.minimumReadableDescriptorWidth(scale: scale))
+        line(parts.last ?? descriptor, idealWidth: nil)
+        nameText
+      }
+    } else {
+      nameText
+    }
+  }
+
+  private var nameText: some View {
+    Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
+  }
+
+  /// `idealWidth` only changes what ViewThatFits measures; laid out, the
+  /// descriptor takes the width left after the name and truncates within it.
+  private func line(_ descriptor: String, idealWidth: CGFloat?) -> some View {
+    HStack(spacing: 6) {
+      nameText.layoutPriority(1)
+      Text(verbatim: descriptor).csFont(10)
+        .foregroundStyle(palette.mutedText.color)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .frame(idealWidth: idealWidth)
+        .accessibilityIdentifier(descriptorIdentifier)
+    }
+  }
+}
+
 /// Only metadata already projected for this exact conversation is shown.
 /// The canonical descriptor supplies provider, model and declared repository
 /// on one line. Execution coordinates remain outside the card's metadata row.
@@ -2964,10 +3019,9 @@ private struct OverlayIntercomInstanceCard: View {
       mini
       ? OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
       : OverlayIntercomWidgetLayout.conversationCornerRadius
-    let showsContext = !mini && conversation != nil
-    let titleBarHeight =
-      OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-      + (showsContext ? OverlayIntercomWidgetLayout.contextStripHeight(scale: scale) : 0)
+    // The window's bar is one row (Maciej, 2026-11-03: "jest za gruby …
+    // żeby on był jednorzędowy"); the descriptor rides its name line.
+    let titleBarHeight = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
     return intercomGlassContainer(
       ZStack(alignment: .top) {
         VStack(spacing: 0) {
@@ -3003,26 +3057,13 @@ private struct OverlayIntercomInstanceCard: View {
           }
         }
         .accessibilitySortPriority(0)
-        VStack(spacing: 0) {
-          headerRow(
-            instance, conversation: conversation, palette: palette, roster: roster,
-            audioBelowName: audioBelowName
-          )
-          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-          // The detached fiszka keeps the same metadata line as its group card;
-          // the agent's provider, model and repository must not vanish with the
-          // detach (Maciej, 2026-10-28).
-          if showsContext, let conversation {
-            OverlayIntercomConversationContext(
-              descriptor: state.conversationAgentDescriptor(conversation)
-                ?? conversation.owner?.provider,
-              palette: palette
-            )
-            .frame(
-              height: OverlayIntercomWidgetLayout.contextStripHeight(scale: scale),
-              alignment: .top)
-          }
-        }
+        // The agent's provider, model and repository must not vanish with the
+        // detach (Maciej, 2026-10-28); they ride the name line of this one row.
+        headerRow(
+          instance, conversation: conversation, palette: palette, roster: roster,
+          audioBelowName: audioBelowName
+        )
+        .frame(height: titleBarHeight)
         // Same plate as the docked card: composer glass above the rows, opaque
         // when Reduce Transparency is on. The header's drag grip stays inside it.
         .modifier(OverlayComposerSurface(palette: palette))
@@ -3073,9 +3114,12 @@ private struct OverlayIntercomInstanceCard: View {
     // #183). Only the exact owner's row is this window's to control.
     let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
     // A wide mini fiszka carries the metadata inside the name line; there is
-    // no context strip to hold it (Maciej, 2026-10-28).
+    // no context strip to hold it (Maciej, 2026-10-28). An open window's bar
+    // is one row too (Maciej, 2026-11-03), so it carries the metadata at every
+    // text tier: the name keeps priority and the descriptor truncates in the
+    // middle, provider first and repository last.
     let instanceDescriptor: String? = {
-      guard mini, layout.controls.marks, let conversation else { return nil }
+      guard !mini || layout.controls.marks, let conversation else { return nil }
       let text =
         (state.conversationAgentDescriptor(conversation)
         ?? conversation.owner?.provider)?
@@ -3083,15 +3127,11 @@ private struct OverlayIntercomInstanceCard: View {
       return (text?.isEmpty ?? true) ? nil : text
     }()
     let nameRow = HStack(spacing: 6) {
-      Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
-        .layoutPriority(1)
-      if let instanceDescriptor {
-        Text(verbatim: instanceDescriptor).csFont(10)
-          .foregroundStyle(palette.mutedText.color)
-          .lineLimit(1)
-          .truncationMode(.middle)
-          .accessibilityIdentifier("overlay-intercom-instance-context-\(instance.digit)")
-      }
+      OverlayIntercomNameLine(
+        name: instance.name, descriptor: instanceDescriptor, palette: palette,
+        descriptorIdentifier: "overlay-intercom-instance-context-\(instance.digit)"
+      )
+      .layoutPriority(1)
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)

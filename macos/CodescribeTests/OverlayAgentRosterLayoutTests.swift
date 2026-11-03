@@ -54,7 +54,8 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       [
         "Text(verbatim: identity.displayDigit)", "OverlayReceptionMarks(",
         "OverlayIntercomStatusMark(",
-        "Text(verbatim: name)", "OverlayIntercomFocusButton(", "audioSlot(",
+        // The name and its inline descriptor share OverlayIntercomNameLine.
+        "OverlayIntercomNameLine( name: name,", "OverlayIntercomFocusButton(", "audioSlot(",
       ], in: String(card[richRow.lowerBound...]))
 
     let instance = try sourceSection(
