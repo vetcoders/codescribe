@@ -107,6 +107,7 @@ jobs:
           "$venv/bin/python" -I scripts/tests/test_ci_workflow_merge_queue.py
           "$venv/bin/python" -I scripts/tests/test_l10n_workflow_base.py
           "$venv/bin/python" -I scripts/tests/test_ci_workflow_contract.py
+          "$venv/bin/python" -I scripts/tests/test_release_workflow_contract.py
 
       - name: Show the Xcode this image selected
         run: xcodebuild -version

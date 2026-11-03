@@ -66,6 +66,7 @@ VARIANT=""
 VERSION=""
 EXPECTED_CHANNEL="stable"
 SKIP_NOTARY=0
+UNSIGNED=0
 EXPECT_EMBEDDER=0
 MOUNT_POINT=""
 FAILED=0
@@ -73,7 +74,7 @@ FAILURES=()
 
 usage() {
   cat <<EOF
-Usage: $0 <dmg> --variant slim|full --version X.Y.Z [--skip-notary]
+Usage: $0 <dmg> --variant slim|full --version X.Y.Z [--skip-notary] [--unsigned]
 
 Fail-closed payload gate for Codescribe release DMGs.
 
@@ -82,6 +83,9 @@ Fail-closed payload gate for Codescribe release DMGs.
   --version X.Y.Z     Expected CFBundleShortVersionString
   --channel stable|nightly  Expected build channel (default: stable)
   --skip-notary       Skip stapler + spctl (pre-notarization smoke)
+  --unsigned          Smoke builds only (\`make dmg\`, no Developer ID): skip the
+                      codesign checks as well. Requires --skip-notary. Never
+                      passes a release artifact.
   --expect-embedder   Require the MiniLM app resource (builds using --bundle-embedder)
 
 SPARKLE_ED_PUBLIC_KEY, when set, must match the non-empty SUPublicEDKey in the
@@ -145,6 +149,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_NOTARY=1
       shift
       ;;
+    --unsigned)
+      UNSIGNED=1
+      shift
+      ;;
     --expect-embedder)
       EXPECT_EMBEDDER=1
       shift
@@ -186,6 +194,11 @@ case "$EXPECTED_CHANNEL" in
   *) echo "ERROR: --channel must be stable or nightly" >&2; exit 2;;
 esac
 
+if [[ $UNSIGNED -eq 1 && $SKIP_NOTARY -eq 0 ]]; then
+  echo "ERROR: --unsigned is a smoke-only mode and requires --skip-notary" >&2
+  exit 2
+fi
+
 if [[ ! -f "$DMG" ]]; then
   echo "ERROR: DMG not found: $DMG" >&2
   exit 2
@@ -203,6 +216,7 @@ echo "  DMG:     $DMG"
 echo "  Variant: $VARIANT"
 echo "  Version: $VERSION"
 echo "  Notary:  $([[ $SKIP_NOTARY -eq 1 ]] && echo skip || echo required)"
+echo "  Codesign: $([[ $UNSIGNED -eq 1 ]] && echo "skip (unsigned smoke build)" || echo required)"
 echo "───────────────────────────────────────────────────────────"
 
 # ── 1. DMG size floor (fast pre-check) ───────────────────────────────────────
@@ -249,7 +263,9 @@ fi
 # ── 3. codesign (DMG) ────────────────────────────────────────────────────────
 echo ""
 echo "▶ codesign --verify (DMG)"
-if codesign --verify --verbose=2 "$DMG" >/dev/null 2>&1; then
+if [[ $UNSIGNED -eq 1 ]]; then
+  echo "  – skipped: --unsigned smoke build (never a release artifact)"
+elif codesign --verify --verbose=2 "$DMG" >/dev/null 2>&1; then
   ok "DMG signature present"
 else
   # Ad-hoc unsigned dev DMGs fail here — correct fail-closed for release gate.
@@ -367,7 +383,9 @@ if [[ -n "${APP_PATH:-}" ]]; then
   # Deep codesign on the app bundle
   echo ""
   echo "▶ codesign --verify --deep --strict (app)"
-  if codesign --verify --deep --strict "$APP_PATH" >/dev/null 2>&1; then
+  if [[ $UNSIGNED -eq 1 ]]; then
+    echo "  – skipped: --unsigned smoke build (never a release artifact)"
+  elif codesign --verify --deep --strict "$APP_PATH" >/dev/null 2>&1; then
     ok "app signature deep/strict OK"
   else
     fail "codesign --verify --deep --strict failed on $(basename "$APP_PATH")"
@@ -462,14 +480,22 @@ PY
 
   PUBLISHER="$APP_PATH/Contents/Resources/agent-bridge/bin/codescribe"
   if codesign --verify --strict "$PUBLISHER" >/dev/null 2>&1; then
-    PUBLISHER_SIGNATURE="$(codesign -dv --verbose=4 "$PUBLISHER" 2>&1)"
-    if printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^TeamIdentifier=MW223P3NPX$' \
-      && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Authority=Developer ID Application:' \
-      && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q 'flags=.*runtime' \
-      && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Timestamp='; then
-      ok "canonical publisher has its own timestamped hardened Developer ID signature"
+    if [[ $UNSIGNED -eq 1 ]]; then
+      # The linker's ad-hoc signature still proves the binary is intact; the
+      # Developer ID team, hardened runtime flag and timestamp exist only on a
+      # signed release build.
+      ok "canonical publisher signature verifies (strict)"
+      echo "  – publisher identity skipped: --unsigned smoke build (never a release artifact)"
     else
-      fail "canonical publisher signature lacks the release identity, runtime or timestamp"
+      PUBLISHER_SIGNATURE="$(codesign -dv --verbose=4 "$PUBLISHER" 2>&1)"
+      if printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^TeamIdentifier=MW223P3NPX$' \
+        && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Authority=Developer ID Application:' \
+        && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q 'flags=.*runtime' \
+        && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Timestamp='; then
+        ok "canonical publisher has its own timestamped hardened Developer ID signature"
+      else
+        fail "canonical publisher signature lacks the release identity, runtime or timestamp"
+      fi
     fi
   else
     fail "canonical publisher strict signature verification failed"
