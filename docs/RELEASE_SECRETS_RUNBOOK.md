@@ -316,6 +316,19 @@ environment gate applies, so the rehearsal waits for the same reviewer. Install
 the rehearsal DMG with `make install-app-release` and run the cold-path check
 on it; the first real tag then repeats a path that has already been observed.
 
+Two consequences of running the rehearsal under the same job:
+
+- The environment's deployment policy must admit the rehearsed branch. A policy
+  limited to `v*` tags rejects every rehearsal before it starts; keep the
+  policy at "selected branches and tags" with the release branches listed, or
+  leave it open and rely on the required reviewer, which is what protects the
+  signing inputs in either case.
+- Job permissions cannot depend on an input, so a rehearsal runs with the same
+  `contents: write` token as a release. It never reaches the publish steps;
+  the reviewer who approves the rehearsal approves that token as well.
+- `smoke=true` wins over `rehearse=true`: a dispatch with both flags runs only
+  the smoke lane.
+
 ## Rotation and revocation
 
 Rotate the `.p12` payload, its password, and the identity together whenever the

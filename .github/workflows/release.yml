@@ -12,7 +12,12 @@ name: Release DMG
 #               dispatched ref, signing, notarizing, stapling and gating exactly
 #               like a release, with the DMG kept as a run artifact and nothing
 #               published. It uses the signing inputs, so the `release`
-#               environment gate applies to it as well.
+#               environment gate applies to it as well; the environment must
+#               therefore admit the rehearsed branch, not only `v*` tags, and
+#               the required reviewer is what protects the signing inputs. Job
+#               permissions cannot depend on an input, so a rehearsal carries
+#               the same `contents: write` token as a release and simply never
+#               reaches the publish steps.
 #   smoke     — `workflow_dispatch` with `smoke: true`: builds the slim DMG from
 #               the dispatched ref with `make dmg` (no Developer ID), runs the
 #               payload gate without signature and notary checks and keeps the
@@ -49,7 +54,7 @@ on:
         type: boolean
         default: false
       rehearse:
-        description: Rehearse the release on the dispatched ref (sign, notarize, staple, gate; DMG as run artifact; nothing published)
+        description: Rehearse the release on the dispatched ref (sign, notarize, staple, gate; DMG as run artifact; nothing published). Ignored when smoke is set.
         type: boolean
         default: false
 
