@@ -117,6 +117,15 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual(self.release["env"]["VARIANT"], "${{ inputs.variant || 'slim' }}")
         self.assertEqual(self.release["env"]["REHEARSE"], "${{ inputs.rehearse == true }}")
 
+    def test_release_checks_out_the_approved_commit_with_full_history(self):
+        checkout = next(step for step in self.release["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertEqual(
+            checkout["with"]["ref"],
+            "${{ inputs.tag_name || (github.event_name == 'workflow_dispatch' && github.sha) || github.ref }}",
+        )
+        # CSBuildNumber is `git rev-list --count HEAD`: a shallow clone stamps 1.
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+
     def test_release_builds_slim_by_default_and_full_only_on_request(self):
         joined = "\n".join(runs(self.release))
         self.assertIn("make release-standard", joined)

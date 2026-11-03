@@ -316,7 +316,14 @@ environment gate applies, so the rehearsal waits for the same reviewer. Install
 the rehearsal DMG with `make install-app-release` and run the cold-path check
 on it; the first real tag then repeats a path that has already been observed.
 
-Two consequences of running the rehearsal under the same job:
+The job builds the commit the run page shows: a dispatch checks out `github.sha`
+as resolved when the run was created, not the branch tip at the moment the
+reviewer releases the environment gate, so what was approved is what gets
+signed. The bundle's `CSBuildCommit` and the DMG slug name that commit; the
+checkout fetches the full history so `CSBuildNumber` is the real commit count
+rather than the 1 a shallow clone would stamp.
+
+Three consequences of running the rehearsal under the same job:
 
 - The environment's deployment policy must admit the rehearsed branch. A policy
   limited to `v*` tags rejects every rehearsal before it starts; keep the

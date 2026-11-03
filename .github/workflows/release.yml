@@ -162,7 +162,14 @@ jobs:
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.tag_name || github.ref }}
+          # Build the commit the reviewer approved. A dispatch resolves to the
+          # SHA the run page shows (`github.sha`), not to the branch tip at the
+          # moment the environment gate is released; a tag push still checks
+          # out the tag, and `tag_name` names an existing tag explicitly.
+          ref: ${{ inputs.tag_name || (github.event_name == 'workflow_dispatch' && github.sha) || github.ref }}
+          # scripts/build-app.sh stamps CSBuildNumber with `git rev-list --count
+          # HEAD`; a shallow clone stamps 1 into every bundle.
+          fetch-depth: 0
 
       - name: Show the Xcode this job selected
         run: xcodebuild -version
