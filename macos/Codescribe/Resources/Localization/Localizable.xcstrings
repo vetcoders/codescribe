@@ -1975,6 +1975,18 @@
         }
       }
     },
+    "A delivery is still going out. Wait for it to finish before changing recipients." : {
+      "comment" : "Recipient row and roster chain while a synced send or attachment delivery is in flight",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wysyłka jeszcze trwa. Poczekaj, aż się skończy, zanim zmienisz odbiorców."
+          }
+        }
+      }
+    },
     "A formatting level set outside the app differs from the one chosen in Settings. The value from outside the app is in effect." : {
       "comment" : "About panel: FORMATTING_LEVEL override differs from the saved level",
       "localizations" : {
@@ -3210,6 +3222,30 @@
         }
       }
     },
+    "Already in a sync with %@. Choosing them joins the two syncs." : {
+      "comment" : "Recipient row when that agent already belongs to a different sync. %@ is the other group's names.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jest już w synchronizacji z %@. Wybranie łączy obie grupy."
+          }
+        }
+      }
+    },
+    "Already in another sync. Choosing them joins the two syncs." : {
+      "comment" : "Roster chain when the agent is linked in a sync other than the open conversation",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jest już w innej synchronizacji. Wybranie łączy obie grupy."
+          }
+        }
+      }
+    },
     "Already turned on? macOS may apply it only after you quit and reopen Codescribe." : {
       "comment" : "Permission still missing after a request; macOS may need the app to restart",
       "localizations" : {
@@ -3934,6 +3970,17 @@
         }
       }
     },
+    "Bar (beta)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Belka (beta)"
+          }
+        }
+      }
+    },
     "Base instructions for the Agent acting on a dictated request. Voice chat uses its own instructions." : {
       "localizations" : {
         "pl" : {
@@ -4525,6 +4572,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nagrywanie trwa, dopóki go nie zatrzymasz."
+          }
+        }
+      }
+    },
+    "Cards (beta)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fiszki (beta)"
           }
         }
       }
@@ -7642,6 +7700,18 @@
         }
       }
     },
+    "Dictation is in progress. This take keeps the recipients it started with. Stop it to add or remove someone." : {
+      "comment" : "Recipient row and roster chain while a composer dictation take is open",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trwa dyktowanie. Ta wypowiedź idzie do odbiorców z jej startu. Zatrzymaj je, żeby dodać albo usunąć kogoś."
+          }
+        }
+      }
+    },
     "Dictation is ready." : {
       "comment" : "Setup final heading: dictation passed its checks, the Agent lane is not ready yet",
       "localizations" : {
@@ -8717,17 +8787,6 @@
         }
       }
     },
-    "Cards (beta)" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Fiszki (beta)"
-          }
-        }
-      }
-    },
     "Fn and Agent channels" : {
       "localizations" : {
         "pl" : {
@@ -9422,17 +9481,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Poziomy pasek"
-          }
-        }
-      }
-    },
-    "Bar (beta)" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Belka (beta)"
           }
         }
       }
@@ -12677,17 +12725,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Do tego nagrania nie dopuszczono żadnych słów."
-          }
-        }
-      }
-    },
-    "The none level answers fastest. Higher levels are slower; choose one only if a model needs it." : {
-      "comment" : "Formatting reasoning row explanation",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Poziom „none” zwykle pozwala uzyskać odpowiedź najszybciej. Wyższe poziomy mogą wydłużyć czas oczekiwania. Wybierz je, gdy zadanie tego wymaga."
           }
         }
       }
@@ -19363,66 +19400,6 @@
         }
       }
     },
-    "A delivery is still going out. Wait for it to finish before changing recipients." : {
-      "comment" : "Recipient row and roster chain while a synced send or attachment delivery is in flight",
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wysyłka jeszcze trwa. Poczekaj, aż się skończy, zanim zmienisz odbiorców."
-          }
-        }
-      }
-    },
-    "Already in a sync with %@. Choosing them joins the two syncs." : {
-      "comment" : "Recipient row when that agent already belongs to a different sync. %@ is the other group's names.",
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Jest już w synchronizacji z %@. Wybranie łączy obie grupy."
-          }
-        }
-      }
-    },
-    "Already in another sync. Choosing them joins the two syncs." : {
-      "comment" : "Roster chain when the agent is linked in a sync other than the open conversation",
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Jest już w innej synchronizacji. Wybranie łączy obie grupy."
-          }
-        }
-      }
-    },
-    "Dictation is in progress. This take keeps the recipients it started with. Stop it to add or remove someone." : {
-      "comment" : "Recipient row and roster chain while a composer dictation take is open",
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Trwa dyktowanie. Ta wypowiedź idzie do odbiorców z jej startu. Zatrzymaj je, żeby dodać albo usunąć kogoś."
-          }
-        }
-      }
-    },
-    "This link no longer matches the agent on this channel. The message will not go to them." : {
-      "comment" : "A sync seat whose owner identity no longer matches the live agent",
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "To powiązanie nie pasuje już do agenta na tym kanale. Wiadomość do niego nie pójdzie."
-          }
-        }
-      }
-    },
     "System" : {
       "comment" : "Appearance choice: follow macOS",
       "localizations" : {
@@ -20068,6 +20045,17 @@
         }
       }
     },
+    "The none level answers fastest. Higher levels are slower; choose one only if a model needs it." : {
+      "comment" : "Formatting reasoning row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poziom „none” zwykle pozwala uzyskać odpowiedź najszybciej. Wyższe poziomy mogą wydłużyć czas oczekiwania. Wybierz je, gdy zadanie tego wymaga."
+          }
+        }
+      }
+    },
     "The outdated copy for %@ is updated at the same time." : {
       "comment" : "Install confirmation; the placeholder lists coding-agent clients such as Claude Code",
       "localizations" : {
@@ -20418,6 +20406,18 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ta licencja nie obejmuje trybu agentowego"
+          }
+        }
+      }
+    },
+    "This link no longer matches the agent on this channel. The message will not go to them." : {
+      "comment" : "A sync seat whose owner identity no longer matches the live agent",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To powiązanie nie pasuje już do agenta na tym kanale. Wiadomość do niego nie pójdzie."
           }
         }
       }
