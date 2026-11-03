@@ -472,6 +472,172 @@ class SendHoldTests(unittest.TestCase):
         self.assertEqual(sealed["utterance_id"], 0)
         self.assertEqual(sealed["hold_until"], stamp(NOW + 10))
 
+    def closing_voice_checkpoint(self):
+        lease = self.lease()
+        owner = {key: getattr(lease, key) for key in ("provider", "provider_session_id", "lease_id", "bus")}
+        session = "agent-channel-2-checkpoint-fixture"
+        closing = {"schema": DEMUX.EVIDENCE_SCHEMA, "session_id": session,
+            "recipients": [owner], "audience": "lena", "capture_epoch": 1,
+            "reducer_revision": 3, "reducer_action": DEMUX.TERMINAL_SEAL,
+            "rendered_text": "retained closing voice", "sequence": 1,
+            "status": DEMUX.SEALED, "terminal": True, "closing_decision": DEMUX.CLOSING_PUBLISH,
+            "utterance_id": 42, "hold_until": stamp(NOW + 10)}
+        normalizer = DEMUX.EvidenceNormalizer()
+        DEMUX.normalized_revision_events(json.dumps(closing), normalizer)
+        self.bus.write_text(json.dumps(closing) + "\n")
+        lease.unclosed_channel_messages = normalizer.channel_documents()
+        lease.persist(active=True, cursor=self.bus.stat().st_size)
+        boundary = {"schema": DEMUX.CHANNEL_SESSION_SCHEMA, **owner, "channel": "2",
+            "session_id": session, "state": "sealed", "publication": DEMUX.CONTROLLER_PUBLICATION,
+            "emitted_at": stamp(NOW)}
+        DEMUX.write_channel_binding(self.root, "2", "lena", self.provider, self.session, str(self.bus))
+        return lease, boundary
+
+    def assert_control_after_closing_checkpoint(self, kind):
+        lease, boundary = self.closing_voice_checkpoint()
+        with self.bus.open("a") as bus:
+            bus.write(json.dumps(boundary) + "\n")
+        lease.close()
+        published = []
+
+        def publish_then_follow(path, event, **kwargs):
+            self.assertEqual(path, self.bus)
+            published.append(event)
+            # Resume the actual follower at the checkpoint. It has not yet read
+            # the boundary when preflight validates the requested control.
+            self.run_follower([(NOW + 2, [boundary, event])])
+            return RECEIPT
+
+        args = self.args(revise=None, withdraw=None, release=None)
+        setattr(args, kind, boundary["session_id"])
+        with mock.patch.object(DEMUX, "publish_reply_event", side_effect=publish_then_follow), \
+                mock.patch.object(DEMUX, "held_control_applied", side_effect=APPLIED), \
+                mock.patch.object(DEMUX, "live_follower_pid", return_value=321), \
+                mock.patch.object(DEMUX.time, "time", return_value=NOW + 2), \
+                mock.patch.object(DEMUX, "emit"), \
+                mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"corrected closing voice"))):
+            self.assertEqual(DEMUX.delivery_control_command(args), 0)
+        self.assertEqual(len(published), 1)
+        self.assertEqual((published[0]["session_id"], published[0]["utterance_id"]),
+                         (boundary["session_id"], 42))
+        state = DEMUX.read_json(lease.path)
+        if kind == "release":
+            self.assertEqual(state["held"], {})
+            self.assertEqual([row["text"] for row in state["pending"]], ["retained closing voice"])
+        elif kind == "withdraw":
+            self.assertEqual((state["held"], state["pending"]), ({}, []))
+            self.assertEqual(len(state["withdrawn_held"]), 1)
+        else:
+            self.assertEqual(state["pending"], [])
+            self.assertEqual([row["text"] for row in state["held"].values()], ["corrected closing voice"])
+
+    def test_send_now_after_checkpoint_between_closing_snapshot_and_boundary(self):
+        self.assert_control_after_closing_checkpoint("release")
+
+    def test_cancel_after_checkpoint_between_closing_snapshot_and_boundary(self):
+        self.assert_control_after_closing_checkpoint("withdraw")
+
+    def test_edit_after_checkpoint_between_closing_snapshot_and_boundary(self):
+        self.assert_control_after_closing_checkpoint("revise")
+
+    def test_closing_checkpoint_without_an_owned_boundary_is_not_deliverable(self):
+        lease, boundary = self.closing_voice_checkpoint()
+        for tail in ([], [{**boundary, "provider_session_id": "foreign"}]):
+            with self.bus.open("a") as bus:
+                for row in tail:
+                    bus.write(json.dumps(row) + "\n")
+            before = lease.path.read_bytes()
+            with mock.patch.object(DEMUX, "publish_reply_event") as publish, \
+                    mock.patch.object(DEMUX, "held_control_applied") as applied, \
+                    mock.patch.object(DEMUX, "live_follower_pid", return_value=321), \
+                    mock.patch.object(DEMUX.time, "time", return_value=NOW + 2):
+                with self.assertRaisesRegex(ValueError, "no longer held"):
+                    DEMUX.delivery_control_command(self.args(
+                        revise=None, withdraw=boundary["session_id"], release=None))
+            publish.assert_not_called()
+            applied.assert_not_called()
+            self.assertEqual(lease.path.read_bytes(), before)
+
+    def test_foreign_closing_checkpoint_cannot_be_restored_by_an_owned_boundary(self):
+        lease, boundary = self.closing_voice_checkpoint()
+        document = lease.unclosed_channel_messages[boundary["session_id"]]
+        document["recipients"][0]["provider_session_id"] = "foreign"
+        lease.persist(active=True)
+        with self.bus.open("a") as bus:
+            bus.write(json.dumps(boundary) + "\n")
+        with mock.patch.object(DEMUX, "publish_reply_event") as publish, \
+                mock.patch.object(DEMUX, "live_follower_pid", return_value=321):
+            with self.assertRaisesRegex(ValueError, "invalid unclosed"):
+                DEMUX.delivery_control_command(self.args(
+                    revise=None, withdraw=None, release=boundary["session_id"]))
+        publish.assert_not_called()
+
+    def test_owned_refusal_suppresses_a_retained_closing_checkpoint(self):
+        lease, boundary = self.closing_voice_checkpoint()
+        lease.channel_publication_refusals[boundary["session_id"]] = {
+            "schema": DEMUX.PUBLICATION_SCHEMA, "status": "channel_publication_refused",
+            "reason": "sound_without_speech", "entirely_unwitnessed": True,
+            "session_id": boundary["session_id"], "capture_epoch": 1,
+            "recipients": [lease.unclosed_channel_messages[boundary["session_id"]]["recipients"][0]],
+        }
+        lease.persist(active=True)
+        with self.bus.open("a") as bus:
+            bus.write(json.dumps(boundary) + "\n")
+        before = lease.path.read_bytes()
+        with mock.patch.object(DEMUX, "publish_reply_event") as publish, \
+                mock.patch.object(DEMUX, "live_follower_pid", return_value=321):
+            with self.assertRaisesRegex(ValueError, "no longer held"):
+                DEMUX.delivery_control_command(self.args(
+                    revise=None, withdraw=None, release=boundary["session_id"]))
+        publish.assert_not_called()
+        self.assertEqual(lease.path.read_bytes(), before)
+
+    def test_partial_boundary_does_not_seal_a_retained_closing_checkpoint(self):
+        lease, boundary = self.closing_voice_checkpoint()
+        with self.bus.open("a") as bus:
+            bus.write(json.dumps(boundary))
+        before = lease.path.read_bytes()
+        with mock.patch.object(DEMUX, "publish_reply_event") as publish, \
+                mock.patch.object(DEMUX, "live_follower_pid", return_value=321):
+            with self.assertRaisesRegex(ValueError, "no longer held"):
+                DEMUX.delivery_control_command(self.args(
+                    revise=None, withdraw=None, release=boundary["session_id"]))
+        publish.assert_not_called()
+        self.assertEqual(lease.path.read_bytes(), before)
+
+    def test_expired_closing_checkpoint_cannot_be_cancelled_or_edited(self):
+        lease, boundary = self.closing_voice_checkpoint()
+        with self.bus.open("a") as bus:
+            bus.write(json.dumps(boundary) + "\n")
+        before = lease.path.read_bytes()
+        for kind in ("withdraw", "revise"):
+            args = self.args(revise=None, withdraw=None, release=None)
+            setattr(args, kind, boundary["session_id"])
+            with mock.patch.object(DEMUX, "publish_reply_event") as publish, \
+                    mock.patch.object(DEMUX, "live_follower_pid", return_value=321), \
+                    mock.patch.object(DEMUX.time, "time", return_value=NOW + 11), \
+                    mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"too late"))):
+                with self.assertRaisesRegex(ValueError, "message already delivered"):
+                    DEMUX.delivery_control_command(args)
+            publish.assert_not_called()
+        self.assertEqual(lease.path.read_bytes(), before)
+
+    def voice_journal_rows(self, *sessions):
+        owner = {"provider": self.provider, "provider_session_id": self.session,
+                 "lease_id": self.lease_id, "bus": str(self.bus)}
+        rows = []
+        for session in sessions:
+            rows.extend([
+                {"schema": DEMUX.EVIDENCE_SCHEMA, "session_id": session,
+                 "recipients": [owner], "audience": "lena", "reducer_revision": 1,
+                 "reducer_action": DEMUX.TERMINAL_SEAL, "rendered_text": "held voice",
+                 "sequence": 1, "utterance_id": 42, "status": DEMUX.SEALED,
+                 "hold_until": stamp(NOW + 10)},
+                {"schema": DEMUX.CHANNEL_SESSION_SCHEMA, **owner, "session_id": session,
+                 "channel": "2", "state": "sealed"},
+            ])
+        return rows
+
     def test_quiet_broadcast_promotes_without_any_wake(self):
         self.policy("quiet")
         state, output, native, hooks = self.run_follower([
@@ -550,13 +716,14 @@ class SendHoldTests(unittest.TestCase):
         with mock.patch.object(DEMUX.time, "time", return_value=NOW):
             lease.queue_delivery(row)
         DEMUX.write_channel_binding(self.root, "2", "lena", self.provider, self.session, str(self.bus))
-        publish = DEMUX.publish_reply_event
-
         def publish_then_follow(path, event, **kwargs):
-            receipt = publish(path, event, **kwargs)
+            # The fixture owns its disposable journal; this receipt test must
+            # not require a locally built external publisher on a clean runner.
+            with path.open("a") as bus:
+                bus.write(json.dumps(event) + "\n")
             self.assertFalse(APPLIED(self.root, self.lease_id, "withdraw", event["control_id"]))
             lease.control_delivery(event)
-            return receipt
+            return RECEIPT
 
         with mock.patch.object(DEMUX, "publish_reply_event", side_effect=publish_then_follow), \
                 mock.patch.object(DEMUX, "held_control_applied", side_effect=APPLIED), \
@@ -673,10 +840,10 @@ class SendHoldTests(unittest.TestCase):
         self.lease()
         DEMUX.write_channel_binding(self.root, "2", "lena", self.provider, self.session, str(self.bus))
         first, second = "agent-channel-2-first", "agent-channel-2-second"
-        rows = [{"schema": DEMUX.EVIDENCE_SCHEMA, "session_id": session, "utterance_id": 42,
-                 "status": DEMUX.SEALED, "hold_until": stamp(NOW + 10)} for session in (first, second)]
+        rows = self.voice_journal_rows(first, second)
         rows.append({"schema": DEMUX.DELIVERY_CONTROL_SCHEMA, "kind": "release", "identity": "42",
-                     "session_id": first, "lease_id": self.lease_id})
+                     "session_id": first, "lease_id": self.lease_id, "provider": self.provider,
+                     "provider_session_id": self.session, "bus": str(self.bus)})
         self.bus.write_text("".join(json.dumps(row) + "\n" for row in rows))
         args = self.args(revise=None, withdraw=second, release=None)
         with mock.patch.object(DEMUX, "publish_reply_event", return_value=RECEIPT) as publish, \
@@ -839,9 +1006,7 @@ class SendHoldTests(unittest.TestCase):
     def test_voice_control_selects_the_capture_session_not_a_reused_numeric_label(self):
         self.lease()
         DEMUX.write_channel_binding(self.root, "2", "lena", self.provider, self.session, str(self.bus))
-        rows = [{"schema": DEMUX.EVIDENCE_SCHEMA, "session_id": session,
-                 "utterance_id": 42, "status": DEMUX.SEALED}
-                for session in ("agent-channel-2-first", "agent-channel-2-second")]
+        rows = self.voice_journal_rows("agent-channel-2-first", "agent-channel-2-second")
         self.bus.write_text("".join(json.dumps(row) + "\n" for row in rows))
         args = self.args(revise=None, withdraw=None, release="agent-channel-2-second")
         with mock.patch.object(DEMUX, "publish_reply_event", return_value=RECEIPT) as publish, \

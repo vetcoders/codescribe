@@ -895,7 +895,7 @@ struct OverlayConversationView: View {
       draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       pendingCaptureAttachments.isEmpty, !conversation.isHumanInbox,
       composerConversation == nil || composerConversation?.id == conversation.id,
-      let message = orderedMessages.last(where: {
+      let message = conversation.messages.last(where: {
         $0.kind == .user && $0.controlIdentity != nil && $0.holdingSeconds(at: Date()) != nil
           && ($0.sourceChannel == "0") == (conversation.channel == "0")
       })

@@ -9708,7 +9708,37 @@ def delivery_control_sources(root: Path, owner: dict[str, Any]) -> Iterator[dict
                 yield {"schema": DELIVERY_CONTROL_SCHEMA, "kind": "release",
                        "identity": held_identity(payload), "session_id": payload.get("session_id"),
                        "lease_id": owner["lease_id"]}
-    storage = ChunkDecoder()
+    # A closing snapshot may be checkpointed before its channel boundary.
+    # Resume the same normalizer as the follower, so that boundary can seal
+    # the retained document without replaying already consumed generations.
+    def admitted(row: dict[str, Any]) -> bool:
+        return channel_event_admitted(row, **{key: owner[key] for key in identity_keys})
+
+    documents = state.get("unclosed_channel_messages", {})
+    if (not isinstance(documents, dict)
+            or len(documents) > EvidenceNormalizer.MAX_TRACKED_SESSIONS
+            or any(not isinstance(document, dict)
+                or document.get("session_id") != session
+                or channel_of_session(session) is None
+                or document.get("message_id") != channel_message_identity(session)
+                or document.get("status") not in LIVE_STATUSES
+                or document.get("producer_schema") != EVIDENCE_SCHEMA
+                or not isinstance(document.get("text"), str)
+                or not isinstance(document.get("occurrences"), list)
+                or any(not isinstance(item, dict) for item in document["occurrences"])
+                or not admitted(document) for session, document in documents.items())):
+        raise ValueError("invalid unclosed delivery checkpoint")
+    normalizer = EvidenceNormalizer()
+    refusals = state.get("channel_publication_refusals", {})
+    if not isinstance(refusals, dict):
+        raise ValueError("invalid publication refusal checkpoint")
+    normalizer.restore_publication_refusals([
+        receipt for receipt in refusals.values() if isinstance(receipt, dict) and admitted(receipt)
+    ])
+    normalizer.restore_channel_documents(list(documents.values()))
+    normalizer.restore_channel_documents([
+        payload for payload in [*held.values(), *pending] if payload.get("status") == SEALED
+    ])
     with GenerationFile(Path(owner["bus"])) as handle:
         if cursor > handle.size:
             raise ValueError("held delivery checkpoint exceeds journal")
@@ -9718,10 +9748,8 @@ def delivery_control_sources(root: Path, owner: dict[str, Any]) -> Iterator[dict
                 # The append owner may still be writing this last record.
                 # Do not interpret its partial bytes or rewind the checkpoint.
                 break
-            source = parse_line(raw.decode("utf-8", errors="strict"))
-            source = storage.feed(source) if source is not None else None
-            if source is not None:
-                yield source
+            yield from normalized_revision_events(
+                raw.decode("utf-8", errors="strict"), normalizer, admit_row=admitted)
 
 
 def delivery_control_command(args: argparse.Namespace) -> int:

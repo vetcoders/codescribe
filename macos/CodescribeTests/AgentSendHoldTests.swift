@@ -176,12 +176,22 @@ final class AgentSendHoldTests: XCTestCase {
   }
 
   func testEmptyEnterReleasesTheLatestHeldMessageOnceAndNeverSendsAnotherText() async throws {
+    try await assertEmptyEnterReleasesTheLatestHeldMessage(messageCount: 2, windowLimit: nil)
+  }
+
+  func testEmptyEnterReleasesAHeldMessageOutsideTheCompactPreviewWindow() async throws {
+    try await assertEmptyEnterReleasesTheLatestHeldMessage(messageCount: 10, windowLimit: 8)
+  }
+
+  private func assertEmptyEnterReleasesTheLatestHeldMessage(
+    messageCount: Int, windowLimit: Int?
+  ) async throws {
     let fixture = try Fixture()
     defer { try? FileManager.default.removeItem(at: fixture.home) }
     let until = ISO8601DateFormatter().string(from: Date().addingTimeInterval(60))
     var bus = OverlayChannelDelivery.Bus()
-    for index in [1, 2] {
-      bus.consume([
+    for index in 1...messageCount {
+      var row: [String: Any] = [
         "schema": "codescribe.agent-user-message.v1", "kind": "agent_user_message",
         "source": "typed", "audience": "fixture", "channel": "1",
         "message_id": String(format: "%024x", index), "text": "Held \(index)",
@@ -194,7 +204,9 @@ final class AgentSendHoldTests: XCTestCase {
             "lease_id": fixture.owner.leaseID, "channel": "1", "name": "fixture",
           ]
         ],
-      ])
+      ]
+      if index > 2 { row.removeValue(forKey: "hold_until") }
+      bus.consume(row)
     }
     let conversation = try XCTUnwrap(
       bus.conversations(busPath: fixture.identity.bus).first {
@@ -209,6 +221,7 @@ final class AgentSendHoldTests: XCTestCase {
       pendingControls: [], controlErrors: [:], onControl: { _, _ in },
       draft: .constant(""), sending: false, sendError: nil,
       onSend: { XCTFail("Empty Enter must not publish another message") },
+      messageWindowLimit: windowLimit,
       onDeliveryControl: { control, message, owner, _ in
         XCTAssertEqual(control, .release)
         XCTAssertEqual(owner, fixture.owner)
