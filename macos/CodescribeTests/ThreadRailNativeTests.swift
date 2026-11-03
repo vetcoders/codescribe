@@ -6,6 +6,19 @@ import XCTest
 
 @MainActor
 final class ThreadRailNativeTests: XCTestCase {
+  func testNativeRowMetadataUsesSelectionAwareSecondaryStyle() throws {
+    let path = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/AgentChat/ThreadRail.swift")
+    let source = try String(contentsOf: path, encoding: .utf8)
+    let row = try XCTUnwrap(
+      source.components(separatedBy: "private var rowContent: some View {").last
+    )
+    .components(separatedBy: "// MARK: - Sidebar search keys")[0]
+    XCTAssertFalse(row.contains("CSColor.secondaryInk"))
+    XCTAssertEqual(row.components(separatedBy: ".foregroundStyle(.secondary)").count - 1, 4)
+  }
+
   func testNativeSearchFiltersWhileTypingAndEscapeRestoresList() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let rows = [ChatThread(title: "Atlas", meta: ""), ChatThread(title: "Lena", meta: "")]

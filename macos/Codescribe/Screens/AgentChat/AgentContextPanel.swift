@@ -97,7 +97,7 @@ struct AgentConversationHeader: View {
       }
       Text(verbatim: Self.identityLine(model: store.currentThread?.model))
         .font(CSFont.mono(10, .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(1)
         .truncationMode(.tail)
     }
@@ -131,17 +131,17 @@ struct AgentLiveStatusPill: View {
     case .idle:
       EmptyView()
     case .thinking:
-      StatusPill(text: activity.statusLabel ?? "", color: CSColor.amber, rippling: true)
+      StatusPill(text: activity.statusLabel ?? "", color: CSColor.amberLight, rippling: true)
     case .answering:
-      StatusPill(text: activity.statusLabel ?? "", color: CSColor.terracotta, rippling: true)
+      StatusPill(text: activity.statusLabel ?? "", color: CSColor.terracottaText, rippling: true)
     case .usingTools:
       StatusPill(text: activity.statusLabel ?? "", color: CSColor.oliveLight, rippling: true)
     case .awaitingApproval:
-      StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.amber)
+      StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.amberLight)
     case .stopping:
       StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.textTertiary)
     case .failed:
-      StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.terracotta)
+      StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.terracottaText)
     }
   }
 }
@@ -163,7 +163,7 @@ struct AgentWidthModeButton: View {
       widthModeRaw = mode.next.rawValue
     } label: {
       CSIconView(icon: .conversationWidth, size: 12, weight: .medium)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .frame(width: 26, height: 22)
         .overlay(
           RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
@@ -195,7 +195,7 @@ struct AgentContextToggle: View {
           .font(CSFont.ui(12, .medium))
           .lineLimit(1)
       }
-      .foregroundStyle(isOpen ? CSColor.chromeAccent : Color.secondary)
+      .foregroundStyle(isOpen ? CSColor.chromeAccent : CSColor.secondaryInk)
       .padding(.horizontal, 8)
       .frame(height: 22)
       .background(
@@ -292,7 +292,7 @@ struct AgentContextPanel: View {
     VStack(alignment: .leading, spacing: 7) {
       Text(title)
         .font(CSFont.ui(11, .semibold))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .accessibilityAddTraits(.isHeader)
       content()
     }
@@ -337,7 +337,7 @@ struct AgentContextPanel: View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text(label)
         .font(CSFont.ui(11, .regular))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(1)
       Spacer(minLength: 8)
       value()
@@ -352,7 +352,7 @@ struct AgentContextPanel: View {
   private var toolSettingsRow: some View {
     Button(action: openToolSettings) {
       HStack(spacing: 8) {
-        CSIconView(icon: .settings, size: 12, color: Color.secondary)
+        CSIconView(icon: .settings, size: 12, color: CSColor.secondaryInk)
         Text(AgentContextPanelCopy.toolSettings)
           .font(CSFont.ui(12.5, .medium))
           .foregroundStyle(Color.primary)

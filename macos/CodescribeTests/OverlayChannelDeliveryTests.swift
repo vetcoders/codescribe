@@ -3056,7 +3056,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       for (role, foreground, minimum) in [
         ("channel name", style.primaryText, 4.5),
         ("receipt and dead follower", style.bodyText, 4.5),
-        ("secondary text", style.mutedText, 3.0),
+        ("secondary text", style.mutedText, 4.5),
         ("open microphone", palette.listeningStatus, 4.5),
         ("queued receipt", palette.processingStatus, 4.5),
         ("confirmed receipt", palette.successStatus, 4.5),

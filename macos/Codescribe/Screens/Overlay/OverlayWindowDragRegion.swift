@@ -36,6 +36,15 @@ private struct AppKitWindowDragRegion: NSViewRepresentable {
 }
 
 final class OverlayWindowDragRegionView: NSView {
+  private weak var owner: FloatingOverlayPanel?
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    owner?.windowDragRegions.remove(self)
+    owner = window as? FloatingOverlayPanel
+    owner?.windowDragRegions.add(self)
+  }
+
   override var isOpaque: Bool { false }
   override func resetCursorRects() {
     discardCursorRects()

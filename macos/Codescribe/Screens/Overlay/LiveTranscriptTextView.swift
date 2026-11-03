@@ -169,6 +169,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 
   static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
     coordinator.detach()
+    coordinator.undoHistory.removeAllActions()
   }
 
   func updateNSView(_ scrollView: NSScrollView, context: Context) {
@@ -230,6 +231,9 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     textView.setTranscriptActivity(
       showsActivityUnderline && !coordinator.isEditing, subdued: !text.isEmpty)
     textView.allowsUndo = isEditable
+    // An edit's undo steps index the text being edited; once the reducer owns
+    // the text again they would point into a different transcript.
+    if !isEditable { coordinator.undoHistory.removeAllActions() }
     textView.typingAttributes = attributes
     textView.insertionPointColor = OverlayAppearancePalette.resolve(appearance).bodyText.nsColor
 
@@ -391,9 +395,14 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     var onPlayUncertainWord: ((OverlayUncertainWord) -> Void)?
     var onTeachUncertainWord: ((OverlayUncertainWord, String) -> Void)?
     let uncertainWordPopover = UncertainWordPopoverPresenter()
+    /// Edit-mode undo, owned by this view rather than the overlay panel that
+    /// outlives it (see `ComposerTextView.Coordinator`).
+    let undoHistory = UndoManager()
     private weak var observedScrollView: NSScrollView?
     private var scrollObservers: [NSObjectProtocol] = []
     private let scrollerPin = CSScrollerPin()
+
+    func undoManager(for view: NSTextView) -> UndoManager? { undoHistory }
 
     func attach(to scrollView: NSScrollView) {
       guard observedScrollView !== scrollView else { return }
@@ -814,6 +823,7 @@ final class LiveTranscriptNativeTextView: NSTextView {
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     if performSelectedCopy(with: event) { return true }
+    if isEditable, performUndoChord(with: event) { return true }
     return super.performKeyEquivalent(with: event)
   }
 

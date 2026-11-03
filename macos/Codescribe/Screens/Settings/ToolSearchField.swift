@@ -16,7 +16,7 @@ struct ToolSearchField: View {
     HStack(spacing: CSSpace.xs) {
       Image(systemName: "magnifyingglass")
         .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .accessibilityHidden(true)
       TextField("Search tools…", text: $text)
         .textFieldStyle(.plain)

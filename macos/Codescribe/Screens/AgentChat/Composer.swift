@@ -100,7 +100,7 @@ struct Composer: View {
           ZStack {
             Image(systemName: primaryAction.systemImage)
               .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
-              .foregroundStyle(primaryAction.isSend ? CSColor.terracotta : CSColor.chromeAccent)
+              .foregroundStyle(primaryAction.isSend ? CSColor.terracottaText : CSColor.chromeAccent)
             if primaryAction == .stopping {
               ProgressView()
                 .controlSize(.small)
@@ -143,7 +143,7 @@ struct Composer: View {
       if let notice = store.unsentDictationNotice {
         Text(verbatim: notice)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.amber)
+          .foregroundStyle(CSColor.amberLight)
           .accessibilityIdentifier("composer.dictation.not-sent")
       }
       dictationFeedback
@@ -236,7 +236,7 @@ struct Composer: View {
   private var agenticGate: some View {
     if let message = store.agenticBlockMessage {
       HStack(spacing: 9) {
-        CSIconView(icon: .warning, size: 11, color: CSColor.amber)
+        CSIconView(icon: .warning, size: 11, color: CSColor.amberLight)
         Text(message)
           .font(CSFont.ui(11.5, .medium))
           .foregroundStyle(Color.primary)
@@ -480,7 +480,7 @@ struct Composer: View {
         Text(message)
           .font(CSFont.mono(10.5, .medium))
       }
-      .foregroundStyle(CSColor.amber)
+      .foregroundStyle(CSColor.amberLight)
       .padding(.leading, 2)
       .transition(.opacity)
     }

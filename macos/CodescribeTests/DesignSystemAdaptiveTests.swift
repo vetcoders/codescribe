@@ -146,6 +146,90 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     }
   }
 
+  // MARK: - Contrast on the surfaces text really meets (audit 2026-10-24)
+
+  /// The surfaces a label meets in the app, composited exactly: the sheet,
+  /// a Settings card (`primary` at 5 %), a chip on that card (6 %), the glass
+  /// sheet measured on screen (2026-10-20: #DFDDD9 paper, #18181C ink; the
+  /// overlay, tray and setup wizard), and a bubble on that glass. A token
+  /// that clears 4.5:1 on `ink` alone missed most of these.
+  private func realSurfaces(_ name: NSAppearance.Name) -> [(String, RGB)] {
+    let dark = isDark(name)
+    let label = resolvedRGBA(.labelColor, name)
+    let shades = SheetShade.allCases.filter { $0.isDark == dark }
+    let sheets = shades.flatMap { shade -> [(String, RGB)] in
+      let sheet = RGB(hex: shade.hex)
+      let card = label.over(sheet, alpha: label.alpha * 0.05)
+      let chip = label.over(card, alpha: label.alpha * 0.06)
+      return [
+        ("\(shade.rawValue) sheet", sheet), ("\(shade.rawValue) card", card),
+        ("\(shade.rawValue) chip", chip),
+      ]
+    }
+    let glass = RGB(hex: dark ? 0x18181C : 0xDFDDD9)
+    let high = resolvedRGBA(CSPalette.textHigh, name)
+    return sheets + [
+      ("glass", glass),
+      ("glass bubble", high.over(glass, alpha: 0.06)),
+    ]
+  }
+
+  private static let auditAppearances: [NSAppearance.Name] = [
+    .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
+  ]
+
+  func testSecondaryInkClearsAaOnEveryRealSurface() {
+    for name in Self.auditAppearances {
+      let ink = resolvedRGBA(CSPalette.secondaryInk, name)
+      let system = resolvedRGBA(.secondaryLabelColor, name)
+      for (surface, background) in realSurfaces(name) {
+        let ratio = ink.over(background, alpha: ink.alpha).contrast(background)
+        XCTAssertGreaterThanOrEqual(
+          ratio, 4.5, "secondaryInk on \(surface) in \(name.rawValue): \(ratio):1")
+        let systemRatio = system.over(background, alpha: system.alpha).contrast(background)
+        XCTAssertGreaterThan(
+          ratio, systemRatio, "secondaryInk must read stronger than the system rung on \(surface)")
+      }
+    }
+  }
+
+  func testTextRolesClearAaOnEveryRealSurfaceAndTheirOwnTint() {
+    let roles: [(String, NSColor)] = [
+      ("textMuted", CSPalette.textMuted),
+      ("terracottaText", CSPalette.terracottaText),
+      ("terracottaLight", CSPalette.terracottaLight),
+      ("amberLight", CSPalette.amberLight),
+      ("dangerLight", CSPalette.dangerLight),
+      ("oliveLight", CSPalette.oliveLight),
+      ("oliveStatus", CSPalette.oliveStatus),
+      ("assistiveLight", CSPalette.assistiveLight),
+      ("modeProcessingLight", CSPalette.modeProcessingLight),
+      ("lexicon", CSPalette.lexicon),
+    ]
+    for name in Self.auditAppearances {
+      let surfaces = realSurfaces(name)
+      for (role, color) in roles {
+        let ink = resolvedRGBA(color, name)
+        var backgrounds = surfaces
+        // A status word on its own 12 % tint: pills, probe chips, the tray row.
+        // The muted grey is never a pill; its tint check is the 8 % search field.
+        for (surface, background) in surfaces where surface.hasSuffix("card") || surface == "glass"
+        {
+          guard role != "textMuted" else {
+            backgrounds.append(("8 % muted field on \(surface)", ink.over(background, alpha: 0.08)))
+            continue
+          }
+          backgrounds.append(("12 % \(role) tint on \(surface)", ink.over(background, alpha: 0.12)))
+        }
+        for (surface, background) in backgrounds {
+          let ratio = ink.contrast(background)
+          XCTAssertGreaterThanOrEqual(
+            ratio, 4.5, "\(role) on \(surface) in \(name.rawValue): \(ratio):1")
+        }
+      }
+    }
+  }
+
   // MARK: - Veil polarity
 
   func testHairlineAndRaisedVeilsFlipPolarityWithTheAppearance() {
@@ -186,4 +270,61 @@ final class DesignSystemAdaptiveTests: XCTestCase {
       OverlayAppearancePalette.light.desktopBackground,
       OverlayColorToken(CSPalette.sheetLightHex))
   }
+}
+
+/// Exact sRGB composition for the contrast checks above.
+private struct RGB {
+  var red: Double
+  var green: Double
+  var blue: Double
+  var alpha: Double = 1
+
+  init(red: Double, green: Double, blue: Double, alpha: Double = 1) {
+    self.red = red
+    self.green = green
+    self.blue = blue
+    self.alpha = alpha
+  }
+
+  init(hex: UInt32) {
+    self.init(
+      red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255,
+      blue: Double(hex & 0xFF) / 255)
+  }
+
+  /// This colour at `alpha` over an opaque `background`.
+  func over(_ background: RGB, alpha: Double) -> RGB {
+    RGB(
+      red: red * alpha + background.red * (1 - alpha),
+      green: green * alpha + background.green * (1 - alpha),
+      blue: blue * alpha + background.blue * (1 - alpha))
+  }
+
+  var luminance: Double {
+    func linear(_ value: Double) -> Double {
+      value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+    }
+    return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+  }
+
+  func contrast(_ other: RGB) -> Double {
+    let lighter = max(luminance, other.luminance)
+    let darker = min(luminance, other.luminance)
+    return (lighter + 0.05) / (darker + 0.05)
+  }
+}
+
+private func isDark(_ name: NSAppearance.Name) -> Bool {
+  NSAppearance(named: name)?.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+}
+
+private func resolvedRGBA(_ color: NSColor, _ name: NSAppearance.Name) -> RGB {
+  var resolved = color
+  NSAppearance(named: name)?.performAsCurrentDrawingAppearance {
+    resolved = NSColor(cgColor: color.cgColor) ?? color
+  }
+  let srgb = resolved.usingColorSpace(.sRGB) ?? resolved
+  return RGB(
+    red: Double(srgb.redComponent), green: Double(srgb.greenComponent),
+    blue: Double(srgb.blueComponent), alpha: Double(srgb.alphaComponent))
 }

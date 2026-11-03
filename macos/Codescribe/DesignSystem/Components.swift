@@ -98,6 +98,10 @@ enum CSFocusPolicy {
     case pointer
   }
 
+  static func shouldShowOutline(isFocused: Bool, modality: InputModality) -> Bool {
+    isFocused && modality == .keyboard
+  }
+
   static func shouldReleaseFocus(
     for modality: InputModality,
     hitView: NSView?
@@ -128,19 +132,42 @@ enum CSFocusPolicy {
   }
 }
 
+@MainActor
+@Observable
+private final class CSFocusInputState {
+  var modality = CSFocusPolicy.InputModality.keyboard
+}
+
+private struct CSFocusInputKey: EnvironmentKey {
+  static let defaultValue: CSFocusInputState? = nil
+}
+
+extension EnvironmentValues {
+  fileprivate var csFocusInput: CSFocusInputState? {
+    get { self[CSFocusInputKey.self] }
+    set { self[CSFocusInputKey.self] = newValue }
+  }
+}
+
 private struct CSFocusPolicyModifier: ViewModifier {
+  @State private var input = CSFocusInputState()
+
   func body(content: Content) -> some View {
-    content.background {
-      CSFocusPolicyMonitor()
-        .frame(width: 0, height: 0)
-        .allowsHitTesting(false)
-    }
+    content
+      .environment(\.csFocusInput, input)
+      .background {
+        CSFocusPolicyMonitor(input: input)
+          .frame(width: 0, height: 0)
+          .allowsHitTesting(false)
+      }
   }
 }
 
 private struct CSFocusPolicyMonitor: NSViewRepresentable {
+  let input: CSFocusInputState
+
   func makeNSView(context: Context) -> CSFocusPolicyMonitorView {
-    CSFocusPolicyMonitorView()
+    CSFocusPolicyMonitorView(input: input)
   }
 
   func updateNSView(_ nsView: CSFocusPolicyMonitorView, context: Context) {}
@@ -152,7 +179,15 @@ private struct CSFocusPolicyMonitor: NSViewRepresentable {
 
 @MainActor
 private final class CSFocusPolicyMonitorView: NSView {
+  private let input: CSFocusInputState
   private var mouseMonitor: Any?
+
+  init(input: CSFocusInputState) {
+    self.input = input
+    super.init(frame: .zero)
+  }
+
+  required init?(coder: NSCoder) { nil }
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
@@ -160,11 +195,12 @@ private final class CSFocusPolicyMonitorView: NSView {
     guard let window else { return }
 
     mouseMonitor = NSEvent.addLocalMonitorForEvents(
-      matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
-    ) { [weak window] event in
+      matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]
+    ) { [weak window, input] event in
       guard let window, event.window === window else { return event }
+      input.modality = event.type == .keyDown ? .keyboard : .pointer
       let hitView = window.contentView?.hitTest(event.locationInWindow)
-      guard CSFocusPolicy.shouldReleaseFocus(for: .pointer, hitView: hitView) else {
+      guard CSFocusPolicy.shouldReleaseFocus(for: input.modality, hitView: hitView) else {
         return event
       }
 
@@ -200,11 +236,14 @@ struct CSFocusOutline: View {
   var isFocused: Bool
   var cornerRadius: CGFloat
   @Environment(\.displayScale) private var displayScale
+  @Environment(\.csFocusInput) private var input
 
   var body: some View {
     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
       .strokeBorder(
-        CSColor.chromeAccent.opacity(isFocused ? 1 : 0),
+        CSColor.chromeAccent.opacity(
+          CSFocusPolicy.shouldShowOutline(
+            isFocused: isFocused, modality: input?.modality ?? .keyboard) ? 1 : 0),
         lineWidth: 1 / max(displayScale, 1)
       )
       .allowsHitTesting(false)

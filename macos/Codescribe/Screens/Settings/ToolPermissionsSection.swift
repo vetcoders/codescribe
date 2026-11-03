@@ -60,7 +60,7 @@ struct ToolPermissionsSection: View {
         "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent."
       )
       .font(SettingsScale.helper)
-      .foregroundStyle(Color.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, SettingsScale.headerGap)
 
@@ -84,7 +84,7 @@ struct ToolPermissionsSection: View {
           Spacer(minLength: 0)
           Text("\(model.toolCapabilities.count) tools", comment: "Plural: count of tools")
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
         }
         .padding(.top, SettingsScale.sectionGap)
 
@@ -133,7 +133,7 @@ struct ToolPermissionsSection: View {
         .controlSize(.small)
       Text("Discovering tools from the MCP servers…")
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
     }
     .padding(.vertical, CSSpace.sm)
     .accessibilityIdentifier("settings-tool-catalog-loading")
@@ -142,7 +142,7 @@ struct ToolPermissionsSection: View {
   private var emptyCapabilities: some View {
     Text("No tools registered yet — open the Agent once or add an MCP server.")
       .font(SettingsScale.helper)
-      .foregroundStyle(Color.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .padding(.vertical, CSSpace.sm)
   }
 }
@@ -503,21 +503,21 @@ struct ToolCapabilityRow: View {
           // a long translation wraps instead of eating the name's line.
           Text(ToolPermissionLabels.ruleCaption(item.ruleSource))
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .multilineTextAlignment(.trailing)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: 150, alignment: .trailing)
         }
         Text(verbatim: item.sourceSummary)
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
         // The technical identity, in the background but never hidden: the
         // scale's quietest mono rung, whole, and selectable so it can be
         // copied into a config or a bug report.
         Text(item.identity)
           .font(SettingsScale.metaKey)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       }

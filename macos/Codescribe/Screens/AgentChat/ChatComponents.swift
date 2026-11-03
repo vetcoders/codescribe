@@ -6,10 +6,10 @@ import SwiftUI
 // the system accent.
 
 enum ChatPalette {
-  static let nameInactive = Color.secondary
+  static let nameInactive = CSColor.secondaryInk
   static let nameActive = Color.primary
   static var activeThreadSub: Color { CSColor.chromeAccent.opacity(0.78) }
-  static let toolBody = Color.secondary
+  static let toolBody = CSColor.secondaryInk
   static let thinking = CSColor.textTertiary
 }
 
@@ -53,7 +53,7 @@ struct RippleMic: View {
         icon: state.icon,
         size: ComposerControlMetrics.glyphSize,
         weight: isActive ? .semibold : .regular,
-        color: isActive ? CSColor.terracotta : CSColor.textTertiary
+        color: isActive ? CSColor.terracottaText : CSColor.textTertiary
       )
     }
     .frame(
@@ -265,7 +265,7 @@ struct MarkdownText: View {
     HStack(alignment: .firstTextBaseline, spacing: 7) {
       Text(marker)
         .font(CSFont.mono(deep ? s - 4 : s - 2))
-        .foregroundStyle(deep ? CSColor.textTertiary : Color.secondary)
+        .foregroundStyle(deep ? CSColor.textTertiary : CSColor.secondaryInk)
         .frame(minWidth: 14, alignment: .trailing)
       inlineText(
         text, baseFont: CSFont.ui(s), baseColor: bodyColor,
@@ -289,7 +289,7 @@ struct MarkdownText: View {
       .frame(minWidth: 14, alignment: .trailing)
       inlineText(
         text, baseFont: CSFont.ui(s),
-        baseColor: done ? Color.secondary : bodyColor,
+        baseColor: done ? CSColor.secondaryInk : bodyColor,
         fontSize: s, isLast: isLast)
     }
     .padding(.leading, CGFloat(min(indent, 4)) * 16)
@@ -593,11 +593,11 @@ enum CalloutKind {
 
   var tint: Color {
     switch self {
-    case .note: return Color.secondary  // neutral (palette carries no blue)
+    case .note: return CSColor.secondaryInk  // neutral (palette carries no blue)
     case .tip: return CSColor.oliveLight
     case .important: return CSColor.terracottaDeep
-    case .warning: return CSColor.amber
-    case .caution: return CSColor.terracotta
+    case .warning: return CSColor.amberLight
+    case .caution: return CSColor.terracottaText
     }
   }
 

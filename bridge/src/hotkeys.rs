@@ -1644,12 +1644,10 @@ impl CodescribeHotkeys {
 
     /// Atomically reject busy capture or close future admission for this process.
     /// This never constructs a new controller and never stops an active take.
-    pub async fn reserve_idle_restart(&self) -> Result<bool, CsError> {
-        application_runtime::run(async move {
-            current_controller(&shared_controller())
-                .is_some_and(|controller| controller.reserve_idle_restart())
-        })
-        .await
+    /// Synchronous so the UI can check composing and reserve without yielding.
+    pub fn reserve_idle_restart(&self) -> bool {
+        current_controller(&shared_controller())
+            .is_some_and(|controller| controller.reserve_idle_restart())
     }
 
     /// True while the shared controller is in an active recording/conversation state.

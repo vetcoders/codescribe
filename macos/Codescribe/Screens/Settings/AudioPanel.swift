@@ -846,7 +846,7 @@ struct AudioPanel: View {
 
       Text(card.current)
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -869,7 +869,7 @@ struct AudioPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       if let error = model.admissionReadError {
         statusRow(
-          color: CSColor.terracotta,
+          color: CSColor.terracottaText,
           title: "Readiness check unavailable",
           detail: error
         )
@@ -888,7 +888,7 @@ struct AudioPanel: View {
       if let notice = model.calibrationNotice {
         Text(notice)
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .accessibilityLabel("Calibration result")
       }
 
@@ -913,11 +913,11 @@ struct AudioPanel: View {
             GridRow {
               Text(verbatim: detail.label)
                 .font(CSFont.ui(10, .semibold))
-                .foregroundStyle(Color.secondary)
+                .foregroundStyle(CSColor.secondaryInk)
                 .gridColumnAlignment(.leading)
               Text(verbatim: detail.value)
                 .font(CSFont.mono(10, .medium))
-                .foregroundStyle(Color.secondary)
+                .foregroundStyle(CSColor.secondaryInk)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1016,7 +1016,7 @@ struct AudioPanel: View {
           Text(detail)
             .font(SettingsScale.helper)
             .lineSpacing(2)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
         remedyControl(summary.remedy, recordingState: recordingState, tray: tray)
@@ -1094,7 +1094,7 @@ struct AudioPanel: View {
             comment: "Button on the readiness status line: stop the running take")
         )
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(enabled ? CSColor.chromeAccent : Color.secondary)
+        .foregroundStyle(enabled ? CSColor.chromeAccent : CSColor.secondaryInk)
       }
       .accessibilityLabel("Stop recording")
       .accessibilityHint("Stops the active take in the shared recorder")
@@ -1110,7 +1110,7 @@ struct AudioPanel: View {
             comment: "Button on the readiness status line: start a take")
         )
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(enabled ? CSColor.chromeAccent : Color.secondary)
+        .foregroundStyle(enabled ? CSColor.chromeAccent : CSColor.secondaryInk)
       }
       .accessibilityLabel("Start recording")
       .accessibilityHint("Starts a real dictation session in the shared recorder")
@@ -1136,7 +1136,7 @@ struct AudioPanel: View {
               "\(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: elapsed)) s left"
             )
             .font(CSFont.mono(9.5, .medium))
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
           }
         }
         .accessibilityLabel("Calibration capture progress")
@@ -1243,7 +1243,7 @@ struct AudioPanel: View {
       if let detail = audioRetentionDetail(model.audioRetention) {
         Text(detail)
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -1334,7 +1334,7 @@ struct AudioPanel: View {
         Text(detail)
           .font(SettingsScale.helper)
           .lineSpacing(2)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
       }
       Spacer(minLength: 0)
     }
@@ -1343,9 +1343,9 @@ struct AudioPanel: View {
   private func statusColor(_ tone: AudioInputDisplayTone) -> Color {
     switch tone {
     case .healthy: return CSColor.oliveLight
-    case .neutral: return Color.secondary
-    case .fallback: return CSColor.amber
-    case .unavailable: return CSColor.terracotta
+    case .neutral: return CSColor.secondaryInk
+    case .fallback: return CSColor.amberLight
+    case .unavailable: return CSColor.terracottaText
     }
   }
 

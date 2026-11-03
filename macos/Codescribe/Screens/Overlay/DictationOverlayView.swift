@@ -1535,7 +1535,7 @@ struct DictationOverlayView: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 12) {
         CSIconView(icon: .error, size: 18, weight: .regular)
-          .foregroundStyle(CSColor.terracotta)
+          .foregroundStyle(palette.errorStatus.color)
         VStack(alignment: .leading, spacing: 2) {
           // "Transcription failed" is only true when there is nothing to show.
           // A take whose words exist but whose handover did not land is a
@@ -1583,15 +1583,15 @@ struct DictationOverlayView: View {
   private func presentationStatusBody(_ status: OverlayPresentationStatus) -> some View {
     HStack(spacing: 12) {
       CSIconView(icon: status.isError ? .error : .success, size: 18, weight: .regular)
-        .foregroundStyle(status.isError ? CSColor.terracotta : CSColor.oliveLight)
+        .foregroundStyle(status.isError ? palette.errorStatus.color : palette.successStatus.color)
       VStack(alignment: .leading, spacing: 4) {
         Text(status.headline)
           .csFont(15, .medium)
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(palette.bodyText.color)
           .fixedSize(horizontal: false, vertical: true)
         Text(status.message)
           .csFont(11, .medium)
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(palette.mutedText.color)
           .fixedSize(horizontal: false, vertical: true)
       }
       Spacer(minLength: 0)

@@ -28,6 +28,16 @@ def registered_names(path):
             raise ValueError("invalid environment variable name: " + repr(name))
         if not isinstance(fields, dict):
             raise ValueError("vars." + name + " must be a table")
+        flag_keys = ("owner", "metric", "removal_condition")
+        present_flag_keys = [k for k in flag_keys if k in fields]
+        if present_flag_keys:
+            for k in flag_keys:
+                val = fields.get(k)
+                if not isinstance(val, str) or not val.strip():
+                    raise ValueError(
+                        f"vars.{name} sets feature-flag metadata {present_flag_keys} "
+                        f"and must provide non-empty string for {k!r}"
+                    )
     return sorted(variables)
 
 

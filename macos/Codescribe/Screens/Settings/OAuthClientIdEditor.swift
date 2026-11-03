@@ -20,7 +20,7 @@ struct OAuthClientIdEditor: View {
       .foregroundStyle(Color.primary)
       Text("Optional override (settings.json) — empty restores the shipped default.")
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 8) {
         TextField(placeholder, text: $draft)

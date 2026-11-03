@@ -182,23 +182,27 @@ final class TrayStatusStore: ObservableObject {
     }
   }
 
+  /// The status pill's and status row's ink: words on their own 10–12 % tint
+  /// over the tray glass, so each hue takes its label rung (contrast audit
+  /// 2026-10-24: the base rungs read 2.3–3.0:1 there on paper). The menu-bar
+  /// dot keeps the base hues in `menuBarDotColor`.
   var color: Color {
     if status.indicatorMode == .assistive {
-      return CSColor.modeAgent
+      return CSColor.assistiveLight
     }
     switch status.tone {
     case .neutral:
       return CSColor.oliveLight
     case .active:
       return status.indicatorMode == .processing
-        ? CSColor.modeProcessing
-        : CSColor.modeRecording
+        ? Color(nsColor: CSPalette.modeProcessingLight)
+        : CSColor.terracottaText
     case .success:
       return CSColor.oliveLight
     case .warning:
-      return CSColor.modeProcessing
+      return Color(nsColor: CSPalette.modeProcessingLight)
     case .critical:
-      return CSColor.terracottaDeep
+      return CSColor.terracottaText
     }
   }
 

@@ -241,7 +241,7 @@ struct OnboardingView: View {
       HStack(alignment: .firstTextBaseline, spacing: 10) {
         Image(systemName: current.symbol)
           .font(.title2.weight(.regular))
-          .foregroundStyle(.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .accessibilityHidden(true)
         Text(current.title)
           .font(.title2.weight(.semibold))

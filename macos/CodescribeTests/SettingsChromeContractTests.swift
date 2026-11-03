@@ -22,8 +22,10 @@ final class SettingsChromeContractTests: XCTestCase {
       "CSColor.textMutedAlt",
       "CSColor.textFaint",
       "CSColor.textFaintAlt",
+      // Pale `terracottaLight` on ink: Settings keeps solid terracotta there,
+      // through `CSColor.terracottaText`. `dangerLight` is the error rung that
+      // clears 4.5:1 on the sheet in both appearances (contrast audit 2026-10-24).
       "CSColor.terracottaLight",
-      "CSColor.dangerLight",
       "cornerRadius: 10",
       "cornerRadius: 11",
       "focusEffectDisabled",
@@ -322,7 +324,7 @@ final class SettingsChromeContractTests: XCTestCase {
     // level, the sentence is quiet secondary text (Monika, 2026-10-18).
     XCTAssertTrue(
       view.contains(
-        "Text(message)\n        .font(.caption)\n        .foregroundStyle(Color.secondary)"))
+        "Text(message)\n        .font(.caption)\n        .foregroundStyle(CSColor.secondaryInk)"))
     // Narrowest sidebar minus the footer padding, the status dot and its gap.
     let slot: CGFloat = 196 - 2 * 16 - 6 - 8
     XCTAssertEqual(states.first?.level, .healthy)
@@ -404,7 +406,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(accountSource.contains("Advanced · OAuth client id…"))
 
     // Red only for a real failure: an absent key and Sign out stay neutral.
-    XCTAssertTrue(keyRowSource.contains("isSet ? CSColor.olive : Color.secondary"))
+    XCTAssertTrue(keyRowSource.contains("isSet ? CSColor.olive : CSColor.secondaryInk"))
     XCTAssertFalse(rows.contains("\"Sign out\", tint: CSColor.terracotta"))
     XCTAssertFalse(panel.contains("\"Sign out\", tint: CSColor.terracotta"))
     XCTAssertTrue(panel.contains("optional: !provider.keyRequired || accountServesRequests"))
@@ -1448,7 +1450,7 @@ final class SettingsChromeContractTests: XCTestCase {
     // Maciej, 2026-10-21: the pane leads with this Mac's recent takes, in
     // human terms, above the corrections desk.
     let recentTakes = try XCTUnwrap(
-      panel.range(of: "DictionaryRecentTakes(configDir: model.configDir)"))
+      panel.range(of: "DictionaryRecentTakes(\n        configDir: model.configDir,"))
     let correctionsHeader = try XCTUnwrap(
       panel.range(of: "SettingsSectionHeaderRow(String(localized: \"Recent corrections\"))"))
     XCTAssertLessThan(recentTakes.lowerBound, correctionsHeader.lowerBound)
@@ -1485,7 +1487,7 @@ final class SettingsChromeContractTests: XCTestCase {
   func testAvailabilityTintsUseSolidTerracotta() throws {
     let model = try XCTUnwrap(settingsSources()["SettingsViewModel.swift"])
     XCTAssertEqual(
-      model.components(separatedBy: "? CSColor.oliveLight : CSColor.terracotta").count, 3)
+      model.components(separatedBy: "? CSColor.oliveLight : CSColor.terracottaText").count, 3)
     XCTAssertTrue(
       model.contains(
         "static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive)"))
@@ -1686,6 +1688,40 @@ final class SettingsChromeContractTests: XCTestCase {
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
+  }
+
+  /// Text actions in a row, card or header are small native bordered buttons,
+  /// not plain text in the system accent: with the Graphite accent that text
+  /// is grey, half a tone from a disabled control, and working actions read
+  /// as disabled. The bordered style keeps the system font and colour, with
+  /// no brand tint.
+  func testRowActionsAreSmallBorderedButtons() throws {
+    let sources = try settingsSources()
+    let takes = try XCTUnwrap(sources["DictionaryRecentTakes.swift"])
+    for title in ["Refresh", "Copy text", "Open in Lab"] {
+      let button = try XCTUnwrap(takes.range(of: "Button(String(localized: \"\(title)\")"))
+      let tail = takes[button.upperBound...]
+      let style = try XCTUnwrap(tail.range(of: ".buttonStyle(.bordered)"))
+      let size = try XCTUnwrap(tail.range(of: ".controlSize(.small)"))
+      let next = tail.range(of: "Button(")?.lowerBound ?? tail.endIndex
+      XCTAssertLessThan(style.lowerBound, next, "\(title) is not bordered")
+      XCTAssertLessThan(size.lowerBound, next, "\(title) is not small")
+    }
+    XCTAssertFalse(takes.contains(".buttonStyle(.plain)"))
+    XCTAssertFalse(takes.contains("CSColor.chromeAccent"))
+
+    let lab = try XCTUnwrap(sources["LabPanel.swift"])
+    let centre = try XCTUnwrap(lab.range(of: "Button(\"Centre\")"))
+    let disabled = try XCTUnwrap(
+      lab.range(
+        of: ".disabled(model.settings.ledgerSensitivity == 0)",
+        range: centre.upperBound..<lab.endIndex))
+    let modifiers = lab[centre.upperBound..<disabled.lowerBound]
+    XCTAssertTrue(modifiers.contains(".buttonStyle(.bordered)"))
+    XCTAssertTrue(modifiers.contains(".controlSize(.small)"))
+    XCTAssertFalse(modifiers.contains(".buttonStyle(.plain)"))
+    XCTAssertFalse(modifiers.contains("CSColor.chromeAccent"))
+    XCTAssertFalse(modifiers.contains(".font("))
   }
 
   private func settingsSources() throws -> [String: String] {

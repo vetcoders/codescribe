@@ -74,18 +74,18 @@ struct MCPServersSection: View {
         VStack(alignment: .leading, spacing: CSSpace.xs) {
           Text("Edited on disk in mcp.json. Hand edits (env, custom fields) are preserved.")
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
           Text(verbatim: "~/.codescribe/mcp.json")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .textSelection(.enabled)
           Button(role: .destructive) {
             confirmingClear = true
           } label: {
             Text("Move MCP configuration to Trash…")
               .font(SettingsScale.controlLabel)
-              .foregroundStyle(CSColor.danger)
+              .foregroundStyle(CSColor.dangerLight)
           }
           .csFocusRing()
           .padding(.top, CSSpace.xs)
@@ -96,7 +96,7 @@ struct MCPServersSection: View {
       } label: {
         Text("Technical details")
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
       }
       .padding(.top, SettingsScale.sectionGap)
       .accessibilityIdentifier("settings-mcp-technical-details")
@@ -171,10 +171,10 @@ struct MCPServerRow: View {
   private var isRemote: Bool { server.transport == "remote" }
 
   private var accent: Color {
-    guard server.enabled else { return Color.secondary }
-    if pending { return CSColor.amber }
-    if let result { return result.ok ? CSColor.olive : CSColor.terracotta }
-    return Color.secondary
+    guard server.enabled else { return CSColor.secondaryInk }
+    if pending { return CSColor.amberLight }
+    if let result { return result.ok ? CSColor.olive : CSColor.terracottaText }
+    return CSColor.secondaryInk
   }
 
   private var commandLine: String {
@@ -230,7 +230,7 @@ struct MCPServerRow: View {
               .rotationEffect(.degrees(showingDetails ? 90 : 0))
               .accessibilityHidden(true)
           }
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: true, vertical: false)
         }
       }
@@ -253,7 +253,7 @@ struct MCPServerRow: View {
   /// never a live connection indicator: the Agent spawns servers per turn.
   @ViewBuilder private var lastTestLine: some View {
     if pending {
-      resultLine(text: String(localized: "Checking the connection…"), color: CSColor.amber)
+      resultLine(text: String(localized: "Checking the connection…"), color: CSColor.amberLight)
     } else if let result {
       if result.ok {
         resultLine(
@@ -261,10 +261,10 @@ struct MCPServerRow: View {
           color: CSColor.oliveLight
         )
       } else {
-        resultLine(text: String(localized: "Last test: failed"), color: CSColor.terracotta)
+        resultLine(text: String(localized: "Last test: failed"), color: CSColor.terracottaText)
       }
     } else {
-      resultLine(text: String(localized: "Connection not tested"), color: Color.secondary)
+      resultLine(text: String(localized: "Connection not tested"), color: CSColor.secondaryInk)
     }
   }
 
@@ -288,7 +288,7 @@ struct MCPServerRow: View {
           "Terminal and process tools always require Allow once. Commands and paths remain constrained to Agent workspace roots."
         )
         .font(CSFont.ui(11, .regular))
-        .foregroundStyle(CSColor.amber)
+        .foregroundStyle(CSColor.amberLight)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.bottom, 2)
       }
@@ -328,7 +328,7 @@ struct MCPServerRow: View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text(label)
         .font(CSFont.ui(11, .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .frame(width: 150, alignment: .leading)
       Text(verbatim: value)
         .font(CSFont.mono(10.5, .regular))
@@ -363,14 +363,14 @@ struct MCPServerRow: View {
       HStack(spacing: 5) {
         CSIconView(
           icon: .power, size: 8, weight: .semibold,
-          color: server.enabled ? CSColor.oliveLight : Color.secondary)
+          color: server.enabled ? CSColor.oliveLight : CSColor.secondaryInk)
         Text(
           server.enabled
             ? String(localized: "mcp.server.enabled", defaultValue: "Enabled")
             : String(localized: "mcp.server.disabled", defaultValue: "Disabled"))
       }
       .font(SettingsScale.controlLabel)
-      .foregroundStyle(server.enabled ? CSColor.oliveLight : Color.secondary)
+      .foregroundStyle(server.enabled ? CSColor.oliveLight : CSColor.secondaryInk)
     }
     .help(server.enabled ? "Disable this server" : "Enable this server")
   }
@@ -379,7 +379,7 @@ struct MCPServerRow: View {
     SettingsChipButton(enabled: !pending, action: onTest) {
       Text("Test", comment: "Button label: run a connection test")
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(pending ? Color.secondary : Color.primary)
+        .foregroundStyle(pending ? CSColor.secondaryInk : Color.primary)
     }
     .help("Spawn the server and list its tools")
   }
@@ -388,7 +388,7 @@ struct MCPServerRow: View {
     SettingsChipButton(action: onRemove) {
       // A glyph has no cap height to pad against: the square matches the line
       // height of the two labelled chips beside it, so all three are one row.
-      CSIconView(icon: .delete, size: 11, weight: .semibold, color: CSColor.terracotta)
+      CSIconView(icon: .delete, size: 11, weight: .semibold, color: CSColor.terracottaText)
         .frame(width: 14, height: 14)
     }
     .accessibilityLabel(Text("Remove", comment: "Button label: remove an MCP server"))
@@ -511,12 +511,12 @@ private struct MCPServerForm: View {
             .onSubmit(submit)
           Text("The token is stored in the macOS Keychain, never in mcp.json.")
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
           if server?.authRef.isEmpty == false {
             Text("Leave the token empty to keep the saved token.")
               .font(SettingsScale.helper)
-              .foregroundStyle(Color.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
           }
         }
       } else {
@@ -525,7 +525,7 @@ private struct MCPServerForm: View {
           focus: .command)
         Text("Enter only the executable here. Add each command argument separately below.")
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         fieldLabel("Command arguments")
         ForEach($arguments) { $argument in
           HStack {
@@ -565,7 +565,7 @@ private struct MCPServerForm: View {
   private func fieldLabel(_ title: LocalizedStringKey) -> some View {
     Text(title)
       .font(SettingsScale.helper)
-      .foregroundStyle(Color.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
   }
 
   /// A field with its caption. The caption is also the field's accessibility
@@ -599,7 +599,7 @@ private struct MCPServerForm: View {
   private func errorLine(_ failure: MCPAddFailure) -> some View {
     Text(verbatim: failure.message)
       .font(SettingsScale.helper)
-      .foregroundStyle(CSColor.terracotta)
+      .foregroundStyle(CSColor.terracottaText)
       .textSelection(.enabled)
       .fixedSize(horizontal: false, vertical: true)
       .help(failure.detail == failure.message ? "" : failure.detail)

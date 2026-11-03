@@ -82,7 +82,7 @@ struct UserPanel: View {
               comment: "User panel: the build number under the version"
             )
             .font(SettingsScale.helper)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .textSelection(.enabled)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -146,14 +146,14 @@ struct UserPanel: View {
         showingConfigNotice.toggle()
       } label: {
         HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
-          CSIconView(icon: .info, size: 12, weight: .medium, color: Color.secondary)
+          CSIconView(icon: .info, size: 12, weight: .medium, color: CSColor.secondaryInk)
           Text(notice.compactTitle)
             .font(SettingsScale.helper)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
           CSIconView(
             icon: showingConfigNotice ? .chevronDown : .chevronRight, size: 10,
-            weight: .semibold, color: Color.secondary)
+            weight: .semibold, color: CSColor.secondaryInk)
           Spacer(minLength: 0)
         }
         .contentShape(Rectangle())
@@ -180,19 +180,19 @@ struct UserPanel: View {
         HStack(alignment: .center, spacing: 10) {
           CSIconView(
             icon: notice.isWarning ? .warning : .info, size: 14, weight: .medium,
-            color: notice.isWarning ? CSColor.amber : Color.secondary)
+            color: notice.isWarning ? CSColor.amberLight : CSColor.secondaryInk)
           VStack(alignment: .leading, spacing: 2) {
             Text(notice.title)
               .font(SettingsScale.settingName)
               .foregroundStyle(.primary)
             Text(notice.subtitle)
               .font(SettingsScale.helper)
-              .foregroundStyle(.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
           CSIconView(
             icon: showingConfigNotice ? .chevronDown : .chevronRight, size: 11,
-            weight: .semibold, color: Color.secondary)
+            weight: .semibold, color: CSColor.secondaryInk)
         }
         .contentShape(Rectangle())
       }
@@ -224,7 +224,7 @@ struct UserPanel: View {
             .fixedSize(horizontal: false, vertical: true)
           Text(item.action)
             .font(SettingsScale.helper)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -237,7 +237,7 @@ struct UserPanel: View {
       // The launch record verbatim, for support; it repeats the key names.
       Text(verbatim: notice.raw)
         .font(CSFont.mono(10.5, .regular))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityLabel(Text("Launch record", comment: "User panel: the raw repair line"))
@@ -383,7 +383,7 @@ struct UserPanel: View {
     HStack(alignment: .firstTextBaseline, spacing: CSSpace.card) {
       Text(label)
         .font(SettingsScale.helper)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .frame(width: 110, alignment: .leading)
       Text(value)
         .font(mono ? CSFont.mono(11.5, .medium) : .subheadline)
@@ -411,7 +411,7 @@ struct UserPanel: View {
           .foregroundStyle(Color.primary)
         Text(display)
           .font(loaded ? CSFont.mono(11, .regular) : CSFont.ui(11))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .textSelection(.enabled)
           .lineLimit(2)
           .truncationMode(.middle)
@@ -427,7 +427,7 @@ struct UserPanel: View {
         } label: {
           Image(systemName: "doc.on.doc")
             .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
         }
         .buttonStyle(.plain)
         .csFocusRing()
@@ -464,7 +464,7 @@ private struct TrailingDisclosureButton: View {
           icon: isExpanded ? .chevronDown : .chevronRight, size: 10, weight: .semibold)
       }
       .font(SettingsScale.helper)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .contentShape(Rectangle())
     }
     .csFocusRing()
@@ -484,7 +484,7 @@ private struct DestructiveResetButton: View {
     Button(role: .destructive, action: action) {
       Text(title)
         .font(.callout.weight(.semibold))
-        .foregroundStyle(CSColor.danger)
+        .foregroundStyle(CSColor.dangerLight)
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
         .background(
@@ -521,7 +521,7 @@ private struct ResetAgentSection: View {
           "User panel: short scope of the Agent reset; the confirmation shows the full scope"
       )
       .font(SettingsScale.helper)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, CSSpace.xxs)
 
@@ -570,7 +570,7 @@ private struct ResetAppDataSection: View {
           "User panel: short scope of the app-data reset; the confirmation shows the full scope"
       )
       .font(SettingsScale.helper)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, CSSpace.xxs)
 

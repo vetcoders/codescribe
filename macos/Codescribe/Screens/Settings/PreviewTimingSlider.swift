@@ -16,7 +16,7 @@ struct PreviewTimingSlider: View {
     VStack(alignment: .leading, spacing: 6) {
       Text(title)
         .font(CSFont.ui(12, .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       // The track stops at `sliderWidth`; the value reads at its end.
       HStack(spacing: CSSpace.md) {
         Slider(value: $value, in: range, step: step)

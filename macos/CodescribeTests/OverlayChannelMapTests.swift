@@ -460,6 +460,16 @@ final class OverlayChannelMapTests: XCTestCase {
       kuba.accessibilityLabel(modifier: .function), "Channel 5, Kuba, shortcut Fn 5")
   }
 
+  /// Both keys record dictation: the core resolves the modifier to `off`,
+  /// and no hint names a chord that does not exist.
+  func testNoChordWhenBothKeysRecord() {
+    XCTAssertEqual(OverlayChannelChordModifier(setting: "off"), .unbound)
+    let kuba = scenario().chips[2]
+    XCTAssertEqual(kuba.hint(modifier: .unbound), "5 · Kuba")
+    XCTAssertEqual(kuba.accessibilityLabel(modifier: .unbound), "Channel 5, Kuba")
+    XCTAssertFalse(kuba.accessibilityLabel(modifier: .unbound).contains("shortcut"))
+  }
+
   func testCounterHintListsTheAgents() {
     XCTAssertEqual(scenario().counterHint, "2 Miksa · 3 Igor · 5 Kuba")
     XCTAssertEqual(scenario().counterAccessibilityValue, "2 Miksa · 3 Igor · 5 Kuba")

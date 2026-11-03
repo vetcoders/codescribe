@@ -300,35 +300,39 @@ open. It never blocks saving. The technical identifier
 that came across the bridge is not shown; the save receipt and the bridge log
 keep it.
 
-**Dictation control** sits directly under the gestures because it shapes the
-same recording gestures; both switches write on change. **Tap Fn to toggle
-dictation**: a short tap (under the hold start delay) starts a take and the next
+**Fn and Agent channels** sits directly under the gestures and keeps everything
+that decides what Fn does side by side; every control writes on change. **Tap
+Fn to toggle dictation**: a short tap (under the hold start delay) starts a take and the next
 tap stops it. Holding Fn records while held whether the switch is on or off;
 the switch only adds the tap (set the macOS Fn key action to _Do Nothing_,
 otherwise macOS can claim a double press for its own dictation). **Middle mouse acts as Fn**: the middle button follows
 the same press, hold and tap rules as Fn; custom mappings in your mouse
 software can block the standard middle-click signal the app listens for.
-**Middle click picks an agent**: middle click opens the list, scrolling chooses,
-left click opens the conversation, and middle click starts and ends talking.
+**Agent channel** (`Ctrl + digit`, or `Fn + digit`; Command is not offered
+because it collides with tab switching): a key that records dictation cannot be
+the channel key, so its option is greyed out and one sentence below says what
+would free it, for example "Fn records dictation — to use it for channels,
+assign dictation to another shortcut and turn off the Fn tap." With both Ctrl
+and Fn recording, channels open from the agents list. **Middle click picks an
+agent**: middle click opens the list, scrolling chooses, left click opens the
+conversation, and middle click starts and ends talking.
 
 **Attach extra context** is a quiet neutral card: while holding Fn, pressing the
 chosen key attaches the selected text to the take. **Arm with** chooses Shift
 (default) or Command. Further pulses during the same hold attach the next
 selections; the take, the overlay and the destination do not change.
 
-**Extra shortcuts** holds the two shortcuts beyond the modes. **Agent channel**
-(`Ctrl + digit`, or `Fn + digit`; Command is not offered because it collides
-with tab switching) and **Paste transcript**: the chord that pastes a
-transcript waiting to be inserted — the app in front may handle the same
-chord as well.
+**Extra shortcuts** holds the two shortcuts beyond the modes and Fn: **Show or
+hide the widget** and **Paste transcript**, the chord that pastes a transcript
+waiting to be inserted — the app in front may handle the same chord as well.
 
 **Paste after dictation** (one heading, formerly doubled with "Automatic
 paste") keeps **Safe**, **Comfort** and **Off**, with the picker on its own
 full-width row and only the selected mode explained underneath. The terminal,
 command and password-field safeguards are unchanged.
 
-**Recording indicator** carries its title above the card, like **Dictation
-control**, **Extra shortcuts** and **Paste after dictation**. Inside, the size
+**Recording indicator** carries its title above the card, like **Fn and Agent
+channels**, **Extra shortcuts** and **Paste after dictation**. Inside, the size
 of the indicator next to the cursor comes first (Off / 4px / 8px / 12px; the
 Agent indicator stays proportionally larger), and the three dot states —
 Recording, Agent, Processing — read as captions below the size they are sized
@@ -970,6 +974,8 @@ learned, and where the active rules come from.
   channel), length, word count and the words the ledger admitted. **Copy text**
   puts the take on the pasteboard; **Open in Lab** jumps to the acoustic view
   of the same takes (word pins, PCM slots, Silero ranges), which stays in Lab.
+  **Open in Lab** appears only where the Lab section is available (a developer
+  build); elsewhere Lab is hidden and the card does not offer it.
   A take the ledger left open (any terminal status other than sealed or
   observed silence) says so, with the share of its speech that committed
   words cover. The ledger's refusal list is not shown as a word count: it

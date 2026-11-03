@@ -57,7 +57,7 @@ private struct LastTranscriptionRow: View {
     HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
       Text(key)
         .font(CSFont.ui(12))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       Spacer(minLength: CSSpace.sm)
       valueText
         .foregroundStyle(Color.primary)

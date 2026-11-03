@@ -82,6 +82,41 @@ final class IdleRestartCoordinatorTests: XCTestCase {
     XCTAssertEqual(terminated, 1)
   }
 
+  /// Copilot on #184: typing that starts while the lease is being acquired
+  /// must refuse before the reservation, which closes capture admission for
+  /// good. A refusal after it would leave dictation disabled with no restart.
+  func testTypingDuringTheLeaseWaitRefusesBeforeReservingCapture() async throws {
+    let root = try fixture()
+    let entered = expectation(description: "lease wait entered")
+    var continuation: CheckedContinuation<Void, Never>?
+    let composing = CaptureState()
+    var reservations = 0
+    var terminated = false
+    let coordinator = try IdleRestartCoordinator(
+      root: root, pid: 123, nonce: "generation",
+      acquireLease: {
+        await withCheckedContinuation {
+          continuation = $0
+          entered.fulfill()
+        }
+        return try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+      },
+      reserveCapture: {
+        reservations += 1
+        return true
+      },
+      founderComposing: { composing.busy }, terminate: { terminated = true })
+    let url = try request(root)
+    let pending = Task { await coordinator.handle(url) }
+    await fulfillment(of: [entered], timeout: 1)
+    composing.busy = true
+    continuation?.resume()
+    await pending.value
+    XCTAssertEqual(try receipt(root, url)["reason"] as? String, "founder_composing")
+    XCTAssertEqual(reservations, 0, "typing during the lease wait never reaches the reservation")
+    XCTAssertFalse(terminated)
+  }
+
   func testCaptureBeginningDuringLeaseCheckStillRefuses() async throws {
     let root = try fixture()
     let entered = expectation(description: "lease check entered")
@@ -126,6 +161,31 @@ final class IdleRestartCoordinatorTests: XCTestCase {
       })
     await coordinator.handle(url)
     XCTAssertTrue(terminated)
+  }
+
+  func testReservationAndTerminationDoNotYieldToComposingActivity() async throws {
+    let root = try fixture()
+    let composing = CaptureState()
+    var pendingComposition: Task<Void, Never>?
+    var terminated = false
+    let coordinator = try IdleRestartCoordinator(
+      root: root, pid: 123, nonce: "generation",
+      acquireLease: { try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null")) },
+      reserveCapture: {
+        pendingComposition = Task { @MainActor in composing.busy = true }
+        return true
+      },
+      founderComposing: { composing.busy },
+      terminate: {
+        XCTAssertFalse(composing.busy, "reservation must not suspend before termination")
+        terminated = true
+      })
+    let url = try request(root)
+    await coordinator.handle(url)
+    XCTAssertTrue(terminated)
+    XCTAssertEqual(try receipt(root, url)["status"] as? String, "accepted")
+    await pendingComposition?.value
+    XCTAssertTrue(composing.busy)
   }
 
   func testWrongGenerationAndExpiredRequestCannotReserveCapture() async throws {

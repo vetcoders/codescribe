@@ -87,7 +87,7 @@ struct ProvidersPanel: View {
 
       Text("Keys are stored securely in the macOS Keychain.")
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.top, SettingsScale.sectionGap)
     }
@@ -130,7 +130,7 @@ struct ProviderAccessStatusSlot: View {
 
       Text(receipt)
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(1)
         .opacity(showsReceipt ? 1 : 0)
         .accessibilityHidden(!showsReceipt)
@@ -172,10 +172,10 @@ struct LaneResetNotice: View {
 
   var body: some View {
     HStack(spacing: CSSpace.sm) {
-      Circle().fill(CSColor.amber).frame(width: 7, height: 7)
+      Circle().fill(CSColor.amberLight).frame(width: 7, height: 7)
       Text(text)
         .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.amber)
+        .foregroundStyle(CSColor.amberLight)
         .lineLimit(2)
     }
     .accessibilityIdentifier("lane-reset-notice")
@@ -258,7 +258,7 @@ struct ProviderCard: View {
         Text("Account access unavailable")
           .font(SettingsScale.settingName)
         Text(error).font(SettingsScale.helper).textSelection(.enabled)
-        SettingsChipButton("Sign out", tint: Color.secondary) {
+        SettingsChipButton("Sign out", tint: CSColor.secondaryInk) {
           model.signOutAccount(providerId: provider.id)
         }
         .accessibilityLabel("Sign out \(provider.displayName)")
@@ -289,7 +289,7 @@ struct ProviderCard: View {
         Text("Advanced")
       }
       .font(SettingsScale.helper)
-      .foregroundStyle(Color.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .accessibilityIdentifier("provider-advanced")
     }
     .settingsGroupedInset()
@@ -335,10 +335,10 @@ struct ProviderCard: View {
       wireBadge
       Spacer(minLength: CSSpace.sm)
       HStack(spacing: CSSpace.xs) {
-        SettingsChipButton("Edit", tint: Color.secondary) { onEdit?() }
+        SettingsChipButton("Edit", tint: CSColor.secondaryInk) { onEdit?() }
           .accessibilityLabel("Edit custom provider \(provider.displayName)")
         SettingsChipButton(action: { confirmRemove = true }) {
-          CSIconView(icon: .delete, size: 12, weight: .semibold, color: CSColor.terracotta)
+          CSIconView(icon: .delete, size: 12, weight: .semibold, color: CSColor.terracottaText)
             .frame(width: 10, height: 18)
         }
         .accessibilityLabel("Remove custom provider \(provider.displayName)")
@@ -350,7 +350,7 @@ struct ProviderCard: View {
   private var wireBadge: some View {
     Text(verbatim: wireLabel)
       .font(CSFont.mono(10, .semibold))
-      .foregroundStyle(Color.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .padding(.horizontal, CSSpace.xs)
       .padding(.vertical, 2)
       .background(Capsule().fill(Color.primary.opacity(0.1)))
@@ -391,7 +391,7 @@ struct CustomProvidersSection: View {
       if model.customProviders.isEmpty {
         Text("No custom providers yet.")
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .padding(.top, SettingsScale.headerGap)
       } else {
         VStack(spacing: CSSpace.sm) {
@@ -456,7 +456,7 @@ struct CustomProviderForm: View {
         .foregroundStyle(Color.primary)
       Text("The endpoint is normalized to the wire's canonical path on save.")
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
 
       field("Name") {
         TextField(Self.namePlaceholder, text: $name)
@@ -485,7 +485,7 @@ struct CustomProviderForm: View {
         if let endpointError {
           Text(endpointError)
             .font(CSFont.ui(11, .medium))
-            .foregroundStyle(CSColor.terracotta)
+            .foregroundStyle(CSColor.terracottaText)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("custom-provider-endpoint-error")
         }
@@ -501,7 +501,7 @@ struct CustomProviderForm: View {
       if let error {
         Text(error)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.terracotta)
+          .foregroundStyle(CSColor.terracottaText)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("custom-provider-form-error")
       }
@@ -542,7 +542,7 @@ struct CustomProviderForm: View {
     VStack(alignment: .leading, spacing: 5) {
       Text(title)
         .font(CSFont.ui(10.5, .semibold))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       control()
     }
   }
@@ -608,7 +608,7 @@ struct SpeechToTextSection: View {
       // the same truth as Dictation › Cloud & privacy.
       Text("Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription.")
         .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.amber)
+        .foregroundStyle(CSColor.amberLight)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.top, SettingsScale.headerGap)
       VStack(spacing: CSSpace.sm) {
@@ -736,7 +736,7 @@ struct SttLaneCard: View {
         .padding(.top, CSSpace.xs)
       }
       .font(SettingsScale.helper)
-      .foregroundStyle(Color.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .accessibilityIdentifier("stt-lane-advanced")
     }
     .settingsGroupedInset()

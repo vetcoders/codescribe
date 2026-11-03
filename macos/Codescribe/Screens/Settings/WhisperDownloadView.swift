@@ -33,7 +33,7 @@ struct WhisperDownloadView: View {
         .font(SettingsScale.settingName)
         Text(installLabel)
           .font(.caption.weight(.medium))
-          .foregroundStyle(store.status.available ? CSColor.oliveLight : Color.secondary)
+          .foregroundStyle(store.status.available ? CSColor.oliveLight : CSColor.secondaryInk)
         Spacer(minLength: 0)
       }
       Text(store.status.modelId).font(SettingsScale.helper)
@@ -52,7 +52,7 @@ struct WhisperDownloadView: View {
                 comment: "Setup summary: disclosure with the Whisper model's source, size and path"))
           )
           .font(SettingsScale.helper)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         }
         .accessibilityIdentifier("whisper-download-details")
       }
@@ -75,14 +75,14 @@ struct WhisperDownloadView: View {
                 comment: "Whisper download progress with no file detail yet"))
         )
         .font(SettingsScale.helper)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
         Button(cancelDownloadTitle, action: store.cancel)
           .csAction()
           .disabled(store.cancelling)
       } else if !store.status.available {
         if let error = store.error {
-          Text(error).font(SettingsScale.helper).foregroundStyle(CSColor.terracotta)
+          Text(error).font(SettingsScale.helper).foregroundStyle(CSColor.terracottaText)
             .fixedSize(horizontal: false, vertical: true)
         } else if store.interruption == .cancelled {
           Text(
@@ -92,7 +92,7 @@ struct WhisperDownloadView: View {
                 comment: "The user cancelled the Whisper download; the partial file is removed"))
           )
           .font(SettingsScale.helper)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("whisper-download-stopped")
         }
@@ -125,7 +125,7 @@ struct WhisperDownloadView: View {
           ))
       )
       .font(SettingsScale.helper)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       if let path = store.status.path {
         Text(path).font(.caption).textSelection(.enabled)
@@ -137,7 +137,7 @@ struct WhisperDownloadView: View {
               comment: "Default model storage folder; the placeholder is a directory path"))
         )
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       }
     }
   }

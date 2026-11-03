@@ -173,7 +173,7 @@ private struct PromptEditor: View {
       if snapshot?.source == "read_error" {
         Text("The custom prompt file could not be read, so the built-in prompt is in use.")
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.danger)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.top, CSSpace.xxs)
       }
@@ -217,7 +217,7 @@ private struct PromptEditor: View {
         if let subtitle = file.editorSubtitle {
           Text(subtitle)
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -253,7 +253,7 @@ private struct PromptEditor: View {
       Text(tag)
         .font(SettingsScale.controlLabel)
         .lineLimit(1)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .padding(.horizontal, SettingsScale.controlInsetH)
         .padding(.vertical, SettingsScale.controlInsetV)
         .background(Capsule().fill(Color.primary.opacity(0.08)))
@@ -271,7 +271,7 @@ private struct PromptEditor: View {
       if !editing {
         Text("Preview of the original prompt text.")
           .font(CSFont.ui(11))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
       }
       content
     }
@@ -313,7 +313,7 @@ private struct PromptEditor: View {
     Button("Cancel", action: onDiscard)
       .csFocusRing()
       .font(CSFont.ui(11.5, .semibold))
-      .foregroundStyle(Color.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .help("Discard unsaved changes")
   }
 
@@ -329,7 +329,7 @@ private struct PromptEditor: View {
     }
     .csFocusRing()
     .font(CSFont.ui(11.5, .semibold))
-    .foregroundStyle(Color.secondary)
+    .foregroundStyle(CSColor.secondaryInk)
     .disabled(!canRestore)
     .help(
       canRestore
@@ -354,11 +354,11 @@ private struct PromptEditor: View {
     VStack(alignment: .leading, spacing: 2) {
       Text(promptFailureLabel(failure.operation, title: title))
         .font(CSFont.ui(11.5, .medium))
-        .foregroundStyle(CSColor.danger)
+        .foregroundStyle(CSColor.dangerLight)
       if !failure.detail.isEmpty {
         Text(failure.detail)
           .font(CSFont.mono(10.5, .regular))
-          .foregroundStyle(CSColor.danger)
+          .foregroundStyle(CSColor.dangerLight)
           .textSelection(.enabled)
       }
     }
@@ -375,28 +375,28 @@ private struct PromptEditor: View {
         HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
           Text("Path")
             .font(CSFont.ui(11))
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
           // One line, truncated in the middle: a deep path must not widen the
           // pane past the minimum window width.
           Text(pathDisplay)
             .font(CSFont.mono(10.5, .regular))
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .lineLimit(1)
             .truncationMode(.middle)
             .textSelection(.enabled)
         }
         Text(promptFileStatus(source: snapshot?.source, fileExists: fileExists))
           .font(CSFont.ui(11))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
         if let error = snapshot?.readError, !error.isEmpty {
           HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
             Text("Read error")
               .font(CSFont.ui(11))
-              .foregroundStyle(CSColor.danger)
+              .foregroundStyle(CSColor.dangerLight)
             Text(error)
               .font(CSFont.mono(10.5, .regular))
-              .foregroundStyle(CSColor.danger)
+              .foregroundStyle(CSColor.dangerLight)
               .textSelection(.enabled)
           }
         }
@@ -406,7 +406,7 @@ private struct PromptEditor: View {
       HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
         Text("File details")
           .font(CSFont.ui(11.5, .medium))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         Spacer(minLength: CSSpace.sm)
         restoreButton
       }

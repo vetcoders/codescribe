@@ -224,20 +224,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join(EXTERNAL_PLAYBACK_MARKER);
         watch_external_playback(marker.clone());
-        std::thread::sleep(EXTERNAL_PLAYBACK_POLL * 3);
         assert!(!channel_capture_should_drop());
         write_marker(
             dir.path(),
             std::process::id(),
             unix_ms(SystemTime::now()) + 10_000,
         );
-        std::thread::sleep(EXTERNAL_PLAYBACK_POLL * 3);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !channel_capture_should_drop() && Instant::now() < deadline {
+            std::thread::sleep(EXTERNAL_PLAYBACK_POLL);
+        }
         assert!(
             channel_capture_should_drop(),
             "a live player drops channel PCM"
         );
         std::fs::remove_file(&marker).unwrap();
-        std::thread::sleep(EXTERNAL_PLAYBACK_TAIL + EXTERNAL_PLAYBACK_POLL * 4);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while channel_capture_should_drop() && Instant::now() < deadline {
+            std::thread::sleep(EXTERNAL_PLAYBACK_POLL);
+        }
         assert!(
             !channel_capture_should_drop(),
             "the gate lapses after the room tail once the player is gone"

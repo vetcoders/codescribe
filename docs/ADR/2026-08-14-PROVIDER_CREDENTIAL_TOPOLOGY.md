@@ -112,4 +112,12 @@ Implementation. This ADR freezes the shape so no agent re-derives a
 different one. Anti-pattern to reject on sight: "add one more key slot" or
 "add an endpoint override field" — both re-open the drift maker.
 
+## Revisit if
+
+- Upstream LLM providers decouple server-side conversation chain IDs from the
+  minting credential and expose a standardized, credential-independent session
+  continuation token.
+- A vendor introduces dynamic per-tenant regional endpoints that cannot be
+  represented as pinned Tier-1 vendor constants.
+
 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI

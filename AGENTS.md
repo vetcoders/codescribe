@@ -34,6 +34,11 @@ Avoid introducing `shim`, `compat`, `legacy`, `adapter-for-old`,
 - `docs/DELIVERY_ROUTE.md` — destination selection.
 - `docs/ENV_REGISTRY.toml` — every environment variable the app reads.
 - `docs/LOCALIZATION.md` — String Catalogs and UI copy rules.
+- `docs/PRIMITIVES.md` — workspace roots and runtime building blocks.
+- `docs/ADR/README.md` — architecture decisions, standing "no" rules and revisit triggers.
+- `docs/RELEASE_ROLLBACK_RUNBOOK.md` — Sparkle `appcast.xml`, GitHub Release and client rollback procedure.
+- `.agents/skills/control-codescribe/SKILL.md` — local control CLI (`bin/control-codescribe`) for self-verification.
+- `.agents/skills/ship-pr/SKILL.md` — deterministic PR shipping loop (`npx kcd-skills@latest autopilot ship-pr`).
 
 After changing the Rust bridge API, regenerate the Swift bindings with
 `make app-bindings`. Do not edit `macos/Codescribe/Bridge/codescribe_ffi.swift`

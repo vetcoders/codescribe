@@ -30,7 +30,9 @@ use super::settings::{
     SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidationError,
     UserSettings, normalize_agent_workspace_roots, parse_agent_workspace_roots,
 };
-use super::types::{Config, DeferredInsertShortcut, PasteMode};
+use super::types::{
+    ChannelModifier, Config, DeferredInsertShortcut, PasteMode, RecordingKeys, WorkMode,
+};
 use crate::llm::account_auth;
 use crate::llm::on_device::FORMAT_ON_DEVICE_ENV;
 use crate::llm::provider::{LlmMode, ProviderKind, ProviderRef, ProviderRegistry, WireFamily};
@@ -203,6 +205,28 @@ pub fn note_startup_acquisition(source: &'static str) {
             panic!("forbidden startup acquisition: {source}");
         }
     });
+}
+
+/// Log a resolved agent-channel modifier once per distinct outcome: the loader
+/// runs on every Settings projection and hotkey reload, the log line is for the
+/// moment the rule starts (or stops) overriding the stored choice.
+fn note_channel_modifier_resolution(requested: ChannelModifier, effective: ChannelModifier) {
+    use std::sync::atomic::AtomicU8;
+    static LAST: AtomicU8 = AtomicU8::new(u8::MAX);
+    let code = |modifier: ChannelModifier| match modifier {
+        ChannelModifier::Ctrl => 0u8,
+        ChannelModifier::Fn => 1,
+        ChannelModifier::Off => 2,
+    };
+    let outcome = code(requested) * 4 + code(effective);
+    if LAST.swap(outcome, Ordering::Relaxed) == outcome || requested == effective {
+        return;
+    }
+    info!(
+        requested = requested.as_str(),
+        effective = effective.as_str(),
+        "agent channel modifier resolved: the requested key records dictation (one key, one role)"
+    );
 }
 
 impl Config {
@@ -987,8 +1011,45 @@ impl Config {
         // Override with environment variables (explicit runtime env + injected env-managed .env).
         config.load_from_env();
         config.sanitize();
+        config.resolve_channel_modifier(&user_settings);
         Self::mark_process_env_bootstrapped(seed_process_env);
         (config, user_settings)
+    }
+
+    /// Keys the configured recording gestures use: the three work-mode
+    /// bindings from `settings.json` and the Fn tap.
+    pub fn recording_keys(
+        user_settings: &UserSettings,
+        fn_tap_toggles_dictation: bool,
+    ) -> RecordingKeys {
+        RecordingKeys::from_bindings(
+            [
+                WorkMode::Dictation,
+                WorkMode::Formatting,
+                WorkMode::Assistive,
+            ]
+            .map(|mode| {
+                let binding = user_settings.mode_binding_for(mode);
+                if super::mode_binding_reachable(mode, binding) {
+                    binding
+                } else {
+                    super::ShortcutBinding::Disabled
+                }
+            }),
+            fn_tap_toggles_dictation,
+        )
+    }
+
+    /// One key, one role: the channel modifier in effect is never a key that
+    /// records ([`RecordingKeys::channel_modifier`]). Applied after every
+    /// source (settings.json, `.env`, process env) so the rule holds whatever
+    /// set the value. The stored choice is not rewritten: it is in effect again
+    /// once its key stops recording.
+    fn resolve_channel_modifier(&mut self, user_settings: &UserSettings) {
+        let requested = self.channel_modifier;
+        let keys = Self::recording_keys(user_settings, self.fn_tap_toggles_dictation);
+        self.channel_modifier = keys.channel_modifier(requested);
+        note_channel_modifier_resolution(requested, self.channel_modifier);
     }
 
     /// Hold the bootstrap lock only for process-env publication and capture. Skipped under `cfg(test)`,
@@ -1382,6 +1443,16 @@ impl Config {
     /// Apply user settings from JSON (lower priority than .env).
     /// Only applies values that are Some AND not already overridden by env vars.
     fn apply_user_settings(&mut self, settings: &super::settings::UserSettings) {
+        self.mode_bindings = [
+            WorkMode::Dictation,
+            WorkMode::Formatting,
+            WorkMode::Assistive,
+        ]
+        .map(|mode| super::ModeBinding {
+            mode,
+            binding: settings.mode_binding_for(mode),
+        })
+        .to_vec();
         // Helper: only apply if the env var is NOT set
         macro_rules! apply_parsed_if_no_env {
             ($env_key:expr, $field:expr, $val:expr) => {
@@ -4014,6 +4085,10 @@ mod tests {
 
         let mut config = Config::default();
         let settings = super::super::settings::UserSettings {
+            mode_bindings: Some(vec![super::super::ModeBinding {
+                mode: WorkMode::Dictation,
+                binding: super::super::ShortcutBinding::HoldCtrl,
+            }]),
             hold_start_delay_ms: Some(500),
             double_tap_interval_ms: Some(300),
             toggle_silence_sec: Some(3.0),
@@ -4023,6 +4098,10 @@ mod tests {
 
         config.apply_user_settings(&settings);
 
+        for entry in &config.mode_bindings {
+            assert_eq!(entry.binding, settings.mode_binding_for(entry.mode));
+        }
+        assert_eq!(config.mode_bindings.len(), 3);
         assert_eq!(config.hold_start_delay_ms, 500);
         assert_eq!(config.double_tap_interval_ms, 300);
         assert!((config.toggle_silence_sec - 3.0).abs() < f32::EPSILON);
@@ -4420,6 +4499,118 @@ fn resolve_local_tail_patch(
 }
 
 #[cfg(test)]
+mod channel_modifier_resolution_tests {
+    use super::*;
+    use crate::config::{ModeBinding, ShortcutBinding};
+
+    fn settings_with_dictation(binding: ShortcutBinding) -> UserSettings {
+        UserSettings {
+            mode_bindings: Some(vec![ModeBinding {
+                mode: WorkMode::Dictation,
+                binding,
+            }]),
+            ..UserSettings::default()
+        }
+    }
+
+    fn resolved(
+        requested: ChannelModifier,
+        dictation: ShortcutBinding,
+        fn_tap: bool,
+    ) -> ChannelModifier {
+        let mut config = Config {
+            channel_modifier: requested,
+            fn_tap_toggles_dictation: fn_tap,
+            ..Config::default()
+        };
+        config.resolve_channel_modifier(&settings_with_dictation(dictation));
+        config.channel_modifier
+    }
+
+    /// The Founder's own settings: channel `fn`, Fn tap on, Hold Fn/Globe
+    /// dictation. Fn records, so the snapshot carries Ctrl.
+    #[test]
+    fn fn_channel_with_fn_recording_resolves_to_ctrl() {
+        assert_eq!(
+            resolved(ChannelModifier::Fn, ShortcutBinding::HoldFn, true),
+            ChannelModifier::Ctrl
+        );
+        assert_eq!(
+            resolved(ChannelModifier::Fn, ShortcutBinding::HoldFn, false),
+            ChannelModifier::Ctrl,
+            "Hold Fn/Globe alone records with Fn"
+        );
+        assert_eq!(
+            resolved(ChannelModifier::Fn, ShortcutBinding::Disabled, true),
+            ChannelModifier::Ctrl,
+            "the Fn tap alone records with Fn"
+        );
+    }
+
+    #[test]
+    fn ctrl_channel_with_ctrl_recording_resolves_to_fn() {
+        for binding in [ShortcutBinding::HoldCtrl, ShortcutBinding::DoubleCtrl] {
+            assert_eq!(
+                resolved(ChannelModifier::Ctrl, binding, false),
+                ChannelModifier::Fn,
+                "{binding:?}"
+            );
+        }
+    }
+
+    /// Both keys record: no digit chord opens a channel, whatever was stored.
+    #[test]
+    fn both_keys_recording_leave_no_channel_modifier() {
+        for requested in [ChannelModifier::Ctrl, ChannelModifier::Fn] {
+            assert_eq!(
+                resolved(requested, ShortcutBinding::HoldCtrlShift, true),
+                ChannelModifier::Off
+            );
+        }
+    }
+
+    #[test]
+    fn a_free_key_keeps_the_stored_choice() {
+        assert_eq!(
+            resolved(ChannelModifier::Fn, ShortcutBinding::DoubleCtrl, false),
+            ChannelModifier::Fn
+        );
+        assert_eq!(
+            resolved(ChannelModifier::Ctrl, ShortcutBinding::HoldFn, true),
+            ChannelModifier::Ctrl
+        );
+    }
+
+    #[test]
+    fn unreachable_recording_bindings_do_not_claim_channel_keys() {
+        for mode in [WorkMode::Formatting, WorkMode::Assistive] {
+            for binding in [
+                ShortcutBinding::HoldFn,
+                ShortcutBinding::HoldCtrl,
+                ShortcutBinding::HoldCtrlAlt,
+                ShortcutBinding::HoldCtrlShift,
+                ShortcutBinding::HoldCtrlCmd,
+                ShortcutBinding::DoubleCtrl,
+            ] {
+                let mut settings = settings_with_dictation(ShortcutBinding::HoldCtrl);
+                settings
+                    .mode_bindings
+                    .as_mut()
+                    .unwrap()
+                    .push(ModeBinding { mode, binding });
+                let mut config = Config::default();
+                config.resolve_channel_modifier(&settings);
+                assert_eq!(
+                    config.channel_modifier,
+                    ChannelModifier::Fn,
+                    "{mode:?}: {binding:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod local_tail_decision_tests {
     use super::*;
     #[test]
@@ -4545,6 +4736,16 @@ mod captured_startup_tests {
                 })
         );
         assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
+    fn captured_mode_bindings_change_the_snapshot_digest() {
+        let original = inputs();
+        let first = Config::runtime_snapshot_from_captured(original.clone());
+        let mut changed = original;
+        changed.values.mode_bindings[0].binding = super::super::ShortcutBinding::HoldCtrl;
+        let second = Config::runtime_snapshot_from_captured(changed);
+        assert_ne!(first.digest(), second.digest());
     }
 
     #[test]

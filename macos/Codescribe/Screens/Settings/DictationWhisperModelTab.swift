@@ -21,7 +21,7 @@ struct DictationWhisperModelTab: View {
       if embedded {
         Text("This build embeds Whisper. The on-disk model selection is ignored.")
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       } else {
         selectedModelCard(status: status, catalog: catalog)
@@ -40,7 +40,7 @@ struct DictationWhisperModelTab: View {
         if let error = model.whisperDownloadStore.error {
           Text(error)
             .font(SettingsScale.helper)
-            .foregroundStyle(CSColor.terracotta)
+            .foregroundStyle(CSColor.terracottaText)
             .fixedSize(horizontal: false, vertical: true)
         }
         SettingsControlRow(
@@ -137,7 +137,7 @@ struct DictationWhisperModelTab: View {
         .foregroundStyle(line.tone.color)
         .fixedSize(horizontal: false, vertical: true)
         Spacer(minLength: CSSpace.sm)
-        SettingsChipButton("Check model", tint: Color.secondary, action: checkModel)
+        SettingsChipButton("Check model", tint: CSColor.secondaryInk, action: checkModel)
           .accessibilityHint("Re-reads the install state, the model catalog and the disk")
       }
     }
@@ -157,19 +157,19 @@ struct DictationWhisperModelTab: View {
         if let overrideNote {
           Text(overrideNote)
             .font(SettingsScale.helper)
-            .foregroundStyle(CSColor.amber)
+            .foregroundStyle(CSColor.amberLight)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let notice = model.whisperModelNotice {
           Text(notice)
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let error = model.whisperModelError {
           Text(error)
             .font(SettingsScale.helper)
-            .foregroundStyle(CSColor.amber)
+            .foregroundStyle(CSColor.amberLight)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -238,9 +238,9 @@ struct DictationWhisperModelTab: View {
     case .livePatchingConfigured:
       CSColor.oliveLight
     case .livePatchingNotReady, .degradedEnvOverride:
-      CSColor.amber
+      CSColor.amberLight
     case .notSelected:
-      Color.secondary
+      CSColor.secondaryInk
     }
   }
 
@@ -256,7 +256,7 @@ struct DictationWhisperModelTab: View {
       }
       Text(model.whisperDownloadDetail ?? String(localized: "Downloading…"))
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(2)
     }
   }
@@ -292,7 +292,7 @@ struct DictationWhisperModelTab: View {
               Spacer(minLength: CSSpace.sm)
               Text(Self.reasonTag(entry.element.reason))
                 .font(CSFont.ui(11.5, .medium))
-                .foregroundStyle(CSColor.amber)
+                .foregroundStyle(CSColor.amberLight)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -317,18 +317,18 @@ struct DictationWhisperModelTab: View {
         detailLine(directory.name, value: directory.detail)
         Text(modelFootprint(directory))
           .font(CSFont.ui(11))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
       Spacer(minLength: CSSpace.sm)
       if removable {
-        SettingsChipButton("Remove", tint: CSColor.terracotta) {
+        SettingsChipButton("Remove", tint: CSColor.terracottaText) {
           remove(directory)
         }
       } else {
         // Disabled, not hidden: the line must still show that removal is the
         // action it would otherwise offer, and say why it cannot.
-        SettingsChipButton("Remove", tint: CSColor.terracotta, enabled: false) {}
+        SettingsChipButton("Remove", tint: CSColor.terracottaText, enabled: false) {}
           .help("The selected model cannot be removed.")
           .accessibilityHint("The selected model cannot be removed.")
       }
@@ -406,7 +406,7 @@ struct DictationWhisperModelTab: View {
           if let storageError {
             Text(storageError)
               .font(SettingsScale.helper)
-              .foregroundStyle(CSColor.amber)
+              .foregroundStyle(CSColor.amberLight)
               .fixedSize(horizontal: false, vertical: true)
           }
         }
@@ -431,7 +431,7 @@ struct DictationWhisperModelTab: View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
       Text(title)
         .font(CSFont.ui(11.5, .semibold))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .accessibilityAddTraits(.isHeader)
       content()
     }
@@ -444,7 +444,7 @@ struct DictationWhisperModelTab: View {
     VStack(alignment: .leading, spacing: 1) {
       Text(label)
         .font(CSFont.ui(11))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       Text(verbatim: value)
         .font(CSFont.mono(10.5))
         .foregroundStyle(Color.primary)
@@ -492,8 +492,8 @@ struct DictationWhisperModelTab: View {
     var color: Color {
       switch self {
       case .ready: CSColor.oliveLight
-      case .missing: CSColor.amber
-      case .pending: Color.secondary
+      case .missing: CSColor.amberLight
+      case .pending: CSColor.secondaryInk
       }
     }
   }

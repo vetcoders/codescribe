@@ -34,7 +34,7 @@ struct WorkspaceRootsSection: View {
       // blurb and is not repeated here (Founder review, 2026-10-18).
       Text("The Agent looks for projects here, skipping hidden and build folders.")
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .padding(.top, SettingsScale.headerGap)
 
       VStack(spacing: SettingsScale.rowGap) {
@@ -70,7 +70,7 @@ struct WorkspaceRootsSection: View {
           SettingsChipButton(action: syncFromModel) {
             Text("Discard changes")
               .font(SettingsScale.controlLabel)
-              .foregroundStyle(Color.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
           }
           .help("Go back to the saved list")
         }
@@ -81,7 +81,7 @@ struct WorkspaceRootsSection: View {
         } label: {
           Text("Save changes")
             .font(SettingsScale.controlLabel)
-            .foregroundStyle(isDirty ? Color.primary : Color.secondary)
+            .foregroundStyle(isDirty ? Color.primary : CSColor.secondaryInk)
         }
       }
       .padding(.top, SettingsScale.rowGap)
@@ -115,7 +115,7 @@ struct WorkspaceRootsSection: View {
           removed.append(RemovedRoot(index: index, path: path))
         }
       } label: {
-        CSIconView(icon: .remove, size: 13, weight: .semibold, color: Color.secondary)
+        CSIconView(icon: .remove, size: 13, weight: .semibold, color: CSColor.secondaryInk)
       }
       .csFocusRing()
       .help("Remove folder")
@@ -142,7 +142,7 @@ struct WorkspaceRootsSection: View {
     let trimmed = path.trimmingCharacters(in: .whitespaces)
     let valid = Self.directoryExists(trimmed)
     return Circle()
-      .fill(valid ? CSColor.oliveLight : CSColor.amber)
+      .fill(valid ? CSColor.oliveLight : CSColor.amberLight)
       .frame(width: 7, height: 7)
   }
 
