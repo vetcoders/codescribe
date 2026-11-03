@@ -14,9 +14,10 @@ around the gate with `--no-verify`; fix the message instead.
 First line, exactly one of:
 
 - `[copilot/vc-<workflow>] <what changed>` — your own work. `copilot` is your
-  agent name; never borrow `claude`, `codex`, `gemini`, `grok` or `junie`. Use a
-  real workflow slug: `vc-workflow` (default), `vc-justdo`, `vc-marbles`,
-  `vc-polish`, `vc-review`. Lowercase agent, lowercase slug, one space after `]`.
+  agent name; never borrow `agy`, `claude`, `codex`, `gemini`, `grok` or
+  `junie`. Use a real workflow slug: `vc-workflow` (default), `vc-justdo`,
+  `vc-marbles`, `vc-polish`, `vc-review`. Lowercase agent, lowercase slug, one
+  space after `]`.
 - `Merge …` — a merge commit (see conflicts below).
 - `Revert "<original first line>"` — a revert keeps the provenance of what it reverts.
 
