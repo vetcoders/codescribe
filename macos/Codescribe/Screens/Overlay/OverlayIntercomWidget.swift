@@ -2340,15 +2340,11 @@ private struct OverlayIntercomCard: View {
             }
           } label: {
             HStack(spacing: 6) {
-              Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
-                .layoutPriority(1)
-              if let inlineDescriptor {
-                Text(verbatim: inlineDescriptor).csFont(10)
-                  .foregroundStyle(palette.mutedText.color)
-                  .lineLimit(1)
-                  .truncationMode(.middle)
-                  .accessibilityIdentifier("overlay-intercom-context-\(identity.digit)")
-              }
+              OverlayIntercomNameLine(
+                name: name, descriptor: inlineDescriptor, palette: palette,
+                descriptorIdentifier: "overlay-intercom-context-\(identity.digit)"
+              )
+              .layoutPriority(1)
               // The client focus button lives beside the name, not out with
               // the audio pair (Maciej, 2026-10-28).
               if row.slots >= 3 {
@@ -2720,6 +2716,51 @@ private struct OverlayIntercomConversationBody: View {
   }
 }
 
+/// The agent's name and, when it can be read, its descriptor on one line.
+/// The name always keeps its letters. The descriptor shows in full, then
+/// truncated in the middle down to a readable minimum, then not at all — never
+/// as a sliver that costs the name its width (a 220 pt fiszka rendered
+/// "Klau…" beside a one-glyph descriptor).
+private struct OverlayIntercomNameLine: View {
+  @Environment(\.csTextScale) private var scale
+  let name: String
+  let descriptor: String?
+  let palette: OverlayAppearancePalette
+  let descriptorIdentifier: String
+
+  var body: some View {
+    if let descriptor {
+      ViewThatFits(in: .horizontal) {
+        line(descriptor, idealWidth: nil)
+        line(
+          descriptor,
+          idealWidth: OverlayIntercomWidgetLayout.minimumReadableDescriptorWidth(scale: scale))
+        nameText
+      }
+    } else {
+      nameText
+    }
+  }
+
+  private var nameText: some View {
+    Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
+  }
+
+  /// `idealWidth` only changes what ViewThatFits measures; laid out, the
+  /// descriptor takes the width left after the name and truncates within it.
+  private func line(_ descriptor: String, idealWidth: CGFloat?) -> some View {
+    HStack(spacing: 6) {
+      nameText.layoutPriority(1)
+      Text(verbatim: descriptor).csFont(10)
+        .foregroundStyle(palette.mutedText.color)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .frame(idealWidth: idealWidth)
+        .accessibilityIdentifier(descriptorIdentifier)
+    }
+  }
+}
+
 /// Only metadata already projected for this exact conversation is shown.
 /// The canonical descriptor supplies provider, model and declared repository
 /// on one line. Execution coordinates remain outside the card's metadata row.
@@ -3077,15 +3118,11 @@ private struct OverlayIntercomInstanceCard: View {
       return (text?.isEmpty ?? true) ? nil : text
     }()
     let nameRow = HStack(spacing: 6) {
-      Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
-        .layoutPriority(1)
-      if let instanceDescriptor {
-        Text(verbatim: instanceDescriptor).csFont(10)
-          .foregroundStyle(palette.mutedText.color)
-          .lineLimit(1)
-          .truncationMode(.middle)
-          .accessibilityIdentifier("overlay-intercom-instance-context-\(instance.digit)")
-      }
+      OverlayIntercomNameLine(
+        name: instance.name, descriptor: instanceDescriptor, palette: palette,
+        descriptorIdentifier: "overlay-intercom-instance-context-\(instance.digit)"
+      )
+      .layoutPriority(1)
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
