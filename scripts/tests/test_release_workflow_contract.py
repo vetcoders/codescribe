@@ -1,9 +1,10 @@
 """Declarative contract of the `Release DMG` workflow.
 
-Parses the real YAML and judges the shape that keeps a release honest: both
+Parses the real YAML and judges the shape that keeps a release honest: all
 lanes build on the hosted Xcode 27 image, the smoke lane can never sign,
 notarize or publish, the release lane validates its inputs before it imports a
-certificate, publishes a draft and never overwrites release assets. It proves
+certificate, publishes a draft and never overwrites release assets, and a
+rehearsal runs the whole signing path without publishing anything. It proves
 nothing about hosted execution; that is observed only on GitHub, cheapest
 through a smoke dispatch.
 """
@@ -17,16 +18,18 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = Path(os.environ.get("WORKFLOWS_DIR", ROOT / ".github/workflows"))
 
-RELEASE_SECRETS = (
-    "CODESIGN_CERTIFICATE_BASE64",
-    "CODESIGN_CERTIFICATE_PASSWORD",
-    "CODESCRIBE_CODESIGN_IDENTITY",
-    "APPLE_ID",
-    "APPLE_TEAM_ID",
-    "APPLE_APP_SPECIFIC_PASSWORD",
-    "SPARKLE_ED_PRIVATE_KEY",
-)
+# env name the build scripts read -> organization-wide secret name (shared with Vista)
+RELEASE_SECRETS = {
+    "CODESIGN_CERTIFICATE_BASE64": "MACOS_CERTIFICATE_BASE64",
+    "CODESIGN_CERTIFICATE_PASSWORD": "MACOS_CERTIFICATE_PASSWORD",
+    "CODESCRIBE_CODESIGN_IDENTITY": "MACOS_SIGNING_IDENTITY",
+    "APPLE_ID": "NOTARY_APPLE_ID",
+    "APPLE_TEAM_ID": "NOTARY_TEAM_ID",
+    "APPLE_APP_SPECIFIC_PASSWORD": "NOTARY_PASSWORD",
+    "SPARKLE_ED_PRIVATE_KEY": "SPARKLE_ED_PRIVATE_KEY",
+}
 RELEASE_VARIABLES = ("CODESCRIBE_LICENSE_PUBLIC_KEY_HEX", "SPARKLE_ED_PUBLIC_KEY")
+NOT_REHEARSING = "env.REHEARSE != 'true'"
 
 
 def load():
@@ -55,6 +58,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.smoke = self.jobs["smoke"]
         self.release = self.jobs["release"]
 
+    def step(self, name):
+        return self.release["steps"][names(self.release).index(name)]
+
     def test_triggers_are_tags_and_manual_dispatch_only(self):
         trigger = self.workflow["on"]
         self.assertEqual(set(trigger), {"push", "workflow_dispatch"})
@@ -64,8 +70,10 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual(inputs["variant"]["type"], "choice")
         self.assertEqual(inputs["variant"]["options"], ["slim", "full"])
         self.assertEqual(inputs["variant"]["default"], "slim")
-        self.assertEqual(inputs["smoke"]["type"], "boolean")
-        self.assertIs(inputs["smoke"]["default"], False)
+        for flag in ("smoke", "rehearse"):
+            with self.subTest(flag=flag):
+                self.assertEqual(inputs[flag]["type"], "boolean")
+                self.assertIs(inputs[flag]["default"], False)
 
     def test_both_lanes_build_on_the_hosted_xcode_27_image(self):
         for job_id, job in (("smoke", self.smoke), ("release", self.release)):
@@ -107,6 +115,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertEqual(self.release["if"], "github.event_name == 'push' || !inputs.smoke")
         self.assertEqual(self.release["env"]["RELEASE_TAG"], "${{ inputs.tag_name || github.ref_name }}")
         self.assertEqual(self.release["env"]["VARIANT"], "${{ inputs.variant || 'slim' }}")
+        self.assertEqual(self.release["env"]["REHEARSE"], "${{ inputs.rehearse == true }}")
 
     def test_release_builds_slim_by_default_and_full_only_on_request(self):
         joined = "\n".join(runs(self.release))
@@ -131,10 +140,45 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         for step in self.release["steps"][: positions[2]]:
             self.assertNotIn("secrets.", yaml.safe_dump(step))
         validate = self.release["steps"][positions[2]]
-        for secret in RELEASE_SECRETS:
-            self.assertEqual(validate["env"][secret], "${{ secrets.%s }}" % secret)
+        for env_name, secret in RELEASE_SECRETS.items():
+            self.assertEqual(validate["env"][env_name], "${{ secrets.%s }}" % secret)
         for variable in RELEASE_VARIABLES:
             self.assertEqual(validate["env"][variable], "${{ vars.%s }}" % variable)
+
+    def test_signing_secrets_use_the_organization_wide_names_everywhere(self):
+        text = yaml.safe_dump(self.release)
+        for env_name, secret in RELEASE_SECRETS.items():
+            with self.subTest(secret=secret):
+                self.assertIn("${{ secrets.%s }}" % secret, text)
+                if env_name != secret:
+                    self.assertNotIn("${{ secrets.%s }}" % env_name, text)
+
+    def test_rehearsal_stands_down_the_tag_guards_but_keeps_the_signing_path(self):
+        for name in ("Refuse anything but a vX.Y.Z tag", "Refuse to publish over existing release assets"):
+            with self.subTest(step=name):
+                self.assertEqual(self.step(name)["if"], NOT_REHEARSING)
+        for name in (
+            "Validate release keys and signing secrets",
+            "Import Developer ID certificate",
+            "Configure Apple notarization profile",
+            "Build, sign, notarize and gate the DMG",
+            "Verify DMG payloads against the tag",
+        ):
+            with self.subTest(step=name):
+                self.assertNotIn("if", self.step(name))
+        verify = self.step("Verify DMG payloads against the tag")["run"]
+        self.assertIn('if [[ "$REHEARSE" == true ]]', verify)
+        self.assertIn("make -s version", verify)
+
+    def test_rehearsal_publishes_nothing_and_keeps_the_dmg_as_a_run_artifact(self):
+        keep = self.step("Keep the rehearsal DMG as a run artifact")
+        self.assertEqual(keep["if"], "env.REHEARSE == 'true'")
+        self.assertTrue(keep["uses"].startswith("actions/upload-artifact@"))
+        self.assertEqual(keep["with"]["if-no-files-found"], "error")
+        for asset in ("Codescribe_*.dmg", "Codescribe_*.dmg.sha256", "appcast.xml"):
+            self.assertIn(asset, keep["with"]["path"])
+        order = names(self.release)
+        self.assertLess(order.index("Publish draft release with the full DMG and checksum"), order.index(keep["name"]))
 
     def test_publish_is_a_draft_that_never_overwrites_assets(self):
         publishes = [
@@ -142,7 +186,10 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             for step in self.release["steps"]
             if step.get("uses", "").startswith("softprops/action-gh-release@")
         ]
-        self.assertEqual(sorted(step["if"] for step in publishes), ["env.VARIANT == 'full'", "env.VARIANT == 'slim'"])
+        self.assertEqual(
+            sorted(step["if"] for step in publishes),
+            ["env.VARIANT == 'full' && " + NOT_REHEARSING, "env.VARIANT == 'slim' && " + NOT_REHEARSING],
+        )
         for step in publishes:
             with self.subTest(step=step["if"]):
                 options = step["with"]
@@ -150,14 +197,13 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                 self.assertIs(options["overwrite_files"], False)
                 self.assertIs(options["fail_on_unmatched_files"], True)
                 self.assertEqual(options["tag_name"], "${{ env.RELEASE_TAG }}")
-        slim = next(step for step in publishes if step["if"] == "env.VARIANT == 'slim'")
+        slim = next(step for step in publishes if step["if"].startswith("env.VARIANT == 'slim'"))
         for asset in ("Codescribe.dmg", "Codescribe.dmg.sha256", "appcast.xml"):
             self.assertIn(asset, slim["with"]["files"])
 
     def test_appcast_and_stable_alias_exist_only_for_the_slim_feed(self):
         for name in ("Alias slim DMG as stable Codescribe.dmg", "Generate signed Sparkle appcast"):
-            step = self.release["steps"][names(self.release).index(name)]
-            self.assertEqual(step["if"], "env.VARIANT == 'slim'")
+            self.assertEqual(self.step(name)["if"], "env.VARIANT == 'slim'")
 
     def test_signing_keychain_is_released_on_every_outcome(self):
         cleanup = [step for step in self.release["steps"] if "keychain-session.sh end" in step.get("run", "")]

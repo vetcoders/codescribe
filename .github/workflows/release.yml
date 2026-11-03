@@ -1,20 +1,28 @@
 name: Release DMG
 
-# Two lanes, one file.
+# Three lanes, one file.
 #
-#   release — a `v*` tag push, or `workflow_dispatch` with `tag_name`: signs,
-#             notarizes and staples the slim DMG (the Whisper-embedded full DMG
-#             only when `variant: full` is requested), runs the payload gate and
-#             attaches the artifacts, checksums and signed appcast to a DRAFT
-#             GitHub release. Publishing the draft after the cold-path check in
-#             docs/PUBLIC_RELEASE_CHECKLIST.md is a human click.
-#   smoke   — `workflow_dispatch` with `smoke: true`: builds the slim DMG from the
-#             dispatched ref with `make dmg` (no Developer ID), runs the payload
-#             gate without signature and notary checks and keeps the DMG as a run
-#             artifact. It needs no secret and never touches a release; it exists
-#             to prove that the hosted image still builds this product.
+#   release   — a `v*` tag push, or `workflow_dispatch` with `tag_name`: signs,
+#               notarizes and staples the slim DMG (the Whisper-embedded full DMG
+#               only when `variant: full` is requested), runs the payload gate and
+#               attaches the artifacts, checksums and signed appcast to a DRAFT
+#               GitHub release. Publishing the draft after the cold-path check in
+#               docs/PUBLIC_RELEASE_CHECKLIST.md is a human click.
+#   rehearse  — `workflow_dispatch` with `rehearse: true`: the release job on the
+#               dispatched ref, signing, notarizing, stapling and gating exactly
+#               like a release, with the DMG kept as a run artifact and nothing
+#               published. It uses the signing inputs, so the `release`
+#               environment gate applies to it as well.
+#   smoke     — `workflow_dispatch` with `smoke: true`: builds the slim DMG from
+#               the dispatched ref with `make dmg` (no Developer ID), runs the
+#               payload gate without signature and notary checks and keeps the
+#               DMG as a run artifact. It needs no secret and never touches a
+#               release; it proves that the hosted image still builds this product.
 #
-# Both lanes run on the GitHub-hosted `xcode-27` preview image
+# Signing inputs use the organization-wide names (`MACOS_*`, `NOTARY_*`) that the
+# Vista release workflow reads, so one Developer ID and one notary account serve
+# every Vetcoders app; the steps below map them onto the names the build scripts
+# expect. All lanes run on the GitHub-hosted `xcode-27` preview image
 # (actions/runner-images#14404): the Swift app does not compile on Xcode 26, so
 # `macos-latest` would fail every tag run right after the secrets were validated.
 # This is a public repository; nothing here runs on a self-hosted runner.
@@ -38,6 +46,10 @@ on:
         default: slim
       smoke:
         description: Smoke build of the dispatched ref (no signing, no notarization, no release)
+        type: boolean
+        default: false
+      rehearse:
+        description: Rehearse the release on the dispatched ref (sign, notarize, staple, gate; DMG as run artifact; nothing published)
         type: boolean
         default: false
 
@@ -114,8 +126,13 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
       VARIANT: ${{ inputs.variant || 'slim' }}
+      # A rehearsal builds from the dispatched ref, which is normally a branch:
+      # the tag guards stand down, the version comes from Cargo, and the two
+      # publish steps are skipped in favour of a run artifact.
+      REHEARSE: ${{ inputs.rehearse == true }}
     steps:
       - name: Refuse anything but a vX.Y.Z tag
+        if: env.REHEARSE != 'true'
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "Release tag must have the form vX.Y.Z (got: $RELEASE_TAG)"
@@ -125,6 +142,7 @@ jobs:
       - name: Refuse to publish over existing release assets
         # Changed release bytes need a new patch version; a rerun must never
         # replace what a published appcast already signed.
+        if: env.REHEARSE != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -150,31 +168,33 @@ jobs:
         run: command -v xcodegen >/dev/null || brew install xcodegen
 
       - name: Validate release keys and signing secrets
+        # Secret names are the organization-wide ones (shared with Vista); the
+        # env names are what scripts/build-dmg.sh and notarize.sh read.
         env:
-          CODESIGN_CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
-          CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
-          CODESCRIBE_CODESIGN_IDENTITY: ${{ secrets.CODESCRIBE_CODESIGN_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          CODESIGN_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          CODESCRIBE_CODESIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
           CODESCRIBE_LICENSE_PUBLIC_KEY_HEX: ${{ vars.CODESCRIBE_LICENSE_PUBLIC_KEY_HEX }}
           SPARKLE_ED_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
-          test -n "$CODESIGN_CERTIFICATE_BASE64" || { echo "Missing CODESIGN_CERTIFICATE_BASE64"; exit 1; }
-          test -n "$CODESIGN_CERTIFICATE_PASSWORD" || { echo "Missing CODESIGN_CERTIFICATE_PASSWORD"; exit 1; }
-          test -n "$CODESCRIBE_CODESIGN_IDENTITY" || { echo "Missing CODESCRIBE_CODESIGN_IDENTITY"; exit 1; }
-          test -n "$APPLE_ID" || { echo "Missing APPLE_ID"; exit 1; }
-          test -n "$APPLE_TEAM_ID" || { echo "Missing APPLE_TEAM_ID"; exit 1; }
-          test -n "$APPLE_APP_SPECIFIC_PASSWORD" || { echo "Missing APPLE_APP_SPECIFIC_PASSWORD"; exit 1; }
+          test -n "$CODESIGN_CERTIFICATE_BASE64" || { echo "Missing MACOS_CERTIFICATE_BASE64 secret"; exit 1; }
+          test -n "$CODESIGN_CERTIFICATE_PASSWORD" || { echo "Missing MACOS_CERTIFICATE_PASSWORD secret"; exit 1; }
+          test -n "$CODESCRIBE_CODESIGN_IDENTITY" || { echo "Missing MACOS_SIGNING_IDENTITY secret"; exit 1; }
+          test -n "$APPLE_ID" || { echo "Missing NOTARY_APPLE_ID secret"; exit 1; }
+          test -n "$APPLE_TEAM_ID" || { echo "Missing NOTARY_TEAM_ID secret"; exit 1; }
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD" || { echo "Missing NOTARY_PASSWORD secret"; exit 1; }
           [[ "$CODESCRIBE_LICENSE_PUBLIC_KEY_HEX" =~ ^[[:xdigit:]]{64}$ ]] || { echo "Missing or invalid CODESCRIBE_LICENSE_PUBLIC_KEY_HEX repository variable"; exit 1; }
           test -n "$SPARKLE_ED_PUBLIC_KEY" || { echo "Missing SPARKLE_ED_PUBLIC_KEY repository variable"; exit 1; }
           test -n "$SPARKLE_ED_PRIVATE_KEY" || { echo "Missing SPARKLE_ED_PRIVATE_KEY secret"; exit 1; }
 
       - name: Import Developer ID certificate
         env:
-          CODESIGN_CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
-          CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+          CODESIGN_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           KEYCHAIN_SESSION_STATE_DIR: ${{ runner.temp }}/keychain-session
         run: |
           set -euo pipefail
@@ -205,9 +225,9 @@ jobs:
 
       - name: Configure Apple notarization profile
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
         run: |
           xcrun notarytool store-credentials "CodescribeNotary" \
             --apple-id "$APPLE_ID" \
@@ -219,7 +239,7 @@ jobs:
         # embeds Silero only and reads no model cache; release-full warms the
         # Whisper cache itself (ensure-models) before it embeds the model.
         env:
-          CODESCRIBE_CODESIGN_IDENTITY: ${{ secrets.CODESCRIBE_CODESIGN_IDENTITY }}
+          CODESCRIBE_CODESIGN_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
           CODESCRIBE_BUNDLE_ID: ${{ vars.CODESCRIBE_BUNDLE_ID || 'com.vetcoders.codescribe' }}
           CODESCRIBE_LICENSE_PUBLIC_KEY_HEX: ${{ vars.CODESCRIBE_LICENSE_PUBLIC_KEY_HEX }}
           NOTARY_PROFILE: CodescribeNotary
@@ -237,7 +257,13 @@ jobs:
           SPARKLE_ED_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-          VERSION="${RELEASE_TAG#v}"
+          if [[ "$REHEARSE" == true ]]; then
+            # No tag on a rehearsal: the bundle must match the version Cargo declares.
+            VERSION="$(make -s version)"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="${RELEASE_TAG#v}"
+          fi
           shopt -s nullglob
           dmgs=(Codescribe_*.dmg)
           (( ${#dmgs[@]} == 1 )) || {
@@ -286,7 +312,7 @@ jobs:
             --download-url-prefix "https://github.com/vetcoders/codescribe/releases/download/${RELEASE_TAG}/"
 
       - name: Publish draft release with the slim DMG, checksums and appcast
-        if: env.VARIANT == 'slim'
+        if: env.VARIANT == 'slim' && env.REHEARSE != 'true'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -302,7 +328,7 @@ jobs:
             appcast.xml
 
       - name: Publish draft release with the full DMG and checksum
-        if: env.VARIANT == 'full'
+        if: env.VARIANT == 'full' && env.REHEARSE != 'true'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -313,6 +339,20 @@ jobs:
           files: |
             Codescribe_*_full.dmg
             Codescribe_*_full.dmg.sha256
+
+      - name: Keep the rehearsal DMG as a run artifact
+        # A rehearsal publishes nothing; the signed, notarized and gated DMG is
+        # what the human installs and checks before the real tag.
+        if: env.REHEARSE == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codescribe-rehearsal-dmg
+          path: |
+            Codescribe_*.dmg
+            Codescribe_*.dmg.sha256
+            appcast.xml
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Release the signing keychain
         # Runs on every outcome: a failed build must not leave the imported
