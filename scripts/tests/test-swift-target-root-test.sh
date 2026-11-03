@@ -89,8 +89,9 @@ elif name == 'xcodebuild':
         print('unfiltered tool failure')
         sys.exit(65)
     count = 0 if s['mode'] in ('zero', 'gui-zero') else 30 if s['mode'] == 'suite-over' else 7
-    seconds = (255 if s['mode'] in ('slow', 'budget') else
-               255 if s['mode'] == 'suite-over' else
+    # Over the 300 s default budget; 'budget' raises it to 360 s explicitly.
+    seconds = (315 if s['mode'] in ('slow', 'budget') else
+               315 if s['mode'] == 'suite-over' else
                30 if s['mode'] == 'two-over' else
                18 if s['mode'] == 'one-over' else
                25 if s['mode'] == 'under' else 1.25)
@@ -229,7 +230,7 @@ def run_case(base, profile, layout, mode='success'):
     if mode == 'override-helper':
         args.append('ENGINE_BRIDGE=' + str(bridge))
     if mode == 'budget':
-        args.append('SWIFT_TEST_MAX_SECONDS=300')
+        args.append('SWIFT_TEST_MAX_SECONDS=360')
     result = subprocess.run(args, cwd=base, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     calls = [json.loads(l) for l in Path(spec['calls']).read_text().splitlines()] if Path(spec['calls']).exists() else []
     if evidence:
