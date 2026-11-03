@@ -1,5 +1,24 @@
 name: Release DMG
 
+# Two lanes, one file.
+#
+#   release — a `v*` tag push, or `workflow_dispatch` with `tag_name`: signs,
+#             notarizes and staples the slim DMG (the Whisper-embedded full DMG
+#             only when `variant: full` is requested), runs the payload gate and
+#             attaches the artifacts, checksums and signed appcast to a DRAFT
+#             GitHub release. Publishing the draft after the cold-path check in
+#             docs/PUBLIC_RELEASE_CHECKLIST.md is a human click.
+#   smoke   — `workflow_dispatch` with `smoke: true`: builds the slim DMG from the
+#             dispatched ref with `make dmg` (no Developer ID), runs the payload
+#             gate without signature and notary checks and keeps the DMG as a run
+#             artifact. It needs no secret and never touches a release; it exists
+#             to prove that the hosted image still builds this product.
+#
+# Both lanes run on the GitHub-hosted `xcode-27` preview image
+# (actions/runner-images#14404): the Swift app does not compile on Xcode 26, so
+# `macos-latest` would fail every tag run right after the secrets were validated.
+# This is a public repository; nothing here runs on a self-hosted runner.
+
 on:
   push:
     tags:
@@ -7,37 +26,128 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: Existing tag to publish (for example v0.12.2)
-        required: true
+        description: Existing tag to publish (for example v0.18.0). Ignored by a smoke build.
+        required: false
+        default: ""
+      variant:
+        description: slim is the public artifact; full also embeds Whisper
+        type: choice
+        options:
+          - slim
+          - full
+        default: slim
+      smoke:
+        description: Smoke build of the dispatched ref (no signing, no notarization, no release)
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  # Local release DMGs are cut with Xcode 27.2. The image defaults to 27.1 and
+  # ships 27.2 beside it; build with the toolchain the product is proven on.
+  DEVELOPER_DIR: /Applications/Xcode_27.2.app
 
 jobs:
-  dmg:
+  smoke:
+    name: Smoke build (unsigned, run artifact only)
+    if: github.event_name == 'workflow_dispatch' && inputs.smoke
+    runs-on: xcode-27
+    timeout-minutes: 120
+    env:
+      # Public values (repository variables), the same ones the release lane
+      # bakes in, so the payload gate can check the bundle against them.
+      CODESCRIBE_LICENSE_PUBLIC_KEY_HEX: ${{ vars.CODESCRIBE_LICENSE_PUBLIC_KEY_HEX }}
+      SPARKLE_ED_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Show the Xcode this job selected
+        run: xcodebuild -version
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install XcodeGen
+        # scripts/build-app.sh preflights `require xcodegen`: the .xcodeproj is
+        # generated, not committed.
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Build the slim DMG without a Developer ID
+        run: make dmg
+
+      - name: Run the payload gate without signature and notary checks
+        run: |
+          set -euo pipefail
+          VERSION="$(make -s version)"
+          VERSION="${VERSION#v}"
+          shopt -s nullglob
+          dmgs=(Codescribe_*.dmg)
+          (( ${#dmgs[@]} == 1 )) || {
+            echo "Expected exactly one Codescribe_*.dmg, found ${#dmgs[@]}"
+            exit 1
+          }
+          scripts/verify-dmg-payload.sh "${dmgs[0]}" --variant slim --version "$VERSION" --skip-notary --unsigned
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codescribe-smoke-dmg
+          path: |
+            Codescribe_*.dmg
+            Codescribe_*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
     name: Build, notarize, and publish DMG
-    runs-on: macos-latest
+    if: github.event_name == 'push' || !inputs.smoke
+    runs-on: xcode-27
+    timeout-minutes: 180
+    permissions:
+      contents: write
     # Deployment gate: `workflow_dispatch` can otherwise be fired by anyone with
     # write access against any tag. Protection rules (required reviewers,
     # deployment branches/tags) live on the `release` environment in repo
     # settings — configure them there; this line is what makes them apply.
     environment:
       name: release
+    env:
+      RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+      VARIANT: ${{ inputs.variant || 'slim' }}
     steps:
+      - name: Refuse anything but a vX.Y.Z tag
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Release tag must have the form vX.Y.Z (got: $RELEASE_TAG)"
+            exit 1
+          }
+
+      - name: Refuse to publish over existing release assets
+        # Changed release bytes need a new patch version; a rerun must never
+        # replace what a published appcast already signed.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          if [[ -n "$assets" ]]; then
+            echo "Release $RELEASE_TAG already carries assets:"
+            printf '%s\n' "$assets" | sed 's/^/  /'
+            exit 1
+          fi
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.tag_name || github.ref }}
 
+      - name: Show the Xcode this job selected
+        run: xcodebuild -version
+
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - name: Install XcodeGen
-        # scripts/build-app.sh preflights `require xcodegen` — the app's
-        # .xcodeproj is generated, not committed, so the release runner needs it
-        # or the DMG build dies before xcodebuild. (cargo, uniffi-bindgen and
-        # xcodebuild are already provided: rust-toolchain installs cargo,
-        # uniffi-bindgen is built from `cargo build -p codescribe-ffi`, and
-        # xcodebuild ships with the macOS runner image.)
-        run: brew install xcodegen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
 
       - name: Validate release keys and signing secrets
         env:
@@ -104,61 +214,54 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD"
 
-      - name: Prepare release models
-        # release-dmgs builds slim before full, while ensure-models is otherwise
-        # only a dependency of release-full. Warm both public-model caches first
-        # so the slim artifact cannot silently compile without MiniLM.
-        run: make ensure-models
-
-      - name: Build signed and notarized DMG artifacts
+      - name: Build, sign, notarize and gate the DMG
+        # Both targets end with the fail-closed payload gate. The slim build
+        # embeds Silero only and reads no model cache; release-full warms the
+        # Whisper cache itself (ensure-models) before it embeds the model.
         env:
           CODESCRIBE_CODESIGN_IDENTITY: ${{ secrets.CODESCRIBE_CODESIGN_IDENTITY }}
           CODESCRIBE_BUNDLE_ID: ${{ vars.CODESCRIBE_BUNDLE_ID || 'com.vetcoders.codescribe' }}
           CODESCRIBE_LICENSE_PUBLIC_KEY_HEX: ${{ vars.CODESCRIBE_LICENSE_PUBLIC_KEY_HEX }}
           NOTARY_PROFILE: CodescribeNotary
           SPARKLE_ED_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
-        run: make release-dmgs
+        run: |
+          set -euo pipefail
+          case "$VARIANT" in
+            slim) make release-standard ;;
+            full) make release-full ;;
+            *) echo "Unknown variant: $VARIANT"; exit 1 ;;
+          esac
 
-      - name: Verify DMG payloads
+      - name: Verify DMG payloads against the tag
         env:
-          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
           SPARKLE_ED_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
         run: |
-          test -x scripts/verify-dmg-payload.sh || {
-            echo "Missing executable payload verifier: scripts/verify-dmg-payload.sh"
-            exit 1
-          }
-
+          set -euo pipefail
           VERSION="${RELEASE_TAG#v}"
-          test -n "$VERSION" && test "$VERSION" != "$RELEASE_TAG" || {
-            echo "Release tag must have the form vX.Y.Z (got: $RELEASE_TAG)"
-            exit 1
-          }
-
           shopt -s nullglob
           dmgs=(Codescribe_*.dmg)
-          ((${#dmgs[@]} > 0)) || {
-            echo "No Codescribe_*.dmg artifacts produced"
+          (( ${#dmgs[@]} == 1 )) || {
+            echo "Expected exactly one Codescribe_*.dmg, found ${#dmgs[@]}"
             exit 1
           }
-
-          for dmg in "${dmgs[@]}"; do
-            variant=slim
-            [[ "$dmg" == *_full.dmg ]] && variant=full
-            echo "Verifying $dmg as $variant for version $VERSION"
-            scripts/verify-dmg-payload.sh \
-              "$dmg" \
-              --variant "$variant" \
-              --version "$VERSION"
-          done
+          variant=slim
+          [[ "${dmgs[0]}" == *_full.dmg ]] && variant=full
+          [[ "$variant" == "$VARIANT" ]] || {
+            echo "Built a $variant DMG while $VARIANT was requested"
+            exit 1
+          }
+          echo "Verifying ${dmgs[0]} as $variant for version $VERSION"
+          scripts/verify-dmg-payload.sh "${dmgs[0]}" --variant "$variant" --version "$VERSION"
 
       - name: Alias slim DMG as stable Codescribe.dmg
+        if: env.VARIANT == 'slim'
         # The website pins two asset URLs that must survive the provenance slug
         # (Codescribe_<ver>-<date>-<sha>.dmg): releases/latest/download/Codescribe.dmg
         # and releases/download/v<ver>/Codescribe.dmg. Publish the slug artifact
         # for provenance AND a stable-named copy for the funnel, each with its
         # SHA-256 (bare filename inside, so `shasum -c` works from the download dir).
         run: |
+          set -euo pipefail
           shopt -s nullglob
           DMG=""
           for candidate in Codescribe_*.dmg; do
@@ -171,28 +274,45 @@ jobs:
           shasum -a 256 Codescribe.dmg > Codescribe.dmg.sha256
 
       - name: Generate signed Sparkle appcast
+        if: env.VARIANT == 'slim'
         # The appcast is attached to the release as provenance; publishing it to
-        # the live feed (site/public/appcast.xml → Pages) stays an operator PR.
+        # the live feed (site/public/appcast.xml) stays a human step.
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
           SPARKLE_ED_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
-          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
         run: |
           scripts/generate-appcast.sh . \
             -o appcast.xml \
             --download-url-prefix "https://github.com/vetcoders/codescribe/releases/download/${RELEASE_TAG}/"
 
-      - name: Publish GitHub release
+      - name: Publish draft release with the slim DMG, checksums and appcast
+        if: env.VARIANT == 'slim'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          draft: true
+          overwrite_files: false
+          fail_on_unmatched_files: true
+          generate_release_notes: true
           files: |
             Codescribe_*.dmg
             Codescribe_*.dmg.sha256
             Codescribe.dmg
             Codescribe.dmg.sha256
             appcast.xml
+
+      - name: Publish draft release with the full DMG and checksum
+        if: env.VARIANT == 'full'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          draft: true
+          overwrite_files: false
+          fail_on_unmatched_files: true
           generate_release_notes: true
+          files: |
+            Codescribe_*_full.dmg
+            Codescribe_*_full.dmg.sha256
 
       - name: Release the signing keychain
         # Runs on every outcome: a failed build must not leave the imported

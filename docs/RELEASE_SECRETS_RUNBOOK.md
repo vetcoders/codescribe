@@ -274,6 +274,24 @@ Do not trigger a release merely to test secret presence. The next
 operator-authorized tag or manual release run performs its own fail-closed
 validation before importing the certificate.
 
+The build itself needs none of these secrets to be proven. A smoke dispatch
+builds the slim DMG with `make dmg` on the hosted `xcode-27` image, runs the
+payload gate with `--skip-notary --unsigned` and keeps the DMG as a run artifact
+for seven days. It never signs, notarizes or touches a release:
+
+```bash
+gh workflow run release.yml --repo vetcoders/codescribe --ref <branch> -f smoke=true
+```
+
+Run it before provisioning secrets and after any change to the build scripts.
+
+The release job runs under the `release` environment. Store the six Apple
+secrets on that environment (`gh secret set NAME --env release`) and configure
+required reviewers there: a tag push then waits for a human before the
+certificate is imported, and a `workflow_dispatch` from any other branch cannot
+read them. The workflow creates the GitHub release as a draft; publishing it is
+the final click after the cold-path check in `PUBLIC_RELEASE_CHECKLIST.md`.
+
 ## Rotation and revocation
 
 Rotate the `.p12` payload, its password, and the identity together whenever the
