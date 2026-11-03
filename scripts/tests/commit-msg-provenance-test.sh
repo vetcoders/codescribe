@@ -26,6 +26,7 @@ expect() {
   fi
 }
 
+expect accept '[agy/vc-hello] chore(hooks): allow agy provenance tag'
 expect accept '[claude/vc-implement] fix(bridge): schema'
 expect accept '[codex/vc-ownership] release: embed models by default'
 expect accept '[copilot/vc-implement] fix(bus): bounded history'
@@ -40,6 +41,7 @@ expect accept "Merge branch 'feature' into develop"
 expect accept 'Squashed commit of the following:'
 
 # What git writes on its own, and what blocked a real commit on 2026-08-28.
+expect accept 'Revert "[agy/vc-hello] chore(hooks): allow agy provenance tag"'
 expect accept 'Revert "[claude/vc-implement] feat(overlay): swift"'
 expect accept 'Revert "Revert "[codex/vc-workflow] fix(stt): coarse timing""'
 expect accept 'Revert "[junie/vc-implement] fix(ci): fixture candidates"'
@@ -54,6 +56,7 @@ expect block 'Revert ""'
 expect block 'Revertowanie czegos'
 expect block 'fix: no tag at all'
 expect block '[unknown/vc-manual] docs: unknown author'
+expect block '[agy/manual] chore: malformed agent workflow'
 expect block '[junie/manual] fix: malformed agent workflow'
 expect block '[junie/vc-] fix: missing workflow'
 expect block '[maciej/vc-implement] fix: not a manual founder commit'
