@@ -1010,8 +1010,16 @@ smoke-macos27:
 # Keep the independent 10 s per-test ceiling: the old blocking Keychain fault
 # manifested as one 43 s test. Investigate either ceiling breach before an
 # explicit override; more coverage never waives assertion failures.
+#
+# Rebaselined 2026-11-03 for 2461 tests (70 skipped): 243.6 s and 246.3 s in
+# two full runs on dragon, 0.099-0.100 s per test against 0.109 s on
+# 2026-10-19. Each test got faster; the suite grew by 687 tests. A 300 s
+# ceiling leaves ~22% headroom. The slowest test,
+# OverlayHeaderChromeTests.testSelectedControlsWearAPastelOfTheirModeAndStillAnswerHover,
+# took 9.85 s in both runs, 0.15 s under the per-test ceiling: the next render
+# case added to it breaks that gate, not this one.
 SWIFT_TEST_CODESIGN_IDENTITY ?= -
-SWIFT_TEST_MAX_SECONDS ?= 240
+SWIFT_TEST_MAX_SECONDS ?= 300
 SWIFT_TEST_MAX_TEST_SECONDS ?= 10
 .PHONY: test-swift
 test-swift: $(ENGINE_BRIDGE)
