@@ -479,7 +479,11 @@ PY
   fi
 
   PUBLISHER="$APP_PATH/Contents/Resources/agent-bridge/bin/codescribe"
-  if codesign --verify --strict "$PUBLISHER" >/dev/null 2>&1; then
+  if [[ $UNSIGNED -eq 1 ]]; then
+    # The linker's ad-hoc signature verifies, but the Developer ID team,
+    # hardened runtime flag and timestamp exist only on a signed release build.
+    echo "  – publisher signature skipped: --unsigned smoke build (never a release artifact)"
+  elif codesign --verify --strict "$PUBLISHER" >/dev/null 2>&1; then
     PUBLISHER_SIGNATURE="$(codesign -dv --verbose=4 "$PUBLISHER" 2>&1)"
     if printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^TeamIdentifier=MW223P3NPX$' \
       && printf '%s\n' "$PUBLISHER_SIGNATURE" | grep -q '^Authority=Developer ID Application:' \
