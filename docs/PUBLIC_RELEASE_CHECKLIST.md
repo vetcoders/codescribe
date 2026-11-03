@@ -53,14 +53,19 @@ artifact; neither variant requires an unused embedder.
 - [ ] Record post-staple SHA256, byte size, embedded version, build and source
       commit. Sign the appcast against these exact DMG bytes.
 
-GitHub Actions publication is an alternative only when its required signing and
-notary inputs are provisioned. A failed tag-triggered workflow does not replace
-or invalidate an independently verified local artifact; disclose that failure.
+GitHub Actions publication (`Release DMG`, hosted `xcode-27` image) runs when its
+signing and notary inputs are provisioned on the `release` environment: a
+`vX.Y.Z` tag push builds, signs, notarizes and gates the slim DMG and attaches
+it, its checksums and the signed appcast to a draft release. Publishing the draft
+after the cold-path check below is the final click. A failed tag-triggered
+workflow does not replace or invalidate an independently verified local
+artifact; disclose that failure.
 
 ## Publish and check the cold path
 
-- [ ] Tag the exact accepted source and attach the verified DMG, checksum,
-      provenance and signed appcast to its GitHub Release.
+- [ ] Tag the exact accepted source. Let the workflow attach the verified DMG,
+      checksum, provenance and signed appcast as a draft release, or attach the
+      locally verified artifacts by hand; then publish the release.
 - [ ] Download the public DMG and checksum into a fresh directory. Verify hash,
       payload, signature, notarization ticket and embedded provenance again.
 - [ ] Install that downloaded, verified app through the guarded prebuilt path:

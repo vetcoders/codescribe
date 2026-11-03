@@ -587,7 +587,9 @@ for line in sys.stdin:
         assert any(p.get('text') == 'hello' for p in params['prompt'])
         if mode == 'attachments':
             assert any(p.get('type') == 'image' and p['data'] == 'AQID' for p in params['prompt'])
-        if mode == 'cancel': continue
+        if mode == 'cancel':
+            send(dict(method='session/update', params=dict(sessionId='session-fixture', update=dict(sessionUpdate='agent_message_chunk', content=dict(type='text', text='cancel-ready')))))
+            continue
         if mode == 'exit-desc':
             child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
             record('descendant:' + str(child.pid))
@@ -959,22 +961,18 @@ for line in sys.stdin:
     async fn acp_cancel_notifies_and_reaps_child() {
         let root = tempfile::tempdir().unwrap();
         let provider = AcpProvider::new(fixture(root.path(), "cancel")).unwrap();
-        let rx = provider
+        let mut rx = provider
             .stream(&messages(), &[], &StreamOptions::default())
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let receipt =
-                    std::fs::read_to_string(root.path().join("receipt")).unwrap_or_default();
-                if receipt.contains("session/prompt") {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        // Wait for the real protocol path to deliver readiness. Polling the
+        // receipt file neither observes transport errors nor proves that the
+        // client has consumed the agent's prompt state before cancellation.
+        let ready = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("ACP fixture must signal readiness within the original five-second budget")
+            .expect("ACP stream closed before cancellation readiness");
+        assert_eq!(ready, AgentEvent::TextDelta("cancel-ready".into()));
         provider.cancel();
         let events = collect(rx).await;
         assert!(
