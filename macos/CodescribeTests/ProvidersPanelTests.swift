@@ -131,7 +131,10 @@ final class ProvidersPanelTests: XCTestCase {
     // and the UI must not re-sort it — first place is I1's call, not this test's.
     XCTAssertEqual(
       Set(model.vendorProviders.map(\.id)),
-      ["libraxis-responses", "openai-responses", "xai-responses", "anthropic-messages"]
+      [
+        "libraxis-responses", "openai-responses", "xai-responses", "anthropic-messages",
+        "google-gemini",
+      ]
     )
     XCTAssertEqual(
       model.vendorProviders.map(\.id),
@@ -274,15 +277,28 @@ final class ProvidersPanelTests: XCTestCase {
 
   /// The account row shows one action: `Sign out` while connected, `Sign in`
   /// otherwise — and names the connected account when the id token does.
-  func testAccountRowStatusNamesTheConnectedAccount() {
+  func testAccountRowDescribesStorageWithoutClaimingServiceAcceptance() {
     var provider = CsProviderOption.sampleProviders[1]
     XCTAssertEqual(provider.id, "openai-responses")
     XCTAssertEqual(AccountLoginRow.status(for: provider), "Not connected")
     provider.accountSignedIn = true
-    XCTAssertEqual(AccountLoginRow.status(for: provider), "Connected")
+    // The state is the one "Saved" word (W0-03, a11); the signed-in identity
+    // is named on its own line under the row name, not inside the state.
+    XCTAssertEqual(AccountLoginRow.status(for: provider), "Saved")
+    XCTAssertNil(AccountLoginRow.identityLine(for: provider))
     provider.accountIdentity = "user@example.com"
-    XCTAssertEqual(AccountLoginRow.status(for: provider), "Connected as user@example.com")
+    XCTAssertEqual(AccountLoginRow.status(for: provider), "Saved")
+    XCTAssertEqual(
+      AccountLoginRow.identityLine(for: provider), "Saved account: user@example.com")
+    provider.accountSignedIn = false
+    XCTAssertNil(
+      AccountLoginRow.identityLine(for: provider), "a signed-out row names no account")
     XCTAssertEqual(AccountLoginRow.brand(for: provider), "ChatGPT")
+
+    let google = CsProviderOption.sampleProviders[4]
+    XCTAssertEqual(google.id, "google-gemini")
+    XCTAssertTrue(google.accountLoginEnabled)
+    XCTAssertEqual(AccountLoginRow.brand(for: google), "Google")
   }
 
   /// LLMLaneEditor.body reads `llmLane` per menu item; the FFI loader must not.

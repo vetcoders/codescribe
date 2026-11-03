@@ -1,24 +1,27 @@
 import Foundation
 
 /// Durable "read" marks for agent replies: one small JSON next to the delivery
-/// cursor, `<bridge home>/runtime/overlay-read-state.v1.json`. Conversation
+/// cursor, `<data root>/data.noindex/overlay-read-state.v1.json`. Conversation
 /// history survives a launch through the cursor's projections, so the marks
 /// must survive with it; otherwise every restored reply counts as unread.
-/// Written atomically (tmp file + rename) with owner-only permissions. The
-/// root is injected, so tests never touch the real bridge home.
+/// Written atomically (tmp file + rename) with owner-only permissions.
+/// `cacheRoot` is the core's high-churn folder (`CodescribeConfig.churnDir()`),
+/// which Spotlight does not index; it is injected, so tests never touch the
+/// real data root.
 enum OverlayReadStateStore {
   static let schema = "codescribe.overlay-read-state.v1"
   static let filename = "overlay-read-state.v1.json"
 
-  static func url(root: URL) -> URL {
-    root.appendingPathComponent("runtime", isDirectory: true)
-      .appendingPathComponent(filename)
+  static func url(cacheRoot: URL) -> URL {
+    cacheRoot.appendingPathComponent(filename)
   }
 
   /// `nil` means no marks were ever written here (or the file is unreadable),
   /// which is different from an empty set of marks.
-  static func load(root: URL) -> Set<String>? {
-    guard let handle = try? FileHandle(forReadingFrom: url(root: root)) else { return nil }
+  static func load(cacheRoot: URL) -> Set<String>? {
+    guard let handle = try? FileHandle(forReadingFrom: url(cacheRoot: cacheRoot)) else {
+      return nil
+    }
     defer { try? handle.close() }
     guard let data = try? handle.read(upToCount: (8 << 20) + 1), data.count <= 8 << 20,
       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -28,8 +31,8 @@ enum OverlayReadStateStore {
     return Set(ids)
   }
 
-  static func save(root: URL, readReplyIDs: Set<String>) throws {
-    let directory = root.appendingPathComponent("runtime", isDirectory: true)
+  static func save(cacheRoot: URL, readReplyIDs: Set<String>) throws {
+    let directory = cacheRoot
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let data = try JSONSerialization.data(
       withJSONObject: ["schema": schema, "read_reply_ids": readReplyIDs.sorted()] as [String: Any],
@@ -51,7 +54,7 @@ enum OverlayReadStateStore {
         throw error
       }
       // rename(2) replaces the previous marks atomically, unlike moveItem.
-      guard rename(temporary.path, url(root: root).path) == 0 else {
+      guard rename(temporary.path, url(cacheRoot: cacheRoot).path) == 0 else {
         throw CocoaError(.fileWriteUnknown)
       }
     } catch {

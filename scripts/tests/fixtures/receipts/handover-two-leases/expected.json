@@ -1,0 +1,23 @@
+{
+  "denominator": 1,
+  "message_id": "0123456789abcdef00000003",
+  "recipients": [
+    {
+      "at": "2026-10-26T02:30:00Z",
+      "channel": "3",
+      "delivered_at": "2026-10-26T02:00:01Z",
+      "delivery_id": "111111111111111111111111",
+      "name": "lena",
+      "state": "read",
+      "wake": "on"
+    }
+  ],
+  "sent_to": [
+    {
+      "channel": "3",
+      "name": "lena"
+    }
+  ],
+  "spoken": null,
+  "withdrawn": []
+}

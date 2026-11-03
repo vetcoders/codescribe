@@ -164,7 +164,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `CODESCRIBE_INLINE_FORMAT` (HOT RELOADED; default `0`) — uzbraja bufor formatowania chunków W13-1; timeouty `CODESCRIBE_INLINE_FORMAT_{CHUNK,FLUSH,TAIL}_TIMEOUT_MS` mają domyślne budżety odpowiednio 10000/2500/15000 ms. Default pozostaje guzikiem operatora.
 - `USE_LOCAL_STT` (RESTART NEEDED)
 - `LOCAL_MODEL`, `WHISPER_MODEL` (RESTART NEEDED)
-- `WHISPER_LANGUAGE` (HOT RELOADED; default `auto`; applies to the next capture. `auto` leaves language detection to Whisper for mixed-language dictation.)
+- `WHISPER_LANGUAGE` (HOT RELOADED; default `auto`; applies to the next capture. `auto` leaves language detection to Whisper for mixed-language dictation. It is also the language of the app's xAI spoken replies, where `auto` speaks `pl`.)
 - `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
 - `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` — retired, ignored at runtime and rejected on config writes; repair removes the persisted setting. Retranscribe remains explicit.
@@ -201,7 +201,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `LLM_USE_STREAMING` (HOT RELOADED)
 - `AI_MAX_TOKENS`, `AI_ASSISTIVE_MAX_TOKENS` (RESTART NEEDED)
 - `TRANSCRIPT_SEND_MODE` (RESTART NEEDED)
-- `CODESCRIBE_AI_MAX_RETRIES`, `CODESCRIBE_AI_RETRY_DELAY_MS`, `CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS`, `CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS` (HOT — valid values are read once by the canonical loader and sealed into the next selected `RuntimeSettingsSnapshot`; formatter and Agent share the two request timeouts)
+- `CODESCRIBE_AI_MAX_RETRIES`, `CODESCRIBE_AI_RETRY_DELAY_MS`, `CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS`, `CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS`, `CODESCRIBE_AI_FIRST_EVENT_TIMEOUT_MS` (HOT — valid values are read once by the canonical loader and sealed into the next selected `RuntimeSettingsSnapshot`; formatter and Agent share the request timeouts: first-event budget until the first SSE content event, then the inter-chunk idle timeout, which any chunk including a keepalive comment restarts)
 - `CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS` (registry-only zero-reader residue; no runtime consumer in this cut)
 - `CODESCRIBE_RESPONSES_PROBE_URL` (HOT RELOADED; default pusty = oficjalny endpoint providera) — opcjonalny cel sondy _zdolności_ Responses (puste body ⇒ 400/401). Nie bramkuje sign-in: OAuth zapisuje tożsamość wiersza; zapis do Responses to osobny lane/klucz.
 

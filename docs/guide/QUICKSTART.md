@@ -1,140 +1,77 @@
-# Codescribe Quick Start Guide
+# Quick Start
 
-Get codescribe running in 5 minutes.
+## 1. Install and open the app
 
----
+Download Codescribe from the [website](https://codescribe.vetcoders.io/) or
+[GitHub Releases](https://github.com/vetcoders/codescribe/releases). Open the DMG,
+copy the app into **Applications**, then launch it from Finder or Spotlight.
+You do not need Rust or Xcode to use a packaged app.
 
-## 1. Install
+Follow the permission checklist in **Settings → Creator**. Microphone access is
+needed to record; Apple's recognition path also needs Speech Recognition.
+Accessibility and Input Monitoring support delivery and shortcuts. Screen
+Recording is used for screenshot context. See the
+[installation guide](installation.md#permissions) for the distinction between
+setup completion and recording readiness.
 
-### Option A: From Source (Developers)
+## 2. Choose where speech is recognized
 
-```bash
-# Clone and enter directory
-git clone https://github.com/vetcoders/codescribe.git
-cd codescribe
+Open **Settings → Dictation → Engine**:
 
-# Build and install the SwiftUI app
-make app PROFILE=local-release
-make install-app       # Build + copy Codescribe.app to /Applications
-```
+- **Apple only** is the fresh-install default. No Whisper download is required.
+- **Local power** uses Whisper on your Mac. Open **Dictation → Whisper** to
+  download and validate a model first.
+- **Cloud** uses an online recognizer and requires audio-egress consent.
 
-### Option B: From Release (Users)
+A downloaded model is not necessarily loaded, and a selected mode is not proof
+that its recognizer is ready. Read the availability shown in Settings.
 
-1. Download `Codescribe_x.x.x.dmg` from [Releases](https://github.com/vetcoders/codescribe/releases)
-2. Open DMG, drag to Applications
-3. Open Codescribe from Applications
+## 3. Record a short sentence
 
-> If Releases is empty for the branch you are on, fall back to Option A and build locally.
+1. Open a text document and put its insertion point where you want the text.
+2. Hold your Dictation shortcut, **Fn/Globe** by default.
+3. Say a short sentence, then release the shortcut.
+4. Review the result in the overlay and in your document.
 
----
+Delivery follows the destination and paste policy you selected. If text remains
+in the overlay, check **Settings → Hotkeys → Paste policy**; do not assume every
+recording must paste automatically. Safe, Comfort and Off have different
+behavior. [Recording Modes](modes.md) explains the distinction.
 
-## 2. Grant Permissions
+You can also start a recording from the menu bar or overlay and stop it with
+its visible Stop control. Confirm the microphone state rather than relying on
+an open window or a decorative text marker.
 
-On first launch, grant these permissions in **System Settings → Privacy & Security**:
+## 4. Decide whether to format the text
 
-| Permission           | Location                   | Why                  |
-| -------------------- | -------------------------- | -------------------- |
-| **Microphone**       | Privacy → Microphone       | Record speech        |
-| **Accessibility**    | Privacy → Accessibility    | Global hotkeys       |
-| **Input Monitoring** | Privacy → Input Monitoring | Detect modifier keys |
+**Settings → Creator → Formatting level** offers **Off**, **Correction** and
+**Smart** for automatic formatting. **Max** is a per-take request from the
+overlay Format menu and uses the Agent model and prompt. Other formatting uses
+the provider/model configured for that function. Add credentials in **Providers**, then choose the model in
+**Agent → AI models**.
 
-> **Tip**: Restart Codescribe after granting permissions.
+Use Off when you want to inspect recognition without an AI rewrite. Formatting
+can change wording; it does not establish whether the recognizer heard every
+spoken word correctly.
 
----
+## 5. Try an agent conversation
 
-## 3. Configure
+Choose the surface you need:
 
-Recommended: configure Codescribe in the **Settings** window.
+- **Show Agent** opens Codescribe's built-in Agent. Configure its provider,
+  model and tool permissions before sending a request.
+- To talk to an existing coding-agent session, install the Codescribe integration
+  for that client and ask the session to connect under a name and channel.
+  Check that the roster shows it as connected.
 
-```bash
-# Menu bar icon → Settings
-# or: edit ~/.codescribe/.env (power-user overrides)
-```
+In the channel roster, opening an agent changes the conversation you view.
+Its microphone control selects a voice destination. Written recipients are
+chosen in the composer; Sync can share a draft with several agents. These
+choices are explained in [Chat & Overlay](chat-overlay.md).
 
-### Essential Settings
+## If something fails
 
-- **Audio & Input**
-  - Set `Whisper language` (`Auto-detect / multilingual` is the default; pick Polish or English only to force a language)
-  - Pick a **Formatting level** for Dictation in **Creator** (Off keeps the raw transcript)
-- **Hotkeys**
-  - Dictation: hold a modifier (default: `Fn/Globe`)
-  - Formatting: double‑tap `Left Option`
-  - Assistive (Agent): double‑tap `Right Option`
-- **AI & Prompts**
-  - Configure providers for **Formatting** and **Assistive**
-  - API keys are stored in macOS Keychain
-
-Power-user overrides still exist via `~/.codescribe/.env`, but you should not need it to get started.
-
----
-
-## 4. Use
-
-### Recording Modes
-
-| Mode                  | Shortcut                    | What It Does                                 |
-| --------------------- | --------------------------- | -------------------------------------------- |
-| **Dictation**         | Hold your Dictation binding | Fast dictation, auto‑paste (AI optional)     |
-| **Formatting**        | Double‑tap `Left Option`    | Hands‑free + AI formatting pass (auto‑paste) |
-| **Assistive (Agent)** | Double‑tap `Right Option`   | Agent chat overlay (auto‑paste OFF)          |
-
-### Visual Feedback
-
-Look at the menu bar icon:
-
-| Icon State | Meaning      |
-| ---------- | ------------ |
-| Green dot  | Ready (idle) |
-| Red dot    | Recording    |
-| Orange dot | Processing   |
-| Red X      | Error        |
-
----
-
-## 5. Verify
-
-```bash
-# Check version
-make version
-
-# Check status
-make status
-
-# View logs
-make logs
-```
-
----
-
-## Troubleshooting
-
-### Hotkeys don't work
-
-1. Check all three permissions are granted
-2. Restart Codescribe
-3. Check `make logs` for recent app output
-
-### No transcription
-
-1. Check microphone permission
-2. Leave `WHISPER_LANGUAGE` unset or set it to `auto` unless you need to force `pl` or `en`
-3. Check logs: `make logs`
-
-### Error icon appears
-
-```bash
-# Check logs for details
-tail -50 /tmp/codescribe.log
-```
-
----
-
-## Next Steps
-
-- [Modes Guide](modes.md) - Deep dive into recording modes
-- [Settings Reference](settings.md) - All configuration options
-- [Troubleshooting](troubleshooting.md) - Common issues
-
----
-
-_Copyright © 2024–2026 Vetcoders_
+Keep the transcript or unsent draft. Do not force-quit a recording to clear a
+status indicator. Start with [Troubleshooting](troubleshooting.md), and include
+the app version/build, time of the problem and the selected mode when reporting
+it. Never include API keys or an unreviewed configuration dump.

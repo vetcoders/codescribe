@@ -14,67 +14,84 @@ struct OverlayAgentRosterLabel: View {
   let dot: OverlayAgentDotKind
   let statusLabel: String
   let statusDetail: String
-  /// The row whose antenna and moon are drawn, clickable, before the status dot;
-  /// nil for the All row, which has no reception of its own.
-  let reception: OverlayChannelDelivery?
-  var receptionEnabled = true
+  /// Rendered right after the name: the caller's own control, such as the
+  /// client focus button that lives beside the agent's name.
+  var titleAccessory: AnyView? = nil
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
+  var headerOnly = false
+  var contentOnly = false
+  /// The last sent message's receipt as a glyph after the name. It must tell
+  /// the whole receipt story, not two states (Maciej, 2026-10-30 on build
+  /// 2981: "ja bym zostawił te ptaszki, ale one naprawdę muszą dawać status.
+  /// Teraz jest tylko (-) i 2 ptaszki").
+  var receipt: OverlayRosterReceipt? = nil
+  /// After the receipt: the caller's sync chain and panel button.
+  var trailingMarks: AnyView? = nil
 
   var body: some View {
     HStack(alignment: .top, spacing: 6) {
       VStack(alignment: .leading, spacing: 1) {
-        HStack(spacing: 6) {
-          if let channel {
-            Text(verbatim: channel)
-              .font(.system(size: 11 * textScale, weight: .medium, design: .monospaced))
-              .foregroundStyle(palette.mutedText.color)
-              .accessibilityIdentifier("overlay-agent-digit-\(channel)")
-          }
-          if let reception {
-            OverlayReceptionMarks(
-              channel: reception, palette: palette, textScale: textScale,
-              enabled: receptionEnabled)
-          }
-          OverlayAgentStatusDot(kind: dot, palette: palette)
-            .accessibilityLabel(Text(verbatim: statusLabel))
-            .accessibilityValue(Text(verbatim: statusDetail))
-            .accessibilityIdentifier(
-              channel.map { "overlay-channel-delivery-\($0)" } ?? "overlay-channel-delivery"
-            )
-          Text(verbatim: title)
-            .font(.system(size: 13.5 * textScale, weight: .semibold))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .layoutPriority(1)
-            .accessibilityIdentifier("overlay-agent-title-\(channel ?? "0")")
-          Spacer(minLength: 4)
-          if unreadCount > 0, let conversationID {
-            OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)
-              .accessibilityIdentifier("overlay-agent-unread-replies-\(conversationID)")
-          }
-          if let timestamp {
-            MessageTimestampLabel(date: timestamp, compact: true)
-              .font(.system(size: 11 * textScale))
-              .foregroundStyle(palette.mutedText.color)
-              .fixedSize(horizontal: true, vertical: false)
+        if !contentOnly {
+          HStack(spacing: 6) {
+            if let channel {
+              Text(verbatim: channel)
+                .font(.system(size: 11 * textScale, weight: .medium, design: .monospaced))
+                .foregroundStyle(palette.mutedText.color)
+                .accessibilityIdentifier("overlay-agent-digit-\(channel)")
+            }
+            OverlayAgentStatusDot(kind: dot, palette: palette)
+              .accessibilityLabel(Text(verbatim: statusLabel))
+              .accessibilityValue(Text(verbatim: statusDetail))
               .accessibilityIdentifier(
-                "overlay-agent-timestamp-\(conversationID ?? channel ?? "0")")
+                channel.map { "overlay-channel-delivery-\($0)" } ?? "overlay-channel-delivery"
+              )
+            Text(verbatim: title)
+              .font(.system(size: 14 * textScale, weight: .semibold))
+              .lineLimit(1)
+              .truncationMode(.tail)
+              .layoutPriority(1)
+              .help(Text(verbatim: title))
+              .accessibilityIdentifier("overlay-agent-title-\(channel ?? "0")")
+            if let titleAccessory {
+              titleAccessory
+            }
+            if let receipt {
+              OverlayRosterReceiptMark(receipt: receipt, palette: palette, textScale: textScale)
+            }
+            if let trailingMarks {
+              trailingMarks
+            }
+            Spacer(minLength: 4)
+            if unreadCount > 0, let conversationID {
+              OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)
+                .layoutPriority(2)
+                .accessibilityIdentifier("overlay-agent-unread-replies-\(conversationID)")
+            }
+            if let timestamp {
+              MessageTimestampLabel(date: timestamp, compact: true)
+                .font(.system(size: 11 * textScale))
+                .foregroundStyle(palette.mutedText.color)
+                .lineLimit(1)
+                .accessibilityIdentifier(
+                  "overlay-agent-timestamp-\(conversationID ?? channel ?? "0")")
+            }
           }
+          .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        if let descriptor, let channel {
+        if !headerOnly, let descriptor, let channel {
           Text(verbatim: descriptor)
             .font(.system(size: 11 * textScale))
             .foregroundStyle(palette.mutedText.color)
             .lineLimit(1)
             .truncationMode(.middle)
+            .help(Text(verbatim: descriptor))
             .accessibilityLabel(Text(verbatim: descriptor))
             .accessibilityIdentifier("overlay-agent-descriptor-\(channel)")
         }
-        if let preview {
+        if !headerOnly, let preview {
           Text(verbatim: preview)
-            .font(.system(size: 12.5 * textScale))
+            .font(.system(size: 13 * textScale))
             .foregroundStyle(unreadCount > 0 ? palette.bodyText.color : palette.mutedText.color)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
@@ -93,13 +110,93 @@ struct OverlayAgentUnreadBadge: View {
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
 
+  private var badgeDiameter: CGFloat {
+    max(20, CGFloat(String(count).count) * 8 + 8) * textScale
+  }
+
   var body: some View {
     Text(verbatim: String(count))
       .font(.system(size: 11 * textScale, weight: .semibold))
       .monospacedDigit()
       .foregroundStyle(palette.processingStatus.color)
-      .padding(.horizontal, 6).padding(.vertical, 2)
-      .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
+      .frame(width: badgeDiameter, height: badgeDiameter)
+      .background(palette.processingStatus.color.opacity(0.12), in: Circle())
+      .fixedSize()
       .accessibilityLabel("\(count) unread replies")
+  }
+}
+
+/// The draft-sync chain in its canonical form: the glyph the fiszki render.
+/// Lit in the agent accent while this conversation's draft is linked.
+struct OverlayRosterSyncMark: View {
+  let linked: Bool
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+
+  var body: some View {
+    Image(systemName: "link")
+      .font(.system(size: 10 * textScale, weight: .semibold))
+      .foregroundStyle(linked ? palette.agentAccent.color : palette.mutedText.color)
+      .frame(width: 16 * textScale, height: 16 * textScale)
+      .contentShape(Rectangle())
+  }
+}
+
+/// Compact projection of a frozen recipient's delivery evidence: the words
+/// the conversation bubble uses for the same receipt, and the glyph that
+/// stands for them in the name row. One glyph per state, so the row reads
+/// the whole vocabulary: `pause.circle` held, `clock` queued or addressed
+/// with no receipt yet, `checkmark` accepted or delivered, `double-check`
+/// read, `forward.end` skipped off channel 0, `circle.dotted` no receipt.
+struct OverlayRosterReceipt {
+  let symbol: String
+  let text: String
+  let helpText: String
+  var isRead = false
+}
+
+private struct OverlayRosterReceiptMark: View {
+  let receipt: OverlayRosterReceipt
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+
+  var body: some View {
+    Group {
+      switch receipt.symbol {
+      case "double-check":
+        OverlayRosterCheckmarks(count: 2)
+          .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+          .frame(width: 16 * textScale, height: 10 * textScale)
+      case "checkmark":
+        OverlayRosterCheckmarks(count: 1)
+          .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+          .frame(width: 16 * textScale, height: 10 * textScale)
+      default:
+        Image(systemName: receipt.symbol)
+          .font(.system(size: 11 * textScale, weight: .medium))
+      }
+    }
+    .foregroundStyle(receipt.isRead ? palette.bodyText.color : palette.mutedText.color)
+    .help(Text(verbatim: receipt.helpText))
+    .accessibilityLabel(Text(verbatim: receipt.helpText))
+    .accessibilityIdentifier("overlay-agent-receipt-\(receipt.symbol)")
+  }
+}
+
+/// One check for a copy that reached the agent's side, two for one it read;
+/// the second check sits a third of the width behind the first.
+private struct OverlayRosterCheckmarks: Shape {
+  let count: Int
+
+  func path(in rect: CGRect) -> Path {
+    var check = Path()
+    check.move(to: CGPoint(x: rect.minX + rect.width * 0.05, y: rect.minY + rect.height * 0.53))
+    check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.28, y: rect.minY + rect.height * 0.82))
+    check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.68, y: rect.minY + rect.height * 0.18))
+    var path = check
+    if count > 1 {
+      path.addPath(check, transform: CGAffineTransform(translationX: rect.width * 0.27, y: 0))
+    }
+    return path
   }
 }

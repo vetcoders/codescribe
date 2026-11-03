@@ -1,155 +1,97 @@
 # Installation
 
-## System Requirements
+## Install a packaged app
 
-| Requirement | Minimum                           | Recommended              |
-| ----------- | --------------------------------- | ------------------------ |
-| macOS       | 13.0 (Ventura)                    | 14.0+ (Sonoma)           |
-| Chip        | Apple Silicon or Intel with Metal | Apple Silicon (M1/M2/M3) |
-| RAM         | 8 GB                              | 16 GB                    |
-| Disk        | 1 GB                              | 2 GB                     |
+1. Download the appropriate package from the
+   [website](https://codescribe.vetcoders.io/) or
+   [GitHub Releases](https://github.com/vetcoders/codescribe/releases).
+2. Open the DMG and drag **Codescribe.app** to **Applications**.
+3. Launch Codescribe from Finder or Spotlight. Complete the setup checklist in
+   **Settings → Creator**.
+4. Check **Settings → User** for the installed version and build.
 
----
+Use a package intended for your Mac and macOS version. Release notes and the
+package's requirements describe that build; the version in the source repository
+is not proof that a corresponding installer has been published.
 
-## Installation Methods
+A packaged app does not require Rust, Cargo or Xcode. For development, use the
+[separate source installation guide](../INSTALLATION.md).
 
-### Option 1: Direct Download (Preferred for end users once a release is published)
+## Permissions
 
-1. Go to [Releases](https://github.com/vetcoders/codescribe/releases)
-2. Download `Codescribe-x.x.x.dmg`
-3. Open DMG, drag Codescribe to Applications
-4. Eject DMG
+Codescribe shows its permission checklist in **Settings → Creator**. macOS
+controls the grants in **System Settings → Privacy & Security**.
 
-> If Releases is empty, use the source path below. The repository now ships a release workflow, but not every branch has a published tag yet.
+| Permission         | What it enables                                             |
+| ------------------ | ----------------------------------------------------------- |
+| Microphone         | Recording your speech                                       |
+| Speech Recognition | Apple's speech recognition path                             |
+| Accessibility      | Reading selected text and delivering text to supported apps |
+| Input Monitoring   | Configured global shortcuts and modifier keys               |
+| Screen Recording   | Capturing screenshots as agent context                      |
 
-### Option 2: Build from Source
+The setup completion checklist can include Screen Recording even when your
+first task is ordinary dictation. That checklist is distinct from the
+requirements of the selected recording mode. Full Disk Access is optional;
+it is not a universal prerequisite for dictation.
 
-```bash
-git clone https://github.com/vetcoders/codescribe.git
-cd codescribe
-make app PROFILE=local-release   # Build an optimized local Codescribe.app
-make install-app      # Build + copy app to /Applications
-```
+After changing a permission, follow the app's prompt to reopen it when needed.
+Finish active recordings and preserve unsent drafts before quitting. Avoid
+repeatedly resetting all permissions: development and distribution builds can
+have different signing identities and grants.
 
----
+## Recognition and downloads
 
-## First Launch
+Select the path in **Settings → Dictation → Engine**:
 
-1. **Open Codescribe** from Applications or Spotlight
-2. **Grant Microphone access** when prompted
-3. **Grant Accessibility access** in System Settings → Privacy & Security → Accessibility
-4. **Wait for initialization** (first launch may take a few seconds to resolve and load the local Whisper model)
+- **Apple only:** the fresh-install default; it does not require a Whisper model.
+- **Local power:** download a local model in **Dictation → Whisper**. Use the
+  availability and validation controls before recording with it.
+- **Cloud:** configure the service and explicitly allow the captured audio to
+  leave your Mac.
 
-You'll see the Codescribe icon appear in your menu bar. It starts black (idle).
+A model being installed, valid and loaded into memory are different states.
+Download size and memory use depend on the chosen model. Do not remove model
+files while a take is using them.
 
-The first-run setup wizard has nine steps: interface language, how you want to
-work, permissions, dictation language, local Whisper model, AI provider,
-shortcuts, agents (only when you choose **Dictation + AI agent**; the
-dictation-only path counts eight) and a summary. Every step has the same
-layout in one narrow column: the step's icon with its one question or
-instruction, a small category label under it (for example **INTERFACE
-LANGUAGE** or **OPERATING LANE**), the cards or rows, and a short note only
-where it adds something. The step counter and progress bar stay at the top and
-**Back** / **Skip** / **Continue** / **Finish** at the bottom. Permissions say
-"You can do this later in Settings." — the same checklist, with the same
-request and System Settings actions, is in **Settings › Creator ›
-Permissions**. The provider step's sentence names only the access the selected
-provider has: "account or API key" only where a signed-in account can make
-requests (OpenAI and xAI with account sign-in available), otherwise the API key,
-or that a key-optional server needs none. On the agents step each client card reads **Install the Codescribe
-skill**, or **Codescribe skill installed** once the skill is in that client's
-skills folder: Continue installs the skill, it does not join a running agent
-session. The summary's heading is **Codescribe is ready.** only when dictation
-and, on the agent path, the agent step are both ready; with dictation ready and
-the agent not, it reads **Dictation is ready.**
+AI formatting, the built-in Agent and spoken replies have separate provider
+settings. Basic local recognition does not require an AI-provider key.
 
-The wizard never downloads the local Whisper model on its own: its model step
-shows one card with the model, its install state, its source, its size and
-where it is or would be stored; the summary shows the model name and state with
-the source and path under **Details**. **Download model** asks to confirm first, naming the size and the
-directory the files go to, and the transfer starts only once you confirm.
-While it runs, the step shows a progress bar, the file being fetched with the
-megabytes done, the rate and the time left, and a **Cancel download** button
-that stops the transfer and removes the partial file — the model goes back to
-not installed and the download button returns. Continuing without the model is
-fine: the cloud and Apple paths do not need it, and a running download finishes
-in the background.
+## Configuration
 
----
+Use Settings for normal setup. Preferences are stored in `settings.json` under
+Codescribe's Application Support directory; provider credentials are stored in
+macOS Keychain. An optional `~/.codescribe/.env` is available for advanced
+configuration. You do not need to create it for a normal GUI installation.
 
-## Required Permissions
+See [Settings](settings.md) and [Privacy & Security](privacy.md) for providers,
+local history, prompts and recordings. Do not post configuration files or keys
+when asking for support.
 
-Codescribe needs these permissions to function:
+## Updates and nightly builds
 
-| Permission           | Why                        | How to Grant                                            |
-| -------------------- | -------------------------- | ------------------------------------------------------- |
-| **Microphone**       | Record your speech         | System Settings → Privacy & Security → Microphone       |
-| **Accessibility**    | Global hotkeys, paste text | System Settings → Privacy & Security → Accessibility    |
-| **Input Monitoring** | Detect modifier keys       | System Settings → Privacy & Security → Input Monitoring |
+Use the app's update controls or a package from the release page. Read which
+channel you are installing: a nightly build can contain features absent from a
+public release. Attachment Markup is one such feature.
 
-> **Tip**: If hotkeys don't work, check that Codescribe is enabled in all three permission categories.
+Finish the current take and any in-flight agent request before replacing or
+reopening the app. An installed update and a running process can be different
+builds until the app restarts. Check the version again after reopening it.
 
----
+For source installations, the guarded install and idle-restart commands are
+specified in the [developer guide](../INSTALLATION.md). Do not bypass an active
+recording to make an update complete.
 
-## Verify Installation
+## Remove the app or reset data
 
-Open Terminal and run:
+Quit Codescribe when idle, then move its app bundle to Trash in Finder.
+Removing the app does not by itself erase your transcripts, recordings or
+provider credentials.
 
-```bash
-make version
-```
+For a selective reset, use **Settings → User** and read the scope of the chosen
+action. Preserve recordings and conversation history you want to keep. Audio
+retention is configured separately in **Settings → Audio**; choosing Off affects
+new takes and does not purge existing audio.
 
-Expected output:
-
-```
-v0.13.x
-```
-
-Test transcription:
-
-1. Launch Codescribe.
-2. Start a short Dictation capture with your configured shortcut.
-3. Check `make logs` if the menu-bar state reports an error.
-
----
-
-## Configuration Location
-
-Codescribe stores configuration in:
-
-```
-~/.codescribe/
-├── .env              # Configuration file
-├── prompts/
-│   ├── formatting.txt   # AI formatting prompt
-│   └── assistive.txt    # Assistive mode prompt
-├── transcriptions/   # Saved transcripts
-└── logs/             # Debug logs
-```
-
-Create default config:
-
-```bash
-make config
-```
-
----
-
-## Updating
-
-### Manual / Releases
-
-Download new version from Releases and replace the old app.
-
----
-
-## Uninstalling
-
-### Manual
-
-1. Delete `/Applications/Codescribe.app`
-2. Optionally remove config: `rm -rf ~/.codescribe`
-
----
-
-_Created by Vetcoders (c)2026_
+If the app does not start or permissions appear stale, use
+[Troubleshooting](troubleshooting.md) before deleting local data.

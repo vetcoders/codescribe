@@ -19,11 +19,14 @@ enum OverlayTranscriptActionsLayout {
   static let groupSpacing: CGFloat = 8
   static let separatorHeight: CGFloat = 1
   static let contentVerticalPadding: CGFloat = 4
-  /// The palette shows seven controls at once; its remaining commands scroll.
+  /// Room the expanded window floor still reserves. It is not a visibility
+  /// cap: a taller window shows every available action that fits, and a
+  /// shorter one scrolls the rest.
   static let visibleSlotBudget = 7
-  /// Controls per group, top to bottom, matching the rail's fixed order:
-  /// history/versions/undo/redo, previous take, the document commands, the
-  /// engine commands and the delivery command.
+  /// Full semantic inventory, top to bottom, used only to keep the expanded
+  /// floor's measurement stable: history/versions/undo/redo, previous take,
+  /// the document commands, the engine commands and the delivery command.
+  /// The rail mounts the available subset of this order.
   static let groupControlCounts = [4, 1, 4, 2, 1]
   /// Gap between the header and the column, and the column's bottom padding,
   /// as installed by `transcriptActionsColumn`.
@@ -36,14 +39,14 @@ enum OverlayTranscriptActionsLayout {
     contentWidth + OverlayResizeHit.band
   }
 
-  /// The whole command inventory remains mounted, including disabled slots.
+  /// Height of the full semantic inventory if every action were available at
+  /// once. Live content is shorter whenever a band is absent.
   static var columnHeight: CGFloat {
     height(forFirst: groupControlCounts.reduce(0, +))
   }
 
-  /// Height of the first seven slots, respecting the same group boundaries
-  /// as the full stack. End at the seventh control so the next one cannot
-  /// peek through the full stack's bottom padding.
+  /// Height reserved by the expanded window floor. The column frame uses the
+  /// height the window actually offers, not this value as a maximum.
   static var viewportHeight: CGFloat {
     height(forFirst: visibleSlotBudget) - contentVerticalPadding
   }
@@ -65,8 +68,8 @@ enum OverlayTranscriptActionsLayout {
   /// plus its 10 pt of vertical padding on each side.
   static var headerHeight: CGFloat { OverlayHeaderDensity.rowHeight + 20 }
 
-  /// The expanded floor pays for seven visible slots, not the full inventory.
-  /// The scroll view keeps every command available below that viewport.
+  /// The expanded floor still reserves room for seven controls. A taller
+  /// window gives the column that extra height; it does not stop at this floor.
   static var minimumExpandedHeight: CGFloat {
     headerHeight + columnTopGap + viewportHeight + columnBottomPadding
   }

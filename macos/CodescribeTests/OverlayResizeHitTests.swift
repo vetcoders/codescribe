@@ -1041,6 +1041,7 @@ final class OverlayResizeHitTests: XCTestCase {
       state.selectConversation(conversation.id)
       let recorder = MicrophoneFrameRecorder()
       state.showAgentMonitor()
+      state.setAgentsLayout(.agents)
       let host = NSHostingView(
         rootView:
           MicrophoneFrameCapture(state: state, recorder: recorder)
@@ -1056,8 +1057,11 @@ final class OverlayResizeHitTests: XCTestCase {
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
       host.layoutSubtreeIfNeeded()
       let drawer = recorder.drawer
-      XCTAssertEqual(drawer.minX, 0, accuracy: 0.5, "the list starts at the left edge")
-      XCTAssertEqual(drawer.width, size.width, accuracy: 1, "and covers the canvas width")
+      let edge = OverlayAgentDrawerLayout.conversationEdgeWidth(textScale: 1)
+      XCTAssertEqual(
+        drawer.minX, edge, accuracy: 0.5, "the folded conversation keeps its edge control")
+      XCTAssertEqual(
+        drawer.width, size.width - edge, accuracy: 1, "the list covers the remaining canvas")
       XCTAssertEqual(drawer.maxY, size.height, accuracy: 0.5, "and its height")
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(state.activeText, text)
@@ -2047,7 +2051,7 @@ final class OverlayResizeHitTests: XCTestCase {
     let edge = try XCTUnwrap(
       OverlayResizeHit.edge(at: NSPoint(x: grip.midX, y: grip.midY), in: bounds))
     for (dy, expectedHeight) in [
-      (CGFloat(-80), CGFloat(640)), (CGFloat(200), DictationOverlayWindow.minSize.height),
+      (CGFloat(-80), CGFloat(640)), (CGFloat(300), DictationOverlayWindow.minSize.height),
     ] {
       let resized = OverlayResizeHit.apply(
         edge: edge, start: start, dx: 40, dy: dy, minSize: DictationOverlayWindow.minSize)

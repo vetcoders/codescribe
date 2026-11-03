@@ -1,0 +1,1913 @@
+<div id="cs-bus-merged" aria-label="Codescribe — propozycja okna busa">
+  <div class="cs-window">
+    <header class="cs-chrome">
+      <div class="cs-brand"><span class="cs-brand-dot"></span>codescribe</div>
+      <div class="cs-wave" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span
+        ><span></span><span></span><span></span><span></span><span></span
+        ><span></span><span></span>
+      </div>
+      <span class="cs-chrome-time">00:08</span>
+      <div class="cs-chrome-actions">
+        <button
+          type="button"
+          class="cs-icon cursor-interaction"
+          data-action="dictate"
+          aria-label="Dyktowanie"
+          data-tooltip="Dyktowanie"
+        >
+          <i data-lucide="pencil" aria-hidden="true"></i>
+        </button>
+        <button
+          type="button"
+          class="cs-icon cursor-interaction"
+          data-action="assistant"
+          aria-label="Tryb Agent"
+          data-tooltip="Tryb Agent"
+        >
+          <i data-lucide="sparkles" aria-hidden="true"></i>
+        </button>
+        <button
+          type="button"
+          class="cs-icon cursor-interaction"
+          data-action="pin"
+          aria-label="Przypnij okno"
+          aria-pressed="false"
+          data-tooltip="Przypnij okno"
+        >
+          <i data-lucide="pin" aria-hidden="true"></i>
+        </button>
+        <button
+          type="button"
+          class="cs-icon cursor-interaction"
+          data-action="main-mic"
+          aria-label="Mikrofon"
+          data-tooltip="Mikrofon"
+        >
+          <i data-lucide="mic" aria-hidden="true"></i>
+        </button>
+      </div>
+    </header>
+    <div class="cs-workspace">
+      <main class="cs-conversation">
+        <header class="cs-conversation-heading">
+          <div class="cs-heading-text">
+            <div class="cs-heading-name">
+              <h2 data-title>Rozmowa · Tola</h2>
+              <span data-heading-status></span>
+            </div>
+            <div class="cs-heading-meta" data-view-meta>
+              Kanał 2 <span>·</span>
+              <span class="cs-online-dot"></span> połączona
+            </div>
+          </div>
+          <div
+            class="cs-current-actions"
+            data-current-actions
+            aria-label="Działania wybranego agenta"
+          ></div>
+        </header>
+        <div class="cs-message-area">
+          <div class="cs-message-heading">
+            <span>Dzisiaj</span><span data-message-context>Ty i Tola</span>
+          </div>
+          <div class="cs-inbox-filters" data-inbox-filters hidden>
+            <button
+              type="button"
+              class="cursor-interaction"
+              data-filter="all"
+              aria-pressed="true"
+            >
+              Wszystkie
+            </button>
+            <button
+              type="button"
+              class="cursor-interaction"
+              data-filter="direct"
+              aria-pressed="false"
+            >
+              Bezpośrednie
+            </button>
+            <button
+              type="button"
+              class="cursor-interaction"
+              data-filter="shared"
+              aria-pressed="false"
+            >
+              Wspólne
+            </button>
+          </div>
+          <div class="cs-messages" data-messages aria-live="polite"></div>
+        </div>
+        <footer class="cs-composer-area">
+          <div class="cs-routing-state">
+            <span
+              ><i data-lucide="mic-off" aria-hidden="true"></i
+              ><span data-mic-label>Mikrofon wyłączony</span></span
+            ><span data-view-label>Oglądasz: Tola</span>
+          </div>
+          <form class="cs-composer" data-composer>
+            <div class="cs-recipient-row">
+              <label for="cs-recipient">Tekst do:</label
+              ><select
+                id="cs-recipient"
+                aria-label="Adresat wiadomości"
+              ></select
+              ><button
+                class="cs-match-recipient cursor-interaction"
+                type="button"
+                data-action="match-recipient"
+                hidden
+                data-match-recipient
+              ></button>
+            </div>
+            <textarea
+              rows="2"
+              aria-label="Treść wiadomości"
+              placeholder="Napisz wiadomość…"
+              data-draft
+            ></textarea>
+            <div class="cs-composer-tools">
+              <button
+                type="button"
+                class="cs-icon cursor-interaction"
+                data-action="attachment"
+                aria-label="Dodaj załącznik"
+                data-tooltip="Dodaj załącznik"
+              >
+                <i data-lucide="plus" aria-hidden="true"></i></button
+              ><span class="cs-draft-hint" data-draft-hint></span
+              ><button
+                type="button"
+                class="cs-icon cursor-interaction"
+                data-action="compose-mic"
+                aria-label="Dyktuj tekst do pola"
+                data-tooltip="Dyktuj tekst do pola"
+              >
+                <i data-lucide="mic" aria-hidden="true"></i></button
+              ><button
+                type="submit"
+                class="cs-icon cs-send cursor-interaction"
+                aria-label="Wyślij wiadomość"
+                data-tooltip="Wyślij wiadomość"
+              >
+                <i data-lucide="arrow-up" aria-hidden="true"></i>
+              </button>
+            </div>
+          </form>
+        </footer>
+      </main>
+      <aside class="cs-sidebar" aria-label="Kanały i agenci">
+        <header class="cs-sidebar-heading">
+          <div class="cs-sidebar-heading-copy">
+            <h2>Agenci</h2>
+            <span data-agent-count>4 kanały</span>
+          </div>
+          <button
+            type="button"
+            class="cs-icon cursor-interaction"
+            data-action="sidebar"
+            aria-label="Zwiń panel agentów"
+            aria-expanded="true"
+            data-tooltip="Zwiń panel agentów"
+          >
+            <i data-lucide="panel-right-close" aria-hidden="true"></i>
+          </button>
+        </header>
+        <nav class="cs-special" aria-label="Wspólna rozmowa i skrzynka">
+          <button
+            type="button"
+            class="cs-special-row cursor-interaction"
+            data-view="all"
+            data-tooltip="0 · Wszyscy"
+          >
+            <span class="cs-channel-digit">0</span
+            ><span class="cs-special-copy"
+              ><span class="cs-special-name">Wszyscy</span
+              ><span class="cs-special-preview"
+                >Ty → Wszyscy · Krótki status prac?</span
+              ></span
+            ><span class="cs-special-tail" aria-label="Przeczytało 3 z 4"
+              >3 z 4 <i data-lucide="check-check" aria-hidden="true"></i
+            ></span>
+          </button>
+          <button
+            type="button"
+            class="cs-special-row cursor-interaction"
+            data-view="inbox"
+            data-tooltip="Twoja skrzynka — 2 nieobejrzane odpowiedzi"
+          >
+            <span class="cs-inbox-symbol"
+              ><i data-lucide="inbox" aria-hidden="true"></i></span
+            ><span class="cs-special-copy"
+              ><span class="cs-special-name">Twoja skrzynka</span
+              ><span class="cs-special-preview"
+                >Wiadomości do Ciebie</span
+              ></span
+            ><span class="cs-count">2</span>
+          </button>
+        </nav>
+        <div class="cs-roster" data-roster></div>
+        <div class="cs-saved">
+          <button
+            type="button"
+            class="cs-saved-toggle cursor-interaction"
+            data-action="saved"
+            aria-expanded="false"
+            data-tooltip="Zapisane rozmowy"
+          >
+            <i data-lucide="archive" aria-hidden="true"></i
+            ><span class="cs-saved-label">Zapisane rozmowy</span
+            ><span class="cs-saved-count" data-saved-count>3</span
+            ><i
+              data-lucide="chevron-down"
+              class="cs-saved-chevron"
+              aria-hidden="true"
+            ></i>
+          </button>
+          <div class="cs-saved-list" data-saved-list hidden></div>
+        </div>
+      </aside>
+    </div>
+    <div class="cs-notice" data-notice role="status" hidden>
+      <span data-notice-text></span
+      ><button
+        type="button"
+        class="cursor-interaction"
+        data-action="dismiss-notice"
+        aria-label="Zamknij komunikat"
+      >
+        <i data-lucide="x" aria-hidden="true"></i>
+      </button>
+    </div>
+    <div class="cs-menu" data-menu hidden></div>
+  </div>
+</div>
+<style>
+  #cs-bus-merged {
+    --cs-bg: light-dark(#f7f5f1, #18191d);
+    --cs-chrome: light-dark(#eeece8, #27272b);
+    --cs-side: light-dark(#f1efeb, #1b1b20);
+    --cs-card: light-dark(#eeece8, #232328);
+    --cs-field: light-dark(#ebe8e3, #2b2b30);
+    --cs-line: light-dark(#d5d0c9, #39383f);
+    --cs-text: light-dark(#26231f, #eeeae5);
+    --cs-secondary: light-dark(#67615b, #b3acb0);
+    --cs-muted: light-dark(#716a62, #a29a9e);
+    --cs-accent: light-dark(#a44f34, #d99c7d);
+    --cs-selected: light-dark(#f0e4dc, #332a27);
+    --cs-selected-border: light-dark(#b97e62, #8d624f);
+    --cs-status: light-dark(#687c40, #b5c88c);
+    --cs-voice: light-dark(#7043b0, #bd9bf5);
+    --cs-unread-bg: light-dark(#e7dfbd, #544924);
+    --cs-unread-text: light-dark(#5f4a0e, #f2dfa5);
+    --cs-sidebar-width: 308px;
+    --cs-card-padding: 11px;
+    --cs-card-gap: 8px;
+    color: var(--cs-text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    width: 100%;
+    color-scheme: light dark;
+  }
+  #cs-bus-merged * {
+    box-sizing: border-box;
+  }
+  #cs-bus-merged button,
+  #cs-bus-merged select,
+  #cs-bus-merged textarea {
+    font: inherit;
+    color: inherit;
+  }
+  #cs-bus-merged button {
+    touch-action: manipulation;
+  }
+  #cs-bus-merged [hidden] {
+    display: none !important;
+  }
+  #cs-bus-merged svg {
+    width: 17px;
+    height: 17px;
+    stroke-width: 1.5;
+    flex-shrink: 0;
+  }
+  #cs-bus-merged .cs-window {
+    background: var(--cs-bg);
+    border: 1px solid var(--cs-line);
+    border-radius: 20px;
+    overflow: hidden;
+    position: relative;
+  }
+  #cs-bus-merged .cs-chrome {
+    min-height: 57px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    background: var(--cs-chrome);
+    border-bottom: 1px solid var(--cs-line);
+    padding: 10px 17px;
+  }
+  #cs-bus-merged .cs-brand {
+    font-size: 19px;
+    font-weight: 650;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    letter-spacing: -0.4px;
+    white-space: nowrap;
+  }
+  #cs-bus-merged .cs-brand-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: light-dark(#ba5c3c, #d97757);
+  }
+  #cs-bus-merged .cs-wave {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    flex: 1;
+    opacity: 0.55;
+  }
+  #cs-bus-merged .cs-wave span {
+    width: 2px;
+    height: 13px;
+    background: var(--cs-secondary);
+  }
+  #cs-bus-merged .cs-chrome-time {
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--cs-secondary);
+    font-variant-numeric: tabular-nums;
+  }
+  #cs-bus-merged .cs-chrome-actions {
+    display: flex;
+    gap: 6px;
+  }
+  #cs-bus-merged .cs-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--cs-line);
+    background: transparent;
+    border-radius: 50%;
+    color: var(--cs-secondary);
+    flex-shrink: 0;
+  }
+  #cs-bus-merged .cs-icon:hover {
+    background: var(--cs-field);
+    color: var(--cs-text);
+  }
+  #cs-bus-merged .cs-icon[aria-pressed="true"] {
+    color: var(--cs-accent);
+    border-color: var(--cs-selected-border);
+    background: var(--cs-selected);
+  }
+  #cs-bus-merged .cs-icon:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  #cs-bus-merged .cs-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--cs-sidebar-width);
+    min-height: 690px;
+  }
+  #cs-bus-merged .cs-conversation {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  #cs-bus-merged .cs-conversation-heading {
+    padding: 17px 20px 16px;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--cs-line);
+    min-height: 84px;
+  }
+  #cs-bus-merged h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.1px;
+  }
+  #cs-bus-merged .cs-heading-meta {
+    display: flex;
+    gap: 7px;
+    align-items: center;
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--cs-secondary);
+  }
+  #cs-bus-merged .cs-online-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--cs-status);
+    flex-shrink: 0;
+  }
+  #cs-bus-merged .cs-offline-dot {
+    background: transparent;
+    border: 1px solid var(--cs-muted);
+  }
+  #cs-bus-merged .cs-current-actions {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  #cs-bus-merged .cs-action-divider {
+    height: 19px;
+    width: 1px;
+    background: var(--cs-line);
+    margin: 0 4px;
+  }
+  #cs-bus-merged .cs-current-actions .cs-icon {
+    width: 29px;
+    height: 29px;
+  }
+  #cs-bus-merged .cs-current-actions .cs-voice-on {
+    background: color-mix(in srgb, var(--cs-voice) 18%, var(--cs-bg));
+    color: var(--cs-voice);
+    border-color: var(--cs-voice);
+  }
+  #cs-bus-merged .cs-message-area {
+    padding: 21px 20px 26px;
+    flex: 1;
+    min-width: 0;
+  }
+  #cs-bus-merged .cs-message-heading {
+    display: flex;
+    justify-content: space-between;
+    color: var(--cs-muted);
+    font-size: 12px;
+    margin-bottom: 17px;
+    gap: 8px;
+  }
+  #cs-bus-merged .cs-message-heading span:last-child {
+    font-size: 11px;
+  }
+  #cs-bus-merged .cs-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 13px;
+  }
+  #cs-bus-merged .cs-message {
+    padding: 15px 16px;
+    background: var(--cs-card);
+    border: 1px solid var(--cs-line);
+    border-radius: 12px;
+    min-width: 0;
+  }
+  #cs-bus-merged .cs-message.cs-from-me {
+    margin-left: 36px;
+  }
+  #cs-bus-merged .cs-message.cs-awaiting {
+    border-color: var(--cs-selected-border);
+  }
+  #cs-bus-merged .cs-message-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: start;
+    font-size: 12px;
+  }
+  #cs-bus-merged .cs-message-route {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  #cs-bus-merged .cs-message-time {
+    font-size: 11px;
+    color: var(--cs-muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  #cs-bus-merged .cs-message-text {
+    margin: 11px 0 12px;
+    line-height: 1.65;
+    font-size: 14px;
+    overflow-wrap: anywhere;
+    max-width: 72ch;
+  }
+  #cs-bus-merged .cs-message-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px;
+    color: var(--cs-secondary);
+    font-size: 11px;
+  }
+  #cs-bus-merged .cs-receipt {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  #cs-bus-merged .cs-receipt svg {
+    width: 13px;
+    height: 13px;
+  }
+  #cs-bus-merged .cs-message-actions {
+    display: flex;
+    gap: 12px;
+  }
+  #cs-bus-merged .cs-message-actions button {
+    background: transparent;
+    border: 0;
+    padding: 2px 0;
+    color: var(--cs-secondary);
+    font-size: 11px;
+  }
+  #cs-bus-merged .cs-message-actions button:hover {
+    color: var(--cs-text);
+  }
+  #cs-bus-merged .cs-composer-area {
+    padding: 12px 16px 16px;
+  }
+  #cs-bus-merged .cs-routing-state {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: var(--cs-secondary);
+    padding: 0 3px 9px;
+  }
+  #cs-bus-merged .cs-routing-state > span {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  #cs-bus-merged .cs-routing-state svg {
+    width: 12px;
+    height: 12px;
+  }
+  #cs-bus-merged .cs-routing-state .cs-speaking {
+    color: var(--cs-voice);
+  }
+  #cs-bus-merged .cs-composer {
+    background: var(--cs-field);
+    border: 1px solid var(--cs-line);
+    border-radius: 13px;
+    overflow: hidden;
+  }
+  #cs-bus-merged .cs-recipient-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 10px 12px 0;
+    font-size: 12px;
+  }
+  #cs-bus-merged .cs-recipient-row label {
+    color: var(--cs-secondary);
+    white-space: nowrap;
+  }
+  #cs-bus-merged .cs-recipient-row select {
+    font-size: 12px;
+    max-width: 180px;
+    min-width: 0;
+    background: var(--cs-bg);
+    border: 1px solid var(--cs-line);
+    padding: 4px 6px;
+    border-radius: 6px;
+  }
+  #cs-bus-merged .cs-match-recipient {
+    margin-left: auto;
+    padding: 3px 0;
+    background: transparent;
+    border: 0;
+    color: var(--cs-accent);
+    font-size: 11px;
+  }
+  #cs-bus-merged textarea {
+    display: block;
+    width: 100%;
+    padding: 11px 13px 2px;
+    border: 0;
+    background: transparent;
+    resize: vertical;
+    min-height: 62px;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  #cs-bus-merged textarea::placeholder {
+    color: var(--cs-muted);
+  }
+  #cs-bus-merged .cs-composer-tools {
+    display: flex;
+    gap: 7px;
+    align-items: center;
+    padding: 4px 9px 9px;
+  }
+  #cs-bus-merged .cs-composer-tools .cs-icon {
+    width: 28px;
+    height: 28px;
+    border-color: transparent;
+  }
+  #cs-bus-merged .cs-draft-hint {
+    flex: 1;
+    font-size: 11px;
+    color: var(--cs-secondary);
+  }
+  #cs-bus-merged .cs-composer-tools .cs-send {
+    background: var(--cs-text);
+    color: var(--cs-bg);
+  }
+  #cs-bus-merged .cs-sidebar {
+    border-left: 1px solid var(--cs-line);
+    background: var(--cs-side);
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  #cs-bus-merged .cs-sidebar-heading {
+    min-height: 65px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 16px 13px 10px;
+  }
+  #cs-bus-merged .cs-sidebar-heading-copy {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  #cs-bus-merged .cs-sidebar-heading-copy > span {
+    font-size: 11px;
+    color: var(--cs-secondary);
+  }
+  #cs-bus-merged .cs-sidebar-heading .cs-icon {
+    border-radius: 7px;
+    border-color: transparent;
+  }
+  #cs-bus-merged .cs-special {
+    padding: 0 10px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    border-bottom: 1px solid var(--cs-line);
+  }
+  #cs-bus-merged .cs-special-row {
+    width: 100%;
+    padding: 9px 8px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    position: relative;
+    min-width: 0;
+  }
+  #cs-bus-merged .cs-special-row:hover {
+    background: var(--cs-card);
+  }
+  #cs-bus-merged .cs-special-row[aria-current="true"] {
+    background: var(--cs-selected);
+    border-color: var(--cs-selected-border);
+  }
+  #cs-bus-merged .cs-channel-digit {
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--cs-field);
+    font-size: 12px;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  #cs-bus-merged .cs-special-copy {
+    min-width: 0;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 3px;
+  }
+  #cs-bus-merged .cs-special-name {
+    font-size: 13px;
+    font-weight: 550;
+  }
+  #cs-bus-merged .cs-special-preview {
+    color: var(--cs-secondary);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #cs-bus-merged .cs-special-tail {
+    font-size: 11px;
+    white-space: nowrap;
+    color: var(--cs-secondary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  #cs-bus-merged .cs-special-tail svg {
+    width: 13px;
+    height: 13px;
+  }
+  #cs-bus-merged .cs-inbox-symbol {
+    display: flex;
+    width: 24px;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  #cs-bus-merged .cs-count {
+    border-radius: 50%;
+    min-width: 19px;
+    height: 19px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    background: var(--cs-unread-bg);
+    color: var(--cs-unread-text);
+    font-size: 11px;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+  #cs-bus-merged .cs-roster {
+    padding: 12px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--cs-card-gap);
+  }
+  #cs-bus-merged .cs-agent {
+    border: 1px solid var(--cs-line);
+    background: var(--cs-card);
+    border-radius: 10px;
+    padding: var(--cs-card-padding);
+    position: relative;
+    min-width: 0;
+  }
+  #cs-bus-merged .cs-agent.cs-selected {
+    background: var(--cs-selected);
+    border-color: var(--cs-selected-border);
+  }
+  #cs-bus-merged .cs-agent.cs-offline {
+    background: transparent;
+    opacity: 0.65;
+  }
+  #cs-bus-merged .cs-agent-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  #cs-bus-merged .cs-agent-open {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 1;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+  }
+  #cs-bus-merged .cs-agent-name {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #cs-bus-merged .cs-agent-header-controls {
+    display: flex;
+    gap: 1px;
+  }
+  #cs-bus-merged .cs-agent-header-controls .cs-icon {
+    width: 23px;
+    height: 23px;
+    border: 0;
+  }
+  #cs-bus-merged .cs-agent-header-controls svg {
+    width: 14px;
+    height: 14px;
+  }
+  #cs-bus-merged .cs-agent-time {
+    font-size: 11px;
+    color: var(--cs-secondary);
+    font-variant-numeric: tabular-nums;
+    margin-left: 3px;
+  }
+  #cs-bus-merged .cs-agent-meta {
+    font-size: 11px;
+    color: var(--cs-secondary);
+    margin: 6px 0 5px;
+    overflow-wrap: anywhere;
+  }
+  #cs-bus-merged .cs-agent-preview {
+    font-size: 12px;
+    line-height: 1.5;
+    margin: 0;
+    color: var(--cs-text);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  #cs-bus-merged .cs-agent-preview strong {
+    font-weight: 550;
+  }
+  #cs-bus-merged .cs-heading-name,
+  #cs-bus-merged .cs-status-marks,
+  #cs-bus-merged .cs-agent-clock {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+  #cs-bus-merged .cs-status-marks {
+    color: var(--cs-muted);
+    flex-shrink: 0;
+  }
+  #cs-bus-merged .cs-status-marks svg,
+  #cs-bus-merged .cs-agent-clock svg {
+    width: 13px;
+    height: 13px;
+  }
+  #cs-bus-merged .cs-radio-off {
+    position: relative;
+    display: inline-flex;
+  }
+  #cs-bus-merged .cs-radio-off:after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 6px;
+    width: 14px;
+    height: 1px;
+    background: currentColor;
+    transform: rotate(-45deg);
+  }
+  #cs-bus-merged .cs-agent-clock {
+    color: var(--cs-muted);
+    white-space: nowrap;
+  }
+  #cs-bus-merged .cs-agent-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 5px;
+  }
+  #cs-bus-merged .cs-agent-header-controls .cs-voice-on {
+    color: var(--cs-voice);
+    background: var(--cs-selected);
+  }
+  #cs-bus-merged .cs-menu {
+    position: absolute;
+    z-index: 5;
+    min-width: 210px;
+    max-width: calc(100% - 16px);
+    padding: 5px;
+    background: var(--cs-chrome);
+    border: 1px solid var(--cs-line);
+    border-radius: 9px;
+    box-shadow: 0 4px 16px #0003;
+  }
+  #cs-bus-merged .cs-menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    text-align: left;
+    padding: 8px;
+    color: var(--cs-text);
+    font-size: 12px;
+  }
+  #cs-bus-merged .cs-menu button:hover,
+  #cs-bus-merged .cs-menu button:focus-visible {
+    background: var(--cs-field);
+  }
+  #cs-bus-merged .cs-menu button:disabled {
+    opacity: 0.45;
+  }
+  #cs-bus-merged .cs-agent.cs-offline .cs-agent-name {
+    color: var(--cs-secondary);
+  }
+  #cs-bus-merged .cs-saved {
+    margin-top: auto;
+    padding: 0 12px 10px;
+  }
+  #cs-bus-merged .cs-saved-toggle {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--cs-line);
+    padding: 12px 2px 4px;
+    width: 100%;
+    color: var(--cs-secondary);
+    font-size: 12px;
+    text-align: left;
+  }
+  #cs-bus-merged .cs-saved-toggle svg {
+    width: 14px;
+    height: 14px;
+  }
+  #cs-bus-merged .cs-saved-count {
+    margin-left: auto;
+    font-size: 11px;
+  }
+  #cs-bus-merged .cs-saved-list {
+    padding: 8px 0 3px;
+  }
+  #cs-bus-merged .cs-saved-list button {
+    display: block;
+    border: 0;
+    background: transparent;
+    color: var(--cs-secondary);
+    padding: 6px 0;
+    font-size: 12px;
+    text-align: left;
+  }
+  #cs-bus-merged .cs-inbox-filters {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+  #cs-bus-merged .cs-inbox-filters button {
+    font-size: 11px;
+    border: 1px solid var(--cs-line);
+    background: transparent;
+    padding: 5px 8px;
+    border-radius: 6px;
+    color: var(--cs-secondary);
+  }
+  #cs-bus-merged .cs-inbox-filters button[aria-pressed="true"] {
+    background: var(--cs-selected);
+    border-color: var(--cs-selected-border);
+    color: var(--cs-text);
+  }
+  #cs-bus-merged .cs-notice {
+    position: absolute;
+    left: 15px;
+    bottom: 15px;
+    right: 15px;
+    background: var(--cs-chrome);
+    color: var(--cs-text);
+    border: 1px solid var(--cs-line);
+    padding: 12px 14px;
+    border-radius: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    box-shadow: 0 3px 20px #0002;
+    z-index: 3;
+  }
+  #cs-bus-merged .cs-notice button {
+    background: transparent;
+    border: 0;
+    padding: 2px;
+    display: flex;
+  }
+  #cs-bus-merged.cs-collapsed .cs-workspace {
+    grid-template-columns: minmax(0, 1fr) 59px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-sidebar-heading {
+    justify-content: center;
+    padding: 13px 6px;
+    min-height: 65px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-sidebar-heading-copy,
+  #cs-bus-merged.cs-collapsed .cs-special-copy,
+  #cs-bus-merged.cs-collapsed .cs-special-tail {
+    display: none;
+  }
+  #cs-bus-merged.cs-collapsed .cs-special {
+    padding: 0 7px 10px;
+    gap: 8px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-special-row {
+    padding: 8px 4px;
+    justify-content: center;
+    min-height: 40px;
+    background: var(--cs-card);
+    border-color: transparent;
+    border-radius: 9px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-special-row .cs-channel-digit {
+    background: transparent;
+  }
+  #cs-bus-merged.cs-collapsed .cs-special-row .cs-count {
+    position: absolute;
+    right: -2px;
+    top: -4px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-roster {
+    padding: 13px 7px;
+    gap: 10px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent {
+    padding: 0;
+    border-color: transparent;
+    border-radius: 9px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent.cs-selected {
+    border-color: var(--cs-selected-border);
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent-header {
+    height: 41px;
+    justify-content: center;
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent-open {
+    justify-content: center;
+    gap: 4px;
+    height: 100%;
+    position: relative;
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent-open .cs-channel-digit {
+    background: transparent;
+    width: auto;
+    font-size: 13px;
+    font-weight: 600;
+    order: 2;
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent-open .cs-online-dot {
+    order: 1;
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent-open .cs-count {
+    position: absolute;
+    top: -6px;
+    right: -3px;
+    order: 3;
+  }
+  #cs-bus-merged.cs-collapsed .cs-agent-name,
+  #cs-bus-merged.cs-collapsed .cs-status-marks,
+  #cs-bus-merged.cs-collapsed .cs-agent-header-controls,
+  #cs-bus-merged.cs-collapsed .cs-agent-clock,
+  #cs-bus-merged.cs-collapsed .cs-agent-meta,
+  #cs-bus-merged.cs-collapsed .cs-agent-preview {
+    display: none;
+  }
+  #cs-bus-merged.cs-collapsed .cs-saved {
+    padding: 0 7px 12px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-saved-toggle {
+    justify-content: center;
+    padding: 12px 0 3px;
+  }
+  #cs-bus-merged.cs-collapsed .cs-saved-label,
+  #cs-bus-merged.cs-collapsed .cs-saved-count,
+  #cs-bus-merged.cs-collapsed .cs-saved-chevron,
+  #cs-bus-merged.cs-collapsed .cs-saved-list {
+    display: none !important;
+  }
+  @media (max-width: 750px) {
+    #cs-bus-merged .cs-workspace {
+      grid-template-columns: minmax(0, 1fr) 270px;
+    }
+    #cs-bus-merged .cs-conversation-heading {
+      padding: 15px;
+    }
+    #cs-bus-merged .cs-message-area {
+      padding: 18px 14px;
+    }
+    #cs-bus-merged .cs-current-actions {
+      gap: 4px;
+    }
+    #cs-bus-merged .cs-message.cs-from-me {
+      margin-left: 14px;
+    }
+    #cs-bus-merged .cs-message {
+      padding: 12px;
+    }
+    #cs-bus-merged .cs-chrome {
+      gap: 10px;
+    }
+    #cs-bus-merged .cs-chrome-actions {
+      gap: 4px;
+    }
+  }
+  @media (max-width: 580px) {
+    #cs-bus-merged .cs-workspace {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    #cs-bus-merged:not(.cs-collapsed) .cs-sidebar {
+      border-left: 0;
+      border-top: 1px solid var(--cs-line);
+    }
+    #cs-bus-merged .cs-sidebar-heading {
+      min-height: 55px;
+    }
+    #cs-bus-merged .cs-roster {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    #cs-bus-merged .cs-agent-header-controls {
+      gap: 0;
+    }
+    #cs-bus-merged .cs-agent-header-controls .cs-icon {
+      width: 21px;
+    }
+    #cs-bus-merged .cs-agent-name {
+      max-width: 65px;
+    }
+    #cs-bus-merged.cs-collapsed .cs-workspace {
+      grid-template-columns: minmax(0, 1fr) 51px;
+    }
+    #cs-bus-merged.cs-collapsed .cs-roster {
+      display: flex;
+    }
+    #cs-bus-merged .cs-wave {
+      display: none;
+    }
+    #cs-bus-merged .cs-chrome-time {
+      margin-left: auto;
+    }
+    #cs-bus-merged .cs-chrome-actions .cs-icon:nth-child(-n + 2) {
+      display: none;
+    }
+    #cs-bus-merged .cs-conversation-heading {
+      padding: 14px 12px;
+    }
+    #cs-bus-merged .cs-current-actions {
+      gap: 5px;
+    }
+    #cs-bus-merged .cs-current-actions .cs-icon {
+      width: 27px;
+      height: 27px;
+    }
+    #cs-bus-merged .cs-message-area {
+      padding: 16px 12px;
+    }
+    #cs-bus-merged .cs-composer-area {
+      padding: 10px;
+    }
+    #cs-bus-merged .cs-message.cs-from-me {
+      margin-left: 0;
+    }
+    #cs-bus-merged .cs-message-text {
+      font-size: 13px;
+    }
+    #cs-bus-merged .cs-routing-state {
+      font-size: 10px;
+    }
+    #cs-bus-merged .cs-notice {
+      font-size: 11px;
+      left: 8px;
+      right: 8px;
+    }
+  }
+  @media (max-width: 390px) {
+    #cs-bus-merged .cs-roster {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    #cs-bus-merged .cs-agent-name {
+      max-width: none;
+    }
+    #cs-bus-merged .cs-heading-meta {
+      font-size: 11px;
+    }
+    #cs-bus-merged .cs-current-actions {
+      gap: 4px;
+    }
+    #cs-bus-merged .cs-current-actions .cs-action-divider {
+      margin: 0 1px;
+    }
+    #cs-bus-merged .cs-brand {
+      font-size: 17px;
+    }
+    #cs-bus-merged .cs-chrome {
+      padding: 10px;
+    }
+    #cs-bus-merged .cs-chrome-actions .cs-icon {
+      width: 28px;
+      height: 28px;
+    }
+    #cs-bus-merged .cs-recipient-row select {
+      max-width: 140px;
+    }
+  }
+  @media (pointer: coarse) {
+    #cs-bus-merged .cs-icon {
+      min-width: 38px;
+      min-height: 38px;
+    }
+    #cs-bus-merged .cs-current-actions {
+      gap: 7px;
+    }
+    #cs-bus-merged .cs-agent-header-controls {
+      flex-wrap: wrap;
+    }
+    #cs-bus-merged .cs-message-actions button {
+      padding: 8px 0;
+    }
+    #cs-bus-merged textarea {
+      font-size: 16px;
+    }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    #cs-bus-merged .cs-icon {
+      transition: background 0.12s, color 0.12s;
+    }
+    #cs-bus-merged .cs-special-row {
+      transition: background 0.12s;
+    }
+  }
+</style>
+<script>
+  (() => {
+    const root = document.getElementById("cs-bus-merged");
+    const $ = (s) => root.querySelector(s);
+    const escapeHtml = (s) =>
+      String(s).replace(
+        /[&<>"']/g,
+        (c) =>
+          ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+          }[c])
+      );
+    const agents = [
+      {
+        id: "2",
+        name: "Tola",
+        meta: "Claude Code · Opus · mcp-web",
+        route: "Tola → Ty",
+        preview: "Zebrałam uwagi. Możesz już sprawdzić całość.",
+        time: "03:51",
+        receipt: "Doręczono",
+        online: true,
+        unread: 0,
+        broadcast: true,
+        dnd: false,
+        audio: true,
+      },
+      {
+        id: "3",
+        name: "Lena",
+        meta: "Codex · GPT-6.1 · Codescribe",
+        route: "Lena → Ty",
+        preview:
+          "Zmiany gotowe do sprawdzenia. Mam jeszcze jedno pytanie o sidebar.",
+        time: "03:49",
+        receipt: "Przeczytano",
+        online: true,
+        unread: 2,
+        broadcast: true,
+        dnd: false,
+        audio: true,
+      },
+      {
+        id: "4",
+        name: "Basia",
+        meta: "Claude Code · Sonnet · Codescribe",
+        route: "Ty → Basia",
+        preview: "Sprawdź proszę zachowanie wąskiego okna i długie nazwy.",
+        time: "03:46",
+        receipt: "Przeczytano",
+        online: true,
+        unread: 0,
+        broadcast: true,
+        dnd: true,
+        audio: false,
+      },
+      {
+        id: "8",
+        name: "Igor",
+        meta: "Codex · GPT-6.1 · Codescribe",
+        route: "Igor → Ty",
+        preview: "Raport z ostatniego sprawdzenia jest gotowy.",
+        time: "wczoraj",
+        receipt: "Rozłączony",
+        online: false,
+        unread: 0,
+        broadcast: false,
+        dnd: false,
+        audio: false,
+      },
+    ];
+    const defaults = {
+      view: "2",
+      recipient: "2",
+      collapsed: false,
+      mic: null,
+      filter: "all",
+    };
+    const saved = window.openai?.widgetState?.privateContent;
+    const state = {
+      ...defaults,
+      ...(saved && typeof saved === "object" ? saved : {}),
+    };
+    if (!["2", "3", "4", "8", "all", "inbox"].includes(state.view))
+      state.view = "2";
+    if (!["2", "3", "4", "8", "0"].includes(state.recipient))
+      state.recipient = "2";
+    state.mic = null;
+    const design = { sidebarWidth: 308, spacing: "Zwarta" };
+    const additions = [];
+    const archived = [
+      "Hania · wczorajsza rozmowa",
+      "As · ustalenia do okna",
+      "Lena · poprzednia sesja",
+    ];
+    const agent = (id) => agents.find((a) => a.id === id);
+    const current = () => agent(state.view);
+    const icons = () => {
+      if (globalThis.lucide)
+        globalThis.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+    };
+    const persist = () => {
+      try {
+        window.openai
+          ?.setWidgetState?.({
+            modelContent: {
+              proposal: "Połączony układ okna busa",
+              sidebar: state.collapsed ? "zwinięty" : "rozwinięty",
+              view: state.view,
+              recipient: state.recipient,
+            },
+            privateContent: {
+              view: state.view,
+              recipient: state.recipient,
+              collapsed: state.collapsed,
+              filter: state.filter,
+            },
+          })
+          ?.catch(() => {});
+      } catch {}
+    };
+    const icon = (name, label, action, id, pressed, disabled = false) =>
+      `<button type="button" class="cs-icon cursor-interaction" data-action="${action}" ${
+        id ? `data-agent="${id}"` : ""
+      } aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}" ${
+        action === "menu" ? 'aria-haspopup="true" aria-expanded="false"' : ""
+      } ${pressed === undefined ? "" : `aria-pressed="${pressed}"`} ${
+        disabled ? "disabled" : ""
+      }><i data-lucide="${name}" aria-hidden="true"></i></button>`;
+    function statusMarks(a) {
+      return a
+        ? `<span class="cs-status-marks">${
+            a.dnd
+              ? '<span aria-label="Nie przeszkadzać włączone" data-tooltip="Nie przeszkadzać włączone"><i data-lucide="moon" aria-hidden="true"></i></span>'
+              : ""
+          }${
+            !a.broadcast
+              ? '<span class="cs-radio-off" aria-label="Nie uczestniczy w kanale Wszyscy" data-tooltip="Nie uczestniczy w kanale Wszyscy"><i data-lucide="radio-tower" aria-hidden="true"></i></span>'
+              : ""
+          }</span>`
+        : "";
+    }
+    function actionSet(a) {
+      if (!a) return "";
+      return (
+        icon(
+          "audio-lines",
+          state.mic === a.id
+            ? `Zamknij mikrofon do ${a.name}`
+            : `Mów do ${a.name}`,
+          "talk",
+          a.id,
+          state.mic === a.id,
+          !a.online
+        ) +
+        icon(
+          a.audio ? "volume-2" : "volume-x",
+          `${a.audio ? "Wycisz" : "Włącz"} odpowiedzi: ${a.name}`,
+          "audio",
+          a.id,
+          a.audio,
+          !a.online
+        ) +
+        icon("ellipsis", `Więcej działań: ${a.name}`, "menu", a.id, undefined)
+      );
+    }
+    function roster() {
+      $("[data-roster]").innerHTML = agents
+        .map(
+          (a) =>
+            `<article class="cs-agent ${
+              state.view === a.id ? "cs-selected" : ""
+            } ${a.online ? "" : "cs-offline"}" data-card-agent="${
+              a.id
+            }" aria-label="${a.id} · ${escapeHtml(a.name)}${
+              a.online ? " · połączona" : " · rozłączony"
+            }"><div class="cs-agent-header"><button type="button" class="cs-agent-open cursor-interaction" data-view="${
+              a.id
+            }" data-tooltip="${a.id} · ${escapeHtml(a.name)}${
+              a.unread ? ` · ${a.unread} nieobejrzane odpowiedzi` : ""
+            }" aria-label="Otwórz rozmowę: ${escapeHtml(a.name)}" ${
+              state.view === a.id ? 'aria-current="true"' : ""
+            }><span class="cs-channel-digit">${
+              a.id
+            }</span><span class="cs-online-dot ${
+              a.online ? "" : "cs-offline-dot"
+            }"></span><span class="cs-agent-name">${escapeHtml(
+              a.name
+            )}</span>${statusMarks(a)}${
+              a.unread
+                ? `<span class="cs-count" aria-label="${a.unread} nieobejrzane odpowiedzi">${a.unread}</span>`
+                : ""
+            }</button><div class="cs-agent-header-controls">${actionSet(
+              a
+            )}</div></div><div class="cs-agent-meta"><span>${escapeHtml(
+              a.meta
+            )}</span><span class="cs-agent-clock"><span class="cs-agent-time">${escapeHtml(
+              a.time
+            )}</span>${
+              a.online
+                ? `<span aria-label="${a.receipt}" data-tooltip="${
+                    a.receipt
+                  }"><i data-lucide="${
+                    a.receipt === "Przeczytano" ? "check-check" : "check"
+                  }" aria-hidden="true"></i></span>`
+                : ""
+            }</span></div><p class="cs-agent-preview"><strong>${escapeHtml(
+              a.route
+            )}</strong> · ${escapeHtml(a.preview)}</p></article>`
+        )
+        .join("");
+    }
+    let menuTrigger = null;
+    function closeMenu(restoreFocus = false) {
+      const menu = $("[data-menu]");
+      menu.hidden = true;
+      menu.innerHTML = "";
+      const trigger = menuTrigger;
+      menuTrigger = null;
+      if (trigger) {
+        trigger.setAttribute("aria-expanded", "false");
+        if (restoreFocus) trigger.focus();
+      }
+    }
+    function openMenu(a, anchor) {
+      if (!a) return;
+      closeMenu();
+      menuTrigger = anchor.matches('[data-action="menu"]')
+        ? anchor
+        : anchor.querySelector('[data-action="menu"]');
+      menuTrigger?.setAttribute("aria-expanded", "true");
+      const menu = $("[data-menu]");
+      const item = (name, label, action, disabled = false) =>
+        `<button type="button" class="cursor-interaction" data-action="${action}" data-agent="${
+          a.id
+        }" ${
+          disabled ? "disabled" : ""
+        }><i data-lucide="${name}" aria-hidden="true"></i>${escapeHtml(
+          label
+        )}</button>`;
+      menu.innerHTML =
+        item(
+          "radio-tower",
+          a.broadcast ? "Opuść kanał Wszyscy" : "Dołącz do kanału Wszyscy",
+          "broadcast",
+          !a.online
+        ) +
+        item(
+          "moon",
+          a.dnd ? "Wyłącz Nie przeszkadzać" : "Włącz Nie przeszkadzać",
+          "dnd",
+          !a.online
+        ) +
+        item("square-terminal", "Otwórz miejsce pracy", "workspace") +
+        item("x", "Odłącz i zachowaj rozmowę", "archive", !a.online);
+      menu.hidden = false;
+      icons();
+      const box = $(".cs-window").getBoundingClientRect(),
+        target = anchor.getBoundingClientRect();
+      menu.style.left =
+        Math.max(
+          8,
+          Math.min(
+            target.right - box.left - menu.offsetWidth,
+            box.width - menu.offsetWidth - 8
+          )
+        ) + "px";
+      menu.style.top =
+        Math.max(
+          8,
+          Math.min(target.bottom - box.top, box.height - menu.offsetHeight - 8)
+        ) + "px";
+      menu.querySelector("button:not(:disabled)")?.focus();
+    }
+    function messagesForView() {
+      if (state.view === "all")
+        return [
+          {
+            from: "Ty",
+            to: "Wszyscy",
+            text: "Krótki status prac? Najpierw ustalmy układ rozmowy i listy agentów.",
+            time: "03:40",
+            receipt: "Przeczytano 3 z 4",
+            mine: true,
+          },
+          {
+            from: "Tola",
+            to: "Wszyscy",
+            text: "Mam propozycję okna z rozwijanym panelem agentów. Funkcje zostają dostępne w obu układach.",
+            time: "03:43",
+            receipt: "Przeczytano 2 z 4",
+          },
+        ];
+      if (state.view === "inbox")
+        return [
+          {
+            from: "Lena",
+            to: "Ty",
+            text: "Przygotowałam dwie wersje sidebara. Którą szerokość porównujemy jako pierwszą?",
+            time: "03:49",
+            receipt: "Czeka na Twoją odpowiedź",
+            awaiting: true,
+            channel: "3",
+            kind: "direct",
+          },
+          {
+            from: "Tola",
+            to: "Ty",
+            text: "Zebrałam uwagi do układu. Wiadomości i działania agentów mają zostać czytelne także po zwinięciu panelu.",
+            time: "03:51",
+            receipt: "Doręczono",
+            channel: "2",
+            kind: "direct",
+          },
+          {
+            from: "Basia",
+            to: "Wszyscy",
+            text: "Sprawdzę długie nazwy i wąskie okno, kiedy uzgodnimy kierunek.",
+            time: "03:52",
+            receipt: "Wspólna wiadomość",
+            channel: "4",
+            kind: "shared",
+          },
+        ].filter((m) => state.filter === "all" || m.kind === state.filter);
+      const a = current();
+      return [
+        {
+          from: "Ty",
+          to: a.name,
+          text: "Porównajmy oba układy. Chcę zachować informacje o agentach, ale dać więcej miejsca rozmowie.",
+          time: "03:27",
+          receipt: "Przeczytano",
+          mine: true,
+          channel: a.id,
+        },
+        {
+          from: a.name,
+          to: "Ty",
+          text: "Rozmowa zostaje po lewej. Listę agentów możesz zwinąć do numerów, a działania otwartego agenta nadal masz w nagłówku.",
+          time: "03:28",
+          receipt: "Przeczytano",
+          channel: a.id,
+        },
+        {
+          from: a.name,
+          to: "Ty",
+          text: "Adresat tekstu jest widoczny przez cały czas pisania. Mikrofon ma osobny stan — wybór rozmowy go nie otwiera.",
+          time: "03:51",
+          receipt: "Doręczono",
+          channel: a.id,
+        },
+      ];
+    }
+    function messages() {
+      const all = [
+        ...messagesForView(),
+        ...additions.filter((m) => m.view === state.view),
+      ];
+      $("[data-messages]").innerHTML = all
+        .map(
+          (m, index) =>
+            `<article class="cs-message ${m.mine ? "cs-from-me" : ""} ${
+              m.awaiting ? "cs-awaiting" : ""
+            }"><div class="cs-message-top"><span class="cs-message-route">${escapeHtml(
+              m.from
+            )} → ${escapeHtml(m.to)}</span><time class="cs-message-time">${
+              m.time
+            }</time></div><p class="cs-message-text">${escapeHtml(
+              m.text
+            )}</p><div class="cs-message-footer"><span class="cs-receipt">${
+              m.receipt === "Przeczytano"
+                ? '<i data-lucide="check-check" aria-hidden="true"></i>'
+                : ""
+            }${escapeHtml(m.receipt)}</span><span class="cs-message-actions">${
+              m.mine
+                ? ""
+                : `<button type="button" class="cursor-interaction" data-reply="${
+                    m.channel || "2"
+                  }">Odpowiedz</button>`
+            }<button type="button" class="cursor-interaction" data-copy="${index}">Kopiuj</button></span></div></article>`
+        )
+        .join("");
+    }
+    function render() {
+      closeMenu();
+      root.classList.toggle("cs-collapsed", Boolean(state.collapsed));
+      root.style.setProperty("--cs-sidebar-width", design.sidebarWidth + "px");
+      root.style.setProperty(
+        "--cs-card-padding",
+        design.spacing === "Zwarta" ? "11px" : "15px"
+      );
+      root.style.setProperty(
+        "--cs-card-gap",
+        design.spacing === "Zwarta" ? "8px" : "12px"
+      );
+      const a = current();
+      $("[data-title]").textContent =
+        state.view === "inbox"
+          ? "Twoja skrzynka"
+          : state.view === "all"
+          ? "Wszyscy"
+          : `Rozmowa · ${a.name}`;
+      $("[data-view-meta]").innerHTML =
+        state.view === "inbox"
+          ? "Wiadomości adresowane do Ciebie"
+          : state.view === "all"
+          ? "Kanał 0 · wspólna rozmowa"
+          : `Kanał ${a.id} <span>·</span> <span class="cs-online-dot ${
+              a.online ? "" : "cs-offline-dot"
+            }"></span> ${a.online ? "połączona" : "rozłączony"}`;
+      $("[data-current-actions]").innerHTML = actionSet(a);
+      $("[data-heading-status]").innerHTML = statusMarks(a);
+      $("[data-current-actions]").hidden = !a;
+      $("[data-message-context]").textContent =
+        state.view === "inbox"
+          ? "Bezpośrednie i wspólne"
+          : state.view === "all"
+          ? "Wspólna rozmowa"
+          : `Ty i ${a.name}`;
+      $("[data-view-label]").textContent =
+        "Oglądasz: " +
+        (a ? a.name : state.view === "all" ? "Wszyscy" : "Twoja skrzynka");
+      const micAgent = agent(state.mic);
+      $("[data-mic-label]").textContent = micAgent
+        ? `Mówisz do: ${micAgent.id} · ${micAgent.name}`
+        : "Mikrofon wyłączony";
+      $("[data-mic-label]").parentElement.classList.toggle(
+        "cs-speaking",
+        Boolean(micAgent)
+      );
+      const toggle = $('[data-action="sidebar"]');
+      toggle.setAttribute("aria-expanded", String(!state.collapsed));
+      toggle.setAttribute(
+        "aria-label",
+        state.collapsed ? "Rozwiń panel agentów" : "Zwiń panel agentów"
+      );
+      toggle.setAttribute(
+        "data-tooltip",
+        state.collapsed ? "Rozwiń panel agentów" : "Zwiń panel agentów"
+      );
+      toggle.innerHTML = `<i data-lucide="${
+        state.collapsed ? "panel-right-open" : "panel-right-close"
+      }" aria-hidden="true"></i>`;
+      $("#cs-recipient").innerHTML =
+        '<option value="0">0 · Wszyscy</option>' +
+        agents
+          .map(
+            (x) =>
+              `<option value="${x.id}">${x.id} · ${escapeHtml(x.name)}</option>`
+          )
+          .join("");
+      $("#cs-recipient").value = state.recipient;
+      const match = $("[data-match-recipient]");
+      match.hidden = !a || a.id === state.recipient;
+      match.textContent = a ? `Pisz do ${a.name}` : "";
+      $("[data-inbox-filters]").hidden = state.view !== "inbox";
+      root
+        .querySelectorAll("[data-filter]")
+        .forEach((b) =>
+          b.setAttribute(
+            "aria-pressed",
+            String(b.dataset.filter === state.filter)
+          )
+        );
+      root
+        .querySelectorAll(".cs-special-row")
+        .forEach((b) =>
+          b.setAttribute("aria-current", String(b.dataset.view === state.view))
+        );
+      roster();
+      messages();
+      icons();
+    }
+    let noticeTimer;
+    function notice(text) {
+      $("[data-notice-text]").textContent = text;
+      $("[data-notice]").hidden = false;
+      clearTimeout(noticeTimer);
+      noticeTimer = setTimeout(() => {
+        $("[data-notice]").hidden = true;
+      }, 5500);
+    }
+    root.addEventListener("click", (event) => {
+      if (
+        !event.target.closest("[data-menu]") &&
+        !event.target.closest('[data-action="menu"]')
+      )
+        closeMenu();
+      const b = event.target.closest("button");
+      if (!b || !root.contains(b) || b.disabled) return;
+      if (b.dataset.view) {
+        state.view = b.dataset.view;
+        render();
+        persist();
+        return;
+      }
+      if (b.dataset.filter) {
+        state.filter = b.dataset.filter;
+        render();
+        persist();
+        return;
+      }
+      if (b.dataset.reply) {
+        state.recipient = b.dataset.reply;
+        render();
+        $("[data-draft]").focus();
+        persist();
+        return;
+      }
+      if (b.dataset.copy !== undefined) {
+        notice("Treść wiadomości jest gotowa do skopiowania.");
+        return;
+      }
+      const a = agent(b.dataset.agent) || current();
+      if (b.closest("[data-menu]")) closeMenu();
+      switch (b.dataset.action) {
+        case "menu":
+          if (!$("[data-menu]").hidden && menuTrigger === b) {
+            closeMenu();
+          } else openMenu(a, b);
+          break;
+        case "sidebar":
+          state.collapsed = !state.collapsed;
+          render();
+          persist();
+          break;
+        case "broadcast":
+          if (a) {
+            a.broadcast = !a.broadcast;
+            render();
+          }
+          break;
+        case "dnd":
+          if (a) {
+            a.dnd = !a.dnd;
+            render();
+          }
+          break;
+        case "audio":
+          if (a) {
+            a.audio = !a.audio;
+            render();
+          }
+          break;
+        case "talk":
+          if (a) {
+            state.mic = state.mic === a.id ? null : a.id;
+            render();
+          }
+          break;
+        case "match-recipient":
+          if (a) {
+            state.recipient = a.id;
+            render();
+            $("[data-draft]").focus();
+            persist();
+          }
+          break;
+        case "workspace":
+          notice(`Miejsce pracy ${a?.name || "agenta"} — podgląd działania.`);
+          break;
+        case "archive":
+          notice(
+            "Odłączenie i zapisanie rozmowy — znaczenie tej akcji pozostaje do ustalenia."
+          );
+          break;
+        case "saved": {
+          if (state.collapsed) {
+            state.collapsed = false;
+            render();
+          }
+          const list = $("[data-saved-list]");
+          list.hidden = !list.hidden;
+          $('[data-action="saved"]').setAttribute(
+            "aria-expanded",
+            String(!list.hidden)
+          );
+          list.innerHTML = archived
+            .map(
+              (name) =>
+                `<button type="button" class="cursor-interaction" data-action="saved-open">${escapeHtml(
+                  name
+                )}</button>`
+            )
+            .join("");
+          break;
+        }
+        case "saved-open":
+          notice("Wybrana zapisana rozmowa — podgląd miejsca w nawigacji.");
+          break;
+        case "pin":
+          b.setAttribute(
+            "aria-pressed",
+            String(b.getAttribute("aria-pressed") !== "true")
+          );
+          break;
+        case "dismiss-notice":
+          $("[data-notice]").hidden = true;
+          break;
+        case "attachment":
+          notice("Załączniki zostają w menu przy polu pisania.");
+          break;
+        case "compose-mic":
+          notice("Dyktowanie do pola pisania — odrębne od mikrofonu kanału.");
+          break;
+        case "dictate":
+        case "assistant":
+        case "main-mic":
+          notice("Górna belka jest kontekstem; jej układ ustalamy osobno.");
+          break;
+      }
+    });
+    root.addEventListener("contextmenu", (event) => {
+      const card = event.target.closest("[data-card-agent]");
+      if (card && !state.collapsed) {
+        event.preventDefault();
+        openMenu(agent(card.dataset.cardAgent), card);
+      }
+    });
+    root.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !$("[data-menu]").hidden) {
+        closeMenu(true);
+        event.preventDefault();
+      }
+    });
+    document.addEventListener("click", (event) => {
+      if (!root.contains(event.target)) closeMenu();
+    });
+    $("#cs-recipient").addEventListener("change", (e) => {
+      state.recipient = e.target.value;
+      render();
+      persist();
+    });
+    $("[data-composer]").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const field = $("[data-draft]");
+      const text = field.value.trim();
+      if (!text) {
+        field.focus();
+        return;
+      }
+      const recipient = agent(state.recipient);
+      additions.push({
+        view: state.view,
+        from: "Ty",
+        to: recipient ? recipient.name : "Wszyscy",
+        text,
+        time: "teraz",
+        receipt: "Podgląd wiadomości · nie wysłano",
+        mine: true,
+      });
+      field.value = "";
+      render();
+    });
+    window.addEventListener("openai:set_globals", (event) => {
+      const s = event.detail?.globals?.widgetState?.privateContent;
+      if (s && typeof s === "object") {
+        for (const k of ["view", "recipient", "collapsed", "filter"])
+          if (k in s) state[k] = s[k];
+        if (!["2", "3", "4", "8", "all", "inbox"].includes(state.view))
+          state.view = "2";
+        render();
+      }
+    });
+    render();
+    if (globalThis.Tweak) {
+      const tweak = new globalThis.Tweak({ container: root, onChange: render });
+      tweak.addSlider(design, "sidebarWidth", {
+        label: "Szerokość listy agentów",
+        min: 270,
+        max: 360,
+        step: 4,
+        unit: "px",
+      });
+      tweak.addSelect(design, "spacing", {
+        label: "Odstępy w kartach",
+        options: ["Zwarta", "Swobodna"],
+      });
+      tweak.addToggle(state, "collapsed", { label: "Zwinięty sidebar" });
+    }
+  })();
+</script>

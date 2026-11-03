@@ -62,6 +62,7 @@ protocol TrayEngine: AnyObject {
   func stopRecording() async throws
 
   /// Current values for the tray's quick toggles, read from on-disk settings.
+  /// `autoFormatLevel` is the automatic level (a stored Max reads as Smart).
   /// `nil` when settings cannot be loaded.
   func currentToggles() -> (
     showDockIcon: Bool,
@@ -76,6 +77,8 @@ protocol TrayEngine: AnyObject {
   /// Persist user-owned delivery/formatting policy. Callers always re-read
   /// `currentToggles()` after these writes instead of assuming success.
   func setPasteMode(_ mode: CsPasteMode)
+  /// Accepts only `FormattingPolicyOption.automaticCases`; Max is a manual
+  /// overlay action and is never written as the automatic level.
   func setAutoFormatLevel(_ level: FormattingPolicyOption)
   func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool
   /// Notes Mode is a two-key flag (quick-notes enabled + save-only) written as
@@ -155,7 +158,7 @@ final class MockTrayEngine: TrayEngine {
       showDockIcon,
       overlayEnabled,
       pasteMode,
-      autoFormatLevel,
+      autoFormatLevel.automaticLevel,
       notesMode,
       startInAssistive,
       holdBadgeOption
@@ -170,7 +173,10 @@ final class MockTrayEngine: TrayEngine {
   }
 
   func setPasteMode(_ mode: CsPasteMode) { pasteMode = mode }
-  func setAutoFormatLevel(_ level: FormattingPolicyOption) { autoFormatLevel = level }
+  func setAutoFormatLevel(_ level: FormattingPolicyOption) {
+    guard FormattingPolicyOption.automaticCases.contains(level) else { return }
+    autoFormatLevel = level
+  }
   func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool {
     holdBadgeOption = option
     return true

@@ -41,7 +41,7 @@ struct DictationRuntimeRows: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 }
 
@@ -73,7 +73,7 @@ private struct LastTranscriptionRow: View {
   private var valueText: some View {
     if mono {
       Text(verbatim: value)
-        .font(CSFont.mono(11.5, .semibold))
+        .font(CSFont.mono(12, .semibold))
         .lineLimit(1)
         .truncationMode(.middle)
     } else {

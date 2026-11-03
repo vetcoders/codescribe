@@ -226,4 +226,127 @@ final class ComposerTextViewTests: XCTestCase {
   func testTextSurfaceHasStableAccessibilityIdentifier() {
     XCTAssertEqual(ComposerAccessibility.textViewIdentifier, "agent-composer-text")
   }
+
+  // MARK: Long Fn while a composer owns the caret
+
+  /// Falsifier 2: with the caret in the Agent composer, the Rust hold-start
+  /// gate reads "owned", and a refused long Fn reaches that composer's hint.
+  func testAgentComposerCaretOwnershipGatesLongFnAndReceivesTheRedirect() throws {
+    var redirects = 0
+    try assertCaretOwnership(
+      rootView: ComposerTextView(
+        text: .constant("Draft"), height: .constant(40), textScale: 1,
+        isFocused: .constant(false), history: [], onSend: {},
+        onMicrophoneRedirect: { redirects += 1 }),
+      redirects: { redirects })
+  }
+
+  /// The Intercom field's redirect drives its own hint state; ownership is
+  /// what this test pins.
+  func testIntercomComposerCaretOwnershipGatesLongFn() throws {
+    try assertCaretOwnership(
+      rootView: OverlayConversationComposer(
+        palette: .dark, draft: .constant("Bus draft"), sending: false, onSubmit: {},
+        onToggleDraftMicrophone: {}),
+      redirects: { 0 }, onRedirect: {})
+  }
+
+  /// A field without its own microphone keeps long Fn as global dictation.
+  func testComposerWithoutMicrophoneNeverOwnsTheCaretForLongFn() throws {
+    let registry = ComposerCaretOwnership.shared
+    var published: [Bool] = []
+    let previous = registry.publish
+    registry.publish = { published.append($0) }
+    defer { registry.publish = previous }
+    let host = NSHostingView(
+      rootView: OverlayConversationComposer(
+        palette: .dark, draft: .constant("Inbox"), sending: false, onSubmit: {}))
+    let (window, text) = try present(host)
+    defer { window.close() }
+    XCTAssertTrue(window.makeFirstResponder(text))
+    settle(host)
+    XCTAssertFalse(registry.ownsCaret)
+    XCTAssertFalse(published.contains(true))
+  }
+
+  private func assertCaretOwnership<Root: View>(
+    rootView: Root, redirects: () -> Int, onRedirect: (() -> Void)? = nil,
+    file: StaticString = #filePath, line: UInt = #line
+  ) throws {
+    let registry = ComposerCaretOwnership.shared
+    var published: [Bool] = []
+    let previous = registry.publish
+    registry.publish = { published.append($0) }
+    defer { registry.publish = previous }
+    let host = NSHostingView(rootView: rootView)
+    let (window, text) = try present(host)
+    defer { window.close() }
+    let other = NSTextField(frame: NSRect(x: 0, y: 0, width: 40, height: 20))
+    window.contentView?.addSubview(other)
+
+    XCTAssertTrue(window.makeFirstResponder(text), file: file, line: line)
+    settle(host)
+    XCTAssertTrue(registry.ownsCaret, "caret in the field must gate long Fn", file: file, line: line)
+    XCTAssertEqual(published.last, true, file: file, line: line)
+
+    if onRedirect == nil {
+      registry.redirectToComposerMicrophone()
+      XCTAssertEqual(redirects(), 1, "the refused hold reaches this field", file: file, line: line)
+    }
+
+    window.forcedIsKey = false
+    NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+    settle(host)
+    XCTAssertFalse(registry.ownsCaret, "another app's caret is not ours", file: file, line: line)
+    XCTAssertEqual(published.last, false, file: file, line: line)
+
+    window.forcedIsKey = true
+    NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+    settle(host)
+    XCTAssertTrue(registry.ownsCaret, file: file, line: line)
+
+    XCTAssertTrue(window.makeFirstResponder(other), file: file, line: line)
+    settle(host)
+    XCTAssertFalse(registry.ownsCaret, "another field releases the gate", file: file, line: line)
+
+    XCTAssertTrue(window.makeFirstResponder(text), file: file, line: line)
+    settle(host)
+    host.removeFromSuperview()
+    settle(host)
+    XCTAssertFalse(registry.ownsCaret, "an unmounted field releases the gate", file: file, line: line)
+    XCTAssertEqual(published.last, false, file: file, line: line)
+  }
+
+  private func present(_ host: NSView) throws -> (CaretTestWindow, NSTextView) {
+    host.frame = NSRect(x: 0, y: 0, width: 420, height: 90)
+    let window = CaretTestWindow(frame: host.frame)
+    let container = NSView(frame: host.frame)
+    container.addSubview(host)
+    window.contentView = container
+    BackgroundTestWindow.present(window)
+    settle(host)
+    return (window, try XCTUnwrap(editable(in: host)))
+  }
+
+  private func editable(in view: NSView) -> NSTextView? {
+    if let text = view as? NSTextView, text.isEditable { return text }
+    return view.subviews.lazy.compactMap { self.editable(in: $0) }.first
+  }
+
+  private func settle(_ host: NSView) {
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    host.layoutSubtreeIfNeeded()
+  }
+}
+
+private final class CaretTestWindow: NSWindow {
+  var forcedIsKey = true
+  override var canBecomeKey: Bool { true }
+  override var isKeyWindow: Bool { forcedIsKey }
+
+  init(frame: NSRect) {
+    super.init(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    isReleasedWhenClosed = false
+  }
 }

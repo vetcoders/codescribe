@@ -7,6 +7,36 @@ import XCTest
 /// Transcription keeps its own action column and measures the text beside it.
 @MainActor
 final class OverlayTranscriptSurfaceTests: XCTestCase {
+  func testPreviewOpensDictationFromAnAgentWithoutChangingCaptureOrDraft() {
+    for mode in [OverlayPresentationMode.mini, .midi] {
+      let state = OverlayState.previewListening()
+      let agent = OverlayConversation(
+        id: "preview-agent", channel: "3", name: "agent", owner: nil, messages: [])
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [agent]))
+      state.chooseConversation(agent.id)
+      state.conversationDrafts[agent.id] = "Unsent agent draft"
+      state.setPresentationMode(mode)
+      let text = state.activeText
+      let generation = state.captureGeneration
+      let recording = state.recording
+      let controls = OverlayRecordingControls(
+        canFinish: recording, presentationMode: mode, compact: true, palette: .dark,
+        onIntent: { _ in XCTFail("Preview must not send a recording command") },
+        onPreviewToggle: state.toggleCollapsed)
+      controls.togglePreview()
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertEqual(state.windowContentSurface, .transcription)
+      XCTAssertNil(state.selectedConversationID)
+      XCTAssertEqual(state.activeText, text)
+      XCTAssertEqual(state.captureGeneration, generation)
+      XCTAssertEqual(state.recording, recording)
+      XCTAssertEqual(state.conversationDrafts[agent.id], "Unsent agent draft")
+      state.toggleCollapsed()
+      XCTAssertEqual(state.presentationMode, .mini)
+      XCTAssertEqual(state.captureGeneration, generation)
+    }
+  }
+
   func testColumnWidthIsOneControlItsInsetsAndTheResizeBandAtEveryScale() {
     // The control chrome is unscaled, so the column is the same width at
     // every supported text scale: 28 control + 4 + 4 insets + 16 resize band.
@@ -21,9 +51,8 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
   }
 
   func testExpandedMinimumHeightFitsSevenSlotsAndKeepsTheFullInventory() {
-    // All twelve commands remain in the scroll content. The viewport ends
-    // after the seventh, without revealing a clipped eighth control. Header
-    // clearance and bottom padding are paid once: 54 + 242 + 12.
+    // The expanded floor still reserves seven controls. Available actions
+    // use the offered height; the full inventory is only a sizing reference.
     XCTAssertEqual(OverlayTranscriptActionsLayout.columnHeight, 426)
     XCTAssertEqual(OverlayTranscriptActionsLayout.visibleSlotBudget, 7)
     XCTAssertEqual(OverlayTranscriptActionsLayout.viewportHeight, 242)
@@ -41,41 +70,48 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
       DictationOverlayWindow.minimumSize(for: .midi), DictationOverlayWindow.midiSize)
   }
 
-  func testSevenSlotViewportScrollsTheRemainingCommandsWithoutPresentingAWindow() throws {
-    let height = OverlayTranscriptActionsLayout.viewportHeight
-    let host = NSHostingView(
-      rootView: OverlayIntentRail(
-        phase: "formatted", intents: [.copy, .retranscribe, .format, .sendToAgent],
-        palette: .dark, onIntent: { _ in }
-      )
-      .frame(width: OverlayTranscriptActionsLayout.contentWidth, height: height))
-    host.sizingOptions = []
-    host.frame = NSRect(
-      x: 0, y: 0, width: OverlayTranscriptActionsLayout.contentWidth, height: height)
-    // A window supplies AppKit's layout context, but is never ordered on
-    // screen, made key, or admitted to the person's input surface.
-    let window = NSWindow(
-      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-    window.isReleasedWhenClosed = false
-    window.contentView = host
-    defer { window.close() }
-    host.layoutSubtreeIfNeeded()
-    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-    host.layoutSubtreeIfNeeded()
-    func descendants(_ view: NSView) -> [NSView] {
-      view.subviews.flatMap { [$0] + descendants($0) }
+  func testAvailableActionsScrollOnlyWhenTheWindowIsTooShort() throws {
+    for height: CGFloat in [90, OverlayTranscriptActionsLayout.viewportHeight] {
+      let host = NSHostingView(
+        rootView: OverlayIntentRail(
+          phase: "formatted", intents: [.copy, .retranscribe, .format, .sendToAgent],
+          palette: .dark, onIntent: { _ in }
+        )
+        .frame(width: OverlayTranscriptActionsLayout.contentWidth, height: height))
+      host.sizingOptions = []
+      host.frame = NSRect(
+        x: 0, y: 0, width: OverlayTranscriptActionsLayout.contentWidth, height: height)
+      // A window supplies AppKit's layout context, but is never ordered on
+      // screen, made key, or admitted to the person's input surface.
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+      func descendants(_ view: NSView) -> [NSView] {
+        view.subviews.flatMap { [$0] + descendants($0) }
+      }
+      let scroll = try XCTUnwrap(descendants(host).compactMap { $0 as? NSScrollView }.first)
+      let document = try XCTUnwrap(scroll.documentView)
+      XCTAssertFalse(window.isVisible, "this fixture must never present a native window")
+      XCTAssertFalse(window.isKeyWindow)
+      XCTAssertEqual(scroll.contentView.bounds.height, height, accuracy: 1)
+      if height == 90 {
+        XCTAssertGreaterThan(document.bounds.height, height)
+        let bottom = document.bounds.height - scroll.contentView.bounds.height
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        XCTAssertEqual(scroll.contentView.bounds.minY, bottom, accuracy: 1)
+        XCTAssertEqual(scroll.contentView.bounds.maxY, document.bounds.maxY, accuracy: 1)
+      } else {
+        XCTAssertLessThanOrEqual(
+          document.bounds.height, height + 1,
+          "unavailable controls must not reserve scroll space ahead of format/retranscribe")
+      }
     }
-    let scroll = try XCTUnwrap(descendants(host).compactMap { $0 as? NSScrollView }.first)
-    let document = try XCTUnwrap(scroll.documentView)
-    XCTAssertFalse(window.isVisible, "this fixture must never present a native window")
-    XCTAssertFalse(window.isKeyWindow)
-    XCTAssertEqual(scroll.contentView.bounds.height, height, accuracy: 1)
-    XCTAssertEqual(document.bounds.height, OverlayTranscriptActionsLayout.columnHeight, accuracy: 1)
-    let bottom = document.bounds.height - scroll.contentView.bounds.height
-    scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom))
-    scroll.reflectScrolledClipView(scroll.contentView)
-    XCTAssertEqual(scroll.contentView.bounds.minY, bottom, accuracy: 1)
-    XCTAssertEqual(scroll.contentView.bounds.maxY, document.bounds.maxY, accuracy: 1)
   }
 
   func testConversationInventoryCannotChooseTheTranscriptionCanvas() {
@@ -132,15 +168,13 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
     }
   }
 
-  /// The whole fixed action set renders from the first frame, in its fixed
-  /// top-to-bottom order, even in a listening take where almost none of it
-  /// can run yet. Availability must never add or remove a control.
-  func testFixedActionSetRendersInFullFromTheFirstRender() throws {
+  /// Availability changes the mounted controls while preserving their order.
+  /// Finished-take engine actions must be reachable without disabled slots.
+  func testOnlyAvailableActionsRenderAcrossListeningFinishedAndEditingStates() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
-    let state = OverlayState.previewListening()
     let host = NSHostingView(
-      rootView: DictationOverlayView(state: state)
-        .defaultAppStorage(try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))))
+      rootView: OverlayIntentRail(
+        phase: "listening", intents: [], palette: .dark, onIntent: { _ in }))
     host.sizingOptions = []
     let window = NSWindow(
       contentRect: NSRect(
@@ -162,20 +196,44 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
       "overlay-intent-retranscribe", "overlay-intent-format",
       "overlay-intent-send-to-agent",
     ]
-    var tops: [Double] = []
-    for identifier in identifiers {
-      let element = try XCTUnwrap(
-        NativeAccessibilityProbe.waitForElements(identifier).elements.first,
-        "\(identifier) is not rendered from the first render")
-      tops.append(element.y)
+    let cases: [(String, [OverlayIntent], [String])] = [
+      ("listening", [], ["overlay-history-menu"]),
+      (
+        "formatted", [.copy, .retranscribe, .format, .sendToAgent],
+        [
+          "overlay-history-menu", "overlay-intent-copy", "overlay-intent-retranscribe",
+          "overlay-intent-format", "overlay-intent-send-to-agent",
+        ]
+      ),
+      (
+        "formatted", [.commitRevision, .discardRevision],
+        [
+          "overlay-history-menu", "overlay-intent-commit-revision",
+          "overlay-intent-discard-revision",
+        ]
+      ),
+    ]
+    for (phase, intents, expected) in cases {
+      host.rootView = OverlayIntentRail(
+        phase: phase, intents: intents, palette: .dark, onIntent: { _ in })
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      var tops: [Double] = []
+      for identifier in identifiers {
+        if expected.contains(identifier) {
+          let element = try XCTUnwrap(
+            NativeAccessibilityProbe.waitForElements(identifier).elements.first,
+            "\(identifier) is missing in \(phase)")
+          tops.append(element.y)
+        } else {
+          XCTAssertTrue(
+            try NativeAccessibilityProbe.query(identifier).elements.isEmpty,
+            "\(identifier) must not leave a disabled placeholder in \(phase)")
+        }
+      }
+      XCTAssertEqual(tops, tops.sorted(), "available actions changed order: \(tops)")
+      XCTAssertEqual(Set(tops).count, expected.count, "two controls share one place")
     }
-    XCTAssertEqual(tops, tops.sorted(), "the fixed column changed its order: \(tops)")
-    XCTAssertEqual(Set(tops).count, identifiers.count, "two controls share one place")
-    // First-to-last top distance of the rendered stack: eleven 28 pt controls
-    // stepped over inner spacing 14, 4 separators and 64 of group spacing.
-    XCTAssertEqual(
-      tops.last! - tops.first!, 390, accuracy: 1,
-      "the rendered column does not match the laid-out column height")
   }
 
   func testGrowthMeasuresTheTextColumnBesideTheActionsBar() {

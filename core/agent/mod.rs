@@ -23,6 +23,8 @@ pub mod consultation;
 pub mod conversation_search;
 /// Streaming events: provider-level [`AgentEvent`] and UI-level [`AgentUiEvent`].
 pub mod event;
+/// Compact MCP tool projection, on-demand schema search, and lazy invocation gateway.
+pub mod mcp_projection;
 /// Tool permission policy — the allow / ask / deny gateway.
 pub mod permissions;
 /// The [`AgentProvider`] trait and its per-request [`StreamOptions`].
@@ -63,10 +65,14 @@ pub use conversation_search::{
     BusConversationSearch, BusConversationSearchHit, query_matches, search_bus_conversations,
 };
 pub use event::{AgentEvent, AgentUiEvent};
+pub use mcp_projection::{
+    MCP_CALL_TOOL_NAME, MCP_CATALOG_BUDGET_BYTES, MCP_SEARCH_TOOL_NAME, McpCallResolution,
+    McpToolEntry, json_schema_to_compact_signature, render_mcp_catalog,
+};
 pub use permissions::{
     AgentPermissions, PermissionLevel, PermissionSource, ToolCapability, tool_identity,
 };
-pub use provider::{AgentProvider, StreamOptions};
+pub use provider::{AgentProvider, AgentProviderHost, StreamOptions};
 pub use redaction::{
     CommandRedactor, contains_sensitive_key, redact_command_line, redacted_arguments,
 };
@@ -86,4 +92,7 @@ pub use thread_delivery::{
 };
 pub use thread_index::{ThreadFilter, ThreadIndex, ThreadIndexData, ThreadSummary};
 pub use thread_store::{Thread, ThreadMessage, ThreadNote, ThreadStore, TokenUsage};
-pub use types::{ContentBlock, ImageAsset, Message, Role};
+pub use types::{
+    ContentBlock, ImageAsset, Message, MessageMetadata, ProviderResponseMetadata,
+    ProviderWireMessage, Role,
+};

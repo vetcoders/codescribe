@@ -1,321 +1,158 @@
 # Troubleshooting
 
-Common issues and solutions for codescribe.
+Preserve the current take, transcript and unsent draft before restarting or
+resetting anything. A failed send, an unread message and an unavailable
+recognizer are different problems.
 
----
+## What to include in a report
 
-## Quick Fixes
+- App version and build from **Settings → User**; whether it is a nightly.
+- Time of the problem, selected recognition mode and microphone.
+- The destination: another app, built-in Agent, individual channel, All or inbox.
+- What you did, what you expected and what appeared instead.
+- A screenshot, and the original audio when a recognition comparison is needed
+  and you consent to sharing it.
 
-**80% of issues are solved by:**
+Review diagnostics before sharing them. They can contain transcript text,
+paths, endpoints and other private context. Never send an API key, licence key
+or a raw `.env` dump.
 
-1. ✅ Check Accessibility permission is enabled
-2. ✅ Check Microphone permission is enabled
-3. ✅ Restart codescribe
-4. ✅ Check menu bar icon is visible (not hidden by notch)
+## The app does not open
 
----
+Launch **Codescribe.app** from Applications through Finder or Spotlight. A
+standalone `codescribe` terminal command is a CLI utility, not a replacement
+for launching the native app bundle.
 
-## Startup Issues
+Confirm which copy and version you are opening, especially after a source
+installation. A newer bundle on disk does not prove that an older process has
+restarted. Finish active work before quitting normally and reopening it.
 
-### Codescribe doesn't launch
+For signing, Gatekeeper or source-build problems, use the
+[developer installation guide](../INSTALLATION.md). Do not disable system
+security or delete local history as a first troubleshooting step.
 
-**Symptoms**: Nothing happens when opening the app.
+## Recording will not start
 
-**Solutions**:
+1. Check **Settings → Creator** for Microphone and, for Apple's path, Speech
+   Recognition permission.
+2. Check the selected input and its effective availability in **Audio**.
+3. Check **Dictation → Engine**. Local power also needs a usable model in
+   **Dictation → Whisper**; Apple only does not.
+4. Check whether an existing recording still owns the microphone. Do not start
+   a second recorder or force-kill the app to clear a live take.
 
-1. Check Activity Monitor for running `codescribe` process
-2. Kill any zombie processes: `pkill -9 codescribe`
-3. Try launching from Terminal: `codescribe -v`
-4. Check Console.app for crash logs
+A downloaded model, a saved microphone name and a completed setup wizard are
+not interchangeable readiness checks. If readiness remains blocked, record the
+specific reason shown rather than repeatedly toggling unrelated settings.
 
-### Menu bar icon not visible
+## Hotkeys do not work
 
-**Symptoms**: App launches but no icon appears.
+Check the binding in **Settings → Hotkeys**, including whether it is disabled
+or conflicts with another action. Apply the Hotkeys page's Save action after
+editing a binding. Check Accessibility and Input Monitoring in macOS settings.
 
-**Solutions**:
+For Fn/Globe, also inspect macOS's own keyboard shortcut assignment. Option and
+other double-tap gestures are opt-in; their absence is not a failed install.
+After granting a permission, follow any reopen prompt when idle.
 
-1. Check if icon is hidden behind notch (MacBook Pro)
-2. Use Bartender or similar to reveal hidden icons
-3. Run `codescribe` from Terminal to confirm it's running
+## Text is visible but was not pasted
 
-### "Model loading" takes forever
+Inspect the recording destination and **Hotkeys → Paste policy**. Safe,
+Comfort and Off intentionally differ. Check Accessibility, the receiving app's
+insertion point and whether the take was directed to an agent rather than a
+text application.
 
-**Symptoms**: Icon stays gray, no response to hotkeys.
+Keep the transcript and copy it manually if needed. Do not change the recognition
+engine to repair a delivery problem. Reopening another conversation does not
+retroactively redirect a recording that was already started.
 
-**Solutions**:
+## Recognition is inaccurate or text disappears
 
-1. First launch takes 5-10 seconds - wait
-2. Check RAM usage (Whisper needs ~2GB)
-3. Restart if stuck more than 30 seconds
+Compare the final result with the original audio, not only an earlier live
+preview. Live hypotheses can change; a successful processing status does not
+prove that every word was preserved.
 
----
+Record the language, recognition mode, app build and exact part of the audio
+that differs. Use an available paired take/retranscription action for a
+controlled comparison. AI formatting can also change text; compare with
+formatting Off when isolating recognition. Do not use formatting to conceal
+missing words or assume all repetitions should be deleted.
 
-## Permission Issues
+Keep the original take and diagnostic evidence. A transcript alone cannot
+establish whether the microphone, recognizer, formatting or delivery caused
+the discrepancy.
 
-### Hotkeys don't work
+## Formatting or the built-in Agent fails
 
-**Symptoms**: Pressing Ctrl does nothing.
+Check **Providers** for the chosen account or key, then **Agent → AI models**
+for the function's provider/model. Saving a key is not a successful connection
+test. Test the provider using the app's controls and note its actual result.
 
-**Solutions**:
+A model list, an account subscription and API-key access can have different
+availability. Do not replace a configured provider with an arbitrary endpoint
+or paste credentials into a terminal command for a support report.
 
-1. **Check Accessibility**:
+Inspect the prompt in **Agent → Prompts** if the service responds but performs
+the wrong transformation. Recognition, formatting and tool execution have
+separate responsibilities.
 
-   - System Settings → Privacy & Security → Accessibility
-   - Ensure codescribe is in the list and enabled
-   - If present but not working, remove and re-add
+## A connected agent is not answering
 
-2. **Check Input Monitoring**:
+Check that its named session is attached and that the roster does not show it
+as disconnected. Installing a plugin is not the same as attaching a conversation.
+An old conversation can remain readable after the session disconnects.
 
-   - System Settings → Privacy & Security → Input Monitoring
-   - Enable codescribe
+Inspect the recipient selection and delivery state. Published or queued does
+not mean read/ACK, and read/ACK does not mean completed work. With a partial
+send, preserve the draft and retry the missing recipients.
 
-3. **Restart after permission change**:
-   ```bash
-   pkill -9 codescribe
-   open -a codescribe
-   ```
+For voice, inspect microphone destination and speaker mute separately. All
+uses its audience rules; it is not the same as individually selecting every
+agent. User-directed responses belong in **Your inbox (10)**.
 
-### Microphone not recording
+If an agent is attached on another host, verify attachment accessibility there.
+A local file path is not automatically a transferred attachment.
 
-**Symptoms**: Recording starts but no audio captured.
+## A pasted attachment is missing
 
-**Solutions**:
+Check for the attachment chip in the correct draft. Note whether you pasted
+before capture, during capture or after the recording ended. A capture refusal
+can keep the draft without starting speech or publishing a message.
 
-1. **Check Microphone permission**:
+Use the offered retry and inspect the result. Opening a preview does not send
+an attachment, and seeing a chip does not prove the recipient opened it.
+Markup is available only in nightly builds where that action is offered.
 
-   - System Settings → Privacy & Security → Microphone
-   - Enable codescribe
+## The composer, cursor or scrolling misbehaves
 
-2. **Check audio input**:
+Report the affected surface: main agent view, built-in Agent window or floating
+card. Include its size, sidebar/rail state, appearance and app build. Describe
+whether typed characters disappear, the pointer flickers, scrolling moves away
+from the current reply, or a hover covers an actionable control.
 
-   - System Settings → Sound → Input
-   - Verify correct microphone selected
-   - Speak and check input level meter
+Preserve the draft. These are UI failures, not a reason to discard recordings,
+reset provider credentials or treat high CPU as normal.
 
-3. **Test microphone**:
-   ```bash
-   # Record 5 seconds
-   codescribe transcribe --record 5
-   ```
+## High CPU, heat or an unresponsive app
 
-### Text doesn't paste
+Note whether the app is recording, recognizing, playing speech or simply idle.
+Use Activity Monitor to capture the app's resource usage and a process sample;
+include the time and build. If you are already recording an Instruments trace,
+preserve it and ensure the disk has free space for the output.
 
-**Symptoms**: Transcription works but text doesn't appear.
+A hot Mac or a log that stops after an engine event does not identify the cause
+by itself. Keep the relevant logs and take; avoid repeated force-quits or model
+changes that destroy the comparison. Quit normally after active work is saved
+when the app remains responsive.
 
-**Solutions**:
+## Logs, storage and resets
 
-1. **Check Accessibility** (required for simulating keyboard)
-2. **Check target app accepts text input**
-3. **Try manual paste**: Text is in clipboard, use Cmd+V
+The local support data is under `~/.codescribe/`. Core tracing is normally in
+`data.noindex/logs/codescribe.log`; Swift diagnostics use `diagnostic.log` there.
+Review a narrow time range before sharing. See [Privacy & Security](privacy.md)
+for recording and transcript storage.
 
----
-
-## Transcription Quality
-
-### Empty transcripts
-
-**Symptoms**: Recording completes but transcript is blank.
-
-**Causes**:
-
-- Microphone not picking up audio
-- Audio too quiet
-- Wrong input device
-
-**Solutions**:
-
-1. Speak louder/closer to mic
-2. Check System Settings → Sound → Input level
-3. Test with: `codescribe transcribe --record 5 -v`
-
-### Poor accuracy
-
-**Symptoms**: Many wrong words, missed phrases.
-
-**Solutions**:
-
-1. **Environment**:
-
-   - Reduce background noise
-   - Use headset microphone
-   - Speak at moderate pace
-
-2. **Language setting**:
-
-   - Set correct language: `WHISPER_LANGUAGE=en`
-   - Whisper auto-detects but explicit is better
-
-3. **Repetition loops** ("word, word, word..."):
-   - This is a known Whisper issue
-   - Codescribe auto-detects and cleans these
-   - If persistent, try shorter recordings
-
-### Mixed language issues
-
-**Symptoms**: Code-switching or multilingual speech garbled.
-
-**Solutions**:
-
-- Set primary language explicitly
-- Avoid switching languages mid-sentence
-- Use AI formatting to fix mixed content
-
----
-
-## AI Formatting Issues
-
-### "AI Failed" error
-
-**Symptoms**: Recording works but AI formatting fails.
-
-**Solutions**:
-
-1. **Check API configuration**:
-
-   ```bash
-   cat ~/.codescribe/.env | grep LLM
-   ```
-
-   Verify `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL` are set.
-
-2. **Test API connectivity**:
-
-   ```bash
-   curl $LLM_ENDPOINT/models -H "Authorization: Bearer $LLM_API_KEY"
-   ```
-
-3. **Check API key validity**:
-   - OpenAI: Check usage/billing at platform.openai.com
-   - Anthropic: Check at console.anthropic.com
-   - Local: Ensure Ollama is running
-
-### Slow AI responses
-
-**Symptoms**: Long delay before AI response appears.
-
-**Solutions**:
-
-1. Enable streaming: `LLM_USE_STREAMING=1`
-2. Use faster model (gpt-4o-mini vs gpt-4)
-3. Check network connection
-4. For local: ensure Ollama has GPU acceleration
-
-### AI not activated
-
-**Symptoms**: Getting raw text even with AI enabled.
-
-**Solutions**:
-
-1. Verify provider settings in **Settings → AI & Prompts** (Formatting AI / Assistive AI)
-2. If you're using **Dictation** mode: set **Settings → Creator → Formatting level** to anything but Off
-3. If you want AI every time: use **Formatting** (double‑tap `Left Option`) or **Assistive (Agent)** (double‑tap `Right Option`)
-
----
-
-## Performance Issues
-
-### High CPU usage
-
-**Symptoms**: Mac gets hot, fans spin up.
-
-**Causes**: Whisper transcription is GPU-intensive.
-
-**Solutions**:
-
-1. This is normal during transcription
-2. Should drop after recording stops
-3. If persistent, restart codescribe
-
-### Memory usage
-
-**Symptoms**: Codescribe using several GB of RAM.
-
-**Normal**: Whisper model needs ~2GB.
-
-**If excessive (>4GB)**:
-
-1. Restart codescribe
-2. Check for memory leaks with Activity Monitor
-3. Report issue with `codescribe -v` logs
-
----
-
-## Log Files
-
-### View logs
-
-```bash
-# Recent logs
-tail -100 ~/.codescribe/logs/codescribe.log
-
-# Live logs
-tail -f ~/.codescribe/logs/codescribe.log
-
-# Verbose mode (run in foreground)
-codescribe -v
-```
-
-### Important log messages
-
-| Message                      | Meaning                     |
-| ---------------------------- | --------------------------- |
-| `Whisper engine initialized` | Model loaded successfully   |
-| `Recording started`          | Microphone activated        |
-| `Transcription complete`     | Whisper finished processing |
-| `AI formatting applied`      | AI cleaned up text          |
-| `Text pasted successfully`   | Clipboard + paste worked    |
-
-### Error patterns
-
-| Error                          | Cause               | Fix                      |
-| ------------------------------ | ------------------- | ------------------------ |
-| `Failed to initialize Whisper` | Model not found     | Reinstall codescribe     |
-| `Microphone access denied`     | Permission missing  | Grant in System Settings |
-| `Backend unavailable`          | Health check failed | Check LLM configuration  |
-| `Empty transcript`             | No audio captured   | Check microphone         |
-
----
-
-## Reset Everything
-
-If all else fails, complete reset:
-
-```bash
-# Stop codescribe
-pkill -9 codescribe
-
-# Backup config
-cp -r ~/.codescribe ~/.codescribe.backup
-
-# Reset config
-rm ~/.codescribe/.env
-make config
-
-# Clear caches
-rm -rf ~/.codescribe/logs/*
-
-# Restart
-open -a codescribe
-```
-
----
-
-## Getting Help
-
-If troubleshooting doesn't solve your issue:
-
-1. **Collect logs**: `codescribe -v 2>&1 | tee debug.log`
-2. **Note your setup**: macOS version, chip type, Codescribe version
-3. **Open issue**: [GitHub Issues](https://github.com/vetcoders/codescribe/issues)
-
-Include in your report:
-
-- macOS version (System Settings → General → About)
-- Chip (M1/M2/M3/Intel)
-- Codescribe version (`make version`)
-- Relevant log output
-- Steps to reproduce
-
----
-
-_Created by Vetcoders (c)2026_
+Configure audio retention in **Settings → Audio**. Off affects new takes and
+does not erase old recordings; text history is separate. Use the scoped actions
+in **Settings → User** for resets and read their confirmation. Do not delete the
+whole data directory or empty Trash as a generic repair.

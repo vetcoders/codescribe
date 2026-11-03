@@ -26,9 +26,10 @@ scripts/data/cldr/UNICODE-LICENSE.txt. The file is read by the catalog lint
 Third-party OAuth client identity
 ---------------------------------
 
-Codescribe ships public desktop OAuth client ids for two providers so account
-sign-in works without the operator pasting a registration. Neither id is a
-secret. Settings and env overrides are always checked first.
+Codescribe ships public desktop OAuth client ids for three providers so account
+sign-in works without the operator pasting a registration. None of these desktop
+client identifiers is a private server secret. Settings and env overrides are
+always checked first.
 
 OpenAI (ChatGPT account / Codex CLI public app id):
 
@@ -51,6 +52,18 @@ Codescribe does not claim to be the Grok CLI. Product sign-in follows OpenCode's
 SuperGrok path: RFC 8628 device authorization (open a verification URL, poll
 for tokens) — not a local loopback callback on 127.0.0.1:56121. Override with
 LLM_XAI_OAUTH_CLIENT_ID or CODESCRIBE_XAI_OAUTH_CLIENT_ID.
+
+Google (Antigravity / Cloud Code Assist public desktop OAuth client id):
+
+    1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com
+
+This is the public installed-app OAuth client id used by Google Antigravity /
+Cloud Code Assist for desktop loopback sign-in (redirect host 127.0.0.1, path
+/oauth-callback, preferred port 51121). Codescribe uses it as the default so
+"Sign in with Google" works out of the box, and also recognizes the Gemini CLI
+desktop client id (681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com)
+when configured via LLM_GOOGLE_OAUTH_CLIENT_ID or
+CODESCRIBE_GOOGLE_OAUTH_CLIENT_ID.
 
 Anthropic account login stays gated on the operator supplying their own
 registration (paste-code flow; no shipped default).

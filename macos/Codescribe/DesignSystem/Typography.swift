@@ -33,13 +33,16 @@ enum CSFont {
 }
 
 // Eyebrow label: mono, uppercase, wide tracking, olive — the section marker.
+// A caller that speaks in one family (the setup wizard, Founder 2026-10-26)
+// passes the system face; the default stays the mono eyebrow.
 struct EyebrowLabel: View {
   let text: String
   var color: Color = CSColor.eyebrowOlive
+  var font: Font = CSFont.eyebrow
   var body: some View {
     Text(text)
       .textCase(.uppercase)
-      .font(CSFont.eyebrow)
+      .font(font)
       .tracking(2.2)
       .foregroundStyle(color)
   }

@@ -63,6 +63,11 @@ pub enum IpcEventPayload {
     /// Passive, capture-bound `CompactProjection` paint; no document authority.
     #[serde(rename = "compact_projection")]
     CompactProjection { json: String },
+    /// A long dictation hold was refused because one of Codescribe's own
+    /// message fields owns the caret. UI-only: the field points at its own
+    /// microphone; no capture opened and the controller stayed idle.
+    #[serde(rename = "composer_dictation_redirected")]
+    ComposerDictationRedirected,
 }
 
 /// Serializable mirror of [`EngineEvent`], tagged by `type` in snake_case.

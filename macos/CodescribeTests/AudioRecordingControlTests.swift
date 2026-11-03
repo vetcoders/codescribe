@@ -54,12 +54,26 @@ final class AudioRecordingControlTests: XCTestCase {
     XCTAssertTrue(panel.canStartRecording(state, tray: tray))
   }
 
+  func testErrorAfterCaptureStartedRetainsItsFrozenDuration() {
+    var now: TimeInterval = 100
+    let state = OverlayState(nowProvider: { now })
+    state.handleRecordingPreparing()
+    XCTAssertNil(state.elapsedCaptureSeconds())
+    state.handleRecordingStarted()
+    now = 112
+    state.handleError(message: "synthetic-started-failure")
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 12)
+    now = 130
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 12, "A started take's duration remains frozen")
+    XCTAssertTrue(state.sessionTimerPaused)
+  }
+
   func testAudioRetryInvokesSharedAdmissionOnceInsteadOfFencedDirectStart() async {
     let state = OverlayState(autoSendEnabled: { false }, micAccessProvider: { true })
     defer { state.finishControllerRecording() }
     state.prepareForExternalStart()
     state.handleError(message: "synthetic-start-failure")
-    XCTAssertNotNil(state.elapsedCaptureSeconds(), "failed capture retains its clock fence")
+    XCTAssertNil(state.elapsedCaptureSeconds(), "Preparing never started a physical take")
     XCTAssertFalse(state.recording)
     XCTAssertFalse(state.warmingUp)
     let engine = MockTrayEngine()

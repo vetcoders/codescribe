@@ -9,13 +9,14 @@
 #   --all    print every Bus line instead of one per reducer burst
 #
 # Bus path resolves like the runtime (bus-demux.py --print-bus-path). Log path:
-# $CODESCRIBE_LOG_PATH, else $CODESCRIBE_DATA_DIR/logs/codescribe.log.
+# $CODESCRIBE_LOG_PATH, else $CODESCRIBE_DATA_DIR/data.noindex/logs/codescribe.log
+# (Config::churn_dir in core/config/loader.rs owns data.noindex).
 # Timestamps are UTC as written by both sources; the date is stripped for display.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 bus=$(python3 "$here/bus-demux.py" --print-bus-path)
-log=${CODESCRIBE_LOG_PATH:-${CODESCRIBE_DATA_DIR:-$HOME/.codescribe}/logs/codescribe.log}
+log=${CODESCRIBE_LOG_PATH:-${CODESCRIBE_DATA_DIR:-$HOME/.codescribe}/data.noindex/logs/codescribe.log}
 
 since="" until="" warn=0
 while [ $# -gt 0 ]; do
@@ -24,7 +25,7 @@ while [ $# -gt 0 ]; do
     --until) until=$2; shift 2 ;;
     --warn) warn=1; shift ;;
     --all) export BUS_ALL=1; shift ;;
-    *) sed -n '2,12p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,14p' "$0" >&2; exit 2 ;;
   esac
 done
 

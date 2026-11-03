@@ -97,6 +97,28 @@ class SendHoldTests(unittest.TestCase):
         self.assertEqual(lease.held, {})
         self.assertEqual(lease.pending[row["delivery_id"]], row)
 
+    def test_sync_context_survives_held_revision_and_expiry_without_changing_ownership(self):
+        lease = self.lease()
+        peers = [{"channel": "5", "audience": "tomek", "provider": "codex",
+                  "provider_session_id": "peer-session", "lease_id": "b" * 32}]
+        row = self.payload(lease, also_sent_to=peers, also_sent_to_basis="sync_selection")
+        with mock.patch.object(DEMUX.time, "time", return_value=NOW):
+            self.assertFalse(lease.queue_delivery(row))
+            self.assertEqual(lease.pending, {})
+            lease.control_delivery(self.control(row, "revise", text="Corrected held text"))
+        with mock.patch.object(DEMUX.time, "time", return_value=NOW + 11):
+            ready = lease.ready_held()
+            self.assertEqual(len(ready), 1)
+            self.assertTrue(lease.queue_delivery(ready[0]))
+        pending = list(lease.pending.values())
+        self.assertEqual(len(pending), 1)
+        projection = DEMUX.conversation_envelope(pending[0])
+        self.assertEqual(projection["text"], "Corrected held text")
+        self.assertEqual(projection["also_sent_to"], peers)
+        self.assertEqual(projection["also_sent_to_basis"], "sync_selection")
+        self.assertEqual(projection["lease_id"], self.lease_id)
+        self.assertEqual(projection["provider_session_id"], self.session)
+
     def test_future_row_parks_without_publication_or_lifecycle_bell(self):
         lease = self.lease()
         row = self.payload(lease)

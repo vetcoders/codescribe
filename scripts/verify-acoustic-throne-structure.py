@@ -50,8 +50,8 @@ AST_BODIES = {
     "finish": "core/audio/streaming_recorder.rs",
     "copy_stop_error": "core/audio/streaming_recorder.rs",
     "finalize_take_archive": "core/audio/streaming_recorder.rs",
-    "terminal_finality": "core/pipeline/acoustic_ledger.rs",
-    "has_no_capture_facts": "core/pipeline/acoustic_ledger.rs",
+    "terminal_finality": "core/pipeline/acoustic_ledger/fence.rs",
+    "has_no_capture_facts": "core/pipeline/acoustic_ledger/fence.rs",
     "matches_refused_document": "app/presentation/transcript_bus.rs",
     "process_terminal_stop_error": "app/controller/mod.rs",
 }
@@ -770,6 +770,7 @@ def residue_occurrences(
     needle: str,
     *,
     direct_test_functions: set[tuple[str, int, str]] | None = None,
+    literal_test_scopes: set[tuple[tuple[str, int, int], str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     complete_occurrences = require_complete_regex_evidence(
         regex_payload,
@@ -780,6 +781,7 @@ def residue_occurrences(
         occurrence_key(row) for row in forbidden_occurrences(exact_payload)
     }
     proven_test_functions = direct_test_functions or set()
+    proven_literal_scopes = literal_test_scopes or set()
     rows: list[dict[str, Any]] = []
     for occurrence in complete_occurrences:
         if occurrence_key(occurrence) in exact_fail_gate:
@@ -792,13 +794,19 @@ def residue_occurrences(
             int(occurrence.get("line", 0)),
             str(occurrence.get("matched_text", "")),
         ) in proven_test_functions
+        literal_scope_proven = (
+            occurrence_key(occurrence), matched_identifier,
+            str(occurrence.get("match_role", "unknown")),
+        ) in proven_literal_scopes
         residue_class, reason = classify_substring_residue(
             occurrence,
             needle,
             # Keep the legacy keyword used by frozen wrapper tests, but feed it
             # only a complete Loctree receipt. Raw Rust source is not anatomy.
-            disabled_cfg_any=is_direct_test_function,
+            disabled_cfg_any=is_direct_test_function or literal_scope_proven,
         )
+        if literal_scope_proven:
+            reason = "exact code row has complete Loctree literal test scope; regex scope differs"
         rows.append(
             {
                 "file": str(occurrence.get("file", "")),
@@ -1000,6 +1008,38 @@ def direct_test_function_keys(
     return candidates
 
 
+def literal_test_scope_keys(
+    verifier: StructuralVerifier, regex_payloads: dict[str, Any]
+) -> set[tuple[tuple[str, int, int], str, str]]:
+    """Authenticate unresolved regex rows against complete exact literal evidence.
+
+    Regex can lose out-of-line cfg(test) module scope. A literal receipt may
+    resolve that row, but only at the same file, line, column, identifier and
+    code role. Exact retired-name hits keep their separate fail gate.
+    """
+    candidates: dict[str, set[tuple[tuple[str, int, int], str, str]]] = {}
+    for needle, payload in regex_payloads.items():
+        rows = require_complete_regex_evidence(
+            payload, needle, expected_query=substring_identifier_pattern(needle))
+        for row in rows:
+            residue_class, _ = classify_substring_residue(row, needle)
+            if residue_class != "unclassified_requires_review":
+                continue
+            identifier = str(row["matched_text"])
+            key = (occurrence_key(row), identifier, str(row.get("match_role", "unknown")))
+            candidates.setdefault(identifier, set()).add(key)
+    proven: set[tuple[tuple[str, int, int], str, str]] = set()
+    for identifier, keys in sorted(candidates.items()):
+        rows = require_complete_literal_evidence(verifier.literal_occurrences(identifier), identifier)
+        for row in rows:
+            key = (occurrence_key(row), str(row.get("matched_text", "")),
+                   str(row.get("match_role", "unknown")))
+            if (row.get("scope_classification") == "test" and key in keys
+                    and key[2] in {"reference", "definition", "import"}):
+                proven.add(key)
+    return proven
+
+
 def build_residue_by_substring(
     verifier: StructuralVerifier, forbidden_symbols: list[str]
 ) -> dict[str, Any]:
@@ -1017,12 +1057,14 @@ def build_residue_by_substring(
     proven_test_functions = direct_test_function_keys(
         verifier, regex_payloads, test_attribute_lines
     )
+    proven_literal_scopes = literal_test_scope_keys(verifier, regex_payloads)
     by_needle = {
         needle: residue_occurrences(
             regex_payloads[needle],
             exact_payloads[needle],
             needle,
             direct_test_functions=proven_test_functions,
+            literal_test_scopes=proven_literal_scopes,
         )
         for needle in forbidden_symbols
     }

@@ -9,10 +9,11 @@
 #       --apple-id "your@email.com" --team-id "TEAMID" --password "app-specific-pwd"
 #
 # Usage:
+#   ./scripts/notarize.sh --app <signed-app-path>
 #   ./scripts/notarize.sh Codescribe-<VERSION>.dmg [app-path]
 #   NOTARY_PROFILE=MyProfile ./scripts/notarize.sh Codescribe.dmg
 #
-# The optional second argument points at the signed .app to verify/staple. It
+# The optional second argument points at the already-stapled .app to verify. It
 # defaults to the Xcode-built product (macos/build/Build/Products/Release), the
 # same bundle build-dmg.sh packages — the old bundle/ hand-built path is retired.
 #
@@ -44,10 +45,19 @@ if [ $# -lt 1 ]; then
     exit 1
 fi
 
-DMG_FILE="$1"
-BUNDLE_DIR="${2:-$DEFAULT_BUNDLE_DIR}"
+APP_ONLY=0
+if [[ "$1" == --app ]]; then
+    [[ $# -eq 2 ]] || { echo "Usage: $0 --app <signed-app-path>" >&2; exit 2; }
+    APP_ONLY=1
+    BUNDLE_DIR="$2"
+    DMG_FILE=""
+else
+    [[ $# -le 2 ]] || { echo "Usage: $0 <dmg_file> [stapled-app-path]" >&2; exit 2; }
+    DMG_FILE="$1"
+    BUNDLE_DIR="${2:-$DEFAULT_BUNDLE_DIR}"
+fi
 
-if [ ! -f "$DMG_FILE" ]; then
+if [[ "$APP_ONLY" -eq 0 && ! -f "$DMG_FILE" ]]; then
     echo "✗ DMG not found: $DMG_FILE"
     exit 1
 fi
@@ -61,7 +71,8 @@ fi
 echo "═══════════════════════════════════════════════════════════"
 echo "  Codescribe Notarization"
 echo "═══════════════════════════════════════════════════════════"
-echo "  DMG:     ${DMG_FILE}"
+echo "  App:     ${BUNDLE_DIR}"
+if [[ "$APP_ONLY" -eq 0 ]]; then echo "  DMG:     ${DMG_FILE}"; fi
 echo "  Profile: ${NOTARY_PROFILE}"
 echo "───────────────────────────────────────────────────────────"
 
@@ -74,13 +85,27 @@ if ! codesign --verify --deep --strict "${BUNDLE_DIR}" 2>/dev/null; then
 fi
 echo "  ✓ Signature valid"
 
+NOTARY_ARCHIVE_DIR=""
+trap 'if [[ -n "$NOTARY_ARCHIVE_DIR" ]]; then rm -rf "$NOTARY_ARCHIVE_DIR"; fi' EXIT
+if [[ "$APP_ONLY" -eq 1 ]]; then
+    NOTARY_ARCHIVE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codescribe-notary.XXXXXXXX")"
+    SUBMIT_FILE="$NOTARY_ARCHIVE_DIR/${APP_NAME}.zip"
+    ditto -c -k --keepParent "$BUNDLE_DIR" "$SUBMIT_FILE"
+else
+    if ! xcrun stapler validate "$BUNDLE_DIR"; then
+        echo "✗ App must be stapled before creating the DMG. Rebuild with make release-standard." >&2
+        exit 1
+    fi
+    SUBMIT_FILE="$DMG_FILE"
+fi
+
 # Step 2: Submit for notarization
 echo ""
 echo "▶ Submitting to Apple Notary Service..."
 echo "  This may take 5-15 minutes..."
 
 set +e
-SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG_FILE" \
+SUBMIT_OUTPUT=$(xcrun notarytool submit "$SUBMIT_FILE" \
     --keychain-profile "$NOTARY_PROFILE" \
     --wait \
     --timeout 30m 2>&1)
@@ -121,17 +146,19 @@ fi
 echo ""
 echo "▶ Stapling notarization ticket..."
 
-# Staple to app
-xcrun stapler staple "${BUNDLE_DIR}"
-echo "  ✓ Stapled to ${APP_NAME}.app"
-
-# Staple to DMG
-xcrun stapler staple "$DMG_FILE"
-echo "  ✓ Stapled to ${DMG_FILE}"
+if [[ "$APP_ONLY" -eq 1 ]]; then
+    xcrun stapler staple "$BUNDLE_DIR"
+    xcrun stapler validate "$BUNDLE_DIR"
+    echo "  ✓ App stapled before packaging: $BUNDLE_DIR"
+else
+    xcrun stapler staple "$DMG_FILE"
+    xcrun stapler validate "$DMG_FILE"
+    echo "  ✓ Stapled to ${DMG_FILE}"
+fi
 
 # Stapling rewrites the DMG bytes, so the .sha256 build-dmg.sh wrote at create
 # time no longer matches — refresh it or the published checksum is a lie.
-if [ -f "${DMG_FILE}.sha256" ]; then
+if [[ "$APP_ONLY" -eq 0 && -f "${DMG_FILE}.sha256" ]]; then
   (
     cd "$(dirname "$DMG_FILE")"
     shasum -a 256 "$(basename "$DMG_FILE")" > "$(basename "$DMG_FILE").sha256"
@@ -148,7 +175,11 @@ echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo "  Notarization Complete!"
 echo "═══════════════════════════════════════════════════════════"
-echo "  DMG ready for distribution: ${DMG_FILE}"
+if [[ "$APP_ONLY" -eq 1 ]]; then
+    echo "  App ready to package: ${BUNDLE_DIR}"
+else
+    echo "  DMG ready for distribution: ${DMG_FILE}"
+fi
 echo ""
 echo "  Users can now install without Gatekeeper warnings."
 echo "───────────────────────────────────────────────────────────"

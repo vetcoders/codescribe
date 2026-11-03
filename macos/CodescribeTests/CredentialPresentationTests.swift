@@ -55,12 +55,13 @@ final class CredentialPresentationTests: XCTestCase {
         "global key-status flags cannot impersonate this provider's credential")
       XCTAssertEqual(engine.keyWrites, 0)
       // An account and a key are alternatives: whichever is missing reads
-      // "Optional" once the other covers the provider.
+      // "Optional" once the other covers the provider. A stored account says
+      // "Saved" like a stored key; the row label already names the account.
       XCTAssertEqual(
         model.selectedProviderAccountStatus,
-        account ? "Connected" : (key ? "Optional" : "Not connected"))
+        account ? "Saved" : (key ? "Optional" : "Not connected"))
       XCTAssertEqual(
-        model.selectedProviderKeyStatus, key ? "Set" : (account ? "Optional" : "Not set"))
+        model.selectedProviderKeyStatus, key ? "Saved" : (account ? "Optional" : "Not set"))
       engine.provider.accountSignedIn = !account
       engine.provider.apiKeySet = !key
       model.refreshProviderAccess()
@@ -107,7 +108,9 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertFalse(lane.usesDiscoveredPicker)
     XCTAssertTrue(lane.discoveryDescription.contains("needs an API key"))
     XCTAssertTrue(lane.discoveryDescription.contains("model ID"))
-    XCTAssertEqual(lane.availabilityDescription, "Connected account")
+    // One "Saved" word for stored credentials (W0-03, a11); the lane row
+    // already names the account, and the word never claims acceptance.
+    XCTAssertEqual(lane.availabilityDescription, "Saved")
     XCTAssertFalse(lane.discoveryFailed, "a missing key is not a failed fetch")
     XCTAssertNil(lane.discoveryErrorDetails)
     let cached = LLMLaneModel(
@@ -131,10 +134,10 @@ final class CredentialPresentationTests: XCTestCase {
       lane: .formatting, runtime: runtime, provider: provider, configuredModel: "formatter-model",
       discovery: CsModelDiscovery(
         providerId: provider.id, status: "no_key", message: nil, models: []))
-    XCTAssertEqual(lane.availabilityDescription, "Connected account")
-    XCTAssertEqual(lane.availabilityTint, CSColor.oliveLight)
+    XCTAssertEqual(lane.availabilityDescription, "Saved")
+    XCTAssertEqual(lane.availabilityTint, CSColor.secondaryInk)
     XCTAssertEqual(
-      SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.oliveLight)
+      SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.secondaryInk)
     XCTAssertEqual(
       lane.discoveryDescription,
       "The model list needs an API key. You can enter a model ID by hand.")
@@ -142,7 +145,7 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertFalse(lane.usesDiscoveredPicker)
     provider.accountSignedIn = false
     XCTAssertEqual(
-      SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.terracottaText)
+      SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.dangerLight)
   }
 
   /// A stored key is presence, not validity: the lane says "Stored API key"
@@ -185,10 +188,10 @@ final class CredentialPresentationTests: XCTestCase {
       discovery: CsModelDiscovery(
         providerId: provider.id, status: "key_rejected",
         message: "{\"error\":\"Incorrect API key provided\"}", models: []))
-    XCTAssertEqual(rejectedWithAccount.availabilityDescription, "Connected account")
+    XCTAssertEqual(rejectedWithAccount.availabilityDescription, "Saved")
     XCTAssertEqual(
       rejectedWithAccount.discoveryDescription,
-      "The API key was rejected, so there is no model list. The account still works."
+      "The API key was rejected, so there is no model list. The account remains saved."
     )
 
     // Any other failure is a plain fetch error: the key is never blamed on a guess.

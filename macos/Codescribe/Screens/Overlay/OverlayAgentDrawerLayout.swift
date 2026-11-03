@@ -18,7 +18,7 @@ enum OverlayAgentDrawerLayout {
   /// The host can grow to this floor when a side column is requested. During
   /// a smaller frame's transition both panes still receive a positive width.
   static func minimumSplitWindowWidth(textScale: CGFloat) -> CGFloat {
-    (240 + 320) * textScale
+    contentMinimumWidth(textScale: textScale) + minimumConversationWidth(textScale: textScale)
   }
 
   static func isDocked(windowWidth: CGFloat, textScale: CGFloat) -> Bool {
@@ -37,10 +37,11 @@ enum OverlayAgentDrawerLayout {
   /// Clamp a remembered width to the current split instead of replacing the
   /// conversation with a full-width roster when the window becomes narrower.
   static func drawerWidth(
-    textScale: CGFloat, preferredWidth: CGFloat = 300, windowWidth: CGFloat = .infinity
+    textScale: CGFloat, preferredWidth: CGFloat = 300, windowWidth: CGFloat = .infinity,
+    minimumWidth: CGFloat? = nil
   ) -> CGFloat {
     let preferred = preferredWidth.isFinite ? preferredWidth : 300
-    let width = max(240 * textScale, preferred * textScale)
+    let width = max(minimumWidth ?? contentMinimumWidth(textScale: textScale), preferred * textScale)
     guard windowWidth.isFinite else { return width }
     let available = max(0, windowWidth)
     let conversation =
@@ -51,7 +52,18 @@ enum OverlayAgentDrawerLayout {
 
   static func minimumConversationWidth(textScale: CGFloat) -> CGFloat { 320 * textScale }
 
-  /// A folded conversation keeps a real edge column for its reveal control.
+  /// The narrowest width the list's rows are laid out at. A divider dragged
+  /// narrower clips them from the trailing side, leaving their pills.
+  static func contentMinimumWidth(textScale: CGFloat) -> CGFloat { 240 * textScale }
+
+  /// The divider is the list's only fold: released narrower than this, the
+  /// list folds to its rail of pills.
+  static func railFoldWidth(textScale: CGFloat) -> CGFloat { 160 * textScale }
+
+  /// A rail's divider dragged this far toward the conversation unfolds the list.
+  static let railUnfoldDrag: CGFloat = 40
+
+  /// A folded conversation keeps a real edge column beside the divider.
   static func conversationEdgeWidth(textScale: CGFloat) -> CGFloat { 38 * textScale }
 
   /// The roster covers the window: the conversation beside it is hidden.
@@ -90,12 +102,11 @@ enum OverlayAgentDrawerLayout {
     (12 + 7.2 + 12) * textScale + 3
   }
 
-  /// A 2-point inset on each side of the widest pill and the panel's resize
-  /// band at the trailing edge. The band is the native resize target itself,
-  /// not an additional gutter: the pills end before it starts, so they stay
-  /// fully clickable while the edge resize keeps working.
+  /// A 2-point inset on each side of the widest pill, plus equal gutters
+  /// matching the panel's native resize band. The pills stay centered in the
+  /// full column while ending before the trailing resize target starts.
   static func railWidth(textScale: CGFloat) -> CGFloat {
-    railPillWidth(textScale: textScale) + 4 + OverlayResizeHit.band
+    railPillWidth(textScale: textScale) + 4 + 2 * OverlayResizeHit.band
   }
 
   /// The name pill's width: 224 at 1.0.

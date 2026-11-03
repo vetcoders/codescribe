@@ -1417,7 +1417,7 @@ private func isolatedSettingsModel(licenseService: LicenseService = .preview) ->
 private func densityServer(_ name: String, enabled: Bool) -> CsMcpServer {
   CsMcpServer(
     name: name, command: "fixture-mcp", args: ["--offline"], envKeys: ["FIXTURE_ENV"],
-    enabled: enabled, transport: "stdio", endpoint: "", authRef: "")
+    enabled: enabled, transport: "stdio", endpoint: "", authRef: "", oauth: false)
 }
 
 private struct DensityLicenseStore: LicenseKeychainStoring {

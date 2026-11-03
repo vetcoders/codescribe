@@ -5,6 +5,38 @@ import XCTest
 
 @MainActor
 final class OverlayIntercomInstancesTests: XCTestCase {
+  func testHumanInboxDetachPersistsWithoutAnAgentOwnerOrDisplayedDigit() throws {
+    let suite = "CodescribeTests.human-inbox.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let inbox = OverlayConversation.humanInbox()
+    let identity = OverlayIntercomCardIdentity(digit: inbox.channel, conversation: inbox)
+    var desktop = OverlayIntercomDesktopState()
+    let instance = OverlayIntercomInstance(
+      identity: identity, frame: CGRect(x: 100, y: 100, width: 380, height: 360))
+    desktop.upsert(instance)
+    let impostor = OverlayConversation(
+      id: "unknown", channel: "10", name: "Not the inbox", owner: nil, messages: [])
+    desktop.upsert(
+      OverlayIntercomInstance(
+        identity: .init(digit: "10", conversation: impostor), frame: instance.frame))
+    let store = OverlayIntercomDesktopStore(defaults: defaults)
+    store.save(desktop)
+    let restored = store.load()
+    XCTAssertEqual(restored.instances.count, 1, "only the canonical human identity is ownerless")
+    let human = try XCTUnwrap(restored.openInstance(for: identity))
+    XCTAssertTrue(human.matches(inbox))
+    XCTAssertTrue(human.ownerID.isEmpty)
+    XCTAssertEqual(human.displayDigit, "")
+    XCTAssertEqual(human.displayTitle, String(localized: "Your Inbox"))
+    XCTAssertEqual(restored.groupRows(of: [identity]), [])
+    var closed = human
+    closed.closed = true
+    desktop = restored
+    desktop.upsert(closed)
+    XCTAssertEqual(desktop.groupRows(of: [identity]), [identity])
+  }
+
   private func identity(
     _ name: String, channel: String, lease: String
   ) throws -> OverlayIntercomCardIdentity {
@@ -50,10 +82,8 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     XCTAssertNil(desktop.openInstance(for: lena), "closing frees the row for a fresh detach")
   }
 
-  /// Maciej, 17:48Z on the greyed ghost row: "likwidować, chować… jak ty
-  /// myślisz". An agent standing in its own window, open or mini, leaves the
-  /// group's rows; closing that window hands the row back in its place.
-  func testAnAgentInItsOwnWindowLeavesTheGroupUntilTheWindowCloses() throws {
+  /// A conversation has one visible placement; docking restores its roster position.
+  func testDetachedAgentLeavesGroupUntilDockedAcrossWindowStatesAndRestoration() throws {
     let lena = try identity("lena", channel: "2", lease: "a")
     let olga = try identity("olga", channel: "3", lease: "c")
     let astra = try identity("astra", channel: "4", lease: "d")
@@ -64,15 +94,23 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     var torn = OverlayIntercomInstance(
       identity: olga, frame: CGRect(x: 600, y: 400, width: 380, height: 360), minimized: true)
     desktop.upsert(torn)
-    XCTAssertEqual(desktop.groupRows(of: roster), [lena, astra], "a mini stands outside the stack")
+    XCTAssertEqual(
+      desktop.groupRows(of: roster), [lena, astra], "a minimized detached window owns its placement"
+    )
 
     torn.minimized = false
     desktop.upsert(torn)
-    XCTAssertEqual(desktop.groupRows(of: roster), [lena, astra], "so does the open window")
+    XCTAssertEqual(
+      desktop.groupRows(of: roster), [lena, astra], "an open detached window owns its placement")
+    let restored = try JSONDecoder().decode(
+      OverlayIntercomDesktopState.self, from: JSONEncoder().encode(desktop))
+    XCTAssertEqual(restored.groupRows(of: roster), [lena, astra])
+    XCTAssertEqual(restored.openInstance(for: olga)?.id, torn.id)
+    XCTAssertEqual(desktop.openInstance(for: olga)?.id, torn.id)
 
     torn.closed = true
     desktop.upsert(torn)
-    XCTAssertEqual(desktop.groupRows(of: roster), roster, "closing returns the row in order")
+    XCTAssertEqual(desktop.groupRows(of: roster), roster, "closing preserves roster order")
 
     let usurper = try identity("olga", channel: "3", lease: "e")
     desktop.upsert(

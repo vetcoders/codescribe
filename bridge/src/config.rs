@@ -94,6 +94,10 @@ pub struct CsSettings {
     pub hold_arm_modifier: String,
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
+    /// `TAP_MAX_MS`: longest Option press that still counts as a tap.
+    pub tap_max_ms: u64,
+    /// `TYPING_QUIET_MS`: Option taps count for nothing this long after typing.
+    pub typing_quiet_ms: u64,
     pub toggle_silence_sec: f32,
     /// `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
     pub whisper_context_window_sec: f32,
@@ -189,6 +193,22 @@ pub struct CsSettings {
     pub agent_auto_send: bool,
     /// Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
     pub agent_send_hold_sec: u32,
+    /// Built-in Agent auto-send countdown, `1...30` seconds.
+    pub agent_auto_send_delay_sec: u64,
+    /// A built-in Agent take without voice ends after this, `10...120` seconds.
+    pub agent_take_voiceless_end_sec: u64,
+    /// `continuous` | `end_after_message`.
+    pub agent_channel_session_policy: String,
+    /// Effective channel send pause; `0` only from the env override (off).
+    pub agent_channel_send_pause_sec: f32,
+    /// `settings` | `env_override`: where that pause came from.
+    pub agent_channel_send_pause_source: String,
+    /// `0` = never, else `15...600` seconds.
+    pub agent_channel_voiceless_close_sec: u64,
+    /// `off` | `light_plus` | `formatter`.
+    pub agent_channel_segment_finish: String,
+    /// Formatter budget for one channel message, `1...10` seconds.
+    pub agent_channel_format_wait_sec: u64,
     pub dump_audio_logs: bool,
     // ── Persisted lane selection and engine settings ──
     /// Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -200,7 +220,13 @@ pub struct CsSettings {
     pub llm_assistive_model: Option<String>,
     /// Agent reasoning level: `default` (the model's own) or a chosen level.
     pub llm_assistive_reasoning: String,
+    /// Automatic formatting policy: off, correction or smart. A stored earlier
+    /// `max`/`creative` reads as smart here; Max is invoked through Format.
     pub formatting_level: Option<String>,
+    /// Formatter Keywords: preferred vocabulary given as context to
+    /// Correction, Smart and Max. Normalized terms from the same seal; empty
+    /// means no extra context. Written only through `set_formatter_keywords`.
+    pub formatter_keywords: Vec<String>,
     pub whisper_model: Option<String>,
     /// Read-only diagnostic env override captured by the runtime snapshot.
     /// ASR mode owns the default; Settings never writes this value.
@@ -256,6 +282,8 @@ impl CsSettings {
             hold_arm_modifier: config.hold_arm_modifier.as_str().to_string(),
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
+            tap_max_ms: config.tap_max_ms,
+            typing_quiet_ms: config.typing_quiet_ms,
             toggle_silence_sec: config.toggle_silence_sec,
             whisper_context_window_sec: config.whisper_context_window_sec,
             whisper_adaptive_buffer: config.whisper_adaptive_buffer,
@@ -312,6 +340,18 @@ impl CsSettings {
             agent_enter_sends: config.agent_enter_sends,
             agent_auto_send: config.agent_auto_send,
             agent_send_hold_sec: runtime.agent_send_hold_sec(),
+            agent_auto_send_delay_sec: config.agent_auto_send_delay_sec,
+            agent_take_voiceless_end_sec: config.agent_take_voiceless_end_sec,
+            agent_channel_session_policy: config.agent_channel.session_policy.as_str().to_string(),
+            agent_channel_send_pause_sec: config.agent_channel.send_pause_sec,
+            agent_channel_send_pause_source: config
+                .agent_channel
+                .send_pause_source
+                .as_str()
+                .to_string(),
+            agent_channel_voiceless_close_sec: config.agent_channel.voiceless_close_sec,
+            agent_channel_segment_finish: config.agent_channel.segment_finish.as_str().to_string(),
+            agent_channel_format_wait_sec: config.agent_channel.format_wait_sec,
             dump_audio_logs: config.dump_audio_logs,
             // Editable Settings fields prefer persisted intent from the same
             // seal so a fresh UI write is visible; sealed lanes fill gaps when
@@ -337,7 +377,8 @@ impl CsSettings {
                 .to_string(),
             llm_assistive_provider: setting_string(settings.llm_assistive_provider.clone())
                 .or_else(|| Some(assistive.provider().as_string())),
-            formatting_level: Some(runtime.formatting_policy().as_str().to_string()),
+            formatting_level: Some(runtime.automatic_formatting_policy().as_str().to_string()),
+            formatter_keywords: runtime.formatter_keywords().to_vec(),
             whisper_model: setting_string(settings.whisper_model.clone()),
             layered_transcription: runtime.layered_transcription_override().map(str::to_owned),
             agent_workspace_roots,
@@ -463,14 +504,12 @@ impl From<CsPasteMode> for PasteMode {
 /// UI-safe API-key liveness bucket. No variant carries secret material.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsApiKeyProbeStatus {
-    /// The key authenticated. Also covers a processed-but-rejected request
-    /// (most 4xx other than auth/quota): the server got far enough to prove the
-    /// credential is live, even when this particular probe body was refused.
+    /// The provider accepted this probe. This does not verify another model,
+    /// OAuth account or a later request.
     Ok,
     /// The provider rejected the credential itself (401 / 403).
     Invalid,
-    /// The key authenticates but the account cannot pay for the call
-    /// (429 / 402, or an explicit quota/billing marker in the body).
+    /// A usage, quota or billing limit (429 / 402 or an explicit marker).
     NoQuota,
     /// No verdict was reachable — transport failure or a provider 5xx.
     Network,
@@ -479,6 +518,8 @@ pub enum CsApiKeyProbeStatus {
     /// This account has no cheap liveness probe or belongs
     /// to no registered provider.
     Unsupported,
+    /// The request was rejected without establishing credential acceptance.
+    Rejected,
 }
 
 /// Result of one Settings "Test" action for a Keychain account.
@@ -504,6 +545,13 @@ pub struct CsFormattingProbe {
     pub model: String,
     /// The reasoning effort sent; `None` when the request carried no field.
     pub reasoning: Option<String>,
+    /// Fixed diagnostic code, never a raw provider error or response body.
+    pub failure_code: Option<String>,
+    pub http_status: Option<u16>,
+    /// Configured cloud route; excludes path, query and user information.
+    pub endpoint_host: Option<String>,
+    pub credential_source: String,
+    pub checked_at_unix_ms: u64,
 }
 
 impl From<codescribe_core::llm::ai_formatting::FormattingProbe> for CsFormattingProbe {
@@ -525,6 +573,11 @@ impl From<codescribe_core::llm::ai_formatting::FormattingProbe> for CsFormatting
             provider: probe.provider,
             model: probe.model,
             reasoning: probe.reasoning.map(str::to_string),
+            failure_code: probe.failure.map(|failure| failure.code().to_string()),
+            http_status: probe.failure.and_then(|failure| failure.http_status()),
+            endpoint_host: probe.endpoint_host,
+            credential_source: probe.credential_source.to_string(),
+            checked_at_unix_ms: probe.checked_at_unix_ms,
         }
     }
 }
@@ -812,7 +865,8 @@ pub struct CsTrayToggles {
     /// Read-only projection `paste_mode != off` for binary on/off surfaces.
     /// Never persisted; `paste_mode` is the one stored choice.
     pub auto_paste_enabled: bool,
-    /// Normalized automatic formatting policy: off, correction, smart, or max.
+    /// Normalized automatic formatting policy: off, correction or smart.
+    /// A stored earlier `max`/`creative` value reads as smart.
     pub formatting_level: String,
     /// UI-initiated recording starts in the assistive lane when enabled.
     pub start_assistive: bool,
@@ -987,11 +1041,23 @@ impl CodescribeConfig {
     }
 
     /// Persist a normalized Auto Format policy and return prompt-free
-    /// post-write truth. Unknown policy IDs fail without changing disk state.
+    /// post-write truth. Only off, correction and smart are automatic; Max and
+    /// unknown policy IDs fail without changing disk state.
     pub fn set_auto_format_level(&self, level: String) -> Result<CsTrayToggles, CsError> {
         let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
             msg: error.to_string(),
         })?;
+        // Max is the overlay assistant, invoked for one operation through
+        // Format. It is never stored as the automatic policy; the explicit
+        // formatter APIs keep selecting it per request.
+        if policy == FormattingPolicy::Max {
+            return Err(CsError::Config {
+                msg: format!(
+                    "{level:?} is not an automatic formatting level; Max runs only when \
+                     invoked through Format. Expected off, correction, or smart"
+                ),
+            });
+        }
         let mut settings = UserSettings::load();
         settings.formatting_level = Some(policy.as_str().to_string());
         settings.save().map_err(|error| CsError::Config {
@@ -1000,6 +1066,36 @@ impl CodescribeConfig {
         reload_hotkey_runtime();
         crate::hotkeys::refresh_live_controller_config();
         Ok(self.tray_toggles())
+    }
+
+    /// Saved formatter Keywords, normalized, from one runtime snapshot. A
+    /// failed read serves the last good snapshot instead of an empty list.
+    pub fn get_formatter_keywords(&self) -> Vec<String> {
+        load_runtime_snapshot_for_lane()
+            .formatter_keywords()
+            .to_vec()
+    }
+
+    /// Replace the formatter Keywords and return the normalized stored list.
+    /// Only `formatter_keywords` changes; the automatic level and every other
+    /// setting keep their stored values. The settings owner refuses an
+    /// oversized list whole; nothing is truncated and the error is returned.
+    /// An empty list removes the Keywords.
+    pub fn set_formatter_keywords(&self, keywords: Vec<String>) -> Result<Vec<String>, CsError> {
+        let mut settings = UserSettings::load();
+        settings.formatter_keywords = (!keywords.is_empty()).then_some(keywords);
+        settings.save().map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        // The returned list is what the next formatting request receives:
+        // the snapshot sealed from the document just written.
+        let runtime =
+            Config::load_runtime_snapshot_without_keychain().map_err(|error| CsError::Config {
+                msg: error.to_string(),
+            })?;
+        reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(runtime.formatter_keywords().to_vec())
     }
 
     /// Lightweight tray-only settings read uses files, env and cached credentials.
@@ -1014,7 +1110,7 @@ impl CodescribeConfig {
             transcription_overlay_enabled: config.transcription_overlay_enabled,
             paste_mode: config.paste_mode.into(),
             auto_paste_enabled: config.paste_mode != PasteMode::Off,
-            formatting_level: runtime.formatting_policy().as_str().to_string(),
+            formatting_level: runtime.automatic_formatting_policy().as_str().to_string(),
             start_assistive: config.tray_start_assistive,
             // Notes Mode is "on" only when BOTH flags are set (dictation → note
             // AND no paste). Reading just quick_notes_enabled could show the toggle
@@ -1100,6 +1196,13 @@ impl CodescribeConfig {
         Config::config_dir().to_string_lossy().to_string()
     }
 
+    /// Absolute path to the high-churn data folder (`<config dir>/data.noindex`),
+    /// resolved by `Config::churn_dir`. Swift places its diagnostic log and
+    /// overlay caches here instead of rebuilding the path.
+    pub fn churn_dir(&self) -> String {
+        Config::churn_dir().to_string_lossy().to_string()
+    }
+
     /// Settings JSON belongs to the settings loader, not the app-data directory.
     /// Resolves the path only; does not load credentials or create a file.
     pub fn settings_file_path(&self) -> String {
@@ -1177,9 +1280,13 @@ impl CodescribeConfig {
         let mut providers = Vec::new();
         let mut account_errors = std::collections::HashMap::new();
         for provider in registry.all() {
-            let account_unavailable = provider
-                .oauth_vendor
-                .is_some_and(|vendor| account_auth::account_status_snapshot(vendor).is_err());
+            let account_unavailable = if provider.wire == WireFamily::GoogleGenerateContent {
+                account_auth::google_credential_status().is_err()
+            } else {
+                provider
+                    .oauth_vendor
+                    .is_some_and(|vendor| account_auth::account_status_snapshot(vendor).is_err())
+            };
             let option = provider_option(provider);
             if account_unavailable {
                 // Never expose token JSON or its decoder details in public UI metadata.
@@ -2101,9 +2208,11 @@ fn agent_secret_accounts() -> &'static [&'static str] {
         "LLM_OPENAI_API_KEY",
         "LLM_ANTHROPIC_API_KEY",
         "LLM_XAI_API_KEY",
+        "LLM_GOOGLE_API_KEY",
         account_auth::OPENAI_ACCOUNT_TOKENS_ACCOUNT,
         account_auth::ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT,
         account_auth::XAI_ACCOUNT_TOKENS_ACCOUNT,
+        account_auth::GOOGLE_ACCOUNT_TOKENS_ACCOUNT,
     ]
 }
 
@@ -2134,16 +2243,21 @@ fn agent_env_keys() -> &'static [&'static str] {
         "LLM_OPENAI_API_KEY",
         "LLM_ANTHROPIC_API_KEY",
         "LLM_XAI_API_KEY",
+        "LLM_GOOGLE_API_KEY",
         "LLM_OPENAI_ACCOUNT_TOKENS",
         "LLM_ANTHROPIC_ACCOUNT_TOKENS",
         "LLM_XAI_ACCOUNT_TOKENS",
+        "LLM_GOOGLE_ACCOUNT_TOKENS",
         "LLM_OPENAI_OAUTH_CLIENT_ID",
         "LLM_ANTHROPIC_OAUTH_CLIENT_ID",
         "LLM_XAI_OAUTH_CLIENT_ID",
+        "LLM_GOOGLE_OAUTH_CLIENT_ID",
         "AGENT_WORKSPACE_ROOTS",
         "AGENT_ENTER_SENDS",
         "AGENT_AUTO_SEND",
         "CODESCRIBE_AGENT_SEND_HOLD_SEC",
+        "AGENT_AUTO_SEND_DELAY_SEC",
+        "AGENT_TAKE_VOICELESS_END_SEC",
     ]
 }
 
@@ -2740,6 +2854,21 @@ fn resolve_catalog_provider(
 }
 
 fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
+    let google = provider.wire == WireFamily::GoogleGenerateContent;
+    let google_status = google.then(account_auth::google_credential_status);
+    let google_account_available = google_status
+        .as_ref()
+        .is_some_and(|status| status.as_ref().is_ok_and(|status| status.available));
+    let google_message = google_status.as_ref().map(|status| match status {
+        Ok(status) => status.message.clone(),
+        Err(_) => "Google account credentials are unavailable or unsupported. Use an API key or authorized-user ADC; service-account and external-account credentials are not supported.".into(),
+    }).map(|message| {
+        if codescribe_core::llm::vendors::google::is_cloud_code_assist(&provider.endpoint) {
+            format!("Cloud Code Assist uses account credentials; API keys cannot authenticate this endpoint. {message}")
+        } else {
+            message
+        }
+    });
     let status = provider
         .oauth_vendor
         .map(account_auth::cached_account_status);
@@ -2754,15 +2883,29 @@ fn provider_option(provider: ResolvedProvider) -> CsProviderOption {
         display_name: provider.display_name,
         wire: provider.wire.as_str().to_string(),
         endpoint: provider.endpoint,
-        api_key_set: keychain::key_present(&provider.key_account),
+        api_key_set: keychain::key_present(&provider.key_account)
+            || (google && account_auth::google_api_key().is_some()),
         api_key_account: provider.key_account,
-        key_required: provider.key_required,
-        account_signed_in: status.as_ref().is_some_and(|status| status.signed_in),
+        key_required: provider.key_required && !google_account_available,
+        account_signed_in: if google {
+            // Saved storage is not a token-acceptance receipt. ADC remains
+            // externally managed and is not shown as a removable account.
+            google_status
+                .as_ref()
+                .and_then(|status| status.as_ref().ok())
+                .map_or_else(
+                    || keychain::key_present(account_auth::GOOGLE_ACCOUNT_TOKENS_ACCOUNT),
+                    |status| status.stored_account,
+                )
+        } else {
+            status.as_ref().is_some_and(|status| status.signed_in)
+        },
         account_login_enabled: status
             .as_ref()
             .is_some_and(|status| status.client_id_configured),
         account_identity: status.as_ref().and_then(|status| status.identity.clone()),
-        account_status_message: status.map(|status| status.message).unwrap_or_default(),
+        account_status_message: google_message
+            .unwrap_or_else(|| status.map(|status| status.message).unwrap_or_default()),
         oauth_client_id: provider
             .oauth_vendor
             .and_then(|vendor| account_auth::client_id_for_provider(vendor).ok()),
@@ -2892,6 +3035,7 @@ impl From<ApiKeyLivenessStatus> for CsApiKeyProbeStatus {
             ApiKeyLivenessStatus::Network => Self::Network,
             ApiKeyLivenessStatus::Missing => Self::Missing,
             ApiKeyLivenessStatus::Unsupported => Self::Unsupported,
+            ApiKeyLivenessStatus::Rejected => Self::Rejected,
         }
     }
 }
@@ -3694,6 +3838,21 @@ mod settings_snapshot_tests {
         assert_eq!(fs::read(path).unwrap(), source);
     }
 
+    /// Swift reads the high-churn folder from the core resolver, never from a
+    /// string it builds itself.
+    #[test]
+    #[serial]
+    fn churn_dir_export_is_the_core_resolver_under_the_data_override() {
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let exported = CodescribeConfig {}.churn_dir();
+        assert_eq!(exported, Config::churn_dir().to_string_lossy());
+        assert_eq!(
+            std::path::PathBuf::from(exported),
+            root.path().canonicalize().unwrap().join("data.noindex")
+        );
+    }
+
     #[test]
     #[serial]
     fn diagnostic_settings_project_valid_saved_configuration() {
@@ -3824,7 +3983,14 @@ mod settings_snapshot_tests {
         let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
         let config = CodescribeConfig::new();
         assert_eq!(config.service_key_accounts(), ["GITHUB_TOKEN"]);
-        assert_eq!(config.available_providers().len(), 4);
+        let providers = config.available_providers();
+        assert_eq!(providers.len(), 5);
+        let google = providers
+            .iter()
+            .find(|provider| provider.id == "google-gemini")
+            .expect("Google is discoverable through the native provider catalog");
+        assert_eq!(google.wire, "google-generate-content");
+        assert_eq!(google.api_key_account, "LLM_GOOGLE_API_KEY");
         assert!(
             config
                 .available_providers()

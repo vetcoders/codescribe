@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "codescribe": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["-E", "${PLUGIN_ROOT}/scripts/openai.py", "--serve"],
+      "cwd": "${PLUGIN_ROOT}"
+    }
+  }
+}

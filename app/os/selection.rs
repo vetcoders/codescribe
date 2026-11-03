@@ -212,8 +212,28 @@ pub(crate) fn paste_latch_from_frontmost(
     current: Option<String>,
     prior: Option<String>,
 ) -> Option<String> {
+    let current = current.filter(|name| !is_system_non_target(name));
+    let prior = prior.filter(|name| !is_system_non_target(name));
     let (app, _) = resolve_effective_frontmost_app(current, prior);
     app.filter(|name| !is_codescribe_app(name))
+}
+
+/// System processes that can hold the frontmost slot but never take a paste:
+/// the login and lock window and the system's own prompts. Latching one makes
+/// every stop-path paste wait for a focus that cannot come (div0, 1 XI 2026:
+/// `target_app=Some("loginwindow") frontmost_app=Some("Vibecrafted")`).
+fn is_system_non_target(app_name: &str) -> bool {
+    const SYSTEM_NON_TARGETS: [&str; 5] = [
+        "loginwindow",
+        "UserNotificationCenter",
+        "CoreServicesUIAgent",
+        "SecurityAgent",
+        "universalAccessAuthWarn",
+    ];
+    let name = app_name.trim();
+    SYSTEM_NON_TARGETS
+        .iter()
+        .any(|system| name.eq_ignore_ascii_case(system))
 }
 
 fn last_foreign_frontmost_store() -> &'static Mutex<Option<TimedFrontmostApp>> {
@@ -224,7 +244,7 @@ fn last_foreign_frontmost_store() -> &'static Mutex<Option<TimedFrontmostApp>> {
 fn remember_foreign_frontmost(name: Option<&str>) {
     let Some(name) = name
         .map(str::trim)
-        .filter(|s| !s.is_empty() && !is_codescribe_app(s))
+        .filter(|s| !s.is_empty() && !is_codescribe_app(s) && !is_system_non_target(s))
     else {
         return;
     };
@@ -1147,5 +1167,50 @@ mod tests {
 
         assert_eq!(app.as_deref(), Some("Codescribe"));
         assert!(!should_restore);
+    }
+
+    #[test]
+    fn paste_latch_ignores_loginwindow_and_system_prompts() {
+        for system_app in [
+            "loginwindow",
+            "UserNotificationCenter",
+            "CoreServicesUIAgent",
+            "SecurityAgent",
+            "universalAccessAuthWarn",
+        ] {
+            assert_eq!(
+                paste_latch_from_frontmost(Some(system_app.to_string()), None),
+                None
+            );
+            assert_eq!(
+                paste_latch_from_frontmost(
+                    Some(system_app.to_string()),
+                    Some("Ghostty".to_string())
+                ),
+                Some("Ghostty".to_string())
+            );
+            assert_eq!(
+                paste_latch_from_frontmost(
+                    Some("Codescribe".to_string()),
+                    Some(system_app.to_string())
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn remember_foreign_frontmost_refuses_loginwindow_and_system_prompts() {
+        remember_foreign_frontmost(Some("Ghostty"));
+        for system_app in [
+            "loginwindow",
+            "UserNotificationCenter",
+            "CoreServicesUIAgent",
+            "SecurityAgent",
+            "universalAccessAuthWarn",
+        ] {
+            remember_foreign_frontmost(Some(system_app));
+            assert_eq!(last_foreign_frontmost().as_deref(), Some("Ghostty"));
+        }
     }
 }

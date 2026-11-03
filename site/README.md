@@ -157,3 +157,13 @@ Self-hosted via `@fontsource` (Space Grotesk 400/500/600/700, JetBrains Mono
 400/500/600), imported in `Layout.astro`. Per-weight CSS includes the
 `latin-ext` subset via `unicode-range`, so Polish glyphs render without hotlinking
 Google Fonts. `font-display: swap` is the @fontsource default.
+
+## Nightly download
+
+`/nightly/` is a separate website-only download lane. Its metadata in
+`src/data/nightly.json` names the exact notarized DMG, build, source commit,
+byte count and post-staple SHA-256. Publish those immutable bytes and their
+checksum under `/rc/nightly/` before deploying the page. Keep the stable
+GitHub-release snapshot and `/appcast.xml` unchanged. Nightly publication
+creates no GitHub Release or tag. See [Nightly distribution](../docs/NIGHTLY_RELEASE.md)
+for production and acceptance; preserve both rsync exclusions during redeploy.

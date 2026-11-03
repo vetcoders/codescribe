@@ -74,7 +74,7 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
       XCTAssertEqual(wizard.progressLabel, "Step 1 of 8")
       wizard.selectMode(.agentic)
       XCTAssertEqual(wizard.progressLabel, "Step 1 of 9")
-      XCTAssertEqual(wizard.progressFraction, 0, accuracy: 0.0001)
+      XCTAssertEqual(wizard.progressFraction, 1.0 / 9.0, accuracy: 0.0001)
     }
   }
 

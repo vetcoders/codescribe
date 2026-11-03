@@ -553,6 +553,50 @@ class AgentToolsTests(Fixture):
         metadata = (self.server.calls.parent / "send" / ("a" * 24 + ".json")).read_text()
         self.assertNotIn(values["text"], metadata)
 
+    def test_send_receipt_matches_the_lease_name_in_any_letter_case(self):
+        # Attach stores the lease name casefolded and the publisher reports that
+        # spelling as the sender; the scope keeps the name as configured.
+        self.state["name"] = "ada"
+        self.save()
+        DEMUX.write_channel_binding(self.root, "2", "ada", "codex", SESSION, str(self.bus))
+        DEMUX.write_channel_binding(self.root, "1", "Lin", "codex", "peer-1", str(self.root / "peer-1.jsonl"))
+        self.server = AGENT.AgentMailbox(DEMUX, self.native,
+            AGENT.Scope({**self.config, "broadcast_enabled": True}))
+
+        def native_send(flags, **kwargs):
+            args = argparse.Namespace(bridge_home=self.root, provider="codex", session=SESSION,
+                                      send=flags[1], to=flags[3])
+            stream = io.StringIO()
+            with patch.object(DEMUX, "publish_reply_event", return_value={"stream_id": "synthetic",
+                    "stream_dev": 1, "stream_inode": 2, "offset": 0, "length": 12}), \
+                    patch.object(DEMUX, "live_follower_pid", return_value=None), contextlib.redirect_stdout(stream):
+                DEMUX.send_peer_command(args)
+            return json.loads(stream.getvalue())
+
+        values = {"request_id": "b" * 24, "text": "Hello, this agent is on the BUS.", "to": "0"}
+        with patch.object(self.native, "run", side_effect=native_send) as run:
+            first = self.call("send", values)
+            second = self.call("send", values)
+            self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.server.scope.name, "Ada")
+        self.assertEqual(first["state"], "published")
+        self.assertEqual(first, second)
+
+    def test_send_receipt_from_another_sender_stays_uncertain_and_is_not_resent(self):
+        DEMUX.write_channel_binding(self.root, "2", "Ada", "codex", SESSION, str(self.bus))
+        self.server = AGENT.AgentMailbox(DEMUX, self.native,
+            AGENT.Scope({**self.config, "broadcast_enabled": True}))
+        foreign = {"kind": "peer_message_published", "sender": "lin", "message_id": "c" * 24,
+                   "recipients": [{"peer": "ada", "channel": "2", "follower_live": False}]}
+        values = {"request_id": "c" * 24, "text": "Hello, this agent is on the BUS.", "to": "0"}
+        with patch.object(self.native, "run", return_value=foreign) as run:
+            first = self.call("send", values)
+            second = self.call("send", values)
+            self.assertEqual(run.call_count, 1)
+        self.assertEqual(first["state"], "uncertain")
+        self.assertNotIn("message_id", first)
+        self.assertEqual(first, second)
+
     def test_roster_and_direct_send_follow_all_nine_slots_and_renames(self):
         self.server.scope = AGENT.Scope({**self.config, 'message_targets': 'current_bus'})
         for slot in map(str, range(1, 10)):

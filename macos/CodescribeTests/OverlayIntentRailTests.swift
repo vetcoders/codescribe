@@ -1010,8 +1010,8 @@ final class OverlayIntentRailTests: XCTestCase {
       onPreviewToggle: { previewCollapsed.toggle() }
     )
     XCTAssertTrue(collapsed.showsStop)
-    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Expand to compact widget")
-    XCTAssertEqual(collapsed.previewSymbol, "chevron.left", "click opens MIDI")
+    XCTAssertEqual(collapsed.previewAccessibilityLabel, "Expand transcript")
+    XCTAssertEqual(collapsed.previewSymbol, "chevron.down", "click reveals the transcript")
 
     let unavailable = OverlayRecordingControls(
       canFinish: false,

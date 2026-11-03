@@ -48,13 +48,13 @@ fn test_get_config_defaults() {
     );
     assert_eq!(
         settings.mode_binding_for(WorkMode::Formatting),
-        ShortcutBinding::DoubleLeftOption,
-        "Default formatting binding"
+        ShortcutBinding::Disabled,
+        "Default formatting binding: Option gestures are opt-in"
     );
     assert_eq!(
         settings.mode_binding_for(WorkMode::Assistive),
-        ShortcutBinding::DoubleRightOption,
-        "Default assistive binding"
+        ShortcutBinding::Disabled,
+        "Default assistive binding: Option gestures are opt-in"
     );
 
     let config = Config::load();

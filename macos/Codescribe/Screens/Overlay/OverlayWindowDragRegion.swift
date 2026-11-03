@@ -57,17 +57,20 @@ final class OverlayWindowDragRegionView: NSView {
 /// Cursor decisions stay with the existing FloatingOverlayPanel owner.
 struct OverlayMenuCursorRegion: NSViewRepresentable {
   var cursor: NSCursor = .arrow
+  var coalescesHover = true
   var onHover: ((Bool) -> Void)? = nil
 
   func makeNSView(context: Context) -> OverlayMenuCursorRegionView {
     let view = OverlayMenuCursorRegionView()
     view.cursor = cursor
+    view.coalescesHover = coalescesHover
     view.onHover = onHover
     return view
   }
 
   func updateNSView(_ nsView: OverlayMenuCursorRegionView, context: Context) {
     nsView.cursor = cursor
+    nsView.coalescesHover = coalescesHover
     nsView.onHover = onHover
   }
 }
@@ -75,9 +78,12 @@ struct OverlayMenuCursorRegion: NSViewRepresentable {
 final class OverlayMenuCursorRegionView: NSView {
   private weak var owner: FloatingOverlayPanel?
   var cursor: NSCursor = .arrow
+  var coalescesHover = true
   var onHover: ((Bool) -> Void)?
   private(set) var hovered = false
   private var hoverArea: NSTrackingArea?
+  private var deliveredHover = false
+  private var hoverTask: Task<Void, Never>?
 
   func updateHover(at point: NSPoint?) {
     let inside =
@@ -91,45 +97,105 @@ final class OverlayMenuCursorRegionView: NSView {
   private func setHovered(_ inside: Bool) {
     guard hovered != inside else { return }
     hovered = inside
-    onHover?(inside)
+    if !coalescesHover {
+      deliverHover()
+      return
+    }
+    guard onHover != nil, hoverTask == nil else { return }
+    // Hit geometry and cursor ownership stay synchronous. Only SwiftUI paint
+    // and hint callbacks take the latest enter/leave within one display beat.
+    let framesPerSecond = max(30, min(window?.screen?.maximumFramesPerSecond ?? 60, 120))
+    let delay = Duration.nanoseconds(1_000_000_000 / framesPerSecond)
+    hoverTask = Task { @MainActor [weak self] in
+      do {
+        try await Task.sleep(for: delay)
+      } catch {
+        return
+      }
+      guard !Task.isCancelled, let self else { return }
+      self.hoverTask = nil
+      guard self.window != nil else { return }
+      self.deliverHover()
+    }
+  }
+
+  private func deliverHover() {
+    guard deliveredHover != hovered else { return }
+    deliveredHover = hovered
+    onHover?(hovered)
   }
 
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
+    let rect = bounds.intersection(visibleRect)
+    // View updates do not imply a new pointer region. Replacing an unchanged
+    // area makes AppKit queue needless exit/entry events and cursor resets.
+    if let hoverArea, hoverArea.rect == rect { return }
     if let hoverArea { removeTrackingArea(hoverArea) }
+    hoverArea = nil
+    guard !rect.isEmpty else {
+      setHovered(false)
+      return
+    }
     let area = NSTrackingArea(
-      rect: bounds.intersection(visibleRect), options: [.mouseEnteredAndExited, .activeAlways],
+      rect: rect, options: [.mouseEnteredAndExited, .activeAlways],
       owner: self, userInfo: nil)
     addTrackingArea(area)
     hoverArea = area
   }
 
-  override func mouseEntered(with event: NSEvent) { updateHover(at: event.locationInWindow) }
-  override func mouseExited(with event: NSEvent) { setHovered(false) }
+  /// Both native callbacks enter here with their original source identity.
+  /// A late exit from a retired area must not clear a newer hover entry.
+  func handleHoverEvent(at point: NSPoint?, from area: NSTrackingArea?, in sourceWindow: NSWindow?)
+  {
+    if let area, area !== hoverArea { return }
+    if let sourceWindow, sourceWindow !== window { return }
+    updateHover(at: point)
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    handleHoverEvent(at: event.locationInWindow, from: event.trackingArea, in: event.window)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    handleHoverEvent(at: nil, from: event.trackingArea, in: event.window)
+  }
 
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    setHovered(false)
+    hoverTask?.cancel()
+    hoverTask = nil
+    hovered = false
+    // Removal must withdraw an already delivered hint even when no next frame
+    // will run. A pending entry is discarded rather than replayed after unmount.
+    deliverHover()
     owner?.menuCursorRegions.remove(self)
     owner = window as? FloatingOverlayPanel
     owner?.menuCursorRegions.add(self)
   }
 }
 
-/// Geometry and mounted identity only; this background never intercepts clicks.
+/// Mounted bubble bounds and Copy payload; this background never intercepts clicks.
 /// A click inside opens the panel keyboard gate for selectable SwiftUI text.
 struct OverlaySelectableTextRegion: NSViewRepresentable {
+  var copyText = ""
+
   func makeNSView(context: Context) -> OverlaySelectableTextRegionView {
-    OverlaySelectableTextRegionView()
+    let view = OverlaySelectableTextRegionView()
+    view.copyText = copyText
+    return view
   }
 
-  func updateNSView(_ nsView: OverlaySelectableTextRegionView, context: Context) {}
+  func updateNSView(_ nsView: OverlaySelectableTextRegionView, context: Context) {
+    nsView.copyText = copyText
+  }
 }
 
 final class OverlaySelectableTextRegionView: NSView {
-  private weak var owner: FloatingOverlayPanel?
+  private weak var owner: NSPanel?
+  var copyText = ""
 
   func contains(windowPoint: NSPoint) -> Bool {
     window != nil && !isHiddenOrHasHiddenAncestor
@@ -138,10 +204,17 @@ final class OverlaySelectableTextRegionView: NSView {
 
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+  func copyContent() -> Bool {
+    guard copyText.contains(where: { !$0.isWhitespace }) else { return false }
+    let text = copyText
+    Task { @MainActor in await chatCopy(text) }
+    return true
+  }
+
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    owner?.selectableTextRegions.remove(self)
-    owner = window as? FloatingOverlayPanel
-    owner?.selectableTextRegions.add(self)
+    owner?.conversationTextRegions?.remove(self)
+    owner = window as? NSPanel
+    owner?.conversationTextRegions?.add(self)
   }
 }

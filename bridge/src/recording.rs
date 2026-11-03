@@ -357,6 +357,9 @@ pub enum CsTranscriptDelivery {
     SinkAccepted,
     /// No sink took the text; it stays recoverable.
     Retained,
+    /// The assistive take ended without voice; no destination was chosen and
+    /// nothing may send the text on its own.
+    EndedWithoutVoice,
     /// The text was copied to the clipboard without posting a paste.
     CopiedToClipboard,
     /// The text is armed for a later explicit insert, not pasted yet.
@@ -411,6 +414,22 @@ pub struct CsPresentationStatusEvent {
     pub calibration_version: Option<String>,
 }
 
+/// UTF-16 range within ephemeral canvas text for an uncommitted (pending) fragment.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsPendingRange {
+    pub utf16_start: u32,
+    pub utf16_end: u32,
+}
+
+impl From<codescribe::presentation::emitter::PendingRange> for CsPendingRange {
+    fn from(value: codescribe::presentation::emitter::PendingRange) -> Self {
+        Self {
+            utf16_start: value.utf16_start,
+            utf16_end: value.utf16_end,
+        }
+    }
+}
+
 /// Capture-bound ephemeral paint. No document or delivery mutation is exposed.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct CsCompactProjection {
@@ -424,6 +443,8 @@ pub struct CsCompactProjection {
     /// Read-only unanchored text beside the canvas, in PCM order. Swift paints
     /// it as secondary text; it is never canvas, Bus, or delivery bytes.
     pub evidence: Vec<CsUnanchoredEvidence>,
+    #[uniffi(default = [])]
+    pub pending_ranges: Vec<CsPendingRange>,
 }
 
 /// One unanchored text and the capture range it belongs to. `reason` is the
@@ -454,6 +475,7 @@ impl From<codescribe::presentation::emitter::CompactProjection> for CsCompactPro
                     reason: item.reason,
                 })
                 .collect(),
+            pending_ranges: value.pending_ranges.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -495,6 +517,7 @@ impl CsTranscriptDelivery {
             TranscriptDelivery::ComposerPending => Self::ComposerPending,
             TranscriptDelivery::SinkAccepted => Self::SinkAccepted,
             TranscriptDelivery::Retained => Self::Retained,
+            TranscriptDelivery::EndedWithoutVoice => Self::EndedWithoutVoice,
             TranscriptDelivery::CopiedToClipboard => Self::CopiedToClipboard,
             TranscriptDelivery::DeferredInsertArmed => Self::DeferredInsertArmed,
         }
@@ -573,6 +596,7 @@ impl CsPresentationStatusEvent {
             PresentationStatusKind::AdmissionRefused => "admission_refused",
             PresentationStatusKind::CalibrationSucceeded => "calibration_succeeded",
             PresentationStatusKind::CalibrationFailed => "calibration_failed",
+            PresentationStatusKind::FormattingDegraded => "formatting_degraded",
         };
         Self {
             schema: event.schema.clone(),
@@ -731,6 +755,8 @@ pub struct CsWhisperModelOption {
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct CsWhisperModelCatalog {
     pub options: Vec<CsWhisperModelOption>,
+    /// Optional cache roots still being read; available rows remain selectable.
+    pub discovery_pending: bool,
     /// Effective configured reference (env → settings.json → env file → default).
     pub configured: String,
     /// What the next engine load will use; nil when resolution currently fails.
@@ -775,10 +801,13 @@ fn whisper_selection_override_kind() -> Option<&'static str> {
 }
 
 /// Snapshot the canonical local-Whisper catalog for Settings → Dictation.
+/// Live Swift consumer: `Screens/Settings/SettingsEngine.swift` calls
+/// `whisperModelCatalog` through `WhisperModelCatalogIO` off the main actor.
+/// No Rust caller edge is expected for this UniFFI product entry point.
 #[uniffi::export]
 pub fn whisper_model_catalog() -> CsWhisperModelCatalog {
     let configured = codescribe_core::stt::whisper::singleton::configured_model_reference();
-    let options = codescribe_core::config::models::whisper_model_options(Some(&configured));
+    let inventory = codescribe_core::config::models::whisper_model_options(Some(&configured));
     let resolved_path =
         codescribe_core::config::models::resolve_runtime_whisper_model_path(Some(&configured))
             .ok()
@@ -786,7 +815,9 @@ pub fn whisper_model_catalog() -> CsWhisperModelCatalog {
     let loaded = codescribe_core::stt::whisper::singleton::loaded_model_identity()
         .map(|identity| identity.describe());
     CsWhisperModelCatalog {
-        options: options
+        discovery_pending: inventory.discovery_pending,
+        options: inventory
+            .options
             .into_iter()
             .map(|option| CsWhisperModelOption {
                 id: option.id,
@@ -820,7 +851,7 @@ pub async fn set_local_whisper_model(reference: String) -> Result<CsWhisperModel
         let options = codescribe_core::config::models::whisper_model_options(Some(
             &codescribe_core::stt::whisper::singleton::configured_model_reference(),
         ));
-        let Some(option) = options.iter().find(|option| option.id == reference) else {
+        let Some(option) = options.options.iter().find(|option| option.id == reference) else {
             return Err(CsError::Config {
                 msg: format!("unknown local Whisper model: {reference}"),
             });
@@ -834,6 +865,14 @@ pub async fn set_local_whisper_model(reference: String) -> Result<CsWhisperModel
                 msg: format!("{reference} cannot be selected: {reason}"),
             });
         }
+        // Discovery may return a cached row while another root is unavailable.
+        // Revalidate the chosen bundle before persisting any configuration.
+        codescribe_core::config::models::validate_whisper_model_bundle(std::path::Path::new(
+            &option.path,
+        ))
+        .map_err(|error| CsError::Config {
+            msg: format!("{reference} cannot be selected: {error:#}"),
+        })?;
         if codescribe_core::stt::whisper::embedded::is_embedded_available() {
             return Err(CsError::Config {
                 msg: "this build embeds Whisper; the on-disk model selection has no effect"
@@ -2542,5 +2581,47 @@ mod tests {
         );
         assert!(device_is_available(Some("Studio Mic"), &devices));
         assert!(!device_is_available(Some("Unplugged Mic"), &devices));
+    }
+
+    #[test]
+    fn whisper_model_catalog_is_consumed_by_swift_settings_engine() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../macos/Codescribe/Screens/Settings/SettingsEngine.swift");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert!(
+            source.contains("whisperModelCatalog()"),
+            "{} no longer calls whisperModelCatalog(); remove the export",
+            path.display()
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn whisper_model_catalog_projects_inventory_across_bridge() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+
+        let catalog = whisper_model_catalog();
+        assert!(!catalog.configured.trim().is_empty());
+
+        let directories = model_directories().expect("inspect empty temp model directories");
+        assert!(directories.is_empty());
+
+        let err = set_local_whisper_model("nonexistent-whisper-model".to_string())
+            .await
+            .expect_err("unknown local Whisper model reference must fail closed");
+        assert!(matches!(
+            err,
+            CsError::Config { ref msg } if msg.contains("unknown local Whisper model")
+        ));
+
+        let _ = std::hint::black_box(download_whisper_model);
+        let _ = std::hint::black_box(
+            audio_input_snapshot as fn() -> Result<CsAudioInputSnapshot, CsError>,
+        );
+        let _ = std::hint::black_box(mic_permission_granted as fn() -> bool);
+        let _ = std::hint::black_box(request_mic_permission as fn() -> bool);
     }
 }

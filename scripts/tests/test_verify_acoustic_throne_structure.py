@@ -630,6 +630,62 @@ class SubstringResidueTests(unittest.TestCase):
             VERIFIER.validate_receipt_shape(inconsistent)
 
 
+class LiteralTestScopeProofTests(unittest.TestCase):
+    def prove(self, regex_row, literal_row, mutate=None):
+        identifier = "OverlayPasteResult"
+        literal = literal_payload(identifier, literal_row)
+        if mutate:
+            mutate(literal)
+        class Reader:
+            def literal_occurrences(self, query):
+                if query != identifier:
+                    raise AssertionError(query)
+                return literal
+        payload = regex_payload(regex_row, query=VERIFIER.substring_identifier_pattern("overlay_paste"))
+        return VERIFIER.literal_test_scope_keys(Reader(), {"overlay_paste": payload}), payload
+
+    def test_exact_test_scope_resolves_regex_module_scope_without_hiding_exact_hits(self):
+        row = occurrence("OverlayPasteResult", file="app/controller/acceptance.rs", line=20, column=8)
+        typed = {**row, "scope_classification": "test"}
+        keys, payload = self.prove(row, typed)
+        residue = VERIFIER.residue_occurrences(payload, exact_payload(), "overlay_paste", literal_test_scopes=keys)
+        self.assertEqual(residue[0]["class"], "test_only_mutant")
+        self.assertIn("complete Loctree literal", residue[0]["reason"])
+        self.assertEqual(residue[0]["scope_classification"], "production", "retain the provider disagreement")
+        self.assertEqual(VERIFIER.residue_occurrences(payload, exact_payload(row), "overlay_paste", literal_test_scopes=keys), [])
+        self.assertEqual(VERIFIER.forbidden_occurrences(exact_payload(row)), [row])
+
+    def test_wrong_row_role_identifier_or_production_scope_cannot_prove_test_scope(self):
+        row = occurrence("OverlayPasteResult", file="app/controller/acceptance.rs", line=20, column=8)
+        for field, value in [("file", "other.rs"), ("line", 21), ("column", 9),
+                             ("match_role", "definition"),
+                             ("scope_classification", "production")]:
+            with self.subTest(field=field):
+                typed = {**row, "scope_classification": "test", field: value}
+                keys, payload = self.prove(row, typed)
+                self.assertEqual(keys, set())
+                residue = VERIFIER.residue_occurrences(payload, exact_payload(), "overlay_paste", literal_test_scopes=keys)
+                self.assertEqual(residue[0]["class"], "unclassified_requires_review")
+
+    def test_unknown_role_never_authenticates_test_scope(self):
+        row = occurrence("OverlayPasteResult", file="app/controller/acceptance.rs", match_role="unknown")
+        keys, payload = self.prove(row, {**row, "scope_classification": "test"})
+        self.assertEqual(keys, set())
+        residue = VERIFIER.residue_occurrences(payload, exact_payload(), "overlay_paste", literal_test_scopes=keys)
+        self.assertEqual(residue[0]["class"], "unclassified_requires_review")
+
+    def test_truncated_or_untrusted_literal_proof_is_refused(self):
+        row = occurrence("OverlayPasteResult", file="app/controller/acceptance.rs", line=20, column=8)
+        typed = {**row, "scope_classification": "test"}
+        for mutate in [lambda p: p["matches"].update(truncated=True),
+                       lambda p: p["literal_trust"].update(file_scope_resolved=False),
+                       lambda p: p.update(query="Other"),
+                       lambda p: p["matches"]["occurrences"][0].update(matched_text="OverlayPasteDelivery")]:
+            with self.subTest(mutate=mutate):
+                with self.assertRaises(RuntimeError):
+                    self.prove(row, typed, mutate)
+
+
 class CorridorProofTests(unittest.TestCase):
     def contract(self) -> list[dict[str, object]]:
         return [
@@ -3005,13 +3061,13 @@ class CurrentChainMutantTests(unittest.TestCase):
              "within_capture"),
             # The ledger goes back to assessing bare ranges without availability.
             ("ranges_only_assessment_restored",
-             "assess_seal_coverage", "core/pipeline/acoustic_ledger.rs",
+             "assess_seal_coverage", "core/pipeline/acoustic_ledger/replay.rs",
              "speech: &AcousticSpeechEvidence,",
              "speech_ranges: &[TailSampleRange],",
              "assess_seal_coverage"),
             # Absence of measurement stops refusing the terminal seal.
             ("unavailable_stops_refusing_the_seal",
-             "seal_terminal", "core/pipeline/acoustic_ledger.rs",
+             "seal_terminal", "core/pipeline/acoustic_ledger/fence.rs",
              "|| coverage.status.unavailable_reason().is_some()",
              "",
              "seal_terminal"),
@@ -3080,8 +3136,8 @@ class CurrentChainMutantTests(unittest.TestCase):
              [("utterance.range.session != state.session_id", "false")]),
             # The identity refusal warns and then continues anyway.
             ("identity_refusal_falls_through", "reconcile_silero_ledger",
-             [("        });\n        return false;\n    }\n    let apple_words",
-               "        });\n    }\n    let apple_words")]),
+             [("        });\n        return false;\n    }\n    let ledger = ledger_with_voiced_onsets(state, ledger);",
+               "        });\n    }\n    let ledger = ledger_with_voiced_onsets(state, ledger);")]),
             # Ownership is minted from the padded recognition context instead of
             # the exclusive closed span.
             ("ownership_minted_from_padded_range", "reconcile_silero_ledger",
@@ -3161,7 +3217,7 @@ class CurrentChainMutantTests(unittest.TestCase):
     def test_pinned_admission_bypasses_are_rejected(self):
         """Each pin bypass must fail at its own capture-to-ledger hop."""
         self.assertEqual(self.positive_failures, [])
-        ledger = "core/pipeline/acoustic_ledger.rs"
+        ledger = "core/pipeline/acoustic_ledger/reducer.rs"
         apple = "core/pipeline/streaming/apple_live_session.rs"
         cases = [
             ("pins_admitted_without_composition_check", "admit_pinned_label", ledger,
@@ -3276,6 +3332,15 @@ class CurrentDeliveryProjectionMutantTests(unittest.TestCase):
 
     def test_current_delivery_and_projection_chains_pass(self):
         self.assertEqual(self.positive_failures, [])
+
+    def test_rail_slot_dispatch_cannot_be_removed_from_the_rendered_chain(self):
+        path = "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift"
+        self.assertTrue(self.run_mutated(
+            "OverlayIntentRail", path, "mountedControl(slot)", "EmptyView()"
+        ))
+        self.assertTrue(self.run_mutated(
+            "mountedControl", path, "intentControl(intent)", "EmptyView()"
+        ))
 
     def test_tail_patch_retains_exact_owners_and_rejects_a_fourth_constructor(self):
         literal = "TailPatchRequest {"
@@ -3610,42 +3675,37 @@ class CaptureOrderingProofTests(unittest.TestCase):
                 self.assertNotIn("min_calls", invocation, invocation)
                 self.assertIn("minimum_count", invocation, invocation)
 
-    def test_local_const_callsite_attribution_limit_is_declared(self):
-        """A declared instrument limit, pinned so it cannot rot silently.
-
-        `seal_utterance_final` opens with a function-local `const`, and
-        Loctree attributes every callsite in that function to the constant
-        instead of the function. Its two real `admit_ledger_label` calls and
-        its `seal_sliced_by_silero` call therefore observe zero production
-        callsites, so those edges are deliberately NOT declared — declaring
-        them would be a red obligation caused by the provider, not the product.
-
-        The bodies below prove the calls exist. When the provider is fixed this
-        test goes red and forces the corridor to gain the missing edges, which
-        is exactly the behaviour a silent limit does not have.
-        """
+    def test_local_const_caller_edges_are_declared_and_proven(self):
+        """The repaired provider exposes all three calls despite a local const."""
         body = VERIFIER.corridor_body_rows(
             self.seed.body("seal_utterance_final", self.APPLE),
-            symbol="seal_utterance_final",
-            file=self.APPLE,
+            symbol="seal_utterance_final", file=self.APPLE,
             signature_contains=None,
         )
         self.assertEqual(len(body), 1)
         source = VERIFIER.code_without_comments_or_strings(body[0]["source"])
-        for present in ("admit_ledger_label(", "seal_sliced_by_silero(state,ev_tx,&segments)"):
-            self.assertIn(present, source, present)
+        self.assertIn("admit_ledger_label(", source)
+        self.assertIn("seal_sliced_by_silero(state,ev_tx,&segments)", source)
+        corridor = next(row for row in self.contracts if row["name"] == self.CORRIDOR)
+        for callee, minimum in (("admit_ledger_label", 2), ("seal_sliced_by_silero", 1)):
+            with self.subTest(callee=callee):
+                self.assertGreaterEqual(len(self.callsites(self.seed, callee, "seal_utterance_final")), minimum)
+                declared = [edge for edge in corridor["required_invocations"]
+                            if edge["caller"] == "seal_utterance_final" and edge["callee"] == callee]
+                self.assertEqual(len(declared), 1)
+                self.assertEqual(declared[0]["minimum_count"], minimum)
+
+    def test_missing_local_const_caller_edges_are_rejected(self):
         for callee in ("admit_ledger_label", "seal_sliced_by_silero"):
             with self.subTest(callee=callee):
-                self.assertEqual(
-                    self.callsites(self.seed, callee, "seal_utterance_final"), [],
-                    f"{callee}: provider now attributes this caller; declare the edge")
-        corridor = next(
-            row for row in self.contracts if row["name"] == self.CORRIDOR
-        )
-        for invocation in corridor["required_invocations"]:
-            self.assertNotEqual(
-                invocation["caller"], "seal_utterance_final",
-                "an edge is declared on a caller the provider cannot attribute")
+                clone = self.clone()
+                removed = self.callsites(clone, callee, "seal_utterance_final")
+                self.assertTrue(removed, "negative control must remove real evidence")
+                clone._occurrences[callee]["occurrences"] = [
+                    row for row in clone._occurrences[callee]["occurrences"] if row not in removed]
+                _, failures = VERIFIER.verify_code_corridors(clone, self.contracts)
+                self.assertTrue(any("seal_utterance_final" in failure and callee in failure
+                                    for failure in failures), failures)
 
 
 class OverlayRailCallsiteLimitTests(unittest.TestCase):

@@ -24,7 +24,7 @@ struct ToolSearchField: View {
         // Input text, not a label: the scale's control rung is semibold and
         // reads wrong under a caret, and the one input rung the pane owns
         // (`settingsInputChrome`) is mono and taller than this row allows.
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(Color.primary)
     }
     .padding(.horizontal, SettingsScale.controlInsetH)
@@ -32,8 +32,8 @@ struct ToolSearchField: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background {
       RoundedRectangle(cornerRadius: SettingsScale.controlRadius)
-        .fill(Color.primary.opacity(0.06))
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+        .fill(Color.primary.opacity(CSAlpha.fill))
+        .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
     }
     .overlay {
       CSFocusOutline(isFocused: searchFocused, cornerRadius: SettingsScale.controlRadius)

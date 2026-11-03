@@ -26,6 +26,7 @@ jobs:
           bash scripts/validate-envs.sh
           bash scripts/validate-gates.sh
           python3 -m unittest scripts/tests/test_env_registry.py
+          python3 -m unittest scripts/tests/test_pr_risk_vocabulary.py
 
       - name: Classify risk tier and check test-expectation changes on PRs
         if: github.event_name == 'pull_request'
@@ -156,6 +157,15 @@ jobs:
               if line.startswith("+++ b/"):
                   cur_file = line[6:]
               elif line.startswith("+") and not line.startswith("+++"):
+                  # Google CCA's onboarding tier is external protocol data.
+                  # Keep its spelling visible in the client; only this exact
+                  # literal in its owning module is exempt, never a comment,
+                  # identifier, another value, or another file.
+                  if (
+                      cur_file == "core/llm/account_auth/google.rs"
+                      and line[1:].strip() == '"legacy-tier"'
+                  ):
+                      continue
                   hit = word_re.search(line[1:])
                   if hit:
                       violations.append(f"{cur_file}: {hit.group(0)!r} in added line: {line[1:].strip()[:120]}")

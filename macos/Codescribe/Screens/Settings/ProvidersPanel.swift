@@ -25,7 +25,7 @@ struct ProvidersPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        String(localized: "Providers"),
+        SettingsSection.keys.title,
         blurb: String(
           localized: "Connect accounts or add API keys. Models are chosen under Agent › AI models.",
           comment: "Providers panel blurb; `AI models` is the Agent tab title")
@@ -37,12 +37,16 @@ struct ProvidersPanel: View {
       }
 
       if let error = model.providerAccessError {
-        Text(model.providerAccessResolved
-          ? String(localized: "Provider access is unavailable. The last checked values are shown below.")
-          : String(localized: "Provider access is unavailable. No credential status has been confirmed."))
-          .font(SettingsScale.helper)
-          .padding(.top, SettingsScale.sectionGap)
-        Text(error).font(CSFont.mono(10.5)).textSelection(.enabled)
+        Text(
+          model.providerAccessResolved
+            ? String(
+              localized: "Provider access is unavailable. The last checked values are shown below.")
+            : String(
+              localized: "Provider access is unavailable. No credential status has been confirmed.")
+        )
+        .font(SettingsScale.helper)
+        .padding(.top, SettingsScale.sectionGap)
+        Text(error).font(CSFont.mono(11)).textSelection(.enabled)
       }
       HStack(spacing: CSSpace.md) {
         // The status slot beside the chip carries the progress line, so the
@@ -119,11 +123,13 @@ struct ProviderAccessStatusSlot: View {
       HStack(spacing: CSSpace.sm) {
         ProgressView()
           .controlSize(.small)
-        Text(mutationPending
-          ? String(localized: "Updating provider access…")
-          : String(localized: "Checking provider access…"))
-          .font(SettingsScale.helper)
-          .lineLimit(1)
+        Text(
+          mutationPending
+            ? String(localized: "Updating provider access…")
+            : String(localized: "Checking provider access…")
+        )
+        .font(SettingsScale.helper)
+        .lineLimit(1)
       }
       .opacity(busy ? 1 : 0)
       .accessibilityHidden(!busy)
@@ -142,7 +148,7 @@ struct ProviderAccessStatusSlot: View {
 
   private var receipt: String {
     guard let checkedAt else { return "" }
-    let time = checkedAt.formatted(date: .omitted, time: .standard)
+    let time = checkedAt.formatted(date: .omitted, time: .shortened)
     return String(localized: "Checked at \(time)")
   }
 
@@ -172,10 +178,10 @@ struct LaneResetNotice: View {
 
   var body: some View {
     HStack(spacing: CSSpace.sm) {
-      Circle().fill(CSColor.amberLight).frame(width: 7, height: 7)
+      StatusToneGlyph(tone: .warn)
       Text(text)
         .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.amberLight)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(2)
     }
     .accessibilityIdentifier("lane-reset-notice")
@@ -213,14 +219,18 @@ struct ProviderCard: View {
   private var hasAccount: Bool {
     !isCustom && (provider.accountLoginEnabled || provider.accountSignedIn)
   }
-  /// A signed-in account stands in for the key only on the Responses wire:
-  /// the loader seals `account_auth` for that wire alone.
+  /// Responses and Google account availability are projected here.
   private var accountServesRequests: Bool {
-    !isCustom && provider.accountSignedIn && provider.wire == "responses"
+    !isCustom
+      && provider.accountSignedIn
+      && (provider.wire == "responses" || provider.wire == "google-generate-content")
   }
   /// "Responses" / "Messages" — the one thing every provider declares.
   private var wireLabel: String {
-    ["responses": "Responses", "messages": "Messages"][provider.wire] ?? provider.wire
+    [
+      "responses": "Responses", "messages": "Messages",
+      "google-generate-content": "GenerateContent",
+    ][provider.wire] ?? provider.wire
   }
   /// The badge is where the wire is named, so the card title must not name it
   /// twice. Core ships `OpenAI (Responses)` and `Anthropic (Messages)`
@@ -246,9 +256,8 @@ struct ProviderCard: View {
         vendorProviderHeader
       }
       // Key-optional hosts, and vendors whose connected account serves
-      // requests, read "Optional": one credential is enough. Only a Responses
-      // vendor's account serves requests (`core/config/loader.rs`); a
-      // signed-in Messages account does not, so its key stays required.
+      // requests, read "Optional": one credential is enough. A signed-in
+      // Messages account does not serve requests, so its key stays required.
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
         isSet: provider.apiKeySet,
@@ -262,7 +271,8 @@ struct ProviderCard: View {
           model.signOutAccount(providerId: provider.id)
         }
         .accessibilityLabel("Sign out \(provider.displayName)")
-      } else if hasAccount {
+      }
+      if hasAccount && model.providerAccountErrors[provider.id] == nil {
         AccountLoginRow(
           provider: provider,
           loginPending: model.accountLoginPending.contains(provider.id),
@@ -270,6 +280,17 @@ struct ProviderCard: View {
           onStart: { model.startAccountLogin(providerId: provider.id) },
           onSignOut: { model.signOutAccount(providerId: provider.id) }
         )
+      }
+      if provider.wire == "google-generate-content" && !hasAccount {
+        Text(provider.accountStatusMessage)
+          .font(SettingsScale.helper)
+          .foregroundStyle(CSColor.secondaryInk)
+          .textSelection(.enabled)
+        if provider.accountSignedIn {
+          SettingsChipButton("Remove stored account", tint: CSColor.secondaryInk) {
+            model.signOutAccount(providerId: provider.id)
+          }
+        }
       }
       DisclosureGroup(isExpanded: $showingAdvanced) {
         VStack(alignment: .leading, spacing: CSSpace.xs) {
@@ -338,7 +359,7 @@ struct ProviderCard: View {
         SettingsChipButton("Edit", tint: CSColor.secondaryInk) { onEdit?() }
           .accessibilityLabel("Edit custom provider \(provider.displayName)")
         SettingsChipButton(action: { confirmRemove = true }) {
-          CSIconView(icon: .delete, size: 12, weight: .semibold, color: CSColor.terracottaText)
+          CSIconView(icon: .delete, size: 12, weight: .semibold, color: CSColor.dangerLight)
             .frame(width: 10, height: 18)
         }
         .accessibilityLabel("Remove custom provider \(provider.displayName)")
@@ -353,8 +374,8 @@ struct ProviderCard: View {
       .foregroundStyle(CSColor.secondaryInk)
       .padding(.horizontal, CSSpace.xs)
       .padding(.vertical, 2)
-      .background(Capsule().fill(Color.primary.opacity(0.1)))
-      .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+      .background(Capsule().fill(Color.primary.opacity(CSAlpha.line)))
+      .overlay(Capsule().strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1))
       .accessibilityLabel("\(wireLabel) wire")
       .fixedSize(horizontal: true, vertical: false)
   }
@@ -450,7 +471,7 @@ struct CustomProviderForm: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text(isEdit ? "Edit custom provider." : "Add custom provider.")
+      Text(isEdit ? "Edit custom provider" : "Add custom provider")
         .font(CSFont.ui(20, .bold))
         .tracking(-0.3)
         .foregroundStyle(Color.primary)
@@ -469,9 +490,14 @@ struct CustomProviderForm: View {
         Picker("Wire", selection: $wire) {
           Text("Responses (/v1/responses)").tag("responses")
           Text("Messages (/v1/messages)").tag("messages")
+          Text("Gemini (GenerateContent)").tag("google-generate-content")
         }
-        .pickerStyle(.segmented)
+        // Protocol names include their API paths. A segmented control gives
+        // them one unbreakable intrinsic width and pushes the whole form past
+        // the sheet's edges; a native pop-up keeps all choices within the form.
+        .pickerStyle(.menu)
         .labelsHidden()
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityLabel("Custom provider wire")
       }
       field("Endpoint") {
@@ -485,7 +511,7 @@ struct CustomProviderForm: View {
         if let endpointError {
           Text(endpointError)
             .font(CSFont.ui(11, .medium))
-            .foregroundStyle(CSColor.terracottaText)
+            .foregroundStyle(CSColor.dangerLight)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("custom-provider-endpoint-error")
         }
@@ -501,7 +527,7 @@ struct CustomProviderForm: View {
       if let error {
         Text(error)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("custom-provider-form-error")
       }
@@ -512,10 +538,8 @@ struct CustomProviderForm: View {
       }
       HStack(spacing: 10) {
         Spacer()
-        Button("Cancel") { dismiss() }
-          .disabled(saving)
+        SettingsSaveButton(title: "Cancel", enabled: !saving) { dismiss() }
           .keyboardShortcut(.cancelAction)
-          .csFocusRing()
         SettingsSaveButton(
           title: isEdit ? "Save changes" : "Add provider", enabled: canSave, action: save
         )
@@ -541,7 +565,7 @@ struct CustomProviderForm: View {
   ) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       Text(title)
-        .font(CSFont.ui(10.5, .semibold))
+        .font(CSFont.ui(11, .semibold))
         .foregroundStyle(CSColor.secondaryInk)
       control()
     }
@@ -569,7 +593,8 @@ struct CustomProviderForm: View {
         }
         dismiss()
       } catch {
-        Self.log.error("Custom provider save failed: \(String(reflecting: error), privacy: .private)")
+        Self.log.error(
+          "Custom provider save failed: \(String(reflecting: error), privacy: .private)")
         // The bridge currently carries ProviderError's Display sentence in Config.
         // Match its endpoint reason, never revalidate the URL with a second parser.
         if let bridgeError = error as? CsError,
@@ -606,11 +631,13 @@ struct SpeechToTextSection: View {
       // recording egresses are the live Cloud mode session and an explicit
       // cloud re-transcription (`cloud:` pass in `bridge/src/recording.rs`),
       // the same truth as Dictation › Cloud & privacy.
-      Text("Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription.")
-        .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.amberLight)
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(.top, SettingsScale.headerGap)
+      Text(
+        "Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription."
+      )
+      .font(SettingsScale.helper)
+      .foregroundStyle(CSColor.secondaryInk)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.top, SettingsScale.headerGap)
       VStack(spacing: CSSpace.sm) {
         ForEach(model.sttLanes, id: \.id) { lane in
           SttLaneCard(model: model, lane: lane)
@@ -635,9 +662,11 @@ struct SttLaneCard: View {
   static func title(for lane: CsSttLane) -> String {
     switch lane.id {
     case "file":
-      return String(localized: "File transcription", comment: "Cloud transcription lane: recorded files")
+      return String(
+        localized: "File transcription", comment: "Cloud transcription lane: recorded files")
     case "live":
-      return String(localized: "Live transcription", comment: "Cloud transcription lane: live socket")
+      return String(
+        localized: "Live transcription", comment: "Cloud transcription lane: live socket")
     default:
       return lane.title
     }
@@ -724,7 +753,7 @@ struct SttLaneCard: View {
           }
           if DeveloperSurface.isEnabled() {
             Text(Self.accepts(for: lane))
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.mono(11, .medium))
               .fixedSize(horizontal: false, vertical: true)
           }
           SettingsDetailRow(

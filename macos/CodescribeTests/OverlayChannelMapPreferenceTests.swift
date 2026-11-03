@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import XCTest
@@ -6,6 +7,31 @@ import XCTest
 
 @MainActor
 final class OverlayChannelMapPreferenceTests: XCTestCase {
+  func testSavedBetaChoiceFollowsCompiledChannelWithoutRewritingPreferences() throws {
+    let name = "CodescribeTests.channel-lane.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+    defer { defaults.removePersistentDomain(forName: name) }
+    defaults.set(true, forKey: OverlayChannelMapPreference.key)
+    defaults.set("vertical", forKey: OverlayChannelMapPreference.layoutKey)
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    #if CHANNEL_nightly
+      XCTAssertTrue(preference.enabled)
+      XCTAssertEqual(preference.mode, .vertical)
+      preference.selectMode(.horizontal)
+      XCTAssertEqual(preference.mode, .horizontal)
+    #else
+      XCTAssertFalse(preference.enabled)
+      XCTAssertEqual(preference.mode, .classic)
+      let original = defaults.dictionaryRepresentation() as NSDictionary
+      preference.select(true)
+      preference.selectLayout(.horizontal)
+      preference.selectMode(.vertical)
+      XCTAssertEqual(defaults.dictionaryRepresentation() as NSDictionary, original)
+      XCTAssertFalse(preference.enabled)
+      XCTAssertEqual(OverlayChannelMapPreference(defaults: defaults).mode, .classic)
+    #endif
+  }
+
   func testAbsentChoiceIsOffAndExplicitChoiceSurvivesReopening() throws {
     let name = "CodescribeTests.channel-map.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
@@ -74,14 +100,18 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     state.channelMapPreference.selectLayout(.vertical)
     XCTAssertTrue(state.channelMapEnabled)
     XCTAssertFalse(state.channelMapInHeader)
-    state.setPresentationMode(.midi)
-    XCTAssertNil(
-      DictationOverlayView(state: state).channelMap,
-      "the vertical layout's chips live in the Intercom")
-    state.setPresentationMode(.mini)
-    let counter = try XCTUnwrap(
-      DictationOverlayView(state: state).channelMap, "mini is one widget in both layouts")
-    XCTAssertTrue(counter.stacked, "only the counter's face and destination differ")
+    var reveals = 0
+    state.onRevealIntercom = { reveals += 1 }
+    for mode: OverlayPresentationMode in [.mini, .midi, .expanded] {
+      state.setPresentationMode(mode)
+      let counter = try XCTUnwrap(
+        DictationOverlayView(state: state).channelMap,
+        "Floating panels keep their reveal entrance at every overlay width")
+      XCTAssertTrue(counter.stacked)
+      counter.onCounter()
+      XCTAssertEqual(state.presentationMode, mode, "Reveal must not switch overlay density")
+    }
+    XCTAssertEqual(reveals, 3)
     XCTAssertEqual(state.captureGeneration, generation)
     XCTAssertEqual(state.selectedConversationID, selected)
     XCTAssertEqual(state.channelHudStates, hud)
@@ -116,15 +146,35 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  func testDisabledPanelUsesEarlierMiniAndCompactWidths() throws {
+  /// Mini with the map off is as wide as its row: the measured brand word
+  /// with the dot, the gaps and the 81 pt trailing controls, idle and while
+  /// capturing alike. The former fixed 200 pt (164 capturing) clipped the
+  /// fold control at the capsule's edge (Maciej, 2026-10-30 14:24).
+  func testMiniBrandWidthIsTheMeasuredWordRowAndNeverNarrowerThanItsControls() {
+    typealias W = DictationOverlayWindow
+    let font = NSFont.systemFont(ofSize: W.miniWordSize, weight: .bold)
+    let word =
+      ceil(
+        ("codescribe" as NSString).size(withAttributes: [.font: font, .kern: W.miniWordTracking])
+          .width) + 1
+    let row =
+      W.miniOuterPadding + W.miniBrandDot + W.miniBrandGap + word + 2 * W.miniWordRowSpacing
+      + W.miniTrailingControls
+    XCTAssertEqual(W.miniBrandWidth, ceil(row + W.miniWordClosedCentre))
+    XCTAssertGreaterThanOrEqual(W.miniBrandWidth, row, "the fold control is never clipped")
+    XCTAssertGreaterThan(W.miniBrandWidth, W.miniFloorWidth)
+    XCTAssertEqual(W.miniBrandWidth, W.miniBrandWidth.rounded(.up), "whole points")
+  }
+
+  func testDisabledPanelUsesTheBrandRowWidthIdleAndCapturing() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let panel = FloatingOverlayPanel(
       contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
     defer { panel.invalidatePresence() }
     panel.setChannelMapPresentation(enabled: false, capturing: false, naturalWidth: 160)
-    XCTAssertEqual(panel.miniSize.width, 200)
+    XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniBrandWidth)
     panel.setChannelMapPresentation(enabled: false, capturing: true, naturalWidth: 160)
-    XCTAssertEqual(panel.miniSize.width, 164)
+    XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniBrandWidth)
     panel.setChannelMapPresentation(enabled: true, capturing: true, naturalWidth: 160)
     XCTAssertEqual(panel.miniSize.width, 160)
     panel.setMidiNaturalWidth(DictationOverlayWindow.midiSize.width)

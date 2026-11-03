@@ -84,7 +84,21 @@ fn register_native_tools(registry: &mut ToolRegistry) {
 /// Unit tests for native tool registration and capability coverage.
 mod tests {
     use super::*;
-    use codescribe_core::agent::{CapabilityOp, ConnectorHealth, resolve_capability};
+    use codescribe_core::agent::{
+        AgentPermissions, CapabilityOp, ConnectorHealth, PermissionLevel, PermissionSource,
+        ToolCapability, ToolDecision, resolve_capability,
+    };
+    use serde_json::json;
+
+    /// The Settings row of one registered tool, from the same registry the
+    /// gate decides with.
+    fn native_row(registry: &ToolRegistry, name: &str) -> ToolCapability {
+        registry
+            .capabilities()
+            .into_iter()
+            .find(|row| row.name == name)
+            .expect("native tool is registered")
+    }
 
     /// Asserts the native registry exposes the expected sorted tool name set.
     #[test]
@@ -164,5 +178,62 @@ mod tests {
                 op.as_str()
             );
         }
+    }
+
+    /// `read_clipboard` stays a read-only tool but asks by its built-in rule,
+    /// because the clipboard often holds a password; the other read-only tools
+    /// keep the category Allow, a stricter category default still wins, and
+    /// an explicit operator rule for the tool wins over the built-in one.
+    #[test]
+    fn read_clipboard_asks_by_builtin_rule_until_the_operator_decides() {
+        let mut registry = ToolRegistry::new();
+        register_native_tools(&mut registry);
+        registry.set_policy(AgentPermissions::default());
+
+        let clipboard = native_row(&registry, "read_clipboard");
+        assert_eq!(clipboard.risk, "read_only");
+        assert_eq!(
+            (clipboard.effective, clipboard.source),
+            (PermissionLevel::Ask, PermissionSource::Builtin)
+        );
+        assert!(matches!(
+            registry.decide("read_clipboard", &json!({}), "c", "s", "t"),
+            ToolDecision::RequireApproval(_)
+        ));
+        for row in registry.capabilities() {
+            if row.risk == "read_only" && row.name != "read_clipboard" {
+                assert_eq!(
+                    (row.effective, row.source),
+                    (PermissionLevel::Allow, PermissionSource::Default),
+                    "{}",
+                    row.name
+                );
+            }
+        }
+
+        registry.set_policy(AgentPermissions {
+            read_only_default: PermissionLevel::Deny,
+            ..Default::default()
+        });
+        let clipboard = native_row(&registry, "read_clipboard");
+        assert_eq!(
+            (clipboard.effective, clipboard.source),
+            (PermissionLevel::Deny, PermissionSource::Default)
+        );
+
+        let mut policy = AgentPermissions::default();
+        policy
+            .tools
+            .insert("native:read_clipboard".into(), PermissionLevel::Allow);
+        registry.set_policy(policy);
+        let clipboard = native_row(&registry, "read_clipboard");
+        assert_eq!(
+            (clipboard.effective, clipboard.source),
+            (PermissionLevel::Allow, PermissionSource::Tool)
+        );
+        assert_eq!(
+            registry.decide("read_clipboard", &json!({}), "c", "s", "t"),
+            ToolDecision::Allow
+        );
     }
 }

@@ -659,7 +659,13 @@ impl CodescribeAgent {
         };
         let provider_label = explicit_provider
             .map(|p| p.wire.clone())
-            .unwrap_or_else(|| assistive_lane.provider().as_str().to_string());
+            .unwrap_or_else(|| {
+                if assistive_lane.acp_configuration().is_some() {
+                    "acp".to_string()
+                } else {
+                    assistive_lane.provider().as_str().to_string()
+                }
+            });
         let model = explicit_provider
             .map(|p| p.model.clone())
             .unwrap_or_else(|| assistive_lane.model().to_string());

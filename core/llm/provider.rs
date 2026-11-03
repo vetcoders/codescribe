@@ -35,6 +35,8 @@ pub enum ProviderKind {
     /// Libraxis gateway on the OpenAI Responses protocol at `api.libraxis.com`.
     /// Last in the picker until I1 promotes it on a live keyed witness (§B.3).
     LibraxisResponses,
+    /// Google Gemini GenerateContent API; Cloud Code Assist uses a Custom row.
+    GoogleGemini,
 }
 
 /// The request/response protocol a provider speaks.
@@ -50,6 +52,15 @@ pub enum WireFamily {
     /// Anthropic Messages (`/v1/messages`, adaptive thinking, refusal stops).
     #[serde(rename = "messages")]
     AnthropicMessages,
+    /// Google GenerateContent (Gemini and configured Cloud Code Assist hosts).
+    #[serde(
+        rename = "google-generate-content",
+        alias = "gemini",
+        alias = "google",
+        alias = "antigravity",
+        alias = "agy"
+    )]
+    GoogleGenerateContent,
 }
 
 impl WireFamily {
@@ -58,6 +69,7 @@ impl WireFamily {
         match self {
             WireFamily::OpenAiResponses => "responses",
             WireFamily::AnthropicMessages => "messages",
+            WireFamily::GoogleGenerateContent => "google-generate-content",
         }
     }
 
@@ -66,6 +78,9 @@ impl WireFamily {
         match raw.trim().to_ascii_lowercase().as_str() {
             "responses" | "openai-responses" => Some(WireFamily::OpenAiResponses),
             "messages" | "anthropic-messages" => Some(WireFamily::AnthropicMessages),
+            "google-generate-content" | "gemini" | "google" | "antigravity" | "agy" => {
+                Some(WireFamily::GoogleGenerateContent)
+            }
             _ => None,
         }
     }
@@ -75,6 +90,7 @@ impl WireFamily {
         match self {
             WireFamily::OpenAiResponses => "/v1/responses",
             WireFamily::AnthropicMessages => "/v1/messages",
+            WireFamily::GoogleGenerateContent => "/v1beta",
         }
     }
 
@@ -82,23 +98,39 @@ impl WireFamily {
     /// trim, strip a known protocol suffix (or a bare `/v1`), append the
     /// canonical one. Pure string work — no settings, env, or Keychain.
     pub fn normalize_endpoint(self, raw: &str) -> String {
-        let known: &[&str] = match self {
-            WireFamily::OpenAiResponses => {
-                &["/v1/responses", "/v1/chat/completions", "/v1/completions"]
-            }
-            WireFamily::AnthropicMessages => &["/v1/messages", "/v1/responses"],
-        };
-        let mut base = raw.trim().trim_end_matches('/').to_string();
-        for suffix in known {
-            if base.ends_with(suffix) {
-                base.truncate(base.len() - suffix.len());
-                return format!("{base}{}", self.canonical_suffix());
-            }
+        // URL parsing can reinterpret a missing authority as a host from the
+        // path. Preserve invalid input so provider validation can reject it.
+        if endpoint_host(raw.trim()).is_empty() {
+            return raw.trim().to_string();
         }
-        if base.ends_with("/v1") {
+        if self == WireFamily::GoogleGenerateContent {
+            return vendors::google::normalize_endpoint(raw);
+        }
+        let known = [
+            "/v1beta",
+            "/v1/responses",
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/v1/completions",
+        ];
+        let Ok(mut endpoint) = reqwest::Url::parse(raw.trim()) else {
+            return raw.trim().to_string();
+        };
+        let mut base = endpoint.path().trim_end_matches('/').to_string();
+        // A wire change replaces the previous API path. Repeated suffixes
+        // also occur in persisted rows written by the former append path.
+        // Work on the path only: neither host names nor query values are API
+        // suffixes. A bare /v1 in a mount prefix survives an existing API path.
+        let mut replaced_api_path = false;
+        while let Some(suffix) = known.iter().find(|suffix| base.ends_with(**suffix)) {
+            base.truncate(base.len() - suffix.len());
+            replaced_api_path = true;
+        }
+        if !replaced_api_path && base.ends_with("/v1") {
             base.truncate(base.len() - "/v1".len());
         }
-        format!("{base}{}", self.canonical_suffix())
+        endpoint.set_path(&format!("{base}{}", self.canonical_suffix()));
+        endpoint.to_string()
     }
 }
 
@@ -190,23 +222,38 @@ const ANTHROPIC_IDENTITY: ProviderIdentity = ProviderIdentity {
     assistive_model: vendors::anthropic::DEFAULT_ASSISTIVE_MODEL,
 };
 
+const GOOGLE_IDENTITY: ProviderIdentity = ProviderIdentity {
+    kind: ProviderKind::GoogleGemini,
+    canonical: vendors::google::CANONICAL,
+    aliases: vendors::google::ALIASES,
+    display_name: vendors::google::DISPLAY_NAME,
+    api_key_account: vendors::google::API_KEY_ACCOUNT,
+    wire_family: WireFamily::GoogleGenerateContent,
+    endpoint: vendors::google::ENDPOINT,
+    extra_hosts: &[],
+    formatting_model: vendors::google::DEFAULT_FORMATTING_MODEL,
+    assistive_model: vendors::google::DEFAULT_ASSISTIVE_MODEL,
+};
+
 /// Every vendor row, in picker order.
-const PROVIDER_REGISTRY: [ProviderIdentity; 4] = [
+const PROVIDER_REGISTRY: [ProviderIdentity; 5] = [
     LIBRAXIS_IDENTITY,
     OPENAI_IDENTITY,
     XAI_IDENTITY,
     ANTHROPIC_IDENTITY,
+    GOOGLE_IDENTITY,
 ];
 
 /// Every vendor handle, in picker order: Libraxis, OpenAI, xAI, Anthropic.
 /// Libraxis earned the first slot on a live two-part witness at integration
 /// (2026-09-07 18:16Z: `GET /v1/models` 200 with 8 aliases, one Responses call
 /// completed); the lane default stays OpenAI (`ProviderKind::default`).
-pub const ALL_PROVIDERS: [ProviderKind; 4] = [
+pub const ALL_PROVIDERS: [ProviderKind; 5] = [
     ProviderKind::LibraxisResponses,
     ProviderKind::OpenAiResponses,
     ProviderKind::XaiResponses,
     ProviderKind::AnthropicMessages,
+    ProviderKind::GoogleGemini,
 ];
 
 impl ProviderKind {
@@ -216,6 +263,7 @@ impl ProviderKind {
             ProviderKind::AnthropicMessages => &ANTHROPIC_IDENTITY,
             ProviderKind::XaiResponses => &XAI_IDENTITY,
             ProviderKind::LibraxisResponses => &LIBRAXIS_IDENTITY,
+            ProviderKind::GoogleGemini => &GOOGLE_IDENTITY,
         }
     }
 
@@ -421,19 +469,39 @@ pub struct CustomProvider {
 
 impl CustomProvider {
     /// Validate and build a row: `id = slug(name)` must be non-empty, the
-    /// endpoint is normalized onto the wire's canonical path and must carry an
-    /// `http(s)` scheme and a host.
+    /// endpoint must carry an explicit `http(s)` authority before its path is
+    /// normalized onto the wire's canonical path.
     pub fn new(name: &str, wire: WireFamily, endpoint: &str) -> Result<Self, ProviderError> {
         let name = name.trim();
         let id = slug(name);
         if id.is_empty() {
             return Err(ProviderError::EmptyName);
         }
-        let endpoint = wire.normalize_endpoint(endpoint);
-        let scheme_ok = endpoint.starts_with("http://") || endpoint.starts_with("https://");
-        if !scheme_ok || endpoint_host(&endpoint).is_empty() {
-            return Err(ProviderError::InvalidEndpoint(endpoint));
+        let endpoint = endpoint.trim();
+        let scheme = endpoint.split(':').next().unwrap_or_default();
+        let scheme_ok = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+        // URL parsing repairs missing authority separators and ignores some
+        // control characters. Refuse those spellings before a path can become
+        // the host of a different endpoint.
+        let authority_ok = endpoint
+            .strip_prefix(scheme)
+            .and_then(|rest| rest.strip_prefix("://"))
+            .is_some_and(|rest| {
+                let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+                !authority.is_empty()
+                    && !authority
+                        .chars()
+                        .any(|ch| ch == '\\' || ch.is_ascii_control())
+            });
+        let host_ok = reqwest::Url::parse(endpoint).is_ok_and(|url| url.host_str().is_some());
+        if !scheme_ok || !authority_ok || !host_ok {
+            return Err(ProviderError::InvalidEndpoint(if scheme_ok {
+                endpoint.to_string()
+            } else {
+                wire.normalize_endpoint(endpoint)
+            }));
         }
+        let endpoint = wire.normalize_endpoint(endpoint);
         Ok(Self {
             id,
             name: name.to_string(),
@@ -489,7 +557,7 @@ pub fn is_custom_key_account(account: &str) -> bool {
 pub enum ProviderError {
     /// The name slugs to nothing (`""`, `"---"`, `"  "`).
     EmptyName,
-    /// Missing `http(s)` scheme or host; carries the normalized endpoint.
+    /// Missing or malformed `http(s)` authority; carries the rejected endpoint.
     InvalidEndpoint(String),
     /// A row with this id already exists.
     DuplicateId(String),
@@ -736,6 +804,11 @@ pub fn capability_policy(provider: ProviderKind, model: &str) -> CapabilityPolic
     match provider.wire_family() {
         WireFamily::OpenAiResponses => openai_policy(),
         WireFamily::AnthropicMessages => anthropic_policy_for_model(model),
+        WireFamily::GoogleGenerateContent => CapabilityPolicy {
+            previous_response_id: false,
+            effort: false,
+            ..openai_policy()
+        },
     }
 }
 
@@ -894,8 +967,8 @@ mod tests {
             );
         }
         assert_eq!(
-            ProviderKind::from_str("gemini").unwrap_err(),
-            ParseProviderError("gemini".to_string())
+            ProviderKind::from_str("unknown-provider").unwrap_err(),
+            ParseProviderError("unknown-provider".to_string())
         );
     }
 
@@ -914,6 +987,7 @@ mod tests {
                 ProviderKind::OpenAiResponses,
                 ProviderKind::XaiResponses,
                 ProviderKind::AnthropicMessages,
+                ProviderKind::GoogleGemini,
             ]
         );
     }
@@ -1016,6 +1090,37 @@ mod tests {
         );
     }
 
+    /// Repair only the protocol path; host names and proxy metadata are opaque.
+    #[test]
+    fn formatter_endpoint_repair_preserves_authority_mount_query_and_fragment() {
+        let responses = WireFamily::OpenAiResponses;
+        for (input, expected) in [
+            ("https://v1/", "https://v1/v1/responses"),
+            (
+                "https://proxy.example/v1/messages/v1/responses",
+                "https://proxy.example/v1/responses",
+            ),
+            (
+                "https://proxy.example/mount/v1/v1/messages",
+                "https://proxy.example/mount/v1/v1/responses",
+            ),
+            (
+                "https://proxy.example/v1/messages?next=/v1/messages#v1",
+                "https://proxy.example/v1/responses?next=/v1/messages#v1",
+            ),
+        ] {
+            let actual = responses.normalize_endpoint(input);
+            assert_eq!(actual, expected, "{input}");
+            assert_eq!(responses.normalize_endpoint(&actual), actual, "idempotence");
+        }
+        assert_eq!(responses.normalize_endpoint(" not a URL "), "not a URL");
+        assert_eq!(
+            WireFamily::AnthropicMessages
+                .normalize_endpoint("https://proxy.example/mount/v1/responses/v1/chat/completions"),
+            "https://proxy.example/mount/v1/messages"
+        );
+    }
+
     /// `custom:<id>` and vendor spellings round-trip through `parse`.
     #[test]
     fn provider_ref_round_trips_through_its_persisted_spelling() {
@@ -1034,7 +1139,11 @@ mod tests {
         assert_eq!(xai.vendor(), Some(ProviderKind::XaiResponses));
         assert_eq!(ProviderRef::parse("custom:"), None);
         assert_eq!(ProviderRef::parse("custom:not a slug"), None);
-        assert_eq!(ProviderRef::parse("gemini"), None);
+        let google = ProviderRef::Vendor(ProviderKind::GoogleGemini);
+        assert_eq!(ProviderRef::parse("gemini"), Some(google.clone()));
+        assert_eq!(google.as_str(), Cow::Borrowed("google-gemini"));
+        assert_eq!(ProviderRef::parse(&google.as_string()), Some(google));
+        assert_eq!(ProviderRef::parse("unknown-provider"), None);
     }
 
     /// A custom row slugs its name, normalizes its endpoint, and refuses
@@ -1106,7 +1215,7 @@ mod tests {
         let row = libraxis;
         let registry = ProviderRegistry::new(vec![row.clone()]);
         let all = registry.all();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 6);
         assert_eq!(
             all.iter()
                 .map(|p| p.reference.as_string())
@@ -1116,6 +1225,7 @@ mod tests {
                 "openai-responses",
                 "xai-responses",
                 "anthropic-messages",
+                "google-gemini",
                 "custom:api-libraxis-com",
             ]
         );

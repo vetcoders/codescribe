@@ -44,9 +44,15 @@ final class OverlayChannelMapPreference {
   }
 
   /// Opt-in: an existing installation has no key and keeps its earlier chrome.
+  /// Standard builds unconditionally evaluate to false (Classic mode), ensuring
+  /// a saved experimental choice from a nightly build cannot reactivate beta UI.
   var enabled: Bool {
     access(keyPath: \.enabled)
-    return defaults.bool(forKey: Self.key)
+    #if CHANNEL_nightly
+      return defaults.bool(forKey: Self.key)
+    #else
+      return false
+    #endif
   }
 
   /// The existing strip is the default. Choosing a layout never enables it
@@ -58,27 +64,37 @@ final class OverlayChannelMapPreference {
   }
 
   func selectLayout(_ layout: OverlayIntercomLayout) {
-    guard layout != self.layout else { return }
-    withMutation(keyPath: \.layout) {
-      defaults.set(layout.rawValue, forKey: Self.layoutKey)
-    }
+    #if CHANNEL_nightly
+      guard layout != self.layout else { return }
+      withMutation(keyPath: \.layout) {
+        defaults.set(layout.rawValue, forKey: Self.layoutKey)
+      }
+    #endif
   }
 
   func select(_ enabled: Bool) {
-    guard enabled != self.enabled else { return }
-    withMutation(keyPath: \.enabled) {
-      defaults.set(enabled, forKey: Self.key)
-    }
+    #if CHANNEL_nightly
+      guard enabled != self.enabled else { return }
+      withMutation(keyPath: \.enabled) {
+        defaults.set(enabled, forKey: Self.key)
+      }
+    #endif
   }
 
   /// The one Settings control. Classic only disables the map; the stored
   /// layout survives, so returning to a mapped mode restores the last one.
   var mode: OverlayIntercomPresentationMode {
-    OverlayIntercomPresentationMode(enabled: enabled, layout: layout)
+    #if CHANNEL_nightly
+      OverlayIntercomPresentationMode(enabled: enabled, layout: layout)
+    #else
+      .classic
+    #endif
   }
 
   func selectMode(_ mode: OverlayIntercomPresentationMode) {
-    if let layout = mode.layout { selectLayout(layout) }
-    select(mode != .classic)
+    #if CHANNEL_nightly
+      if let layout = mode.layout { selectLayout(layout) }
+      select(mode != .classic)
+    #endif
   }
 }

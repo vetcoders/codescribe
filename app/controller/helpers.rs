@@ -625,6 +625,8 @@ pub(crate) fn friendly_tool_name(raw: &str) -> String {
         "mcp__loctree-mcp__find" => return "Loctree occurrences/find".into(),
         "mcp__aicx-mcp__aicx_intents" => return "AICX intents".into(),
         "mcp__vibecrafted-mcp__vc_run_observe" => return "Vibecrafted observe".into(),
+        "mcp_search_tools" => return "MCP tool search".into(),
+        "call_mcp_tool" => return "MCP tool".into(),
         // Native (non-mcp) tools: the bare snake_case prettifies to a reversed,
         // verbose label ("Read Clipboard"); the operator wants noun-first copy.
         "read_clipboard" => return "Clipboard read".into(),

@@ -19,7 +19,7 @@
 
 [meta]
 version = "1.2.0"
-updated = "2026-10-20"
+updated = "2026-10-24"
 
 [vars.CODESCRIBE_BIN]
 default = ""
@@ -91,11 +91,11 @@ category = "audio"
 description = "Audio input device name (empty = system default)"
 
 [vars.CODESCRIBE_CHANNEL_AUTOSEAL_SECS]
-default = "5"
-type = "u64"
-reload = "hot"
+default = ""
+type = "f32"
+reload = "restart"
 category = "audio"
-description = "Hands-free delivery boundary: seconds of silence after heard voice before the open agent-channel utterance seals, delivers, and the channel reopens on the same binding. Default 5 per the Founder's 2026-09-29 voice decision (seal cc6c8248, closes A.5.3); a channel that heard no voice stays open. 0 disables the threshold; utterance silence inside the session is a different knob."
+description = "Power-user override of settings.json agent_channel.send_pause_sec: seconds of silence after heard voice that send an agent-channel message. Unset = the setting rules (default 5.0, 1.0..=15.0 on a 0.5 grid). Read into the runtime snapshot at load, never clamped; Settings shows the pause as (env override). Under agent_channel.session_policy = continuous the session keeps listening after the send; under end_after_message the send also ends the session. 0 turns automatic sending and agent_channel.voiceless_close_sec off. Seeds send_pause_sec once when a .env is first migrated into settings.json; toggle_silence_sec (hands-free dictation) is never an input."
 
 [vars.CODESCRIBE_AGENT_SEND_HOLD_SEC]
 default = "10"
@@ -317,6 +317,45 @@ reload = "hot"
 category = "llm"
 description = "Anthropic vendor key account (Settings › Providers / Keychain bundle); env is a fallback, never the URL. Anthropic Messages API key account shared by Anthropic formatting and assistive lanes"
 
+[vars.LLM_GOOGLE_API_KEY]
+default = ""
+type = "secret"
+secret = true
+reload = "hot"
+category = "llm"
+description = "Google Gemini API key account in the Codescribe Keychain bundle; the provider sends it in x-goog-api-key, never in settings.json or a URL"
+
+[vars.LLM_GOOGLE_ACCOUNT_TOKENS]
+default = ""
+type = "secret"
+secret = true
+reload = "hot"
+category = "llm"
+description = "Dev/CI injection of a Google OAuth credential JSON record; production reads the Keychain bundle and never seeds this account into child-process env. Refresh records carry client_id, client_secret, refresh_token and optional access_token/expires_at_unix"
+
+[vars.GEMINI_API_KEY]
+default = ""
+type = "secret"
+secret = true
+reload = "hot"
+category = "llm"
+description = "Google Gemini vendor environment API key, after Codescribe Keychain credentials and before GOOGLE_API_KEY / ADC"
+
+[vars.GOOGLE_API_KEY]
+default = ""
+type = "secret"
+secret = true
+reload = "hot"
+category = "llm"
+description = "Google vendor environment API key, after Codescribe Keychain credentials and GEMINI_API_KEY, before ADC"
+
+[vars.GOOGLE_APPLICATION_CREDENTIALS]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Path to a Google authorized_user ADC JSON file; unset uses ~/.config/gcloud/application_default_credentials.json. OAuth refresh uses the official HTTPS Google token endpoint; service-account and workload-identity records are explicitly unsupported"
+
 [vars.LLM_API_KEY]
 default = ""
 type = "secret"
@@ -464,7 +503,7 @@ default = "auto"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
+description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture. Also the language of the app's xAI spoken replies; auto speaks pl there."
 
 [vars.WHISPER_ADAPTIVE_BUFFER]
 default = "false"
@@ -1024,6 +1063,48 @@ reload = "restart"
 category = "llm"
 description = "Override the xAI OAuth issuer base URL used for account login (HTTPS proxies and staging only; credential requests never follow redirects). Note that the published desktop client is registered against the loopback redirect http://127.0.0.1:56121/callback; changing the issuer does not change that redirect"
 
+[vars.CODESCRIBE_GOOGLE_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Dev/CI fallback for the Google account-login OAuth client id. Non-secret; the operator-facing value lives in settings.json under LLM_GOOGLE_OAUTH_CLIENT_ID. Leaving both unset uses the shipped Antigravity / Cloud Code Assist public desktop client id (see NOTICE)"
+
+[vars.CODESCRIBE_GOOGLE_OAUTH_CLIENT_SECRET]
+default = ""
+type = "secret"
+reload = "restart"
+category = "llm"
+description = "Optional desktop OAuth client secret override when pairing a custom Google installed-app OAuth client id via LLM_GOOGLE_OAUTH_CLIENT_ID or CODESCRIBE_GOOGLE_OAUTH_CLIENT_ID; unset selects the matching built-in desktop secret for the shipped Antigravity or Gemini CLI client ids"
+
+[vars.CODESCRIBE_GOOGLE_OAUTH_ISSUER]
+default = "https://accounts.google.com"
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override the Google OAuth issuer base URL used for loopback account login and test fixtures (HTTPS proxies and numeric loopback test fixtures only; credential requests never follow redirects)"
+
+[vars.CODESCRIBE_GOOGLE_CCA_ENDPOINT]
+default = "https://daily-cloudcode-pa.googleapis.com/v1internal"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Cloud Code Assist base endpoint override for a signed-in Google OAuth account when the lane points at the default Google Gemini vendor endpoint; does not affect API-key requests"
+
+[vars.GOOGLE_CLOUD_PROJECT]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Optional Google Cloud project id hint for Cloud Code Assist onboarding and discovery during Google OAuth sign-in"
+
+[vars.GOOGLE_CLOUD_PROJECT_ID]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Secondary Google Cloud project id fallback when GOOGLE_CLOUD_PROJECT is unset during Cloud Code Assist discovery"
+
 [vars.LLM_USE_STREAMING]
 default = "1"
 type = "bool"
@@ -1071,7 +1152,14 @@ default = "30000"
 type = "u64"
 reload = "hot"
 category = "llm"
-description = "Shared formatter and Agent max idle time between SSE chunks (ms); loader seals valid overlays into the next selected runtime snapshot"
+description = "Shared formatter and Agent max idle time between SSE chunks after the first content event (ms); any chunk, including an SSE keepalive comment, restarts it; loader seals valid overlays into the next selected runtime snapshot"
+
+[vars.CODESCRIBE_AI_FIRST_EVENT_TIMEOUT_MS]
+default = "90000"
+type = "u64"
+reload = "hot"
+category = "llm"
+description = "Shared formatter and Agent budget from the SSE request send to the first content event (prefill, queueing, hosted web_search); response.created and keepalive comments do not end it; loader seals valid overlays into the next selected runtime snapshot"
 
 [vars.CODESCRIBE_AGENT_BRIDGE_HOME]
 default = ""
@@ -1213,6 +1301,20 @@ type = "u64"
 reload = "hot"
 category = "hotkeys"
 description = "Double-tap interval for toggle detection (ms)"
+
+[vars.TAP_MAX_MS]
+default = "220"
+type = "u64"
+reload = "hot"
+category = "hotkeys"
+description = "Longest Option press that still counts as one tap of an Option double-tap (ms, 120..=300)"
+
+[vars.TYPING_QUIET_MS]
+default = "300"
+type = "u64"
+reload = "hot"
+category = "hotkeys"
+description = "Option taps count for nothing this long after any typed key (ms, 0..=1000); keeps Option-typed characters such as Polish diacritics from pairing into a double-tap"
 
 [vars.TOGGLE_SILENCE_SEC]
 default = "5.0"
@@ -1364,7 +1466,7 @@ default = ""
 type = "string"
 reload = "restart"
 category = "storage"
-description = "Override data directory (default: ~/.codescribe)"
+description = "Override data directory (default: ~/.codescribe); high-churn data (logs, overlay caches) lives in its data.noindex subfolder, which Spotlight does not index"
 
 [vars.CODESCRIBE_TRANSCRIPT_BUS_PATH]
 default = ""
@@ -1833,6 +1935,13 @@ reload = "restart"
 category = "agent"
 description = "TTS vendor for the cs-say system voice: xai or openai; --tts-vendor wins. Read at helper invocation."
 
+[vars.CS_SAY_LANGUAGE]
+default = "pl"
+type = "string"
+reload = "restart"
+category = "agent"
+description = "Language of every xAI reply the helper speaks (cs-say, --play-reply). Cut to its first part (pl-PL is pl) and accepted as pl or en; anything else, auto included, speaks pl with a warning. Read at synthesis."
+
 [vars.LLM_ANTHROPIC_OAUTH_CLIENT_ID]
 default = ""
 type = "string"
@@ -1853,6 +1962,13 @@ type = "string"
 reload = "restart"
 category = "llm"
 description = "Override of the default public desktop OAuth client id used for xAI/Grok sign-in; empty means the built-in public Grok CLI client id (see NOTICE)."
+
+[vars.LLM_GOOGLE_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override of the default public desktop OAuth client id used for Google sign-in; empty means the built-in public Antigravity / Cloud Code Assist client id (see NOTICE)."
 
 [vars.ONBOARDING_MODE]
 default = ""

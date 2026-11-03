@@ -24,13 +24,20 @@ enum OverlayAppWindowPolicy {
 final class OverlayAppWindowYield {
   private weak var panel: NSPanel?
   private weak var state: OverlayState?
+  private let onWindowFocus: (NSWindow?) -> Void
+  private let foldsOverlay: Bool
   private var observers: [NSObjectProtocol] = []
   /// `windowNumber`s of the windows already yielded to in their current appearance.
   private var yieldedWindows: Set<Int> = []
 
-  init(panel: NSPanel, state: OverlayState) {
+  init(
+    panel: NSPanel, state: OverlayState, foldsOverlay: Bool = true,
+    onWindowFocus: @escaping (NSWindow?) -> Void = { _ in }
+  ) {
     self.panel = panel
     self.state = state
+    self.onWindowFocus = onWindowFocus
+    self.foldsOverlay = foldsOverlay
   }
 
   /// Listen for every window in this process becoming key. Delivery stays on
@@ -42,6 +49,18 @@ final class OverlayAppWindowYield {
       observe(NSWindow.willCloseNotification) { $0.noteGone($1) },
       observe(NSWindow.didChangeOcclusionStateNotification) { $0.noteOcclusion($1) },
     ]
+    for name in [
+      NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
+    ] {
+      let observer = NotificationCenter.default.addObserver(
+        forName: name, object: NSApp, queue: .main
+      ) { [weak self] _ in
+        MainActor.assumeIsolated {
+          self?.onWindowFocus(NSApp.isActive ? NSApp.keyWindow : nil)
+        }
+      }
+      observers.append(observer)
+    }
   }
 
   /// Drop the key-window observer. The panel keeps this object, so only a
@@ -76,6 +95,8 @@ final class OverlayAppWindowYield {
   /// while the panel is hidden or compact, so an overlay brought up by hand
   /// later does not fold on the next click into that window.
   private func noteBecameKey(_ window: NSWindow) {
+    onWindowFocus(window)
+    guard foldsOverlay else { return }
     guard let panel, window !== (panel as NSWindow) else { return }
     guard OverlayAppWindowPolicy.shouldYield(to: window) else { return }
     guard yieldedWindows.insert(window.windowNumber).inserted else { return }
@@ -86,6 +107,7 @@ final class OverlayAppWindowYield {
   /// A closed window that opens again is a new appearance.
   private func noteGone(_ window: NSWindow) {
     yieldedWindows.remove(window.windowNumber)
+    onWindowFocus(NSApp.keyWindow === window ? nil : NSApp.keyWindow)
   }
 
   /// An ordered-out window (the agent chat when minimised) is a new appearance

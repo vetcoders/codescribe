@@ -299,7 +299,7 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         };
     }
-    codescribe::logging::init_logging_with_default_filter("warn");
+    codescribe::logging::init_cli_logging("warn");
     match dispatch(cli) {
         Ok(code) => code,
         Err(error) => {

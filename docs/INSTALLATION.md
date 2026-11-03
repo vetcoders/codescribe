@@ -2,9 +2,11 @@
 
 This document describes the installation methods, configuration paths, and how the application locates its resources.
 
-> **Published release:** GitHub Latest is [`v0.15.2`](https://github.com/vetcoders/codescribe/releases/tag/v0.15.2).
-> The standard DMG is signed, notarized and stapled. The website and signed
-> Sparkle feed point to this release.
+For a packaged app, start with the [user installation guide](guide/installation.md)
+and the current [GitHub Releases](https://github.com/vetcoders/codescribe/releases).
+This page covers development builds, resource discovery, signing and launch.
+Do not infer the published version from the source version or this document.
+A local app build is not a signed distribution release.
 
 ## Installation Methods
 
@@ -38,14 +40,18 @@ runtime interlock while copying the signed bundle. An active take, agent turn,
 unreadable state or failed Quit refuses the copy. Launch the installed app through
 LaunchServices after the installer succeeds.
 
-### Method 2: Qube CLI Tools (Batch Quality Work)
+### Method 2: CLI and Batch Quality Tools
 
 ```bash
-make release-qube
 make install
 ```
 
-**Result**: the `codescribe` CLI is installed; `codescribe report` and `codescribe daemon` are the authoritative spellings of the quality tools. The standalone `qube-report` and `qube-daemon` binaries run the same functions and are slated for removal under the one-throne rule.
+**Result**: the `codescribe` CLI and quality tools are installed. Use
+`codescribe transcribe` for file transcription and `codescribe transcribe live`
+to observe the app-owned transcript. `codescribe report` and `codescribe daemon`
+provide the quality workflows. See the [CLI guide](CLI.md) for output, side
+effects and recognition flags. `make release-qube` builds the separate quality
+binaries; it does not install or launch Codescribe.app.
 
 **How it runs**: Terminal-only quality/reporting utilities, not the user-facing app.
 
@@ -66,6 +72,24 @@ bundle whose executables lack the hardened runtime flag, so `make app PROFILE=lo
 manual re-sign. The ad-hoc path (`CODESCRIBE_CODESIGN_IDENTITY=-`) stays
 plain: ad-hoc plus hardened runtime breaks local TCC grants and is not meant
 to be notarized.
+
+The signing identity comes from the default keychain search list (login),
+named by its SHA-1 hash so the choice is unambiguous even when a certificate
+is installed twice; `CODESCRIBE_CODESIGN_IDENTITY` overrides it and `-` keeps
+ad-hoc signing. There is no separate build keychain. The unlocked state of the
+login keychain belongs to the security session that unlocked it: the graphical
+session of the build host has it open, while a shell reached over SSH on the
+same Mac sees it locked, and neither a keychain timeout nor `security set-key-partition-list` changes that. `scripts/build-app.sh` therefore probes
+the default keychain before its first build stage when `SSH_CONNECTION` or
+`SSH_TTY` is set and the identity is not ad-hoc, and stops at once instead of
+failing in `codesign` with `errSecInternalComponent` after minutes of
+xcodebuild. The way out is to run the same lane inside the graphical session,
+for example `open -a Terminal <lane>.command` from the SSH shell (a locked
+screen is fine); notarization and stapling work over SSH as before. A one-time
+`security set-key-partition-list -S apple-tool:,apple:,codesign: -s ~/Library/Keychains/login.keychain-db` in the graphical session only removes
+the "Always Allow" prompt for that session's signatures. The build log says
+`signing from keychain: <default keychain>` before the first real-identity
+signature, and the script never falls back to ad-hoc signing behind the caller.
 
 For an isolated build/test bundle on a host whose signing keychain is locked,
 `CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing;
@@ -231,12 +255,16 @@ make notarize         # Notarize an existing signed DMG
 ```
 
 **Result**: standard `Codescribe_X.Y.Z-….dmg` (slim: Silero embedded,
-MiniLM signed as a runtime resource, Whisper via Settings download/cache) and
+Whisper via Settings download/cache, no MiniLM resource by default) and
 optional `…_full.dmg` (embeds Whisper too). `make release-standard` is the
 canonical distribution cut. `make release-stable` adds installation of that
 same stapled Release `.app` into `/Applications`; it does not publish a tag or
 GitHub Release. Do not chain `VAR=x make release && make dmg-signed` — make
 variables do not survive the `&&`.
+
+MiniLM is only bundled when explicitly requested. The default app/DMG path
+omits it because no product runtime path loads it; a development embedding
+resource is not a prerequisite for ordinary dictation.
 
 Before calling any DMG production-ready, record four independent facts:
 
@@ -285,6 +313,8 @@ Configuration is **tiered**:
 │   └── assistive.txt
 ├── history/          # Transcription history
 ├── reports/          # Quality reports
+└── data.noindex/     # Constantly rewritten data (logs, overlay caches);
+                      # the .noindex suffix keeps Spotlight from re-indexing it
 ```
 
 **Secrets** (API keys) are stored in **macOS Keychain** under service `com.vetcoders.codescribe`.
@@ -458,7 +488,7 @@ the selection stays a windowed act: the CLI never installs an empty selection.
 | CFBundleIdentifier                  | com.vetcoders.codescribe | Unique app identifier                |
 | CFBundleIconFile                    | AppIcon                  | Points to AppIcon.icns               |
 | CFBundleExecutable                  | Codescribe               | Main binary name                     |
-| LSMinimumSystemVersion              | 14.0                     | Requires macOS Sonoma+               |
+| LSMinimumSystemVersion              | 26.0                     | Requires macOS Tahoe+                |
 | NSMicrophoneUsageDescription        | ...                      | Microphone permission prompt         |
 | NSSpeechRecognitionUsageDescription | ...                      | Speech Recognition permission prompt |
 
@@ -503,19 +533,26 @@ flowchart LR
 
 Grant in **System Settings > Privacy & Security**:
 
-| Permission         | Purpose                 | When Prompted                         |
-| ------------------ | ----------------------- | ------------------------------------- |
-| Microphone         | Audio recording         | First recording attempt               |
-| Speech Recognition | SFSpeechRecognizer path | Setup / app launch while undetermined |
-| Accessibility      | Global hotkeys, paste   | First hotkey press                    |
-| Input Monitoring   | Keyboard event capture  | First hotkey press                    |
+| Permission         | Purpose                 | When Prompted                          |
+| ------------------ | ----------------------- | -------------------------------------- |
+| Microphone         | Audio recording         | First recording attempt                |
+| Speech Recognition | SFSpeechRecognizer path | Setup / app launch while undetermined  |
+| Accessibility      | Selected text, paste    | When the corresponding feature is used |
+| Input Monitoring   | Keyboard event capture  | First hotkey press                     |
+| Screen Recording   | Screenshot context      | Setup / screenshot context             |
+
+The setup checklist and the selected mode's recording readiness are distinct.
+Full Disk Access is optional. Apple only does not require a Whisper download;
+Local power requires a usable local model. See the
+[Settings reference](guide/settings.md) for the current GUI sections.
 
 ## Troubleshooting
 
 ### Empty Dock Icon
 
-- **CLI mode**: `set_dock_icon()` should set it programmatically
-- **Bundle mode**: Check that `Info.plist` exists and has `CFBundleIconFile`
+- Launch the native app bundle through Finder, Spotlight or LaunchServices;
+  the `codescribe` CLI is a separate terminal utility.
+- Check that the bundle's `Info.plist` exists and has `CFBundleIconFile`.
 - **Verify**: `plutil -lint /Applications/Codescribe.app/Contents/Info.plist`
 
 ### Empty Tray Icon
@@ -525,15 +562,20 @@ Grant in **System Settings > Privacy & Security**:
 
 ### Config Not Loading
 
-- Check `~/.codescribe/.env` exists
-- Verify syntax: `cat ~/.codescribe/.env`
-- Check logs: `make logs`
+- Check the value in Settings and whether the page has an explicit Save action.
+- Preferences use `settings.json` in Application Support; credentials use
+  Keychain. An optional `~/.codescribe/.env` is advanced configuration, not a
+  prerequisite for the GUI. See [CONFIG.md](CONFIG.md) for precedence.
+- Inspect the relevant log interval locally. Review it before sharing; do not
+  paste a `.env`, API key or unreviewed configuration dump into a report.
+- Start a new take when checking a recording-snapshot change. A saved preference
+  does not rewrite an active take.
 
 ### Hotkeys Not Working
 
 - Grant Accessibility permission
 - Grant Input Monitoring permission
-- Restart the application after granting
+- Follow any reopen prompt after granting, once recordings and agent work are idle.
 
 ---
 

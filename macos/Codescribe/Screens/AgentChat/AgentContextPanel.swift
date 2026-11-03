@@ -141,7 +141,7 @@ struct AgentLiveStatusPill: View {
     case .stopping:
       StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.textTertiary)
     case .failed:
-      StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.terracottaText)
+      StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.dangerLight)
     }
   }
 }
@@ -166,13 +166,13 @@ struct AgentWidthModeButton: View {
         .foregroundStyle(CSColor.secondaryInk)
         .frame(width: 26, height: 22)
         .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+          Capsule(style: .continuous)
+            .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
         )
         .contentShape(Rectangle())
     }
     .buttonStyle(.borderless)
-    .csFocusRing(cornerRadius: CSRadius.pill)
+    .csFocusRing(cornerRadius: CSRadius.window)
     .fixedSize()
     .help(mode.label)
     .accessibilityLabel(
@@ -199,19 +199,19 @@ struct AgentContextToggle: View {
       .padding(.horizontal, 8)
       .frame(height: 22)
       .background(
-        RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+        Capsule(style: .continuous)
           .fill(isOpen ? CSColor.chromeAccent.opacity(0.16) : Color.clear)
       )
       .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+        Capsule(style: .continuous)
           .strokeBorder(
-            isOpen ? CSColor.chromeAccent.opacity(0.32) : Color.primary.opacity(0.09),
+            isOpen ? CSColor.chromeAccent.opacity(0.32) : Color.primary.opacity(CSAlpha.line),
             lineWidth: 1)
       )
       .contentShape(Rectangle())
     }
     .buttonStyle(.borderless)
-    .csFocusRing(cornerRadius: CSRadius.pill)
+    .csFocusRing(cornerRadius: CSRadius.window)
     .fixedSize()
     .help(isOpen ? AgentContextPanelCopy.closeHelp : AgentContextPanelCopy.openHelp)
     .accessibilityLabel(AgentContextPanelCopy.contextButton)
@@ -278,7 +278,7 @@ struct AgentContextPanel: View {
           .contentShape(Rectangle())
       }
       .buttonStyle(.borderless)
-      .csFocusRing(cornerRadius: CSRadius.pill)
+      .csFocusRing(cornerRadius: CSRadius.window)
       .help(AgentContextPanelCopy.closeHelp)
       .accessibilityLabel(AgentContextPanelCopy.closeHelp)
     }
@@ -303,7 +303,7 @@ struct AgentContextPanel: View {
       HStack(alignment: .firstTextBaseline, spacing: 8) {
         CSIconView(icon: .agent, size: 12, color: CSColor.textTertiary)
         Text(verbatim: ThreadRowTitle.labelTitle(for: thread))
-          .font(CSFont.ui(12.5, .medium))
+          .font(CSFont.ui(13, .medium))
           .foregroundStyle(Color.primary)
           .lineLimit(3)
           .truncationMode(.tail)
@@ -341,7 +341,7 @@ struct AgentContextPanel: View {
         .lineLimit(1)
       Spacer(minLength: 8)
       value()
-        .font(CSFont.mono(10.5, .medium))
+        .font(CSFont.mono(11, .medium))
         .foregroundStyle(Color.primary)
         .lineLimit(1)
         .truncationMode(.middle)
@@ -354,7 +354,7 @@ struct AgentContextPanel: View {
       HStack(spacing: 8) {
         CSIconView(icon: .settings, size: 12, color: CSColor.secondaryInk)
         Text(AgentContextPanelCopy.toolSettings)
-          .font(CSFont.ui(12.5, .medium))
+          .font(CSFont.ui(13, .medium))
           .foregroundStyle(Color.primary)
           .lineLimit(2)
           .fixedSize(horizontal: false, vertical: true)
@@ -386,10 +386,10 @@ struct AgentContextPanel: View {
 private struct AgentContextCardSurface: ViewModifier {
   func body(content: Content) -> some View {
     content
-      .background(Color.primary.opacity(0.04))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }

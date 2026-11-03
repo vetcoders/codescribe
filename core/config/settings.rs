@@ -41,6 +41,9 @@ use crate::pipeline::acoustic_ledger::EnergyCalibration;
 use super::energy_calibration::{
     EnergyCalibrationRefusal, EnergyCalibrationStatus, SealedEnergyCalibration,
 };
+use super::formatter_keywords::{
+    FormatterKeywordsContext, FormatterKeywordsError, normalize_formatter_keywords,
+};
 
 /// Serialize settings read/migrate/write transactions. A V1 load writes a
 /// backup and a V3 replacement, so it is a writer even though the public API is
@@ -118,10 +121,40 @@ impl FormattingPolicy {
 /// chosen contract (removed 2026-08-09).
 pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/.codescribe";
 
+/// Explicit local Agent selection in `speech.assistive.acp`. Arguments are
+/// already separated; no shell, model-prefix parser or environment override
+/// can silently select an executable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AcpLaunchSettings {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub cwd: String,
+}
+
+/// Validated local launch facts sealed by the same pass as the Agent lane.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RuntimeAcpConfiguration {
+    pub command: crate::acp::AcpCommand,
+    pub workspace_roots: Vec<PathBuf>,
+}
+
 /// Power-user override of `interaction.agent_send_hold_sec`.
 pub const AGENT_SEND_HOLD_ENV: &str = "CODESCRIBE_AGENT_SEND_HOLD_SEC";
 /// Seconds between an Agent channel seal and automatic delivery; zero disables it.
 pub const DEFAULT_AGENT_SEND_HOLD_SEC: u32 = 10;
+
+/// Settings wire keys of the voice-conversation and built-in Agent timers.
+/// They live in `settings.json` only; none of them is read from the
+/// environment. The one env override is `CODESCRIBE_CHANNEL_AUTOSEAL_SECS`.
+pub const AGENT_AUTO_SEND_DELAY_KEY: &str = "AGENT_AUTO_SEND_DELAY_SEC";
+pub const AGENT_TAKE_VOICELESS_END_KEY: &str = "AGENT_TAKE_VOICELESS_END_SEC";
+pub const AGENT_CHANNEL_SESSION_POLICY_KEY: &str = "AGENT_CHANNEL_SESSION_POLICY";
+pub const AGENT_CHANNEL_SEND_PAUSE_KEY: &str = "AGENT_CHANNEL_SEND_PAUSE_SEC";
+pub const AGENT_CHANNEL_VOICELESS_CLOSE_KEY: &str = "AGENT_CHANNEL_VOICELESS_CLOSE_SEC";
+pub const AGENT_CHANNEL_SEGMENT_FINISH_KEY: &str = "AGENT_CHANNEL_SEGMENT_FINISH";
+pub const AGENT_CHANNEL_FORMAT_WAIT_KEY: &str = "AGENT_CHANNEL_FORMAT_WAIT_SEC";
 
 /// Power-user override for the product-owned Silero seal lane.
 ///
@@ -218,6 +251,12 @@ pub struct UserSettings {
     pub hold_start_delay_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub double_tap_interval_ms: Option<u64>,
+    /// Longest Option press that counts as a tap. `None` keeps the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tap_max_ms: Option<u64>,
+    /// Option taps ignored this long after typing. `None` keeps the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typing_quiet_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toggle_silence_sec: Option<f32>,
     /// Layer 1 Whisper context, seconds. `None` keeps the code default.
@@ -246,6 +285,12 @@ pub struct UserSettings {
     pub sound_volume: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatting_level: Option<String>,
+    /// Formatter Keywords: preferred vocabulary for every formatting kind.
+    /// `None`/empty adds no context. Writers go through
+    /// [`UserSettings::set_formatter_keywords`]; the canonical form is owned by
+    /// `config::formatter_keywords`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formatter_keywords: Option<Vec<String>>,
     /// Assistive lane model; `None` ⇒ the provider's default (vendor) or
     /// "no model selected" (custom).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -256,6 +301,9 @@ pub struct UserSettings {
     /// Assistive lane provider reference (`ProviderRef` spelling); `None` ⇒ OpenAI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_provider: Option<String>,
+    /// Explicit opt-in local ACP backend; absent preserves the HTTP lane.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_acp: Option<AcpLaunchSettings>,
     /// Formatting lane provider reference (`ProviderRef` spelling); `None` ⇒ OpenAI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_formatting_provider: Option<String>,
@@ -284,6 +332,11 @@ pub struct UserSettings {
     /// `CODESCRIBE_XAI_OAUTH_CLIENT_ID` is the dev-only mid-tier fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xai_oauth_client_id: Option<String>,
+    /// Optional override for Google OAuth client id. `None` falls through to
+    /// env, then the shipped Cloud Code Assist / Antigravity public client id
+    /// (`NOTICE`). Env `CODESCRIBE_GOOGLE_OAUTH_CLIENT_ID` is the dev fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google_oauth_client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -382,6 +435,27 @@ pub struct UserSettings {
     /// Agent-channel send hold in seconds. Zero disables the hold.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_send_hold_sec: Option<u32>,
+    /// Built-in Agent auto-send countdown in seconds (`1..=30`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_auto_send_delay_sec: Option<u64>,
+    /// A built-in Agent take without voice ends after this many seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_take_voiceless_end_sec: Option<u64>,
+    /// `agent_channel.session_policy`: `continuous` | `end_after_message`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_channel_session_policy: Option<String>,
+    /// `agent_channel.send_pause_sec`, `1.0..=15.0`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_channel_send_pause_sec: Option<f32>,
+    /// `agent_channel.voiceless_close_sec`: `0` = never, else `15..=600`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_channel_voiceless_close_sec: Option<u64>,
+    /// `agent_channel.segment_finish`: `off` | `light_plus` | `formatter`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_channel_segment_finish: Option<String>,
+    /// `agent_channel.format_wait_sec`, `1..=10`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_channel_format_wait_sec: Option<u64>,
     /// First-run operating lane chosen during onboarding ("basic" | "agentic").
     /// `None` means "not yet chosen" — callers treat that as the safe Basic lane.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -693,6 +767,7 @@ pub struct RuntimeLlmLane {
     /// The level requests on this lane ask for. Formatting always carries one
     /// (default `none`); the Agent lane carries one only when the user chose it.
     reasoning: Option<crate::llm::provider::ReasoningEffort>,
+    acp: Option<RuntimeAcpConfiguration>,
 }
 
 impl RuntimeLlmLane {
@@ -713,7 +788,35 @@ impl RuntimeLlmLane {
             unavailable_reason,
             configuration_fault,
             reasoning: None,
+            acp: None,
         }
+    }
+
+    pub(super) fn with_acp(
+        mut self,
+        configuration: Result<RuntimeAcpConfiguration, String>,
+    ) -> Self {
+        match configuration {
+            Ok(configuration) => {
+                self.model = configuration.command.program.clone();
+                self.acp = Some(configuration);
+                self.configuration_fault = None;
+                self.unavailable_reason = None;
+                self.available = true;
+            }
+            Err(reason) => {
+                self.configuration_fault = Some(reason.clone());
+                self.unavailable_reason = Some(reason);
+                self.available = false;
+            }
+        }
+        self
+    }
+
+    /// The selected local backend, if this generation explicitly opted in.
+    /// HTTP provider identity is retained only as the user's inactive choice.
+    pub fn acp_configuration(&self) -> Option<&RuntimeAcpConfiguration> {
+        self.acp.as_ref()
     }
 
     pub(super) fn with_reasoning(mut self, effort: crate::llm::provider::ReasoningEffort) -> Self {
@@ -737,7 +840,11 @@ impl RuntimeLlmLane {
 
     /// Picker label of the provider (vendor display name or custom row name).
     pub fn provider_display_name(&self) -> &str {
-        &self.provider.display_name
+        if self.acp.is_some() {
+            "ACP"
+        } else {
+            &self.provider.display_name
+        }
     }
 
     /// The vendor, when the provider is one; `None` for a Custom provider.
@@ -774,9 +881,21 @@ impl RuntimeLlmLane {
     /// Whether a request can be sent under the credential truth that exists
     /// now, rather than only under the truth observed when this lane was sealed.
     pub fn request_available(&self) -> bool {
-        self.credential.account_auth()
+        if self.acp.is_none() && self.provider.wire == WireFamily::GoogleGenerateContent {
+            let account = self.credential.account_auth();
+            if crate::llm::vendors::google::is_cloud_code_assist(&self.provider.endpoint) {
+                return account;
+            }
+            return account
+                || crate::llm::account_auth::google::google_api_key_available(
+                    self.credential.key_account(),
+                );
+        }
+        self.acp.is_some()
+            || self.credential.account_auth()
             || self.credential.request_api_key().is_some()
-            || !self.provider.key_required
+            || (!self.provider.key_required
+                && self.provider.wire != WireFamily::GoogleGenerateContent)
     }
 
     pub fn unavailable_reason(&self) -> Option<&str> {
@@ -807,7 +926,7 @@ impl RuntimeLlmLane {
 
     pub(super) fn digest_material(&self) -> String {
         format!(
-            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{:?}",
             self.lane.as_str(),
             self.provider.reference,
             self.provider.wire,
@@ -817,6 +936,7 @@ impl RuntimeLlmLane {
             self.credential.api_key.is_some(),
             self.credential.account_auth,
             self.available,
+            self.acp,
         )
     }
 }
@@ -965,6 +1085,9 @@ impl fmt::Debug for RuntimeSealedPrompt {
 pub struct RuntimeFormatterExecution {
     formatting_prompt: Option<RuntimeSealedPrompt>,
     assistive_prompt: RuntimeSealedPrompt,
+    /// Formatter Keywords sealed beside the prompts. Kept separate from the
+    /// sealed prompt bytes so custom prompts and tuning stay byte-identical.
+    vocabulary: FormatterKeywordsContext,
     max_retries: u32,
     retry_delay: Duration,
 }
@@ -973,15 +1096,23 @@ impl RuntimeFormatterExecution {
     pub(super) fn seal(
         formatting_prompt: Option<RuntimeSealedPrompt>,
         assistive_prompt: RuntimeSealedPrompt,
+        vocabulary: FormatterKeywordsContext,
         max_retries: u32,
         retry_delay: Duration,
     ) -> Self {
         Self {
             formatting_prompt,
             assistive_prompt,
+            vocabulary,
             max_retries,
             retry_delay,
         }
+    }
+
+    /// Formatter Keywords of this generation, shared by Correction, Smart and
+    /// the explicit Max request.
+    pub const fn vocabulary(&self) -> &FormatterKeywordsContext {
+        &self.vocabulary
     }
 
     pub fn formatting_prompt(&self) -> Option<&RuntimeSealedPrompt> {
@@ -1007,8 +1138,9 @@ impl RuntimeFormatterExecution {
             .map(RuntimeSealedPrompt::digest_material)
             .unwrap_or_else(|| "off".to_string());
         format!(
-            "formatting_prompt={formatting}\nassistive_prompt={}\nmax_retries={}\nretry_delay_ms={}",
+            "formatting_prompt={formatting}\nassistive_prompt={}\n{}\nmax_retries={}\nretry_delay_ms={}",
             self.assistive_prompt.digest_material(),
+            self.vocabulary.digest_material(),
             self.max_retries,
             self.retry_delay.as_millis(),
         )
@@ -1020,13 +1152,19 @@ impl RuntimeFormatterExecution {
 pub struct RuntimeAiRequestTiming {
     attempt_timeout: Duration,
     inter_chunk_timeout: Duration,
+    first_event_timeout: Duration,
 }
 
 impl RuntimeAiRequestTiming {
-    pub(super) const fn seal(attempt_timeout: Duration, inter_chunk_timeout: Duration) -> Self {
+    pub(super) const fn seal(
+        attempt_timeout: Duration,
+        inter_chunk_timeout: Duration,
+        first_event_timeout: Duration,
+    ) -> Self {
         Self {
             attempt_timeout,
             inter_chunk_timeout,
+            first_event_timeout,
         }
     }
 
@@ -1038,11 +1176,18 @@ impl RuntimeAiRequestTiming {
         self.inter_chunk_timeout
     }
 
+    /// Budget from the request send to the first SSE content event (prefill,
+    /// queueing, hosted tool runs). `inter_chunk_timeout` applies after it.
+    pub const fn first_event_timeout(&self) -> Duration {
+        self.first_event_timeout
+    }
+
     fn digest_material(&self) -> String {
         format!(
-            "attempt_timeout_ms={}\ninter_chunk_timeout_ms={}",
+            "attempt_timeout_ms={}\ninter_chunk_timeout_ms={}\nfirst_event_timeout_ms={}",
             self.attempt_timeout.as_millis(),
             self.inter_chunk_timeout.as_millis(),
+            self.first_event_timeout.as_millis(),
         )
     }
 }
@@ -1333,6 +1478,29 @@ impl RuntimeSettingsSnapshot {
         self.formatting_policy
     }
 
+    /// Policy for automatic formatting (capture, grouped live and Stop, and the
+    /// automatic selectors): Off, Correction or Smart only. A stored Max (or
+    /// its earlier `creative` alias) resolves to Smart here, because Max is the
+    /// manually invoked Agent. Nothing is written back to disk; explicit
+    /// requests keep the full policy via [`Self::with_formatting_level`].
+    pub const fn automatic_formatting_policy(&self) -> FormattingPolicy {
+        match self.formatting_policy {
+            FormattingPolicy::Max => FormattingPolicy::Smart,
+            policy => policy,
+        }
+    }
+
+    /// Normalized Formatter Keywords frozen in this generation.
+    pub fn formatter_keywords(&self) -> &[String] {
+        self.ai_execution.formatter().vocabulary().terms()
+    }
+
+    /// Frozen vocabulary suffix for formatting requests (application-owned
+    /// instruction plus JSON-encoded terms); `None` when there are none.
+    pub fn formatting_vocabulary_context(&self) -> Option<&str> {
+        self.ai_execution.formatter().vocabulary().prompt_suffix()
+    }
+
     /// Resolve a one-request formatting level entirely from captured inputs.
     /// The source snapshot and its persisted Settings remain untouched.
     pub fn with_formatting_level(&self, level: FormattingPolicy) -> Self {
@@ -1464,6 +1632,9 @@ pub(super) struct SettingsV2 {
     /// Agent runtime preferences (tool permissions gateway, …).
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<AgentV2>,
+    /// Voice conversation with a Codescribe Bus agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_channel: Option<AgentChannelV2>,
     /// Operator-defined LLM providers; vendors are pinned in code.
     #[serde(skip_serializing_if = "Option::is_none")]
     providers: Option<ProvidersV2>,
@@ -1479,6 +1650,22 @@ struct ProvidersV2 {
     pending_key_moves: Vec<super::keychain::KeyMove>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pending_env_key_imports: Vec<super::migrate::PendingEnvKeyImport>,
+}
+
+/// `agent_channel` section: how an open Fn+digit channel sends and ends.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct AgentChannelV2 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    send_pause_sec: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    voiceless_close_sec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    segment_finish: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format_wait_sec: Option<u64>,
 }
 
 /// `agent` section. Written only when at least one of its parts is present, so
@@ -1515,6 +1702,10 @@ struct InteractionV2 {
     agent_auto_send: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_send_hold_sec: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_auto_send_delay_sec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_take_voiceless_end_sec: Option<u64>,
     /// User-owned automatic paste policy shared by Hold and hands-free
     /// dictation. Assistive and safety vetoes are enforced by the controller.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1544,6 +1735,10 @@ struct InteractionV2 {
 struct TriggerV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     double_tap_interval_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tap_max_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    typing_quiet_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_silence_timeout_sec: Option<f32>,
 }
@@ -1633,6 +1828,9 @@ struct FormattingV2 {
     transcript_tag_template: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     level: Option<String>,
+    /// Formatter Keywords (`speech.formatting.keywords`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keywords: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1653,6 +1851,8 @@ struct AssistiveV2 {
     llm_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_reasoning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acp: Option<AcpLaunchSettings>,
 }
 
 /// Pacing of text as it lands in the target app: buffering delay, typing
@@ -1776,6 +1976,9 @@ struct SystemV2 {
     // xAI account-login OAuth client id (non-secret app identity).
     #[serde(skip_serializing_if = "Option::is_none")]
     xai_oauth_client_id: Option<String>,
+    // Google account-login OAuth client id (non-secret app identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    google_oauth_client_id: Option<String>,
     // C2: audio-egress consent record — install-level privacy state, kept in
     // `system` so engine-section rewrites can never touch it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1796,6 +1999,8 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "WHISPER_LANGUAGE",
     "HOLD_START_DELAY_MS",
     "DOUBLE_TAP_INTERVAL_MS",
+    "TAP_MAX_MS",
+    "TYPING_QUIET_MS",
     "TOGGLE_SILENCE_SEC",
     "WHISPER_CONTEXT_WINDOW_SEC",
     "WHISPER_ADAPTIVE_BUFFER",
@@ -1842,6 +2047,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "LLM_OPENAI_OAUTH_CLIENT_ID",
     "LLM_ANTHROPIC_OAUTH_CLIENT_ID",
     "LLM_XAI_OAUTH_CLIENT_ID",
+    "LLM_GOOGLE_OAUTH_CLIENT_ID",
     // Promoted from .env
     "USE_LOCAL_STT",
     "LOCAL_MODEL",
@@ -1863,6 +2069,13 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "AGENT_ENTER_SENDS",
     "AGENT_AUTO_SEND",
     AGENT_SEND_HOLD_ENV,
+    AGENT_AUTO_SEND_DELAY_KEY,
+    AGENT_TAKE_VOICELESS_END_KEY,
+    AGENT_CHANNEL_SESSION_POLICY_KEY,
+    AGENT_CHANNEL_SEND_PAUSE_KEY,
+    AGENT_CHANNEL_VOICELESS_CLOSE_KEY,
+    AGENT_CHANNEL_SEGMENT_FINISH_KEY,
+    AGENT_CHANNEL_FORMAT_WAIT_KEY,
     "ONBOARDING_MODE",
     "AGENT_WORKSPACE_ROOTS",
     // Voice Lab survivors
@@ -1949,8 +2162,14 @@ typed_setting_writes! {
         AGENT_SEND_HOLD_ENV => agent_send_hold_sec,
     }
     store_u64: u64, |value: &str| value.parse::<u64>().ok() => {
+        AGENT_AUTO_SEND_DELAY_KEY => agent_auto_send_delay_sec,
+        AGENT_TAKE_VOICELESS_END_KEY => agent_take_voiceless_end_sec,
+        AGENT_CHANNEL_VOICELESS_CLOSE_KEY => agent_channel_voiceless_close_sec => super::agent_channel::normalize_voiceless_close_sec,
+        AGENT_CHANNEL_FORMAT_WAIT_KEY => agent_channel_format_wait_sec,
         "HOLD_START_DELAY_MS" => hold_start_delay_ms,
         "DOUBLE_TAP_INTERVAL_MS" => double_tap_interval_ms,
+        "TAP_MAX_MS" => tap_max_ms,
+        "TYPING_QUIET_MS" => typing_quiet_ms,
         "CODESCRIBE_BUFFER_DELAY_MS" => buffer_delay_ms,
         "CODESCRIBE_EMIT_WORDS_MAX" => emit_words_max,
         "BACKEND_MAX_UPLOAD_MB" => backend_max_upload_mb,
@@ -1960,6 +2179,7 @@ typed_setting_writes! {
     store_f32: f32, |value: &str| value.parse::<f32>().ok() => {
         "SOUND_VOLUME" => sound_volume,
         "TOGGLE_SILENCE_SEC" => toggle_silence_sec,
+        AGENT_CHANNEL_SEND_PAUSE_KEY => agent_channel_send_pause_sec => super::agent_channel::normalize_send_pause_sec,
         "WHISPER_CONTEXT_WINDOW_SEC" => whisper_context_window_sec => super::normalize_whisper_context_window_sec,
         "LIGHT_PLUS_SENTENCE_PAUSE_SEC" => light_plus_sentence_pause_sec => super::normalize_light_plus_sentence_pause_sec,
         "CODESCRIBE_TYPING_CPS" => typing_cps,
@@ -1979,6 +2199,8 @@ impl UserSettings {
             interaction: Some(InteractionV2 {
                 trigger: Some(TriggerV2 {
                     double_tap_interval_ms: self.double_tap_interval_ms,
+                    tap_max_ms: self.tap_max_ms,
+                    typing_quiet_ms: self.typing_quiet_ms,
                     toggle_silence_timeout_sec: self.toggle_silence_sec,
                 }),
                 hold: Some(HoldV2 {
@@ -1998,6 +2220,14 @@ impl UserSettings {
                 agent_send_hold_sec: Some(
                     self.agent_send_hold_sec
                         .unwrap_or(DEFAULT_AGENT_SEND_HOLD_SEC),
+                ),
+                agent_auto_send_delay_sec: Some(
+                    self.agent_auto_send_delay_sec
+                        .unwrap_or(super::agent_channel::DEFAULT_AGENT_AUTO_SEND_DELAY_SEC),
+                ),
+                agent_take_voiceless_end_sec: Some(
+                    self.agent_take_voiceless_end_sec
+                        .unwrap_or(super::agent_channel::DEFAULT_AGENT_TAKE_VOICELESS_END_SEC),
                 ),
                 paste_mode: self.paste_mode,
                 deferred_insert_shortcut: self.deferred_insert_shortcut.clone(),
@@ -2039,6 +2269,10 @@ impl UserSettings {
                         .as_deref()
                         .and_then(|value| FormattingPolicy::parse(value).ok())
                         .map(|policy| policy.as_str().to_string()),
+                    keywords: self
+                        .formatter_keywords
+                        .clone()
+                        .filter(|terms| !terms.is_empty()),
                     llm_provider: self.llm_formatting_provider.clone(),
                     llm_model: self.llm_formatting_model.clone(),
                     llm_reasoning: self.llm_formatting_reasoning.clone(),
@@ -2047,6 +2281,7 @@ impl UserSettings {
                     provider: self.llm_assistive_provider.clone(),
                     llm_model: self.llm_assistive_model.clone(),
                     llm_reasoning: self.llm_assistive_reasoning.clone(),
+                    acp: self.agent_acp.clone(),
                 }),
                 emission: Some(EmissionV2 {
                     buffer_delay_ms: self.buffer_delay_ms,
@@ -2094,6 +2329,7 @@ impl UserSettings {
                 openai_oauth_client_id: self.openai_oauth_client_id.clone(),
                 anthropic_oauth_client_id: self.anthropic_oauth_client_id.clone(),
                 xai_oauth_client_id: self.xai_oauth_client_id.clone(),
+                google_oauth_client_id: self.google_oauth_client_id.clone(),
                 cloud_audio_egress_consent: self.cloud_consent.clone(),
                 cloud_audio_egress_consent_at: self.cloud_consent_at.clone(),
             }),
@@ -2107,6 +2343,7 @@ impl UserSettings {
                     capabilities,
                 }),
             },
+            agent_channel: Some(self.agent_channel_v2()),
             providers: (!self.llm_custom_providers.is_empty()
                 || !self.pending_key_moves.is_empty()
                 || !self.pending_env_key_imports.is_empty())
@@ -2115,6 +2352,43 @@ impl UserSettings {
                 pending_key_moves: self.pending_key_moves.clone(),
                 pending_env_key_imports: self.pending_env_key_imports.clone(),
             }),
+        }
+    }
+
+    /// The complete `agent_channel` section: every field written, each
+    /// missing one at its default, so the file states the whole contract.
+    fn agent_channel_v2(&self) -> AgentChannelV2 {
+        use super::agent_channel::{
+            ChannelSegmentFinish, ChannelSessionPolicy, DEFAULT_FORMAT_WAIT_SEC,
+            DEFAULT_SEND_PAUSE_SEC,
+        };
+        let session_policy = self
+            .agent_channel_session_policy
+            .as_deref()
+            .and_then(ChannelSessionPolicy::parse)
+            .unwrap_or_default();
+        AgentChannelV2 {
+            session_policy: Some(session_policy.as_str().to_string()),
+            send_pause_sec: Some(
+                self.agent_channel_send_pause_sec
+                    .unwrap_or(DEFAULT_SEND_PAUSE_SEC),
+            ),
+            voiceless_close_sec: Some(
+                self.agent_channel_voiceless_close_sec
+                    .unwrap_or(session_policy.default_voiceless_close_sec()),
+            ),
+            segment_finish: Some(
+                self.agent_channel_segment_finish
+                    .as_deref()
+                    .and_then(ChannelSegmentFinish::parse)
+                    .unwrap_or_default()
+                    .as_str()
+                    .to_string(),
+            ),
+            format_wait_sec: Some(
+                self.agent_channel_format_wait_sec
+                    .unwrap_or(DEFAULT_FORMAT_WAIT_SEC),
+            ),
         }
     }
 
@@ -2157,6 +2431,8 @@ impl UserSettings {
             mode_bindings: cloned!(v2.interaction, mode_bindings),
             hold_start_delay_ms: copy!(v2.interaction, hold, start_delay_ms),
             double_tap_interval_ms: copy!(v2.interaction, trigger, double_tap_interval_ms),
+            tap_max_ms: copy!(v2.interaction, trigger, tap_max_ms),
+            typing_quiet_ms: copy!(v2.interaction, trigger, typing_quiet_ms),
             toggle_silence_sec: copy!(v2.interaction, trigger, toggle_silence_timeout_sec),
             format_on_device: copy!(v2.speech, formatting, on_device),
             paste_mode: copy!(v2.interaction, paste_mode),
@@ -2171,6 +2447,7 @@ impl UserSettings {
                 .and_then(|f| f.level.as_deref())
                 .and_then(|value| FormattingPolicy::parse(value).ok())
                 .map(|policy| policy.as_str().to_string()),
+            formatter_keywords: cloned!(v2.speech, formatting, keywords),
             llm_formatting_provider: cloned!(v2.speech, formatting, llm_provider),
             llm_custom_providers: v2
                 .providers
@@ -2188,6 +2465,7 @@ impl UserSettings {
                 .map(|p| p.pending_env_key_imports.clone())
                 .unwrap_or_default(),
             llm_assistive_model: cloned!(v2.speech, assistive, llm_model),
+            agent_acp: cloned!(v2.speech, assistive, acp),
             llm_assistive_reasoning: cloned!(v2.speech, assistive, llm_reasoning),
             llm_assistive_provider: cloned!(v2.speech, assistive, provider),
             chat_zoom: copy!(v2.ui, chat_zoom),
@@ -2242,9 +2520,17 @@ impl UserSettings {
             openai_oauth_client_id: cloned!(v2.system, openai_oauth_client_id),
             anthropic_oauth_client_id: cloned!(v2.system, anthropic_oauth_client_id),
             xai_oauth_client_id: cloned!(v2.system, xai_oauth_client_id),
+            google_oauth_client_id: cloned!(v2.system, google_oauth_client_id),
             agent_enter_sends: copy!(v2.interaction, agent_enter_sends),
             agent_auto_send: copy!(v2.interaction, agent_auto_send),
             agent_send_hold_sec: copy!(v2.interaction, agent_send_hold_sec),
+            agent_auto_send_delay_sec: copy!(v2.interaction, agent_auto_send_delay_sec),
+            agent_take_voiceless_end_sec: copy!(v2.interaction, agent_take_voiceless_end_sec),
+            agent_channel_session_policy: cloned!(v2.agent_channel, session_policy),
+            agent_channel_send_pause_sec: copy!(v2.agent_channel, send_pause_sec),
+            agent_channel_voiceless_close_sec: copy!(v2.agent_channel, voiceless_close_sec),
+            agent_channel_segment_finish: cloned!(v2.agent_channel, segment_finish),
+            agent_channel_format_wait_sec: copy!(v2.agent_channel, format_wait_sec),
             buffer_delay_ms: copy!(v2.speech, emission, buffer_delay_ms),
             typing_cps: copy!(v2.speech, emission, typing_cps),
             emit_words_max: copy!(v2.speech, emission, emit_words_max),
@@ -2283,6 +2569,20 @@ impl UserSettings {
             .and_then(|formatting| formatting.level.as_deref())
         {
             FormattingPolicy::parse(level)?;
+        }
+        if let Some(channel) = v2.agent_channel.as_ref() {
+            if let Some(policy) = channel.session_policy.as_deref()
+                && super::agent_channel::ChannelSessionPolicy::parse(policy).is_none()
+            {
+                anyhow::bail!(
+                    "agent_channel.session_policy must be continuous or end_after_message"
+                )
+            }
+            if let Some(finish) = channel.segment_finish.as_deref()
+                && super::agent_channel::ChannelSegmentFinish::parse(finish).is_none()
+            {
+                anyhow::bail!("agent_channel.segment_finish must be off, light_plus or formatter")
+            }
         }
         Ok(())
     }
@@ -2854,6 +3154,24 @@ impl UserSettings {
         })
     }
 
+    /// Replace Formatter Keywords with their canonical form and return it.
+    ///
+    /// The whole edit is refused when any limit is exceeded; the previous
+    /// list stays untouched and nothing is truncated. An empty result clears
+    /// the field. Persisting is the caller's `save`, which re-validates.
+    pub fn set_formatter_keywords<I, S>(
+        &mut self,
+        entries: I,
+    ) -> Result<Vec<String>, FormatterKeywordsError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let terms = normalize_formatter_keywords(entries)?;
+        self.formatter_keywords = (!terms.is_empty()).then(|| terms.clone());
+        Ok(terms)
+    }
+
     /// Persists current settings to disk as pretty-printed JSON.
     pub fn save(&self) -> anyhow::Result<()> {
         let _data_io = super::storage_reset::begin_app_data_io()?;
@@ -2932,7 +3250,7 @@ impl UserSettings {
             changed |= remove_json_keys_at(
                 &mut value,
                 &["speech", "assistive"],
-                &["llm_endpoint", "llm_model", "provider"],
+                &["llm_endpoint", "llm_model", "provider", "acp"],
             )?;
             changed |= remove_json_keys_at(
                 &mut value,
@@ -2942,6 +3260,7 @@ impl UserSettings {
                     "openai_oauth_client_id",
                     "anthropic_oauth_client_id",
                     "xai_oauth_client_id",
+                    "google_oauth_client_id",
                 ],
             )?;
             changed |=
@@ -2953,6 +3272,8 @@ impl UserSettings {
                     "agent_enter_sends",
                     "agent_auto_send",
                     "agent_send_hold_sec",
+                    "agent_auto_send_delay_sec",
+                    "agent_take_voiceless_end_sec",
                 ],
             )?;
 
@@ -2966,15 +3287,19 @@ impl UserSettings {
                     "llm_assistive_endpoint",
                     "llm_assistive_model",
                     "llm_assistive_provider",
+                    "agent_acp",
                     "openai_oauth_client_id",
                     "anthropic_oauth_client_id",
                     "xai_oauth_client_id",
+                    "google_oauth_client_id",
                     "agent_workspace_roots",
                     "agent_permissions",
                     "agent_capabilities",
                     "agent_enter_sends",
                     "agent_auto_send",
                     "agent_send_hold_sec",
+                    "agent_auto_send_delay_sec",
+                    "agent_take_voiceless_end_sec",
                 ],
             )?;
             let _: Self = serde_json::from_value(value.clone())?;
@@ -2995,6 +3320,10 @@ impl UserSettings {
         let path = Self::settings_path();
         if let Some(level) = self.formatting_level.as_deref() {
             FormattingPolicy::parse(level)?;
+        }
+        if let Some(terms) = self.formatter_keywords.as_deref() {
+            // Refuse the whole write; an oversized list is never truncated.
+            super::formatter_keywords::normalize_formatter_keywords(terms)?;
         }
         let v2 = self.to_v2();
         Self::validate_v2(&v2)?;
@@ -3233,6 +3562,11 @@ impl UserSettings {
                 let trimmed = value.trim();
                 self.xai_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
             }
+            "LLM_GOOGLE_OAUTH_CLIENT_ID" => {
+                // Empty clears back to Google's published Cloud Code Assist desktop client id.
+                let trimmed = value.trim();
+                self.google_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            }
             "FORMATTING_LEVEL" => match FormattingPolicy::parse(value) {
                 Ok(policy) => self.formatting_level = Some(policy.as_str().to_string()),
                 Err(error) => {
@@ -3292,6 +3626,26 @@ impl UserSettings {
                 }
             }
             "TRANSCRIPT_SEND_MODE" => self.transcript_send_mode = Some(value.to_owned()),
+            AGENT_CHANNEL_SESSION_POLICY_KEY => {
+                match super::agent_channel::ChannelSessionPolicy::parse(value) {
+                    Some(policy) => {
+                        self.agent_channel_session_policy = Some(policy.as_str().to_string());
+                    }
+                    None => {
+                        return reject(format!("Rejected channel session policy: {value}"), false);
+                    }
+                }
+            }
+            AGENT_CHANNEL_SEGMENT_FINISH_KEY => {
+                match super::agent_channel::ChannelSegmentFinish::parse(value) {
+                    Some(finish) => {
+                        self.agent_channel_segment_finish = Some(finish.as_str().to_string());
+                    }
+                    None => {
+                        return reject(format!("Rejected channel segment finish: {value}"), false);
+                    }
+                }
+            }
             "AUDIO_INPUT_DEVICE" => self.audio_input_device = Some(value.to_owned()),
             "AUDIO_RETENTION" => {
                 self.audio_retention = Some(
@@ -5214,11 +5568,11 @@ mod tests {
         let mut settings = UserSettings::default();
 
         settings.set_mode_binding(WorkMode::Formatting, ShortcutBinding::Disabled);
-        settings.set_mode_binding(WorkMode::Assistive, ShortcutBinding::DoubleRightOption);
+        settings.set_mode_binding(WorkMode::Dictation, ShortcutBinding::DoubleCtrl);
 
         assert_eq!(
             settings.mode_binding_for(WorkMode::Dictation),
-            ShortcutBinding::HoldFn
+            ShortcutBinding::DoubleCtrl
         );
         assert_eq!(
             settings.mode_binding_for(WorkMode::Formatting),
@@ -5226,7 +5580,7 @@ mod tests {
         );
         assert_eq!(
             settings.mode_binding_for(WorkMode::Assistive),
-            ShortcutBinding::DoubleRightOption
+            ShortcutBinding::Disabled
         );
     }
 
@@ -5249,11 +5603,11 @@ mod tests {
         );
         assert_eq!(
             settings.mode_binding_for(WorkMode::Formatting),
-            ShortcutBinding::DoubleLeftOption
+            ShortcutBinding::Disabled
         );
         assert_eq!(
             settings.mode_binding_for(WorkMode::Assistive),
-            ShortcutBinding::DoubleRightOption
+            ShortcutBinding::Disabled
         );
         assert!(
             !UserSettings::settings_path().exists(),
@@ -5282,11 +5636,11 @@ mod tests {
         );
         assert_eq!(
             loaded.mode_binding_for(WorkMode::Formatting),
-            ShortcutBinding::DoubleLeftOption
+            ShortcutBinding::Disabled
         );
         assert_eq!(
             loaded.mode_binding_for(WorkMode::Assistive),
-            ShortcutBinding::DoubleRightOption
+            ShortcutBinding::Disabled
         );
     }
 

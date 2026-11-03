@@ -35,6 +35,7 @@ fn continuous_speech_coverage_survives_maximum_duration_splits() {
 
 /// Explicit local corpus acceptance; recordings stay outside Git.
 #[test]
+#[ignore = "needs the private silero-regression/{quiet,long,silence}.wav corpus — run explicitly with --ignored"]
 fn preserved_capture_silero_ingress_keeps_long_speech() {
     use crate::vad::AccumulatingVad;
     use codescribe_core::audio::{load_audio_file, resample_to_16k};

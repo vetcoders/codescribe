@@ -1162,6 +1162,7 @@ mod tests {
                     .to_string(),
             )],
             timestamp: None,
+            metadata: None,
         };
         assert_eq!(
             derive_thread_title(&[message]),
@@ -1178,6 +1179,7 @@ mod tests {
                 "Fix the rate limiter double-fire".to_string(),
             )],
             timestamp: None,
+            metadata: None,
         };
         assert_eq!(
             derive_thread_title(&[message]),
@@ -1192,6 +1194,7 @@ mod tests {
             role: Role::User,
             content: vec![ContentBlock::Text("INSTRUKCJA: zrób coś".to_string())],
             timestamp: None,
+            metadata: None,
         };
         assert_eq!(derive_thread_title(&[message]), "INSTRUKCJA: zrób coś");
     }

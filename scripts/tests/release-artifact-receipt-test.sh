@@ -23,7 +23,7 @@ fixture() {
   # Extract the actual recipes, not a second test-only consumer. Exclude the
   # main Makefile's parse-time signing-key discovery and unrelated prerequisites.
   printf 'SHELL := /bin/bash\ndist-preflight-signed ensure-models:\n\t@:\n' > "$FIXTURE/Makefile"
-  awk '/^release-standard:|^release-full:/ {copy=1} copy && /^$/ {copy=0} copy {print}' \
+  awk '/^release-standard:|^release-full:|^release-nightly:/ {copy=1} copy && /^$/ {copy=0} copy {print}' \
     "$ROOT/Makefile" >> "$FIXTURE/Makefile"
   cat > "$FIXTURE/bin/git" <<'SH'
 #!/bin/bash
@@ -63,18 +63,34 @@ SH
 set -eu
 [[ "$1" == create ]] || exit 92
 [[ "${SCENARIO:-}" != dmg-failure ]] || exit 42
-printf 'fixture DMG\n' > "${!#}"
-printf '%s\n' "${!#}" > "$FIXTURE/produced-path"
+destination="${!#}"
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -srcfolder ]]; then
+    [[ -f "$2/Codescribe.app/.notary-stapled" ]] || exit 93
+  fi
+  shift
+done
+echo image-created >> "$FIXTURE/production-order"
+printf 'fixture DMG\n' > "$destination"
+printf '%s\n' "$destination" > "$FIXTURE/produced-path"
 SH
   cat > "$FIXTURE/bin/codesign" <<'SH'
 #!/bin/bash
 [[ "${SCENARIO:-}" != sign-failure ]] || exit 43
+if [[ "${SCENARIO:-}" == dmg-sign-failure && "${!#}" == *.dmg ]]; then exit 46; fi
 exit 0
 SH
   cat > "$FIXTURE/scripts/notarize.sh" <<'SH'
 #!/bin/bash
 set -eu
+if [[ "$1" == --app ]]; then
+  [[ "${SCENARIO:-}" != app-notary-failure ]] || exit 45
+  : > "$2/.notary-stapled"
+  echo app-notarized > "$FIXTURE/production-order"
+  exit 0
+fi
 [[ "${SCENARIO:-}" != notary-failure ]] || exit 44
+echo image-notarized >> "$FIXTURE/production-order"
 # Stapling changes bytes: receipt must hash the result, not the pre-notary DMG.
 printf 'fixture staple\n' >> "$1"
 SH
@@ -122,6 +138,7 @@ invoke() {
   set +e
   env -i PATH="$FIXTURE/bin:/usr/bin:/bin" FIXTURE="$FIXTURE" \
     TMPDIR="$FIXTURE/tmp" SCENARIO="${SCENARIO:-}" VERIFIER_RC="${VERIFIER_RC:-0}" \
+    CODESCRIBE_BUILD_CHANNEL="${TEST_BUILD_CHANNEL:-stable}" \
     "$REAL_MAKE" --no-print-directory -C "$FIXTURE" "$target" \
     CODESCRIBE_DIST_CODESIGN_IDENTITY=fixture-identity \
     CODESCRIBE_DIST_LICENSE_KEY=fixture-key CODESCRIBE_DIST_SPARKLE_KEY=fixture-key \
@@ -131,7 +148,7 @@ invoke() {
 }
 
 success() {
-  local target=$1 variant=$2
+  local target=$1 variant=$2 channel=${3:-stable}
   SCENARIO="" VERIFIER_RC=0
   invoke "$target"
   [[ "$RESULT" -eq 0 ]] || { cat "$FIXTURE/output"; fail "$target exit $RESULT"; }
@@ -139,8 +156,10 @@ success() {
   artifact=$(cat "$FIXTURE/produced-path")
   [[ "$artifact" == *'Codescribe_1.2.3-'*'-aaaaaaaaa'*'.dmg' ]] || fail 'producer did not freeze identity'
   [[ $(cat "$FIXTURE/head") == bbbbbbbbb ]] || fail 'HEAD race not exercised'
-  printf '%s\n' "$artifact" --variant "$variant" --version 1.2.3 > "$FIXTURE/expected"
+  printf '%s\n' "$artifact" --variant "$variant" --version 1.2.3 --channel "$channel" > "$FIXTURE/expected"
   cmp "$FIXTURE/expected" "$FIXTURE/verifier-args" || fail 'verifier argument contract'
+  printf '%s\n' app-notarized image-created image-notarized > "$FIXTURE/expected-order"
+  cmp "$FIXTURE/expected-order" "$FIXTURE/production-order" || fail 'app ticket was not packed before DMG notarization'
   [[ ! -e $(cat "$FIXTURE/receipt-path") ]] || fail 'private receipt not cleaned'
 }
 
@@ -152,8 +171,21 @@ for variant in slim full; do
   echo "PASS: $variant exact artifact/version despite HEAD drift; spaces; post-notary hash"
 done
 
-negative_count=0
-for SCENARIO in build-failure dmg-failure sign-failure notary-failure missing malformed wrong-run wrong-variant wrong-version extra unterminated nul shell-data stale changed-artifact; do
+fixture "nightly"
+success release-nightly slim nightly
+[[ $(cat "$FIXTURE/produced-path") == *_nightly.dmg ]] || fail 'nightly artifact name is not distinct'
+echo "PASS: Nightly uses the same notarized producer and verifies its explicit channel"
+
+fixture "invalid-channel"
+TEST_BUILD_CHANNEL=unsupported
+SCENARIO="" VERIFIER_RC=0
+invoke release-standard
+[[ "$RESULT" -ne 0 && ! -e "$FIXTURE/produced-path" && ! -e "$FIXTURE/verifier-args" ]] || fail 'unsupported channel reached artifact production'
+unset TEST_BUILD_CHANNEL
+echo "PASS: unsupported channel refused before build and payload acceptance"
+
+negative_count=1
+for SCENARIO in build-failure dmg-failure sign-failure dmg-sign-failure app-notary-failure notary-failure missing malformed wrong-run wrong-variant wrong-version extra unterminated nul shell-data stale changed-artifact; do
   scenario=$SCENARIO
   fixture "$scenario"
   # A prior success and its DMG really exist before the later failing invocation.
@@ -169,7 +201,7 @@ for SCENARIO in build-failure dmg-failure sign-failure notary-failure missing ma
   [[ ! -e "$FIXTURE/injected" ]] || fail 'receipt executed as shell'
   [[ ! -e $(cat "$FIXTURE/receipt-path") ]] || fail "$scenario leaked receipt"
   case "$scenario" in
-    build-failure|dmg-failure|sign-failure|notary-failure)
+    build-failure|dmg-failure|sign-failure|dmg-sign-failure|app-notary-failure|notary-failure)
       [[ ! -e "$FIXTURE/success-receipt" ]] || fail "$scenario published success" ;;
   esac
   negative_count=$((negative_count + 1))
@@ -190,4 +222,4 @@ set -e
 [[ "$helper_rc" -eq 47 ]] || fail "verifier exit became $helper_rc"
 negative_count=$((negative_count + 1))
 echo 'PASS: actual target fails and helper preserves verifier exit 47'
-echo "SCENARIO_CENSUS positive=2 negative=$negative_count"
+echo "SCENARIO_CENSUS positive=3 negative=$negative_count"

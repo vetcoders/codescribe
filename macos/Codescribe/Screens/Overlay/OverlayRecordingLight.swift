@@ -92,10 +92,15 @@ enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
   /// exactly as the cursor badge does.
   var pulses: Bool {
     switch self {
-    case .handsFree, .processing: true
-    case .holdToTalk, .silence, .agent: false
+    case .handsFree: true
+    case .holdToTalk, .silence, .processing, .agent: false
     }
   }
+
+  /// Transcribing draws a spinning arc instead of a pulse: its orange sits too
+  /// close to the recording red (1.15:1 light, 1.45:1 dark) to be told apart by
+  /// colour alone, so the two states differ by shape.
+  var spins: Bool { self == .processing }
 
   var nsColor: NSColor {
     switch self {
@@ -111,6 +116,19 @@ enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
   /// Opacity of a pulsing light at `time`: a raised cosine between 0.45 and 1
   /// with a 1.2 s period, computed from the clock so a paused timeline stops it.
   static func pulseOpacity(at time: TimeInterval) -> Double {
-    0.725 + 0.275 * cos(time * 2 * .pi / 1.2)
+    0.725 + 0.275 * cos(time * 2 * .pi / CSMotion.Tempo.lampPulse)
+  }
+
+  /// One full turn of the processing arc.
+  static let rotationPeriod: TimeInterval = CSMotion.Tempo.processingArc
+
+  /// Share of the circle the processing arc covers: an open arc, not a ring.
+  static let arcFraction: CGFloat = 0.3
+
+  /// Rotation of the processing arc at `time`, in radians within [0, 2π): read
+  /// from the same clock as the pulse, so a paused timeline stops it too.
+  static func arcRotation(at time: TimeInterval) -> Double {
+    let turns = time / rotationPeriod
+    return (turns - turns.rounded(.down)) * 2 * .pi
   }
 }

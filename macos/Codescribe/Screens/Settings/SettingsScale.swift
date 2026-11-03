@@ -76,19 +76,19 @@ enum SettingsScale {
   /// The sentence under the page title.
   static let pageBlurb = CSFont.ui(12)
   /// A peer section's title, above its cards.
-  static let sectionTitle = CSFont.ui(13.5, .semibold)
+  static let sectionTitle = CSFont.ui(14, .semibold)
   /// The name of one setting, inside a card.
-  static let settingName = CSFont.ui(12.5, .semibold)
+  static let settingName = CSFont.ui(13, .semibold)
   /// The current value of one setting, inside a card.
-  static let settingValue = CSFont.ui(12.5, .semibold)
+  static let settingValue = CSFont.ui(13, .semibold)
   /// A value that is a path, an identifier, a version or a shortcut.
   static let monoValue = CSFont.mono(12, .semibold)
   /// Secondary text: what a setting does, under its name.
-  static let helper = CSFont.ui(11.5)
+  static let helper = CSFont.ui(12)
   /// The key column of a runtime-truth row.
   static let metaKey = CSFont.mono(11, .medium)
   /// The label of a chip or any other flat Settings action.
-  static let controlLabel = CSFont.ui(11.5, .semibold)
+  static let controlLabel = CSFont.ui(12, .semibold)
   /// A one-word state beside a row.
   static let statusBadge = CSFont.ui(10, .semibold)
 }

@@ -343,6 +343,41 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     XCTAssertNil(material(in: host), "Reduce Transparency must replace translucent native material")
   }
 
+  func testNativeBackdropFollowsContainerCornerRadius() async throws {
+    guard #available(macOS 26, *) else { return }
+    let host = NSHostingView(
+      rootView: OverlayCanvasBackdrop(palette: .light, reduceTransparency: false))
+    let window = NSWindow(
+      contentRect: NSRect(x: -10000, y: -10000, width: 240, height: 160),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    func glass(in view: NSView) -> OverlayDesktopGlassView? {
+      if let glass = view as? OverlayDesktopGlassView { return glass }
+      return view.subviews.lazy.compactMap { glass(in: $0) }.first
+    }
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+    let native = try XCTUnwrap(glass(in: host))
+    XCTAssertEqual(native.cornerRadius, CSRadius.window)
+    for scale in [CGFloat(1), 1.6, 2.4] {
+      for corner in [
+        OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
+        OverlayIntercomWidgetLayout.conversationCornerRadius,
+      ] {
+        host.rootView = OverlayCanvasBackdrop(
+          palette: .dark, reduceTransparency: false, cornerRadius: corner)
+        host.layoutSubtreeIfNeeded()
+        await nextMainQueueTurn()
+        let updated = try XCTUnwrap(glass(in: host))
+        XCTAssertTrue(updated === native, "Resizing keeps one native glass surface")
+        XCTAssertEqual(updated.cornerRadius, corner)
+        XCTAssertNil(updated.hitTest(NSPoint(x: 30, y: 30)))
+      }
+    }
+  }
+
   func testNativeTranscriptDisablesWritingTools() {
     let textView = LiveTranscriptTextView.makeTextView()
     if #available(macOS 15.0, *) {
@@ -850,6 +885,81 @@ final class LiveTranscriptTextViewTests: XCTestCase {
     try await settle(textView.copySelection())
 
     XCTAssertEqual(pasteboard.string(forType: .string), "beta")
+  }
+
+  func testPendingPaintDimsOnlyItsRangesAndSettlementRestoresInkWithoutChangingCopy() async throws {
+    let fixture = makeScrollFixture()
+    defer {
+      fixture.coordinator.detach()
+      fixture.window.close()
+    }
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let restoreClipboard = ClipboardCapture.route(into: board)
+    defer { restoreClipboard() }
+    let text = "Gotowe 🐢 e\u{301} dalej"
+    let pending = (text as NSString).range(of: "🐢 e\u{301}")
+    func update(_ ranges: [NSRange]) {
+      LiveTranscriptTextView(text: text, pendingRanges: ranges, appearance: .dark).update(
+        fixture.textView, coordinator: fixture.coordinator)
+    }
+    update([])
+    let storage = try XCTUnwrap(fixture.textView.textStorage)
+    let ink = try XCTUnwrap(
+      storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+    fixture.textView.setSelectedRange(NSRange(location: 0, length: storage.length))
+    let selection = fixture.textView.selectedRange()
+    update([pending])
+    let dim = try XCTUnwrap(
+      storage.attribute(.foregroundColor, at: pending.location, effectiveRange: nil) as? NSColor)
+    XCTAssertNotEqual(dim, ink)
+    XCTAssertEqual(storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, ink)
+    XCTAssertEqual(
+      storage.attribute(.foregroundColor, at: storage.length - 1, effectiveRange: nil) as? NSColor,
+      ink)
+    XCTAssertEqual(fixture.textView.selectedRange(), selection)
+    try await settle(fixture.textView.copySelection())
+    XCTAssertEqual(Array(try XCTUnwrap(board.string(forType: .string)).utf8), Array(text.utf8))
+    update([])
+    for index in 0..<storage.length {
+      XCTAssertEqual(
+        storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor, ink)
+    }
+    XCTAssertEqual(fixture.textView.selectedRange(), selection)
+    XCTAssertEqual(Array(fixture.textView.string.utf8), Array(text.utf8))
+  }
+
+  func testMalformedPendingRangesCannotOverflowOrSplitUnicode() throws {
+    let fixture = makeScrollFixture()
+    defer {
+      fixture.coordinator.detach()
+      fixture.window.close()
+    }
+    let text = "A 🐢 Z"
+    LiveTranscriptTextView(text: text, appearance: .dark).update(
+      fixture.textView, coordinator: fixture.coordinator)
+    let storage = try XCTUnwrap(fixture.textView.textStorage)
+    let ink = try XCTUnwrap(
+      storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+    LiveTranscriptTextView(
+      text: text,
+      pendingRanges: [
+        NSRange(location: NSNotFound, length: Int.max),
+        NSRange(location: 3, length: 1), NSRange(location: -1, length: 3),
+        NSRange(location: 0, length: 0),
+      ], appearance: .dark
+    ).update(fixture.textView, coordinator: fixture.coordinator)
+    for index in 0..<storage.length {
+      XCTAssertEqual(
+        storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor, ink)
+    }
+    LiveTranscriptTextView(
+      text: text, pendingRanges: [NSRange(location: 5, length: Int.max)], appearance: .dark
+    ).update(
+      fixture.textView, coordinator: fixture.coordinator)
+    XCTAssertNotEqual(
+      storage.attribute(.foregroundColor, at: 5, effectiveRange: nil) as? NSColor, ink)
+    XCTAssertEqual(Array(fixture.textView.string.utf8), Array(text.utf8))
   }
 
   private func makeScrollFixture() -> (

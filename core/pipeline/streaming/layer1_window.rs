@@ -33,8 +33,6 @@ pub(crate) struct CaptureWindowPlan {
     last_full_end: u64,
     offered: Option<TailSampleRange>,
     finished: bool,
-    trial_offer: bool,
-    last_trial_bucket: Option<u64>,
 }
 
 impl CaptureWindowPlan {
@@ -50,8 +48,6 @@ impl CaptureWindowPlan {
             last_full_end: 0,
             offered: None,
             finished: sample_rate == 0,
-            trial_offer: false,
-            last_trial_bucket: None,
         }
     }
 
@@ -63,13 +59,71 @@ impl CaptureWindowPlan {
         self.step_samples = self.window_samples;
     }
 
+    /// Decode context may overlap; each word belongs to one publication band.
+    /// A disjoint decoder owns its entire issued range. At EOF the last
+    /// overlapping window also owns the remaining right-hand context.
+    pub(crate) fn publication_band(
+        &self,
+        range: &TailSampleRange,
+        capture_end: u64,
+        stopping: bool,
+    ) -> (u64, u64) {
+        if self.step_samples == self.window_samples {
+            return (range.sample_start, range.sample_end);
+        }
+        Self::overlapping_publication_band(range, self.step_samples, capture_end, stopping)
+    }
+
+    /// Reconstruct only the middle band of a full overlapping live frame.
+    /// First, partial, off-grid and invalid-rate frames supply no such proof.
+    /// The caller must also reject terminal-tail and disjoint publications.
+    pub(crate) fn interior_publication_band(
+        range: &TailSampleRange,
+        sample_rate: u32,
+    ) -> Option<(u64, u64)> {
+        let step_samples = u64::from(sample_rate) * u64::from(LIVE_STEP_SECS);
+        let window_samples = u64::from(sample_rate) * u64::from(LIVE_WINDOW_SECS);
+        if sample_rate == 0
+            || range.sample_start == 0
+            || !range.sample_start.is_multiple_of(step_samples)
+            || range.sample_start.checked_add(window_samples) != Some(range.sample_end)
+        {
+            return None;
+        }
+        Some(Self::overlapping_publication_band(
+            range,
+            step_samples,
+            range.sample_end,
+            false,
+        ))
+    }
+
+    fn overlapping_publication_band(
+        range: &TailSampleRange,
+        step_samples: u64,
+        capture_end: u64,
+        stopping: bool,
+    ) -> (u64, u64) {
+        let start = if range.sample_start == 0 {
+            0
+        } else {
+            range.sample_start.saturating_add(step_samples)
+        };
+        let end = if stopping && range.sample_end == capture_end {
+            range.sample_end
+        } else {
+            range
+                .sample_start
+                .saturating_add(step_samples.saturating_mul(2))
+                .min(range.sample_end)
+        };
+        (start.min(end), end)
+    }
+
     /// Peeking never spends work. Backpressure retains the exact offered frame.
     /// The first Stop observation freezes the head. A later, larger sample
     /// count neither hides that offer nor opens another grid past the freeze.
     pub(crate) fn next_due(&mut self, capture_end: u64, stopping: bool) -> Option<TailSampleRange> {
-        if self.trial_offer {
-            return self.offered.clone();
-        }
         if self.finished {
             return None;
         }
@@ -113,40 +167,6 @@ impl CaptureWindowPlan {
         Some(range)
     }
 
-    /// One additional lexical witness per nine seconds of capture, through the
-    /// same offer/account corridor as grid work. Never advances the grid. Stop
-    /// may only offer work wholly inside its final nine seconds.
-    pub(crate) fn offer_trial(
-        &mut self,
-        start: u64,
-        end: u64,
-        capture_end: u64,
-        stopping: bool,
-    ) -> Option<TailSampleRange> {
-        self.observe_head(capture_end, stopping);
-        let head = self.eof.unwrap_or(self.capture_end);
-        let bucket = head.checked_div(self.window_samples)?;
-        if self.offered.is_some()
-            || start >= end
-            || end > head
-            || end - start > self.window_samples
-            || self.last_trial_bucket == Some(bucket)
-            || (self.eof.is_some() && start < head.saturating_sub(self.window_samples))
-        {
-            return None;
-        }
-        let range = TailSampleRange {
-            session: self.session.clone(),
-            capture_epoch: self.capture_epoch,
-            sample_start: start,
-            sample_end: end,
-        };
-        self.last_trial_bucket = Some(bucket);
-        self.trial_offer = true;
-        self.offered = Some(range.clone());
-        Some(range)
-    }
-
     fn observe_head(&mut self, capture_end: u64, stopping: bool) {
         if self.eof.is_some() {
             return;
@@ -166,10 +186,6 @@ impl CaptureWindowPlan {
             return false;
         }
         self.offered = None;
-        if self.trial_offer {
-            self.trial_offer = false;
-            return true;
-        }
         if range.sample_end - range.sample_start == self.window_samples {
             self.last_full_end = range.sample_end;
             self.next_start = self.next_start.saturating_add(self.step_samples);

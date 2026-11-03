@@ -95,3 +95,12 @@ or transcript text. Request/receipt files remain as diagnostic evidence.
 After installation, `make install-app` reads the installed bundle version and
 asks `~/.local/bin/cs-say` to announce `Build <version> zainstalowany`. Speech
 failure does not change the installation result or print the helper receipt.
+
+To install and arm the same idle waiter without either spoken announcement:
+
+```sh
+make install-app INSTALL_ANNOUNCE=0 \
+  RESTART_IF_IDLE='./scripts/restart-if-idle --newer-only --wait 21600 --interval 30 --detach'
+```
+
+The native shutdown reservation, signature and loaded-binary checks still apply.

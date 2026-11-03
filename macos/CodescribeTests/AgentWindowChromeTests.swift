@@ -443,7 +443,7 @@ final class AgentWindowChromeTests: XCTestCase {
       encoding: .utf8)
     XCTAssertFalse(composer.contains("Composer hint"))
     XCTAssertFalse(composer.contains("ForEach(affordances"))
-    XCTAssertTrue(composer.contains(".help(\"Attach an image (PNG, JPEG, GIF, WebP)\")"))
+    XCTAssertTrue(composer.contains(".help(\"Attach\")"))
     XCTAssertTrue(
       composer.contains(".accessibilityLabel(Text(\"Attach an image (PNG, JPEG, GIF, WebP)\"))"))
     XCTAssertTrue(composer.contains(".help(micState.accessibilityLabel)"))

@@ -39,6 +39,8 @@ pub struct McpServerSummary {
     pub enabled: bool,
     pub endpoint: Option<String>,
     pub auth_ref: Option<String>,
+    /// `"oauth"` when the credential behind `auth_ref` is an OAuth grant.
+    pub auth_type: Option<String>,
 }
 
 /// Desired spawn shape when adding / updating a server through the UI. Env is not
@@ -52,6 +54,11 @@ pub struct McpServerSpec {
     pub enabled: bool,
     pub endpoint: Option<String>,
     pub auth_ref: Option<String>,
+    /// `Some("oauth")` marks the connector as OAuth-authorized. `None` leaves
+    /// an existing `auth_type` untouched on update (the Settings form does not
+    /// edit it), and a local/stdio flip removes it with the rest of the remote
+    /// shape.
+    pub auth_type: Option<String>,
 }
 
 /// List every configured server (sorted by name) from the canonical config path
@@ -82,6 +89,7 @@ pub fn list_servers_at(path: &Path) -> Result<Vec<McpServerSummary>> {
                 enabled: cfg.enabled.unwrap_or(true),
                 endpoint: cfg.url,
                 auth_ref: cfg.auth_ref,
+                auth_type: cfg.auth_type,
             }
         })
         .collect();
@@ -263,13 +271,18 @@ fn write_server_shape(obj: &mut Map<String, Value>, spec: &McpServerSpec) {
             }
             None => {
                 obj.remove("auth_ref");
+                obj.remove("auth_type");
             }
+        }
+        if let Some(auth_type) = &spec.auth_type {
+            obj.insert("auth_type".to_string(), Value::String(auth_type.clone()));
         }
     } else {
         obj.remove("url");
         obj.remove("endpoint");
         obj.remove("transport");
         obj.remove("auth_ref");
+        obj.remove("auth_type");
         obj.insert("command".to_string(), Value::String(spec.command.clone()));
         obj.insert("args".to_string(), args_value(&spec.args));
     }
@@ -455,6 +468,7 @@ mod tests {
             enabled: true,
             endpoint: None,
             auth_ref: None,
+            auth_type: None,
         }
     }
 
@@ -518,6 +532,7 @@ mod tests {
             enabled: true,
             endpoint: Some("https://connector.example/mcp".to_string()),
             auth_ref: Some("MCP_CONNECTOR_SLACK_TOKEN".to_string()),
+            auth_type: None,
         };
         add_server_at(&path, &spec).expect("add remote");
 

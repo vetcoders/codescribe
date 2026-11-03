@@ -1,10 +1,598 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
 
 final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private typealias Layout = OverlayIntercomWidgetLayout
+
+  @MainActor
+  func testMainHeaderAndExpandedArrowDoNotOwnResizeHitTargets() throws {
+    let suite = "CodescribeTests.chrome-hit.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let state = OverlayState()
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "chrome-fixture",
+        "lease_id": String(repeating: "c", count: 32), "channel": "3", "name": "Agent",
+      ]))
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "3", name: "Agent", owner: owner, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    state.applyChannelRoster([
+      .init(
+        channel: "3", audience: "Agent", provider: owner.provider,
+        providerSessionId: owner.providerSessionID, open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    let controller = OverlayIntercomWidgetController(
+      state: state, textScale: TextScaleController(key: suite),
+      desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+    defer { controller.invalidate() }
+    let identity = OverlayIntercomCardIdentity(digit: "3", conversation: conversation)
+    for header in [true, false] {
+      let height: CGFloat = header ? Layout.controlHeight(scale: 1) : 400
+      let content: AnyView =
+        header
+        ? AnyView(controller.offscreenHeader(width: 500))
+        : AnyView(
+          controller.offscreenCard(identity, width: 500, height: height, scale: 1, expanded: true))
+      let host = NSHostingView(
+        rootView: content.environment(\.csTextScale, 1).symbolEffectsRemoved()
+          .transaction {
+            $0.animation = nil
+            $0.disablesAnimations = true
+          })
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 500, height: height)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.06))
+      host.layoutSubtreeIfNeeded()
+      let top = host.isFlipped ? host.bounds.minY + 7 : host.bounds.maxY - 7
+      let bottom = host.isFlipped ? host.bounds.maxY - 7 : host.bounds.minY + 7
+      func resizeViews(_ view: NSView) -> [NSView] {
+        let own =
+          String(describing: type(of: view)).contains("OverlayIntercomResizeView") ? [view] : []
+        return own + view.subviews.flatMap { resizeViews($0) }
+      }
+      let nativeHandles = resizeViews(host)
+      print(
+        "chrome-hit-witness header=\(header) bounds=\(host.bounds) handles=\(nativeHandles.map { $0.convert($0.bounds, to: host) })"
+      )
+      func resizeAt(_ x: CGFloat, _ y: CGFloat) -> Bool {
+        let target = host.hitTest(host.convert(NSPoint(x: x, y: y), to: host.superview))
+        return target.map { String(describing: type(of: $0)).contains("OverlayIntercomResizeView") }
+          ?? false
+      }
+      XCTAssertFalse(resizeAt(493, top), "Main header and expanded arrow never resize")
+      for x in [CGFloat(7), 493] {
+        XCTAssertEqual(resizeAt(x, bottom), !header, "Only the card retains bottom resize targets")
+      }
+      if !header {
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .mouseMoved, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1,
+            clickCount: 0, pressure: 0))
+        for handle in nativeHandles { handle.mouseEntered(with: event) }
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let image = NSImage(size: host.bounds.size)
+        image.addRepresentation(bitmap)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Rounded-card-native-corner-ink"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+      }
+    }
+    XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
+  }
+
+  @MainActor
+  func testFourDotHeaderAtCompactAndWideWidthsWithoutPresentingWindows() throws {
+    XCTAssertNotNil(
+      NSImage(systemSymbolName: "circle.grid.2x2.fill", accessibilityDescription: nil))
+    let keyBefore = NSApp.keyWindow
+    let suite = "CodescribeTests.header.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let state = OverlayState()
+    let generation = state.captureGeneration
+    let controller = OverlayIntercomWidgetController(
+      state: state, textScale: TextScaleController(key: suite),
+      desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+    defer { controller.invalidate() }
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      for width in [
+        IntercomHeaderMetrics(agentCount: 0, scale: 1).minimumWidth(paging: false), 400,
+      ] {
+        let host = NSHostingView(
+          rootView: controller.offscreenHeader(width: width)
+            .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light)
+            .environment(\.csTextScale, 1)
+            .frame(width: width, height: Layout.controlHeight(scale: 1))
+            .background(palette.desktopBackground.color))
+        host.frame.size = NSSize(width: width, height: Layout.controlHeight(scale: 1))
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let attachment = XCTAttachment(
+          image: NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size))
+        attachment.name = "four-dot-header-\(palette.appearance)-\(Int(width))"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+      }
+    }
+    XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertTrue(NSApp.keyWindow === keyBefore)
+  }
+
+  func testExpandedConversationIsAlwaysAboveItsSiblingRows() throws {
+    let cards = try ["2", "5", "8"].map { channel in
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": "session-\(channel)",
+          "lease_id": String(repeating: channel, count: 32), "channel": channel,
+          "name": "Agent \(channel)",
+        ]))
+      return OverlayIntercomCardIdentity(
+        digit: channel,
+        conversation: .init(
+          id: owner.id, channel: channel, name: owner.name, owner: owner, messages: []))
+    }
+    var presentation = OverlayIntercomPresentation()
+    presentation.expand(cards[1])
+    XCTAssertEqual(presentation.frontOrder(cards), [cards[0], cards[2], cards[1]])
+    XCTAssertEqual(presentation.expanded, [cards[1]])
+  }
+
+  func testMetadataGetsOneReadableLineBeforePreview() throws {
+    for scale in [CGFloat(0.8), 1, 1.6, 2] {
+      let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
+      let width = max(metrics.actionsWidth, 400 * scale)
+      let row = Layout.controlHeight(scale: scale)
+      XCTAssertEqual(metrics.cardContent(width: width, cardHeight: row), .header)
+      let metadataLine = ceil(
+        NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
+      let metadataHeight = row + metadataLine + 6
+      XCTAssertEqual(metrics.cardContent(width: width, cardHeight: metadataHeight), .context)
+      XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: metadataHeight))
+      XCTAssertNotNil(metrics.compactPreviewLayout(width: width, cardHeight: 3 * row))
+      let later = try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 8 * row))
+      XCTAssertEqual(metrics.cardContent(width: width, cardHeight: 8 * row), .preview)
+      XCTAssertGreaterThan(later.height, 3 * row)
+      XCTAssertLessThan(later.height, 8 * row)
+      let shorter = try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 5 * row))
+      XCTAssertLessThan(shorter.height, later.height)
+      XCTAssertGreaterThan(shorter.height, 0)
+    }
+  }
+
+  func testComposerAppearsAtReadableSizeAndSurvivesFurtherGrowth() throws {
+    for scale in [CGFloat(0.8), 1, 1.6, 2] {
+      let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
+      let factor = max(1, scale)
+      // A narrow card exposes input once readable message content also fits;
+      // the former fixed 320pt width must not hide the same editor.
+      let width: CGFloat = 220 * factor
+      XCTAssertFalse(
+        try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 220 * factor))
+          .showsComposer, "The former admission height is too early for the complete input")
+      let height = CGFloat(
+        try XCTUnwrap(
+          (100...2000).first {
+            metrics.compactPreviewLayout(width: width, cardHeight: CGFloat($0))?.showsComposer
+              == true
+          }))
+      for growth in [CGFloat(1), 1.5, 2, 4] {
+        XCTAssertTrue(
+          try XCTUnwrap(
+            metrics.compactPreviewLayout(width: width * growth, cardHeight: height * growth)
+          )
+          .showsComposer, "Growing the card must never withdraw its input (scale=\(scale))")
+      }
+    }
+  }
+
+  func testUnreadablyNarrowOrHeaderOnlyCardsDoNotMountClippedPreview() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
+      XCTAssertNil(metrics.compactPreviewLayout(width: metrics.iconSide, cardHeight: 2000))
+      XCTAssertNil(metrics.compactPreviewLayout(width: 500, cardHeight: metrics.iconSide))
+      XCTAssertEqual(metrics.cardContent(width: 500, cardHeight: metrics.iconSide), .header)
+    }
+  }
+
+  @MainActor
+  func testAgentMetadataUsesTheExactOwnerAndDeclaredExecutionLocation() throws {
+    let identity = AgentPlaybackIdentity(provider: "codex", session: "fixture", bus: "/fixture/bus")
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": identity.provider, "provider_session_id": identity.session,
+        "lease_id": identity.leaseID, "channel": "3", "name": "Agent",
+      ]))
+    var binding = AgentPlaybackBinding(
+      identity: identity, model: "gpt-6.1-sol", repositoryName: "codescribe",
+      workspace: "/fixture/codescribe",
+      frame: .init(session: "codescribe", paneID: 3),
+      terminal: .init(host: "iTerm2", hostBundleID: "com.googlecode.iterm2", tty: "/dev/ttys011"))
+    let state = OverlayState()
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "3", name: owner.name, owner: owner, messages: [])
+    state.applyBoundAgents(["3": binding])
+    XCTAssertEqual(
+      state.conversationAgentDescriptor(conversation), "Codex · gpt-6.1-sol · codescribe")
+    XCTAssertEqual(state.conversationAgentLocation(conversation), "Frame · codescribe · 3")
+    binding.frame = nil
+    state.applyBoundAgents(["3": binding])
+    XCTAssertEqual(state.conversationAgentLocation(conversation), "iTerm2 · /dev/ttys011")
+    binding.terminal = nil
+    XCTAssertEqual(binding.location, "/fixture/codescribe")
+    binding.workspace = nil
+    XCTAssertNil(binding.location, "No declared location must not invent a host")
+    let replacement = AgentPlaybackIdentity(
+      provider: "codex", session: "replacement", bus: "/fixture/new")
+    state.applyBoundAgents(["3": .init(identity: replacement, model: "other-model")])
+    XCTAssertNil(state.conversationAgentBinding(conversation), "A reused channel is another owner")
+    let wrongLease = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": identity.provider, "provider_session_id": identity.session,
+        "lease_id": String(repeating: "f", count: 32), "channel": "3", "name": "Agent",
+      ]))
+    state.applyBoundAgents(["3": binding])
+    XCTAssertNil(
+      state.conversationAgentBinding(
+        .init(
+          id: wrongLease.id, channel: "3", name: "Agent", owner: wrongLease, messages: [])))
+  }
+
+  @MainActor
+  func testProductionCardPhaseReviewSheetInLightAppearance() throws {
+    try reviewProductionCardPhases(dark: false)
+  }
+
+  @MainActor
+  func testProductionCardPhaseReviewSheetInDarkAppearance() throws {
+    try reviewProductionCardPhases(dark: true)
+  }
+
+  @MainActor
+  private func reviewProductionCardPhases(dark: Bool) throws {
+    func render(
+      channel: String, text: String?, height: CGFloat, dark: Bool,
+      expanded: Bool = false, hover: Bool = false, longDraft: Bool = false,
+      supplementaryDraft: Bool = false
+    ) throws
+      -> Data
+    {
+      let session = "fixture-\(channel)"
+      let identity = AgentPlaybackIdentity(provider: "codex", session: session, bus: "/fixture/bus")
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": "fixture-\(channel)",
+          "lease_id": identity.leaseID, "channel": channel, "name": "Agent",
+        ]))
+      let messages: [OverlayConversationMessage] =
+        text.map { body in
+          [
+            OverlayConversationMessage(
+              id: "fixture-reply", kind: .reply, text: body, order: 1, emittedAt: "",
+              owner: owner, recipients: [], deliveryID: nil, replyTo: nil,
+              unsolicited: false, playback: nil, busPath: "")
+          ]
+        } ?? []
+      let conversation = OverlayConversation(
+        id: owner.id, channel: channel, name: owner.name, owner: owner, messages: messages)
+      let bridgeRoot = RealAgentBridgeInstaller().bridgeRoot
+      guard bridgeRoot.path.contains("codescribe-test-data.") else {
+        XCTFail("Native fixture requires make test-swift's isolated bridge root")
+        throw CocoaError(.fileWriteNoPermission)
+      }
+      let leases = bridgeRoot.appendingPathComponent("leases", isDirectory: true)
+      try FileManager.default.createDirectory(at: leases, withIntermediateDirectories: true)
+      let leaseURL = leases.appendingPathComponent(identity.leaseID + ".json")
+      let previousLease = try? Data(contentsOf: leaseURL)
+      let lease: [String: Any] = [
+        "schema": "codescribe.agent-bridge.lease.v1", "lease_id": identity.leaseID,
+        "provider": identity.provider, "provider_session_id": identity.session,
+        "bus": identity.bus, "model": "gpt-6.1-sol", "repository_name": "codescribe",
+        "workspace": "/fixture/codescribe", "frame": ["session": "codescribe", "pane_id": 11],
+      ]
+      try JSONSerialization.data(withJSONObject: lease).write(to: leaseURL, options: .atomic)
+      defer {
+        if let previousLease {
+          try? previousLease.write(to: leaseURL, options: .atomic)
+        } else {
+          try? FileManager.default.removeItem(at: leaseURL)
+        }
+      }
+      let state = OverlayState()
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+      state.applyChannelRoster([
+        .init(
+          channel: channel, audience: owner.name, provider: owner.provider,
+          providerSessionId: owner.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+      ])
+      state.applyBoundAgents([
+        channel: .init(
+          identity: identity, model: "gpt-6.1-sol", repositoryName: "codescribe",
+          workspace: "/fixture/codescribe",
+          frame: .init(session: "codescribe", paneID: 11))
+      ])
+      var retainedDraft =
+        longDraft
+        ? "Preserved draft " + String(repeating: "Shared text stays intact. ", count: 20) : ""
+      let attachmentStore = ConversationAttachmentPointer.configDirectory
+        .appendingPathComponent("attachments", isDirectory: true)
+      let attachmentURL = attachmentStore.appendingPathComponent(
+        "review-attachment-\(UUID().uuidString).txt")
+      if supplementaryDraft {
+        try FileManager.default.createDirectory(
+          at: attachmentStore, withIntermediateDirectories: true)
+        try Data("Local review attachment".utf8).write(to: attachmentURL)
+        retainedDraft = ConversationDraft.compose(
+          text: "Review draft", attachments: [attachmentURL.path])
+        XCTAssertEqual(ConversationDraft.split(retainedDraft).attachments.count, 1)
+        state.conversationReplies[conversation.id] = OverlayUserReplyReference(
+          row: [
+            "message_id": "fixture-parent", "author": "Agent", "text": "Context for this reply",
+          ])
+      }
+      defer { if supplementaryDraft { try? FileManager.default.removeItem(at: attachmentURL) } }
+      state.conversationDrafts[conversation.id] = retainedDraft
+      state.publishConversationText = { _, _, _, _ in XCTFail("Mounting a preview must not send") }
+      let keyWindow = NSApp.keyWindow
+      let generation = state.captureGeneration
+      let suite = "CodescribeTests.compact.\(UUID().uuidString)"
+      let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+      defer { defaults.removePersistentDomain(forName: suite) }
+      let controller = OverlayIntercomWidgetController(
+        state: state, textScale: TextScaleController(key: suite),
+        desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+      defer { controller.invalidate() }
+      let palette: OverlayAppearancePalette = dark ? .dark : .light
+      let card = OverlayIntercomCardIdentity(digit: channel, conversation: conversation)
+      let content: AnyView =
+        hover
+        ? AnyView(controller.offscreenHover(card, palette: palette))
+        : AnyView(
+          controller.offscreenCard(
+            card, width: 360, height: height, scale: 1, expanded: expanded))
+      let host = NSHostingView(
+        rootView:
+          content
+          .environment(\.colorScheme, dark ? .dark : .light)
+          .environment(\.csTextScale, 1)
+          .symbolEffectsRemoved()
+          .transaction { $0.disablesAnimations = true }
+          .background(palette.desktopBackground.color))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 360, height: height)
+      let window = NSWindow(
+        contentRect: NSRect(x: -10000, y: -10000, width: 360, height: height),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let image = NSImage(size: host.bounds.size)
+      image.addRepresentation(bitmap)
+      let attachment = XCTAttachment(image: image)
+      attachment.name =
+        "Compact-\(channel)-\(Int(height))-\(dark ? "dark" : "light")-\(text == nil ? "empty" : "message")-\(expanded ? "open" : hover ? "hover" : "card")-\(supplementaryDraft ? "reply-attachment" : longDraft ? "long-draft" : "idle")"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+      var header = Data()
+      let headerPixels = Int(30 * CGFloat(bitmap.pixelsHigh) / height)
+      for y in 0..<headerPixels {
+        var previousBrightness: CGFloat?
+        for x in 0..<bitmap.pixelsWide {
+          let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+          let brightness =
+            color.redComponent * 0.2126 + color.greenComponent * 0.7152 + color.blueComponent
+            * 0.0722
+          let ink = previousBrightness.map { abs(brightness - $0) > 0.06 } ?? false
+          previousBrightness = brightness
+          header.append(ink ? 1 : 0)
+        }
+      }
+      var pendingViews: [NSView] = [host]
+      var editors: [NSTextView] = []
+      while let view = pendingViews.popLast() {
+        if let editor = view as? NSTextView, editor.isEditable { editors.append(editor) }
+        pendingViews.append(contentsOf: view.subviews)
+      }
+      if !expanded {
+        let measured = IntercomContentMetrics(names: ["Agent"], digits: [channel], scale: 1)
+          .compactPreviewLayout(width: 360, cardHeight: height)
+        XCTAssertEqual(
+          editors.count, !hover && measured?.showsComposer == true ? 1 : 0,
+          "The mounted native editor must match admission of the entire composer")
+        for editor in editors {
+          XCTAssertEqual(editor.string, ConversationDraft.split(retainedDraft).text)
+          XCTAssertLessThanOrEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 28.5)
+        }
+      }
+      XCTAssertTrue(NSApp.keyWindow === keyWindow, "Resizing or hovering must not take focus")
+      XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
+      XCTAssertEqual(controller.interactionWindowCounts.visible, 0)
+      XCTAssertEqual(state.captureGeneration, generation)
+      XCTAssertEqual(state.conversationDrafts[conversation.id], retainedDraft)
+      return header
+    }
+    let richMessage = """
+      ## Wynik pracy
+      **Gotowe:** wspólne formatowanie na tafli.
+
+      - Tożsamość i status najpierw
+      - Potem czytelna treść wiadomości
+
+      ```swift
+      let agent = "Agent"
+      print(agent)
+      ```
+      """
+    do {
+      // Native control hover and backdrop compositing can change between hosts.
+      // Preserve both review images rather than treating a pixel count as proof
+      // of absent content. The phase policy above pins the early input range.
+      for height in [CGFloat(30), 60, 90] {
+        _ = try render(channel: "3", text: nil, height: height, dark: dark)
+        _ = try render(channel: "3", text: richMessage, height: height, dark: dark)
+      }
+      for height in [CGFloat(150), 220] {
+        _ = try render(channel: "3", text: nil, height: height, dark: dark)
+        _ = try render(channel: "3", text: richMessage, height: height, dark: dark)
+      }
+      _ = try render(channel: "3", text: richMessage, height: 220, dark: dark, longDraft: true)
+      let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["3"], scale: 1)
+      let firstInputHeight = try XCTUnwrap(
+        (100...700).first {
+          metrics.compactPreviewLayout(width: 360, cardHeight: CGFloat($0))?.showsComposer == true
+        })
+      for height in [firstInputHeight - 1, firstInputHeight, firstInputHeight + 80] {
+        _ = try render(
+          channel: "3", text: "First readable line.\n\nSecond readable line.",
+          height: CGFloat(height), dark: dark)
+      }
+      for height in [firstInputHeight, firstInputHeight + 80] {
+        _ = try render(
+          channel: "3", text: "First readable line.\n\nSecond readable line.",
+          height: CGFloat(height), dark: dark, supplementaryDraft: true)
+      }
+      _ = try render(channel: "3", text: richMessage, height: 240, dark: dark, hover: true)
+      _ = try render(channel: "3", text: richMessage, height: 360, dark: dark, expanded: true)
+      let three = try render(channel: "3", text: nil, height: 30, dark: dark)
+      let four = try render(channel: "4", text: nil, height: 30, dark: dark)
+      XCTAssertNotEqual(
+        three, four, "The compact header must paint its digit")
+    }
+  }
+
+  func testHeaderPreservesMenuAudioAndCountAtItsMinimumWidth() {
+    for scale in [CGFloat(0.8), 1, 1.5, 2] {
+      for count in [0, 9] {
+        for paging in [false, true] {
+          let metrics = IntercomHeaderMetrics(agentCount: count, scale: scale)
+          let minimum = metrics.minimumWidth(paging: paging)
+          XCTAssertTrue(metrics.content(width: minimum, paging: paging).showsCount)
+          XCTAssertEqual(metrics.audioWidth, 2 * Layout.controlHeight(scale: scale) + 6)
+          let controls =
+            metrics.groupWidth + metrics.audioWidth + metrics.countWidth
+            + 2 * IntercomHeaderContent(showsCount: true).horizontalInset
+            + IntercomHeaderMetrics.spacerMinimum
+            + CGFloat(paging ? 5 : 3) * IntercomHeaderMetrics.spacing
+            + (paging ? 2 * metrics.pagingControlWidth : 0)
+          XCTAssertGreaterThanOrEqual(minimum, controls)
+        }
+      }
+    }
+  }
+
+  func testHeaderBudgetRespondsToCountAndActualPagerPresence() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let empty = IntercomHeaderMetrics(agentCount: 1, scale: scale)
+      let busy = IntercomHeaderMetrics(agentCount: 25, scale: scale)
+      XCTAssertGreaterThan(busy.countWidth, empty.countWidth)
+      XCTAssertGreaterThan(
+        busy.width(showsCount: true, paging: false),
+        empty.width(showsCount: true, paging: false))
+      XCTAssertGreaterThan(busy.minimumWidth(paging: true), busy.minimumWidth(paging: false))
+      XCTAssertTrue(busy.content(width: 2000, paging: false).showsCount)
+    }
+  }
+
+  func testPagingCountsActualTallCardsSoLowerAgentsRemainReachable() {
+    XCTAssertEqual(
+      Layout.visibleRange(
+        count: 8, offset: 0, visibleHeight: 900, scale: 1, cardHeight: 260), 0..<3)
+    XCTAssertEqual(
+      Layout.visibleRange(
+        count: 8, offset: 99, visibleHeight: 900, scale: 1, cardHeight: 260), 5..<8)
+  }
+
+  func testResizeHonorsTheSharedMailboxMenuAndHeaderControls() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let screen = CGRect(x: -1440, y: 0, width: 1440, height: 900)
+      let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)
+      let floor = IntercomHeaderMetrics(agentCount: 2, scale: scale).minimumWidth(paging: false)
+      let base = CGRect(x: -1000, y: 400, width: 400, height: 200)
+      let left = metrics.resizedGroupFrame(
+        base, delta: CGSize(width: 1000, height: 0), edge: .left,
+        count: 2, visibleFrame: screen, minimumWidth: floor)
+      XCTAssertEqual(left.width, floor)
+      XCTAssertEqual(left.maxX, base.maxX, "the opposite edge remains anchored")
+      let right = metrics.resizedGroupFrame(
+        base, delta: CGSize(width: -1000, height: 0), edge: .right,
+        count: 2, visibleFrame: screen, minimumWidth: floor)
+      XCTAssertEqual(right.width, floor)
+      XCTAssertEqual(right.minX, base.minX)
+      XCTAssertTrue(screen.contains(left))
+      XCTAssertTrue(screen.contains(right))
+    }
+  }
+
+  func testHumanAndBroadcastMailboxesActuallyExpandWithoutBecomingAgents() {
+    let inbox = OverlayConversation.humanInbox()
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    var presentation = OverlayIntercomPresentation()
+    for conversation in [inbox, all] {
+      let identity = OverlayIntercomCardIdentity(
+        digit: conversation.channel, conversation: conversation)
+      presentation.expand(identity)
+      XCTAssertEqual(
+        presentation.expanded, [identity], "a mailbox click must reach the content state")
+      XCTAssertNil(conversation.owner, "opening a mailbox never creates an agent")
+      presentation.close(identity)
+      XCTAssertTrue(presentation.expanded.isEmpty)
+    }
+    for channel in ["0", "2", "10"] {
+      let unknown = OverlayConversation(
+        id: "unknown", channel: channel, name: "Unbound", owner: nil, messages: [])
+      presentation.expand(.init(digit: channel, conversation: unknown))
+      XCTAssertTrue(presentation.expanded.isEmpty, "arbitrary ownerless routes remain forbidden")
+    }
+  }
+
+  func testDraggingTheGroupBelowTheScreenRecoversTheWholeVisibleStack() {
+    for screen in [
+      CGRect(x: 0, y: 0, width: 1440, height: 900),
+      CGRect(x: -1680, y: -90, width: 1680, height: 1050),
+    ] {
+      let proposed = CGRect(
+        x: screen.minX + 100, y: screen.minY + 120, width: 400, height: 30)
+      let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: 1)
+      let height = metrics.fittedCardHeight(260, count: 5, available: screen.height)
+      let result = Layout.clampedHeader(
+        proposed, count: 5, visibleFrame: screen, cardHeight: height)
+      XCTAssertGreaterThan(result.minY, proposed.minY)
+      let lostHeader = proposed.offsetBy(dx: 0, dy: -1000)
+      let recovered = Layout.clampedHeader(
+        lostHeader, count: 5, visibleFrame: screen, cardHeight: height)
+      XCTAssertEqual(recovered, result)
+      XCTAssertTrue(screen.contains(recovered))
+      for index in 0..<5 {
+        XCTAssertTrue(
+          screen.contains(
+            Layout.rowFrame(
+              index: index, header: recovered, count: 5, visibleFrame: screen, cardHeight: height)))
+      }
+    }
+  }
 
   func testMeasuredWidthSelectsTheWholeGroupsContentAtThreeTextScales() {
     for scale in [CGFloat(0.8), 1, 1.6] {
@@ -82,10 +670,9 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertFalse(Audio.sharedShowsSpeaker(speaking: true, muted: nil, open: false))
   }
 
-  /// Maciej, 2026-10-23: the stretched tiles of Codex's tiers "to było w sumie
-  /// fajne", the one-or-two-row snap "nie robi nic". A card follows the
-  /// gesture from one row up to its share of the screen.
-  func testCardsStretchWithTheGestureUpToTheirShareOfTheScreen() {
+  /// Maciej, 2026-10-24: stretching must keep the roster inside the screen.
+  /// Intermediate heights remain continuous until the shared budget is full.
+  func testCardsStretchContinuouslyWithinTheWholeRosterBudget() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)
       let icon = metrics.iconSide
@@ -99,29 +686,26 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           metrics.fittedCardHeight(requested, count: 3, available: 2000), requested,
           "any height in between, not a snap")
       }
-      let share = (2000 - Layout.controlHeight(scale: scale)) / 3 - Layout.gap
-      XCTAssertEqual(metrics.fittedCardHeight(5000, count: 3, available: 2000), share)
+      let maximum = (2000 - Layout.controlHeight(scale: scale)) / 3 - Layout.gap
+      XCTAssertEqual(metrics.fittedCardHeight(5000, count: 3, available: 2000), maximum)
       XCTAssertEqual(
-        metrics.tier(width: metrics.stackedActionsWidth, cardHeight: 2 * icon), .actions,
-        "two rows' height moves the controls under the name")
-      XCTAssertEqual(metrics.tier(width: metrics.stackedActionsWidth, cardHeight: 1.6 * icon), .name)
+        metrics.tier(width: metrics.actionsWidth - 1, cardHeight: 2 * icon), .name,
+        "height never moves controls below the name")
+      XCTAssertEqual(
+        metrics.tier(width: metrics.actionsWidth - 1, cardHeight: 1.6 * icon), .name)
     }
   }
 
-  func testTallNarrowCardsMoveTheSameControlsBelowTheName() {
+  func testTallNarrowCardsKeepOneActionRowAndYieldControlsByWidth() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["A"], digits: ["1"], scale: scale)
-      let width = metrics.stackedActionsWidth
-      XCTAssertLessThan(width, metrics.actionsWidth)
-      XCTAssertGreaterThanOrEqual(width, 3 * Layout.controlHeight(scale: scale) + 9)
-      XCTAssertEqual(metrics.tier(width: width, cardHeight: 2 * metrics.iconSide - 0.1), .name)
-      XCTAssertEqual(metrics.tier(width: width, cardHeight: 2 * metrics.iconSide), .actions)
-      XCTAssertEqual(
-        metrics.tier(width: metrics.iconSide, cardHeight: 500), .icon,
-        "height alone cannot reveal a name or controls that do not fit")
-      if metrics.nameWidth < width {
-        XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: 500), .name)
+      let width = metrics.actionsWidth - 1
+      for height in [metrics.iconSide, 2 * metrics.iconSide, 500] {
+        XCTAssertEqual(metrics.tier(width: width, cardHeight: height), .name)
       }
+      XCTAssertEqual(
+        metrics.tier(width: metrics.actionsWidth, cardHeight: metrics.iconSide), .actions)
+      XCTAssertEqual(metrics.tier(width: metrics.iconSide, cardHeight: 500), .icon)
     }
   }
 
@@ -165,21 +749,29 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertLessThanOrEqual(Layout.gap, 4, "the stack reads as one list")
   }
 
-  func testScreenHeightLimitsControlStackingWithoutEnlargingTheGlyphs() {
+  func testCardsUseCompactRowsBeforePagingAwayFittingSiblings() {
     let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: 1)
     let minimum = metrics.minimumGroupSize(count: 4)
     let row = metrics.fittedCardHeight(200, count: 4, available: minimum.height)
     XCTAssertEqual(row, metrics.iconSide)
     XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: row), .name)
+    XCTAssertEqual(metrics.nameFontSize, 11)
+    XCTAssertEqual(metrics.digitFontSize, 10)
     let tall = metrics.fittedCardHeight(200, count: 4, available: 700)
     XCTAssertGreaterThanOrEqual(tall, 2 * metrics.iconSide)
     let screen = CGRect(x: 0, y: 0, width: 1000, height: 700)
     let header = Layout.clampedHeader(
-      CGRect(x: 900, y: 10, width: 200, height: 30),
+      CGRect(x: 900, y: screen.maxY - 30, width: 200, height: 30),
       count: 4, visibleFrame: screen, cardHeight: tall)
-    for index in 0..<4 {
+    let shown = Layout.visibleRange(
+      count: 4, offset: 0, visibleHeight: screen.height, scale: 1, cardHeight: tall)
+    XCTAssertEqual(shown, 0..<4)
+    XCTAssertEqual(
+      Layout.visibleRange(
+        count: 4, offset: 3, visibleHeight: screen.height, scale: 1, cardHeight: tall), 0..<4)
+    for index in 0..<shown.count {
       let frame = Layout.rowFrame(
-        index: index, header: header, count: 4,
+        index: index, header: header, count: shown.count,
         visibleFrame: screen, cardHeight: tall)
       XCTAssertTrue(screen.contains(frame))
       XCTAssertEqual(frame.height, tall)
@@ -349,7 +941,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           ).count
           XCTAssertGreaterThan(shown, 0)
           let header = Layout.clampedHeader(
-            CGRect(x: visible.maxX + 600, y: visible.minY - 200, width: 300, height: 30),
+            CGRect(x: visible.maxX + 600, y: visible.maxY + 200, width: 300, height: 30),
             count: shown, visibleFrame: visible, scale: scale)
           XCTAssertTrue(visible.contains(header))
           XCTAssertEqual(header.height, Layout.controlHeight(scale: scale))

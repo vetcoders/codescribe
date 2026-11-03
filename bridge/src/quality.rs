@@ -363,6 +363,8 @@ impl From<DictionaryTeachResult> for CsDictionaryTeachResult {
 
 /// Teach live dictionary from quality store (corrections.jsonl + proposed.jsonl).
 /// Product: Dictionary panel "Teach" so rules leave the udawany 0-learned state.
+/// Live Swift consumer: `Screens/Settings/SettingsEngine.swift` calls
+/// `qualityTeachDictionaryFromStore`; retain this cross-language entry point.
 #[uniffi::export]
 pub fn quality_teach_dictionary_from_store() -> Result<CsDictionaryTeachResult, CsError> {
     teach_dictionary_from_store()
@@ -510,5 +512,36 @@ mod tests {
         .expect_err("unknown level must be rejected");
 
         assert!(error.to_string().contains("unknown FORMATTING_LEVEL"));
+    }
+
+    /// `quality_teach_dictionary_from_store` is called from the Swift Settings
+    /// engine; pin that consumer alongside the Rust behavioral contract test.
+    #[test]
+    fn teach_dictionary_from_store_is_consumed_by_swift_settings_engine() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../macos/Codescribe/Screens/Settings/SettingsEngine.swift");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert!(
+            source.contains("qualityTeachDictionaryFromStore()"),
+            "{} no longer calls qualityTeachDictionaryFromStore(); remove the export",
+            path.display()
+        );
+    }
+
+    /// Explicit UniFFI contract test for `quality_teach_dictionary_from_store`
+    /// (`qualityTeachDictionaryFromStore` in Swift `SettingsEngine.swift`).
+    #[test]
+    #[serial_test::serial]
+    fn quality_teach_dictionary_from_store_projects_store_counts_across_bridge() {
+        let temp = tempfile::tempdir().expect("temp quality root");
+        let _data_dir =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+
+        let counts =
+            quality_teach_dictionary_from_store().expect("bridge dictionary teach from store");
+        assert_eq!(counts.from_corrections, 0);
+        assert_eq!(counts.from_proposed, 0);
+        assert_eq!(counts.rules_from_correction_source, 0);
     }
 }

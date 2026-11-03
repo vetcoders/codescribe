@@ -162,6 +162,20 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
   }
 
+  /// Explanation of the selected level, separate from its compact name.
+  var summary: String {
+    switch self {
+    case .off:
+      return String(localized: "Keeps the transcript without AI formatting.")
+    case .correction:
+      return String(localized: "Corrects spelling and punctuation while keeping your wording.")
+    case .smart:
+      return String(localized: "Edits the transcript for clarity while keeping its meaning.")
+    case .max:
+      return String(localized: "Uses the Agent model and prompt for the dictated request.")
+    }
+  }
+
   init?(storedValue: String?) {
     switch storedValue {
     case "off", "raw": self = .off
@@ -174,10 +188,21 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
 
   static let editablePrompts: [Self] = [.correction, .smart]
 
-  /// Next level in the tray's cycling control: Off → Correction → Smart → Max → Off.
+  /// Levels a take may be formatted at without being asked. Max is the
+  /// Agent's consultation: it runs only when the user picks it in the overlay
+  /// Format menu, so automatic selectors and the tray never offer it.
+  /// `allCases` keeps Max for manual requests and version history.
+  static let automaticCases: [Self] = [.off, .correction, .smart]
+
+  /// The automatic level a stored choice runs at. A stored Max (or earlier
+  /// `creative`) runs Smart at the automatic boundary in the core, so every
+  /// automatic selector shows Smart for it instead of a level that never runs.
+  var automaticLevel: Self { self == .max ? .smart : self }
+
+  /// Next level in the tray's cycling control: Off → Correction → Smart → Off.
   var next: Self {
-    let all = Self.allCases
-    let index = all.firstIndex(of: self) ?? all.startIndex
+    let all = Self.automaticCases
+    let index = all.firstIndex(of: automaticLevel) ?? all.startIndex
     return all[(index + 1) % all.count]
   }
 }
@@ -194,12 +219,24 @@ enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
     return "px-\(size)"
   }
   var visibleName: String {
-    guard let size else {
+    switch self {
+    case .off:
       return String(
         localized: "settings.holdBadge.size.off", defaultValue: "Off",
         comment: "Hold badge size: the badge is disabled")
+    case .four:
+      return String(
+        localized: "settings.holdBadge.size.small", defaultValue: "Small",
+        comment: "Hold badge size: the small indicator")
+    case .eight:
+      return String(
+        localized: "settings.holdBadge.size.medium", defaultValue: "Medium",
+        comment: "Hold badge size: the medium indicator")
+    case .twelve:
+      return String(
+        localized: "settings.holdBadge.size.large", defaultValue: "Large",
+        comment: "Hold badge size: the large indicator")
     }
-    return "\(size)px"
   }
   var size: UInt32? {
     switch self {
@@ -247,7 +284,7 @@ enum DeferredInsertShortcutOption: String, CaseIterable, Identifiable, Equatable
   var wireId: String { rawValue }
 
   /// Reads the canonical bridge value defensively. The core always emits one
-  /// of these four ids, while an unknown legacy/corrupt value renders as the
+  /// of these four ids, while an unknown earlier/corrupt value renders as the
   /// safe opt-in default instead of causing a passive write.
   init(wireId: String) {
     self = Self(rawValue: wireId) ?? .disabled
@@ -364,7 +401,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .creator:
-      return String(localized: "Creator", comment: "Settings section: first-run setup and basics")
+      return String(
+        localized: "Creator",
+        comment:
+          "Settings section: general settings (language, appearance, permissions, formatting)")
     case .shortcuts: return String(localized: "Hotkeys", comment: "Settings section")
     case .keys:
       return String(localized: "Providers", comment: "Settings section: AI provider accounts")
@@ -830,20 +870,14 @@ final class SettingsDeepLink {
   }
 }
 
-/// Reasoning levels a lane can ask for, lowest first; the ids are the core's
-/// `ReasoningEffort` words (oh-my-pi's thinking levels, `none` for its `off`).
+/// Reasoning levels a lane can ask for, lowest first. Their protocol names
+/// are displayed verbatim in every interface language.
 struct ReasoningLevel: Identifiable, Hashable {
   let id: String
-  let title: String
+  var title: String { id }
 
-  static let all: [ReasoningLevel] = [
-    ReasoningLevel(id: "none", title: String(localized: "None", comment: "Reasoning level")),
-    ReasoningLevel(id: "minimal", title: String(localized: "Minimal", comment: "Reasoning level")),
-    ReasoningLevel(id: "low", title: String(localized: "Low", comment: "Reasoning level")),
-    ReasoningLevel(id: "medium", title: String(localized: "Medium", comment: "Reasoning level")),
-    ReasoningLevel(id: "high", title: String(localized: "High", comment: "Reasoning level")),
-    ReasoningLevel(id: "xhigh", title: String(localized: "Extra high", comment: "Reasoning level")),
-  ]
+  static let all = ["none", "minimal", "low", "medium", "high", "xhigh"]
+    .map { ReasoningLevel(id: $0) }
 }
 
 /// The two request lanes (D4: no Main fallback lane). A lane binds a provider
@@ -920,7 +954,7 @@ struct LLMLaneModel {
     // Presence, not validity: a stored key may still be rejected, and a
     // signed-in account does not open model discovery (`discoveryDescription`).
     if runtime.accountAuth {
-      return String(localized: "Connected account", comment: "Lane auth: signed-in account")
+      return String(localized: "Saved", comment: "Lane auth: stored account identity")
     }
     if runtime.keyPresent {
       return String(localized: "Stored API key", comment: "Lane auth: an API key is stored")
@@ -949,12 +983,14 @@ struct LLMLaneModel {
       && discoveryFailed && other.discoveryFailed
   }
 
-  var availabilityTint: Color {
-    guard credentialAccessResolved, credentialAccessError == nil else {
-      return CSColor.secondaryInk
-    }
-    return runtime.available ? CSColor.oliveLight : CSColor.terracottaText
+  /// Unavailable is the only state the lane can prove on its own; everything
+  /// else stays neutral until a probe answers.
+  var availabilityTone: CsMcpRowTone {
+    guard credentialAccessResolved, credentialAccessError == nil else { return .neutral }
+    return runtime.available ? .neutral : .bad
   }
+
+  var availabilityTint: Color { availabilityTone.dotColor }
 
   var discoveryDescription: String {
     guard credentialAccessResolved else { return String(localized: "Checking provider access…") }
@@ -979,20 +1015,22 @@ struct LLMLaneModel {
     case "no_key":
       // Discovery authenticates with the stored API key only, never with an
       // account token (`core/llm/model_discovery.rs`, `bridge/src/config.rs`),
-      // so one sentence holds with or without a connected account. It names
-      // the list, not requests: an account still serves those.
+      // so the list's access says nothing about whether requests using a
+      // separately stored account will be accepted.
+      // With a stored account the model is still entered by hand: the account
+      // never opens the list, so one sentence covers both cases.
       return String(
         localized: "The model list needs an API key. You can enter a model ID by hand.")
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
     case "key_rejected":
       // The core classified the refusal (401/403, or a 400 naming the key);
       // any other failure stays generic so a bad key is never guessed. With a
-      // signed-in account the sentence says the account still works: the model
-      // list and the account are independent states (Founder brief, round 8).
+      // stored account this describes presence only. A model-list failure
+      // neither proves nor disproves account-authenticated request acceptance.
       if runtime.accountAuth {
         return String(
           localized:
-            "The API key was rejected, so there is no model list. The account still works.",
+            "The API key was rejected, so there is no model list. The account remains saved.",
           comment: "Model discovery failed while the provider account stays signed in"
         )
       }
@@ -1355,6 +1393,8 @@ final class SettingsViewModel: ObservableObject {
   /// Canonical option catalog + saved preference + resident-engine truth.
   /// Nil until the first live refresh; previews stay on the engine's sample.
   @Published private(set) var whisperModelCatalog: CsWhisperModelCatalog?
+  private var whisperModelCatalogRefresh: Task<Void, Never>?
+  private var whisperModelCatalogRefreshRequested = false
   /// Honest outcome of the last selection ("applies from the next take" …).
   @Published private(set) var whisperModelNotice: String?
   /// Real validation/load error of the last failed selection; the picker never
@@ -1363,7 +1403,7 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var whisperModelSwitchPending = false
 
   /// Shared invalidation edges from `AppModel` (nil in tests and previews).
-  private let configurationInvalidation: ConfigurationInvalidation?
+  let configurationInvalidation: ConfigurationInvalidation?
   private var configurationInvalidationSink: AnyCancellable?
   /// CoreAudio edge while Settings is visible; see `beginAudioDeviceObservation`.
   private var audioDeviceMonitor: AudioInputDeviceMonitor?
@@ -1400,7 +1440,7 @@ final class SettingsViewModel: ObservableObject {
   let buildInfo: AppBuildInfo
   var appVersion: String { buildInfo.version }
 
-  private let engine: SettingsEngine?
+  let engine: SettingsEngine?
   private let creatorAgentBridge: AgentBridgeInstalling
   private let permissionProbe: PermissionProbing
   private let agentStatus: AgentStatusEngine?
@@ -1536,6 +1576,7 @@ final class SettingsViewModel: ObservableObject {
       refreshWhisperModelCatalog()
     case .recordingLifecycle:
       whisperLoadExpected = true
+      guard whisperResidencyObserved else { return }
       refreshWhisperModelCatalog()
     }
     observeWhisperResidencyIfNeeded()
@@ -1721,8 +1762,26 @@ final class SettingsViewModel: ObservableObject {
   /// resident-engine truth). Refreshed together with the install status so the
   /// picker, the footprint rows and the install row never disagree.
   func refreshWhisperModelCatalog() {
-    guard let engine else { return }
-    whisperModelCatalog = engine.loadWhisperModelCatalog()
+    guard engine != nil else { return }
+    whisperModelCatalogRefreshRequested = true
+    guard whisperModelCatalogRefresh == nil else { return }
+    whisperModelCatalogRefresh = Task { @MainActor [weak self] in
+      while let engine = self?.engine {
+        self?.whisperModelCatalogRefreshRequested = false
+        let catalog = await engine.loadWhisperModelCatalog()
+        guard let self, !Task.isCancelled else { return }
+        // A new invalidation supersedes the in-flight snapshot. Collapse all
+        // such edges into one new read, never a queue of filesystem workers.
+        guard !self.whisperModelCatalogRefreshRequested else { continue }
+        self.whisperModelCatalog = catalog
+        self.whisperModelCatalogRefresh = nil
+        if self.whisperResidencySettled { self.whisperLoadExpected = false }
+        if self.whisperResidencyObservation == nil || !self.whisperCatalogRefreshPending {
+          self.observeWhisperResidencyIfNeeded()
+        }
+        return
+      }
+    }
   }
 
   /// "Check model": install state, option catalog and resident-engine truth
@@ -1832,13 +1891,19 @@ final class SettingsViewModel: ObservableObject {
     return whisperModelCatalog?.loaded != nil || whisperLoadExpected
   }
 
+  /// The existing visible-window observer settles both independent facts:
+  /// optional catalog locations and the selected model's resident weights.
+  private var whisperCatalogRefreshPending: Bool {
+    whisperModelCatalog?.discoveryPending == true || whisperResidencyPending
+  }
+
   private func observeWhisperResidencyIfNeeded() {
     guard whisperResidencyObserved, engine != nil else { return }
     whisperResidencyGeneration &+= 1
     whisperResidencyObservation?.cancel()
     whisperResidencyObservation = nil
     if whisperResidencySettled { whisperLoadExpected = false }
-    guard whisperResidencyPending else { return }
+    guard whisperCatalogRefreshPending else { return }
     let generation = whisperResidencyGeneration
     let cadence = whisperResidencyPollInterval
     whisperResidencyObservation = Task { @MainActor [weak self] in
@@ -1850,7 +1915,7 @@ final class SettingsViewModel: ObservableObject {
         }
         self.refreshWhisperModelCatalog()
         if self.whisperResidencySettled { self.whisperLoadExpected = false }
-        guard self.whisperResidencyPending else {
+        guard self.whisperCatalogRefreshPending else {
           self.whisperResidencyObservation = nil
           return
         }
@@ -2083,14 +2148,14 @@ final class SettingsViewModel: ObservableObject {
   @discardableResult
   func addMcpServer(
     name: String, command: String, args: [String],
-    endpoint: String = "", token: String = ""
+    endpoint: String = "", token: String = "", oauth: Bool = false
   ) -> MCPAddFailure? {
     guard let mcpAdmin else { return nil }
     do {
       try mcpAdmin.addServer(
         CsMcpServerInput(
           name: name, command: command, args: args, enabled: true,
-          endpoint: endpoint, authRef: "", token: token
+          endpoint: endpoint, authRef: "", token: token, oauth: oauth
         )
       )
       reloadMcpServers()
@@ -2107,7 +2172,7 @@ final class SettingsViewModel: ObservableObject {
   /// fields. An empty token retains the existing Keychain reference.
   func updateMcpServer(
     _ server: CsMcpServer, command: String, args: [String],
-    endpoint: String, token: String
+    endpoint: String, token: String, oauth: Bool = false
   ) -> MCPAddFailure? {
     guard let mcpAdmin else { return nil }
     do {
@@ -2115,7 +2180,8 @@ final class SettingsViewModel: ObservableObject {
         name: server.name,
         input: CsMcpServerInput(
           name: server.name, command: command, args: args, enabled: server.enabled,
-          endpoint: endpoint, authRef: endpoint.isEmpty ? "" : server.authRef, token: token))
+          endpoint: endpoint, authRef: endpoint.isEmpty ? "" : server.authRef, token: token,
+          oauth: oauth))
       invalidateMcpTest(server.name)
       reloadMcpServers()
       refreshAgentStatus()
@@ -2124,6 +2190,66 @@ final class SettingsViewModel: ObservableObject {
       let failure = MCPAddFailure(error)
       lastError = failure.detail
       return failure
+    }
+  }
+
+  /// Servers with an OAuth sign-in in flight (browser roundtrip pending).
+  @Published private(set) var mcpAuthorizationPending: Set<String> = []
+  /// Last sign-in outcome per server, shown under the row.
+  @Published var mcpAuthNotices: [String: String] = [:]
+
+  /// OAuth sign-in for a remote MCP server — the same two-phase shape as
+  /// provider accounts: `start` binds the loopback listener and returns the
+  /// authorize URL, Swift opens the browser, then the await roundtrip runs
+  /// off the main actor. The result refreshes the row — no restart.
+  func authorizeMcpServer(_ server: CsMcpServer) {
+    guard let mcpAdmin, !mcpAuthorizationPending.contains(server.name) else { return }
+    mcpAuthorizationPending.insert(server.name)
+    mcpAuthNotices[server.name] = nil
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { self.mcpAuthorizationPending.remove(server.name) }
+      do {
+        let started = try await mcpAdmin.startMcpSignIn(
+          name: server.name, endpoint: server.endpoint)
+        guard let authUrl = started.authUrl, let url = URL(string: authUrl) else {
+          self.mcpAuthNotices[server.name] = String(localized: "Sign-in could not start.")
+          return
+        }
+        NSWorkspace.shared.open(url)
+        let login = try await mcpAdmin.awaitMcpSignIn(
+          name: server.name,
+          // Same cap as provider accounts: OAuth browser roundtrip + 2FA.
+          timeoutSeconds: 300
+        )
+        self.mcpAuthNotices[server.name] = Self.mcpSignInNotice(login)
+        if login.signedIn {
+          self.invalidateMcpTest(server.name)
+          self.reloadMcpServers()
+          self.refreshAgentStatus()
+        }
+      } catch {
+        self.lastError = error.userFacingMessage
+      }
+    }
+  }
+
+  /// The bridge sends a wire `status` + propagated `detail`, never a sentence
+  /// (LOCALIZATION_LEDGER.md §4) — the sentence is composed and localized here.
+  private static func mcpSignInNotice(_ result: CsMcpSignInResult) -> String? {
+    switch result.status {
+    case "signed_in":
+      return String(localized: "Signed in — the connector now sends the OAuth token.")
+    case "timeout":
+      return String(localized: "Sign-in was not completed in time. Try again.")
+    case "superseded":
+      return String(localized: "Another sign-in replaced this one.")
+    case "failed":
+      return result.detail.isEmpty
+        ? String(localized: "Sign-in failed.")
+        : String(localized: "Sign-in failed: \(result.detail)")
+    default:
+      return nil
     }
   }
 
@@ -2158,7 +2284,8 @@ final class SettingsViewModel: ObservableObject {
         input: CsMcpServerInput(
           name: server.name, command: server.command,
           args: server.args, enabled: !server.enabled,
-          endpoint: server.endpoint, authRef: server.authRef, token: ""
+          endpoint: server.endpoint, authRef: server.authRef, token: "",
+          oauth: server.oauth
         )
       )
       invalidateMcpTest(server.name)
@@ -2483,27 +2610,35 @@ final class SettingsViewModel: ObservableObject {
     )
   }
 
-  /// The formatting lane is required only for Smart/Corrections without Apple
-  /// on-device. Max runs on the Agent lane (its readiness is the Agent's), and
-  /// Apple needs no cloud credential.
+  /// The formatting lane is required only for automatic Smart/Corrections
+  /// without Apple on-device. A stored Max runs Smart automatically, so it
+  /// needs the lane too. Max itself runs on the Agent lane (its readiness is
+  /// the Agent's), and Apple needs no cloud credential.
   var cloudFormattingRequired: Bool {
     guard !settings.formatOnDevice else { return false }
-    switch FormattingPolicyOption(storedValue: settings.formattingLevel) {
+    switch automaticFormattingLevel {
     case .correction, .smart: return true
     case .off, .max, nil: return false
     }
   }
 
-  /// Max is selected but the Agent lane cannot serve it. Max never borrows the
-  /// formatting lane or Apple, so this is shown instead of a working Max.
+  /// The level automatic formatting runs at, as every automatic selector shows
+  /// it. Nil only for a stored value the app does not know.
+  var automaticFormattingLevel: FormattingPolicyOption? {
+    FormattingPolicyOption(storedValue: settings.formattingLevel)?.automaticLevel
+  }
+
+  /// The Agent lane cannot serve Max. Max stays in the overlay Format menu
+  /// whatever automatic level is selected and never borrows the formatting
+  /// lane or Apple, so this is shown instead of a working Max.
   var maxAgentUnavailable: Bool {
-    maxConsultationEnabled && providerAccessResolved && providerAccessError == nil
+    providerAccessResolved && providerAccessError == nil
       && !llmLane(.assistive).runtime.available
   }
 
   func laneUsageDescription(_ lane: LLMLane) -> String {
     if lane == .assistive { return llmLane(lane).availabilityDescription }
-    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .off {
+    if automaticFormattingLevel == .off {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
     }
     if settings.formatOnDevice {
@@ -2581,15 +2716,11 @@ final class SettingsViewModel: ObservableObject {
   }
 
   var formattingDescription: String {
-    FormattingPolicyOption(storedValue: settings.formattingLevel)?.visibleName
+    automaticFormattingLevel?.visibleName
       ?? String(localized: "invalid policy", comment: "Formatting status: stored level is unknown")
   }
 
   // MARK: - Creator mutations (write through the core router)
-
-  var maxConsultationEnabled: Bool {
-    FormattingPolicyOption(storedValue: settings.formattingLevel) == .max
-  }
 
   func refreshMaxToolApprovals() async {
     guard let engine else { return }
@@ -2715,7 +2846,7 @@ final class SettingsViewModel: ObservableObject {
   }
 
   func beginNewMaxConsultation() async {
-    guard maxConsultationEnabled, !newMaxConsultationPending else { return }
+    guard !newMaxConsultationPending else { return }
     guard let engine else {
       maxConsultationNotice = String(localized: "Consultation reset is unavailable.")
       return
@@ -2746,12 +2877,22 @@ final class SettingsViewModel: ObservableObject {
     persist("AGENT_AUTO_SEND", on ? "1" : "0")
   }
 
+  /// Persist the automatic formatting level. Max is never automatic: it is
+  /// requested per take from the overlay Format menu, so it is refused here
+  /// and the stored level stays as it was.
   func setFormattingLevel(_ level: String) {
     guard let policy = FormattingPolicyOption(storedValue: level) else {
       lastError = String(
         localized: "Unknown formatting policy: \(level)",
         comment: "The placeholder is a stored policy identifier"
       )
+      return
+    }
+    guard FormattingPolicyOption.automaticCases.contains(policy) else {
+      lastError = String(
+        localized: "settings.formatting.level.maxManualOnly",
+        defaultValue: "Max is not an automatic level. Choose Max from the overlay Format menu.",
+        comment: "Refused write: Max runs only when picked for one take in the overlay")
       return
     }
     settings.formattingLevel = policy.rawValue
@@ -2954,6 +3095,26 @@ final class SettingsViewModel: ObservableObject {
     } catch {
       lastError = error.userFacingMessage
     }
+  }
+
+  /// Option double-tap timing. Each write reloads the hotkey atomics, so the
+  /// next tap already uses the new value.
+  func setDoubleTapIntervalMs(_ ms: UInt64) {
+    guard settings.doubleTapIntervalMs != ms else { return }
+    settings.doubleTapIntervalMs = ms
+    persist("DOUBLE_TAP_INTERVAL_MS", String(ms))
+  }
+
+  func setTapMaxMs(_ ms: UInt64) {
+    guard settings.tapMaxMs != ms else { return }
+    settings.tapMaxMs = ms
+    persist("TAP_MAX_MS", String(ms))
+  }
+
+  func setTypingQuietMs(_ ms: UInt64) {
+    guard settings.typingQuietMs != ms else { return }
+    settings.typingQuietMs = ms
+    persist("TYPING_QUIET_MS", String(ms))
   }
 
   func setToggleSilenceSeconds(_ seconds: Float) {
@@ -3530,6 +3691,99 @@ final class SettingsViewModel: ObservableObject {
     persist("CODESCRIBE_AGENT_SEND_HOLD_SEC", String(bounded))
   }
 
+  // MARK: - Voice conversation with an agent (`agent_channel`)
+
+  var agentChannelPolicy: AgentChannelPolicy {
+    AgentChannelPolicy(rawValue: settings.agentChannelSessionPolicy) ?? .continuous
+  }
+
+  /// A policy brings its own voiceless close (never for a conversation, 30 s
+  /// for one message); the slider can change it afterwards.
+  func setAgentChannelPolicy(_ policy: AgentChannelPolicy) {
+    if engine == nil {
+      settings.agentChannelSessionPolicy = policy.rawValue
+      settings.agentChannelVoicelessCloseSec = policy.defaultVoicelessCloseSec
+    }
+    persistMany([
+      CsConfigEntry(key: "AGENT_CHANNEL_SESSION_POLICY", value: policy.rawValue),
+      CsConfigEntry(
+        key: "AGENT_CHANNEL_VOICELESS_CLOSE_SEC", value: String(policy.defaultVoicelessCloseSec)),
+    ])
+  }
+
+  /// The pause that sends; the env override wins over the stored value and
+  /// the row says so.
+  var agentChannelSendPauseOverridden: Bool {
+    settings.agentChannelSendPauseSource == "env_override"
+  }
+
+  var agentChannelSendPauseSlider: Double {
+    get { Double(settings.agentChannelSendPauseSec) }
+    set {
+      let seconds = min(15, max(1, (newValue * 2).rounded() / 2))
+      if engine == nil { settings.agentChannelSendPauseSec = Float(seconds) }
+      persist("AGENT_CHANNEL_SEND_PAUSE_SEC", String(format: "%.1f", seconds))
+    }
+  }
+
+  /// Slider stops: `Never`, then 15 s … 10 min.
+  static let agentChannelVoicelessStops: [UInt64] = [0, 15, 30, 45, 60, 90, 120, 180, 300, 600]
+
+  var agentChannelVoicelessSlider: Double {
+    get {
+      let current = settings.agentChannelVoicelessCloseSec
+      let stops = Self.agentChannelVoicelessStops
+      let index = stops.firstIndex { $0 >= current } ?? stops.count - 1
+      return Double(index)
+    }
+    set {
+      let stops = Self.agentChannelVoicelessStops
+      let index = min(stops.count - 1, max(0, Int(newValue.rounded())))
+      let seconds = stops[index]
+      if engine == nil { settings.agentChannelVoicelessCloseSec = seconds }
+      persist("AGENT_CHANNEL_VOICELESS_CLOSE_SEC", String(seconds))
+    }
+  }
+
+  var agentChannelFinish: AgentChannelFinish {
+    AgentChannelFinish(rawValue: settings.agentChannelSegmentFinish) ?? .lightPlus
+  }
+
+  func setAgentChannelFinish(_ finish: AgentChannelFinish) {
+    if engine == nil { settings.agentChannelSegmentFinish = finish.rawValue }
+    persist("AGENT_CHANNEL_SEGMENT_FINISH", finish.rawValue)
+  }
+
+  var agentChannelFormatWaitSeconds: Binding<Int> {
+    Binding(
+      get: { Int(self.settings.agentChannelFormatWaitSec) },
+      set: { seconds in
+        let bounded = min(10, max(1, seconds))
+        if self.engine == nil { self.settings.agentChannelFormatWaitSec = UInt64(bounded) }
+        self.persist("AGENT_CHANNEL_FORMAT_WAIT_SEC", String(bounded))
+      })
+  }
+
+  var agentAutoSendDelaySeconds: Binding<Int> {
+    Binding(
+      get: { Int(self.settings.agentAutoSendDelaySec) },
+      set: { seconds in
+        let bounded = min(30, max(1, seconds))
+        if self.engine == nil { self.settings.agentAutoSendDelaySec = UInt64(bounded) }
+        self.persist("AGENT_AUTO_SEND_DELAY_SEC", String(bounded))
+      })
+  }
+
+  var agentTakeVoicelessEndSeconds: Binding<Int> {
+    Binding(
+      get: { Int(self.settings.agentTakeVoicelessEndSec) },
+      set: { seconds in
+        let bounded = min(120, max(10, seconds))
+        if self.engine == nil { self.settings.agentTakeVoicelessEndSec = UInt64(bounded) }
+        self.persist("AGENT_TAKE_VOICELESS_END_SEC", String(bounded))
+      })
+  }
+
   // MARK: - Agent workspace roots (list_projects tool)
 
   /// Effective workspace roots the `list_projects` tool scans. Never empty —
@@ -3564,8 +3818,9 @@ final class SettingsViewModel: ObservableObject {
     persist("WHISPER_ADAPTIVE_BUFFER", enabled ? "1" : "0")
   }
 
+  /// This experimental option is presented in public builds, so its setter
+  /// must use the normal persistence/error path there as well.
   func setFormatOnDevice(_ enabled: Bool) {
-    guard DeveloperSurface.isEnabled() else { return }
     persist("CODESCRIBE_FORMAT_ON_DEVICE", enabled ? "1" : "0")
   }
 
@@ -3592,6 +3847,17 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Formatter Keywords seam: the Keywords editor
+  /// (`SettingsViewModel+FormatterKeywords.swift`) writes its list through the
+  /// settings bridge, then calls this on the main actor so the model re-reads
+  /// the canonical snapshot and peers hear about the write, exactly as after
+  /// `persist`. It never writes and keeps no Keywords state of its own.
+  func reloadSettingsAfterWrite() {
+    guard let engine else { return }
+    applyLoadedSettings(engine.loadSettings())
+    configurationInvalidation?.settingsWritten(by: self)
+  }
+
   /// `persist` for rows that present the rejection inline instead of as `lastError`.
   private func persistOrThrow(_ key: String, _ value: String) throws {
     guard let engine else { return }
@@ -3614,7 +3880,7 @@ final class SettingsViewModel: ObservableObject {
   /// Applies an already-read bridge snapshot without writing it back. Keep
   /// this as the only read path so passive reloads cannot reset the picker to
   /// a UI default while persisted truth says otherwise.
-  private func applyLoadedSettings(_ loaded: CsSettings) {
+  func applyLoadedSettings(_ loaded: CsSettings) {
     settings = loaded
     deferredInsertShortcut = DeferredInsertShortcutOption(
       wireId: loaded.deferredInsertShortcut
@@ -3656,13 +3922,13 @@ final class SettingsViewModel: ObservableObject {
   /// Non-provider Keychain accounts (GitHub). STT keys ride on `sttLanes`.
   var serviceKeyAccounts: [String] { engine?.serviceKeyAccounts() ?? [] }
 
-  /// Lane-picker dot: credential present or key-optional host → green; else red.
+  /// Lane-picker dot describes stored configuration, never service acceptance.
   static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive) -> Color
   {
     provider.apiKeySet
       || (provider.wire == "responses" && provider.accountSignedIn)
       || !provider.keyRequired
-      ? CSColor.oliveLight : CSColor.terracottaText
+      ? CSColor.secondaryInk : CSColor.dangerLight
   }
 
   /// Bridge rows take the bare slug; the picker id carries the `custom:` prefix (§D 17:55Z).
@@ -3923,7 +4189,8 @@ final class SettingsViewModel: ObservableObject {
 
   /// Persist the OAuth client id (non-secret; settings.json) for the provider
   /// that owns it. Takes effect on the next click — the core re-reads settings
-  /// per resolution. Advanced override only; shipped defaults cover OpenAI + xAI.
+  /// per resolution. Advanced override only; shipped defaults cover OpenAI,
+  /// xAI, and Google.
   func saveOauthClientId(providerId: String, value: String) {
     let settingKey: String
     switch providerId {
@@ -3933,6 +4200,8 @@ final class SettingsViewModel: ObservableObject {
       settingKey = "LLM_ANTHROPIC_OAUTH_CLIENT_ID"
     case "xai-responses":
       settingKey = "LLM_XAI_OAUTH_CLIENT_ID"
+    case "google-gemini":
+      settingKey = "LLM_GOOGLE_OAUTH_CLIENT_ID"
     default:
       lastError = String(
         localized: "No OAuth client-id setting for provider \(providerId)",

@@ -292,6 +292,9 @@ final class OverlayClipboardPasteTests: XCTestCase {
     let scroll = try XCTUnwrap(text.enclosingScrollView)
     window.makeFirstResponder(text)
     let initialHeight = scroll.frame.height
+    // The regular composer owns a six-line budget plus its fixed action row.
+    XCTAssertEqual(ComposerControlMetrics.conversationEditorMaximumLines, 6)
+    let maximumHeight = ComposerControlMetrics.conversationEditorMaximumHeight
     var previousHeight = initialHeight
     var growingHeights: Set<Int> = []
     for index in 1...70 {
@@ -299,13 +302,17 @@ final class OverlayClipboardPasteTests: XCTestCase {
       settle()
       XCTAssertEqual(text.string, draft.text)
       XCTAssertGreaterThanOrEqual(scroll.frame.height, previousHeight - 1, "word \(index)")
-      XCTAssertLessThanOrEqual(scroll.frame.height, 113)
-      if scroll.frame.height < 111 {
+      XCTAssertLessThanOrEqual(scroll.frame.height, maximumHeight + 1)
+      if scroll.frame.height < maximumHeight - 1 {
         growingHeights.insert(Int(scroll.frame.height.rounded()))
-        XCTAssertEqual(
-          scroll.documentVisibleRect.minY, 0, accuracy: 1,
-          "the field must grow before it starts scrolling, word \(index)")
-        XCTAssertLessThanOrEqual(text.frame.height, scroll.contentSize.height + 1)
+        // Released rows inset the native viewport below the rounded edge.
+        // A small constrained-origin adjustment is that stationary inset,
+        // not overflowing text scrolling before the editor reaches its cap.
+        let inset =
+          scroll.frame.height > initialHeight ? ComposerControlMetrics.textVerticalInset : 0
+        XCTAssertGreaterThanOrEqual(scroll.documentVisibleRect.minY, -1)
+        XCTAssertLessThanOrEqual(scroll.documentVisibleRect.minY, inset + 1, "word \(index)")
+        XCTAssertLessThanOrEqual(text.frame.height, scroll.contentSize.height + inset + 1)
       }
       let layout = try XCTUnwrap(text.layoutManager)
       let container = try XCTUnwrap(text.textContainer)

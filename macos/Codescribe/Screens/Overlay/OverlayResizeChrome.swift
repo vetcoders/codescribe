@@ -30,6 +30,6 @@ enum OverlayResizeChrome {
   }
 
   static func sideIndicatorAnimation(reduceMotion: Bool) -> Animation? {
-    reduceMotion ? nil : .easeOut(duration: 0.15)
+    reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover)
   }
 }

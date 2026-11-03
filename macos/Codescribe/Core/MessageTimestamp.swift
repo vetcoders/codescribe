@@ -191,7 +191,7 @@ struct MessageDaySeparator: View {
 
   private var hairline: some View {
     Rectangle()
-      .fill(Color.primary.opacity(0.07))
+      .fill(Color.primary.opacity(CSAlpha.line))
       .frame(height: 1)
       .frame(maxWidth: .infinity)
   }

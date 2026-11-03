@@ -15,6 +15,8 @@
 pub mod client;
 /// On-disk MCP server config load/save and secret-aware field handling.
 pub mod config_store;
+/// OAuth 2.1 authorization (discovery, PKCE, registration, refresh) for remote servers.
+pub mod oauth;
 /// One-shot migration of legacy MCP secrets into the current secret store.
 pub mod secret_migration;
 

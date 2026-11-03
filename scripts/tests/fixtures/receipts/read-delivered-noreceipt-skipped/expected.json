@@ -1,0 +1,58 @@
+{
+  "denominator": 3,
+  "message_id": "0123456789abcdef00000001",
+  "recipients": [
+    {
+      "at": "2026-10-26T00:34:02Z",
+      "channel": "7",
+      "delivered_at": "2026-10-26T00:34:02Z",
+      "delivery_id": "222222222222222222222222",
+      "name": "igor",
+      "state": "delivered",
+      "wake": "quiet"
+    },
+    {
+      "at": "2026-10-26T00:34:03Z",
+      "channel": "5",
+      "delivered_at": null,
+      "delivery_id": "444444444444444444444444",
+      "name": "kuba",
+      "state": "skipped",
+      "wake": null
+    },
+    {
+      "at": "2026-10-26T05:04:00Z",
+      "channel": "3",
+      "delivered_at": "2026-10-26T00:34:01Z",
+      "delivery_id": "111111111111111111111111",
+      "name": "lena",
+      "state": "read",
+      "wake": "on"
+    },
+    {
+      "at": null,
+      "channel": "2",
+      "delivered_at": null,
+      "delivery_id": null,
+      "name": "nina",
+      "state": "no_receipt",
+      "wake": null
+    }
+  ],
+  "sent_to": [
+    {
+      "channel": "3",
+      "name": "lena"
+    },
+    {
+      "channel": "7",
+      "name": "igor"
+    },
+    {
+      "channel": "2",
+      "name": "nina"
+    }
+  ],
+  "spoken": null,
+  "withdrawn": []
+}

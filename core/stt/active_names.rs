@@ -347,30 +347,35 @@ pub fn unread_backlog_since_at(
     oldest
 }
 
-/// The bounded set of lease files: the first `MAX_LEASE_FILES` `*.json`
-/// names in order, each no larger than the helper can write, with the
-/// metadata read for that check.
+/// The bounded set of lease files: the `MAX_LEASE_FILES` freshest regular
+/// `*.json` files no larger than the helper can write, ordered by
+/// modification time descending with path order as a deterministic
+/// tie-breaker, paired with the metadata read for that check.
 fn lease_files(root: &Path) -> Vec<(PathBuf, fs::Metadata)> {
     let Ok(entries) = fs::read_dir(root.join("leases")) else {
         return Vec::new();
     };
-    let mut paths = entries
+    let mut files = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "json")
         })
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths.truncate(MAX_LEASE_FILES);
-    paths
-        .into_iter()
         .filter_map(|path| {
             let metadata = fs::metadata(&path).ok()?;
-            (metadata.len() <= MAX_LEASE_BYTES).then_some((path, metadata))
+            (metadata.is_file() && metadata.len() <= MAX_LEASE_BYTES).then_some((path, metadata))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    files.sort_by(|(left_path, left_meta), (right_path, right_meta)| {
+        right_meta
+            .modified()
+            .ok()
+            .cmp(&left_meta.modified().ok())
+            .then_with(|| left_path.cmp(right_path))
+    });
+    files.truncate(MAX_LEASE_FILES);
+    files
 }
 
 /// One lease file parsed as the helper wrote it, or `None` when it is
@@ -1041,5 +1046,145 @@ mod tests {
         fs::write(temp.path().join("leases/bad.json"), b"not json").unwrap();
         write_lease(temp.path(), "future.json", "Iwo", true, 1_001.0);
         assert!(read_active_names_at(temp.path(), 1_000.0, 120.0).is_empty());
+    }
+
+    fn set_file_mtime(path: &Path, mtime: SystemTime) {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    #[test]
+    fn freshest_leases_survive_the_64_file_cap_regardless_of_alphabetical_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let now_sys = SystemTime::now();
+        let now_unix = now_sys.duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
+
+        // 87 older leases that sort alphabetically before `zz_andrzej.json`:
+        // 24 stale (> 1h old) + 63 recent-but-older (10..72s old).
+        for idx in 0..87 {
+            let file = format!("aa_{idx:02}.json");
+            let session = format!("sess-{idx:02}");
+            let age_secs = if idx < 24 {
+                3_600 + (24 - idx) as u64
+            } else {
+                10 + (idx - 24) as u64
+            };
+            let stamp_sys = now_sys - Duration::from_secs(age_secs);
+            let stamp_unix = now_unix - age_secs as f64;
+            write_session_lease(temp.path(), &file, "agy", &session, true, stamp_unix);
+            set_file_mtime(&temp.path().join("leases").join(&file), stamp_sys);
+        }
+
+        // 88th lease: sorts last alphabetically (`zz_andrzej.json`), freshest mtime.
+        let fresh_file = "zz_andrzej.json";
+        let dir = temp.path().join("leases");
+        fs::write(
+            dir.join(fresh_file),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "name": "andrzej",
+                "active": true,
+                "heartbeat_unix": now_unix - 1.0,
+                "provider": "agy",
+                "provider_session_id": "sess-andrzej",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        set_file_mtime(&dir.join(fresh_file), now_sys - Duration::from_secs(1));
+
+        let retained_files: Vec<String> = lease_files(temp.path())
+            .into_iter()
+            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(retained_files.len(), MAX_LEASE_FILES);
+        assert_eq!(retained_files.first().map(String::as_str), Some(fresh_file));
+        for stale_idx in 0..24 {
+            let stale_name = format!("aa_{stale_idx:02}.json");
+            assert!(
+                !retained_files.contains(&stale_name),
+                "stale lease {stale_name} should be evicted before fresh leases"
+            );
+        }
+
+        let live = live_follower_sessions_at(temp.path(), now_unix, 120.0);
+        assert!(
+            live.contains(&("agy".to_string(), "sess-andrzej".to_string())),
+            "freshest lease sorting last alphabetically must remain live under the 64-file cap"
+        );
+        let names = read_active_names_at(temp.path(), now_unix, 120.0);
+        assert!(
+            names.contains(&"Andrzej".to_string()),
+            "freshest lease name must remain in active_names(): {names:?}"
+        );
+        let vocabulary = crate::stt::recognizer_vocabulary::RecognizerVocabulary::from_sources(
+            names,
+            Vec::new(),
+            &crate::quality::lexicon_gate::ProtectedTerms::default(),
+        );
+        assert!(
+            vocabulary
+                .apple_contextual_strings()
+                .is_some_and(|terms| terms.contains(&"Andrzej".to_string())),
+            "recognizer_vocabulary must include the freshest lease name from active_names()"
+        );
+    }
+
+    #[test]
+    fn oversized_and_non_regular_entries_do_not_crowd_out_usable_leases_and_ties_are_deterministic()
+    {
+        let temp_a = tempfile::tempdir().unwrap();
+        let temp_b = tempfile::tempdir().unwrap();
+        let now_sys = SystemTime::now();
+        let tied_mtime = now_sys - Duration::from_secs(5);
+
+        // Write 70 equal-mtime usable leases in forward order in temp_a and reverse order in temp_b.
+        for idx in 0..70 {
+            let file_a = format!("lease_{idx:02}.json");
+            write_lease(temp_a.path(), &file_a, "iwo", true, 995.0);
+            set_file_mtime(&temp_a.path().join("leases").join(&file_a), tied_mtime);
+
+            let rev = 69 - idx;
+            let file_b = format!("lease_{rev:02}.json");
+            write_lease(temp_b.path(), &file_b, "iwo", true, 995.0);
+            set_file_mtime(&temp_b.path().join("leases").join(&file_b), tied_mtime);
+        }
+
+        // Add 5 newest non-regular `.json` directories and 5 newest oversized `.json` files to temp_a.
+        for idx in 0..5 {
+            let dir_entry = temp_a
+                .path()
+                .join("leases")
+                .join(format!("00_dir_{idx}.json"));
+            fs::create_dir_all(&dir_entry).unwrap();
+
+            let oversized_name = format!("00_oversized_{idx}.json");
+            let bytes = write_lease_with_mailbox(
+                temp_a.path(),
+                &oversized_name,
+                &format!("runaway-{idx}"),
+                MAX_LEASE_BYTES as usize,
+            );
+            assert!(bytes > MAX_LEASE_BYTES);
+            set_file_mtime(&temp_a.path().join("leases").join(&oversized_name), now_sys);
+        }
+
+        let names_a: Vec<String> = lease_files(temp_a.path())
+            .into_iter()
+            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        let names_b: Vec<String> = lease_files(temp_b.path())
+            .into_iter()
+            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names_a.len(), MAX_LEASE_FILES);
+        assert_eq!(
+            names_a, names_b,
+            "equal-mtime tie-breaker must be deterministic and unaffected by oversized or non-regular newest entries"
+        );
     }
 }

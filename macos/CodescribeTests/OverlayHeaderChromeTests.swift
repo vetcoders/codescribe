@@ -87,6 +87,85 @@ final class OverlayHeaderChromeTests: XCTestCase {
     withExtendedLifetime(detached) {}
   }
 
+  func testScrollableMessageHintKeepsFocusAndRejectsAnEarlierOwnersExit() async throws {
+    let parent = NSPanel(
+      contentRect: NSRect(x: 300, y: 500, width: 400, height: 100),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let control = NSView(frame: NSRect(x: 300, y: 12, width: 80, height: 50))
+    parent.contentView?.addSubview(control)
+    BackgroundTestWindow.present(parent)
+    let first = OverlayHintAnchor()
+    first.view = control
+    let second = OverlayHintAnchor()
+    second.view = control
+    defer {
+      first.hide()
+      second.hide()
+      parent.orderOut(nil)
+    }
+    let responder = parent.firstResponder
+    first.show(
+      "Full message", palette: .dark, leading: true,
+      content: AnyView(ScrollView { Text(String(repeating: "Message paragraph\n", count: 50)) }),
+      size: CGSize(width: 380, height: 280), interactive: true)
+    let hint = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
+    XCTAssertFalse(hint.ignoresMouseEvents, "the full message accepts pointer scrolling")
+    XCTAssertFalse(hint.canBecomeKey, "hover cannot take the composer's keyboard")
+    XCTAssertTrue(parent.firstResponder === responder)
+    XCTAssertEqual(hint.alphaValue, parent.alphaValue, "the preview follows its owner's visibility")
+
+    func previewRegion(in view: NSView) -> OverlayMenuCursorRegionView? {
+      if let region = view as? OverlayMenuCursorRegionView, region.bounds.width > 300 {
+        return region
+      }
+      return view.subviews.lazy.compactMap { previewRegion(in: $0) }.first
+    }
+    let root = try XCTUnwrap(hint.contentView)
+    root.layoutSubtreeIfNeeded()
+    let region = try XCTUnwrap(previewRegion(in: root))
+    region.updateTrackingAreas()
+    XCTAssertTrue(region.trackingAreas.contains { $0.options.contains(.activeAlways) })
+
+    first.hide(allowPointerRetention: true)
+    region.updateHover(
+      at: region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil))
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertTrue(first.isPresented, "the pointer can move from the row into its message")
+
+    region.updateHover(at: NSPoint(x: -10_000, y: -10_000))
+    second.show("Next control", palette: .dark)
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertEqual(OverlayHintPanel.shared.presentedTitle, "Next control")
+    XCTAssertTrue(hint.ignoresMouseEvents, "ordinary hints remain click-through")
+    XCTAssertFalse(hint.hasShadow)
+    first.hide()
+    XCTAssertTrue(second.isPresented, "an old row cannot dismiss its successor")
+  }
+
+  func testScrollableMessageHintDismissesAfterLeavingBothTargets() async throws {
+    let parent = NSPanel(
+      contentRect: NSRect(x: 300, y: 500, width: 400, height: 100),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let control = NSView(frame: NSRect(x: 300, y: 12, width: 80, height: 50))
+    parent.contentView?.addSubview(control)
+    BackgroundTestWindow.present(parent)
+    let owner = OverlayHintAnchor()
+    owner.view = control
+    defer {
+      owner.hide()
+      parent.orderOut(nil)
+    }
+    owner.show(
+      "Full message", palette: .dark,
+      content: AnyView(Text("Message")), size: CGSize(width: 380, height: 280),
+      interactive: true)
+    owner.hide(allowPointerRetention: true)
+    XCTAssertTrue(owner.isPresented, "the row-to-preview gap has a short grace period")
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertFalse(owner.isPresented)
+    XCTAssertNil(OverlayHintPanel.shared.presentedTitle)
+  }
+
   func testAccentsShareOneHoverHue() {
     for palette in [OverlayAppearancePalette.light, .dark] {
       let hover = OverlayHeaderAccent.transcription.color(in: palette)
@@ -94,7 +173,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       XCTAssertEqual(OverlayHeaderAccent.state.color(in: palette), hover)
       XCTAssertNotEqual(hover, palette.successStatus.color)
       XCTAssertNotEqual(hover, palette.agentAccent.color)
-      XCTAssertEqual(hover, Color(nsColor: .controlAccentColor))
+      XCTAssertEqual(hover, CSColor.chromeAccent)
     }
   }
 
@@ -264,13 +343,14 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertTrue(conversation.contains("BubbleOwnerNameButton("))
     XCTAssertTrue(conversation.contains("owner.id != conversation.owner?.id"))
     // Maciej (2026-10-16): hover brightens the name; no outline, nothing more.
-    XCTAssertTrue(
-      conversation.contains("hovered ? palette.primaryText.color : palette.mutedText.color"))
     let nameButton = try XCTUnwrap(
       conversation.range(of: "struct BubbleOwnerNameButton").map { range in
         String(conversation[range.lowerBound...].prefix(900))
       })
     XCTAssertFalse(nameButton.contains("csFocusOutline"))
+    XCTAssertTrue(nameButton.contains(".conversationActionHover("))
+    XCTAssertTrue(nameButton.contains("restingColor: palette.mutedText.color"))
+    XCTAssertTrue(nameButton.contains("hoverColor: palette.primaryText.color"))
     let overlay = try source("Overlay/DictationOverlayView.swift")
     XCTAssertTrue(overlay.contains("onOpenOwnerConversation: { state.openConversation(for: $0) },"))
 
@@ -359,7 +439,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
     }
     XCTAssertEqual(regions.count, 5)
     try headerPointer(false, on: host)
-    headerSettle(host, seconds: 0.16)
+    headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
     let rest = headerRaster(host)
     let scale = CGFloat(rest.width) / host.bounds.width
     for target in regions {
@@ -372,7 +452,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
           context: nil, eventNumber: 1, clickCount: 0, pressure: 0))
       panel.sendEvent(event)
-      headerSettle(host, seconds: 0.16)
+      headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
       XCTAssertEqual(regions.filter(\.hovered).count, 1, "hover must leave earlier controls")
       XCTAssertTrue(target.hovered)
       let current = headerPixels(host)
@@ -408,7 +488,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       XCTAssertEqual(siblingChanges, 0, "hover must not paint sibling controls")
     }
     try headerPointer(false, on: host)
-    headerSettle(host, seconds: 0.16)
+    headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
     XCTAssertTrue(regions.allSatisfy { !$0.hovered })
   }
 
@@ -495,11 +575,11 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertFalse(rest.pixels.isEmpty, "control did not render")
     try headerPointer(
       true, on: host, minimumWidth: minimumWidth)
-    headerSettle(host, seconds: 0.16)
+    headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
     let hover = headerPixels(host)
     try headerPointer(
       false, on: host, minimumWidth: minimumWidth)
-    headerSettle(host, seconds: 0.16)
+    headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
     return (rest.pixels, hover, headerPixels(host), rest.width)
   }
 
@@ -642,10 +722,10 @@ final class OverlayHeaderChromeTests: XCTestCase {
   }
 
   private func headerSystemAccent(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
-    var color = NSColor.controlAccentColor
+    var color = CSPalette.chromeAccent
     NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)?
       .performAsCurrentDrawingAppearance {
-        color = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .controlAccentColor
+        color = CSPalette.chromeAccent.usingColorSpace(.sRGB) ?? CSPalette.chromeAccent
       }
     let hex =
       UInt32((color.redComponent * 255).rounded()) << 16
@@ -824,8 +904,11 @@ final class OverlayHeaderChromeTests: XCTestCase {
   /// receipt sat right of a plain one and a jargon badge rode on replies.
   func testConversationFadesUnderTheHeaderAndKeepsItsChromeQuiet() throws {
     let conversation = try source("Overlay/OverlayConversationView.swift")
-    XCTAssertTrue(conversation.contains(".safeAreaBar(edge: .top, spacing: 0)"), "header is a bar")
-    XCTAssertTrue(conversation.contains(".scrollEdgeEffectStyle(.soft, for: .top)"))
+    XCTAssertTrue(
+      conversation.contains(".contentMargins(.top, topInset + visibleNavigationHeight)"))
+    XCTAssertTrue(conversation.contains(".scrollClipDisabled()"))
+    XCTAssertTrue(conversation.contains(".scrollEdgeEffectHidden(true, for: .top)"))
+    XCTAssertTrue(conversation.contains(".scrollEdgeEffectHidden(true, for: .bottom)"))
     XCTAssertFalse(conversation.contains("scrollEdgeEffectHidden(true, for: [.top, .bottom])"))
     XCTAssertTrue(conversation.contains(".csAutohidingScrollers()"), "one scroller owner")
     let scroller = try source("../DesignSystem/CSScroller.swift")

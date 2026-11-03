@@ -9,7 +9,8 @@
 //!   03_algorytm-ma-zlozonosc... — round 2: medium difficulty
 //!   04_runda-3-czyli.wav        — round 3: hard mispronunciations
 //!
-//! Run with: CODESCRIBE_E2E_STT=1 cargo test --test e2e_full_pipeline -- --nocapture
+//! Run corpus witnesses with: CODESCRIBE_E2E_STT=1 cargo test --test e2e_full_pipeline -- --ignored --nocapture
+//! Synthetic delta witnesses stay in the default suite.
 //!
 //! Created by Vetcoders (c)2026
 
@@ -160,6 +161,7 @@ fn word_overlap(a: &str, b: &str) -> f32 {
 // singleton mutex; these tests build their own engines).
 #[test]
 #[serial]
+#[ignore = "needs the private canonical data_assets corpus and a local Whisper model — run explicitly with --ignored"]
 fn e2e_stage1_raw_whisper_canonical() {
     load_real_env();
 
@@ -391,6 +393,7 @@ fn vad_gate_audio(samples: &[f32], sample_rate: u32) -> Vec<f32> {
 
 #[test]
 #[serial]
+#[ignore = "needs private VAD_voice_real_pauses.wav and local Whisper/Silero models — run explicitly with --ignored"]
 fn e2e_stage7_whisper_hallucination_vs_vad_gated() {
     load_real_env();
 

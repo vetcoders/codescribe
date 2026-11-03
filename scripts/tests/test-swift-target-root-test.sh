@@ -30,6 +30,7 @@ from pathlib import Path
 s = json.loads(Path(os.environ['FIXTURE_SPEC']).read_text())
 name, args = Path(sys.argv[0]).name, sys.argv[1:]
 repo, root = Path(s['repo']), Path(s['root'])
+gui = s['mode'].startswith('gui-') or s['mode'] in ('ax-error', 'ax-untrusted')
 def record(**extra):
     with open(s['calls'], 'a') as f:
         f.write(json.dumps(dict(tool=name, argv=args, cwd=os.getcwd(), **extra)) + '\n')
@@ -66,11 +67,15 @@ elif name == 'xcodebuild':
     assert data.is_dir() and data.parent == Path(s['tmp'])
     assert os.environ['TEST_RUNNER_CODESCRIBE_DATA_DIR'] == str(data)
     assert os.environ['TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN'] == '1'
-    assert os.environ['TEST_RUNNER_CODESCRIBE_TEST_ISOLATED_GUI'] == ('1' if s['mode'] == 'gui-opt-in' else '0')
+    assert os.environ['TEST_RUNNER_CODESCRIBE_TEST_ISOLATED_GUI'] == ('1' if gui else '0')
     bridge_home = Path(os.environ['TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME'])
     assert bridge_home == data / 'agent-bridge' and bridge_home.is_dir()
-    assert os.environ['TEST_RUNNER_CODESCRIBE_AX_PROBE'] == str(data / 'ax-probe')
-    assert (data / 'ax-probe/ready').read_text() == 'trusted'
+    if gui:
+        assert os.environ['TEST_RUNNER_CODESCRIBE_AX_PROBE'] == str(data / 'ax-probe')
+        assert (data / 'ax-probe/ready').read_text() == 'trusted'
+    else:
+        for key in ('AX_PROBE', 'INTERACTION_RUN_ID', 'INTERACTION_SOURCE_SHA', 'INTERACTION_RECEIPTS'):
+            assert 'TEST_RUNNER_CODESCRIBE_' + key not in os.environ, key
     # Record the effective old project defaults too: baseline guards must execute.
     config = args[args.index('-configuration') + 1] if '-configuration' in args else 'Debug'
     settings = [a.split('=', 1)[1] for a in args if a.startswith('LIBRARY_SEARCH_PATHS=')]
@@ -80,10 +85,10 @@ elif name == 'xcodebuild':
     record(selected=str(path), identity=path.read_text() if path.is_file() else 'missing',
            sha256=hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None,
            config=config, data=str(data))
-    if s['mode'] == 'xcode-error':
+    if s['mode'] in ('xcode-error', 'gui-xcode-error'):
         print('unfiltered tool failure')
         sys.exit(65)
-    count = 0 if s['mode'] == 'zero' else 30 if s['mode'] == 'suite-over' else 7
+    count = 0 if s['mode'] in ('zero', 'gui-zero') else 30 if s['mode'] == 'suite-over' else 7
     seconds = (255 if s['mode'] in ('slow', 'budget') else
                255 if s['mode'] == 'suite-over' else
                30 if s['mode'] == 'two-over' else
@@ -97,6 +102,33 @@ elif name == 'xcodebuild':
     }
     for test, duration in durations.get(s['mode'], []):
         print(f"Test Case '-[CodescribeTests.FixtureTests {test}]' passed ({duration} seconds).")
+    if gui:
+        path = Path(os.environ['TEST_RUNNER_CODESCRIBE_INTERACTION_RECEIPTS'])
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert data not in path.parents
+        row = dict(schema='codescribe.test-host-interaction.v1',
+                   runID=os.environ['TEST_RUNNER_CODESCRIBE_INTERACTION_RUN_ID'],
+                   sourceSHA=os.environ['TEST_RUNNER_CODESCRIBE_INTERACTION_SOURCE_SHA'],
+                   requestID='11111111-2222-4333-8444-555555555555',
+                   testMethod='OverlayConversationAcceptanceTests.testVoicelessReplyAndAgentTextRenderEnabledPlay()',
+                   identifier='overlay-reply-play-' + 'd'*24, verb='AXPress',
+                   hostKind='synthetic-deriveddata-xctest', phase='started', outcome='UNVERIFIED',
+                   axStatus=None, postcondition=False, cleanup=False)
+        end = dict(row, phase='completed', outcome='PASS', axStatus=0, postcondition=True, cleanup=True)
+        changes = {'gui-false-postcondition': {'postcondition': False},
+                   'gui-false-cleanup': {'cleanup': False}, 'gui-ax-failure': {'axStatus': 1},
+                   'gui-unverified': {'outcome': 'UNVERIFIED'}, 'gui-wrong-run': {'runID': 'other'},
+                   'gui-wrong-source': {'sourceSHA': '0'*40}, 'gui-extra-key': {'label': 'fixture-only'}}
+        end.update(changes.get(s['mode'], {}))
+        rows = [row, end]
+        if s['mode'] == 'gui-empty': rows = []
+        if s['mode'] == 'gui-unfinished': rows = [row]
+        if s['mode'] == 'gui-duplicate': rows.append(end)
+        path.write_text('{bad\n' if s['mode'] == 'gui-malformed' else ''.join(json.dumps(r)+'\n' for r in rows))
+        if s['mode'] != 'gui-no-selected-pass':
+            print("Test Case '-[CodescribeTests.OverlayConversationAcceptanceTests testVoicelessReplyAndAgentTextRenderEnabledPlay]' passed (0.05 seconds).")
+        if s['mode'] == 'gui-skip':
+            print("Test Case '-[CodescribeTests.FixtureTests testSkipped]' skipped (0.0 seconds).")
     print(f'Executed {count} tests, with 0 failures (0 unexpected) in {seconds} (1.0) seconds')
     print('** TEST SUCCEEDED **')
 elif name == 'codescribe-stt-bridge' or name == 'custom-helper':
@@ -108,6 +140,8 @@ elif name == 'swiftc' and s['mode'] == 'prerequisite-error':
     sys.exit(44)
 elif name == 'git' and args == ['rev-parse', '--git-common-dir']:
     print(str(root.parent / '.git'))
+elif name == 'git' and args == ['rev-parse', 'HEAD']:
+    print('f' * 40)
 elif name in ('security', 'git'):
     sys.exit(1)
 else:
@@ -164,7 +198,7 @@ def run_case(base, profile, layout, mode='success'):
         (bin_dir / 'xcodegen').write_text('#!' + sys.executable + '\n' + stub)
         (bin_dir / 'xcodegen').chmod(0o755)
     # Restrict PATH to stubs and a whitelist; even missing tools cannot hit host Xcode.
-    for name in ('python3', 'sed', 'head', 'tail', 'grep', 'tee', 'awk', 'sort', 'mktemp', 'rm', 'wc', 'tr', 'dirname', 'bash', 'mkdir', 'sleep', 'cp', 'cat'):
+    for name in ('python3', 'sed', 'head', 'tail', 'grep', 'tee', 'awk', 'sort', 'mktemp', 'rm', 'wc', 'tr', 'dirname', 'bash', 'mkdir', 'sleep', 'cp', 'cat', 'uuidgen', 'chmod'):
         os.symlink(sys.executable if name == 'python3' else shutil.which(name), bin_dir / name)
     for name in ('codescribe-stt-bridge.swift', 'bridge-Info.plist'):
         p = repo / 'core/stt/apple_stt' / name
@@ -177,8 +211,12 @@ def run_case(base, profile, layout, mode='success'):
         bridge.unlink()
     env = dict(PATH=str(bin_dir), TMPDIR=str(case / 'tmp'), CARGO_HOME=str(case / 'cargo-home'),
                FIXTURE_SPEC=str(case / 'spec.json'), DEVELOPER_DIR='/fixture/xcode')
-    if mode == 'gui-opt-in':
+    gui = mode.startswith('gui-') or mode in ('ax-error', 'ax-untrusted')
+    if gui:
         env['CODESCRIBE_TEST_ISOLATED_GUI'] = '1'
+    else:
+        for key in ('AX_PROBE', 'INTERACTION_RUN_ID', 'INTERACTION_SOURCE_SHA', 'INTERACTION_RECEIPTS'):
+            env['TEST_RUNNER_CODESCRIBE_' + key] = 'stale-must-not-reach-host'
     if configured:
         env['CARGO_TARGET_DIR'] = configured
     args = [make, '-C', str(repo), 'test-swift',
@@ -205,11 +243,13 @@ def run_case(base, profile, layout, mode='success'):
         assert len(helpers) == (0 if mode == 'prerequisite-error' else 1), helpers
         if mode == 'prerequisite-error':
             assert names.count('swiftc') == 1 and 'Error 44' in result.stdout, result.stdout
+        if not gui:
+            assert 'xcrun' not in names, names
         refusal = mode not in ('success', 'override-helper', 'budget', 'under', 'gui-opt-in') or profile == 'unsupported'
         if refusal:
             assert result.returncode != 0, 'refusal accepted'
-            if mode in ('xcode-error', 'zero', 'slow', 'one-over', 'two-over', 'suite-over'):
-                expected = {'xcode-error': 65, 'zero': 3, 'slow': 4,
+            if mode.startswith('gui-') or mode in ('xcode-error', 'zero', 'slow', 'one-over', 'two-over', 'suite-over'):
+                expected = 65 if mode == 'gui-xcode-error' else 3 if mode == 'gui-zero' else 6 if mode.startswith('gui-') else {'xcode-error': 65, 'zero': 3, 'slow': 4,
                             'one-over': 5, 'two-over': 5, 'suite-over': 4}[mode]
                 assert f'Error {expected}' in result.stdout, result.stdout
                 assert 'xcodebuild' in names
@@ -257,7 +297,11 @@ with tempfile.TemporaryDirectory(prefix='test-swift-target-root-') as tmp:
     for mode in ('missing', 'malformed', 'relative-metadata', 'empty-metadata', 'null-metadata',
                  'control-metadata', 'metadata-error', 'missing-xcodegen', 'generation-error',
                  'xcode-error', 'zero', 'slow', 'budget', 'one-over', 'two-over',
-                 'under', 'suite-over', 'helper-error', 'override-helper', 'prerequisite-error', 'ax-error', 'ax-untrusted', 'gui-opt-in'):
+                 'under', 'suite-over', 'helper-error', 'override-helper', 'prerequisite-error', 'ax-error', 'ax-untrusted', 'gui-opt-in',
+                 'gui-empty', 'gui-unverified', 'gui-unfinished', 'gui-duplicate',
+                 'gui-false-postcondition', 'gui-false-cleanup', 'gui-ax-failure',
+                 'gui-wrong-run', 'gui-wrong-source', 'gui-extra-key', 'gui-malformed',
+                 'gui-no-selected-pass', 'gui-skip', 'gui-zero', 'gui-xcode-error'):
         run_case(base, 'debug', 'spaces', mode)
     run_case(base, 'unsupported', 'spaces')
 print(f'test-swift-target-root: scenarios={passed + failed} passed={passed} failed={failed}')

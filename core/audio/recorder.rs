@@ -1833,6 +1833,10 @@ mod tests {
             use std::os::unix::process::CommandExt as _;
             let exe = std::env::current_exe().expect("test binary path");
             let mut cmd = std::process::Command::new(exe);
+            // Recovery publishes through takes_dir(), not the explicit spill
+            // directory below. Isolate both from sibling retention tests.
+            let data_root = tempfile::tempdir().expect("isolated recovery data root");
+            cmd.env("CODESCRIBE_DATA_DIR", data_root.path());
             cmd.args([
                 "--exact",
                 "audio::recorder::tests::forensic_actual_spill_write_failure_keeps_complete_native_pcm",

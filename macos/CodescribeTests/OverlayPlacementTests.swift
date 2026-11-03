@@ -252,7 +252,7 @@ final class OverlayPlacementTests: XCTestCase {
         y: visible.midY)
       panel.setFrameOrigin(proposed)
       panel.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: panel))
-      let parked = panel.frame.origin
+      let parked = panel.originForPersistence
       state.setPresentationMode(.midi)
       panel.settleFrameTransition()
       XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width)
@@ -269,7 +269,7 @@ final class OverlayPlacementTests: XCTestCase {
       panel.settleFrameTransition()
       XCTAssertEqual(state.presentationMode, .mini)
       XCTAssertTrue(panel.isVisible)
-      assertFrameOrigin(expected, on: panel)
+      assertFrameOrigin(expected, on: panel, logical: true)
     }
   }
 
@@ -291,6 +291,7 @@ final class OverlayPlacementTests: XCTestCase {
       }
     }
     let state = OverlayState()
+    state.setPresentationMode(.expanded)
     state.selectPlacementAnchor(.topRight)
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
@@ -326,14 +327,20 @@ final class OverlayPlacementTests: XCTestCase {
   private func assertFrameOrigin(
     _ expected: NSPoint,
     on panel: NSWindow,
+    logical: Bool = false,
     file: StaticString = #filePath,
     line: UInt = #line
   ) {
     let deadline = Date().addingTimeInterval(2)
-    while panel.frame.origin != expected && Date() < deadline {
+    func origin() -> NSPoint {
+      logical
+        ? (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin
+        : panel.frame.origin
+    }
+    while origin() != expected && Date() < deadline {
       RunLoop.main.run(until: min(deadline, Date().addingTimeInterval(0.01)))
     }
-    XCTAssertEqual(panel.frame.origin, expected, file: file, line: line)
+    XCTAssertEqual(origin(), expected, file: file, line: line)
   }
 
   @MainActor

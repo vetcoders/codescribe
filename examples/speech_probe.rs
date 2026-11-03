@@ -6,7 +6,7 @@ use codescribe_core::llm::{
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Same settings/env bootstrap as the application, without printing credentials.
-    let _settings = codescribe_core::config::Config::load_runtime_snapshot()?;
+    let settings = codescribe_core::config::Config::load_runtime_snapshot()?;
     let args: Vec<String> = std::env::args().collect();
     let value = |flag: &str| {
         args.windows(2)
@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     };
-    let options = SpeechOptions::for_vendor(vendor)?;
+    let options = SpeechOptions::for_vendor(vendor, settings.values().whisper_language)?;
     match speech::synthesize_with(
         value("--text").unwrap_or("Hello from Codescribe."),
         &options,

@@ -325,6 +325,36 @@ assertions. The AX probe also guards its entry point. A background run does
 windows visible and permits activation in that isolated session. It must never
 be used to run over the Founder's working desktop.
 
+The ordinary runner never starts the independent AX client or checks AX trust.
+The explicit isolated GUI runner checks existing trust without prompting, and
+fails on zero executed tests, any skipped test, or zero verified AX actions.
+Choose a supported interaction selection, for example
+`CODESCRIBE_TEST_ISOLATED_GUI=1 make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayConversationAcceptanceTests/testVoicelessReplyAndAgentTextRenderEnabledPlay'`.
+Selecting only state/layout tests in GUI mode cannot satisfy the interaction gate.
+
+`NativeAccessibilityProbe.verifyPress` uses the existing cross-process mailbox.
+Its postcondition and cleanup closures both return an explicit `Bool`; neither
+returning from a closure nor calling `XCTAssert` inside it means success. The
+selected Play fixture verifies its callback identity/count and closes/detaches
+its fixture. Transport refusal, timeout, cancellation, false postcondition,
+false cleanup and missing completion remain nonpassing.
+
+The runner prints a private receipt path beside `SWIFT_TEST_LOG`, named
+`<log>.interactions.jsonl.<unique suffix>`. It survives deletion of the test data
+root. Each action writes a durable `started` row and a `completed` row with the
+same request ID, run ID and source SHA. The closed JSONL schema includes only
+the fixed test method/fixture AX identifier, verb, numeric AX status, Boolean
+effect/cleanup checks and outcome. It excludes labels, values, traces, message
+or speech text, raw stderr and user paths. AX mailbox data and sidecar stderr
+stay disposable and are not copied into that artifact. Interrupted runs retain
+an unverified start, which cannot pass. The existing total-test and time-budget
+gates also remain active.
+
+These receipts describe a **synthetic DerivedData XCTest host**, using AXPress.
+An AX transport success alone is insufficient; a passing receipt additionally
+requires the fixture's effect and cleanup. This path does not certify physical
+HID input, the installed application, or a complete product workflow.
+
 The standalone `scripts/tests/test-window-policy.swift` checks the launch and
 opt-in decision without starting an application or creating a window.
 `BackgroundTestWindowTests` checks the actual native fixture policy in the
@@ -340,3 +370,13 @@ The standalone fold case also fails on the exact older `0adb8214` source (one
 test, five assertions), even though that version previously passed it in a
 full run. That aggregate pass is not independent native acceptance. The exact
 ordering or fixture dependency remains undiagnosed.
+
+### Shared-desktop boundary
+
+`CODESCRIBE_TEST_ISOLATED_GUI=0` disables the AX sidecar and skips cases that
+call `BackgroundTestWindow.requireIsolatedGUI()`. Tests using
+`BackgroundTestWindow.present` use its invisible fixture policy. Controller
+tests that call their real window owner can still order native windows;
+`OverlayIntercomProjectionTests` is one such selection. On a shared desktop,
+select non-presenting tests explicitly. The mode flag alone does not isolate
+window presentation. Installed-app and physical-input acceptance stay separate.

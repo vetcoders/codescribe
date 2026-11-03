@@ -8,7 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use codescribe::os::hold_badge::{BadgeMode, CursorVoice};
+use codescribe::os::hold_badge::{BadgeMode, CursorVoice, IndicatorState};
 use codescribe::os::tray_status::{self, TrayStatus, TrayStatusSnapshot};
 use tracing::trace;
 
@@ -78,6 +78,64 @@ impl From<CursorVoice> for CsCursorVoice {
             CursorVoice::Quiet => Self::Quiet,
             CursorVoice::Lagging => Self::Lagging,
         }
+    }
+}
+
+/// A state the pointer dot can show, as the Settings legend names it.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsIndicatorState {
+    Recording,
+    WordsOwed,
+    Processing,
+    Agent,
+    AgentQuiet,
+    Refused,
+}
+
+impl From<IndicatorState> for CsIndicatorState {
+    /// Map the core palette state into the UniFFI enum.
+    fn from(value: IndicatorState) -> Self {
+        match value {
+            IndicatorState::Recording => Self::Recording,
+            IndicatorState::WordsOwed => Self::WordsOwed,
+            IndicatorState::Processing => Self::Processing,
+            IndicatorState::Agent => Self::Agent,
+            IndicatorState::AgentQuiet => Self::AgentQuiet,
+            IndicatorState::Refused => Self::Refused,
+        }
+    }
+}
+
+/// One entry of the pointer dot's palette: the colour the dot is painted in
+/// (RGBA, 0…1) and, for a dot that needs one, the state whose colour rims it.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsIndicatorSwatch {
+    pub state: CsIndicatorState,
+    pub red: f64,
+    pub green: f64,
+    pub blue: f64,
+    pub alpha: f64,
+    pub rim: Option<CsIndicatorState>,
+}
+
+/// The pointer dot's palette in legend order, read from the core's one owner
+/// (`IndicatorState::color`). Swift draws the Settings legend and the
+/// recording lamp from it instead of keeping its own copy.
+#[uniffi::export]
+pub fn indicator_palette() -> Vec<CsIndicatorSwatch> {
+    IndicatorState::ALL.into_iter().map(swatch).collect()
+}
+
+/// One palette state as a bridge swatch.
+fn swatch(state: IndicatorState) -> CsIndicatorSwatch {
+    let (red, green, blue, alpha) = state.color();
+    CsIndicatorSwatch {
+        state: state.into(),
+        red,
+        green,
+        blue,
+        alpha,
+        rim: state.rim().map(CsIndicatorState::from),
     }
 }
 
@@ -289,6 +347,25 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = None;
         generation_counter().store(0, Ordering::SeqCst);
+    }
+
+    /// The legend's palette is the core's, in legend order, colour for colour.
+    #[test]
+    fn indicator_palette_mirrors_the_core_palette() {
+        let palette = indicator_palette();
+        assert_eq!(palette.len(), IndicatorState::ALL.len());
+        for (swatch, state) in palette.iter().zip(IndicatorState::ALL) {
+            assert_eq!(swatch.state, CsIndicatorState::from(state));
+            let color = (swatch.red, swatch.green, swatch.blue, swatch.alpha);
+            assert_eq!(color, state.color());
+            assert_eq!(swatch.rim, state.rim().map(CsIndicatorState::from));
+        }
+        assert_eq!(palette[0].state, CsIndicatorState::Recording);
+        let quiet = palette
+            .iter()
+            .find(|swatch| swatch.state == CsIndicatorState::AgentQuiet)
+            .expect("the quiet Agent dot is in the palette");
+        assert_eq!(quiet.rim, Some(CsIndicatorState::Agent));
     }
 
     /// Thinking maps to Processing, non-assistive, with the given generation.

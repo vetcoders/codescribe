@@ -20,8 +20,8 @@ WHISPER_CONTEXT_WINDOW_SEC=8.0      # Layer 1 decode context ending at each occu
 LIGHT_PLUS_SENTENCE_PAUSE_SEC=0.7    # PCM gap for a Light+ sentence break; next take
 # Mode bindings are canonical and persisted in settings.json:
 # - dictation: hold_fn
-# - formatting: double_left_option
-# - assistive: double_right_option
+# - formatting: disabled (Formatting starts from the menu bar or the overlay)
+# - assistive: disabled (the agent starts from the menu bar or the overlay)
 
 # === Overlay / UI ===
 OVERLAY_POSITION_MODE=snapped_top_right

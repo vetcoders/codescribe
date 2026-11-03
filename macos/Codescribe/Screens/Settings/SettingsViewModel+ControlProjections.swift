@@ -34,6 +34,21 @@ extension SettingsViewModel {
     set { setPreviewInterimSeconds(Float(newValue)) }
   }
 
+  var doubleTapIntervalSlider: Double {
+    get { Double(settings.doubleTapIntervalMs) }
+    set { setDoubleTapIntervalMs(UInt64(newValue.rounded())) }
+  }
+
+  var tapMaxSlider: Double {
+    get { Double(settings.tapMaxMs) }
+    set { setTapMaxMs(UInt64(newValue.rounded())) }
+  }
+
+  var typingQuietSlider: Double {
+    get { Double(settings.typingQuietMs) }
+    set { setTypingQuietMs(UInt64(newValue.rounded())) }
+  }
+
   var toggleSilenceSlider: Double {
     get { Double(settings.toggleSilenceSec) }
     set { setToggleSilenceSeconds(Float(newValue)) }

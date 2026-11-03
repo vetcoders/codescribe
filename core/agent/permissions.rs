@@ -4,8 +4,13 @@
 //! 1. Per-thread override (session-local, not durable)
 //! 2. Per-tool override (`server:upstream` or `native:name`)
 //! 3. Per-MCP-server override
-//! 4. Risk-class defaults (`read_only` → allow, side-effectful → ask)
-//! 5. Global default (fallback when risk is unknown)
+//! 4. Built-in tool rule: a tool registered with `requires_approval` (for
+//!    example `native:read_clipboard`, whose content may be a password) turns
+//!    the Allow its category default would give into Ask. It never relaxes a
+//!    stricter default, and any rule above it wins. Applied by
+//!    [`crate::agent::ToolRegistry`], reported as [`PermissionSource::Builtin`].
+//! 5. Risk-class defaults (`read_only` → allow, side-effectful → ask)
+//! 6. Global default (fallback when risk is unknown)
 //!
 //! Hard rules outside this table:
 //! - Unregistered tools → deny
@@ -73,17 +78,21 @@ pub enum PermissionSource {
     Tool,
     /// Durable per-server rule.
     Server,
+    /// Built-in rule of the tool itself: its `requires_approval` flag turned
+    /// the category's Allow into Ask (e.g. `read_clipboard`).
+    Builtin,
     /// Category default (read-only / side effects / unclassified).
     Default,
 }
 
 impl PermissionSource {
-    /// Wire spelling (`thread` | `tool` | `server` | `default`).
+    /// Wire spelling (`thread` | `tool` | `server` | `builtin` | `default`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Thread => "thread",
             Self::Tool => "tool",
             Self::Server => "server",
+            Self::Builtin => "builtin",
             Self::Default => "default",
         }
     }
@@ -358,7 +367,8 @@ pub struct ToolCapability {
     /// [`crate::agent::ToolRegistry::decide`] performs, ratchet included.
     pub effective: PermissionLevel,
     /// Rule that produced `effective`: individual (`tool`), inherited from the
-    /// server rule or the category default, or a thread override.
+    /// server rule or the category default, the tool's built-in rule
+    /// (`builtin`), or a thread override.
     pub source: PermissionSource,
     /// Whether the tool declares approval-required independently of policy.
     pub requires_approval_flag: bool,

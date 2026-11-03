@@ -137,6 +137,11 @@ Without `speech_enabled`, `codescribe_say` and `codescribe_call` return a
 prepared result and attempt nothing. `spoken: true` requires a matching terminal
 playback receipt owned by this agent's lease.
 
+`codescribe_send` returns `published`, with the `message_id` and recipients,
+only when the publisher reports this agent as the sender. Names compare without
+regard to letter case, as everywhere on the BUS: attach stores the lease name
+casefolded, so a scope `name` of `Ada` matches the sender `ada`.
+
 Every request must carry `params._meta` with
 `io.modelcontextprotocol/protocolVersion: "2026-07-28"` and a bounded
 `io.modelcontextprotocol/clientCapabilities` object. The standard optional

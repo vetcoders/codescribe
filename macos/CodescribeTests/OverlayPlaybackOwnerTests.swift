@@ -10,7 +10,7 @@ final class OverlayPlaybackOwnerTests: XCTestCase {
   /// warning. A stop he caused reads as a stop, in words, never as a code.
   func testPlaybackOutcomesReadAsSentencesAndAStopIsNotAFailure() {
     let codes = [
-      "muted", "stopped", "take_started", "take_live", "playback_busy",
+      "muted", "stopped", "take_started", "take_live", "history_unread", "playback_busy",
       "credential_missing", "credential_rejected", "quota_exhausted", "network",
     ]
     var labels: Set<String> = []
@@ -146,7 +146,9 @@ final class OverlayPlaybackOwnerTests: XCTestCase {
     defer { state = nil }
     weak let retainedState = state
     state?.applyChannelRoster([roster(old)])
-    state?.observeChannelDelivery(using: OverlayChannelDeliveryReader(root: root))
+    state?.observeChannelDelivery(
+      using: OverlayChannelDeliveryReader(
+        root: root, cacheRoot: root.appendingPathComponent("data.noindex", isDirectory: true)))
     func waitForDescriptor(_ descriptor: String) async throws {
       let deadline = ContinuousClock.now.advanced(by: .seconds(2))
       while state?.channelAgentDescriptors["2"] != descriptor && ContinuousClock.now < deadline {

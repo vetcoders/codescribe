@@ -1,0 +1,1 @@
+{"at": "2026-10-26T04:01:00Z", "kind": "playback", "lease_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "message_id": "0123456789abcdef00000005", "playback_ticket": "ffffffffffffffffffffffff", "provider": "claude-code", "provider_session_id": "author-session", "reason": null, "schema": "codescribe.message-receipt.v1", "spoken": true, "state": "spoken"}

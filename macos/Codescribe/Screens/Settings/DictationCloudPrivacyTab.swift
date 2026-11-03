@@ -37,12 +37,12 @@ struct DictationCloudPrivacyTab: View {
         RuntimeRow(
           key: CloudPrivacyCopy.savedConsentLabel, value: consentValue,
           tint: false,
-          trailing: .dot(model.cloudConsentGranted ? CSColor.oliveLight : CSColor.amberLight))
+          trailing: model.cloudConsentGranted ? .mark(.good) : .none)
       }
       .clipShape(.rect(cornerRadius: CSRadius.composer))
       .overlay {
         RoundedRectangle(cornerRadius: CSRadius.composer)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       }
       prose(CloudPrivacyCopy.consentIsNotLiveEgress)
       // The only entry point from Privacy to the cloud configuration, which
@@ -51,8 +51,8 @@ struct DictationCloudPrivacyTab: View {
       Button(CloudPrivacyCopy.configureCloudServices) {
         SettingsDeepLink.shared.present(.keys, anchor: .providersCloudTranscription)
       }
-      .buttonStyle(.link)
-      .font(CSFont.ui(11.5, .medium))
+      .font(SettingsScale.controlLabel)
+      .csLink()
     }
   }
 
@@ -76,7 +76,7 @@ struct DictationCloudPrivacyTab: View {
       .clipShape(.rect(cornerRadius: CSRadius.composer))
       .overlay {
         RoundedRectangle(cornerRadius: CSRadius.composer)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       }
     }
   }
@@ -88,7 +88,7 @@ struct DictationCloudPrivacyTab: View {
       VStack(alignment: .leading, spacing: 3) {
         // Item label, one step under the section header above it.
         Text(title)
-          .font(CSFont.ui(12.5, .medium))
+          .font(CSFont.ui(13, .medium))
           .foregroundStyle(Color.primary)
         Text(detail)
           .font(SettingsScale.helper)
@@ -132,7 +132,7 @@ struct DictationCloudPrivacyTab: View {
   }
 
   private var rowDivider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 
   private var consentValue: String {

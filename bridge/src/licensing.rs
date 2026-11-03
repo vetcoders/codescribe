@@ -73,6 +73,8 @@ impl From<LicenseStatus> for CsLicenseStatus {
 
 /// Validate a newly entered signed key. The successful explicit validation is
 /// Active and its timestamp is persisted by `LicenseService` with the key.
+/// Live Swift consumer: `Services/LicenseService.swift` calls `licenseActivate`.
+/// UniFFI exports have no Rust caller edge; that does not make this dead code.
 #[uniffi::export]
 pub fn license_activate(key: String, now_unix_seconds: i64) -> Result<CsLicenseStatus, CsError> {
     let now = timestamp(now_unix_seconds)?;
@@ -129,5 +131,34 @@ mod tests {
         let status = license_status(None, None, 1_775_304_000).unwrap();
         assert_eq!(status.state, CsLicenseState::Unlicensed);
         assert!(!status.agentic_entitled);
+    }
+
+    /// `license_activate` has no Rust caller: its consumer is the Swift app,
+    /// which a Rust-only dead-export scan cannot see. Pin that consumer so a
+    /// removed call site fails here and the export goes with it.
+    #[test]
+    fn license_activate_is_consumed_by_swift_license_service() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../macos/Codescribe/Services/LicenseService.swift");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert!(
+            source.contains("licenseActivate(key:"),
+            "{} no longer calls licenseActivate; remove the export",
+            path.display()
+        );
+    }
+
+    /// Contract test for the UniFFI `license_activate` (`licenseActivate`) entry point:
+    /// malformed keys and out-of-range timestamps must fail closed across the FFI boundary.
+    #[test]
+    fn license_activate_contract_fails_closed_on_malformed_key_and_invalid_timestamp() {
+        let malformed = license_activate("invalid-license-key".to_string(), 1_775_304_000)
+            .expect_err("malformed key must fail closed on activation");
+        assert!(matches!(malformed, CsError::License { .. }));
+
+        let bad_ts = license_activate("invalid-license-key".to_string(), i64::MAX)
+            .expect_err("out-of-range timestamp must fail closed on activation");
+        assert!(matches!(bad_ts, CsError::License { .. }));
     }
 }

@@ -133,25 +133,25 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
 
   /// A partial save can leave the snapped-back draft in a blocking conflict:
   /// Dictation=Double Ctrl lands, Agent=Hold Ctrl is refused and snaps back to
-  /// Double Right Option, which Double Ctrl disables
-  /// (app/os/shortcut_registry.rs). The conflict must not swallow the receipt:
-  /// both the completed write and the refusal stay reportable.
+  /// Disabled. The rule that then conflicts is a stand-in; whatever the core
+  /// reports, the conflict must not swallow the receipt: both the completed
+  /// write and the refusal stay reportable.
   func testPartialSaveKeepsItsReceiptWhenThePersistedSetConflicts() throws {
     let engine = RecordingHotkeysEngine(
       rejects: { mode, binding in mode == .assistive && binding == .holdCtrl },
       conflicts: { candidate in
         let dictation = candidate.first { $0.mode == .dictation }?.binding
         let assistive = candidate.first { $0.mode == .assistive }?.binding
-        guard dictation == .doubleCtrl, assistive == .doubleRightOption else { return [] }
+        guard dictation == .doubleCtrl, assistive == .disabled else { return [] }
         return [
           CsHotkeyConflict(
-            gestureLabel: "Double-tap Right Option",
-            message: "Dictation is set to Double Ctrl, so Right Option toggle is disabled.",
+            gestureLabel: "Double-tap Ctrl",
+            message: "A stand-in rule for a snapped-back conflict.",
             blocking: true)
         ]
       })
     let model = model(engine)
-    XCTAssertEqual(model.draftBindings.first { $0.mode == .assistive }?.binding, .doubleRightOption)
+    XCTAssertEqual(model.draftBindings.first { $0.mode == .assistive }?.binding, .disabled)
 
     model.editDraftBinding(mode: .dictation, binding: .doubleCtrl)
     model.editDraftBinding(mode: .assistive, binding: .holdCtrl)
@@ -255,8 +255,8 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
   /// localized one and keeps the wire strings recoverable underneath.
   func testBlockingConflictIsLocalizedWithoutLosingTheWireStrings() {
     let conflict = CsHotkeyConflict(
-      gestureLabel: "Double-tap Left Option",
-      message: "Dictation is set to Double Ctrl, so Left Option toggle is disabled.",
+      gestureLabel: "Hold Fn/Globe",
+      message: "This gesture only starts Dictation, so Formatting would never start from it.",
       blocking: true
     )
 
@@ -265,27 +265,22 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
     XCTAssertTrue(presented.blocking)
     XCTAssertNotEqual(presented.message, conflict.message)
     XCTAssertEqual(presented.technical, "\(conflict.gestureLabel) · \(conflict.message)")
-    XCTAssertEqual(presented.gesture, CsShortcutBinding.doubleLeftOption.visibleName)
+    XCTAssertEqual(presented.gesture, CsShortcutBinding.holdFn.visibleName)
   }
 
   /// P2-007 (linked: hotkeys-dead-binding-cells): every reachability sentence
-  /// the core emits for an unrouted cell — the duplicate left Option among
-  /// them — is a blocking entry with its own localized sentence and the wire
-  /// strings kept underneath. No two cells share a sentence, so the screen
-  /// always says which mode the gesture would start instead.
+  /// the core emits for an unrouted cell is a blocking entry with its own
+  /// localized sentence and the wire strings kept underneath. Every gesture
+  /// starts only Dictation, so there is one sentence per mode it refuses.
   func testUnroutedGestureSentencesAreBlockingDistinctAndLocalized() {
     let wire = [
       "This gesture only starts Dictation, so Formatting would never start from it.",
       "This gesture only starts Dictation, so Assistive would never start from it.",
-      "This gesture only starts Formatting, so Dictation would never start from it.",
-      "This gesture only starts Formatting, so Assistive would never start from it.",
-      "This gesture only starts Assistive, so Dictation would never start from it.",
-      "This gesture only starts Assistive, so Formatting would never start from it.",
     ]
 
     let presented = wire.map { message in
       CsHotkeyConflict(
-        gestureLabel: "Double-tap Left Option", message: message, blocking: true
+        gestureLabel: "Hold Ctrl", message: message, blocking: true
       ).presentation(options: CsBindingOption.sampleOptions)
     }
 
@@ -293,17 +288,36 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
     for (entry, message) in zip(presented, wire) {
       XCTAssertTrue(entry.blocking, message)
       XCTAssertNotEqual(entry.message, message, "the wire sentence must be localized")
-      XCTAssertEqual(entry.technical, "Double-tap Left Option · \(message)")
-      XCTAssertEqual(entry.gesture, CsShortcutBinding.doubleLeftOption.visibleName)
+      XCTAssertEqual(entry.technical, "Hold Ctrl · \(message)")
+      XCTAssertEqual(entry.gesture, CsShortcutBinding.holdCtrl.visibleName)
     }
   }
 
-  /// The audited duplicate blocks Save before anything is written, and the
+  /// Option double-taps are opt-in for Formatting and Assistive: the picker
+  /// offers them there, and only the two Option gestures count as Option
+  /// double-taps (the ones the timing controls and the gesture tester are for).
+  func testOptionDoubleTapsAreOfferedToFormattingAndFlagged() {
+    XCTAssertTrue(CsShortcutBinding.doubleLeftOption.isOptionDoubleTap)
+    XCTAssertTrue(CsShortcutBinding.doubleRightOption.isOptionDoubleTap)
+    for binding in [
+      CsShortcutBinding.disabled, .holdFn, .holdCtrl, .holdCtrlAlt, .holdCtrlShift,
+      .holdCtrlCmd, .doubleCtrl,
+    ] {
+      XCTAssertFalse(binding.isOptionDoubleTap, "\(binding)")
+    }
+
+    let formatting = availableBindingsForMode(mode: .formatting).map(\.binding)
+    XCTAssertTrue(formatting.contains(.doubleLeftOption))
+    XCTAssertTrue(formatting.contains(.doubleCtrl))
+    XCTAssertTrue(formatting.contains(.disabled))
+  }
+
+  /// A Formatting gesture blocks Save before anything is written, and the
   /// default profile with only the Fn-tap note stays saveable.
-  func testDuplicateLeftOptionBlocksSaveWhileTheFnNoteDoesNot() {
+  func testFormattingGestureBlocksSaveWhileTheFnNoteDoesNot() {
     let duplicate = CsHotkeyConflict(
-      gestureLabel: "Double-tap Left Option",
-      message: "This gesture only starts Formatting, so Dictation would never start from it.",
+      gestureLabel: "Hold Fn/Globe",
+      message: "This gesture only starts Dictation, so Formatting would never start from it.",
       blocking: true)
     let fnNote = CsHotkeyConflict(
       gestureLabel: "Hold Fn/Globe",
@@ -311,18 +325,19 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
         "Fn/Globe tap is configured by macOS. Codescribe Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
       blocking: false)
     let engine = RecordingHotkeysEngine(conflicts: { candidate in
-      let dictation = candidate.first { $0.mode == .dictation }?.binding
-      return dictation == .doubleLeftOption ? [duplicate, fnNote] : [fnNote]
+      let formatting = candidate.first { $0.mode == .formatting }?.binding
+      return formatting == .holdFn ? [duplicate, fnNote] : [fnNote]
     })
     let model = model(engine)
 
-    model.editDraftBinding(mode: .dictation, binding: .doubleLeftOption)
+    model.editDraftBinding(mode: .formatting, binding: .holdFn)
     XCTAssertTrue(model.hasBlockingBindingConflicts)
     XCTAssertFalse(model.canSaveBindings)
     model.saveBindings()
     XCTAssertTrue(engine.writes.isEmpty, "a blocked draft must not write")
     XCTAssertNil(model.bindingSaveReceipt)
 
+    model.editDraftBinding(mode: .formatting, binding: .disabled)
     model.editDraftBinding(mode: .dictation, binding: .holdCtrl)
     XCTAssertFalse(model.hasBlockingBindingConflicts, "the Fn note alone never blocks")
     XCTAssertTrue(model.canSaveBindings)
@@ -347,11 +362,10 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
   }
 
   /// Every gesture reads differently for a screen reader, and the spoken form
-  /// never reuses the terse key-cap label — left and right Option stay apart.
+  /// never reuses the terse key-cap label.
   func testSpokenGestureNamesAreDistinctAndNotTheKeyCapLabels() {
     let bindings: [CsShortcutBinding] = [
-      .disabled, .holdFn, .holdCtrl, .holdCtrlAlt, .holdCtrlShift, .holdCtrlCmd,
-      .doubleCtrl, .doubleLeftOption, .doubleRightOption,
+      .disabled, .holdFn, .holdCtrl, .holdCtrlAlt, .holdCtrlShift, .holdCtrlCmd, .doubleCtrl,
     ]
     let spoken = bindings.map(\.spokenName)
 

@@ -16,6 +16,13 @@ protocol MCPAdminEngine {
   func updateServer(name: String, input: CsMcpServerInput) throws
   func removeServer(name: String) throws
   func testServer(_ name: String) async -> CsMcpTestResult
+  /// Begin OAuth sign-in: discovery + client registration + loopback bind.
+  /// Returns the authorize URL the UI opens in the browser.
+  func startMcpSignIn(name: String, endpoint: String) async throws -> CsMcpSignInResult
+  /// Block until the in-flight sign-in completes/fails/times out — the
+  /// browser roundtrip runs on the app runtime, never the main actor.
+  func awaitMcpSignIn(name: String, timeoutSeconds: UInt64) async throws -> CsMcpSignInResult
+  func cancelMcpSignIn()
   /// Persisted "always allow" tool grants (`server:tool` keys).
   func listToolGrants() throws -> [CsToolGrant]
   /// Revoke one grant so that tool asks for approval again.
@@ -37,6 +44,13 @@ protocol MCPAdminEngine {
 extension MCPAdminEngine {
   // Default no-op surface so mocks and previews predating the grants panel
   // keep compiling; the live engine below overrides both.
+  func startMcpSignIn(name: String, endpoint: String) async throws -> CsMcpSignInResult {
+    CsMcpSignInResult(server: name, status: "idle", detail: "", authUrl: nil, signedIn: false)
+  }
+  func awaitMcpSignIn(name: String, timeoutSeconds: UInt64) async throws -> CsMcpSignInResult {
+    CsMcpSignInResult(server: name, status: "idle", detail: "", authUrl: nil, signedIn: false)
+  }
+  func cancelMcpSignIn() {}
   func listToolGrants() throws -> [CsToolGrant] { [] }
   func revokeToolGrant(key: String) throws {}
   func getPermissionPolicy() -> CsPermissionPolicy {
@@ -154,6 +168,13 @@ final class RealMCPAdminEngine: MCPAdminEngine {
     try admin.updateServer(name: name, server: input)
   }
   func removeServer(name: String) throws { try admin.removeServer(name: name) }
+  func startMcpSignIn(name: String, endpoint: String) async throws -> CsMcpSignInResult {
+    try await admin.startMcpSignIn(name: name, endpoint: endpoint)
+  }
+  func awaitMcpSignIn(name: String, timeoutSeconds: UInt64) async throws -> CsMcpSignInResult {
+    try await admin.awaitMcpSignIn(name: name, timeoutSeconds: timeoutSeconds)
+  }
+  func cancelMcpSignIn() { admin.cancelMcpSignIn() }
   func listToolGrants() throws -> [CsToolGrant] { try admin.listToolGrants() }
   func revokeToolGrant(key: String) throws { try admin.revokeToolGrant(key: key) }
   func getPermissionPolicy() -> CsPermissionPolicy { admin.getPermissionPolicy() }
@@ -207,7 +228,7 @@ final class MockMCPAdminEngine: MCPAdminEngine {
         name: input.name, command: input.command, args: input.args,
         envKeys: [], enabled: input.enabled,
         transport: input.endpoint.isEmpty ? "stdio" : "remote",
-        endpoint: input.endpoint, authRef: input.authRef
+        endpoint: input.endpoint, authRef: input.authRef, oauth: input.oauth
       )
     )
   }
@@ -218,7 +239,7 @@ final class MockMCPAdminEngine: MCPAdminEngine {
       name: input.name, command: input.command, args: input.args,
       envKeys: servers[index].envKeys, enabled: input.enabled,
       transport: input.endpoint.isEmpty ? "stdio" : "remote",
-      endpoint: input.endpoint, authRef: input.authRef
+      endpoint: input.endpoint, authRef: input.authRef, oauth: input.oauth
     )
   }
 
@@ -242,12 +263,13 @@ extension CsMcpServer {
   static let samples: [CsMcpServer] = [
     CsMcpServer(
       name: "loctree-mcp", command: "loctree-mcp", args: ["mcp"], envKeys: [], enabled: true,
-      transport: "stdio", endpoint: "", authRef: ""),
+      transport: "stdio", endpoint: "", authRef: "", oauth: false),
     CsMcpServer(
       name: "aicx-mcp", command: "aicx", args: ["mcp"], envKeys: ["AICX_TOKEN"], enabled: true,
-      transport: "stdio", endpoint: "", authRef: ""),
+      transport: "stdio", endpoint: "", authRef: "", oauth: false),
     CsMcpServer(
       name: "slack", command: "", args: [], envKeys: [], enabled: true, transport: "remote",
-      endpoint: "https://connector.example/mcp", authRef: "MCP_CONNECTOR_SLACK_TOKEN"),
+      endpoint: "https://connector.example/mcp", authRef: "MCP_CONNECTOR_SLACK_TOKEN",
+      oauth: false),
   ]
 }

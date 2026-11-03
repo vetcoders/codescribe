@@ -244,6 +244,26 @@ enum ThreadRowTitle {
   }
 }
 
+/// Ink of a history row's time and model line and its glyphs. A resting row
+/// in the front window takes the readable secondary ink; a selected row keeps
+/// the list's own secondary style, which inverts on the accent selection, and
+/// so does a row in a background window, which dims with its title.
+enum ThreadRowSecondaryInk: Equatable {
+  case readable
+  case system
+
+  static func resolve(prominence: BackgroundProminence, activeState: ControlActiveState) -> Self {
+    prominence != .increased && activeState == .key ? .readable : .system
+  }
+
+  var style: AnyShapeStyle {
+    switch self {
+    case .readable: AnyShapeStyle(CSColor.secondaryInk)
+    case .system: AnyShapeStyle(.secondary)
+    }
+  }
+}
+
 /// One history row presented in the native sidebar List.
 ///
 /// System selection, hover and focus are owned by the enclosing List, and so
@@ -266,8 +286,15 @@ private struct ThreadRow: View {
   let onExportMarkdown: () -> Void
 
   @FocusState private var renameFieldFocused: Bool
+  @Environment(\.backgroundProminence) private var backgroundProminence
+  @Environment(\.controlActiveState) private var controlActiveState
 
   private var title: String { ThreadRowTitle.displayTitle(for: thread) }
+
+  private var secondaryStyle: AnyShapeStyle {
+    ThreadRowSecondaryInk.resolve(prominence: backgroundProminence, activeState: controlActiveState)
+      .style
+  }
 
   var body: some View {
     rowContent
@@ -327,7 +354,7 @@ private struct ThreadRow: View {
         if thread.isMaxConsultation {
           Image(systemName: "sparkles")
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(secondaryStyle)
             .accessibilityLabel("Max consultation")
         }
         if isEditing {
@@ -358,17 +385,17 @@ private struct ThreadRow: View {
         Text(ThreadRailMeta.timeOnly(from: thread.meta))
           .lineLimit(1)
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(secondaryStyle)
 
         if let tag = ModelTag.display(for: thread.model) {
           Text(verbatim: "·")
             .font(.caption)
-            .foregroundStyle(Color.secondary.opacity(0.6))
+            .foregroundStyle(secondaryStyle.opacity(0.6))
           Text(tag)
             .lineLimit(1)
             .truncationMode(.tail)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(secondaryStyle)
         }
       }
     }
@@ -385,7 +412,7 @@ private struct ThreadRow: View {
   private var favoriteLabel: some View {
     Image(systemName: thread.isFavorite ? "star.fill" : "star")
       .font(.system(size: 11, weight: .medium))
-      .foregroundStyle(.secondary)
+      .foregroundStyle(secondaryStyle)
       .frame(width: 16, height: 16)
       .contentShape(Rectangle())
   }

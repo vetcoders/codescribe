@@ -11,6 +11,8 @@ import SwiftUI
 enum CSScrollerAxes {
   case verticalOnly
   case includesHorizontal
+  /// A narrow action rail scrolls without drawing a system scroller.
+  case verticalHidden
 }
 
 /// The app's one scroller policy: no legacy bar anywhere, at most a thin
@@ -42,11 +44,14 @@ final class CSScrollerPin {
 
   /// Pins `scrollView` now and keeps it pinned until `detach()`.
   ///
-  /// SwiftUI calls this again on every update of the surface. Attaching to
-  /// the scroll view already held does nothing: the observer keeps the pin,
-  /// and a fresh write would re-tile the scroll view.
+  /// SwiftUI calls this again on updates. Ordinary scrollers need no repeated
+  /// writes; the hidden-rail policy rechecks in case SwiftUI restored one.
   func attach(to scrollView: NSScrollView) {
-    guard self.scrollView !== scrollView else { return }
+    if self.scrollView === scrollView {
+      // SwiftUI may restore a scroller after changing the rail's content.
+      if axes == .verticalHidden { pin() }
+      return
+    }
     self.scrollView = scrollView
     pin()
     guard styleObserver == nil else { return }
@@ -75,8 +80,11 @@ final class CSScrollerPin {
     guard let scrollView else { return }
     if scrollView.scrollerStyle != .overlay { scrollView.scrollerStyle = .overlay }
     if !scrollView.autohidesScrollers { scrollView.autohidesScrollers = true }
-    if axes == .verticalOnly, scrollView.hasHorizontalScroller {
+    if axes != .includesHorizontal, scrollView.hasHorizontalScroller {
       scrollView.hasHorizontalScroller = false
+    }
+    if axes == .verticalHidden, scrollView.hasVerticalScroller {
+      scrollView.hasVerticalScroller = false
     }
   }
 }
@@ -94,6 +102,47 @@ extension View {
   /// list's minimum row height and open a gap above the first section.
   func csAutohidingScrollers(_ axes: CSScrollerAxes = .verticalOnly) -> some View {
     background(CSScrollerStyleAttachment(axes: axes))
+  }
+
+  /// A quiet rail still says which edge has more actions. The state changes
+  /// only when an edge crosses the visible viewport, not on every scroll tick.
+  func csRailOverflowHints(color: Color) -> some View {
+    modifier(CSRailOverflowHints(color: color))
+  }
+}
+
+private struct CSRailScrollEdges: Equatable {
+  let above: Bool
+  let below: Bool
+}
+
+private struct CSRailOverflowHints: ViewModifier {
+  let color: Color
+  @State private var edges = CSRailScrollEdges(above: false, below: false)
+
+  func body(content: Content) -> some View {
+    content
+      .onScrollGeometryChange(for: CSRailScrollEdges.self) { geometry in
+        CSRailScrollEdges(
+          above: geometry.visibleRect.minY > 1,
+          below: geometry.visibleRect.maxY < geometry.contentSize.height - 1)
+      } action: { _, edges in
+        self.edges = edges
+      }
+      .overlay(alignment: .top) {
+        if edges.above { hint("chevron.up").padding(.top, 1) }
+      }
+      .overlay(alignment: .bottom) {
+        if edges.below { hint("chevron.down").padding(.bottom, 1) }
+      }
+  }
+
+  private func hint(_ symbol: String) -> some View {
+    Image(systemName: symbol)
+      .font(.system(size: 7, weight: .semibold))
+      .foregroundStyle(color.opacity(0.65))
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
   }
 }
 

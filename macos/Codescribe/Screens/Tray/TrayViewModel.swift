@@ -246,9 +246,12 @@ final class TrayViewModel: ObservableObject {
     publishSettingsWritten()
   }
 
-  /// Persist one of the four normalized formatting IDs, then reconcile with
-  /// prompt-free settings truth even when the bridge rejects the write.
+  /// Persist one of the three automatic formatting IDs, then reconcile with
+  /// prompt-free settings truth even when the bridge rejects the write. Max
+  /// is a manual overlay action, never an automatic level, so it is refused
+  /// before any write and the shown level stays as it was.
   func setAutoFormatLevel(_ level: FormattingPolicyOption) {
+    guard FormattingPolicyOption.automaticCases.contains(level) else { return }
     guard let engine else {
       autoFormatLevel = level
       return

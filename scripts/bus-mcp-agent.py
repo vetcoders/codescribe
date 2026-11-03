@@ -44,6 +44,7 @@ STATE_DIRECTORY_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}-mcp")
 #: credential the BUS helper itself consumes (OpenAI speech, before Keychain).
 #: Anything else the transport or its launcher holds stays in this process.
 CHILD_ENVIRONMENT = frozenset({"PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ",
+                               "CODEX_HOME",
                                "CODESCRIBE_ENV_PATH", "SPEECH_TTS_MODEL_OPENAI",
                                "LLM_OPENAI_API_KEY"})
 CHILD_ENVIRONMENT_PREFIXES = ("LC_",)
@@ -310,7 +311,8 @@ class AgentMailbox:
             if name == "codescribe_status":
                 result = self.mailbox.status()
                 allowed = {"kind", "attached", "name", "channel", "lease_id", "backlog", "unacked_seals",
-                           "follower_alive", "wakeup", "playback"}
+                           "follower_alive", "wakeup", "playback", "lease_recorded", "channel_bound",
+                           "heartbeat_fresh", "follower_verified", "follower_problem"}
                 status = {k: v for k, v in result.items() if k in allowed}
                 status["voice"] = {k: v for k, v in result.get("voice", {}).items()
                                    if k in ("voice", "speed", "provider")}
@@ -436,7 +438,15 @@ class AgentMailbox:
                 result = self.mailbox.run(flags, timeout=90 if speech else 30)
                 if speech:
                     receipt.update(self.voice_receipt(result))
-                elif result.get("kind") == "peer_message_published" and result.get("sender") == self.scope.name:
+                elif operation == "reply":
+                    rows = result.get("receipts", [result])
+                    reply = next((r for r in rows if r.get("kind") == "agent_reply"), {})
+                    if (reply.get("reply_id") and reply.get("provider") == self.scope.provider
+                            and reply.get("provider_session_id") == self.scope.session
+                            and reply.get("lease_id") == self.lease):
+                        receipt.update(state="published", reply_id=reply["reply_id"], spoken=False)
+                elif (result.get("kind") == "peer_message_published" and isinstance(result.get("sender"), str)
+                        and result["sender"].casefold() == self.scope.name_key):
                     receipt.update(state="published", message_id=result["message_id"],
                         recipients=[{k: v for k, v in row.items() if k in ("peer", "channel", "follower_live")}
                                     for row in result["recipients"]])

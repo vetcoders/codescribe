@@ -331,13 +331,109 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// The tool schemas advertised to the model. Unordered — callers that need
-    /// a stable listing should sort, as [`Self::capabilities`] does.
+    /// The full set of registered tool schemas (native + MCP). Unordered —
+    /// callers that need a stable listing should sort, as [`Self::capabilities`]
+    /// does. For the compact wire surface sent to LLM providers on each turn,
+    /// use [`Self::wire_definitions`].
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .values()
             .map(|tool| tool.definition.clone())
             .collect()
+    }
+
+    /// True when at least one `ToolOrigin::Mcp` tool is registered.
+    pub fn has_mcp_tools(&self) -> bool {
+        self.tools
+            .values()
+            .any(|tool| matches!(tool.policy.origin, ToolOrigin::Mcp { .. }))
+    }
+
+    /// Borrowed catalog entries for all registered MCP tools.
+    pub fn mcp_entries(&self) -> Vec<super::mcp_projection::McpToolEntry<'_>> {
+        let mut entries: Vec<super::mcp_projection::McpToolEntry<'_>> = self
+            .tools
+            .iter()
+            .filter_map(|(name, tool)| match &tool.policy.origin {
+                ToolOrigin::Mcp {
+                    server,
+                    upstream_tool,
+                } => Some(super::mcp_projection::McpToolEntry {
+                    registered_name: name.as_str(),
+                    server: server.as_str(),
+                    upstream_tool: upstream_tool.as_str(),
+                    description: tool.definition.description.as_str(),
+                    input_schema: &tool.definition.input_schema,
+                    risk: tool.policy.risk,
+                }),
+                ToolOrigin::Native => None,
+            })
+            .collect();
+        entries.sort_by(|a, b| {
+            a.server
+                .cmp(b.server)
+                .then_with(|| a.upstream_tool.cmp(b.upstream_tool))
+                .then_with(|| a.registered_name.cmp(b.registered_name))
+        });
+        entries
+    }
+
+    /// Compact, byte-deterministic tool definitions sent to the LLM provider on
+    /// each turn.
+    ///
+    /// Native tools are included in sorted order. Raw `ToolOrigin::Mcp` schemas
+    /// (~40k tokens across 70–90 tools) are omitted from the wire array and
+    /// projected into [`super::mcp_projection::MCP_SEARCH_TOOL_NAME`] (with an
+    /// embedded round-robin compact catalog) plus
+    /// [`super::mcp_projection::MCP_CALL_TOOL_NAME`]. When no MCP tools are
+    /// registered, only native tools are returned.
+    pub fn wire_definitions(&self) -> Vec<ToolDefinition> {
+        let mut native_defs: Vec<ToolDefinition> = self
+            .tools
+            .values()
+            .filter(|tool| matches!(tool.policy.origin, ToolOrigin::Native))
+            .map(|tool| tool.definition.clone())
+            .collect();
+        native_defs.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let mcp_entries = self.mcp_entries();
+        if !mcp_entries.is_empty() {
+            native_defs.push(super::mcp_projection::build_mcp_search_tool_definition(
+                &mcp_entries,
+            ));
+            native_defs.push(super::mcp_projection::build_mcp_call_tool_definition());
+        }
+        native_defs
+    }
+
+    /// Execute an in-memory [`super::mcp_projection::MCP_SEARCH_TOOL_NAME`] query,
+    /// returning full JSON Schemas and signatures for matching MCP tools.
+    pub fn search_mcp_tools(&self, input: &serde_json::Value) -> Vec<ToolResultContent> {
+        let entries = self.mcp_entries();
+        vec![ToolResultContent::Text(
+            super::mcp_projection::search_mcp_tools(&entries, input),
+        )]
+    }
+
+    /// Resolve a [`super::mcp_projection::MCP_CALL_TOOL_NAME`] payload to its
+    /// canonical registered MCP tool name and validated inner arguments.
+    pub fn resolve_mcp_call(
+        &self,
+        input: &serde_json::Value,
+    ) -> super::mcp_projection::McpCallResolution {
+        let entries = self.mcp_entries();
+        super::mcp_projection::resolve_mcp_call(&entries, input)
+    }
+
+    /// Resolve a direct tool name or shorthand (`<server>/<tool>`, `<server>:<tool>`,
+    /// `mcp__<server>_<tool>`, or unambiguous `<upstream_tool>`) to a registered
+    /// tool key if one exists.
+    pub fn resolve_tool_name(&self, name: &str) -> Option<String> {
+        if self.tools.contains_key(name) {
+            return Some(name.to_string());
+        }
+        let entries = self.mcp_entries();
+        super::mcp_projection::resolve_mcp_alias(&entries, name)
     }
 
     /// Per-tool execution metadata (origin/risk/requires_approval flag).
@@ -495,8 +591,10 @@ impl ToolRegistry {
     /// use. Origin does not participate: a native tool that injects keystrokes
     /// into the frontmost app is exactly as side-effectful as an MCP one, so
     /// the category defaults are driven by risk alone (review P1-06). The
-    /// `requires_approval` ratchet turns an inherited Allow into Ask; an
-    /// explicit operator rule (thread, tool, server) is left as written.
+    /// `requires_approval` ratchet turns an inherited Allow into Ask and
+    /// reports it as the tool's built-in rule, so Settings does not call the
+    /// lifted level a category default; an explicit operator rule (thread,
+    /// tool, server) is left as written.
     fn effective_level(
         &self,
         policy: &AgentPermissions,
@@ -509,14 +607,12 @@ impl ToolRegistry {
             tool.policy.risk,
             &self.thread_overrides,
         );
-        let level = if tool.policy.requires_approval
+        if tool.policy.requires_approval
             && source == PermissionSource::Default
             && level == PermissionLevel::Allow
         {
-            PermissionLevel::Ask
-        } else {
-            level
-        };
+            return (PermissionLevel::Ask, PermissionSource::Builtin);
+        }
         (level, source)
     }
 
@@ -1090,7 +1186,8 @@ mod tests {
     }
 
     /// `requires_approval` lifts an inherited Allow to Ask in both the list and
-    /// the gate; an explicit tool rule is honoured as written in both.
+    /// the gate, and the list names it as the tool's built-in rule; an explicit
+    /// tool rule is honoured as written in both.
     #[test]
     fn requires_approval_ratchet_is_visible_in_capabilities() {
         let mut registry = ToolRegistry::new();
@@ -1116,7 +1213,7 @@ mod tests {
 
         let row = registry.capabilities().remove(0);
         assert_eq!(row.effective, PermissionLevel::Ask);
-        assert_eq!(row.source, PermissionSource::Default);
+        assert_eq!(row.source, PermissionSource::Builtin);
         assert!(matches!(
             registry.decide("peek", &json!({}), "c", "s", "t"),
             ToolDecision::RequireApproval(_)
@@ -1316,6 +1413,96 @@ mod tests {
             request.summary.contains("/Users/op/.aws"),
             "{}",
             request.summary
+        );
+    }
+
+    /// Wire projection strips raw MCP tool schemas while keeping full registry
+    /// definitions and Settings capabilities intact.
+    #[test]
+    fn wire_definitions_projects_mcp_tools_into_compact_gateway() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register_native(
+                ToolDefinition {
+                    name: "read_file".to_string(),
+                    description: "Read workspace file".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_| Box::pin(async { Vec::new() })),
+                ToolRisk::ReadOnly,
+            )
+            .expect("register native tool");
+
+        // Without MCP tools, wire_definitions contains only native tools.
+        let wire_native_only = registry.wire_definitions();
+        assert_eq!(wire_native_only.len(), 1);
+        assert_eq!(wire_native_only[0].name, "read_file");
+
+        // Register 80 verbose MCP tools across two servers.
+        for idx in 0..80 {
+            let server = if idx % 2 == 0 {
+                "desktop-commander"
+            } else {
+                "loctree-mcp"
+            };
+            let upstream = format!("heavy_tool_{idx:02}");
+            let wire_name = format!("mcp__{server}__{upstream}");
+            registry
+                .register_with_policy(
+                    ToolDefinition {
+                        name: wire_name,
+                        description: format!(
+                            "[MCP:{server}] Heavy tool {idx} with detailed prose documentation."
+                        ),
+                        input_schema: json!({
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute or workspace-relative file path to inspect."
+                                },
+                                "depth": {
+                                    "type": "integer",
+                                    "description": "Maximum recursion depth."
+                                }
+                            },
+                            "required": ["path"]
+                        }),
+                    },
+                    Box::new(|_| Box::pin(async { Vec::new() })),
+                    ToolExecutionPolicy {
+                        origin: ToolOrigin::Mcp {
+                            server: server.to_string(),
+                            upstream_tool: upstream,
+                        },
+                        risk: ToolRisk::ReadOnly,
+                        requires_approval: false,
+                    },
+                    None,
+                )
+                .expect("register mcp tool");
+        }
+
+        // Full registry truth retains all 81 tools for dispatch and Settings UI.
+        assert_eq!(registry.definitions().len(), 81);
+        assert_eq!(registry.capabilities().len(), 81);
+
+        // Wire definitions contain only the 1 native tool + 2 MCP gateway tools.
+        let wire = registry.wire_definitions();
+        let wire_names: Vec<&str> = wire.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(
+            wire_names,
+            vec!["read_file", "mcp_search_tools", "call_mcp_tool"]
+        );
+
+        let search_def = &wire[1];
+        assert!(search_def.description.contains("[desktop-commander]"));
+        assert!(search_def.description.contains("[loctree-mcp]"));
+        assert!(
+            search_def.description.len()
+                <= super::super::mcp_projection::MCP_CATALOG_BUDGET_BYTES + 1024,
+            "search tool description must stay within compact budget, got {} bytes",
+            search_def.description.len()
         );
     }
 }

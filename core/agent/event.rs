@@ -30,6 +30,16 @@ pub enum AgentEvent {
         /// next turn replays from local history (dirty).
         clean: bool,
     },
+    /// Progress of a tool the provider runs on its own side (hosted
+    /// `web_search`). Display-only: it is never executed locally and never
+    /// becomes a tool result in the conversation. `done` closes the call;
+    /// `query` names the search when the provider reported it.
+    ServerToolProgress {
+        id: String,
+        name: String,
+        done: bool,
+        query: Option<String>,
+    },
     Error(String),
 }
 

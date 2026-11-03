@@ -87,29 +87,57 @@ struct OverlayTooltipLayout: Layout {
   }
 }
 
+/// Resting ink of an enabled control. Header and coverage chrome stay solid.
+/// The transcript rail rests slightly dim and strengthens on hover: dark ink
+/// darkens on paper and light ink brightens on a dark canvas. That dim is
+/// presentation only: the control stays enabled, keeps its hit target and
+/// does not change size.
+enum OverlayHoverEmphasis: Equatable {
+  case solid
+  case transcriptRail
+
+  /// Disabled ink stays at the historical 0.35. Rail rest is only a little
+  /// below full ink, so it cannot be read as the disabled state.
+  func opacity(enabled: Bool, hovered: Bool) -> Double {
+    guard enabled else { return 0.35 }
+    switch self {
+    case .solid:
+      return 1
+    case .transcriptRail:
+      return hovered ? 1 : 0.72
+    }
+  }
+}
+
 /// Hover describes; only button activation opens details or executes an action.
 struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
+  @Environment(\.isEnabled) private var environmentEnabled
   let id: String
   let title: String
   let palette: OverlayAppearancePalette
   @Binding var presented: String?
   var action: (() -> Void)? = nil
   var showsTooltip = true
-  /// An unavailable control stays on screen, greyed to the rail's disabled
-  /// opacity, and neither fires its action nor opens its detail. Its tooltip
-  /// still names it, so the reason it cannot run stays one hover away.
+  /// A caller that passes false greys the control and blocks its action and
+  /// detail. The tooltip still names it. The transcript rail does not use
+  /// this for a missing action; it omits the control. Dim rail ink is
+  /// `emphasis`, and it stays enabled.
   var isEnabled = true
+  var emphasis: OverlayHoverEmphasis = .solid
   /// Transcript actions hint over their document, inside the owning window.
   /// Header and footer controls keep their existing compact hint placement.
   var keepsHintInsideWindow = false
-  /// The transcript column sits on the trailing edge, so its menus open over
-  /// the document. Other chrome keeps the menu below the control.
+  /// The edge of the control used to anchor the popover.
   var popoverArrow: Edge = .top
+  /// Equal widths give related rail menus the same horizontal placement.
+  var detailWidth: CGFloat? = nil
   @ViewBuilder var label: LabelContent
   @ViewBuilder var detail: (@escaping () -> Void) -> Detail
   @State private var hovered = false
 
   var body: some View {
+    let enabled = isEnabled && environmentEnabled
+    let selected = presented == id
     Button {
       if let action {
         presented = nil
@@ -119,14 +147,14 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
       }
     } label: {
       label
-        .foregroundStyle(palette.primaryText.color)
-        .opacity(isEnabled ? 1 : 0.35)
+        .foregroundStyle(
+          enabled && selected && emphasis == .transcriptRail
+            ? CSColor.chromeAccent : palette.primaryText.color
+        )
+        .opacity(emphasis.opacity(enabled: enabled, hovered: hovered || selected))
+        // A menu keeps its accent ink after the pointer leaves for its
+        // popover. Emphasis never adds a halo or changes the hit rectangle.
         .padding(2)
-        .background {
-          RoundedRectangle(cornerRadius: CSRadius.chip)
-            .fill(
-              palette.primaryText.color.opacity(isEnabled && hovered ? 0.14 : 0))
-        }
         .contentShape(Rectangle())
     }
     .csFocusRing()
@@ -134,11 +162,15 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
     .focusable(false)
     .accessibilityLabel(title)
     .accessibilityIdentifier(id)
-    .onHover { hovered = $0 }
+    .accessibilityAddTraits(selected ? .isSelected : [])
+    .background {
+      OverlayMenuCursorRegion { hovered = $0 }
+    }
     .modifier(
       OverlayMiniTooltip(
         title: title, palette: palette, enabled: showsTooltip && presented == nil,
-        floating: popoverArrow == .trailing, withinWindow: keepsHintInsideWindow)
+        floating: popoverArrow == .leading || popoverArrow == .trailing,
+        withinWindow: keepsHintInsideWindow)
     )
     .popover(
       isPresented: Binding(
@@ -151,10 +183,12 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
         .font(CSFont.ui(12, .medium))
         .foregroundStyle(palette.primaryText.color)
         .padding(10)
+        .frame(width: detailWidth, alignment: .leading)
         .frame(maxWidth: 280)
         .fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial)
         .contentShape(Rectangle())
+        .csFocusPolicy()
         .onExitCommand { presented = nil }
     }
     .onExitCommand { presented = nil }

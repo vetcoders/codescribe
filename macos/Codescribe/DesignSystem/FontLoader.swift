@@ -1,11 +1,11 @@
 import CoreText
 import SwiftUI
 
-// Registers the bundled OFL fonts at runtime so they work in the app AND in
+// Registers the bundled OFL font at runtime so it works in the app AND in
 // SwiftUI Previews regardless of bundle layout. Idempotent; safe to call often.
+// Text uses the system face; JetBrains Mono is the only bundled family.
 @MainActor
 enum FontLoader {
-  nonisolated static let spaceGrotesk = "Space Grotesk"
   nonisolated static let jetBrainsMono = "JetBrains Mono"
 
   private static var didRegister = false
@@ -13,7 +13,7 @@ enum FontLoader {
   static func register() {
     guard !didRegister else { return }
     didRegister = true
-    for name in ["SpaceGrotesk", "JetBrainsMono"] {
+    for name in ["JetBrainsMono"] {
       guard
         let url = Bundle.main.url(forResource: name, withExtension: "ttf")
           ?? Bundle.main.url(forResource: name, withExtension: "ttf", subdirectory: "Fonts")

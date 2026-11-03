@@ -6,8 +6,8 @@ import SwiftUI
 /// last, the transcript markers added to delivered text.
 ///
 /// The mode has no section label of its own: the row below carries the one
-/// label ("Recognition mode") and the page headline already says the pane is
-/// about speech recognition (Founder brief, round 13, 2026-10-10).
+/// label ("Recognition mode"), and the page is headed by the tab's own name,
+/// Engine, under Dictation (Founder brief, round 13, 2026-10-10).
 struct DictationEngineTab: View {
   @ObservedObject var model: SettingsViewModel
 

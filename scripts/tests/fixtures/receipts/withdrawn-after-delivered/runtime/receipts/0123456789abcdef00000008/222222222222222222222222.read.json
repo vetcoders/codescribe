@@ -1,0 +1,1 @@
+{"bus": "/fixture/bus-3.jsonl", "channel": "3", "delivery_id": "222222222222222222222222", "kind": "read", "lease_id": "dddddddddddddddddddddddddddddddd", "message_id": "0123456789abcdef00000008", "name": "lena", "provider": "codex", "provider_session_id": "lena-next-session", "read_at": "2026-10-26T06:10:00Z", "schema": "codescribe.message-receipt.v1"}

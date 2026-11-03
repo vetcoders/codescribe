@@ -1,5 +1,8 @@
 # Overlay UX (POC)
 
+> Historical proof-of-concept notes. For the current overlay, channel roster
+> and built-in Agent window, see [Dictation overlay and agent conversations](chat-overlay.md).
+
 This branch adds a more “power-user” chat overlay with two tabs: **Agent** and **Drawer**.
 
 ## Agent (chat)

@@ -287,7 +287,7 @@ async fn direct_agent_terminal_holds_words_without_claiming_failed_acoustic_cove
     ));
     take.emitter.on_event(&terminal());
     take.emitter.finish().await;
-    take.bus.publish_channel_closed(10).unwrap();
+    take.bus.publish_channel_closed(10, None).unwrap();
     let raw = std::fs::read_to_string(&take.bus_path).unwrap();
     let closing: Vec<serde_json::Value> = raw
         .lines()
@@ -324,7 +324,7 @@ async fn direct_empty_agent_terminal_settles_without_inventing_a_word() {
     });
     take.emitter.on_event(&terminal());
     take.emitter.finish().await;
-    take.bus.publish_channel_closed(10).unwrap();
+    take.bus.publish_channel_closed(10, None).unwrap();
     assert!(
         take.bus
             .publish_ended(

@@ -3,7 +3,7 @@
 An attachment delivers new messages to a mailbox. Conversation history is a
 separate, owner-scoped view of retained bus messages. After attaching an
 established agent name, recover the relevant prior context before substantive
-work. Do not ask the Founder to repeat a conversation that is available to read.
+work. Do not ask the user to repeat a conversation that is available to read.
 
 ## Identify the conversation
 
@@ -24,7 +24,7 @@ Archive metadata under `<bridge-home>/archives/*.json` records the original
 provider, session, lease, name, channel and bus path. These small records are
 pointers, not the conversation text. Match them against durable session/handoff
 evidence; a matching friendly name alone is insufficient. Resolve ambiguity from
-those identities before asking the Founder to choose between genuinely ambiguous
+those identities before asking the user to choose between genuinely ambiguous
 conversations. Never borrow an old session ID to make its history look current.
 
 ## Open and read the retained messages
@@ -56,7 +56,7 @@ cs-bus --history --channel 2 --since 2026-10-18 --until 2026-10-19
 ```
 
 It reads every retained generation of the channel buses and prints each message
-once, oldest first: Founder voice seals, typed Founder messages and agent replies,
+once, oldest first: user voice seals, typed user messages and agent replies,
 with sender, recipients and local time. A broadcast fanned out to many mailboxes
 reads once; a held message reads in its last revision; one withdrawn before
 delivery is left out and counted. `--channel 0` keeps messages to everyone. It
@@ -70,7 +70,7 @@ that historical bytes are gone.
 Historical requests, replies and artifacts are context. Do not automatically
 execute old requests, resend replies or ACK another owner's deliveries. Viewing
 history and marking a visible reply read are separate from an agent delivery ACK.
-For a Founder-requested read of one inherited pending envelope, use the existing
+For a user-requested read of one inherited pending envelope, use the existing
 `--read-delivery ID --lease PREVIOUS_LEASE` procedure in
 [Attach](attach.md#handover-between-sessions-of-one-name); it neither imports the
 whole chat nor acknowledges that previous lease.

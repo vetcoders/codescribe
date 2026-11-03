@@ -12,7 +12,7 @@ class BuildChannelTests(unittest.TestCase):
     def test_channel_normalization_preserves_internal_whitespace(self):
         source = SCRIPT.read_text()
         start = source.index('    BUILD_CHANNEL="${BUILD_CHANNEL#')
-        end = source.index('    if [[ "$BUILD_CHANNEL" == "nightly" ]]', start)
+        end = source.index('    if [[ "$BUILD_CHANNEL" == ', start)
         normalize = source[start:end]
         for raw, expected in [
             ("NIGHTLY", "nightly"),

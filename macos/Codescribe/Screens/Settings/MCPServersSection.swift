@@ -42,9 +42,13 @@ struct MCPServersSection: View {
               onToggle: { model.toggleMcpServer(server) },
               onTest: { model.testMcpServer(server.name) },
               onRemove: { model.requestMcpServerRemoval(server.name) },
-              onSave: { command, args, endpoint, token in
+              authorizationPending: model.mcpAuthorizationPending.contains(server.name),
+              authNotice: model.mcpAuthNotices[server.name],
+              onAuthorize: { model.authorizeMcpServer(server) },
+              onSave: { command, args, endpoint, token, oauth in
                 model.updateMcpServer(
-                  server, command: command, args: args, endpoint: endpoint, token: token)
+                  server, command: command, args: args, endpoint: endpoint, token: token,
+                  oauth: oauth)
               }
             )
           }
@@ -60,10 +64,10 @@ struct MCPServersSection: View {
       )
       .padding(.top, model.mcpServers.isEmpty ? 0 : SettingsScale.sectionGap)
 
-      MCPServerForm { name, command, args, endpoint, token in
+      MCPServerForm { name, command, args, endpoint, token, oauth in
         model.addMcpServer(
           name: name, command: command, args: args,
-          endpoint: endpoint, token: token
+          endpoint: endpoint, token: token, oauth: oauth
         )
       }
       .padding(.top, SettingsScale.headerGap)
@@ -145,7 +149,10 @@ struct MCPServerRow: View {
   let onToggle: () -> Void
   let onTest: () -> Void
   let onRemove: () -> Void
-  let onSave: (String, [String], String, String) -> MCPAddFailure?
+  let authorizationPending: Bool
+  let authNotice: String?
+  let onAuthorize: () -> Void
+  let onSave: (String, [String], String, String, Bool) -> MCPAddFailure?
 
   @State private var showingDetails = false
   @State private var isEditing = false
@@ -154,8 +161,11 @@ struct MCPServerRow: View {
     server: CsMcpServer, pending: Bool, result: CsMcpTestResult?,
     permissionLevel: String?, initiallyShowingDetails: Bool = false,
     onToggle: @escaping () -> Void, onTest: @escaping () -> Void,
-    onRemove: @escaping () -> Void,
-    onSave: @escaping (String, [String], String, String) -> MCPAddFailure? = { _, _, _, _ in nil }
+    onRemove: @escaping () -> Void, authorizationPending: Bool = false,
+    authNotice: String? = nil, onAuthorize: @escaping () -> Void = {},
+    onSave: @escaping (String, [String], String, String, Bool) -> MCPAddFailure? = {
+      _, _, _, _, _ in nil
+    }
   ) {
     self.server = server
     self.pending = pending
@@ -164,6 +174,9 @@ struct MCPServerRow: View {
     self.onToggle = onToggle
     self.onTest = onTest
     self.onRemove = onRemove
+    self.authorizationPending = authorizationPending
+    self.authNotice = authNotice
+    self.onAuthorize = onAuthorize
     self.onSave = onSave
     _showingDetails = State(initialValue: initiallyShowingDetails)
   }
@@ -173,7 +186,7 @@ struct MCPServerRow: View {
   private var accent: Color {
     guard server.enabled else { return CSColor.secondaryInk }
     if pending { return CSColor.amberLight }
-    if let result { return result.ok ? CSColor.olive : CSColor.terracottaText }
+    if let result { return result.ok ? CSColor.olive : CSColor.dangerLight }
     return CSColor.secondaryInk
   }
 
@@ -195,7 +208,19 @@ struct MCPServerRow: View {
           .layoutPriority(1)
         Spacer(minLength: CSSpace.sm)
         HStack(spacing: CSSpace.xs) {
-          enabledButton
+          enabledToggle
+          if server.oauth && isRemote {
+            SettingsChipButton(action: onAuthorize) {
+              Text(
+                authorizationPending
+                  ? String(localized: "Signing in…")
+                  : (server.authRef.isEmpty
+                    ? String(localized: "Sign in") : String(localized: "Sign in again"))
+              )
+              .font(SettingsScale.controlLabel)
+            }
+            .disabled(authorizationPending)
+          }
           testButton
           SettingsChipButton(action: { isEditing.toggle() }) {
             Text("Edit").font(SettingsScale.controlLabel)
@@ -208,11 +233,15 @@ struct MCPServerRow: View {
 
       if isEditing {
         MCPServerForm(server: server, onCancel: { isEditing = false }) {
-          _, command, args, endpoint, token in
-          let failure = onSave(command, args, endpoint, token)
+          _, command, args, endpoint, token, oauth in
+          let failure = onSave(command, args, endpoint, token, oauth)
           if failure == nil { isEditing = false }
           return failure
         }
+      }
+
+      if let authNotice, !authNotice.isEmpty {
+        resultLine(text: authNotice, color: CSColor.secondaryInk)
       }
 
       DisclosureGroup(isExpanded: $showingDetails) {
@@ -261,7 +290,7 @@ struct MCPServerRow: View {
           color: CSColor.oliveLight
         )
       } else {
-        resultLine(text: String(localized: "Last test: failed"), color: CSColor.terracottaText)
+        resultLine(text: String(localized: "Last test: failed"), color: CSColor.dangerLight)
       }
     } else {
       resultLine(text: String(localized: "Connection not tested"), color: CSColor.secondaryInk)
@@ -300,8 +329,12 @@ struct MCPServerRow: View {
         detailRow(String(localized: "Server URL"), server.endpoint)
         detailRow(
           String(localized: "Authentication"),
-          server.authRef.isEmpty
-            ? String(localized: "No authentication") : String(localized: "Token in Keychain"))
+          server.oauth
+            ? (server.authRef.isEmpty
+              ? String(localized: "OAuth — not signed in")
+              : String(localized: "OAuth — signed in"))
+            : (server.authRef.isEmpty
+              ? String(localized: "No authentication") : String(localized: "Token in Keychain")))
       } else {
         detailRow(String(localized: "Launch command"), commandLine)
       }
@@ -331,7 +364,7 @@ struct MCPServerRow: View {
         .foregroundStyle(CSColor.secondaryInk)
         .frame(width: 150, alignment: .leading)
       Text(verbatim: value)
-        .font(CSFont.mono(10.5, .regular))
+        .font(CSFont.mono(11, .regular))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
@@ -351,26 +384,33 @@ struct MCPServerRow: View {
 
   // MARK: Actions
 
-  // All three are `SettingsChipButton`: one chip family across Settings, so
-  // the card no longer carries three hand-rolled shapes at a seventh radius.
-  // The state still reads in colour — on the power glyph and the label, where
-  // it belongs — instead of tinting a button's whole background.
+  // The configured state is a switch. Test, Edit and Remove stay actions in
+  // the shared Settings chip family.
 
   /// The configured state. Clicking flips the `enabled` flag in mcp.json; it
-  /// never connects or disconnects anything by itself.
-  private var enabledButton: some View {
-    SettingsChipButton(action: onToggle) {
-      HStack(spacing: 5) {
-        CSIconView(
-          icon: .power, size: 8, weight: .semibold,
-          color: server.enabled ? CSColor.oliveLight : CSColor.secondaryInk)
-        Text(
-          server.enabled
-            ? String(localized: "mcp.server.enabled", defaultValue: "Enabled")
-            : String(localized: "mcp.server.disabled", defaultValue: "Disabled"))
+  /// never connects or disconnects anything by itself. The switch is the one
+  /// Settings switch (`settingsSwitch()`), whose label is hidden, so the state
+  /// word stays visible beside it and the server name labels it for VoiceOver.
+  private var enabledToggle: some View {
+    HStack(spacing: 5) {
+      Toggle(
+        isOn: Binding(
+          get: { server.enabled },
+          set: { enabled in
+            if enabled != server.enabled { onToggle() }
+          }
+        )
+      ) {
+        Text(verbatim: server.name)
       }
+      .settingsSwitch()
+      Text(
+        server.enabled
+          ? String(localized: "mcp.server.enabled", defaultValue: "Enabled")
+          : String(localized: "mcp.server.disabled", defaultValue: "Disabled")
+      )
       .font(SettingsScale.controlLabel)
-      .foregroundStyle(server.enabled ? CSColor.oliveLight : CSColor.secondaryInk)
+      .accessibilityHidden(true)
     }
     .help(server.enabled ? "Disable this server" : "Enable this server")
   }
@@ -388,7 +428,7 @@ struct MCPServerRow: View {
     SettingsChipButton(action: onRemove) {
       // A glyph has no cap height to pad against: the square matches the line
       // height of the two labelled chips beside it, so all three are one row.
-      CSIconView(icon: .delete, size: 11, weight: .semibold, color: CSColor.terracottaText)
+      CSIconView(icon: .delete, size: 11, weight: .semibold, color: CSColor.dangerLight)
         .frame(width: 14, height: 14)
     }
     .accessibilityLabel(Text("Remove", comment: "Button label: remove an MCP server"))
@@ -430,7 +470,7 @@ private struct MCPServerForm: View {
   let onAdd:
     (
       _ name: String, _ command: String, _ args: [String],
-      _ endpoint: String, _ token: String
+      _ endpoint: String, _ token: String, _ oauth: Bool
     ) -> MCPAddFailure?
   let server: CsMcpServer?
   let onCancel: (() -> Void)?
@@ -446,6 +486,7 @@ private struct MCPServerForm: View {
   @State private var arguments: [Argument] = []
   @State private var endpoint: String = ""
   @State private var token: String = ""
+  @State private var oauth = false
   @State private var addError: MCPAddFailure?
   @FocusState private var focusedField: Field?
 
@@ -453,7 +494,7 @@ private struct MCPServerForm: View {
 
   init(
     server: CsMcpServer? = nil, onCancel: (() -> Void)? = nil,
-    onAdd: @escaping (String, String, [String], String, String) -> MCPAddFailure?
+    onAdd: @escaping (String, String, [String], String, String, Bool) -> MCPAddFailure?
   ) {
     self.server = server
     self.onCancel = onCancel
@@ -463,6 +504,7 @@ private struct MCPServerForm: View {
     _command = State(initialValue: server?.command ?? "")
     _arguments = State(initialValue: (server?.args ?? []).map { Argument(value: $0) })
     _endpoint = State(initialValue: server?.endpoint ?? "")
+    _oauth = State(initialValue: server?.oauth ?? false)
   }
 
   /// The field a refusal points at, if the form has one for it.
@@ -500,23 +542,33 @@ private struct MCPServerForm: View {
       if remote {
         labeledField(
           "Server URL", placeholder: "https://…/mcp", text: $endpoint, focus: .endpoint)
-        VStack(alignment: .leading, spacing: CSSpace.xxs) {
-          fieldLabel("Access token (optional)")
-          // The label is the field's accessibility name; the visible caption
-          // above stays a plain Text so the chrome matches the other fields.
-          SecureField(text: $token, prompt: nil) { Text("Access token (optional)") }
-            .labelsHidden()
-            .focused($focusedField, equals: .token)
-            .settingsInputChrome(isFocused: focusedField == .token)
-            .onSubmit(submit)
-          Text("The token is stored in the macOS Keychain, never in mcp.json.")
+        Toggle(String(localized: "Sign in with OAuth"), isOn: $oauth)
+          .toggleStyle(.checkbox)
+          .font(SettingsScale.helper)
+        if oauth {
+          Text("Save the server, then use Sign in on its row — the browser opens like for provider accounts.")
             .font(SettingsScale.helper)
             .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
-          if server?.authRef.isEmpty == false {
-            Text("Leave the token empty to keep the saved token.")
+        } else {
+          VStack(alignment: .leading, spacing: CSSpace.xxs) {
+            fieldLabel("Access token (optional)")
+            // The label is the field's accessibility name; the visible caption
+            // above stays a plain Text so the chrome matches the other fields.
+            SecureField(text: $token, prompt: nil) { Text("Access token (optional)") }
+              .labelsHidden()
+              .focused($focusedField, equals: .token)
+              .settingsInputChrome(isFocused: focusedField == .token)
+              .onSubmit(submit)
+            Text("The token is stored in the macOS Keychain, never in mcp.json.")
               .font(SettingsScale.helper)
               .foregroundStyle(CSColor.secondaryInk)
+              .fixedSize(horizontal: false, vertical: true)
+            if server?.authRef.isEmpty == false {
+              Text("Leave the token empty to keep the saved token.")
+                .font(SettingsScale.helper)
+                .foregroundStyle(CSColor.secondaryInk)
+            }
           }
         }
       } else {
@@ -594,12 +646,12 @@ private struct MCPServerForm: View {
     }
   }
 
-  /// The user sentence in the accent colour; the store's own words, when they
+  /// The user sentence in the error colour; the store's own words, when they
   /// differ, stay one hover away instead of on the screen.
   private func errorLine(_ failure: MCPAddFailure) -> some View {
     Text(verbatim: failure.message)
       .font(SettingsScale.helper)
-      .foregroundStyle(CSColor.terracottaText)
+      .foregroundStyle(CSColor.dangerLight)
       .textSelection(.enabled)
       .fixedSize(horizontal: false, vertical: true)
       .help(failure.detail == failure.message ? "" : failure.detail)
@@ -615,7 +667,8 @@ private struct MCPServerForm: View {
       remote ? "" : command.trimmingCharacters(in: .whitespaces),
       remote ? [] : arguments.map(\.value),
       remote ? endpoint.trimmingCharacters(in: .whitespaces) : "",
-      remote ? token : ""
+      remote && !oauth ? token : "",
+      remote && oauth
     )?.forTransport(remote: remote, endpoint: endpoint)
     guard addError == nil else {
       if let field = Self.field(for: addError?.visibleField(remote: remote)) {
@@ -628,5 +681,6 @@ private struct MCPServerForm: View {
     arguments = []
     endpoint = ""
     token = ""
+    oauth = false
   }
 }

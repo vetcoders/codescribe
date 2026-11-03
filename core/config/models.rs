@@ -6,9 +6,12 @@
 
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::hf_cache;
 
@@ -28,13 +31,11 @@ const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_f
 /// upstream repos ship either `model.safetensors` or `weights.safetensors`.
 const REQUIRED_MODEL_WEIGHTS: [&str; 2] = crate::whisper_weights::SUPPORTED_NAMES;
 
-/// Canonicalize a path, falling back to the original on failure.
-///
-/// Resolution must not fail just because a path cannot be canonicalized (a
-/// symlink into an unmounted volume, a permission gap): the caller gets a usable
-/// path and a warning rather than an error.
+/// Report the canonical location when known, retaining a failed input for a
+/// diagnostic row. Readiness is established separately by the typed validator;
+/// returning an input here never certifies it usable or on internal media.
 fn canonicalize_or_self(path: PathBuf) -> PathBuf {
-    match path.canonicalize() {
+    match hf_cache::resolve_local_path(&path) {
         Ok(canonical) => canonical,
         Err(err) => {
             tracing::warn!(
@@ -67,7 +68,8 @@ fn is_complete_whisper_model_dir(path: &Path) -> bool {
 /// has no payload checksum. The validator checks the complete tensor table,
 /// dtype allowlist, byte sizes, contiguous offsets, and final file length.
 pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
-    crate::whisper_weights::validate_whisper_model_bundle(path)
+    let resolved = hf_cache::validate_model_directory(path)?;
+    crate::whisper_weights::validate_whisper_model_bundle(&resolved)
 }
 
 /// One child of the user's models directory. Status uses the loader's own
@@ -122,7 +124,7 @@ pub fn inspect_model_directories(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     };
-    let active = active_model.and_then(|path| path.canonicalize().ok());
+    let active = active_model.and_then(|path| hf_cache::resolve_local_path(path).ok());
     let mut models = Vec::new();
     let mut tokenizers = Vec::new();
     for entry in entries {
@@ -133,9 +135,9 @@ pub fn inspect_model_directories(
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let is_active = active
-            .as_ref()
-            .is_some_and(|selected| path.canonicalize().ok().as_ref() == Some(selected));
+        let is_active = active.as_ref().is_some_and(|selected| {
+            hf_cache::resolve_local_path(&path).ok().as_ref() == Some(selected)
+        });
         let verdict = if name == "moshiko-q8" || name == "moshika-q8" {
             let mut config = if name == "moshiko-q8" {
                 crate::conversation::MoshiConfig::moshiko()
@@ -262,6 +264,9 @@ pub(crate) use crate::whisper_weights::{
 /// existence as Whisper ownership shadows the user-installed fp16 model and
 /// could incorrectly select a quantized cache instead.
 fn models_root_contains_complete_whisper_model(path: &Path) -> bool {
+    let Ok(path) = hf_cache::resolve_local_path(path) else {
+        return false;
+    };
     fs::read_dir(path).is_ok_and(|entries| {
         entries
             .filter_map(std::result::Result::ok)
@@ -274,10 +279,10 @@ fn models_root_contains_complete_whisper_model(path: &Path) -> bool {
 /// A reference containing `/` is treated as a repo id and looked up directly.
 /// The bare [`DEFAULT_MODEL`] alias maps to [`DEFAULT_WHISPER_REPO`]. Any other
 /// bare name is a models-dir alias, not a repo, so it yields `None` here.
-fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
+fn hf_snapshot_for_model(model_ref: &str) -> Result<Option<PathBuf>> {
     let trimmed = model_ref.trim();
     if trimmed.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let repo = if trimmed.contains('/') {
@@ -285,13 +290,16 @@ fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
     } else if trimmed == DEFAULT_MODEL {
         DEFAULT_WHISPER_REPO
     } else {
-        return None;
+        return Ok(None);
     };
-    hf_cache::find_snapshot_with_any_matching(
+    hf_cache::find_snapshot_with_any_matching_checked(
         repo,
         &REQUIRED_MODEL_FILES,
         &REQUIRED_MODEL_WEIGHTS,
-        is_complete_whisper_model_dir,
+        |path| {
+            validate_whisper_model_bundle(path)?;
+            Ok(true)
+        },
     )
 }
 
@@ -371,7 +379,9 @@ impl ModelManager {
         // Environment override
         if let Ok(path) = std::env::var("CODESCRIBE_MODELS_DIR") {
             let p = expand_home_path(path.trim());
-            if p.exists() {
+            if let Ok(resolved) = hf_cache::resolve_local_path(&p)
+                && resolved.is_dir()
+            {
                 return Ok(p);
             }
         }
@@ -421,9 +431,10 @@ impl ModelManager {
     /// Purely positional — the returned path is not checked for completeness and
     /// need not exist.
     pub fn get_model_path(&self, model_name: &str) -> PathBuf {
-        // Check if it's an absolute path that exists
+        // An explicit absolute reference remains explicit even if its volume
+        // is disconnected; the validator must retain the actual failure.
         let candidate = PathBuf::from(model_name);
-        if candidate.is_absolute() && candidate.exists() {
+        if candidate.is_absolute() {
             return candidate;
         }
 
@@ -432,12 +443,15 @@ impl ModelManager {
 
     /// Resolve a reference that may be a path or a models-dir alias.
     ///
-    /// Differs from [`Self::get_model_path`] by accepting *relative* paths that
-    /// exist (canonicalizing them) before falling back to alias semantics.
+    /// Accepts explicit paths even while unavailable, retaining their identity
+    /// for diagnostics, before falling back to models-directory alias semantics.
     pub fn resolve_model_reference(&self, model_ref: &str) -> PathBuf {
-        let candidate = PathBuf::from(model_ref);
-        if candidate.exists() {
-            return canonicalize_or_self(candidate);
+        let candidate = expand_home_path(model_ref);
+        if candidate.is_absolute() || model_ref.starts_with("./") || model_ref.starts_with("../") {
+            return candidate;
+        }
+        if hf_cache::resolve_local_path(&candidate).is_ok() {
+            return candidate;
         }
 
         self.models_dir.join(model_ref)
@@ -458,16 +472,19 @@ impl ModelManager {
     /// result is safe to surface as user-selectable options. A missing models
     /// directory yields an empty list, not an error.
     pub fn list_models(&self) -> Result<Vec<String>> {
-        if !self.models_dir.exists() {
+        let Ok(models_dir) = hf_cache::resolve_local_path(&self.models_dir) else {
+            return Ok(Vec::new());
+        };
+        if !models_dir.is_dir() {
             return Ok(Vec::new());
         }
 
         let mut out = Vec::new();
-        let entries = fs::read_dir(&self.models_dir).context("Failed to read models directory")?;
+        let entries = fs::read_dir(&models_dir).context("Failed to read models directory")?;
         for entry in entries {
             let entry = entry.context("Failed to read models directory entry")?;
             let path = entry.path();
-            if path.is_dir() {
+            if hf_cache::resolve_local_path(&path).is_ok_and(|resolved| resolved.is_dir()) {
                 // Only advertise fully usable Whisper models, not half-downloaded shells.
                 if is_complete_whisper_model_dir(&path)
                     && let Some(name) = path.file_name().and_then(|s| s.to_str())
@@ -495,10 +512,14 @@ impl ModelManager {
 /// 4. Default models-dir alias (`whisper-large-v3-turbo`)
 /// 5. Default Hugging Face snapshot (`mlx-community/whisper-large-v3-turbo`)
 pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Result<PathBuf> {
-    if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH") {
-        let candidate = PathBuf::from(path.trim());
-        if is_complete_whisper_model_dir(&candidate) {
-            return Ok(canonicalize_or_self(candidate));
+    let mut path_failure = None;
+    if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH")
+        && !path.trim().is_empty()
+    {
+        let candidate = expand_home_path(path.trim());
+        match validate_whisper_model_bundle(&candidate) {
+            Ok(()) => return Ok(canonicalize_or_self(candidate)),
+            Err(error) => path_failure = Some(error),
         }
     }
 
@@ -509,22 +530,62 @@ pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Res
 
     if let Some(model_ref) = configured_model {
         let local_candidate = manager.resolve_model_reference(model_ref);
-        if is_complete_whisper_model_dir(&local_candidate) {
-            return Ok(canonicalize_or_self(local_candidate));
+        match validate_whisper_model_bundle(&local_candidate) {
+            Ok(()) => return Ok(canonicalize_or_self(local_candidate)),
+            Err(error) => {
+                let missing = error
+                    .downcast_ref::<hf_cache::CachePathStatus>()
+                    .is_some_and(|status| {
+                        matches!(status, hf_cache::CachePathStatus::Missing { .. })
+                    });
+                if path_failure.is_none()
+                    && (!missing
+                        || Path::new(model_ref).is_absolute()
+                        || model_ref.starts_with("~/")
+                        || model_ref.starts_with("./")
+                        || model_ref.starts_with("../"))
+                {
+                    path_failure = Some(error);
+                }
+            }
         }
 
-        if let Some(snapshot) = hf_snapshot_for_model(model_ref) {
-            return Ok(snapshot);
+        match hf_snapshot_for_model(model_ref) {
+            Ok(Some(snapshot)) => return Ok(snapshot),
+            Ok(None) => {}
+            Err(error) => {
+                if path_failure.is_none() {
+                    path_failure = Some(error);
+                }
+            }
         }
     }
 
     let default_local = manager.get_model_path(DEFAULT_MODEL);
-    if is_complete_whisper_model_dir(&default_local) {
-        return Ok(canonicalize_or_self(default_local));
+    match validate_whisper_model_bundle(&default_local) {
+        Ok(()) => return Ok(canonicalize_or_self(default_local)),
+        Err(error) => {
+            let missing = error
+                .downcast_ref::<hf_cache::CachePathStatus>()
+                .is_some_and(|status| matches!(status, hf_cache::CachePathStatus::Missing { .. }));
+            if path_failure.is_none() && !missing {
+                path_failure = Some(error);
+            }
+        }
     }
 
-    if let Some(snapshot) = hf_snapshot_for_model(DEFAULT_MODEL) {
-        return Ok(snapshot);
+    match hf_snapshot_for_model(DEFAULT_MODEL) {
+        Ok(Some(snapshot)) => return Ok(snapshot),
+        Ok(None) => {}
+        Err(error) => {
+            if path_failure.is_none() {
+                path_failure = Some(error);
+            }
+        }
+    }
+
+    if let Some(error) = path_failure {
+        return Err(error);
     }
 
     Err(anyhow!(
@@ -626,6 +687,106 @@ pub struct WhisperModelOption {
     pub active: bool,
 }
 
+/// The available rows and whether optional cache discovery is still in flight.
+pub struct WhisperCatalogInventory {
+    pub options: Vec<WhisperModelOption>,
+    pub discovery_pending: bool,
+}
+
+#[derive(Default)]
+struct WhisperCacheScan {
+    options: Vec<WhisperModelOption>,
+    in_flight: bool,
+    completed: Option<Instant>,
+}
+
+/// One bounded worker per cache root. A filesystem call cannot be cancelled
+/// safely; a stalled root therefore retains its worker, never accumulating
+/// another one on every refresh or preventing healthy roots from publishing.
+#[derive(Default)]
+struct WhisperModelCatalogDiscovery {
+    scans: Mutex<HashMap<PathBuf, WhisperCacheScan>>,
+    changed: Condvar,
+}
+
+impl WhisperModelCatalogDiscovery {
+    fn snapshot<F>(
+        self: &Arc<Self>,
+        bases: &[PathBuf],
+        budget: Duration,
+        read: F,
+    ) -> (Vec<WhisperModelOption>, bool)
+    where
+        F: Fn(&Path) -> Vec<WhisperModelOption> + Send + Sync + 'static,
+    {
+        let read = Arc::new(read);
+        let deadline = Instant::now() + budget;
+        let mut scans = self.scans.lock().unwrap_or_else(|error| error.into_inner());
+        for base in bases {
+            let scan = scans.entry(base.clone()).or_default();
+            if scan.in_flight
+                || scan
+                    .completed
+                    .is_some_and(|when| when.elapsed() < Duration::from_secs(2))
+            {
+                continue;
+            }
+            scan.in_flight = true;
+            let owner = Arc::clone(self);
+            let base = base.clone();
+            let worker_base = base.clone();
+            let read = Arc::clone(&read);
+            if let Err(error) = std::thread::Builder::new()
+                .name("whisper-cache-catalog".into())
+                .spawn(move || {
+                    let options = read(&worker_base);
+                    let mut scans = owner
+                        .scans
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    let scan = scans.entry(worker_base).or_default();
+                    scan.options = options;
+                    scan.completed = Some(Instant::now());
+                    scan.in_flight = false;
+                    owner.changed.notify_all();
+                })
+            {
+                let scan = scans
+                    .get_mut(&base)
+                    .expect("scan registered before spawning");
+                scan.in_flight = false;
+                scan.completed = Some(Instant::now());
+                tracing::warn!(%error, "Cannot start optional Whisper cache discovery");
+            }
+        }
+        while bases.iter().any(|base| scans[base].in_flight) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (next, _) = self
+                .changed
+                .wait_timeout(scans, remaining)
+                .unwrap_or_else(|error| error.into_inner());
+            scans = next;
+        }
+        let pending = bases.iter().any(|base| scans[base].in_flight);
+        let mut options = Vec::new();
+        for base in bases {
+            for option in &scans[base].options {
+                // Preserve cache-root precedence for the same HF repository.
+                if !options
+                    .iter()
+                    .any(|known: &WhisperModelOption| known.id == option.id)
+                {
+                    options.push(option.clone());
+                }
+            }
+        }
+        (options, pending)
+    }
+}
+
 /// Whether a directory that failed validation still belongs to the Whisper
 /// family (a broken or refused Whisper bundle), as opposed to another model
 /// family (embedder, Moshi, Silero) that must stay out of the Whisper picker.
@@ -633,8 +794,11 @@ fn is_whisper_family_dir(path: &Path, name: &str) -> bool {
     if name.to_ascii_lowercase().contains("whisper") {
         return true;
     }
+    let Ok(config) = hf_cache::resolve_local_path(&path.join("config.json")) else {
+        return false;
+    };
     crate::whisper_weights::read_bounded_metadata_file(
-        &path.join("config.json"),
+        &config,
         crate::whisper_weights::MAX_WHISPER_CONFIG_BYTES,
         "config",
     )
@@ -653,6 +817,9 @@ fn is_whisper_family_dir(path: &Path, name: &str) -> bool {
 /// Short single-line refusal reason for the picker; quantized bundles get the
 /// explicit cause instead of a generic validation error.
 fn short_validation_reason(error: &anyhow::Error) -> String {
+    if let Some(status) = error.downcast_ref::<hf_cache::CachePathStatus>() {
+        return status.to_string();
+    }
     if error
         .chain()
         .any(|cause| cause.to_string().contains("quantized"))
@@ -714,19 +881,18 @@ fn push_whisper_option(
     options: &mut Vec<WhisperModelOption>,
     seen: &mut Vec<PathBuf>,
 ) {
+    // Validate the selected path before canonicalization loses a cache alias's
+    // exact trust boundary. Preserve the typed cause for the existing UI field.
+    let validation = validate_whisper_model_bundle(&path);
     let canonical = canonicalize_or_self(path);
     if seen.contains(&canonical) {
         return;
     }
     seen.push(canonical.clone());
-    let usable = is_complete_whisper_model_dir(&canonical);
-    let reason = if usable {
-        None
-    } else {
-        validate_whisper_model_bundle(&canonical)
-            .err()
-            .map(|error| short_validation_reason(&error))
-    };
+    let usable = validation.is_ok();
+    let reason = validation
+        .err()
+        .map(|error| short_validation_reason(&error));
     let is_active = active == Some(&canonical);
     options.push(WhisperModelOption {
         label: whisper_display_label(&id, usable),
@@ -741,15 +907,13 @@ fn push_whisper_option(
 
 /// The canonical catalog of local Whisper model options.
 ///
-/// Sources, in order: every Whisper-family child of the resolved models
-/// directory (complete *and* refused/broken, so quantized or half-downloaded
-/// bundles stay visible with their reason), the newest weight-bearing snapshot
-/// of each whisper repo in the known Hugging Face caches, the configured
-/// reference when it points outside the models directory, and the explicit
-/// `CODESCRIBE_MODEL_PATH` override. Rows are deduplicated by resolved path
-/// identity. No disk-wide scan, no tensor loading: validation is the loader's
-/// own structural check.
-pub fn whisper_model_options(configured: Option<&str>) -> Vec<WhisperModelOption> {
+/// Local Whisper-family children, the configured reference and explicit model
+/// override are checked first. Optional Hugging Face cache roots are read and
+/// validated independently, with a bounded wait and an explicit pending flag.
+/// Complete and refused/broken bundles retain the loader's own validation
+/// result. Rows are deduplicated by resolved path identity; this performs no
+/// disk-wide scan or tensor loading.
+pub fn whisper_model_options(configured: Option<&str>) -> WhisperCatalogInventory {
     let active = resolve_runtime_whisper_model_path(configured)
         .ok()
         .map(canonicalize_or_self);
@@ -759,7 +923,8 @@ pub fn whisper_model_options(configured: Option<&str>) -> Vec<WhisperModelOption
 
     // 1. Whisper-family children of the resolved models directory.
     if let Ok(manager) = ModelManager::new()
-        && let Ok(entries) = fs::read_dir(manager.models_dir())
+        && let Ok(root) = hf_cache::resolve_local_path(manager.models_dir())
+        && let Ok(entries) = fs::read_dir(root)
     {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -784,24 +949,17 @@ pub fn whisper_model_options(configured: Option<&str>) -> Vec<WhisperModelOption
         }
     }
 
-    // 2. Newest weight-bearing snapshot per whisper repo in the known caches.
-    for (repo, snapshot) in crate::hf_cache::whisper_cache_snapshots() {
-        push_whisper_option(
-            repo,
-            snapshot,
-            "hf_cache",
-            active.as_ref(),
-            &mut options,
-            &mut seen,
-        );
-    }
-
-    // 3. The configured reference when it resolves outside the rows above.
+    // The configured reference and override must not wait for optional caches.
     if let Some(reference) = configured
         && let Ok(manager) = ModelManager::new()
     {
         let path = manager.resolve_model_reference(reference);
-        if path.is_dir() {
+        if hf_cache::resolve_local_path(&path).is_ok()
+            || Path::new(reference).is_absolute()
+            || reference.starts_with("~/")
+            || reference.starts_with("./")
+            || reference.starts_with("../")
+        {
             push_whisper_option(
                 reference.to_string(),
                 path,
@@ -828,13 +986,63 @@ pub fn whisper_model_options(configured: Option<&str>) -> Vec<WhisperModelOption
         }
     }
 
+    // Optional cache listing and validation both happen outside this read.
+    // A disconnected mount must not hide usable local models or make selecting
+    // one wait on that mount. The catalog reports incomplete discovery and the
+    // visible Settings observer refreshes until the remaining roots settle.
+    static DISCOVERY: OnceLock<Arc<WhisperModelCatalogDiscovery>> = OnceLock::new();
+    let discovery = DISCOVERY.get_or_init(|| Arc::new(WhisperModelCatalogDiscovery::default()));
+    let (cached, discovery_pending) = discovery.snapshot(
+        &hf_cache::cache_bases(),
+        Duration::from_millis(100),
+        |base| {
+            let mut options = Vec::new();
+            let mut seen = Vec::new();
+            if let status @ (hf_cache::CachePathStatus::UnmountedExternalVolume { .. }
+            | hf_cache::CachePathStatus::Io { .. }
+            | hf_cache::CachePathStatus::SymlinkLoop { .. }
+            | hf_cache::CachePathStatus::Missing { .. }) = hf_cache::classify_cache_root(base)
+            {
+                if !matches!(status, hf_cache::CachePathStatus::Missing { .. })
+                    || hf_cache::is_configured_cache_base(base)
+                {
+                    options.push(WhisperModelOption {
+                        id: format!("hf-cache-root:{}", base.display()),
+                        label: "Hugging Face cache".into(),
+                        path: base.display().to_string(),
+                        source: "hf_cache".into(),
+                        usable: false,
+                        reason: Some(status.to_string()),
+                        active: false,
+                    });
+                }
+                return options;
+            }
+            for (repo, snapshot) in hf_cache::whisper_cache_snapshots(base) {
+                push_whisper_option(repo, snapshot, "hf_cache", None, &mut options, &mut seen);
+            }
+            options
+        },
+    );
+    for mut option in cached {
+        let path = PathBuf::from(&option.path);
+        if !seen.contains(&path) {
+            option.active = active.as_ref() == Some(&path);
+            seen.push(path);
+            options.push(option);
+        }
+    }
+
     options.sort_by(|a, b| {
         b.active
             .cmp(&a.active)
             .then_with(|| b.usable.cmp(&a.usable))
             .then_with(|| a.label.cmp(&b.label))
     });
-    options
+    WhisperCatalogInventory {
+        options,
+        discovery_pending,
+    }
 }
 
 /// The transfer was stopped on request, so it is not a failure to report.
@@ -1275,7 +1483,148 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
+
+    #[test]
+    fn bundle_and_catalog_reason_retain_detached_optional_link() {
+        let temp = TempDir::new().unwrap();
+        let model = temp.path().join("model");
+        create_complete_whisper_model(&model);
+        std::os::unix::fs::symlink(
+            "/Volumes/NonExistentExternalDrive/tokenizer_config.json",
+            model.join("tokenizer_config.json"),
+        )
+        .unwrap();
+        let error = validate_whisper_model_bundle(&model).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<hf_cache::CachePathStatus>(),
+                Some(hf_cache::CachePathStatus::UnmountedExternalVolume { .. })
+            ),
+            "{error:#}"
+        );
+        let mut options = Vec::new();
+        push_whisper_option(
+            "selected".into(),
+            model,
+            "models_dir",
+            None,
+            &mut options,
+            &mut Vec::new(),
+        );
+        assert_eq!(options.len(), 1);
+        assert!(!options[0].usable);
+        assert!(
+            options[0]
+                .reason
+                .as_ref()
+                .unwrap()
+                .contains("NonExistentExternalDrive")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn runtime_and_catalog_keep_full_snapshot_refusal_then_accept_valid_older() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("hub");
+        let snapshots = base
+            .join("models--fixture--whisper-diagnostic")
+            .join("snapshots");
+        let broken = snapshots.join("newest");
+        create_complete_whisper_model(&broken);
+        std::os::unix::fs::symlink(
+            "/Volumes/NonExistentExternalDrive/optional.json",
+            broken.join("tokenizer_config.json"),
+        )
+        .unwrap();
+        let _hf = EnvGuard::set("CODESCRIBE_HF_CACHE", &base);
+        let _hf_other = EnvGuard::set("HF_HUB_CACHE", &base);
+        let _hf_old = EnvGuard::set("HUGGINGFACE_HUB_CACHE", &base);
+        let _hf_home = EnvGuard::set("HF_HOME", temp.path());
+        fs::create_dir_all(temp.path().join("models")).unwrap();
+        let _models = EnvGuard::set("CODESCRIBE_MODELS_DIR", temp.path().join("models"));
+        let _path = EnvGuard::remove("CODESCRIBE_MODEL_PATH");
+        let _local = EnvGuard::remove("LOCAL_MODEL");
+        let error =
+            resolve_runtime_whisper_model_path(Some("fixture/whisper-diagnostic")).unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<hf_cache::CachePathStatus>(),
+                Some(hf_cache::CachePathStatus::UnmountedExternalVolume { .. })
+            ),
+            "{error:#}"
+        );
+        let started = Instant::now();
+        loop {
+            let catalog = whisper_model_options(Some("fixture/whisper-diagnostic"));
+            if !catalog.discovery_pending {
+                assert!(
+                    catalog.options.iter().any(|row| !row.usable
+                        && row
+                            .reason
+                            .as_ref()
+                            .is_some_and(|reason| reason.contains("NonExistentExternalDrive"))),
+                    "{:?}",
+                    catalog.options
+                );
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "fixture discovery never settled"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let older = snapshots.join("older");
+        create_complete_whisper_model(&older);
+        std::fs::File::open(&older)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(10)),
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_runtime_whisper_model_path(Some("fixture/whisper-diagnostic"))
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            older.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn explicit_missing_model_reference_keeps_its_path_and_refusal_row() {
+        let temp = TempDir::new().unwrap();
+        let missing = temp.path().join("missing-model");
+        let manager = ModelManager {
+            models_dir: temp.path().join("models"),
+        };
+        assert_eq!(
+            manager.resolve_model_reference(missing.to_str().unwrap()),
+            missing
+        );
+        let mut options = Vec::new();
+        push_whisper_option(
+            "selected".into(),
+            missing.clone(),
+            "models_dir",
+            None,
+            &mut options,
+            &mut Vec::new(),
+        );
+        assert!(!options[0].usable);
+        assert_eq!(options[0].path, missing.display().to_string());
+        assert!(
+            options[0]
+                .reason
+                .as_ref()
+                .unwrap()
+                .contains("Missing cache/model path")
+        );
+    }
 
     #[test]
     fn inventory_reports_active_usable_refused_broken_and_duplicate_tokenizers() {
@@ -2085,6 +2434,7 @@ mod tests {
     #[serial]
     fn resolve_runtime_whisper_model_path_uses_hf_repo_id_from_cache() {
         let temp_dir = TempDir::new().unwrap();
+        let _hf_isolation = isolate_from_real_hf_cache(temp_dir.path());
         let hf_cache = temp_dir.path().join("hf-cache");
         let snapshot = hf_cache
             .join("models--vetcoders--custom-whisper")
@@ -2274,5 +2624,74 @@ mod tests {
         // embedded flag must match cfg(embed_model) payload; we only assert type wiring.
         let _ = status.available;
         let _ = status.embedded;
+    }
+    #[test]
+    fn whisper_catalog_blocked_cache_keeps_healthy_rows_and_one_worker() {
+        let discovery = Arc::new(WhisperModelCatalogDiscovery::default());
+        let bases = vec![PathBuf::from("blocked"), PathBuf::from("healthy")];
+        let (release, gate) = std::sync::mpsc::channel();
+        let gate = Arc::new(Mutex::new(gate));
+        let blocked_reads = Arc::new(AtomicUsize::new(0));
+        let read = {
+            let gate = Arc::clone(&gate);
+            let blocked_reads = Arc::clone(&blocked_reads);
+            move |base: &Path| {
+                if base == Path::new("blocked") {
+                    blocked_reads.fetch_add(1, Ordering::SeqCst);
+                    let _ = gate.lock().unwrap().recv();
+                }
+                vec![WhisperModelOption {
+                    id: base.display().to_string(),
+                    label: base.display().to_string(),
+                    path: base.display().to_string(),
+                    source: "hf_cache".into(),
+                    usable: true,
+                    reason: None,
+                    active: false,
+                }]
+            }
+        };
+        let start = Instant::now();
+        let (rows, pending) = discovery.snapshot(&bases, Duration::from_millis(100), read.clone());
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(pending);
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["healthy"]
+        );
+        for _ in 0..20 {
+            let (_, pending) = discovery.snapshot(&bases, Duration::ZERO, read.clone());
+            assert!(pending);
+        }
+        assert_eq!(blocked_reads.load(Ordering::SeqCst), 1);
+        release.send(()).unwrap();
+        let (rows, pending) = discovery.snapshot(&bases, Duration::from_secs(1), read);
+        assert!(!pending);
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["blocked", "healthy"]
+        );
+    }
+
+    #[test]
+    fn whisper_catalog_cache_snapshot_keeps_root_precedence() {
+        let discovery = Arc::new(WhisperModelCatalogDiscovery::default());
+        let bases = vec![PathBuf::from("first"), PathBuf::from("second")];
+        let (rows, pending) = discovery.snapshot(&bases, Duration::from_secs(1), |base| {
+            vec![WhisperModelOption {
+                id: "same/repository".into(),
+                label: "Same model".into(),
+                path: base.display().to_string(),
+                source: "hf_cache".into(),
+                usable: false,
+                reason: Some("invalid bundle".into()),
+                active: false,
+            }]
+        });
+        assert!(!pending);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "first");
+        assert!(!rows[0].usable);
+        assert_eq!(rows[0].reason.as_deref(), Some("invalid bundle"));
     }
 }

@@ -41,7 +41,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
     XCTAssertFalse(footer.contains("intentRail"), "notices stay out of the actions column")
     XCTAssertTrue(footer.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
-    XCTAssertTrue(overlay.contains("CSSidebarMaterial()"))
+    XCTAssertTrue(overlay.contains("OverlayCanvasSurface(palette: palette)"))
+    XCTAssertFalse(overlay.contains("CSSidebarMaterial()"), "the actions share the canvas material")
     XCTAssertTrue(overlay.contains("overlay-transcript-actions"))
   }
 
@@ -52,12 +53,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let column = try section(
       of: overlay, from: "private func transcriptActionsColumn",
       to: "private func agentDrawerColumn")
-    XCTAssertTrue(column.contains("CSSidebarMaterial()"))
+    XCTAssertFalse(column.contains("CSSidebarMaterial()"), "no second material over the canvas")
     XCTAssertTrue(column.contains(".focusable(false)"))
     XCTAssertTrue(column.contains("overlay-transcript-actions"))
-    let material = try source(at: "Codescribe/DesignSystem/CSSidebarMaterial.swift")
+    let material = try source(at: "Codescribe/Screens/Overlay/OverlayCanvasSurface.swift")
     XCTAssertTrue(material.contains("reduceTransparency"))
-    XCTAssertFalse(material.contains(".glassEffect("))
+    let sharedCanvas = try section(
+      of: material, from: "struct OverlayCanvasSurface", to: "private struct OverlayDesktopMaterial"
+    )
+    XCTAssertFalse(sharedCanvas.contains(".glassEffect("))
   }
 
   func testCoverageWarningStacksWithActionsWithoutHidingOperationErrors() throws {
@@ -190,7 +194,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .midi, "the header never returns to mini")
     state.advancePresentationFromHeader()
     XCTAssertEqual(state.presentationMode, .expanded)
-    // The rotating preview control keeps its unchanged full cycle.
+    // The preview control explicitly folds back to mini.
     state.toggleCollapsed()
     XCTAssertEqual(state.presentationMode, .mini)
   }
@@ -334,10 +338,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.toggleCollapsed()
     XCTAssertTrue(state.isCollapsed)
     state.toggleCollapsed()
-    XCTAssertEqual(state.presentationMode, .midi)
-    state.toggleCollapsed()
     XCTAssertFalse(state.isCollapsed)
-    XCTAssertEqual(collapses, [true, true, false])
+    XCTAssertEqual(collapses, [true, false])
     XCTAssertTrue(state.expandedByDefault)
     XCTAssertTrue(engine.expanded)
     XCTAssertTrue(engine.expansionWrites.isEmpty)
@@ -371,7 +373,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let state = OverlayState()
       state.engine = engine
       state.attach()
-      state.toggleCollapsed()
+      state.setPresentationMode(.midi)
       state.handleRecordingStarted()
       XCTAssertEqual(state.isCollapsed, !expanded)
       XCTAssertTrue(engine.expansionWrites.isEmpty)
@@ -472,7 +474,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
       state.setPresentationMode(.mini)
       settle(root)
-      for mode in [OverlayPresentationMode.midi, .expanded, .mini, .midi, .expanded, .mini] {
+      for mode in [OverlayPresentationMode.expanded, .mini, .expanded, .mini] {
         state.toggleCollapsed()
         settle(root)
         XCTAssertEqual(state.presentationMode, mode)
@@ -829,7 +831,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(intents.contains(.recoverSuperseded))
     XCTAssertTrue(intents.contains(.discardSuperseded))
     XCTAssertTrue(intents.contains(.finish))
-    XCTAssertTrue(rail.contains("enabledSlots.contains(.intent(.sendToAgent))"))
     XCTAssertTrue(rail.contains("id: \"overlay-intent-\\(intent.rawValue)\""))
     actions.toggle()
     XCTAssertEqual(actions.phase, .idle, "The same cap removes the guarded rail again")
@@ -872,7 +873,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       of: source, from: "private func transcriptActionsColumn",
       to: "private func agentDrawerColumn")
     XCTAssertTrue(column.contains(".focusable(false)"))
-    XCTAssertTrue(column.contains("CSSidebarMaterial()"))
+    XCTAssertFalse(column.contains("CSSidebarMaterial()"), "the canvas owns the material")
     let rail = try railSource()
     XCTAssertTrue(rail.contains("OverlayHoverControl("))
     XCTAssertTrue(rail.contains(".accessibilityIdentifier(\"overlay-intent-dock\")"))
@@ -882,7 +883,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try railSource()
     XCTAssertFalse(source.contains("primaryAction:"))
     XCTAssertTrue(source.contains("intent == .format || intent == .retranscribe ? nil"))
-    XCTAssertTrue(source.contains("FormattingPolicyOption.correction, .smart, .max"))
+    XCTAssertEqual(OverlayIntentRail.formatOnceLevels, [.correction, .smart, .max])
+    XCTAssertTrue(source.contains("ForEach(Self.formatOnceLevels"))
     XCTAssertTrue(source.contains("formatOnce(level)"))
     XCTAssertTrue(try overlaySource().contains("onFormatOnce: { state.formatTranscript(at: $0) }"))
   }
@@ -1023,16 +1025,24 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try overlaySource()
     let canvas = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
-    XCTAssertTrue(canvas.contains(".animation(reduceMotion ? nil :"))
-    XCTAssertTrue(canvas.contains("transaction.animation = nil"))
-    XCTAssertTrue(canvas.contains("transaction.disablesAnimations = true"))
+    let animations = canvas.components(separatedBy: ".animation(").count - 1
+    XCTAssertGreaterThan(animations, 0)
+    let guarded = try NSRegularExpression(
+      pattern: #"\.animation\(\s*(?:nil\s*,|reduceMotion\s*\?\s*nil\s*:)"#
+    )
+    .numberOfMatches(in: canvas, range: NSRange(canvas.startIndex..., in: canvas))
+    XCTAssertEqual(
+      guarded, animations,
+      "each canvas animation is disabled explicitly or follows the accessibility preference")
     let column = try section(
       of: source, from: "private func transcriptActionsColumn",
       to: "private func agentDrawerColumn")
-    XCTAssertTrue(column.contains("CSSidebarMaterial()"))
-    let material = try self.source(at: "Codescribe/DesignSystem/CSSidebarMaterial.swift")
+    XCTAssertFalse(
+      column.contains("CSSidebarMaterial()"), "accessibility follows the shared canvas")
+    XCTAssertTrue(source.contains("OverlayCanvasSurface(palette: palette)"))
+    let material = try self.source(at: "Codescribe/Screens/Overlay/OverlayCanvasSurface.swift")
     XCTAssertTrue(material.contains("reduceTransparency"))
-    XCTAssertTrue(material.contains("increaseContrast"))
+    XCTAssertTrue(material.contains("increasedContrast"))
     XCTAssertTrue(material.contains("colorSchemeContrast"))
   }
 
@@ -1098,7 +1108,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         mode: .finalizing, transcribing: true, terminal: true))
   }
 
-  func testResizeChromeUsesTheGeometryContractsWithoutAddingSwiftUIHitTargets() throws {
+  func testResizeChromeKeepsPassiveSurfacesAndMountsBothDividerGestures() throws {
     let source = try overlaySource()
     let chrome = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
@@ -1108,21 +1118,34 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.gripSize.width"))
     XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.gripSize.height"))
     XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.gripBottomInset)"))
-    XCTAssertTrue(chrome.contains("sideIndicatorOpacity(pointerInside: pointerInsideOverlay)"))
-    XCTAssertTrue(chrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
-    XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
-    XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
-    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 8)
-    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 4)
-    // The folded list's rail (2026-10-19) brought two of them: its leading
-    // hairline and its frame reader, neither of which takes a click.
+    let pointerChrome = try section(
+      of: source, from: "private struct OverlayPointerHoverChrome",
+      to: "private struct OverlayCloseButton")
+    XCTAssertTrue(
+      pointerChrome.contains("sideIndicatorOpacity(pointerInside: pointerInsideOverlay)"))
+    XCTAssertTrue(
+      pointerChrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
+    XCTAssertTrue(pointerChrome.contains("transaction.disablesAnimations = true"))
+    XCTAssertTrue(pointerChrome.contains("pointerInsideOverlay = inside"))
+    XCTAssertTrue(source.contains("OverlayPointerHoverChrome("))
+    XCTAssertFalse(chrome.contains("pointerInsideOverlay"))
+    let passiveChrome = chrome + pointerChrome
+    // Geometry readers and decorative chrome stay passive. Both dividers
+    // are interactive, including the rail's formerly passive hairline.
+    XCTAssertEqual(passiveChrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 7)
+    XCTAssertEqual(passiveChrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 2)
     let rail = try section(
-      of: chrome, from: "private func agentRail", to: "private func agentDrawerResizeHandle")
-    XCTAssertEqual(rail.components(separatedBy: ".allowsHitTesting(false)").count - 1, 2)
-    XCTAssertEqual(rail.components(separatedBy: ".accessibilityHidden(true)").count - 1, 1)
-    // The docked agents column's hairline became its resize handle (15d5640d5):
-    // that handle owns the chrome's only drag, and nothing else adds one.
-    XCTAssertEqual(chrome.components(separatedBy: "DragGesture").count - 1, 1)
+      of: chrome, from: "private func agentRail(", to: "private func agentRailUnfoldHandle")
+    XCTAssertEqual(rail.components(separatedBy: ".allowsHitTesting(false)").count - 1, 1)
+    XCTAssertEqual(rail.components(separatedBy: ".accessibilityHidden(true)").count - 1, 0)
+    XCTAssertTrue(rail.contains("agentRailUnfoldHandle(width: width, windowWidth: windowWidth)"))
+    XCTAssertEqual(chrome.components(separatedBy: "DragGesture").count - 1, 2)
+    let railHandle = try section(
+      of: chrome, from: "private func agentRailUnfoldHandle",
+      to: "private func agentDrawerResizeHandle")
+    XCTAssertTrue(railHandle.contains("DragGesture"))
+    XCTAssertTrue(railHandle.contains("OverlayAgentDrawerLayout.railUnfoldDrag"))
+    XCTAssertTrue(railHandle.contains(".accessibilityIdentifier(\"overlay-agent-rail-resize\")"))
     let handle = try section(
       of: chrome, from: "private func agentDrawerResizeHandle", to: ".onEnded")
     XCTAssertTrue(handle.contains("DragGesture"))
@@ -1137,10 +1160,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     try withPanel(state: .previewListening()) { panel, root in
       let elements = accessibilityTree(root)
       XCTAssertFalse(elements.isEmpty, "The rendered accessibility hierarchy must be observable")
-      let header = try headerSource(overlaySource())
+      let source = try overlaySource()
+      let header = try headerSource(source)
       let close = try section(
-        of: header, from: "private var closeButton: some View",
-        to: "private func recordingControls")
+        of: source, from: "private struct OverlayCloseButton",
+        to: "struct DictationOverlayView")
       XCTAssertTrue(close.contains("ModeDot("))
       XCTAssertTrue(close.contains("color: CSColor.terracotta"))
       XCTAssertTrue(close.contains("if closeDotHovered {"))
@@ -1165,22 +1189,27 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
     let source = try overlaySource()
     let header = try headerSource(source)
-    let close = try section(
+    let call = try section(
       of: header, from: "private var closeButton: some View",
       to: "private func recordingControls")
+    let close = try section(
+      of: source, from: "private struct OverlayCloseButton",
+      to: "struct DictationOverlayView")
+    XCTAssertTrue(call.contains("OverlayCloseButton(palette: palette)"))
+    XCTAssertTrue(close.contains("Button(action: onClose)"))
     XCTAssertTrue(
-      close.contains("state.relayIntent(.close)"),
+      call.contains("state.relayIntent(.close)"),
       "The brand dot must relay the close intent")
     XCTAssertTrue(
-      header.contains(".accessibilityIdentifier(\"overlay-brand-close-dot\")"),
+      close.contains(".accessibilityIdentifier(\"overlay-brand-close-dot\")"),
       "The brand dot must stay discoverable as the close control")
     XCTAssertTrue(
-      header.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
+      close.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
     XCTAssertTrue(
       close.contains("color: CSColor.terracotta"),
       "The close control keeps the brand color regardless of engine state")
     XCTAssertEqual(header.components(separatedBy: "state.relayIntent(.close)").count - 1, 1)
-    XCTAssertEqual(header.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
+    XCTAssertEqual(source.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
     // The dot keeps its pre-b83e95538 place: the hit target grows through the
     // content shape, never through a frame that shifts the dot or the wordmark.
     XCTAssertTrue(close.contains("size: 9"))
@@ -1255,8 +1284,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(header.contains("character: OverlayHeaderGlyph.transcription"))
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     XCTAssertTrue(roster.contains("character: OverlayHeaderGlyph.agents"))
-    // sidebar.right is the list's own corner button (Maciej, 2026-10-19),
-    // never the header's Agents mark.
+    // The header's Agents mark remains distinct from the sidebar glyph.
     let glyph = try XCTUnwrap(roster.range(of: "private var headerGlyph: some View"))
     XCTAssertFalse(roster[glyph.lowerBound...].prefix(700).contains("sidebar.right"))
   }
@@ -1284,11 +1312,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       resolved.delegate?.menuNeedsUpdate?(resolved)
       let titles = resolved.items.map(\.title)
       for title in [
-        "Agents", "Transcription", "Pin", "Free motion", "Show transcript by default",
-        "Auto fold after… 10 s",
+        "Agents", "Transcription", "Free motion", "Show transcript by default",
+        "Auto-fold: 10 s of inactivity",
       ] {
         XCTAssertTrue(titles.contains(title), "\(title) missing from \(titles)")
       }
+      XCTAssertFalse(titles.contains("Pin"), "Pin has its own explicit header control")
+      let header = try headerSource(overlaySource())
+      XCTAssertTrue(header.contains("OverlayPinButton(state: state, palette: palette)"))
     }
   }
 
@@ -1321,10 +1352,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         let resolved = try XCTUnwrap(menu)
         resolved.delegate?.menuNeedsUpdate?(resolved)
         let fold = try XCTUnwrap(
-          resolved.items.first { $0.title.hasPrefix("Auto fold after") })
-        let label = seconds == 0 ? "Never" : "\(seconds) s"
-        XCTAssertEqual(fold.title, "Auto fold after… \(label)")
-        XCTAssertNotNil(fold.submenu)
+          resolved.items.first { $0.title.hasPrefix("Auto-fold:") })
+        XCTAssertEqual(
+          fold.title,
+          seconds == 0 ? "Auto-fold: Never" : "Auto-fold: \(seconds) s of inactivity")
+        let submenu = try XCTUnwrap(fold.submenu)
+        submenu.delegate?.menuNeedsUpdate?(submenu)
+        let selected = submenu.items.filter { $0.state == .on }
+        XCTAssertEqual(selected.count, 1)
+        XCTAssertEqual(selected.first?.title, seconds == 0 ? "Never" : "\(seconds) s")
       }
     }
   }
@@ -1367,7 +1403,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(header.contains("chromeWaveform(barCount:"))
     XCTAssertFalse(header.contains("OverlayRecordingLightView("))
     XCTAssertTrue(header.contains("recordingLight: state.recordingLight"))
-    XCTAssertTrue(header.contains("OverlayChannelStatusView("))
+    XCTAssertTrue(header.contains("channelStatusView"))
+    XCTAssertTrue(overlay.contains("var channelStatusView: OverlayChannelStatusView"))
     XCTAssertTrue(header.contains("OverlayRecordingControls("))
 
     let state = try source(at: "Codescribe/Screens/Overlay/OverlayState.swift")
@@ -1383,7 +1420,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.setPresentationMode(.mini)
     let text = state.activeText
     for (mode, symbol, label) in [
-      (OverlayPresentationMode.mini, "chevron.left", "Expand to compact widget"),
+      (OverlayPresentationMode.mini, "chevron.down", "Expand transcript"),
       (.midi, "chevron.down", "Expand transcript"),
       (.expanded, "arrow.up.right", "Collapse widget"),
     ] {
@@ -1395,7 +1432,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertEqual(controls.previewAccessibilityLabel, label)
       controls.togglePreview()
       XCTAssertEqual(
-        state.presentationMode, mode == .mini ? .midi : mode == .midi ? .expanded : .mini)
+        state.presentationMode, mode == .expanded ? .mini : .expanded)
       XCTAssertEqual(state.activeText, text)
     }
     XCTAssertEqual(state.presentationMode, .mini)
@@ -1608,12 +1645,16 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     XCTAssertTrue(
       roster.contains(
-        "symbol: \"megaphone.fill\", tint: OverlayRecordingLight.agent.color, mirrored: true"))
-    XCTAssertTrue(roster.contains(".scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
+        "symbol: broadcasting ? \"megaphone\" : OverlayAgentAudioControls.liveSpeechSymbol"))
+    XCTAssertTrue(
+      roster.contains("tint: OverlayRecordingLight.agent.color, mirrored: broadcasting"))
+    XCTAssertTrue(roster.contains("scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
     let header = try headerSource(try overlaySource())
-    // Spec §13.4: mini draws the dot without the word; the counter follows.
+    // Spec §13.4: mini draws the dot without the word; the counter follows,
+    // beside the brand in mini and in every vertical form.
     XCTAssertTrue(header.contains("showsWord: !mini"))
-    XCTAssertTrue(header.contains("if mini, let map = channelMap {"))
+    XCTAssertTrue(header.contains("let leadingCounter = mini || state.channelMapCounterStacked"))
+    XCTAssertTrue(header.contains("if leadingCounter, let map = channelMap {"))
     XCTAssertFalse(header.contains("short: mini"))
     XCTAssertFalse(header.contains("miniAgentMicrophone"))
   }

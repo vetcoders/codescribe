@@ -76,7 +76,7 @@ extension OpenWindowAction {
 /// the AppDelegate-owned action and carries no recording/model payload.
 final class AgentAppActionListener: CsAppActionListener, Sendable {
   private enum Action: Sendable {
-    case showAgent, toggleWidget, maxApprovalsChanged
+    case showAgent, toggleWidget, maxApprovalsChanged, composerDictationRedirected
     case agentGesture(CsAgentGestureInput)
   }
   private let continuation: AsyncStream<Action>.Continuation
@@ -98,6 +98,8 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
         case .toggleWidget: toggleWidget()
         case .maxApprovalsChanged: await maxApprovalsChanged()
         case .agentGesture(let input): agentGesture(input)
+        case .composerDictationRedirected:
+          ComposerCaretOwnership.shared.redirectToComposerMicrophone()
         }
       }
     }
@@ -117,6 +119,10 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
 
   func onAgentGesture(input: CsAgentGestureInput) {
     continuation.yield(.agentGesture(input))
+  }
+
+  func onComposerDictationRedirected() {
+    continuation.yield(.composerDictationRedirected)
   }
 
   func invalidate() {
@@ -247,12 +253,19 @@ struct CodescribeApp: App {
 
   private var settingsWindow: some Scene {
     Window("Settings", id: SettingsView.windowID) {
-      if QualityCaptureHost.isRunningTests {
-        TestHostScenePlaceholder()
-      } else {
-        SettingsView(model: settingsModel())
+      Group {
+        if QualityCaptureHost.isRunningTests {
+          TestHostScenePlaceholder()
+        } else {
+          SettingsView(model: settingsModel())
+        }
       }
+      .handlesExternalEvents(preferring: [], allowing: [])
     }
+    // Lifecycle URLs are handled by AppDelegate. Without an explicit empty
+    // match, SwiftUI uses its first scene as the URL fallback and reopens
+    // Settings on every idle-restart attempt, including while typing.
+    .handlesExternalEvents(matching: [])
     .defaultSize(width: 1000, height: 720)
     .windowResizability(.contentMinSize)
     // One unified header plane, as the Agent window has. The scene owns this
@@ -623,9 +636,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let trayToggles = config.trayToggles()
     DockPresence.apply(showDockIcon: trayToggles.showDockIcon)
 
-    // Diagnostic log beside codescribe.log: the presentation ledger persists
-    // here because unified-log debug entries do not survive.
-    let diagnostic = DiagnosticLog.install(dataDirectory: config.configDir())
+    // Diagnostic log beside codescribe.log in the high-churn folder: the
+    // presentation ledger persists here because unified-log debug entries do
+    // not survive.
+    let diagnostic = DiagnosticLog.install(churnDirectory: config.churnDir())
     let launchInfo = Bundle.main.infoDictionary ?? [:]
     let launchCommit = launchInfo["CSBuildCommit"] as? String ?? "dev"
     let launchVersion = launchInfo["CFBundleShortVersionString"] as? String ?? "unknown"
@@ -698,9 +712,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
       idleRestartCoordinator = try IdleRestartCoordinator(
         root: URL(fileURLWithPath: hotkeys.idleRestartDirectory()),
         acquireLease: { try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease() },
-        reserveCapture: { [hotkeys] in hotkeys.reserveIdleRestart() },
+        reserveCapture: { [hotkeys] in try hotkeys.reserveIdleRestart() },
         founderComposing: { [model] in model.overlay.state.founderComposing },
         terminate: {
+          // The coordinator already runs its final check and reservation from
+          // the run loop, outside the async job. Do not queue another gap.
           NSApp.terminate(nil)
         })
     } catch {

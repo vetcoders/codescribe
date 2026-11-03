@@ -1,6 +1,7 @@
 import Foundation
 
-/// The diagnostic log: a second file beside `~/.codescribe/logs/codescribe.log`
+/// The diagnostic log: a second file beside `codescribe.log` in
+/// `~/.codescribe/data.noindex/logs/`
 /// for disturbances worth reading after the fact — presentation morphs, policy
 /// decisions, refusals (Maciej, 2026-10-17: a diagnostic log next to the main
 /// one, for "zaburzenia"). The unified log stays the live stream; this file
@@ -20,22 +21,25 @@ final class DiagnosticLog: @unchecked Sendable {
   /// before launch, so no writer has to know whether a file exists.
   nonisolated(unsafe) private(set) static var installed: DiagnosticLog?
 
-  /// `<dataDirectory>/logs/diagnostic.log`, the folder the main log lives in.
-  static func url(dataDirectory: String) -> URL {
-    URL(fileURLWithPath: dataDirectory, isDirectory: true)
+  /// `<churnDirectory>/logs/diagnostic.log`, the folder the main log lives in.
+  /// `churnDirectory` is the core's high-churn folder
+  /// (`CodescribeConfig.churnDir()`), which Spotlight does not index.
+  static func url(churnDirectory: String) -> URL {
+    URL(fileURLWithPath: churnDirectory, isDirectory: true)
       .appendingPathComponent("logs", isDirectory: true)
       .appendingPathComponent(filename, isDirectory: false)
   }
 
   @discardableResult
-  static func install(dataDirectory: String) -> DiagnosticLog {
-    let log = DiagnosticLog(url: url(dataDirectory: dataDirectory))
+  static func install(churnDirectory: String) -> DiagnosticLog {
+    let log = DiagnosticLog(url: url(churnDirectory: churnDirectory))
     installed = log
     return log
   }
 
   let url: URL
   let rollBytes: UInt64
+  private let runID = UUID()
   private let lock = NSLock()
   private var handle: FileHandle?
   private var opened = false
@@ -49,6 +53,109 @@ final class DiagnosticLog: @unchecked Sendable {
   init(url: URL, rollBytes: UInt64 = DiagnosticLog.defaultRollBytes) {
     self.url = url
     self.rollBytes = rollBytes
+  }
+
+  /// Labels are source literals, never user text, errors, paths or payloads.
+  /// A caller finishes at its actual result callback, not when it launches work.
+  func beginInteraction(action: StaticString, surface: StaticString) -> Interaction {
+    Interaction(log: self, action: action, surface: surface)
+  }
+
+  /// A missing sink must not change an action's execution or its result.
+  static func beginInteraction(action: StaticString, surface: StaticString) -> Interaction {
+    Interaction(log: installed, action: action, surface: surface)
+  }
+
+  enum InteractionOutcome: String, Encodable, Sendable {
+    case succeeded, failed, cancelled, refused, unverified
+  }
+
+  enum InteractionEffect: String, Encodable, Sendable {
+    case stateChanged, noChange, callbackCompleted, requestAccepted, unverified
+  }
+
+  enum InteractionCleanup: String, Encodable, Sendable {
+    case complete, notRequired, pending, unverified
+  }
+
+  enum InteractionReason: String, Encodable, Sendable {
+    case none, busy, notFound, ownerMismatch, permissionDenied, operationFailed
+    case superseded, userCancelled, lifetimeEnded
+  }
+
+  /// This is diagnostic evidence, not a second state machine for the product.
+  /// Racing completion/cancel callbacks share one handle and one terminal row.
+  final class Interaction: @unchecked Sendable {
+    let id = UUID()
+    private let log: DiagnosticLog?
+    private let action: String
+    private let surface: String
+    private let started = ProcessInfo.processInfo.systemUptime
+    private let terminalLock = NSLock()
+    private var finished = false
+
+    fileprivate init(log: DiagnosticLog?, action: StaticString, surface: StaticString) {
+      self.log = log
+      self.action = action.description
+      self.surface = surface.description
+      record(phase: "started")
+    }
+
+    deinit {
+      // Dropped work is not success or inferred user cancellation.
+      finish(.unverified, effect: .unverified, cleanup: .unverified, reason: .lifetimeEnded)
+    }
+
+    @discardableResult
+    /// True means this callback won the terminal race; it does not certify I/O.
+    /// Missing diagnostic rows must remain missing evidence in an audit.
+    func finish(
+      _ outcome: InteractionOutcome,
+      effect: InteractionEffect,
+      cleanup: InteractionCleanup,
+      reason: InteractionReason = .none
+    ) -> Bool {
+      terminalLock.lock()
+      defer { terminalLock.unlock() }
+      guard !finished else { return false }
+      finished = true
+      record(
+        phase: "completed", outcome: outcome, effect: effect, cleanup: cleanup, reason: reason)
+      return true
+    }
+
+    private func record(
+      phase: String,
+      outcome: InteractionOutcome? = nil,
+      effect: InteractionEffect? = nil,
+      cleanup: InteractionCleanup? = nil,
+      reason: InteractionReason? = nil
+    ) {
+      guard let log else { return }
+      struct Event: Encodable {
+        let schema = "codescribe.interaction.v1"
+        let runID: UUID
+        let actionID: UUID
+        let action: String
+        let surface: String
+        let phase: String
+        let durationMilliseconds: Double?
+        let outcome: InteractionOutcome?
+        let effect: InteractionEffect?
+        let cleanup: InteractionCleanup?
+        let reason: InteractionReason?
+      }
+      let event = Event(
+        runID: log.runID, actionID: id, action: action, surface: surface, phase: phase,
+        durationMilliseconds: phase == "completed"
+          ? max(0, (ProcessInfo.processInfo.systemUptime - started) * 1000) : nil,
+        outcome: outcome, effect: effect, cleanup: cleanup, reason: reason)
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.sortedKeys]
+      guard let data = try? encoder.encode(event), let text = String(data: data, encoding: .utf8)
+      else { return }
+      log.append(category: "interaction", text)
+    }
   }
 
   deinit { try? handle?.close() }

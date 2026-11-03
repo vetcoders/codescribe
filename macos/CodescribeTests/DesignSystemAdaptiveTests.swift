@@ -68,15 +68,12 @@ final class DesignSystemAdaptiveTests: XCTestCase {
   func testSurfacesAndTextAdaptAcrossAppearances() {
     let adaptiveTokens: [(String, NSColor)] = [
       ("ink", CSPalette.ink),
-      ("glassBase", CSPalette.glassBase),
-      ("glassUnder", CSPalette.glassUnder),
-      ("warmInk", CSPalette.warmInk),
-      ("warmDeep", CSPalette.warmDeep),
       ("textHigh", CSPalette.textHigh),
       ("textBody", CSPalette.textBody),
       ("textMuted", CSPalette.textMuted),
       ("textFaint", CSPalette.textFaint),
       ("terracottaLight", CSPalette.terracottaLight),
+      ("brandAccent", CSPalette.brandAccent),
       ("assistiveLight", CSPalette.assistiveLight),
       ("oliveLight", CSPalette.oliveLight),
       ("oliveStatus", CSPalette.oliveStatus),
@@ -112,6 +109,17 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     XCTAssertEqual(c.r, CGFloat(0xD9) / 255.0, accuracy: 0.001)
     XCTAssertEqual(c.g, CGFloat(0x77) / 255.0, accuracy: 0.001)
     XCTAssertEqual(c.b, CGFloat(0x57) / 255.0, accuracy: 0.001)
+  }
+
+  func testBrandAccentKeepsTheFounderRungs() {
+    let light = components(CSPalette.brandAccent, dark: false)
+    XCTAssertEqual(light.r, CGFloat(0xBA) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(light.g, CGFloat(0x5C) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(light.b, CGFloat(0x3C) / 255.0, accuracy: 0.001)
+    let dark = components(CSPalette.brandAccent, dark: true)
+    XCTAssertEqual(dark.r, CGFloat(0xD9) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(dark.g, CGFloat(0x77) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(dark.b, CGFloat(0x57) / 255.0, accuracy: 0.001)
   }
 
   // MARK: - Legibility contract
@@ -230,6 +238,36 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     }
   }
 
+  /// The brand accent marks state on the sheet itself: the progress bar, the
+  /// glyph of a selected choice, a step's icon. A mark needs 3:1, and every
+  /// selectable sheet shade of each appearance has to hold it (Founder,
+  /// 2026-10-26: "≥ 3:1 on every sheet shade").
+  func testBrandAccentReadsAsAMarkOnEverySheetShade() {
+    for name in Self.auditAppearances {
+      let ink = resolvedRGBA(CSPalette.brandAccent, name)
+      let dark = isDark(name)
+      for shade in SheetShade.allCases where shade.isDark == dark {
+        let ratio = ink.contrast(RGB(hex: shade.hex))
+        XCTAssertGreaterThanOrEqual(
+          ratio, 3.0, "brandAccent on \(shade.rawValue) in \(name.rawValue): \(ratio):1")
+      }
+    }
+  }
+
+  /// Eyebrows mark sections on sheets, cards, chips and glass and never sit on
+  /// their own tint, so only the real surfaces apply. The travertine sheet held
+  /// the old paper rung at 3.4:1.
+  func testEyebrowOliveClearsAaOnEveryRealSurface() {
+    for name in Self.auditAppearances {
+      let ink = resolvedRGBA(CSPalette.eyebrowOlive, name)
+      for (surface, background) in realSurfaces(name) {
+        let ratio = ink.contrast(background)
+        XCTAssertGreaterThanOrEqual(
+          ratio, 4.5, "eyebrowOlive on \(surface) in \(name.rawValue): \(ratio):1")
+      }
+    }
+  }
+
   // MARK: - Veil polarity
 
   func testHairlineAndRaisedVeilsFlipPolarityWithTheAppearance() {
@@ -255,6 +293,49 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     ] {
       assertDiffers(color, "\(name) must follow the system appearance")
     }
+  }
+
+  func testNightlyAddsIndependentLightAndDarkChoicesWithoutReplacingDefaults() throws {
+    let oldDark: [SheetShade] = [.todayDark, .softGraphite, .warmCarbon]
+    let oldLight: [SheetShade] = [.todayLight, .limestone, .travertine]
+    XCTAssertTrue(oldDark.allSatisfy(SheetShade.darkChoices.contains))
+    XCTAssertTrue(oldLight.allSatisfy(SheetShade.lightChoices.contains))
+    let dark = try XCTUnwrap(SheetShade(rawValue: "070707"))
+    let light = try XCTUnwrap(SheetShade(rawValue: "F0F0F0"))
+    XCTAssertTrue(SheetShade.darkChoices.contains(dark))
+    XCTAssertTrue(SheetShade.lightChoices.contains(light))
+    XCTAssertTrue(dark.isDark)
+    XCTAssertFalse(light.isDark)
+    XCTAssertEqual(dark.hex, 0x070707)
+    XCTAssertEqual(light.hex, 0xF0F0F0)
+    let suite = "CodescribeTests.nightly-shade.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let preference = SheetShadePreference(defaults: defaults)
+    XCTAssertEqual(preference.darkShade, .todayDark)
+    XCTAssertEqual(preference.lightShade, .todayLight)
+    preference.select(dark)
+    XCTAssertEqual(preference.darkShade, dark)
+    XCTAssertEqual(preference.lightShade, .todayLight)
+    preference.select(light)
+    let restored = SheetShadePreference(defaults: defaults)
+    XCTAssertEqual(restored.darkShade, dark)
+    XCTAssertEqual(restored.lightShade, light)
+    restored.select(.todayDark)
+    XCTAssertEqual(restored.darkShade, .todayDark)
+    XCTAssertEqual(restored.lightShade, light)
+    XCTAssertNil(defaults.object(forKey: SheetShadePreference.darkKey))
+  }
+
+  func testSheetPreferenceRejectsTheOppositeAppearanceEvenForNightly() throws {
+    let suite = "CodescribeTests.nightly-polarity.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set("F0F0F0", forKey: SheetShadePreference.darkKey)
+    defaults.set("070707", forKey: SheetShadePreference.lightKey)
+    let preference = SheetShadePreference(defaults: defaults)
+    XCTAssertEqual(preference.darkShade, .todayDark)
+    XCTAssertEqual(preference.lightShade, .todayLight)
   }
 
   // MARK: - One sheet for every content area

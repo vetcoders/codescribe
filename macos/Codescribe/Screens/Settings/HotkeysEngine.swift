@@ -135,15 +135,15 @@ struct MockHotkeysEngine: HotkeysEngine {
   func middleMouseAgentGesture() -> Bool { false }
   func setMiddleMouseAgentGesture(_ enabled: Bool) throws {}
   func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] {
-    // Surface a representative blocking conflict when dictation double-taps Ctrl
-    // while a toggle mode is also active — matches the core reachability rule.
-    let dictation = candidate.first { $0.mode == .dictation }?.binding
-    let formatting = candidate.first { $0.mode == .formatting }?.binding
-    guard dictation == .doubleCtrl, formatting == .doubleLeftOption else { return [] }
+    // Surface the representative blocking conflict: Formatting on any gesture,
+    // which only ever starts Dictation (the core reachability rule).
+    guard let formatting = candidate.first(where: { $0.mode == .formatting }),
+      formatting.binding != .disabled
+    else { return [] }
     return [
       CsHotkeyConflict(
-        gestureLabel: "Double-tap Left Option",
-        message: "Dictation is set to Double Ctrl, so Left Option toggle is disabled.",
+        gestureLabel: formatting.bindingLabel,
+        message: "This gesture only starts Dictation, so Formatting would never start from it.",
         blocking: true
       )
     ]
@@ -153,8 +153,8 @@ struct MockHotkeysEngine: HotkeysEngine {
 // MARK: - Bridge value helpers (preview seeds)
 
 extension CsModeBinding {
-  /// Default binding set (Dictation=Hold Fn, Formatting=Double Left Option,
-  /// Assistive=Double Right Option) — preview seed matching the core defaults.
+  /// Default binding set (Dictation=Hold Fn; Formatting and Assistive have no
+  /// gesture) — preview seed matching the core defaults.
   static let sampleBindings: [CsModeBinding] = [
     CsModeBinding(
       mode: .dictation,
@@ -167,15 +167,15 @@ extension CsModeBinding {
       mode: .formatting,
       modeLabel: "Formatting",
       modeDescription: "Records dictation, then formats it before pasting.",
-      binding: .doubleLeftOption,
-      bindingLabel: "Double-tap Left Option"
+      binding: .disabled,
+      bindingLabel: "Disabled"
     ),
     CsModeBinding(
       mode: .assistive,
       modeLabel: "Assistive",
       modeDescription: "Sends your voice to the agent instead of pasting.",
-      binding: .doubleRightOption,
-      bindingLabel: "Double-tap Right Option"
+      binding: .disabled,
+      bindingLabel: "Disabled"
     ),
   ]
 }
@@ -190,7 +190,5 @@ extension CsBindingOption {
     CsBindingOption(binding: .holdCtrlShift, label: "Hold Ctrl+Shift"),
     CsBindingOption(binding: .holdCtrlCmd, label: "Hold Ctrl+Command"),
     CsBindingOption(binding: .doubleCtrl, label: "Double-tap Ctrl"),
-    CsBindingOption(binding: .doubleLeftOption, label: "Double-tap Left Option"),
-    CsBindingOption(binding: .doubleRightOption, label: "Double-tap Right Option"),
   ]
 }

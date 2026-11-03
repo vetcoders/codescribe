@@ -455,6 +455,68 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNotNil(refused.error, "busy is a message, never silence")
   }
 
+  /// Roman's pre-join leak: A's take ends before its document arrives, B is
+  /// linked in that window, and the late document must stay A's alone.
+  func testDraftMicrophoneNeverDeliversPreJoinSpeechToALateSyncMember() async throws {
+    let (state, a, b) = try syncedDraftPair()
+    let surface = DraftCaptureFixture()
+    surface.outcome = .noLiveCapture
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    state.setConversationDraft("Mine", for: a.id)
+
+    await state.toggleDraftMicrophone(in: a)
+    XCTAssertFalse(state.toggleDraftSync(from: a.id, with: b.id), "no join while A speaks")
+    await state.toggleDraftMicrophone(in: a)
+    XCTAssertFalse(state.draftCapture.hasRequest, "the take ended; its document is late")
+    XCTAssertTrue(state.toggleDraftSync(from: a.id, with: b.id))
+
+    projectText(
+      "Prywatne zdanie", to: state, terminal: true, delivery: .composerPending,
+      sessionId: "draft-capture", reducerAction: "session_ended")
+    XCTAssertEqual(
+      ConversationDraft.split(state.conversationDraft(for: a.id)).text,
+      "Mine\nPrywatne zdanie")
+    XCTAssertEqual(state.conversationDraft(for: b.id), "", "B joined after the words")
+
+    // Sync itself survives: typing after the private words is shared.
+    let before = ConversationDraft.split(state.conversationDraft(for: a.id)).text
+    state.applyConversationProseEdit(
+      OverlayComposerProseEdit(
+        before: before, after: before + " razem",
+        replacements: [
+          .init(range: NSRange(location: before.utf16.count, length: 0), replacement: " razem")
+        ]), for: a.id)
+    XCTAssertEqual(state.conversationDraft(for: b.id), " razem")
+  }
+
+  /// Members linked before the take started still receive its words.
+  func testDraftMicrophoneDeliversToMembersLinkedBeforeTheTake() async throws {
+    let (state, a, b) = try syncedDraftPair()
+    state.draftCapture = OverlayDraftCapture(controller: DraftCaptureFixture())
+    XCTAssertTrue(state.toggleDraftSync(from: a.id, with: b.id))
+
+    await state.toggleDraftMicrophone(in: a)
+    projectText(
+      "Wspólne zdanie", to: state, terminal: true, delivery: .composerPending,
+      sessionId: "draft-capture", reducerAction: "session_ended")
+    XCTAssertEqual(state.conversationDraft(for: a.id), "Wspólne zdanie")
+    XCTAssertEqual(state.conversationDraft(for: b.id), "Wspólne zdanie")
+  }
+
+  private func syncedDraftPair() throws -> (OverlayState, OverlayConversation, OverlayConversation)
+  {
+    let state = OverlayState()
+    let a = try navigationConversation(channel: "2", session: "sync-a", lease: "a")
+    let b = try navigationConversation(channel: "3", session: "sync-b", lease: "b")
+    state.applyChannelRoster([
+      navigationRoster(channel: "2", session: "sync-a", open: false),
+      navigationRoster(channel: "3", session: "sync-b", open: false),
+    ])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [a, b]))
+    XCTAssertEqual(Set(state.draftSyncConversations.map(\.id)), [a.id, b.id])
+    return (state, a, b)
+  }
+
   func testDraftMicrophoneDeliversToItsOriginAfterNavigationWithoutSending() async throws {
     let state = OverlayState()
     let surface = DraftCaptureFixture()
@@ -474,7 +536,7 @@ final class OverlayStateTests: XCTestCase {
       text: "Edited", attachments: [attachment])
     state.conversationDrafts[other.id] = "Other draft"
     var sends = 0
-    state.publishConversationText = { _, _, _ in sends += 1 }
+    state.publishConversationText = { _, _, _, _ in sends += 1 }
     await state.toggleDraftMicrophone(in: origin)
     state.openConversation(for: other.owner!)
     projectText(
@@ -651,13 +713,16 @@ final class OverlayStateTests: XCTestCase {
   func testReplyPublicationFreezesReferenceAndPreservesNewerSelectionAndDraft() async throws {
     let state = OverlayState()
     let origin = try navigationConversation()
+    state.applyChannelRoster([navigationRoster()])
+    state.applyConversationSnapshot(
+      OverlayChannelDeliverySnapshot(deliveries: [], conversations: [origin]))
     let first = try XCTUnwrap(
       OverlayUserReplyReference(row: ["message_id": "parent-A", "author": "Lena", "text": "First"]))
     let newer = try XCTUnwrap(
       OverlayUserReplyReference(row: ["message_id": "parent-B", "author": "Astra", "text": "Next"]))
     state.conversationDrafts[origin.id] = "Initial"
     state.conversationReplies[origin.id] = first
-    state.publishConversationText = { owner, text, reference in
+    state.publishConversationText = { owner, text, reference, _ in
       XCTAssertEqual(owner, origin.owner)
       XCTAssertEqual(text, "Initial")
       XCTAssertEqual(reference, first)
@@ -667,7 +732,7 @@ final class OverlayStateTests: XCTestCase {
     await state.sendConversationText(origin)
     XCTAssertEqual(state.conversationDrafts[origin.id], "Newer draft")
     XCTAssertEqual(state.conversationReplies[origin.id], newer)
-    state.publishConversationText = { _, _, reference in XCTAssertEqual(reference, newer) }
+    state.publishConversationText = { _, _, reference, _ in XCTAssertEqual(reference, newer) }
     await state.sendConversationText(origin)
     XCTAssertEqual(state.conversationDrafts[origin.id], "")
     XCTAssertNil(state.conversationReplies[origin.id])
@@ -698,12 +763,13 @@ final class OverlayStateTests: XCTestCase {
   private func replyFocusConversation(
     _ conversation: OverlayConversation, id: String = "reply:admission-1",
     text: String = "Odpowiedź", owner: OverlayConversationOwner? = nil,
-    playback: OverlayReplyPlayback? = nil
+    playback: OverlayReplyPlayback? = nil, sourceChannel: String? = nil
   ) -> OverlayConversation {
-    let message = OverlayConversationMessage(
+    var message = OverlayConversationMessage(
       id: id, kind: .reply, text: text, order: 1, emittedAt: "2026-10-05T18:50:00Z",
       owner: owner ?? conversation.owner, recipients: [], deliveryID: nil,
       replyTo: nil, unsolicited: true, playback: playback, busPath: "/fixture/owned-bus")
+    message.sourceChannel = sourceChannel
     return OverlayConversation(
       id: conversation.id, channel: conversation.channel, name: conversation.name,
       owner: conversation.owner, messages: [message])
@@ -1040,19 +1106,155 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(state.selectedConversationID)
   }
 
-  func testReplyAdmissionBroadcastDuplicateFollowsPrivateExactOwner() throws {
+  /// Founder decision 2026-10-26: a reply that sits in channel 0 never
+  /// moves the Founder off channel 0, even with a copy in its owner's view.
+  func testReplyAdmissionBroadcastReplyNeverLeavesChannelZero() throws {
     let state = OverlayState()
     let lena = try navigationConversation()
     let broadcast = OverlayConversation(
       id: "0", channel: "0", name: "All", owner: nil, messages: [])
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
+    state.selectConversation(broadcast.id)
+    let focus = state.conversationFocusRevision
     let reply = replyFocusConversation(lena)
     let all = OverlayConversation(
       id: "0", channel: "0", name: "All", owner: nil,
       messages: reply.messages)
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [all, reply]))
-    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertEqual(state.selectedConversationID, broadcast.id)
+    XCTAssertEqual(state.conversationFocusRevision, focus)
     XCTAssertEqual(state.conversations.first?.messages.count, 1)
+  }
+
+  /// Founder decision 2026-10-26: a message between agents is not a message
+  /// to the Founder. It stays unread in both conversations, the selection and
+  /// the panel stay where they are, and the next poll does not admit it again.
+  func testReplyAdmissionAgentToAgentMessageNeverMovesFocusOrShowsThePanel() throws {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    var fronted = 0
+    let controller = OverlayController(
+      state: state, engine: engine, overlayEnabledProvider: { true },
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in NSPanel() },
+      orderPanelFront: { _ in fronted += 1 }, orderPanelOut: { _ in })
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lena, astra]))
+    state.selectConversation(broadcast.id)
+    let focus = state.conversationFocusRevision
+    let frontedBefore = fronted
+    let authored = replyFocusConversation(lena, id: "reply:peer", sourceChannel: "3")
+    let received = replyFocusConversation(
+      astra, id: "reply:peer", owner: lena.owner, sourceChannel: "3")
+    for _ in 0..<2 {
+      state.applyConversationSnapshot(
+        .init(deliveries: [], conversations: [broadcast, authored, received]))
+      XCTAssertEqual(state.selectedConversationID, broadcast.id)
+      XCTAssertEqual(state.conversationFocusRevision, focus)
+      XCTAssertEqual(fronted, frontedBefore, "a message between agents never shows the panel")
+    }
+    XCTAssertEqual(state.unreadReplies(in: authored), 1)
+    XCTAssertEqual(state.unreadReplies(in: received), 1)
+    XCTAssertEqual(engine.startedRecordingCount, 0)
+    withExtendedLifetime(controller) {}
+  }
+
+  func testReplyAdmissionInboxMessageFollowsItsAuthor() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [.humanInbox(), lena, astra]))
+    state.selectConversation(astra.id)
+    let authored = replyFocusConversation(lena, id: "reply:inbox", sourceChannel: "10")
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [],
+        conversations: [.humanInbox(messages: authored.messages), authored, astra]))
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+  }
+
+  /// One poll carries a reply to the Founder and a message between agents:
+  /// the reply to the Founder alone decides, so its author is selected.
+  func testReplyAdmissionFounderReplyOutranksAgentToAgentInOneSnapshot() throws {
+    let state = OverlayState()
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lena, astra]))
+    state.selectConversation(broadcast.id)
+    let peer = replyFocusConversation(lena, id: "reply:peer", sourceChannel: "3")
+    let peerCopy = replyFocusConversation(
+      astra, id: "reply:peer", owner: lena.owner, sourceChannel: "3")
+    let toFounder = replyFocusConversation(astra, id: "reply:to-founder")
+    let astraView = OverlayConversation(
+      id: astra.id, channel: astra.channel, name: astra.name, owner: astra.owner,
+      messages: peerCopy.messages + toFounder.messages)
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, peer, astraView]))
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+  }
+
+  /// Every automatic choice leaves one `overlay-presentation` line naming
+  /// ids and channels, so a later jump is attributed without guessing.
+  func testReplyAdmissionTracesSelectionsAndSkipsWithoutMessageText() throws {
+    let trace = OverlayPresentationTrace.shared
+    trace.mirrorsToLog = false
+    defer { trace.mirrorsToLog = true }
+    let state = OverlayState()
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lena, astra]))
+    state.selectConversation(broadcast.id)
+    let before = trace.recorded
+    let secret = "Prywatnie do Astry"
+    let peer = replyFocusConversation(
+      lena, id: "reply:peer", text: secret, sourceChannel: "3")
+    let peerCopy = replyFocusConversation(
+      astra, id: "reply:peer", text: secret, owner: lena.owner, sourceChannel: "3")
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, peer, peerCopy]))
+    let toFounder = replyFocusConversation(astra, id: "reply:to-founder", text: secret)
+    let astraView = OverlayConversation(
+      id: astra.id, channel: astra.channel, name: astra.name, owner: astra.owner,
+      messages: peerCopy.messages + toFounder.messages)
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, peer, astraView]))
+    let left = replyFocusConversation(lena, id: "reply:left", text: secret)
+    let right = replyFocusConversation(astra, id: "reply:right", text: secret)
+    let lenaBoth = OverlayConversation(
+      id: lena.id, channel: lena.channel, name: lena.name, owner: lena.owner,
+      messages: peer.messages + left.messages)
+    let astraBoth = OverlayConversation(
+      id: astra.id, channel: astra.channel, name: astra.name, owner: astra.owner,
+      messages: astraView.messages + right.messages)
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lenaBoth, astraBoth]))
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    let lines = trace.entries(after: before)
+      .filter { [.conversationAutoSelected, .conversationAutoSkipped].contains($0.kind) }
+      .map(OverlayPresentationTrace.line)
+    XCTAssertEqual(
+      lines,
+      [
+        "conversation.auto_skipped reply=reply:peer owner=codex:lena-ses:aaaaaaaa"
+          + " source=3 reason=agent-to-agent stays=0",
+        "conversation.auto_selected reply=reply:to-founder owner=codex:astra:bbbbbbbb"
+          + " source=- from=0 to=3",
+        "conversation.auto_skipped reply=reply:left,reply:right"
+          + " owner=codex:astra:bbbbbbbb,codex:lena-ses:aaaaaaaa"
+          + " source=- reason=ambiguous_owner stays=3",
+      ])
+    XCTAssertFalse(lines.contains { $0.contains(secret) })
   }
 
   func testReplyAdmissionCapturePhasesKeepDictationAndDoNotDeferFocusToReplay() throws {
@@ -1343,7 +1545,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.unreadReplies(in: newer), 0)
   }
 
-  func testAgentsPressReturnsToTheLastConversationThenOffersTheDrawer() throws {
+  func testAgentsPressReturnsToTheLastConversationThenFocusesPinnedRoster() throws {
     let state = OverlayState()
     let lena = try navigationConversation()
     let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
@@ -1356,11 +1558,16 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, astra.id, "back where the user left")
     XCTAssertFalse(state.showsAgentMonitor)
 
+    let focus = state.agentDrawerFocusRevision
     state.toggleAgentSidebar()
-    XCTAssertTrue(state.showsAgentMonitor, "in a conversation the press changes agents")
+    XCTAssertTrue(state.agentListPinned, "The split layout already pins the roster")
+    XCTAssertFalse(state.showsAgentMonitor, "No floating drawer competes with the pinned roster")
+    XCTAssertEqual(state.agentDrawerFocusRevision, focus + 1)
 
     state.toggleAgentSidebar()
-    XCTAssertFalse(state.showsAgentMonitor, "and a press on the drawer closes it")
+    XCTAssertTrue(state.agentListPinned)
+    XCTAssertFalse(state.showsAgentMonitor)
+    XCTAssertEqual(state.agentDrawerFocusRevision, focus + 2)
     XCTAssertEqual(state.selectedConversationID, astra.id)
   }
 
@@ -1428,8 +1635,11 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, lena.id)
     XCTAssertNil(state.recordingAgentConversationID)
 
+    let focus = state.agentDrawerFocusRevision
     state.toggleAgentSidebar()
-    XCTAssertTrue(state.showsAgentMonitor, "with nothing recording the press changes agents")
+    XCTAssertTrue(state.agentListPinned)
+    XCTAssertFalse(state.showsAgentMonitor, "The stopped agent keeps the split roster pinned")
+    XCTAssertEqual(state.agentDrawerFocusRevision, focus + 1)
   }
 
   /// Maciej, 2026-10-20: a press on the mini megaphone while he talks to
@@ -1947,21 +2157,25 @@ final class OverlayStateTests: XCTestCase {
       ]))
     let conversation = OverlayConversation(
       id: owner.id, channel: "2", name: "Lena", owner: owner, messages: [])
+    state.applyChannelRoster([navigationRoster(session: "agent-a")])
+    state.applyConversationSnapshot(
+      OverlayChannelDeliverySnapshot(deliveries: [], conversations: [conversation]))
     state.conversationDrafts[owner.id] = "Pierwszy szkic"
-    state.publishConversationText = { _, _, _ in throw CocoaError(.fileWriteUnknown) }
+    state.publishConversationText = { _, _, _, _ in throw CocoaError(.fileWriteUnknown) }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "Pierwszy szkic")
     XCTAssertNotNil(state.textMessageErrors[owner.id])
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
-    state.publishConversationText = { recipient, text, _ in
+    state.publishConversationText = { recipient, text, _, peers in
       XCTAssertEqual(recipient?.id, owner.id)
+      XCTAssertTrue(peers.isEmpty, "An ordinary send has no sync co-addressing")
       XCTAssertEqual(text, "Pierwszy szkic")
       state.conversationDrafts[owner.id] = "Nowszy szkic"
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "Nowszy szkic")
     XCTAssertNil(state.textMessageErrors[owner.id])
-    state.publishConversationText = { _, _, _ in }
+    state.publishConversationText = { _, _, _, _ in }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "")
     let focus = state.conversationFocusRevision
@@ -1976,23 +2190,26 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     let conversation = OverlayConversation(
       id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.applyConversationSnapshot(
+      OverlayChannelDeliverySnapshot(deliveries: [], conversations: [conversation]))
     state.conversationDrafts["0"] = "Do wszystkich"
-    state.publishConversationText = { owner, _, _ in
+    state.publishConversationText = { owner, _, _, _ in
       XCTAssertNil(owner)
       throw CocoaError(.fileWriteUnknown)
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "Do wszystkich")
     XCTAssertNotNil(state.textMessageErrors["0"])
-    state.publishConversationText = { owner, text, _ in
+    state.publishConversationText = { owner, text, _, peers in
       XCTAssertNil(owner)
+      XCTAssertTrue(peers.isEmpty, "Broadcast must not inherit a sync cohort")
       XCTAssertEqual(text, "Do wszystkich")
       state.conversationDrafts["0"] = "Nowy szkic"
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "Nowy szkic")
     XCTAssertNil(state.textMessageErrors["0"])
-    state.publishConversationText = { _, _, _ in }
+    state.publishConversationText = { _, _, _, _ in }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "")
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
@@ -2087,7 +2304,7 @@ final class OverlayStateTests: XCTestCase {
     // No stored marks yet: the history already on screen is adopted as read.
     reply("b")
     let first = OverlayState()
-    first.restoreReadState(root: root)
+    first.restoreReadState(cacheRoot: root)
     first.applyConversationSnapshot(snapshot())
     XCTAssertEqual(first.unreadReplies(in: try lena()), 0)
 
@@ -2098,15 +2315,19 @@ final class OverlayStateTests: XCTestCase {
     if first.isCollapsed { first.setPresentationMode(.expanded) }
     first.setConversationVisible(true)
     XCTAssertEqual(first.unreadReplies(in: try lena()), 0)
-    XCTAssertEqual(OverlayReadStateStore.load(root: root), Set(try lena().replyIDs))
+    XCTAssertEqual(OverlayReadStateStore.load(cacheRoot: root), Set(try lena().replyIDs))
     let attributes = try FileManager.default.attributesOfItem(
-      atPath: OverlayReadStateStore.url(root: root).path)
+      atPath: OverlayReadStateStore.url(cacheRoot: root).path)
     XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    // The marks sit directly in the high-churn folder, not under a bridge runtime.
+    XCTAssertEqual(
+      OverlayReadStateStore.url(cacheRoot: root),
+      root.appendingPathComponent("overlay-read-state.v1.json"))
 
     // The app is closed while one more reply lands on the bus.
     reply("e")
     let relaunched = OverlayState()
-    relaunched.restoreReadState(root: root)
+    relaunched.restoreReadState(cacheRoot: root)
     relaunched.applyConversationSnapshot(snapshot())
     XCTAssertEqual(
       relaunched.unreadReplies(in: try lena()), 1, "only the reply that came while closed")
@@ -3440,26 +3661,25 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.isFinalizingDictation, "the terminal projection closes the take")
   }
 
-  func testReadinessMarkerPersistsOnIdleAndCompletedCanvas() {
+  func testTranscriptionMarkerIsAbsentOnIdleAndCompletedCanvas() {
     let state = OverlayState()
     state.setPresentationMode(.expanded)
-    XCTAssertTrue(state.animatesTranscriptCaret, "Visible empty canvas conveys readiness")
+    XCTAssertFalse(state.animatesTranscriptCaret, "Idle is not active transcription")
     projectText("Iwo Iwo Iwo Iwo Iwo", to: state, phase: "formatted", terminal: true)
-    XCTAssertTrue(state.animatesTranscriptCaret, "Completed text retains a quiet marker")
+    XCTAssertFalse(state.animatesTranscriptCaret, "Settlement removes the marker")
     XCTAssertEqual(state.canvasText, "Iwo Iwo Iwo Iwo Iwo")
     state.setPresentationMode(.mini)
     XCTAssertFalse(state.animatesTranscriptCaret)
     state.setPresentationMode(.expanded)
-    XCTAssertTrue(state.animatesTranscriptCaret)
+    XCTAssertFalse(state.animatesTranscriptCaret)
   }
 
-  // IDLE-1: authored under W1; execution belongs to the integrator after close.
-  func testReadinessCaretOutlivesCaptureWithoutKeepingTimerRunning() {
+  func testTranscriptionCaretWaitsForFinalTextWithoutKeepingTimerRunning() {
     let state = OverlayState()
     state.setPresentationMode(.expanded)
-    XCTAssertTrue(state.animatesTranscriptCaret)
+    XCTAssertFalse(state.animatesTranscriptCaret)
     state.handleRecordingPreparing()
-    XCTAssertTrue(state.animatesTranscriptCaret, "Readiness does not imply live audio")
+    XCTAssertTrue(state.animatesTranscriptCaret, "Preparing starts transcription activity")
     state.handleRecordingStarted()
     XCTAssertTrue(state.animatesTranscriptCaret)
 
@@ -3483,10 +3703,14 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.sessionTimerPaused)
     state.finishControllerRecording()
     XCTAssertEqual(state.mode, .listening)
-    XCTAssertTrue(state.animatesTranscriptCaret, "Readiness is independent of capture")
+    XCTAssertTrue(state.animatesTranscriptCaret, "Stop still awaits its terminal result")
+    projectText("late old take", to: state, terminal: true)
+    XCTAssertTrue(state.animatesTranscriptCaret, "A retired take cannot settle the current marker")
+    projectText("settled", to: state, terminal: true, sessionId: "next-take")
+    XCTAssertFalse(state.animatesTranscriptCaret)
   }
 
-  func testTerminalOverlayPhasesKeepReadinessButStopTimer() {
+  func testTerminalOverlayPhasesRemoveActivityAndStopTimer() {
     for phase in ["formatted", "no_speech", "error", "coverage_refused"] {
       let clock = OverlayStateTestClock()
       let state = OverlayState(nowProvider: { clock.now })
@@ -3497,7 +3721,7 @@ final class OverlayStateTests: XCTestCase {
       clock.now += 12
       projectText("kept words", to: state, phase: phase, terminal: true)
 
-      XCTAssertTrue(state.animatesTranscriptCaret, phase)
+      XCTAssertFalse(state.animatesTranscriptCaret, phase)
       XCTAssertTrue(state.sessionTimerPaused, phase)
       XCTAssertTrue(state.showsSessionTimer, "Frozen duration remains readable")
       let frozen = state.sessionTimerText
@@ -3506,13 +3730,13 @@ final class OverlayStateTests: XCTestCase {
     }
   }
 
-  func testErrorBeforeTerminalProjectionKeepsReadinessButStopsTimer() {
+  func testErrorBeforeTerminalProjectionRemovesActivityAndStopsTimer() {
     let state = OverlayState()
     state.setPresentationMode(.expanded)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     state.handleError(message: "Capture failed")
-    XCTAssertTrue(state.animatesTranscriptCaret)
+    XCTAssertFalse(state.animatesTranscriptCaret)
     XCTAssertTrue(state.sessionTimerPaused)
   }
 
@@ -3606,11 +3830,15 @@ final class OverlayStateTests: XCTestCase {
     )
     // Maciej (2026-10-17): pinned stays on top, unpinned slips under other
     // windows; alerts and screenshots still win over either.
-    XCTAssertEqual(
-      OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: false, pinned: true)
-        .windowLevel,
-      .floating
-    )
+    let pinned = OverlayPresencePolicy.resolve(
+      screenshotChord: false, shouldYield: false, pinned: true
+    ).windowLevel
+    XCTAssertGreaterThan(
+      pinned.rawValue, NSWindow.Level.floating.rawValue,
+      "Pinned transcription stays above ordinary floating agent cards")
+    XCTAssertLessThan(
+      pinned.rawValue, NSWindow.Level.modalPanel.rawValue,
+      "Modal alerts remain above the resting pinned overlay")
     XCTAssertEqual(
       OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: false, pinned: false),
       .unpinned
@@ -4732,6 +4960,40 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.canvasText, "sealed words")
   }
 
+  func testPendingPaintRangesUseTheirOwnUnicodeBytesAndClearOnSettlement() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    let text = "A 🐢 e\u{301} Z"
+    state.applyCompactProjection(
+      CsCompactProjection(
+        sessionId: "pending-ranges", captureEpoch: 1, sequence: 1,
+        text: text, degraded: false, evidence: [],
+        pendingRanges: [
+          CsPendingRange(utf16Start: 2, utf16End: 4),
+          CsPendingRange(utf16Start: 5, utf16End: 7),
+          CsPendingRange(utf16Start: 3, utf16End: 4),
+          CsPendingRange(utf16Start: 8, utf16End: UInt32.max),
+          CsPendingRange(utf16Start: 40, utf16End: 45),
+          CsPendingRange(utf16Start: 7, utf16End: 2),
+        ]))
+    XCTAssertEqual(
+      state.canvasPendingRanges,
+      [
+        NSRange(location: 2, length: 2), NSRange(location: 5, length: 2),
+        NSRange(location: 8, length: 1),
+      ])
+    XCTAssertEqual(Array(state.canvasText.utf8), Array(text.utf8))
+    XCTAssertEqual(state.activeText, "", "Paint metadata grants no document authority")
+    projectText(text, to: state, terminal: true, sessionId: "pending-ranges")
+    XCTAssertTrue(state.canvasPendingRanges.isEmpty)
+    XCTAssertFalse(state.animatesTranscriptCaret)
+    XCTAssertEqual(Array(state.canvasText.utf8), Array(text.utf8))
+    state.beginTranscriptEdit()
+    state.updateRevisionDraft("edited")
+    XCTAssertTrue(state.canvasPendingRanges.isEmpty)
+  }
+
   func testLivePreviewPaintDoesNotBecomeDocumentOrSurviveItsTerminal() {
     let state = OverlayState()
     state.handleRecordingPreparing()
@@ -4988,6 +5250,34 @@ final class OverlayStateTests: XCTestCase {
     let delivery = state.sendToAgent()
     await delivery?.value
     XCTAssertEqual(engine.sentAssistiveTexts, ["kept for review"])
+  }
+
+  /// W2-09: an Agent take that 30 s without voice ended is archived on
+  /// purpose. The opted-in auto-send stays off for it; an explicit send works.
+  func testAnAgentTakeEndedWithoutVoiceNeverAutoSends() async {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
+    state.engine = engine
+    state.applyIndicatorMode(.assistive)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText(
+      "words heard in the room", to: state, terminal: true, delivery: .endedWithoutVoice)
+    state.finishControllerRecording()
+
+    clock.now = 5
+    state.fireAutoHideNowForTests(armedDeadline: 5)
+    await Task.yield()
+    clock.now = 60
+    state.fireAutoHideNowForTests(armedDeadline: 60)
+    await Task.yield()
+    XCTAssertTrue(engine.sentAssistiveTexts.isEmpty)
+    XCTAssertNil(state.agentSendCountdownSeconds)
+
+    let delivery = state.sendToAgent()
+    await delivery?.value
+    XCTAssertEqual(engine.sentAssistiveTexts, ["words heard in the room"])
   }
 
   func testUntouchedAgentFinalAutoSendsAtDeadline() async {
@@ -5519,6 +5809,69 @@ final class OverlayStateTests: XCTestCase {
   }
 
   // MARK: Typed admission/calibration presentation status
+
+  private func formattingNotice(sessionID: String?, terminal: Bool = false)
+    -> CsPresentationStatusEvent
+  {
+    CsPresentationStatusEvent(
+      schema: "codescribe.presentation-status.v1", emittedAt: "2026-10-27T00:00:00Z",
+      sessionId: sessionID, kind: "formatting_degraded", code: "formatting_not_applied",
+      statusLabel: "formatting not applied", headline: "Formatting was not applied",
+      message: "Transcript retained", isError: false, terminal: terminal,
+      calibrationVersion: nil)
+  }
+
+  func testFormattingNoticePreservesCurrentDocumentPhaseAndCommands() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText(
+      "  retained 🦊\ntext  ", to: state, canPaste: true, canInsert: true,
+      canCopy: true, canRetranscribe: true, canFormat: true, sessionId: "formatter-current")
+    let text = state.activeText
+    let mode = state.mode
+    let terminal = state.terminal
+    let commands = [
+      state.canPaste, state.canInsert, state.canCopy, state.canRetranscribe, state.canFormat,
+    ]
+    var callbacks = 0
+    state.onPresentationStatus = { callbacks += 1 }
+    state.applyPresentationStatus(formattingNotice(sessionID: "formatter-current"))
+    XCTAssertEqual(state.activeText, text)
+    XCTAssertEqual(state.mode, mode)
+    XCTAssertEqual(state.terminal, terminal)
+    XCTAssertEqual(
+      [state.canPaste, state.canInsert, state.canCopy, state.canRetranscribe, state.canFormat],
+      commands)
+    XCTAssertEqual(state.presentationStatus?.kind, "formatting_degraded")
+    XCTAssertEqual(callbacks, 1)
+  }
+
+  func testFormattingNoticeCannotAffectSuccessorOrUnidentifiedTake() {
+    for identity: String? in [nil, "formatter-predecessor"] {
+      let state = OverlayState()
+      projectText("new take", to: state, sessionId: "formatter-current")
+      let mode = state.mode
+      var callbacks = 0
+      state.onPresentationStatus = { callbacks += 1 }
+      state.applyPresentationStatus(formattingNotice(sessionID: identity))
+      XCTAssertNil(state.presentationStatus)
+      XCTAssertEqual(state.activeText, "new take")
+      XCTAssertEqual(state.mode, mode)
+      XCTAssertEqual(callbacks, 0)
+    }
+  }
+
+  func testFormattingNoticeCannotMasqueradeAsTerminalCaptureError() {
+    let state = OverlayState()
+    projectText("retained", to: state, sessionId: "formatter-current")
+    let mode = state.mode
+    state.applyPresentationStatus(formattingNotice(sessionID: "formatter-current", terminal: true))
+    XCTAssertNil(state.presentationStatus)
+    XCTAssertEqual(state.activeText, "retained")
+    XCTAssertEqual(state.mode, mode)
+    XCTAssertFalse(state.terminal)
+  }
 
   func testAdmissionRefusalProjectionBecomesRenderablePassiveOverlayState() {
     let state = OverlayState()

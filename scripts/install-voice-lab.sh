@@ -223,6 +223,29 @@ verify_runtime() {
   echo "==> launcher ${LAUNCHER}"
 }
 
+# The pack installs its developer helpers into ~/.codescribe/bin, which no shell
+# has on PATH. Expose them through ~/.local/bin as symlinks; a regular file there
+# is someone else's tool and stays untouched.
+link_dev_helpers() {
+  local bin_dir="${HOME}/.local/bin" name target link
+  mkdir -p "$bin_dir"
+  for name in stt stt-probe voice-lab; do
+    target="${HOME}/.codescribe/bin/${name}"
+    link="${bin_dir}/${name}"
+    [[ -x "$target" ]] || continue
+    if [[ -e "$link" && ! -L "$link" ]]; then
+      echo "==> ${link} is a regular file; left alone (${name} stays at ${target})"
+      continue
+    fi
+    ln -sfn "$target" "$link"
+    echo "==> ${link} -> ${target}"
+  done
+  case ":${PATH}:" in
+    *":${bin_dir}:"*) ;;
+    *) echo "==> ${bin_dir} is not on PATH; add it to your shell profile to run stt" ;;
+  esac
+}
+
 # Codescribe leaves a live Lab alone, so new Python only loads when the running
 # server restarts. Only this runtime's server.py is touched; anything else
 # holding the port stays.
@@ -268,6 +291,7 @@ main() {
   ensure_checkout "$src"
   run_setup "$src"
   verify_runtime
+  link_dev_helpers
   if [[ "$RESTART_SERVER" == 1 ]]; then
     restart_server
   fi

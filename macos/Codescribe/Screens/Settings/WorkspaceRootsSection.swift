@@ -125,11 +125,11 @@ struct WorkspaceRootsSection: View {
     .padding(.vertical, SettingsScale.rowInsetV)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .fill(Color.primary.opacity(0.06))
+        .fill(Color.primary.opacity(CSAlpha.fill))
     )
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
     )
     .overlay {
       CSFocusOutline(isFocused: focusedRoot == index, cornerRadius: CSRadius.input)

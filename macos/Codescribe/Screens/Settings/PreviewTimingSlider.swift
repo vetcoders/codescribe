@@ -25,7 +25,7 @@ struct PreviewTimingSlider: View {
           .accessibilityLabel(title)
           .accessibilityValue(valueLabel)
         Text(valueLabel)
-          .font(CSFont.mono(10.5, .semibold))
+          .font(CSFont.mono(11, .semibold))
           .foregroundStyle(Color.primary)
       }
     }

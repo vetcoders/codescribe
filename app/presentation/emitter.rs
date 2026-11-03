@@ -35,12 +35,28 @@ use tracing::{debug, info};
 
 use super::transcript_bus::{TranscriptBus, TranscriptBusEvidenceEvent};
 
+/// Live whole-document view of accepted formatter fragments. A child module of
+/// the emitter so it reads the reducer's private state instead of copying it;
+/// the file sits beside the emitter, hence the explicit path.
+#[path = "formatter_live.rs"]
+mod formatter_live;
+#[cfg(test)]
+#[path = "formatter_live_acceptance.rs"]
+mod formatter_live_acceptance;
+
 /// Read-only capture paint observer: full overlay text and acoustic warning state.
 pub type CursorObserver = Arc<dyn Fn(&CompactProjection) + Send + Sync>;
 /// Read-only, ephemeral Apple recognition paint; never a document mutation.
 pub type ApplePreviewObserver = Arc<dyn Fn(&str) + Send + Sync>;
 /// Read-only measured speech edges from this emitter's opened capture.
 pub type SpeechActivityObserver = Arc<dyn Fn(&SidebandEvidence) + Send + Sync>;
+
+/// UTF-16 range within ephemeral canvas text for an uncommitted (pending) fragment.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingRange {
+    pub utf16_start: u32,
+    pub utf16_end: u32,
+}
 
 /// Passive paint from one opened capture. Sequence 1 binds the display before
 /// any transcription event; later values replace paint, never document truth.
@@ -53,6 +69,9 @@ pub struct CompactProjection {
     /// their own paint boundary; no consumer may use it as committed delivery.
     pub text: String,
     pub degraded: bool,
+    /// Explicit in-progress text spans in UTF-16 coordinates within `text`.
+    #[serde(default)]
+    pub pending_ranges: Vec<PendingRange>,
     /// What the cursor dot says about the voice right now.
     #[serde(default)]
     pub voice: CursorVoice,
@@ -1038,6 +1057,7 @@ fn coalesced_overlay_document(
 struct PaintedCanvas {
     text: String,
     preview_only_words: usize,
+    pending_ranges: Vec<PendingRange>,
     visible_words: Vec<VisibleWord>,
     committed_sources: BTreeMap<OccurrenceIdentity, CommittedPaintSource>,
     untimed_final_words: usize,
@@ -1529,7 +1549,10 @@ impl TranscriptReducer {
         preview_sample_point(word.sample_start, word.sample_end) < extent_end
     }
 
-    fn read_paint(&self) -> PaintedCanvas {
+    /// The canvas fragments in paint order: committed tokens, live unanchored
+    /// evidence and the provisional Apple tail. `read_paint` and the live
+    /// formatted view both read this one list.
+    fn read_paint_fragments(&self) -> Vec<(u64, String, VisibleWordSource, bool)> {
         let mut fragments = self.visible_paint_fragments();
         let ledger_word_keys = self
             .unanchored_evidence
@@ -1602,14 +1625,44 @@ impl TranscriptReducer {
             ),
             _ => (0, *start),
         });
+        fragments
+    }
+
+    fn read_paint(&self) -> PaintedCanvas {
+        let fragments = self.read_paint_fragments();
         let mut paint = PaintedCanvas::default();
+        let mut utf16_len = 0usize;
         for (_, text, source, is_evidence) in fragments {
             for member in source.committed_members() {
                 paint
                     .committed_sources
                     .insert(member.occurrence.clone(), member.clone());
             }
+            // Offset metadata follows the one byte-preserving assembler.
+            let previous_bytes = paint.text.len();
             append_exact_fragment(&mut paint.text, &text);
+            let fragment_units = text.encode_utf16().count();
+            let appended_units = paint.text[previous_bytes..].encode_utf16().count();
+            let separator_units = appended_units - fragment_units;
+            utf16_len += separator_units;
+            let start = utf16_len;
+            utf16_len += fragment_units;
+            if is_evidence
+                && fragment_units > 0
+                && let (Ok(start), Ok(end)) = (u32::try_from(start), u32::try_from(utf16_len))
+            {
+                if let Some(last) = paint.pending_ranges.last_mut()
+                    && usize::try_from(last.utf16_end).ok()
+                        == Some(start as usize - separator_units)
+                {
+                    last.utf16_end = end;
+                } else {
+                    paint.pending_ranges.push(PendingRange {
+                        utf16_start: start,
+                        utf16_end: end,
+                    });
+                }
+            }
             if is_evidence {
                 paint.preview_only_words += text.split_whitespace().count();
             }
@@ -3308,6 +3361,42 @@ impl TranscriptReducer {
         true
     }
 
+    fn explicit_raw_step_selected(&self) -> bool {
+        self.document_timeline.steps.len() > 1
+            && self
+                .document_timeline
+                .current()
+                .is_some_and(|step| step.presentation.is_none())
+    }
+
+    fn needs_refused_occurrence_projection_wait(
+        &self,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+    ) -> bool {
+        if self.delivery_selection.is_some()
+            || !matches!(
+                policy,
+                FormattingPolicy::Correction | FormattingPolicy::Smart
+            )
+            || self.document_by_occurrence.is_empty()
+            || !self.direct_document.is_empty()
+            || self.committed_rendered_text() != raw_at_handoff
+            || self.raw_human_revision
+            || self.manual_rendered_text.is_some()
+            || !self.context_markers.is_empty()
+            || self.explicit_raw_step_selected()
+        {
+            return false;
+        }
+        self.document_by_occurrence.values().any(|entry| {
+            entry.seal_receipt.is_some()
+                && !entry.label.trim().is_empty()
+                && entry.manual_edit_receipt.is_none()
+                && self.latest_source_projection(entry, policy).is_none()
+        })
+    }
+
     fn needs_occurrence_projection_wait(
         &self,
         policy: FormattingPolicy,
@@ -3344,24 +3433,7 @@ impl TranscriptReducer {
             if entry.label.trim().is_empty() || entry.manual_edit_receipt.is_some() {
                 return false;
             }
-            let projection = self.derived_projections.iter().rev().find(|projection| {
-                projection.requested_mode == policy.as_str()
-                    && projection
-                        .source_observation
-                        .as_ref()
-                        .is_some_and(|source| {
-                            source.occurrence == entry.occurrence
-                                && projection.source_raw_text == entry.label
-                                && entry.manual_edit_receipt.is_none()
-                                && entry.observation_receipt.starts_with(&format!(
-                                    "{}:{}:{}:",
-                                    source.producer.as_str(),
-                                    source.request,
-                                    source.generation
-                                ))
-                        })
-            });
-            match projection {
+            match self.latest_source_projection(entry, policy) {
                 Some(projection) if projection.status == "applied" => {}
                 Some(_) => return false,
                 None => missing_any = true,
@@ -3905,6 +3977,12 @@ impl VisibleCanvasSnapshot {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+struct StoredCursorPaint {
+    text: String,
+    pending_ranges: Vec<PendingRange>,
+}
+
 /// All target mutations are serialized through one mpsc worker, guaranteeing
 /// that overlay deltas and the shared transcript snapshot see identical order.
 pub struct PresentationEmitter {
@@ -3917,7 +3995,7 @@ pub struct PresentationEmitter {
     cursor_sequence: std::sync::Mutex<u64>,
     cursor_integrity: std::sync::Mutex<Option<SpeechIntegrity>>,
     /// Last full paint, not a document or independently reconstructed delta.
-    cursor_paint: std::sync::Mutex<String>,
+    cursor_paint: std::sync::Mutex<StoredCursorPaint>,
     active_presentation: Arc<std::sync::Mutex<bool>>,
     cmd_tx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<EmitterCmd>>>,
     cmd_handle: Option<tokio::task::JoinHandle<()>>,
@@ -3937,15 +4015,65 @@ pub struct PresentationEmitter {
     transcription_controls: TranscriptionControls,
     /// A terminal diagnostic cannot erase visible words before stop snapshots them.
     stop_snapshot_pending: std::sync::atomic::AtomicBool,
+    /// Refused overlap pins in this take by ledger reason; see
+    /// [`Self::overlap_refusal_repeats`].
+    overlap_refusals: std::sync::Mutex<BTreeMap<String, u64>>,
     formatter_pending: std::sync::atomic::AtomicBool,
     derived_projection_notify: tokio::sync::Notify,
+    /// Last whole formatted view published while the take is still capturing.
+    live_view: formatter_live::LiveViewMemo,
     sentence_pause_sec: f32,
     tick_clock: Arc<dyn Fn() -> std::time::Duration + Send + Sync>,
     #[cfg(test)]
     paint_commands: std::sync::Mutex<Vec<String>>,
 }
 
+/// How stop-time formatter selection assembles occurrence projections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectionAssembly {
+    AllOrWholeRaw,
+    RefusedPerOccurrence,
+}
+
 impl PresentationEmitter {
+    /// One take can refuse an overlap pin thousands of times (24 646 lines
+    /// in four days, 85% of engine warnings, on 2026-10-26). The first stays
+    /// a warning, later ones go to debug, and finalisation reports the count
+    /// for each ledger reason.
+    fn overlap_refusal_repeats(&self, code: &str, message: &str) -> bool {
+        if code != codescribe_core::pipeline::contracts::OVERLAP_PIN_REFUSED {
+            return false;
+        }
+        let reason = codescribe_core::pipeline::contracts::overlap_pin_refusal_reason(message);
+        let mut refusals = self
+            .overlap_refusals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let earlier = !refusals.is_empty();
+        *refusals.entry(reason.to_owned()).or_default() += 1;
+        earlier
+    }
+
+    /// Report this take's refused overlap pins once, at finalisation, with
+    /// the count for each ledger reason.
+    fn report_overlap_refusals(&self) {
+        let refusals = {
+            let mut refusals = self
+                .overlap_refusals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *refusals)
+        };
+        let refused: u64 = refusals.values().sum();
+        if refused > 1 {
+            tracing::info!(
+                refused,
+                reasons = ?refusals,
+                "overlap_pin_refused repeated in this take; repeats are at debug level"
+            );
+        }
+    }
+
     /// Fence only presentation callbacks; the retired take still drains into
     /// its own ledger, reducer, transcript buffer, and archive.
     pub fn retire_presentation(&self) {
@@ -4213,10 +4341,12 @@ impl PresentationEmitter {
             acoustic_ledger,
             projection_callback,
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
+            overlap_refusals: std::sync::Mutex::default(),
             transcription_controls: TranscriptionControls::default(),
             stop_snapshot_pending: std::sync::atomic::AtomicBool::new(false),
             formatter_pending: std::sync::atomic::AtomicBool::new(false),
             derived_projection_notify: tokio::sync::Notify::new(),
+            live_view: formatter_live::LiveViewMemo::default(),
             sentence_pause_sec: 0.7,
             tick_clock: {
                 let origin = std::time::Instant::now();
@@ -4229,7 +4359,7 @@ impl PresentationEmitter {
             cursor_capture: std::sync::OnceLock::new(),
             cursor_sequence: std::sync::Mutex::new(0),
             cursor_integrity: std::sync::Mutex::new(None),
-            cursor_paint: std::sync::Mutex::new(String::new()),
+            cursor_paint: std::sync::Mutex::new(StoredCursorPaint::default()),
             active_presentation,
             #[cfg(test)]
             paint_commands: std::sync::Mutex::new(Vec::new()),
@@ -4306,11 +4436,19 @@ impl PresentationEmitter {
         }
     }
 
+    #[cfg(test)]
     fn paint_cursor(&self, rendered: &str) {
+        self.paint_cursor_with_ranges(rendered, Vec::new());
+    }
+
+    fn paint_cursor_with_ranges(&self, rendered: &str, pending_ranges: Vec<PendingRange>) {
         if self.cursor_observer.is_none() {
             return;
         }
-        *self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner()) = rendered.to_owned();
+        *self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner()) = StoredCursorPaint {
+            text: rendered.to_owned(),
+            pending_ranges,
+        };
         self.repaint_cursor();
     }
 
@@ -4343,7 +4481,9 @@ impl PresentationEmitter {
             )
         });
         let voice = CursorVoice::from_integrity(integrity.as_ref());
-        let paint = self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner());
+        let stored_paint = self.cursor_paint.lock().unwrap_or_else(|e| e.into_inner());
+        let paint_text = stored_paint.text.clone();
+        let pending_ranges = stored_paint.pending_ranges.clone();
         // Snapshot under the sequence lock so a later sequence can never carry
         // older evidence. Callers never hold the reducer lock while painting.
         let state = self
@@ -4381,12 +4521,17 @@ impl PresentationEmitter {
                 sequence: next,
                 // Earlier recovery debt must not hide words arriving now. Amber
                 // stays authoritative until that debt is actually resolved.
-                text: if degraded && paint.is_empty() {
+                text: if degraded && paint_text.is_empty() {
                     "…".into()
                 } else {
-                    paint.clone()
+                    paint_text
                 },
                 degraded,
+                pending_ranges: if degraded && stored_paint.text.is_empty() {
+                    Vec::new()
+                } else {
+                    pending_ranges
+                },
                 voice,
                 evidence,
             })
@@ -4429,7 +4574,7 @@ impl PresentationEmitter {
                 *paint = canvas.text;
                 #[cfg(test)]
                 self.paint_commands.lock().unwrap().push(paint.clone());
-                self.paint_cursor(paint);
+                self.paint_cursor_with_ranges(paint, canvas.pending_ranges);
             }
             EmitterCmd::PaintBarrier(_) | EmitterCmd::Finish => {}
         }
@@ -5185,6 +5330,46 @@ impl PresentationEmitter {
         .await;
     }
 
+    /// Wait while background occurrence formatter jobs are still in flight for
+    /// this active presentation and a refused take still has sealed occurrences
+    /// without a formatter projection for `policy`. The retained job owner
+    /// enforces `retained_formatter_deadline` and clears `formatter_pending`
+    /// on completion, timeout, panic, or cancellation.
+    pub async fn wait_for_refused_occurrence_projections(
+        &self,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+    ) {
+        loop {
+            let notified = self.derived_projection_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let should_wait = {
+                let active = *self
+                    .active_presentation
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if !active
+                    || !self
+                        .formatter_pending
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    false
+                } else {
+                    let reducer = self
+                        .session_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    reducer.needs_refused_occurrence_projection_wait(policy, raw_at_handoff)
+                }
+            };
+            if !should_wait {
+                break;
+            }
+            notified.await;
+        }
+    }
+
     /// Choose one whole-take version. An incomplete Smart set yields a single
     /// Corrections floor over all Raw; late versions never trigger delivery.
     pub fn delivery_projection(
@@ -5192,6 +5377,24 @@ impl PresentationEmitter {
         policy: FormattingPolicy,
         raw_at_handoff: &str,
     ) -> Option<DerivedTranscriptProjection> {
+        self.delivery_projection_with_assembly(
+            None,
+            policy,
+            raw_at_handoff,
+            ProjectionAssembly::AllOrWholeRaw,
+        )
+    }
+
+    pub fn delivery_projection_with_assembly(
+        &self,
+        take_id: Option<&str>,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+        assembly: ProjectionAssembly,
+    ) -> Option<DerivedTranscriptProjection> {
+        if assembly == ProjectionAssembly::RefusedPerOccurrence {
+            return self.refused_delivery_projection(take_id, policy, raw_at_handoff);
+        }
         let mut reducer = self
             .session_state
             .lock()
@@ -5249,24 +5452,7 @@ impl PresentationEmitter {
             complete = true;
         } else {
             for entry in reducer.document_by_occurrence.values() {
-                let projection = reducer.derived_projections.iter().rev().find(|projection| {
-                    projection.requested_mode == policy.as_str()
-                        && projection
-                            .source_observation
-                            .as_ref()
-                            .is_some_and(|source| {
-                                source.occurrence == entry.occurrence
-                                    && projection.source_raw_text == entry.label
-                                    && entry.manual_edit_receipt.is_none()
-                                    && entry.observation_receipt.starts_with(&format!(
-                                        "{}:{}:{}:",
-                                        source.producer.as_str(),
-                                        source.request,
-                                        source.generation
-                                    ))
-                            })
-                });
-                match projection {
+                match reducer.latest_source_projection(entry, policy) {
                     Some(projection) if projection.status == "applied" => {
                         append_exact_fragment(&mut text, &projection.rendered_text)
                     }
@@ -5316,6 +5502,112 @@ impl PresentationEmitter {
             && projection.rendered_text != raw_at_handoff
         {
             let session_id = projection.session_id.clone();
+            reducer.anchor_document_timeline(&session_id);
+            let step = reducer.snapshot_step(
+                "formatter",
+                Some(policy.as_str().to_string()),
+                projection.receipt_id.clone(),
+                Some(projection.clone()),
+            );
+            reducer.push_document_step(step);
+        }
+        reducer.delivery_selection = Some(projection.clone());
+        drop(reducer);
+        self.publish_derived_paint(&projection);
+        Some(projection)
+    }
+
+    fn refused_delivery_projection(
+        &self,
+        take_id: Option<&str>,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+    ) -> Option<DerivedTranscriptProjection> {
+        if self.literal_delivery()
+            || !matches!(
+                policy,
+                FormattingPolicy::Correction | FormattingPolicy::Smart
+            )
+        {
+            return None;
+        }
+        let mut reducer = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(selected) = &reducer.delivery_selection {
+            return (selected.status == "applied").then(|| selected.clone());
+        }
+        let session_id = reducer
+            .document_by_occurrence
+            .keys()
+            .next()
+            .map(|occurrence| occurrence.session.clone())?;
+        if let Some(expected) = take_id.map(|id| id.strip_suffix(":stopping").unwrap_or(id))
+            && session_id != expected
+        {
+            return None;
+        }
+        if reducer.document_by_occurrence.is_empty()
+            || !reducer.direct_document.is_empty()
+            || reducer.committed_rendered_text() != raw_at_handoff
+            || reducer.raw_human_revision
+            || reducer.manual_rendered_text.is_some()
+            || !reducer.context_markers.is_empty()
+            || reducer.explicit_raw_step_selected()
+            || reducer
+                .document_by_occurrence
+                .keys()
+                .any(|occurrence| occurrence.session != session_id)
+        {
+            return None;
+        }
+        let mut text = String::new();
+        let mut any_formatted = false;
+        for (occurrence, entry) in &reducer.document_by_occurrence {
+            let formatted = if entry.manual_edit_receipt.is_none() {
+                reducer
+                    .latest_source_projection(entry, policy)
+                    .filter(|projection| {
+                        projection.status == "applied"
+                            && !projection.rendered_text.trim().is_empty()
+                    })
+                    .map(|projection| projection.rendered_text.clone())
+            } else {
+                None
+            };
+            if let Some(formatted) = formatted {
+                append_exact_fragment(&mut text, &formatted);
+                any_formatted = true;
+            } else {
+                append_exact_fragment(&mut text, reducer.presentation_of(occurrence, entry));
+            }
+        }
+        if !any_formatted || text.trim().is_empty() {
+            return None;
+        }
+        let source_revision = reducer.revision;
+        let mut projection = reducer.mint_derived_projection(
+            session_id.clone(),
+            source_revision,
+            raw_at_handoff.to_string(),
+            policy,
+            AiFormatResult {
+                text: text.clone(),
+                reasoning_text: None,
+                status: AiFormatStatus::Applied,
+            },
+            None,
+        );
+        if projection.rendered_text != text {
+            projection.rendered_text = text.clone();
+            projection.publication_digest = projection.digest();
+            *reducer
+                .derived_projections
+                .last_mut()
+                .expect("minted refused selection") = projection.clone();
+        }
+        if projection.rendered_text != raw_at_handoff {
             reducer.anchor_document_timeline(&session_id);
             let step = reducer.snapshot_step(
                 "formatter",
@@ -5439,6 +5731,9 @@ impl EventSink for PresentationEmitter {
 
     /// Route an `EngineEvent` into reducer state and ordered delta delivery.
     fn on_event(&self, event: &EngineEvent) {
+        // Declared first, so it drops last: every ledger and reducer guard of
+        // the arms below is already released when the live view republishes.
+        let _live_view = formatter_live::LiveViewRefresh::after(self, event);
         let tick_budget = self.schedule_light_plus();
         // Apple-live opt-out: that lane's events never touch paint, mirror, or
         // document. A late callback after the lane's own retirement dies here.
@@ -5727,6 +6022,9 @@ impl EventSink for PresentationEmitter {
                 if evidence_closed {
                     self.repaint_cursor();
                 }
+                // The accepted fragment reaches the overlay as part of the whole
+                // live view: `LiveViewRefresh` (derived paint, like `publish_derived_paint`)
+                // publishes it when this event ends, after the ledger guard below is released.
                 // Raw shaping does not depend on formatting; this tick is an
                 // idempotent re-check of the unchanged acoustic label.
                 self.mint_incremental_light_plus(
@@ -5893,7 +6191,11 @@ impl EventSink for PresentationEmitter {
                 // owner that truly retires the presentation.
             }
             EngineEvent::Warning { code, message } => {
-                tracing::warn!("Engine warning [{}]: {}", code, message);
+                if self.overlap_refusal_repeats(code, message) {
+                    tracing::debug!("Engine warning [{}]: {}", code, message);
+                } else {
+                    tracing::warn!("Engine warning [{}]: {}", code, message);
+                }
                 if (code.starts_with("live_refinement_")
                     || code.starts_with("tail_patch_")
                     || code == "agent_raw_whisper_disabled"
@@ -5909,6 +6211,7 @@ impl EventSink for PresentationEmitter {
                 }
             }
             EngineEvent::SessionFinalised { .. } => {
+                self.report_overlap_refusals();
                 if self
                     .stop_snapshot_pending
                     .load(std::sync::atomic::Ordering::SeqCst)
@@ -6594,6 +6897,93 @@ mod tests {
             compression_ratio: None,
             confidence_flags: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn pending_ranges_follow_paint_provenance_and_settle_without_changing_bytes() {
+        let (emitter, ledger) = mirror_take();
+        let paints = Arc::new(StdMutex::new(Vec::new()));
+        let observed = Arc::clone(&paints);
+        let mut emitter = emitter.with_cursor_observer(Arc::new(move |paint| {
+            observed.lock().unwrap().push(paint.clone());
+        }));
+        let first = OccurrenceIdentity::new("take", 7, 0, 8_000);
+        let unanchored = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, first);
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &unanchored,
+            "🐢 e\u{301}",
+            super::NoAuthorityReason::NoRange,
+        );
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation: unanchored,
+            label: "🐢 e\u{301}".into(),
+            receipt,
+        });
+        let middle = OccurrenceIdentity::new("take", 7, 8_000, 16_000);
+        let mutation = admitted_mutation(&mut ledger.lock().unwrap(), middle, 2, "Iwo");
+        emitter.on_event(&mutation);
+        emitter.on_event(&mirror(
+            1,
+            mirror_words(
+                "🐢 e\u{301}",
+                24_000,
+                32_000,
+                UnadmittedAppleWordSource::Pending { utterance_id: 3 },
+            ),
+        ));
+        assert!(emitter.wait_paint_published().await);
+        let before = paints.lock().unwrap().last().unwrap().clone();
+        assert_eq!(before.text, "🐢 e\u{301} Iwo 🐢 e\u{301}");
+        assert_eq!(
+            before.pending_ranges,
+            vec![
+                super::PendingRange {
+                    utf16_start: 0,
+                    utf16_end: 5
+                },
+                super::PendingRange {
+                    utf16_start: 10,
+                    utf16_end: 15
+                },
+            ]
+        );
+        assert_eq!(
+            emitter
+                .session_state
+                .lock()
+                .unwrap()
+                .committed_rendered_text(),
+            "Iwo"
+        );
+
+        let last = OccurrenceIdentity::new("take", 7, 24_000, 32_000);
+        let mutation = admitted_mutation(&mut ledger.lock().unwrap(), last, 3, "🐢 e\u{301}");
+        emitter.on_event(&mutation);
+        emitter.on_event(&mirror(2, Vec::new()));
+        assert!(emitter.wait_paint_published().await);
+        let after = paints.lock().unwrap().last().unwrap().clone();
+        assert_eq!(after.text.as_bytes(), before.text.as_bytes());
+        assert_eq!(
+            after.pending_ranges,
+            vec![super::PendingRange {
+                utf16_start: 0,
+                utf16_end: 5
+            }]
+        );
+        assert!(after.sequence > before.sequence);
+        assert_eq!(
+            (&after.session_id, after.capture_epoch),
+            (&before.session_id, before.capture_epoch)
+        );
+        assert_eq!(
+            emitter
+                .session_state
+                .lock()
+                .unwrap()
+                .committed_rendered_text(),
+            "Iwo 🐢 e\u{301}"
+        );
+        emitter.finish().await;
     }
 
     #[tokio::test]
@@ -7462,6 +7852,35 @@ mod tests {
             delivery.lock().await.as_str(),
             "One two three four five six settled tail"
         );
+    }
+
+    /// W2-08: a take's refused overlap pins are counted by ledger reason.
+    /// Only the take's first refusal stays a warning, and finalisation
+    /// drains the counts for the next take.
+    #[tokio::test]
+    async fn overlap_refusals_are_counted_by_ledger_reason() {
+        use codescribe_core::pipeline::contracts;
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = emitter_on_ledger(&ledger);
+        let code = contracts::OVERLAP_PIN_REFUSED;
+        let refusal = |reason| contracts::overlap_pin_refused_message((0, 16), "0..16", reason);
+        let replay = refusal("replayed_range_identity");
+        let silent = refusal("no_voiced_hop_in_pin");
+
+        assert!(!emitter.overlap_refusal_repeats(code, &replay));
+        assert!(emitter.overlap_refusal_repeats(code, &replay));
+        assert!(emitter.overlap_refusal_repeats(code, &silent));
+        let other = emitter.overlap_refusal_repeats("tail_patch_refused", &replay);
+        assert!(!other, "only overlap refusals are counted");
+        let counts = emitter.overlap_refusals.lock().unwrap().clone();
+        assert_eq!(counts.get("replayed_range_identity"), Some(&2));
+        assert_eq!(counts.get("no_voiced_hop_in_pin"), Some(&1));
+        assert_eq!(counts.len(), 2);
+
+        emitter.report_overlap_refusals();
+        assert!(emitter.overlap_refusals.lock().unwrap().is_empty());
+        assert!(!emitter.overlap_refusal_repeats(code, &silent));
+        emitter.finish().await;
     }
 
     #[tokio::test]
@@ -14470,6 +14889,7 @@ mod tests {
             rows.push(wrap(TrailEvent::Qualification {
                 evidence,
                 calibration,
+                capture_rate_hz: Some(16_000),
             }));
             let observation =
                 ObservationIdentity::new(ObservationProducer::Apple, index, 0, occurrence.clone());
