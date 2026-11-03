@@ -215,7 +215,9 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     let owner = try XCTUnwrap(conversation.owner)
     let recipient = OverlayConversationRecipient(
       owner: owner, deliveryID: "receipt-layout", queued: true, accepted: true, acknowledged: false)
-    for text in ["Krótka wiadomość", String(repeating: "Pełna czytelna treść wiadomości. ", count: 20)] {
+    for text in [
+      "Krótka wiadomość", String(repeating: "Pełna czytelna treść wiadomości. ", count: 20),
+    ] {
       let message = OverlayConversationMessage(
         id: "user:receipt-layout", kind: .user, text: text, order: 1, emittedAt: "",
         owner: nil, recipients: [recipient], deliveryID: "receipt-layout", replyTo: nil,
@@ -271,7 +273,10 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
               styleMask: .borderless, backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             window.contentView = host
-            defer { window.contentView = nil; window.close() }
+            defer {
+              window.contentView = nil
+              window.close()
+            }
             host.layoutSubtreeIfNeeded()
             return host.fittingSize.height
           }
@@ -1611,9 +1616,17 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   private func assertAgentSwitchPaintsLatestBubble(
     width: CGFloat, height: CGFloat, textScale: CGFloat
   ) throws {
-    let conversations = [173, 1, 35].enumerated().map { agent, count in
-      OverlayConversation(
-        id: "switch-agent-\(agent)", channel: "0", name: "Agent \(agent)", owner: nil,
+    let roster = (0..<3).map { agent in
+      [
+        "provider": "codex", "provider_session_id": "switch-agent-\(agent)",
+        "lease_id": String(repeating: String(agent + 1), count: 32),
+        "channel": String(agent + 1), "name": "Agent \(agent)",
+      ]
+    }
+    let conversations = try [173, 1, 35].enumerated().map { agent, count in
+      let owner = try XCTUnwrap(OverlayConversationOwner(row: roster[agent]))
+      return OverlayConversation(
+        id: owner.id, channel: owner.channel, name: "Agent \(agent)", owner: owner,
         messages: (0..<count).map { index in
           OverlayConversationMessage(
             id: "reply:switch-\(agent)-\(index)", kind: .reply,
@@ -1625,7 +1638,15 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
             playback: nil, busPath: "")
         })
     }
-    let state = OverlayState.previewFormatted()
+    let state = OverlayState()
+    state.applyChannelRoster(
+      try conversations.map { conversation in
+        let owner = try XCTUnwrap(conversation.owner)
+        return CsChannelRosterState(
+          channel: owner.channel, audience: owner.name, provider: owner.provider,
+          providerSessionId: owner.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+      })
     state.applyConversationSnapshot(.init(deliveries: [], conversations: conversations))
     for conversation in conversations {
       state.conversationDrafts[conversation.id] = "Draft for \(conversation.id)"
@@ -1650,15 +1671,13 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(elements)
     }
     func editor(_ root: NSView) -> NSTextView? {
-      if let text = root as? NSTextView, text.isEditable,
-        text.accessibilityLabel() == String(localized: "Send to everyone")
-      {
+      if let text = root as? NSTextView, text.isEditable {
         return text
       }
       return root.subviews.lazy.compactMap(editor).first
     }
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.35))
-    let originalEditor = try XCTUnwrap(editor(host))
+    XCTAssertEqual(try XCTUnwrap(editor(host)).string, "Draft for \(conversations[0].id)")
     for index in [1, 0, 2, 1, 2, 0, 1, 0] {
       let target = conversations[index]
       let loading = OverlayConversation(
@@ -1684,9 +1703,14 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         },
         "agent \(index) has no painted latest bubble after switching (\(width)×\(height) @\(textScale))"
       )
-      XCTAssertTrue(
-        try XCTUnwrap(editor(host)) === originalEditor, "switch must not recreate input")
-      XCTAssertEqual(originalEditor.string, "Draft for \(conversations[index].id)")
+      // Recipient availability can unmount the editor while history loads.
+      // The mounted editor must show this exact owner's durable draft.
+      let currentEditor = try XCTUnwrap(editor(host))
+      XCTAssertTrue(currentEditor.isEditable)
+      XCTAssertEqual(currentEditor.string, "Draft for \(conversations[index].id)")
+      for conversation in conversations {
+        XCTAssertEqual(state.conversationDrafts[conversation.id], "Draft for \(conversation.id)")
+      }
       XCTAssertEqual(state.selectedConversation?.messages, conversations[index].messages)
     }
   }

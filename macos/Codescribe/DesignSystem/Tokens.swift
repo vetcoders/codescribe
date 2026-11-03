@@ -142,8 +142,9 @@ enum CSPalette {
   /// 0.15 of `textMuted`, so a resting grey glyph beside a status read as
   /// "healthy"; this rung keeps the status clear of the muted grey on both
   /// appearances.
-  /// Paper keeps a saturated olive distinct from the muted grey.
-  static let oliveStatus = adaptive(light: NSColor(hex: 0x3C4D1B), dark: NSColor(hex: 0xB5C98D))
+  /// Saturation also separates it from the stronger muted text rung without
+  /// sacrificing the status word's contrast on paper or ink.
+  static let oliveStatus = adaptive(light: NSColor(hex: 0x2C4D12), dark: NSColor(hex: 0xB6D07C))
   /// Steel blue: the dictionary owns the words it rewrote, so a rewritten
   /// surface never wears the uncertainty orange.
   static let lexicon = adaptive(light: NSColor(hex: 0x2A4C69), dark: NSColor(hex: 0x9FC2E8))

@@ -55,6 +55,8 @@ struct OverlayHeaderControlChrome: ViewModifier {
   var hintSize: CGSize? = nil
   var hintDelay: TimeInterval = 0
   var hintInteractive = false
+  /// A control with its own hover paint observes this same native region.
+  var onHoverChanged: ((Bool) -> Void)? = nil
   @State private var hovered = false
   @State private var anchor = OverlayHintAnchor()
 
@@ -98,6 +100,7 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .background {
         OverlayMenuCursorRegion { inside in
           hovered = inside
+          onHoverChanged?(inside)
           syncHint(inside: inside)
         }
       }
@@ -109,6 +112,7 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .onChange(of: hintInteractive) { _, _ in syncHint(inside: hovered) }
       .onChange(of: palette) { _, _ in syncHint(inside: hovered) }
       .onDisappear {
+        onHoverChanged?(false)
         anchor.hide()
       }
       .animation(reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: hovered)

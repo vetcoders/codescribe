@@ -147,7 +147,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
 
     let header = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomHeader: View {",
-      to: "private struct OverlayIntercomWindowProjection")
+      to: "struct OverlayIntercomWindowProjection")
     XCTAssertTrue(header.contains("state.agentGestureFocusID == broadcast?.id"))
     XCTAssertTrue(header.contains("controller.revealChooserFocus(focus)"))
 
@@ -226,8 +226,12 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let widget = try overlaySource("OverlayIntercomWidget.swift")
     XCTAssertFalse(widget.contains("roster.hasDeadFollower("), "every Intercom dim reads both")
     XCTAssertEqual(
-      widget.components(separatedBy: "OverlayDisconnectedRowDim(disconnected: inactive)").count
-        - 1, 4)
+      widget.components(separatedBy: "OverlayDisconnectedRowDim(disconnected: current && inactive)")
+        .count
+        - 1, 2, "current cards and instances share the follower inactivity dim")
+    XCTAssertEqual(
+      widget.components(separatedBy: "OverlayDisconnectedRowDim(disconnected: !current)").count
+        - 1, 3, "stale owner chrome has its own dim, independently of the current follower")
     XCTAssertEqual(widget.components(separatedBy: "OverlayIntercomStatusMark(").count - 1, 3)
     XCTAssertFalse(widget.contains("OverlayAgentStatusDot( kind: intercomStatusDot("))
   }
@@ -248,7 +252,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       to: "private func cardHeader(")
     XCTAssertTrue(body.contains(".onChanged { _ in controller.moveGroup() }"))
     XCTAssertTrue(body.contains(".onEnded { _ in controller.moveGroup(ended: true) }"))
-    XCTAssertTrue(body.contains("sides: true,"))
+    XCTAssertTrue(body.contains("OverlayIntercomResizeHandles("))
     XCTAssertTrue(
       body.contains("from: frame, delta: delta, edge: edge, row: identity, gesture: gesture)"))
     XCTAssertTrue(
@@ -257,13 +261,17 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let handles = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomResizeHandles: View {",
       to: "private struct OverlayIntercomInstanceCard: View {")
-    for edge in [".left", ".right", ".top", ".bottom", ".bottomLeft", ".bottomRight"] {
-      XCTAssertTrue(handles.contains("OverlayIntercomResizeHandle(edge: \(edge),"), edge)
+    for edge in [".topRight", ".bottomLeft", ".bottomRight"] {
+      XCTAssertTrue(handles.contains("handle(\(edge))"), edge)
+    }
+    for edge in [".left", ".right", ".top", ".bottom", ".topLeft"] {
+      XCTAssertFalse(handles.contains("handle(\(edge))"), "no invisible band at \(edge)")
     }
     let header = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomHeader: View {",
-      to: "private struct OverlayIntercomWindowProjection:")
-    XCTAssertTrue(header.contains("OverlayIntercomResizeHandles(corners: false, right: true)"))
+      to: "struct OverlayIntercomWindowProjection:")
+    XCTAssertTrue(header.contains("OverlayIntercomResizeAnchor()"))
+    XCTAssertTrue(header.contains("onDrag: { controller.beginGroupDrag() }"))
   }
 
   /// "Przydym też troszkę te hiperbiałe przyciski … nie tylko w pierwszym"
@@ -295,7 +303,13 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let row = try sourceSection(
       "OverlayChannelStatusView.swift", from: "func channelRow(",
       to: "private func rosterRowLabel(")
-    XCTAssertEqual(row.components(separatedBy: "&& !hasDeadFollower(channel)").count - 1, 2)
+    XCTAssertTrue(row.contains("compactAgentActions(for: channel)"))
+    let actions = try sourceSection(
+      "OverlayChannelStatusView.swift", from: "func compactAgentActions(",
+      to: "func compactReceptionIndicators(")
+    XCTAssertTrue(actions.contains("agentMicrophoneEnabled(for: channel)"))
+    XCTAssertTrue(actions.contains("agentPlaybackEnabled(for: channel)"))
+    XCTAssertTrue(actions.contains("connected: !hasDeadFollower(channel)"))
     XCTAssertTrue(row.contains("OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel))"))
 
     let audio = try sourceSection(
@@ -307,17 +321,18 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let card = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func cardHeader(",
       to: "private func audioSlot(")
-    // An agent in its own window leaves the stack (Maciej 17:48Z): no row
-    // dims for a detached window, and the row carries no window glyph.
-    XCTAssertTrue(card.contains("OverlayDisconnectedRowDim(disconnected: inactive)"))
+    // Parent cards own follower dimming; the title independently marks a
+    // stale owner and an already detached conversation.
+    XCTAssertTrue(card.contains("OverlayDisconnectedRowDim(disconnected: !current)"))
     XCTAssertFalse(card.contains("detachedInstance"))
-    XCTAssertFalse(card.contains("Image(systemName: \"macwindow\")"))
+    XCTAssertTrue(card.contains("if detached { Image(systemName: \"macwindow\")"))
     // A collapsed row moves the group; it never tears off (Maciej,
     // 2026-10-23: only an unrolled card detaches, by its grip).
-    XCTAssertEqual(card.components(separatedBy: ".simultaneousGesture(moveGesture").count - 1, 2)
+    XCTAssertEqual(card.components(separatedBy: ".highPriorityGesture(moveGesture").count - 1, 2)
     XCTAssertFalse(card.contains("tearOff"))
     XCTAssertTrue(
-      card.contains("if expanded { Button(\"Detach conversation\") { controller.detach(identity) }")
+      card.contains(
+        "if identity.canExpand { Button(\"Detach conversation\") { controller.detach(identity) }")
     )
     XCTAssertTrue(
       card.contains(
@@ -329,20 +344,27 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     // Hover moves no row out of the column and adds no preview line; the
     // icon square names its agent in the hint panel instead.
     XCTAssertFalse(card.contains("hovered"))
-    XCTAssertTrue(
-      card.contains(
-        "inactive ? name + \" · \" + roster.detail(for: $0) : nil } ?? name, palette: palette, leading: true"
-      ))
+    XCTAssertTrue(card.contains("showsHint: !expanded && !detached"))
+    XCTAssertTrue(card.contains("!hasInlinePreview"))
     let cardBody = try sourceSection(
       "OverlayIntercomWidget.swift",
       from: "let expanded = controller.presentation.expanded.contains(identity)",
       to: "private func cardHeader(")
-    XCTAssertFalse(cardBody.contains(".onHover"))
+    let hoverStart = try XCTUnwrap(cardBody.range(of: ".onHover {"))
+    let hoverEnd = try XCTUnwrap(
+      cardBody.range(of: ".onChange(of:", range: hoverStart.upperBound..<cardBody.endIndex))
+    let hover = String(cardBody[hoverStart.lowerBound..<hoverEnd.lowerBound])
+    XCTAssertTrue(hover.contains("hovering = $0"))
+    XCTAssertTrue(hover.contains("controller.noteGroupedActivity()"))
+    for forbidden in ["expand(", "resize(", "setFrame", "setPresentationMode"] {
+      XCTAssertFalse(
+        hover.contains(forbidden), "hover paints the grips without changing card geometry")
+    }
     XCTAssertTrue(cardBody.contains("OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)"))
 
     let miniFrame = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func instanceFrame(",
-      to: "fileprivate func setInstanceMinimized(")
+      to: "func setInstanceMinimized(")
     XCTAssertTrue(miniFrame.contains("text: nameWidth + digitWidth"))
     // A saved fiszka controls only its exact owner (Copilot on #183): once the
     // digit is reassigned, its row belongs to the replacement agent.
@@ -352,12 +374,8 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertTrue(
       instanceHeader.contains(
         "let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
-    let instanceControls = try sourceSection(
-      "OverlayIntercomWidget.swift", from: "private func instanceControls(",
-      to: "private struct OverlayIntercomResizeHandle")
-    XCTAssertTrue(
-      instanceControls.contains(
-        "let channel = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
+    XCTAssertTrue(instanceHeader.contains("OverlayIntercomAudioControls("))
+    XCTAssertTrue(instanceHeader.contains("conversation: current ? conversation : nil"))
     let dim = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayDisconnectedRowDim: ViewModifier {",
       to: "struct OverlayRowHoverHighlight: ViewModifier {")
@@ -432,31 +450,39 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     }
   }
 
-  func testFirstRevealHasRailBeforeAnyConversationWasOpened() {
+  func testAgentsFirstRevealWithNoConversationReturnsToTranscriptionOnFold() {
     for width in [CGFloat(700), 1200] {
       let state = OverlayState.previewFormatted()
       XCTAssertNil(state.selectedConversationID)
-      let recorder = FirstRevealRailRecorder()
+      let rail = FirstRevealRailRecorder()
+      let drawer = FirstRevealRailRecorder()
       let host = NSHostingView(
         rootView: DictationOverlayView(state: state)
-          .onPreferenceChange(OverlayAgentRailFramePreferenceKey.self) { recorder.frame = $0 }
+          .onPreferenceChange(OverlayAgentRailFramePreferenceKey.self) { rail.frame = $0 }
+          .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { drawer.frame = $0 }
           .frame(width: width, height: 500))
       host.sizingOptions = []
-      // This case measures first-layout preferences, not AX. Keep it away
-      // from the physical pointer, whose legitimate rail hover opens the list.
       let window = show(host, width: width, origin: NSPoint(x: -10000, y: -10000))
       defer { window.close() }
-      XCTAssertFalse(state.showsAgentMonitor)
-      XCTAssertEqual(
-        recorder.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1)
-      XCTAssertEqual(recorder.frame.maxX, width, accuracy: 1)
+      XCTAssertEqual(state.windowContentSurface, .transcription)
+      XCTAssertEqual(rail.frame, .zero)
+      XCTAssertEqual(drawer.frame, .zero)
       state.unfoldAgentList()
       settle(host)
+      RunLoop.main.run(until: Date().addingTimeInterval(CSMotion.Tempo.enter + 0.05))
+      settle(host)
+      XCTAssertEqual(state.windowContentSurface, .agents)
       XCTAssertTrue(state.showsAgentMonitor)
+      XCTAssertGreaterThan(drawer.frame.width, 0, "the explicit Agents action mounts the roster")
+      XCTAssertEqual(drawer.frame.maxX, width, accuracy: 1)
       state.foldAgentList()
       settle(host)
-      XCTAssertEqual(
-        recorder.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1)
+      RunLoop.main.run(until: Date().addingTimeInterval(CSMotion.Tempo.enter + 0.05))
+      settle(host)
+      XCTAssertEqual(state.windowContentSurface, .transcription)
+      XCTAssertFalse(state.showsAgentMonitor)
+      XCTAssertEqual(rail.frame, .zero, "agent chrome never occupies the transcription")
+      XCTAssertEqual(drawer.frame, .zero)
       XCTAssertNil(state.selectedConversationID)
     }
   }

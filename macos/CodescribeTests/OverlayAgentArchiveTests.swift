@@ -18,11 +18,11 @@ final class OverlayAgentArchiveTests: XCTestCase {
       id: "0", channel: "0", name: "All", owner: nil, messages: [])
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, agent]))
 
-    func drawer() -> OverlayChannelStatusView {
+    func drawer(rosterReady: Bool = true) -> OverlayChannelStatusView {
       var view = OverlayChannelStatusView(
         channels: state.visibleChannelRows, unavailable: false, palette: .dark, animates: false,
         hudStates: state.channelHudStates, conversations: state.conversations,
-        onSelectConversation: { _ in })
+        onSelectConversation: { _ in }, rosterReady: rosterReady)
       view.archivedOwners = state.archivedAgentOwners
       return view
     }
@@ -58,9 +58,14 @@ final class OverlayAgentArchiveTests: XCTestCase {
       try await Task.sleep(for: .milliseconds(50))
       host.layoutSubtreeIfNeeded()
       XCTAssertEqual(host.fittingSize.width, 336, accuracy: 1)
-      // 174 pt with the hint once the Transcription row left the column
-      // (Maciej, 2026-10-17); the hint alone is what lifts it past 160.
-      XCTAssertGreaterThan(host.fittingSize.height, 160, "The hint occupies space between the rows")
+      let loading = drawer(rosterReady: false)
+      let control = NSHostingView(
+        rootView: loading.monitorBody.frame(width: 336)
+          .environment(\.locale, Locale(identifier: locale)))
+      control.layoutSubtreeIfNeeded()
+      XCTAssertGreaterThan(
+        host.fittingSize.height, control.fittingSize.height,
+        "the connection explanation takes more space than the one-line loading control")
       XCTAssertLessThan(host.fittingSize.height, 480, "The hint fits the sidebar")
     }
     state.applyChannelRoster([roster(session: "replacement", alive: true)])

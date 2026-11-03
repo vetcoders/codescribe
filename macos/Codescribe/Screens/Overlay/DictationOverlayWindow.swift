@@ -244,7 +244,17 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
     guard mode != presentationMode || settleResize else { return }
     let previous = presentationMode
-    if previous == .mini && !settleResize { miniFrame = frameTransitionTarget ?? frame }
+    if previous == .mini && !settleResize {
+      // Persist the placement strip, not the wider natural brand capsule.
+      // Both share the trailing edge; retaining the capsule's physical left
+      // edge here shifted the next restored mini by that width difference.
+      let parked = frameTransitionTarget ?? frame
+      miniFrame = NSRect(
+        x: parked.maxX - DictationOverlayWindow.miniPlacementSize.width,
+        y: parked.minY,
+        width: DictationOverlayWindow.miniPlacementSize.width,
+        height: DictationOverlayWindow.miniPlacementSize.height)
+    }
     presentationMode = mode
     let wasApplyingFrame = OverlayController.isApplyingFrame
     OverlayController.isApplyingFrame = true

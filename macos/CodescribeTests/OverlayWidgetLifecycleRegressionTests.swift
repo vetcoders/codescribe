@@ -181,22 +181,14 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     let state = OverlayState()
     let generation = state.captureGeneration
     state.publishConversationText = { _, _, _, _ in XCTFail("Header gestures must not send") }
+    let panel = IntercomGestureWitnessPanel()
     let controller = OverlayIntercomWidgetController(
       state: state, textScale: TextScaleController(key: suite),
-      desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+      desktopStore: OverlayIntercomDesktopStore(defaults: defaults),
+      makeHeaderPanel: { panel })
     defer { controller.invalidate() }
-    let host = NSHostingView(
-      rootView: controller.offscreenHeader(width: 400)
-        .frame(width: 400, height: 30))
-    let panel = IntercomGestureWitnessPanel(
-      contentRect: NSRect(x: 0, y: 0, width: 400, height: 30),
-      styleMask: [.borderless], backing: .buffered, defer: false)
-    panel.contentView = host
-    defer {
-      panel.contentView = nil
-      panel.close()
-    }
-    host.frame.size = NSSize(width: 400, height: 30)
+    controller.setVisible(true, relativeTo: nil)
+    let host = try XCTUnwrap(panel.contentView)
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     func descendants(_ view: NSView) -> [NSView] {
@@ -227,17 +219,22 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     XCTAssertEqual(panel.dragCalls, 1, "One native drag per gesture")
     XCTAssertTrue(panel.dragEvent === originalDown, "AppKit receives the original mouse-down")
     XCTAssertEqual(controller.presentation.folded, initial, "Dragging must not also collapse")
-    XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
+    XCTAssertEqual(controller.interactionWindowCounts.owned, 1)
+    XCTAssertEqual(
+      controller.interactionWindowCounts.visible, 0, "the witness never presents a desktop window")
     XCTAssertEqual(state.captureGeneration, generation)
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
+    controller.invalidate()
+    XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
   }
 
 }
 
 @MainActor
-private final class IntercomGestureWitnessPanel: NSPanel {
+private final class IntercomGestureWitnessPanel: OverlayIntercomPanel {
   var dragCalls = 0
   var dragEvent: NSEvent?
+  override func orderFrontRegardless() {}
   override func performDrag(with event: NSEvent) {
     dragCalls += 1
     dragEvent = event

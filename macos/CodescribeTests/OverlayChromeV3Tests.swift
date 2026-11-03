@@ -13,13 +13,12 @@ final class OverlayChromeV3Tests: XCTestCase {
         .deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
       encoding: .utf8)
-    let header = try XCTUnwrap(source.range(of: "private var closeButton: some View"))
-    let tail = String(source[header.lowerBound...])
-    let button = try XCTUnwrap(tail.range(of: "Button {"))
-    let wordmark = try XCTUnwrap(tail.range(of: "private func recordingControls"))
-    XCTAssertLessThan(button.lowerBound, wordmark.lowerBound)
-    let close = String(tail[button.lowerBound..<wordmark.lowerBound])
-    XCTAssertTrue(close.contains("state.relayIntent(.close)"))
+    XCTAssertTrue(
+      source.contains("OverlayCloseButton(palette: palette) { state.relayIntent(.close) }"))
+    let start = try XCTUnwrap(source.range(of: "private struct OverlayCloseButton: View"))
+    let end = try XCTUnwrap(source.range(of: "struct DictationOverlayView: View"))
+    let close = String(source[start.lowerBound..<end.lowerBound])
+    XCTAssertTrue(close.contains("Button(action: onClose)"))
     XCTAssertTrue(close.contains("ModeDot("))
     XCTAssertTrue(close.contains("size: 9"))
     XCTAssertFalse(close.contains("compact ?"), "Close size must not depend on header width")
@@ -27,12 +26,14 @@ final class OverlayChromeV3Tests: XCTestCase {
     XCTAssertTrue(close.contains(".scaleEffect(closeDotHovered ? 10.0 / 7.0 : 1)"))
     XCTAssertTrue(close.contains("if closeDotHovered {"))
     XCTAssertTrue(close.contains("OverlayCloseCross()"))
-    XCTAssertTrue(close.contains(".onHover {"))
+    XCTAssertTrue(close.contains("onHoverChanged: { closeDotHovered = $0 }"))
+    XCTAssertFalse(
+      close.contains("OverlayMenuCursorRegion"), "the shared chrome owns the native region")
     XCTAssertTrue(close.contains("closeDotHovered = $0"))
     XCTAssertFalse(close.contains("setPresentationMode"), "Close hover must never morph the window")
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
-    XCTAssertFalse(tail.contains("Text(\"×\")"))
-    XCTAssertTrue(tail.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
+    XCTAssertFalse(close.contains("Text(\"×\")"))
+    XCTAssertTrue(close.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
     for scale in [TextScaleController.minScale, CGFloat(1)] {
       XCTAssertEqual(OverlayIntent.close.accessibilityLabel, "Close overlay", "scale \(scale)")
       XCTAssertEqual(TextScaleController.clamp(scale), scale)
@@ -85,12 +86,16 @@ final class OverlayChromeV3Tests: XCTestCase {
       let text = try XCTUnwrap(descendant(LiveTranscriptNativeTextView.self, in: root))
       let scroll = try XCTUnwrap(text.enclosingScrollView)
       let rect = root.convert(scroll.bounds, from: scroll)
-      XCTAssertGreaterThan(rect.width, width - 65)
+      XCTAssertEqual(
+        rect.width, width - OverlayTranscriptActionsLayout.columnWidth(textScale: 1) - 2 * 20,
+        accuracy: 1, "the transcript reserves its actions column and two 20-point body margins")
       XCTAssertGreaterThan(rect.height, 100)
       XCTAssertEqual(rect.minY, root.bounds.minY, accuracy: 2)
       XCTAssertEqual(rect.maxY, root.bounds.maxY, accuracy: 2)
       XCTAssertGreaterThan(scroll.contentView.contentInsets.top, 30)
-      XCTAssertGreaterThan(scroll.contentView.contentInsets.bottom, 30)
+      XCTAssertEqual(
+        scroll.contentView.contentInsets.bottom, 28, accuracy: 1,
+        "one 18-point footer row plus the 10-point transcript gap")
       XCTAssertFalse(scroll.drawsBackground)
       XCTAssertFalse(text.drawsBackground)
       XCTAssertLessThanOrEqual(rect.maxX, root.bounds.maxX)

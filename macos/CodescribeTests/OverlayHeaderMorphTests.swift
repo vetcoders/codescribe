@@ -293,15 +293,16 @@ final class OverlayHeaderMorphTests: XCTestCase {
   /// out in that form's own density. No clock involved.
   func testHeaderControlsFitEverySettledWindowWidth() {
     let modes: [(OverlayPresentationMode, CGFloat)] = [
-      // The map is opt-in. This fixture keeps the earlier mini chrome,
-      // including the cs wordmark, at its 200 pt resting width.
-      (.mini, DictationOverlayWindow.miniPlacementSize.width),
+      // With no map the actual mini width includes the full wordmark.
+      (.mini, DictationOverlayWindow.miniBrandWidth),
       (.midi, DictationOverlayWindow.midiSize.width),
       (.expanded, DictationOverlayWindow.defaultSize.width),
     ]
     for (mode, target) in modes {
-      let minimum = DictationOverlayWindow.minimumSize(for: mode).width
       let (rig, flag) = makeRig(start: mode)
+      let minimum =
+        mode == .mini
+        ? rig.panel.miniSize.width : DictationOverlayWindow.minimumSize(for: mode).width
       flag.value = false
       defer {
         rig.panel.orderOut(nil)

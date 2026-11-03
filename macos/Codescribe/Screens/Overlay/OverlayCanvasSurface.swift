@@ -186,16 +186,19 @@ struct OverlayControlGlass: ViewModifier {
 struct OverlayComposerSurface: ViewModifier {
   let palette: OverlayAppearancePalette
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
 
   func body(content: Content) -> some View {
-    content
+    let opaque = reduceTransparencyOverride ?? reduceTransparency
+    return
+      content
       .background {
-        if reduceTransparency {
+        if opaque {
           RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
             .fill(palette.desktopBackground.color)
         }
       }
       .modifier(
-        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency))
+        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !opaque))
   }
 }

@@ -15,6 +15,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private let diagnosticLog: DiagnosticLog?
   @ObservationIgnored private let idleNow: () -> TimeInterval
   @ObservationIgnored private let idleSchedule: OverlayAutoCollapse.Scheduler
+  @ObservationIgnored private let makeHeaderPanel: () -> OverlayIntercomPanel
   @ObservationIgnored private var header: OverlayIntercomPanel?
   @ObservationIgnored private var appWindowYield: OverlayAppWindowYield?
   @ObservationIgnored private var cards: [OverlayIntercomCardIdentity: OverlayIntercomPanel] = [:]
@@ -117,7 +118,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     desktopStore: OverlayIntercomDesktopStore = OverlayIntercomDesktopStore(),
     diagnosticLog: DiagnosticLog? = nil,
     idleNow: @escaping () -> TimeInterval = { Date.timeIntervalSinceReferenceDate },
-    idleSchedule: @escaping OverlayAutoCollapse.Scheduler = OverlayAutoCollapse.liveScheduler
+    idleSchedule: @escaping OverlayAutoCollapse.Scheduler = OverlayAutoCollapse.liveScheduler,
+    makeHeaderPanel: @escaping () -> OverlayIntercomPanel = { OverlayIntercomPanel() }
   ) {
     self.state = state
     self.textScale = textScale
@@ -126,6 +128,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     self.diagnosticLog = diagnosticLog
     self.idleNow = idleNow
     self.idleSchedule = idleSchedule
+    self.makeHeaderPanel = makeHeaderPanel
     desktop = desktopStore.load()
     super.init()
     for name in [NSMenu.didBeginTrackingNotification, NSMenu.didEndTrackingNotification] {
@@ -221,7 +224,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       return
     }
     if header == nil {
-      let panel = OverlayIntercomPanel()
+      let panel = makeHeaderPanel()
       panel.delegate = self
       panel.onScroll = { [weak self] delta in self?.scrollGroup(delta > 0 ? -1 : 1) }
       let hosting = NSHostingView(
@@ -1400,7 +1403,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 /// selecting its text may take the keyboard; nonactivating hover stays passive.
 /// Internal so the text-size shortcuts can name the Intercom's windows.
 @MainActor
-final class OverlayIntercomPanel: NSPanel {
+class OverlayIntercomPanel: NSPanel {
   let selectableTextRegions = NSHashTable<NSView>.weakObjects()
   private var allowsKeyForSelection = false
 
@@ -1987,8 +1990,10 @@ private struct OverlayIntercomCard: View {
       })
     let channelRow = current ? intercomChannelRow(state: state, digit: identity.digit) : nil
     let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
-    let audioBelowName = !expanded && controller.contentMetrics.audioFooterHeight(
-      width: controller.groupWidth, cardHeight: controller.groupCardHeight) > 0
+    let audioBelowName =
+      !expanded
+      && controller.contentMetrics.audioFooterHeight(
+        width: controller.groupWidth, cardHeight: controller.groupCardHeight) > 0
     let content = controller.contentMetrics.cardContent(
       width: controller.groupWidth, cardHeight: controller.groupCardHeight)
     let preview = controller.contentMetrics.compactPreviewLayout(
@@ -2059,19 +2064,21 @@ private struct OverlayIntercomCard: View {
             audioSlot(
               current ? conversation : nil, palette: palette,
               speaking: current && conversation?.replySpeaking == true,
-              open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false))
-              .frame(maxWidth: .infinity, alignment: .trailing)
-              .padding(.horizontal, 6)
-              .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-              .accessibilityIdentifier("overlay-intercom-audio-footer-\(identity.digit)")
+              open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
+            )
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.horizontal, 6)
+            .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+            .accessibilityIdentifier("overlay-intercom-audio-footer-\(identity.digit)")
           }
         }
         .accessibilitySortPriority(0)
         VStack(spacing: 0) {
           cardHeader(
             palette: palette, expanded: expanded, roster: roster, inactive: inactive,
-            audioBelowName: audioBelowName)
-            .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+            audioBelowName: audioBelowName
+          )
+          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
           if showsContext, let conversation {
             // One physical metadata line uses the card width, not the narrow name
             // button between status marks and audio controls. The complete card
@@ -2363,7 +2370,9 @@ private struct OverlayIntercomCard: View {
           .disabled(!expanded && !canOpenConversation)
           .modifier(OverlayDetachedRosterValue(detached: detached))
           .accessibilityLabel(
-            (expanded ? String(localized: "Collapse into the group") : String(localized: "Open conversation"))
+            (expanded
+              ? String(localized: "Collapse into the group")
+              : String(localized: "Open conversation"))
               + ": " + name
           )
           .accessibilityActions {
@@ -2985,19 +2994,21 @@ private struct OverlayIntercomInstanceCard: View {
               state: state, conversation: current ? conversation : nil, digit: instance.digit,
               palette: palette,
               open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false),
-              speaking: current && conversation?.replySpeaking == true, shared: false)
-              .frame(maxWidth: .infinity, alignment: .trailing)
-              .padding(.horizontal, 6)
-              .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-              .accessibilityIdentifier("overlay-intercom-instance-audio-footer-\(instance.digit)")
+              speaking: current && conversation?.replySpeaking == true, shared: false
+            )
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.horizontal, 6)
+            .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+            .accessibilityIdentifier("overlay-intercom-instance-audio-footer-\(instance.digit)")
           }
         }
         .accessibilitySortPriority(0)
         VStack(spacing: 0) {
           headerRow(
             instance, conversation: conversation, palette: palette, roster: roster,
-            audioBelowName: audioBelowName)
-            .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+            audioBelowName: audioBelowName
+          )
+          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
           // The detached fiszka keeps the same metadata line as its group card;
           // the agent's provider, model and repository must not vanish with the
           // detach (Maciej, 2026-10-28).

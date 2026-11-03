@@ -573,7 +573,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(
       stacked,
       ceil(
-        DictationOverlayWindow.miniFloorWidth + DictationOverlayWindow.miniBrandGap
+        DictationOverlayWindow.miniFloorWidth + DictationOverlayWindow.miniStackedBrandGap
           + OverlayChannelPill.headerHeight))
     XCTAssertLessThanOrEqual(abs(stacked - strip), 12, "one mini, one counter slot")
   }
@@ -859,9 +859,11 @@ final class OverlayChannelMapTests: XCTestCase {
     // Symbols replace a figure: the stacked counter and the numberless human
     // mailbox. Neither adds a glyph to a numbered agent's digit.
     XCTAssertEqual(
-      pillView.components(separatedBy: "Image(systemName:").count - 1, 2,
-      "only the stacked counter and numberless mailbox carry symbols")
-    XCTAssertTrue(pillView.contains("Image(systemName: Self.stackedCardsSymbol)"))
+      pillView.components(separatedBy: "Image(systemName:").count - 1, 1,
+      "the numberless mailbox carries its symbol")
+    XCTAssertEqual(
+      pillView.components(separatedBy: "symbol: Self.stackedCardsSymbol").count - 1, 1,
+      "the stacked counter uses the shared header glyph exactly once")
     XCTAssertFalse(pillView.contains("mic.fill"), "the microphone glyph left the digit")
     XCTAssertFalse(pillView.contains("megaphone"), "the megaphone stays on the Agents button")
     XCTAssertTrue(

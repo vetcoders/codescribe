@@ -53,6 +53,9 @@ final class OverlayAgentMailboxStickyTests: XCTestCase {
     XCTAssertEqual(roster.currentConversations.filter(\.isHumanInbox).count, 1)
     let root = roster.monitorBody(maximumHeight: 360)
       .environment(\.csTextScale, scale)
+      // An unshown panel has no compositor sampling behind native glass.
+      // Use the real opaque accessibility path for this scroll/geometry test.
+      .environment(\.csReduceTransparencyOverride, true)
       .frame(width: 400)
       .background(palette.desktopBackground.color)
       .preferredColorScheme(palette.appearance == .dark ? .dark : .light)
@@ -62,6 +65,7 @@ final class OverlayAgentMailboxStickyTests: XCTestCase {
       contentRect: host.frame, styleMask: [.borderless, .nonactivatingPanel],
       backing: .buffered, defer: false)
     panel.isReleasedWhenClosed = false
+    panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
     panel.contentView = host
     defer { panel.close() }
     settle(host)

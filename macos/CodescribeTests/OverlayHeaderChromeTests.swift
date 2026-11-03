@@ -343,13 +343,14 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertTrue(conversation.contains("BubbleOwnerNameButton("))
     XCTAssertTrue(conversation.contains("owner.id != conversation.owner?.id"))
     // Maciej (2026-10-16): hover brightens the name; no outline, nothing more.
-    XCTAssertTrue(
-      conversation.contains("hovered ? palette.primaryText.color : palette.mutedText.color"))
     let nameButton = try XCTUnwrap(
       conversation.range(of: "struct BubbleOwnerNameButton").map { range in
         String(conversation[range.lowerBound...].prefix(900))
       })
     XCTAssertFalse(nameButton.contains("csFocusOutline"))
+    XCTAssertTrue(nameButton.contains(".conversationActionHover("))
+    XCTAssertTrue(nameButton.contains("restingColor: palette.mutedText.color"))
+    XCTAssertTrue(nameButton.contains("hoverColor: palette.primaryText.color"))
     let overlay = try source("Overlay/DictationOverlayView.swift")
     XCTAssertTrue(overlay.contains("onOpenOwnerConversation: { state.openConversation(for: $0) },"))
 
@@ -438,7 +439,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
     }
     XCTAssertEqual(regions.count, 5)
     try headerPointer(false, on: host)
-    headerSettle(host, seconds: 0.16)
+    headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
     let rest = headerRaster(host)
     let scale = CGFloat(rest.width) / host.bounds.width
     for target in regions {
@@ -451,7 +452,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
           context: nil, eventNumber: 1, clickCount: 0, pressure: 0))
       panel.sendEvent(event)
-      headerSettle(host, seconds: 0.16)
+      headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
       XCTAssertEqual(regions.filter(\.hovered).count, 1, "hover must leave earlier controls")
       XCTAssertTrue(target.hovered)
       let current = headerPixels(host)
@@ -487,7 +488,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       XCTAssertEqual(siblingChanges, 0, "hover must not paint sibling controls")
     }
     try headerPointer(false, on: host)
-    headerSettle(host, seconds: 0.16)
+    headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
     XCTAssertTrue(regions.allSatisfy { !$0.hovered })
   }
 
@@ -574,11 +575,11 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertFalse(rest.pixels.isEmpty, "control did not render")
     try headerPointer(
       true, on: host, minimumWidth: minimumWidth)
-    headerSettle(host, seconds: 0.16)
+    headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
     let hover = headerPixels(host)
     try headerPointer(
       false, on: host, minimumWidth: minimumWidth)
-    headerSettle(host, seconds: 0.16)
+    headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
     return (rest.pixels, hover, headerPixels(host), rest.width)
   }
 
@@ -903,8 +904,11 @@ final class OverlayHeaderChromeTests: XCTestCase {
   /// receipt sat right of a plain one and a jargon badge rode on replies.
   func testConversationFadesUnderTheHeaderAndKeepsItsChromeQuiet() throws {
     let conversation = try source("Overlay/OverlayConversationView.swift")
-    XCTAssertTrue(conversation.contains(".safeAreaBar(edge: .top, spacing: 0)"), "header is a bar")
-    XCTAssertTrue(conversation.contains(".scrollEdgeEffectStyle(.soft, for: .top)"))
+    XCTAssertTrue(
+      conversation.contains(".contentMargins(.top, topInset + visibleNavigationHeight)"))
+    XCTAssertTrue(conversation.contains(".scrollClipDisabled()"))
+    XCTAssertTrue(conversation.contains(".scrollEdgeEffectHidden(true, for: .top)"))
+    XCTAssertTrue(conversation.contains(".scrollEdgeEffectHidden(true, for: .bottom)"))
     XCTAssertFalse(conversation.contains("scrollEdgeEffectHidden(true, for: [.top, .bottom])"))
     XCTAssertTrue(conversation.contains(".csAutohidingScrollers()"), "one scroller owner")
     let scroller = try source("../DesignSystem/CSScroller.swift")

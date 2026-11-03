@@ -701,7 +701,13 @@ private final class ComposerSurface {
       .filter {
         field.contains(NSPoint(x: $0.midX, y: $0.midY)) && $0.width <= $0.height + 2
       }
-    let controls = deduplicated(frames).sorted { $0.midX < $1.midX }
+    let unique = deduplicated(frames)
+    // The recipient chevron's hint registers inside the chevron button.
+    // Count independent hit regions, retaining the enclosing control rather
+    // than treating its strictly contained hint as a fifth button.
+    let controls = unique.filter { frame in
+      !unique.contains { other in other != frame && other.contains(frame) }
+    }.sorted { $0.midX < $1.midX }
     guard controls.count == OverlayHoverCursorContractTests.composerNames.count else {
       throw ContractFixtureError(
         description: "\(kind): expected the four corner controls, got \(controls)")

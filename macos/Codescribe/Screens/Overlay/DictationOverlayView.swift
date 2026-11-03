@@ -451,14 +451,14 @@ private struct OverlayCloseButton: View {
         .contentShape(Circle().inset(by: -7.5))
     }
     .buttonStyle(.plain)
-    .background { OverlayMenuCursorRegion { closeDotHovered = $0 } }
     .animation(
       reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered
     )
     .focusable(false)
     .modifier(
       OverlayHeaderControlChrome(
-        title: OverlayIntent.close.helpText, accent: nil, palette: palette)
+        title: OverlayIntent.close.helpText, accent: nil, palette: palette,
+        onHoverChanged: { closeDotHovered = $0 })
     )
     .accessibilityLabel(OverlayIntent.close.accessibilityLabel)
     .accessibilityIdentifier("overlay-brand-close-dot")

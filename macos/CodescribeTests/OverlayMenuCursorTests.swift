@@ -553,6 +553,7 @@ final class OverlayMenuCursorTests: XCTestCase {
     state.selectConversation(conversation.id)
     state.showAgentMonitor()
     let size = NSSize(width: 470, height: 280)
+    state.setAgentsLayout(.agents)
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(origin: .zero, size: size),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -565,12 +566,18 @@ final class OverlayMenuCursorTests: XCTestCase {
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     host.layoutSubtreeIfNeeded()
-    XCTAssertFalse(state.agentDrawerDocked, "470 wide at 1.0 is below the threshold")
+    XCTAssertEqual(state.agentsLayout, .agents, "the explicitly selected roster owns this canvas")
 
     let lists = panel.menuCursorRegions.allObjects.filter {
       $0.window === panel && !$0.isHiddenOrHasHiddenAncestor && !$0.visibleRect.isEmpty
-    }.map { $0.convert($0.bounds, to: nil) }.filter { $0.width > size.width - 20 }
-    let list = try XCTUnwrap(lists.first, "the list registers one window-wide region")
+    }.map { $0.convert($0.bounds, to: nil) }.filter {
+      $0.width > size.width - OverlayAgentDrawerLayout.conversationEdgeWidth(textScale: 1) - 20
+    }
+    let list = try XCTUnwrap(
+      lists.first, "the list registers a region beside the conversation edge")
+    XCTAssertEqual(
+      list.minX, OverlayAgentDrawerLayout.conversationEdgeWidth(textScale: 1), accuracy: 1)
+    XCTAssertEqual(list.maxX, size.width, accuracy: 1)
     let saved = NSCursor.current
     defer { saved.set() }
     NSCursor.iBeam.set()

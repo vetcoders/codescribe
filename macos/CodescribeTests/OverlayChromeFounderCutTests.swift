@@ -41,7 +41,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
     XCTAssertFalse(footer.contains("intentRail"), "notices stay out of the actions column")
     XCTAssertTrue(footer.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
-    XCTAssertTrue(overlay.contains("CSSidebarMaterial()"))
+    XCTAssertTrue(overlay.contains("OverlayCanvasSurface(palette: palette)"))
+    XCTAssertFalse(overlay.contains("CSSidebarMaterial()"), "the actions share the canvas material")
     XCTAssertTrue(overlay.contains("overlay-transcript-actions"))
   }
 
@@ -52,12 +53,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let column = try section(
       of: overlay, from: "private func transcriptActionsColumn",
       to: "private func agentDrawerColumn")
-    XCTAssertTrue(column.contains("CSSidebarMaterial()"))
+    XCTAssertFalse(column.contains("CSSidebarMaterial()"), "no second material over the canvas")
     XCTAssertTrue(column.contains(".focusable(false)"))
     XCTAssertTrue(column.contains("overlay-transcript-actions"))
-    let material = try source(at: "Codescribe/DesignSystem/CSSidebarMaterial.swift")
+    let material = try source(at: "Codescribe/Screens/Overlay/OverlayCanvasSurface.swift")
     XCTAssertTrue(material.contains("reduceTransparency"))
-    XCTAssertFalse(material.contains(".glassEffect("))
+    let sharedCanvas = try section(
+      of: material, from: "struct OverlayCanvasSurface", to: "private struct OverlayDesktopMaterial"
+    )
+    XCTAssertFalse(sharedCanvas.contains(".glassEffect("))
   }
 
   func testCoverageWarningStacksWithActionsWithoutHidingOperationErrors() throws {
@@ -869,7 +873,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       of: source, from: "private func transcriptActionsColumn",
       to: "private func agentDrawerColumn")
     XCTAssertTrue(column.contains(".focusable(false)"))
-    XCTAssertTrue(column.contains("CSSidebarMaterial()"))
+    XCTAssertFalse(column.contains("CSSidebarMaterial()"), "the canvas owns the material")
     let rail = try railSource()
     XCTAssertTrue(rail.contains("OverlayHoverControl("))
     XCTAssertTrue(rail.contains(".accessibilityIdentifier(\"overlay-intent-dock\")"))
@@ -879,7 +883,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try railSource()
     XCTAssertFalse(source.contains("primaryAction:"))
     XCTAssertTrue(source.contains("intent == .format || intent == .retranscribe ? nil"))
-    XCTAssertTrue(source.contains("FormattingPolicyOption.correction, .smart, .max"))
+    XCTAssertEqual(OverlayIntentRail.formatOnceLevels, [.correction, .smart, .max])
+    XCTAssertTrue(source.contains("ForEach(Self.formatOnceLevels"))
     XCTAssertTrue(source.contains("formatOnce(level)"))
     XCTAssertTrue(try overlaySource().contains("onFormatOnce: { state.formatTranscript(at: $0) }"))
   }
@@ -1020,16 +1025,24 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try overlaySource()
     let canvas = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
-    XCTAssertTrue(canvas.contains(".animation(reduceMotion ? nil :"))
-    XCTAssertTrue(canvas.contains("transaction.animation = nil"))
-    XCTAssertTrue(canvas.contains("transaction.disablesAnimations = true"))
+    let animations = canvas.components(separatedBy: ".animation(").count - 1
+    XCTAssertGreaterThan(animations, 0)
+    let guarded = try NSRegularExpression(
+      pattern: #"\.animation\(\s*(?:nil\s*,|reduceMotion\s*\?\s*nil\s*:)"#
+    )
+    .numberOfMatches(in: canvas, range: NSRange(canvas.startIndex..., in: canvas))
+    XCTAssertEqual(
+      guarded, animations,
+      "each canvas animation is disabled explicitly or follows the accessibility preference")
     let column = try section(
       of: source, from: "private func transcriptActionsColumn",
       to: "private func agentDrawerColumn")
-    XCTAssertTrue(column.contains("CSSidebarMaterial()"))
-    let material = try self.source(at: "Codescribe/DesignSystem/CSSidebarMaterial.swift")
+    XCTAssertFalse(
+      column.contains("CSSidebarMaterial()"), "accessibility follows the shared canvas")
+    XCTAssertTrue(source.contains("OverlayCanvasSurface(palette: palette)"))
+    let material = try self.source(at: "Codescribe/Screens/Overlay/OverlayCanvasSurface.swift")
     XCTAssertTrue(material.contains("reduceTransparency"))
-    XCTAssertTrue(material.contains("increaseContrast"))
+    XCTAssertTrue(material.contains("increasedContrast"))
     XCTAssertTrue(material.contains("colorSchemeContrast"))
   }
 
@@ -1299,11 +1312,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       resolved.delegate?.menuNeedsUpdate?(resolved)
       let titles = resolved.items.map(\.title)
       for title in [
-        "Agents", "Transcription", "Pin", "Free motion", "Show transcript by default",
+        "Agents", "Transcription", "Free motion", "Show transcript by default",
         "Auto-fold: 10 s of inactivity",
       ] {
         XCTAssertTrue(titles.contains(title), "\(title) missing from \(titles)")
       }
+      XCTAssertFalse(titles.contains("Pin"), "Pin has its own explicit header control")
+      let header = try headerSource(overlaySource())
+      XCTAssertTrue(header.contains("OverlayPinButton(state: state, palette: palette)"))
     }
   }
 
@@ -1387,7 +1403,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(header.contains("chromeWaveform(barCount:"))
     XCTAssertFalse(header.contains("OverlayRecordingLightView("))
     XCTAssertTrue(header.contains("recordingLight: state.recordingLight"))
-    XCTAssertTrue(header.contains("OverlayChannelStatusView("))
+    XCTAssertTrue(header.contains("channelStatusView"))
+    XCTAssertTrue(overlay.contains("var channelStatusView: OverlayChannelStatusView"))
     XCTAssertTrue(header.contains("OverlayRecordingControls("))
 
     let state = try source(at: "Codescribe/Screens/Overlay/OverlayState.swift")
@@ -1628,8 +1645,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     XCTAssertTrue(
       roster.contains(
-        "symbol: \"megaphone.fill\", tint: OverlayRecordingLight.agent.color, mirrored: true"))
-    XCTAssertTrue(roster.contains(".scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
+        "symbol: broadcasting ? \"megaphone\" : OverlayAgentAudioControls.liveSpeechSymbol"))
+    XCTAssertTrue(
+      roster.contains("tint: OverlayRecordingLight.agent.color, mirrored: broadcasting"))
+    XCTAssertTrue(roster.contains("scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
     let header = try headerSource(try overlaySource())
     // Spec §13.4: mini draws the dot without the word; the counter follows,
     // beside the brand in mini and in every vertical form.

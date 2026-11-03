@@ -273,11 +273,13 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       panel.orderOut(nil)
     }
 
-    // Narrow: no docked column at all; the list appears only when asked for.
+    // Narrow panes obey the explicit fold choice too; width alone never
+    // changes the selected split layout.
     let (broadcast, lena, _) = try rosterFixture()
     let state = OverlayState.previewFormatted()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
     state.selectConversation(lena.id)
+    state.foldAgentList()
     let recorder = OverlayDrawerFrameRecorder()
     let host = NSHostingView(
       rootView:
@@ -293,7 +295,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     host.layoutSubtreeIfNeeded()
-    XCTAssertEqual(recorder.frame, .zero, "700 wide at 1.0: no docked column")
+    XCTAssertEqual(recorder.frame, .zero, "an explicit fold removes the column at 700 points")
     panel.orderOut(nil)
   }
 
@@ -1529,9 +1531,11 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(bubbles.contains("messageRoute(of: message)"))
     XCTAssertTrue(bubbles.contains("overlay-message-route-"))
     XCTAssertTrue(bubbles.contains("owner.id != conversation.owner?.id"))
-    XCTAssertFalse(
-      bubbles.contains("overlay-message-reply"),
-      "a visual reply control is not a delivery until the envelope carries the source id")
+    XCTAssertTrue(
+      bubbles.contains("if allowsLiveActions, !conversation.isHumanInbox, let onReply,"))
+    XCTAssertTrue(bubbles.contains("message.captureState != .receiving, message.withdrawn != true"))
+    XCTAssertTrue(bubbles.contains("onReply(message)"))
+    XCTAssertTrue(bubbles.contains("overlay-message-reply"))
   }
 
   /// The name row carries identity, descriptor, the receipt glyph and up to
@@ -1581,9 +1585,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       monitor.contains("OverlayBroadcastPolicyMenu("),
       "the docked 0 · All row carries every member's wake policy")
+    let agentMenu = try section(of: source, from: "func agentPillMenu(", to: "func cardAgentMenu(")
+    XCTAssertTrue(agentMenu.contains("channels.first(where: { $0.channel == digit })"))
+    XCTAssertTrue(agentMenu.contains("digit != \"0\""))
     XCTAssertTrue(
-      source.contains("members: broadcastMembers.filter { $0.channel == channel.channel }"),
-      "an agent's own docked row carries only its own policy")
+      agentMenu.contains("members: [channel]"),
+      "an agent's own docked row carries only its exact channel policy")
   }
 
   /// A bound channel whose reader died keeps its row, dimmed as one unit,
