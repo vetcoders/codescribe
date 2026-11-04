@@ -320,7 +320,7 @@ class TestPruneRuntimeToTrash(unittest.TestCase):
         self.assertTrue((target_dir / "sessions/stale.wav").exists())
 
     def test_transcription_texts_and_dates_are_protected(self) -> None:
-        """In transcriptions/, only audio (.wav/.m4a) is moved; texts, sidecars and safe dates stay."""
+        """In transcriptions/, all archival audio (.m4a/.wav), texts, and sidecars stay untouched."""
         trans_dir = self.codescribe_root / "transcriptions"
         golden_date_dir = trans_dir / "2026-08-13"
         normal_date_dir = trans_dir / "2026-10-01"
@@ -333,7 +333,8 @@ class TestPruneRuntimeToTrash(unittest.TestCase):
         golden_audio.write_text("AUDIO_GOLDEN")
         self.set_age(golden_audio, 10)
 
-        # Audio in normal date directory (10 days old) -> MUST BE PRUNED
+        # Audio in normal date directory (10 days old) -> MUST ALSO BE PRESERVED
+        # (audio retention is owned exclusively by core/state/audio_retention.rs)
         normal_wav = normal_date_dir / "010203_normal.wav"
         normal_wav.write_text("AUDIO_WAV")
         self.set_age(normal_wav, 10)
@@ -366,8 +367,8 @@ class TestPruneRuntimeToTrash(unittest.TestCase):
         )
 
         candidate_paths = {c.path.resolve() for c in plan.candidates}
-        self.assertIn(normal_wav.resolve(), candidate_paths)
-        self.assertIn(normal_m4a.resolve(), candidate_paths)
+        self.assertNotIn(normal_wav.resolve(), candidate_paths)
+        self.assertNotIn(normal_m4a.resolve(), candidate_paths)
         self.assertNotIn(golden_audio.resolve(), candidate_paths)
         self.assertNotIn(txt_file.resolve(), candidate_paths)
         self.assertNotIn(md_file.resolve(), candidate_paths)
@@ -376,13 +377,9 @@ class TestPruneRuntimeToTrash(unittest.TestCase):
 
         prune_mod.execute_prune_plan(plan)
 
-        # Audio moved
-        self.assertFalse(normal_wav.exists())
-        self.assertFalse(normal_m4a.exists())
-        self.assertTrue((plan.target_trash_dir / "transcriptions/2026-10-01/010203_normal.wav").exists())
-        self.assertTrue((plan.target_trash_dir / "transcriptions/2026-10-01/010203_normal.m4a").exists())
-
-        # Texts, sidecars, and golden date audio preserved
+        # All transcriptions/ files preserved
+        self.assertTrue(normal_wav.exists())
+        self.assertTrue(normal_m4a.exists())
         self.assertTrue(golden_audio.exists())
         self.assertTrue(txt_file.exists())
         self.assertTrue(md_file.exists())
@@ -403,7 +400,7 @@ class TestPruneRuntimeToTrash(unittest.TestCase):
         s1_ret.write_text('{"status": "active"}')
         self.set_age(s1_ret, 2)
 
-        # Session 2: all files are old (10 days) -> PRUNE ALL
+        # Session 2: all files are old (10 days) -> PRUNE heavy files, PRESERVE slots/truth sidecars
         s2_wav = sessions_dir / "session-2.wav"
         s2_wav.write_text("WAV_2")
         self.set_age(s2_wav, 10)
@@ -443,10 +440,10 @@ class TestPruneRuntimeToTrash(unittest.TestCase):
         self.assertNotIn(s1_wav.resolve(), candidate_paths)
         self.assertNotIn(s1_ret.resolve(), candidate_paths)
 
-        # Session 2: all files expired -> moved
+        # Session 2: heavy/retention files moved, slots sidecar preserved
         self.assertIn(s2_wav.resolve(), candidate_paths)
         self.assertIn(s2_json.resolve(), candidate_paths)
-        self.assertIn(s2_slots.resolve(), candidate_paths)
+        self.assertNotIn(s2_slots.resolve(), candidate_paths)
         self.assertIn(s2_ret.resolve(), candidate_paths)
 
         # Session 3: preserved because s3_wav is target of last_session.wav symlink
@@ -459,7 +456,7 @@ class TestPruneRuntimeToTrash(unittest.TestCase):
         self.assertTrue(s1_ret.exists())
         self.assertFalse(s2_wav.exists())
         self.assertFalse(s2_json.exists())
-        self.assertFalse(s2_slots.exists())
+        self.assertTrue(s2_slots.exists())
         self.assertFalse(s2_ret.exists())
         self.assertTrue(s3_wav.exists())
         self.assertTrue(s3_ret.exists())
@@ -467,7 +464,7 @@ class TestPruneRuntimeToTrash(unittest.TestCase):
         trash_dest = plan.target_trash_dir
         self.assertTrue((trash_dest / "sessions/session-2.wav").exists())
         self.assertTrue((trash_dest / "sessions/session-2.json").exists())
-        self.assertTrue((trash_dest / "sessions/session-2.slots.jsonl").exists())
+        self.assertFalse((trash_dest / "sessions/session-2.slots.jsonl").exists())
         self.assertTrue((trash_dest / "sessions/session-2.audio-retention.json").exists())
 
     def test_additional_bloat_categories(self) -> None:

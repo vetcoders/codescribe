@@ -478,6 +478,10 @@ def build_prune_plan(
 
                 if all_expired:
                     for fp in group_files:
+                        # Preserve lightweight metadata/slots/truth sidecars in sessions/;
+                        # only move heavy raw .wav, .trail.jsonl, and .audio-retention.json.
+                        if fp.name.endswith((".slots.jsonl", ".truth.json", ".revisions.jsonl", ".replay-card.json", ".source.json")):
+                            continue
                         if fp not in seen_paths:
                             seen_paths.add(fp)
                             candidates.append(PruneCandidate(
@@ -561,41 +565,11 @@ def build_prune_plan(
                         mtime=mtime,
                     ))
 
-    # 8. Expired transcriptions in codescribe_root/transcriptions/
-    # Only prune expired audio files (.m4a, .wav). NEVER prune text files (.txt, .md)
-    # or truth sidecars (.revisions.jsonl, .truth.json). Skip benchmark date subdirectories.
-    transcriptions_dir = codescribe_root / "transcriptions"
-    if transcriptions_dir.is_dir():
-        for root, dirs, files in os.walk(transcriptions_dir):
-            dirs[:] = [
-                d for d in dirs
-                if d not in SAFE_PRESERVED_DIR_NAMES and d not in SAFE_PRESERVED_TRANSCRIPTION_DATES
-            ]
-            root_path = Path(root)
-
-            if any(part in SAFE_PRESERVED_TRANSCRIPTION_DATES for part in root_path.parts):
-                continue
-
-            for fname in files:
-                if not (fname.endswith(".m4a") or fname.endswith(".wav")):
-                    continue
-
-                fpath = root_path / fname
-                try:
-                    mtime = fpath.stat().st_mtime
-                except OSError:
-                    continue
-
-                if (now - mtime) > expiry_seconds:
-                    if fpath not in seen_paths and not is_path_safe_from_prune(fpath, protected_paths):
-                        seen_paths.add(fpath)
-                        candidates.append(PruneCandidate(
-                            path=fpath,
-                            category="expired_sessions_and_transcriptions",
-                            is_dir=False,
-                            bytes=get_path_size(fpath),
-                            mtime=mtime,
-                        ))
+    # 8. transcriptions/ is NEVER pruned by runtime hygiene:
+    # - Paired .m4a + .txt + .revisions.jsonl + .truth.json are the durable daily archive
+    #   (core/audio/archive.rs encodes AAC .m4a specifically for long-term "forever" retention).
+    # - Audio expiration is owned exclusively by core/state/audio_retention.rs governed by
+    #   settings.json ("audio.retention").
 
     return PrunePlan(
         codescribe_root=codescribe_root,
