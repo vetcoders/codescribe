@@ -1029,13 +1029,39 @@ impl LiveSessionSpeakerTracker {
         }
     }
 
-    /// Attribute a newly sealed occurrence and emit an immediate sidecar line + INFO log.
+    /// Attribute a newly sealed occurrence using the shared WeSpeaker ONNX embedder.
     pub fn observe_sealed_occurrence(
         &mut self,
         ledger: &AcousticLedger,
         occurrence: &crate::pipeline::acoustic_ledger::OccurrenceIdentity,
         pcm: &[f32],
         pcm_sample_start: u64,
+    ) -> Vec<UtteranceSpeakerReceipt> {
+        let Some(embedder) = shared_wespeaker_embedder() else {
+            return Vec::new();
+        };
+        let sample_rate_hz = self.sample_rate_hz;
+        self.observe_sealed_occurrence_with(ledger, occurrence, pcm, pcm_sample_start, |slice| {
+            let pcm_16k = if sample_rate_hz == 16_000 {
+                slice.to_vec()
+            } else {
+                crate::audio::loader::resample_to_16k(slice, sample_rate_hz)
+                    .map_err(|_| AttributionError::InferenceFailed)?
+            };
+            embedder
+                .embed_sealed_pcm(&pcm_16k)
+                .map_err(|_| AttributionError::InferenceFailed)
+        })
+    }
+
+    /// Attribute a newly sealed occurrence with an explicit embedding function.
+    pub fn observe_sealed_occurrence_with(
+        &mut self,
+        ledger: &AcousticLedger,
+        occurrence: &crate::pipeline::acoustic_ledger::OccurrenceIdentity,
+        pcm: &[f32],
+        pcm_sample_start: u64,
+        mut embed_fn: impl FnMut(&[f32]) -> Result<SpeakerEmbedding, AttributionError>,
     ) -> Vec<UtteranceSpeakerReceipt> {
         if !ledger.is_sealed(occurrence) || self.attributed_occurrences.contains(occurrence) {
             return Vec::new();
@@ -1046,9 +1072,6 @@ impl LiveSessionSpeakerTracker {
         if slots.is_empty() {
             return Vec::new();
         }
-        let Some(embedder) = shared_wespeaker_embedder() else {
-            return Vec::new();
-        };
         let max_gap = u64::from(self.sample_rate_hz) / 2;
         let mut spans = group_word_slots_into_sealed_spans(slots, max_gap, self.capture_epoch);
         if spans.is_empty() {
@@ -1068,17 +1091,7 @@ impl LiveSessionSpeakerTracker {
                     pcm,
                     sample_rate_hz,
                 },
-                |slice| {
-                    let pcm_16k = if sample_rate_hz == 16_000 {
-                        slice.to_vec()
-                    } else {
-                        crate::audio::loader::resample_to_16k(slice, sample_rate_hz)
-                            .map_err(|_| AttributionError::InferenceFailed)?
-                    };
-                    embedder
-                        .embed_sealed_pcm(&pcm_16k)
-                        .map_err(|_| AttributionError::InferenceFailed)
-                },
+                &mut embed_fn,
             );
             let Ok(attr) = attribution else {
                 continue;
@@ -1461,56 +1474,29 @@ mod tests {
     }
 
     #[test]
-    fn real_wespeaker_onnx_and_live_session_speaker_tracker_write_sidecars() {
-        let home = std::env::var_os("HOME").expect("HOME set");
-        let host_model = std::path::PathBuf::from(home)
-            .join(".codescribe/models")
-            .join(WESPEAKER_MODEL_FILENAME);
-        assert!(
-            host_model.is_file(),
-            "expected WeSpeaker ONNX model at {}",
-            host_model.display()
-        );
+    fn live_session_speaker_tracker_writes_sidecars_hermetically() {
         let temp = tempfile::tempdir().expect("temp data dir");
-        let models_dir = temp.path().join("models");
-        std::fs::create_dir_all(&models_dir).expect("create temp models dir");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&host_model, models_dir.join(WESPEAKER_MODEL_FILENAME))
-            .expect("symlink ONNX model into isolated CODESCRIBE_DATA_DIR");
-
         let _guard = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
-        let model_path = resolve_wespeaker_model_path().expect("resolve model in isolated dir");
-        let embedder = OrtWeSpeakerEmbedder::from_file(
-            &model_path,
-            WESPEAKER_EMBEDDING_DIM,
-            FbankConfig::default(),
-        )
-        .expect("load real WeSpeaker ONNX model");
-        let signal_a: Vec<f32> = (0..32_000)
-            .map(|i| {
-                let t = i as f32 / 16_000.0;
-                (2.0 * std::f32::consts::PI * 140.0 * t).sin() * 0.3
-                    + (2.0 * std::f32::consts::PI * 420.0 * t).sin() * 0.15
-            })
-            .collect();
-        let emb_a = embedder
-            .embed_sealed_pcm(&signal_a)
-            .expect("embed signal_a");
-        assert_eq!(emb_a.dim, WESPEAKER_EMBEDDING_DIM);
-
         let session_id = "test-live-diarization-session";
         let (mut ledger, _) = sealed_ledger_with_slots(session_id, 1, 0, 32_000, &[(0, 32_000)]);
         let occ1 = OccurrenceIdentity::new(session_id, 1, 0, 32_000);
         let occ2 = seal_owner_in_ledger(&mut ledger, session_id, 1, 33_600, 40_000, 2);
 
         let mut live = LiveSessionSpeakerTracker::for_session(session_id, 1, 16_000);
-        let r1 = live.observe_sealed_occurrence(&ledger, &occ1, &signal_a, 0);
+        let signal_a = vec![0.25_f32; 32_000];
+        let r1 = live.observe_sealed_occurrence_with(&ledger, &occ1, &signal_a, 0, |_| {
+            let mut v = vec![0.0_f32; WESPEAKER_EMBEDDING_DIM];
+            v[0] = 1.0;
+            SpeakerEmbedding::from_vector(v)
+        });
         assert_eq!(r1.len(), 1);
         assert_eq!(r1[0].speaker_label.as_deref(), Some("SPEAKER_00"));
         assert_eq!(r1[0].decision_kind, "dynamic_cluster");
 
         let short_pcm = vec![0.1_f32; 6_400];
-        let r2 = live.observe_sealed_occurrence(&ledger, &occ2, &short_pcm, 33_600);
+        let r2 = live.observe_sealed_occurrence_with(&ledger, &occ2, &short_pcm, 33_600, |_| {
+            panic!("short span must not invoke embed callback")
+        });
         assert_eq!(r2.len(), 1);
         assert_eq!(r2[0].speaker_label.as_deref(), Some("SPEAKER_00"));
         assert_eq!(r2[0].decision_kind, "short_span_carry_over");
@@ -1532,5 +1518,29 @@ mod tests {
                 .join(format!("{session_id}.diarization.json"))
                 .is_file()
         );
+    }
+
+    #[test]
+    #[ignore = "explicit local ONNX probe; requires CODESCRIBE_WESPEAKER_ONNX_PATH"]
+    fn real_wespeaker_onnx_probe_with_explicit_model_path() {
+        let model_path = std::env::var("CODESCRIBE_WESPEAKER_ONNX_PATH")
+            .map(std::path::PathBuf::from)
+            .expect("set CODESCRIBE_WESPEAKER_ONNX_PATH to run real ONNX probe");
+        let embedder = OrtWeSpeakerEmbedder::from_file(
+            &model_path,
+            WESPEAKER_EMBEDDING_DIM,
+            FbankConfig::default(),
+        )
+        .expect("load real WeSpeaker ONNX model");
+        let signal_a: Vec<f32> = (0..32_000)
+            .map(|i| {
+                let t = i as f32 / 16_000.0;
+                (2.0 * std::f32::consts::PI * 140.0 * t).sin() * 0.3
+            })
+            .collect();
+        let emb_a = embedder
+            .embed_sealed_pcm(&signal_a)
+            .expect("embed signal_a");
+        assert_eq!(emb_a.dim, WESPEAKER_EMBEDDING_DIM);
     }
 }
