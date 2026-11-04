@@ -493,7 +493,15 @@ impl TranscriptBus {
                     entry.seal_receipt.clone(),
                     entry.manual_edit_receipt.clone(),
                     entry.presentation_receipt.as_ref(),
-                    if is_terminal_seal || is_manual_edit || is_coverage_verdict {
+                    if writer.sealed
+                        || is_terminal_seal
+                        || is_manual_edit
+                        || is_coverage_verdict
+                        || matches!(
+                            &revision.action,
+                            ReducerAction::ApplyConsultationPresentation { .. }
+                        )
+                    {
                         ledger
                             .seal_of(&entry.occurrence)
                             .map_or_else(Vec::new, |seal| seal.word_finality.clone())
