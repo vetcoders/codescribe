@@ -274,6 +274,9 @@ def agent_turn_lease_path() -> Path:
 # =============================================================================
 
 
+_VERIFIED_CLOSED_SEGMENTS_CACHE: dict[tuple[str, int, int], tuple[list[dict[str, Any]], int]] = {}
+
+
 def generation_sources(path: Path) -> tuple[list[dict[str, Any]], int, int, float | None]:
     """Read the single generation owner's receipt; broken links never look idle."""
     path = Path(os.path.abspath(path))
@@ -282,6 +285,7 @@ def generation_sources(path: Path) -> tuple[list[dict[str, Any]], int, int, floa
     if not receipt.exists():
         return ([{"path": str(path), "start": 0, "length": current.st_size,
                   "dev": current.st_dev, "ino": current.st_ino}], current.st_dev, current.st_ino, getattr(current, "st_birthtime", None))
+    receipt_stat = receipt.stat()
     with receipt.open("rb") as handle:
         raw = handle.read((4 << 20) + 1)
     if len(raw) > 4 << 20:
@@ -305,20 +309,29 @@ def generation_sources(path: Path) -> tuple[list[dict[str, Any]], int, int, floa
             active = dict(next_generation)
         elif (current.st_dev, current.st_ino) != (active["dev"], active["ino"]):
             raise ValueError("broken generation transaction")
-    expected = 0
-    events = path.parent / "events"
-    for segment in segments:
-        if set(segment) != {"id", "path", "start", "length", "dev", "ino", "day", "compressed", "sha256", "superseded"}:
-            raise ValueError("unknown generation segment")
-        physical = Path(segment["path"])
-        if not physical.is_relative_to(events) or ".." in physical.parts:
-            raise ValueError("generation outside selected storage")
-        meta = physical.stat()
-        if (segment["start"], segment["length"], segment["dev"], segment["ino"]) != (
-            expected, meta.st_size, meta.st_dev, meta.st_ino
-        ):
-            raise ValueError("changed closed generation")
-        expected += meta.st_size
+
+    cache_key = (str(receipt), receipt_stat.st_mtime_ns, receipt_stat.st_size)
+    cached = _VERIFIED_CLOSED_SEGMENTS_CACHE.get(cache_key)
+    if cached is not None:
+        verified_closed, expected = cached
+        segments = [dict(s) for s in verified_closed]
+    else:
+        expected = 0
+        events = path.parent / "events"
+        for segment in segments:
+            if set(segment) != {"id", "path", "start", "length", "dev", "ino", "day", "compressed", "sha256", "superseded"}:
+                raise ValueError("unknown generation segment")
+            physical = Path(segment["path"])
+            if not physical.is_relative_to(events) or ".." in physical.parts:
+                raise ValueError("generation outside selected storage")
+            meta = physical.stat()
+            if (segment["start"], segment["length"], segment["dev"], segment["ino"]) != (
+                expected, meta.st_size, meta.st_dev, meta.st_ino
+            ):
+                raise ValueError("changed closed generation")
+            expected += meta.st_size
+        _VERIFIED_CLOSED_SEGMENTS_CACHE[cache_key] = ([dict(s) for s in segments], expected)
+
     if active["start"] != expected or (active["dev"], active["ino"]) != (current.st_dev, current.st_ino):
         raise ValueError("broken active generation")
     active.update(path=str(path), length=current.st_size)
@@ -346,16 +359,31 @@ def generation_metadata(path: Path) -> Any:
 class GenerationFile:
     """Bounded ordinary open/read/seek over verified, ordered journal files."""
     def __init__(self, path: Path) -> None:
+        self._handle: Any | None = None
+        self._handle_segment_key: tuple[str, int, int] | None = None
         self.path = path
         self.segments, self.dev, self.ino, _ = generation_sources(path)
         self.position = 0
         self.size = self.segments[-1]["start"] + self.segments[-1]["length"]
 
+    def close(self) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+            self._handle = None
+            self._handle_segment_key = None
+
     def __enter__(self) -> GenerationFile:
         return self
 
     def __exit__(self, *_: Any) -> None:
-        pass
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
 
     def metadata(self, refresh: bool = False) -> Any:
         return generation_metadata(self.path)
@@ -370,6 +398,32 @@ class GenerationFile:
         self.position = position
         return position
 
+    def _segment_handle(self, segment: dict[str, Any]) -> Any:
+        seg_key = (segment["path"], segment["dev"], segment["ino"])
+        if self._handle is not None and self._handle_segment_key == seg_key:
+            return self._handle
+        self.close()
+        try:
+            handle = Path(segment["path"]).open("rb")
+        except FileNotFoundError:
+            refreshed, _, _, _ = generation_sources(self.path)
+            current = next(
+                (s for s in refreshed if s.get("id") == segment.get("id") and s["start"] == segment["start"] and s["length"] == segment["length"]),
+                None,
+            )
+            if current is None:
+                raise ValueError("lost generation")
+            segment = current
+            seg_key = (segment["path"], segment["dev"], segment["ino"])
+            handle = Path(segment["path"]).open("rb")
+        meta = os.fstat(handle.fileno())
+        if (meta.st_dev, meta.st_ino) != (segment["dev"], segment["ino"]) or meta.st_size < segment["length"]:
+            handle.close()
+            raise ValueError("changed generation descriptor")
+        self._handle = handle
+        self._handle_segment_key = seg_key
+        return handle
+
     def read(self, width: int) -> bytes:
         if width < 0:
             raise ValueError("unbounded generation read refused")
@@ -380,21 +434,12 @@ class GenerationFile:
                 continue
             if self.position < segment["start"]:
                 raise ValueError("generation gap")
-            try:
-                descriptor = Path(segment["path"]).open("rb")
-            except FileNotFoundError:
-                refreshed, _, _, _ = generation_sources(self.path)
-                current = next((s for s in refreshed if s.get("id") == segment.get("id") and s["start"] == segment["start"] and s["length"] == segment["length"]), None)
-                if current is None:
-                    raise ValueError("lost generation")
-                segment = current
-                descriptor = Path(segment["path"]).open("rb")
-            with descriptor as handle:
-                meta = os.fstat(handle.fileno())
-                if (meta.st_dev, meta.st_ino) != (segment["dev"], segment["ino"]) or meta.st_size < segment["length"]:
-                    raise ValueError("changed generation descriptor")
-                handle.seek(self.position - segment["start"])
-                raw = handle.read(min(width, end - self.position))
+            handle = self._segment_handle(segment)
+            target = self.position - segment["start"]
+            if handle.tell() != target:
+                handle.seek(target)
+            to_read = min(width, end - self.position)
+            raw = handle.read(to_read)
             if not raw:
                 raise ValueError("short generation")
             out.extend(raw)
@@ -404,14 +449,15 @@ class GenerationFile:
 
     def readline(self, limit: int = 1024 * 1024 + 1) -> bytes:
         out = bytearray()
+        chunk_size = 65536
         while len(out) < limit:
-            raw = self.read(min(4096, limit - len(out)))
+            raw = self.read(min(chunk_size, limit - len(out)))
             if not raw:
                 break
             newline = raw.find(b"\n")
             if newline >= 0:
                 out.extend(raw[:newline + 1])
-                self.position -= len(raw) - newline - 1
+                self.seek(self.position - (len(raw) - newline - 1))
                 break
             out.extend(raw)
         return bytes(out)
@@ -3290,6 +3336,9 @@ def resolve_claude_terminal_context(
     )
 
 
+_CLAUDE_HOST_CONTEXT_CACHE: dict[tuple[str, bool], tuple[int, dict[str, Any]]] = {}
+
+
 def _resolve_claude_host_context(
     provider_session_id: str,
     *,
@@ -3300,6 +3349,11 @@ def _resolve_claude_host_context(
     """Find the host context `extract` reads off the process that shows a Claude Code session."""
     if not isinstance(provider_session_id, str) or not provider_session_id.strip():
         return None
+    cached = _CLAUDE_HOST_CONTEXT_CACHE.get((provider_session_id, skip_daemon_hosted))
+    if cached is not None:
+        cached_pid, cached_ctx = cached
+        if cached_pid is not None and process_is_alive(cached_pid):
+            return cached_ctx
     claude_home = (home.expanduser() if home is not None else Path.home()) / ".claude"
     short = provider_session_id[:8]
     procs = process_table()
@@ -3354,6 +3408,7 @@ def _resolve_claude_host_context(
             visited.add(current)
             frame = extract(current, procs[current])
             if frame is not None:
+                _CLAUDE_HOST_CONTEXT_CACHE[(provider_session_id, skip_daemon_hosted)] = (current, frame)
                 return frame
             current = procs[current]["ppid"]
 
@@ -3372,6 +3427,7 @@ def _resolve_claude_host_context(
         if provider_session_id in command or (
             len(short) >= 8 and re.search(rf"\battach\s+{re.escape(short)}\b", command)
         ):
+            _CLAUDE_HOST_CONTEXT_CACHE[(provider_session_id, skip_daemon_hosted)] = (pid, frame)
             return frame
         frame_clients.append({
             "pid": pid,
@@ -3419,6 +3475,9 @@ def _resolve_claude_host_context(
                 best_delta = delta
                 best_frame = client["frame"]
         if best_frame is not None:
+            best_pid = next((c["pid"] for c in frame_clients if c["frame"] == best_frame), None)
+            if best_pid is not None:
+                _CLAUDE_HOST_CONTEXT_CACHE[(provider_session_id, skip_daemon_hosted)] = (best_pid, best_frame)
             return best_frame
 
     # 4. Fallback when PTY ioctl/stat is unavailable (e.g. synthetic test doubles):
@@ -3466,6 +3525,7 @@ def _resolve_claude_host_context(
             if (loaded_pairs and pair in loaded_pairs) or (
                 ready_counts and rendered in ready_counts
             ):
+                _CLAUDE_HOST_CONTEXT_CACHE[(provider_session_id, skip_daemon_hosted)] = (client["pid"], client["frame"])
                 return client["frame"]
 
     return None
@@ -4277,10 +4337,18 @@ class SessionLease:
             self.persist(active=True)
 
     def collect_acknowledgments(self, native: Any = None) -> None:
+        state_view = {
+            "schema": LEASE_SCHEMA,
+            "lease_id": self.lease_id,
+            "provider": self.provider,
+            "provider_session_id": self.provider_session_id,
+            "bus": self.bus,
+            "pending": list(self.pending.values()),
+        }
         completed = [
             delivery_id
             for delivery_id in self.pending
-            if delivery_acknowledged(self.root, self.lease_id, delivery_id, self.pending[delivery_id])
+            if delivery_acknowledged(self.root, self.lease_id, delivery_id, self.pending[delivery_id], state=state_view)
         ]
         settled = []
         for delivery_id in completed:
@@ -4381,7 +4449,8 @@ def receipt_envelope(payload: dict[str, Any], bus: str) -> dict[str, Any]:
 
 def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
                           expected_payload: dict[str, Any] | None = None, *,
-                          historical: bool = False) -> bool:
+                          historical: bool = False,
+                          state: dict[str, Any] | None = None) -> bool:
     path = root / "acknowledgments" / lease_id / f"{delivery_id}.json"
     try:
         metadata = path.lstat()
@@ -4394,19 +4463,19 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
         return False
     if set(receipt) == {"lease_id", "delivery_id"}:
         if historical:
-            state = read_json(root / "leases" / f"{lease_id}.json") or {}
-            return expected_payload is not None and expected_payload.get("bus") == state.get("bus")
+            current_state = state if state is not None else (read_json(root / "leases" / f"{lease_id}.json") or {})
+            return expected_payload is not None and expected_payload.get("bus") == current_state.get("bus")
         return True
-    state = read_json(root / "leases" / f"{lease_id}.json")
-    if (not state or state.get("schema") != LEASE_SCHEMA
-            or state.get("lease_id") != lease_id
-            or not all(isinstance(state.get(key), str) and state[key]
+    current_state = state if state is not None else read_json(root / "leases" / f"{lease_id}.json")
+    if (not current_state or current_state.get("schema") != LEASE_SCHEMA
+            or current_state.get("lease_id") != lease_id
+            or not all(isinstance(current_state.get(key), str) and current_state[key]
                        for key in ("provider", "provider_session_id", "bus"))
-            or lease_identifier(state["provider"], state["provider_session_id"]) != lease_id):
+            or lease_identifier(current_state["provider"], current_state["provider_session_id"]) != lease_id):
         return False
-    owner = {key: state[key] for key in ("lease_id", "provider", "provider_session_id", "bus")}
+    owner = {key: current_state[key] for key in ("lease_id", "provider", "provider_session_id", "bus")}
     if historical:
-        if (not owned_queue_envelope(expected_payload, state["provider_session_id"])
+        if (not owned_queue_envelope(expected_payload, current_state["provider_session_id"])
                 or not isinstance(expected_payload.get("bus"), str)):
             return False
         owner["bus"] = expected_payload["bus"]
@@ -4421,7 +4490,7 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
             or any(not isinstance(item, dict) for item in frozen)
             or not any(matches(item) for item in frozen)):
         return False
-    pending = state.get("pending", [])
+    pending = current_state.get("pending", [])
     original = expected_payload
     if original is None and isinstance(pending, list):
         original = next((item for item in pending if isinstance(item, dict)
@@ -4875,6 +4944,21 @@ def unread_pending(args: argparse.Namespace, *, include_quiet: bool = False) -> 
     if not isinstance(pending, list) or any(not isinstance(row, dict) for row in pending):
         raise MailboxReadError("mailbox_pending_invalid", "invalid pending mailbox; nothing read")
     rows = []
+    policy_cache: dict[tuple[str, str, str, bool], str] = {}
+
+    def cached_delivery_broadcast_policy(payload: dict[str, Any]) -> str:
+        key = (
+            str(payload.get("provider", "")),
+            str(payload.get("provider_session_id", "")),
+            str(payload.get("bus", "")),
+            is_broadcast_delivery(payload),
+        )
+        cached = policy_cache.get(key)
+        if cached is None:
+            cached = delivery_broadcast_policy(args.bridge_home, payload)
+            policy_cache[key] = cached
+        return cached
+
     for row in pending:
         identity = row.get("delivery_id")
         if row.get("kind") in DRAFT_KINDS:
@@ -4888,8 +4972,8 @@ def unread_pending(args: argparse.Namespace, *, include_quiet: bool = False) -> 
         if not isinstance(owner, dict) or any(owner.get(key) != row[key] for key in (
                 "lease_id", "provider", "provider_session_id")):
             raise MailboxReadError("mailbox_delivery_owner_mismatch", "foreign pending delivery owner; nothing read")
-        if (not delivery_acknowledged(args.bridge_home, lease_id, identity, row)
-                and (include_quiet or delivery_broadcast_policy(args.bridge_home, row) == "on")):
+        if (not delivery_acknowledged(args.bridge_home, lease_id, identity, row, state=state)
+                and (include_quiet or cached_delivery_broadcast_policy(row) == "on")):
             rows.append(row)
     return state, rows
 
@@ -5869,10 +5953,16 @@ def _xai_oidc_speech_key() -> str | None:
         raise SpeechCredentialError("credential_storage") from None
 
 
+_KEYCHAIN_KEY_CACHE: dict[str, str | None] = {}
+
+
 def _xai_speech_key() -> str | None:
     """Explicit Keychain key first, then the automatically renewed Grok grant."""
     import subprocess
 
+    cached = _KEYCHAIN_KEY_CACHE.get("LLM_XAI_API_KEY")
+    if cached is not None:
+        return cached
     probe = subprocess.run(
         ["/usr/bin/security", "find-generic-password", "-s",
          "com.vetcoders.codescribe", "-a", "LLM_XAI_API_KEY", "-w"],
@@ -5880,6 +5970,7 @@ def _xai_speech_key() -> str | None:
     )
     key = probe.stdout.strip() if probe.returncode == 0 else ""
     if key:
+        _KEYCHAIN_KEY_CACHE["LLM_XAI_API_KEY"] = key
         return key
     return _xai_oidc_speech_key()
 
@@ -5896,6 +5987,9 @@ def _openai_speech_key() -> str | None:
     env_key = os.environ.get("LLM_OPENAI_API_KEY", "").strip()
     if env_key:
         return env_key
+    cached = _KEYCHAIN_KEY_CACHE.get("LLM_OPENAI_API_KEY")
+    if cached is not None:
+        return cached
     probe = subprocess.run(
         [
             "security",
@@ -5910,7 +6004,10 @@ def _openai_speech_key() -> str | None:
         text=True,
     )
     key = probe.stdout.strip()
-    return key or None
+    result = key or None
+    if result:
+        _KEYCHAIN_KEY_CACHE["LLM_OPENAI_API_KEY"] = result
+    return result
 
 
 VOICES_FILENAME = "voices.json"
@@ -7472,7 +7569,8 @@ def _wait_for_take_end(
         )
         current = _lifecycle_offsets(cursor)
         if checkpoint_lock is None:
-            _save_lifecycle_cursor(bus, root, cursor)
+            if current != previous or idle:
+                _save_lifecycle_cursor(bus, root, cursor)
         elif current != previous:
             _save_lifecycle_cursor_unless_locked(checkpoint_lock, bus, root, cursor)
         remaining = deadline - time.monotonic()
@@ -7607,6 +7705,8 @@ def _play_pcm_24k(
                 ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
         incomplete_scans = 0
+        last_saved_offsets = _lifecycle_offsets(cursor)
+        last_saved_takes = _cursor_holds_take(cursor, kept)
         while True:
             if control is not None and control.stopped():
                 if feeder is not None:
@@ -7641,7 +7741,12 @@ def _play_pcm_24k(
                 return False, "take started during playback", "take_started"
             # Stop on an observed take before any checkpoint filesystem write.
             # A refused prefix can be replayed by the next admission scan.
-            _save_lifecycle_cursor(speech_bus, root, cursor)
+            current_offsets = _lifecycle_offsets(cursor)
+            current_takes = _cursor_holds_take(cursor, kept)
+            if current_offsets != last_saved_offsets or current_takes != last_saved_takes or refuse:
+                _save_lifecycle_cursor(speech_bus, root, cursor)
+                last_saved_offsets = current_offsets
+                last_saved_takes = current_takes
             # A player that ended before the refusal played every sample: a take
             # that starts after the last sample cannot unsay the reply, so the
             # result below reports what the player did (Founder, 2026-10-23).
@@ -9654,33 +9759,34 @@ def send_text_command(args: argparse.Namespace) -> int:
         sent_to = ([{"name": owner["audience"], "channel": owner["channel"]}
                     for owner in owners if policies[owner["lease_id"]] != "off"]
                    if broadcast else None)
-        for owner in owners:
-            event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
-                     **owner, **hold, "message_id": identity, "source_event_id": identity,
-                     "source": "typed", "text": text, "emitted_at": emitted_at,
-                     "sender": dict(FOUNDER_SENDER), "recipients": [owner]}
-            if user_reply is not None:
-                event["user_reply_to"] = user_reply
-            if also_sent_to:
-                event["also_sent_to"] = also_sent_to
-                event["also_sent_to_basis"] = "sync_selection"
-            if attachments:
-                event["attachments"] = attachments
-            if broadcast:
-                event["origin_channel"] = "0"
-                event["target"] = {"mode": "broadcast", "channel": "0", "recipients": list(sent_to)}
-            try:
-                receipt = publish_reply_event(Path(owner["bus"]), event, bridge_root=root)
-                if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-                        for key in ("stream_dev", "stream_inode", "offset", "length"))
-                        or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-                        or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-                    raise ValueError("publication has no durable receipt; do not automatically resend")
-            except (OSError, ValueError, RuntimeError) as error:
-                raise UserTextPublicationUncertain("Some recipients may already have received this message; check receipts before resending.") from error
-            receipts.append(receipt)
-            recipient_receipts.append({**owner, **hold, "source": receipt,
-                "broadcast": policies[owner["lease_id"]]})
+    # BUS-06: Release flock(LOCK_SH) before executing subprocess-heavy publish_reply_event calls
+    for owner in owners:
+        event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
+                 **owner, **hold, "message_id": identity, "source_event_id": identity,
+                 "source": "typed", "text": text, "emitted_at": emitted_at,
+                 "sender": dict(FOUNDER_SENDER), "recipients": [owner]}
+        if user_reply is not None:
+            event["user_reply_to"] = user_reply
+        if also_sent_to:
+            event["also_sent_to"] = also_sent_to
+            event["also_sent_to_basis"] = "sync_selection"
+        if attachments:
+            event["attachments"] = attachments
+        if broadcast:
+            event["origin_channel"] = "0"
+            event["target"] = {"mode": "broadcast", "channel": "0", "recipients": list(sent_to)}
+        try:
+            receipt = publish_reply_event(Path(owner["bus"]), event, bridge_root=root)
+            if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+                    for key in ("stream_dev", "stream_inode", "offset", "length"))
+                    or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+                    or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+                raise ValueError("publication has no durable receipt; do not automatically resend")
+        except (OSError, ValueError, RuntimeError) as error:
+            raise UserTextPublicationUncertain("Some recipients may already have received this message; check receipts before resending.") from error
+        receipts.append(receipt)
+        recipient_receipts.append({**owner, **hold, "source": receipt,
+            "broadcast": policies[owner["lease_id"]]})
     if broadcast:
         # The publisher's own record of the admitted list: receipt_state reads
         # it even when no recipient's reader was alive to leave a file.
