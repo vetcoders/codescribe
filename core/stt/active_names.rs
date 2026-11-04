@@ -1485,7 +1485,7 @@ mod tests {
                 "heartbeat_unix": now - 5.0,
                 "provider": provider,
                 "provider_session_id": session,
-                "frame": {"pane_id": 1, "window_id": 2},
+                "frame": {"pane_id": 1, "session": "vc-frame"},
                 "terminal": {"host": "iterm2", "host_bundle_id": "com.googlecode.iterm2"},
                 "pending": [
                     {"kind": "seal", "delivery_id": "111111111111111111111111", "emitted_at": "2026-10-14T12:00:00Z"},
