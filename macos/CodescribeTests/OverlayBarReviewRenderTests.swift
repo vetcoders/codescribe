@@ -89,8 +89,8 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     XCTAssertTrue(state.channelMapInHeader, "the horizontal map is on")
     XCTAssertEqual(state.channelMapLayoutModel.count, agents.count)
     XCTAssertEqual(
-      state.channelMapLayoutModel.chips.map(\.digit), ["0"] + agents.map(\.0),
-      "(0) leads the agents' chips")
+      state.channelMapLayoutModel.chips.map(\.digit), ["0"] + agents.map(\.0).sorted(),
+      "(0) leads the agents' chips, in digit order")
     XCTAssertEqual(state.presentationMode, mode)
     return (state, conversations)
   }
