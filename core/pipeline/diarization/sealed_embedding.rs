@@ -945,21 +945,13 @@ static SHARED_WESPEAKER: std::sync::LazyLock<Option<Arc<OrtWeSpeakerEmbedder>>> 
         }
     });
 
-/// Resolve the local WeSpeaker ONNX model path from `Config::config_dir()/models`
-/// or `~/.codescribe/models/wespeaker-voxceleb-resnet34-LM.onnx`.
+/// Resolve the local WeSpeaker ONNX model path strictly from `Config::config_dir()/models`
+/// so isolated `CODESCRIBE_DATA_DIR` test environments never leak into `HOME`.
 pub fn resolve_wespeaker_model_path() -> Option<std::path::PathBuf> {
     let candidate = crate::config::Config::config_dir()
         .join("models")
         .join(WESPEAKER_MODEL_FILENAME);
-    if candidate.is_file() {
-        return Some(candidate);
-    }
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
-    let fallback = home
-        .join(".codescribe")
-        .join("models")
-        .join(WESPEAKER_MODEL_FILENAME);
-    fallback.is_file().then_some(fallback)
+    candidate.is_file().then_some(candidate)
 }
 
 /// Process-wide cached WeSpeaker ONNX embedder (`wespeaker-voxceleb-resnet34-LM.onnx`).
@@ -1470,11 +1462,24 @@ mod tests {
 
     #[test]
     fn real_wespeaker_onnx_and_live_session_speaker_tracker_write_sidecars() {
-        let Some(model_path) = resolve_wespeaker_model_path() else {
-            panic!(
-                "expected WeSpeaker ONNX model at ~/.codescribe/models/wespeaker-voxceleb-resnet34-LM.onnx"
-            );
-        };
+        let home = std::env::var_os("HOME").expect("HOME set");
+        let host_model = std::path::PathBuf::from(home)
+            .join(".codescribe/models")
+            .join(WESPEAKER_MODEL_FILENAME);
+        assert!(
+            host_model.is_file(),
+            "expected WeSpeaker ONNX model at {}",
+            host_model.display()
+        );
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let models_dir = temp.path().join("models");
+        std::fs::create_dir_all(&models_dir).expect("create temp models dir");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&host_model, models_dir.join(WESPEAKER_MODEL_FILENAME))
+            .expect("symlink ONNX model into isolated CODESCRIBE_DATA_DIR");
+
+        let _guard = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        let model_path = resolve_wespeaker_model_path().expect("resolve model in isolated dir");
         let embedder = OrtWeSpeakerEmbedder::from_file(
             &model_path,
             WESPEAKER_EMBEDDING_DIM,
@@ -1493,8 +1498,6 @@ mod tests {
             .expect("embed signal_a");
         assert_eq!(emb_a.dim, WESPEAKER_EMBEDDING_DIM);
 
-        let temp = tempfile::tempdir().expect("temp data dir");
-        let _guard = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
         let session_id = "test-live-diarization-session";
         let (mut ledger, _) = sealed_ledger_with_slots(session_id, 1, 0, 32_000, &[(0, 32_000)]);
         let occ1 = OccurrenceIdentity::new(session_id, 1, 0, 32_000);

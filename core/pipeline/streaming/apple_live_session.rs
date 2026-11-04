@@ -2738,34 +2738,51 @@ impl AppleSealState {
         }
     }
 
-    fn observe_sealed_occurrence_speaker(&mut self, occurrence: &OccurrenceIdentity) {
-        let Some(window) = self.window_by_samples(occurrence.sample_start, occurrence.sample_end)
-        else {
+    /// Spawn STOP-only speaker diarization on a detached background thread AFTER
+    /// `EngineEvent::LedgerSeal` has been published. Copies out the immutable ledger
+    /// snapshot and resolved PCM windows first so the background thread never holds
+    /// the live `acoustic_ledger` mutex or delays microphone/session teardown.
+    fn spawn_post_seal_speaker_diarization(&mut self, sealed_occurrences: &[OccurrenceIdentity]) {
+        if sealed_occurrences.is_empty() {
             return;
-        };
-        let ledger = self
-            .acoustic_ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _ = self.speaker_tracker.observe_sealed_occurrence(
-            &ledger,
-            occurrence,
-            &window.samples,
-            window.sample_start,
-        );
-    }
-
-    fn finalize_take_speaker_diarization(&mut self, sealed_occurrences: &[OccurrenceIdentity]) {
-        for occ in sealed_occurrences {
-            self.observe_sealed_occurrence_speaker(occ);
         }
-        let ledger = self
+        let windows: Vec<(OccurrenceIdentity, u64, Vec<f32>)> = sealed_occurrences
+            .iter()
+            .filter_map(|occ| {
+                let w = self.window_by_samples(occ.sample_start, occ.sample_end)?;
+                Some((occ.clone(), w.sample_start, w.samples))
+            })
+            .collect();
+        if windows.is_empty() {
+            return;
+        }
+        let ledger_snapshot = self
             .acoustic_ledger
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _ = self
-            .speaker_tracker
-            .finalize_take(&ledger, sealed_occurrences, |_, _| None);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut tracker = std::mem::replace(
+            &mut self.speaker_tracker,
+            crate::pipeline::diarization::sealed_embedding::LiveSessionSpeakerTracker::for_session(
+                &self.session_id,
+                self.capture_epoch,
+                self.sample_rate,
+            ),
+        );
+        let occurrences = sealed_occurrences.to_vec();
+        let _ = std::thread::Builder::new()
+            .name("codescribe-post-seal-diarizer".to_string())
+            .spawn(move || {
+                for (occ, sample_start, samples) in &windows {
+                    let _ = tracker.observe_sealed_occurrence(
+                        &ledger_snapshot,
+                        occ,
+                        samples,
+                        *sample_start,
+                    );
+                }
+                let _ = tracker.finalize_take(&ledger_snapshot, &occurrences, |_, _| None);
+            });
     }
 
     /// Decoder-only view. Acoustic qualification and fence measurements keep
@@ -4066,7 +4083,6 @@ impl AppleSealState {
                     &owner,
                 );
                 drop(ledger);
-                self.observe_sealed_occurrence_speaker(&owner);
                 self.emit_pending_seal(ev_tx, id);
             }
         }
@@ -7445,7 +7461,6 @@ fn admit_ledger_label<'a>(
         &occurrence,
     );
     drop(ledger);
-    state.observe_sealed_occurrence_speaker(&occurrence);
     Some(receipt)
 }
 
@@ -11376,8 +11391,9 @@ fn apple_stream_worker(
         .seal_terminal(&state.session_id, state.capture_epoch);
     match terminal {
         Ok(receipt) => {
-            state.finalize_take_speaker_diarization(&receipt.sealed_occurrences);
+            let sealed_occurrences = receipt.sealed_occurrences.clone();
             let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+            state.spawn_post_seal_speaker_diarization(&sealed_occurrences);
         }
         Err(refusal) => report_terminal_seal_refusal(&ev_tx, refusal),
     }
