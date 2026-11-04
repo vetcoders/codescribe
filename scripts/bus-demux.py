@@ -1869,6 +1869,11 @@ def emit(payload: dict[str, Any]) -> None:
 
 
 FOLLOWER_TEXT_LIMIT = 200
+# Follower journals store decoded envelopes, including occurrence evidence.
+# They are not the bus's bounded storage frames: one admitted mailbox envelope
+# may exceed a single frame. Include its terminating newline in the read bound.
+MAILBOX_BYTE_LIMIT = 8 * 1024 * 1024
+FOLLOWER_ROW_LIMIT = MAILBOX_BYTE_LIMIT + 1
 
 
 def follower_paths(root: Path, lease_id: str) -> tuple[Path, Path]:
@@ -2035,7 +2040,9 @@ def consider(
     return None
 
 
-def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]:
+def iter_new_lines(
+    path: Path, offset: int, *, line_limit: int = 1024 * 1024 + 1,
+) -> tuple[list[tuple[str, int]], int]:
     """Return complete UTF-8 lines paired with their exclusive byte cursors."""
     try:
         size = generation_metadata(path).st_size
@@ -2050,7 +2057,7 @@ def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]
     with GenerationFile(path) as handle:
         handle.seek(offset)
         while True:
-            raw = handle.readline()
+            raw = handle.readline(line_limit)
             if not raw:
                 break
             if not raw.endswith(b"\n"):
@@ -2134,11 +2141,11 @@ class BusEventTrigger:
         self.mode = "interval-fallback"
 
 
-def replay(path: Path) -> Iterator[str]:
+def replay(path: Path, *, line_limit: int = 1024 * 1024 + 1) -> Iterator[str]:
     try:
         with GenerationFile(path) as handle:
             while True:
-                raw = handle.readline()
+                raw = handle.readline(line_limit)
                 if not raw:
                     return
                 if not raw.endswith(b"\n"):
@@ -4140,7 +4147,7 @@ class SessionLease:
             len(retained_rows) >= 256
             or pending_bytes
             + len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-            > 8 * 1024 * 1024
+            > MAILBOX_BYTE_LIMIT
         ):
             raise BufferError(
                 "pending mailbox is full; acknowledge received deliveries and resume "
@@ -4179,7 +4186,7 @@ class SessionLease:
     def _record_hold_withdrawal(self, receipt: dict[str, Any]) -> None:
         events = follower_paths(self.root, self.lease_id)[1]
         events.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        for raw in replay(events):
+        for raw in replay(events, line_limit=FOLLOWER_ROW_LIMIT):
             # Follower receipts carry the bridge event schema, which the bus
             # admission filter in parse_line never admits: decode them directly.
             try:
@@ -4220,7 +4227,7 @@ class SessionLease:
                 "hold_controls": [*payload.get("hold_controls", []), control_id]}
             size = sum(len(json.dumps(row, ensure_ascii=False).encode("utf-8"))
                        for row in [*self.pending.values(), *self.held.values()])
-            if size + len(json.dumps(replacement, ensure_ascii=False).encode("utf-8")) > 8 * 1024 * 1024:
+            if size + len(json.dumps(replacement, ensure_ascii=False).encode("utf-8")) > MAILBOX_BYTE_LIMIT:
                 raise BufferError("held revision history is full; release or withdraw a held message")
             self.held[payload["delivery_id"]] = replacement
             self.persist(active=True)
@@ -8761,7 +8768,7 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
         if not re.fullmatch(r"[0-9a-f]{32}", lease_id):
             continue
         try:
-            for raw in replay(path):
+            for raw in replay(path, line_limit=FOLLOWER_ROW_LIMIT):
                 try:
                     row = json.loads(raw)
                 except ValueError:
@@ -11679,7 +11686,7 @@ def watch_command(args: argparse.Namespace) -> int:
         if not source.is_file():
             sys.stderr.write(f"bus-demux: watch source missing: {source}\n")
             return 1
-        pump(iter_new_lines(source, 0)[0])
+        pump(iter_new_lines(source, 0, line_limit=FOLLOWER_ROW_LIMIT)[0])
         return 0
     offset = 0
     if not args.from_start:
@@ -11701,7 +11708,7 @@ def watch_command(args: argparse.Namespace) -> int:
     trigger = BusEventTrigger(source, args.interval)
     try:
         while True:
-            entries, offset = iter_new_lines(source, offset)
+            entries, offset = iter_new_lines(source, offset, line_limit=FOLLOWER_ROW_LIMIT)
             pump(entries)
             if relay:
                 for identity, causal in relay_ids.items():
