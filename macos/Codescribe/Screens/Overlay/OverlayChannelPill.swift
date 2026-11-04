@@ -33,7 +33,8 @@ struct OverlayChannelPill: View {
   struct Display: Equatable {
     /// The channel digit; for the counter, the number of agents.
     let figure: String
-    /// A numberless mailbox uses a glyph in the folded rail.
+    /// A numberless mailbox uses a glyph in the folded rail and in the
+    /// agents list's chip, in the circled digit's place.
     var symbol: String? = nil
     /// The agent's name on a chip or stacked pill; channel 0, an agent with
     /// an empty name, the rail and the counter carry none.
@@ -211,7 +212,13 @@ struct OverlayChannelPill: View {
         .padding(.horizontal, 6 * textScale)
       case .chip:
         HStack(spacing: Self.chipGap * textScale) {
-          circledDigit(display.figure)
+          if let symbol = display.symbol {
+            Image(systemName: symbol)
+              .font(.system(size: 12 * textScale))
+              .frame(width: Self.digitCircle * textScale, height: Self.digitCircle * textScale)
+          } else {
+            circledDigit(display.figure)
+          }
           if let dot = display.dot {
             OverlayAgentStatusDot(kind: dot, palette: palette)
               .accessibilityHidden(true)

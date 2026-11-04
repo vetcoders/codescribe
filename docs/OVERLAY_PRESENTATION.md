@@ -235,11 +235,12 @@ channel, and the Agents canvas unfolds for it only with the map off or when
 the overlay is already expanded.
 
 Hovering the Agents button (✦), in mini and in the expanded bar, opens a
-small list of the bound agents after a short pause
+small list of the mailboxes and the bound agents after a short pause
 (`OverlayAgentsHoverListChrome`, `OverlayChannelMapHoverView.swift`). It
 replaces the button's "Agents" hint; while agent capture is open, or with no
-agent bound, the button keeps its one-line hint, because a click then stops
-the capture or opens the Agents canvas. A click on ✦ keeps its action
+row to show (no current mailbox conversation and no agent bound), the button
+keeps its one-line hint, because a click then stops the capture or opens the
+Agents canvas. A click on ✦ keeps its action
 (`OverlayState.toggleAgentSidebar`). The list rides the shared interactive
 hint panel (`OverlayHeaderControlChrome`, as the roster's message preview):
 it is a child window of the overlay, stays while the pointer crosses from ✦
@@ -257,8 +258,16 @@ live model, so a roster or policy refresh repaints rows without re-showing,
 raising or re-timing the panel. No hint opens from inside the list: the
 shared hint panel is the list itself.
 
-One low row per agent 1–9 in ascending order (channel 0 has none), no header
-or cards, sized to its rows so nine fit without scrolling. Columns: the
+Two quick-access rows lead the list, in the sidebar's pinned order (Monika,
+2026-11-04): channel 0 as the circled 0 with "All", and your inbox (10) as
+the envelope with its name, each a chip that opens that conversation through
+`onSelectConversation` without touching the microphone, with the unread dot
+in the text tone and nothing else (no presence dot, no antenna or moon; the
+marks' width stays empty so the unread dots stand in one column). A mailbox
+without a current conversation has no row, as it has no rail pill
+(`hoverListRows`). Under them one low row per agent 1–9 in ascending order
+(`agentsHoverRows`), no header or cards, sized to its rows so the two
+mailboxes and nine agents fit without scrolling. Columns: the
 numbered `OverlayChannelPill` chip carrying the presence dot
 (`presenceDotKind`) between the digit and the agent's name (`nr · dot · name`, as the Bus window's roster rows; Monika, 2026-11-04), the antenna
 (channel-0 membership), the moon (do not disturb) and the unread dot in the
@@ -295,9 +304,10 @@ not disturb" checkmarks (Monika, 2026-11-04); a policy the helper has not
 receipted draws as painted, never as a third, greyed mark, and the receipt
 only confirms this app's own click. The dots
 are decoration for VoiceOver: each row carries one label with every state
-(`5 · Kuba · Listening · in channel 0 · Do not disturb · 2 unread replies`),
-the marks their own; identifiers are `overlay-agents-hover-row-<digit>`,
-`-open-`, `-antenna-` and `-moon-<digit>`.
+(`5 · Kuba · Listening · in channel 0 · Do not disturb · 2 unread replies`;
+a mailbox row `0 · All · 2 unread replies`), the marks their own;
+identifiers are `overlay-agents-hover-row-<digit>`, `-open-`, `-antenna-`
+and `-moon-<digit>`, with `0` and `10` for the mailboxes.
 
 `OverlayChannelPill` is the single owner of the numbered pill visual: the rail
 pill, the map's chips and its counter render the digit through it, from
