@@ -178,10 +178,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.finishControllerRecording()
   }
 
-  /// Header-click cut (2026-10-17): the header is an upward switch. Mini opens
-  /// midi and each further click alternates midi <-> expanded; it never folds
-  /// back to mini, which stays the rotating preview control's exit.
-  func testHeaderClickClimbsThenAlternatesBetweenMidiAndExpanded() {
+  /// Monika, 2026-11-04 (bus brief §12.1): a still click on the free
+  /// background toggles mini and the bar round and round. The window opens
+  /// only from the chevron, the Agents button and the menus; from the window
+  /// a header click returns to the bar.
+  func testHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar() {
     let state = OverlayState()
     state.engine = OverlayChromePolicyEngine()
     state.attach()
@@ -189,12 +190,17 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.advancePresentationFromHeader()
     XCTAssertEqual(state.presentationMode, .midi)
     state.advancePresentationFromHeader()
-    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.presentationMode, .mini, "the bar folds back to mini")
     state.advancePresentationFromHeader()
-    XCTAssertEqual(state.presentationMode, .midi, "the header never returns to mini")
+    XCTAssertEqual(state.presentationMode, .midi)
     state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .mini, "the header never opens the window")
+    state.setPresentationMode(.expanded)
+    state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .midi, "a header click in the window returns to the bar")
+    // The chevron explicitly opens the window and folds it back to mini.
+    state.toggleCollapsed()
     XCTAssertEqual(state.presentationMode, .expanded)
-    // The preview control explicitly folds back to mini.
     state.toggleCollapsed()
     XCTAssertEqual(state.presentationMode, .mini)
   }
@@ -459,7 +465,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
     XCTAssertFalse(panel.allowsUserResize, "MINI is a drag surface")
     XCTAssertFalse(
       panel.styleMask.contains(.resizable), "the panel never carries AppKit's resize style")
@@ -480,7 +486,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         state.toggleCollapsed()
         settle(root)
         XCTAssertEqual(state.presentationMode, mode)
-        XCTAssertEqual(panel.frame.height, mode == .expanded ? fullSize.height : 46, accuracy: 0.5)
+        XCTAssertEqual(
+          panel.frame.height,
+          mode == .expanded ? fullSize.height : DictationOverlayWindow.miniHeight, accuracy: 0.5)
         XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
         XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
         XCTAssertEqual(panel.sizeForPersistence, fullSize)
@@ -707,7 +715,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       state.toggleCollapsed()
       settle(root)
       XCTAssertEqual(panel.frame.maxY, expanded.maxY, accuracy: 0.5)
-      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
       // Mini is content-sized (spec §13.4): the panel's measured mini.
       XCTAssertEqual(panel.frame.width, panel.miniSize.width, accuracy: 0.5)
       XCTAssertEqual(panel.sizeForPersistence, expanded.size)
@@ -1084,7 +1092,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         OverlayActionsPresentation.finishingLabel(
           mode: state.mode, transcribing: state.transcribing, terminal: state.terminal),
         "Finishing…")
-      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
       XCTAssertEqual(state.canvasText, words)
     }
   }
@@ -1499,16 +1507,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(stop.recordingIdentifier, "overlay-stop-recording")
   }
 
-  /// Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini; the
-  /// brand dot leads and the channel counter takes the word's place, and mini
-  /// is as wide as its content ("brzydko to wygląda, ta dziura"), so no
-  /// neighbouring controls stand further apart than the trailing controls do.
-  /// Maciej's 2026-10-20 rule stays for the rest: mini always carries the
-  /// agents button beside the ordinary microphone and the expand arrow,
-  /// whether or not an agent records. An AX walk of the test panel does not
+  /// Monika, 2026-11-04 (bus brief §3): mini at rest is the brand dot, the
+  /// transcription button, the microphone, the Agents button and the chevron,
+  /// 4 pt apart, and carries no channel counter, so a bound agent changes
+  /// nothing. A live take (§6, §11D) grows mini leftward by the waveform, the
+  /// clock and the open channel's digit at the upper-right pin; after it mini
+  /// folds back to its 127 pt controls. An AX walk of the test panel does not
   /// surface the SwiftUI header, so the probe reads AppKit truth: one mounted
   /// hover region per header control and the drag region behind the dot.
-  func testMiniCarriesTheChannelCounterInPlaceOfCsAndHugsItsContent() throws {
+  func testMiniRestsAsItsControlsAndGrowsOnlyByALiveTake() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     optIntoChannelMap(state)
@@ -1546,67 +1553,69 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.35))
         root.layoutSubtreeIfNeeded()
       }
-      /// The capsule hugs its content: its width is the measured natural
-      /// width, and no two neighbouring controls stand further apart than the
-      /// 8 pt the trailing controls keep.
-      @MainActor func assertHugsContent(_ context: String) {
-        let natural = DictationOverlayWindow.miniNaturalWidth(
-          map: state.channelMapLayoutModel, textScale: 1)
-        XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5, context)
+      /// At rest the capsule is its controls: 127 × 36, and no two
+      /// neighbouring controls stand further apart than the 4 pt they keep.
+      @MainActor func assertRests(_ context: String) {
+        XCTAssertEqual(
+          panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5, context)
+        XCTAssertEqual(
+          panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5, context)
         XCTAssertEqual(panel.frame.width, panel.miniSize.width, accuracy: 0.5, context)
-        XCTAssertGreaterThanOrEqual(
-          panel.frame.width, DictationOverlayWindow.miniFloorWidth, context)
         let controls = headerControls()
         for (left, right) in zip(controls, controls.dropFirst()) {
           XCTAssertLessThanOrEqual(
-            right.minX - left.maxX, 8.5, "\(context): a hole between header controls")
+            right.minX - left.maxX, DictationOverlayWindow.miniControlSpacing + 0.5,
+            "\(context): a hole between header controls")
           XCTAssertGreaterThanOrEqual(right.minX - left.maxX, 0, "\(context): controls overlap")
         }
         if let last = controls.last {
-          XCTAssertLessThanOrEqual(last.maxX, root.bounds.maxX, "\(context): the toggle clips")
+          XCTAssertLessThanOrEqual(last.maxX, root.bounds.maxX, "\(context): the chevron clips")
         }
       }
-      // The rig sizes the panel by hand; land mini on its own width first.
+      // The rig sizes the panel by hand; land mini on its own size first.
       panel.setPresentationMode(.mini, settleResize: true)
       settleHeader()
       let restingControls = headerControls().count
       XCTAssertGreaterThanOrEqual(
-        restingControls, 3, "mini with no agent: agents, microphone and expand arrow")
-      XCTAssertLessThan(try brandWidth(), 12, "mini draws the brand dot alone, no cs")
-      XCTAssertEqual(
-        panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5,
-        "no agent: mini is its controls")
-      assertHugsContent("no agent")
-      let trailing = panel.frame.maxX
+        restingControls, 3, "mini with no agent: microphone, Agents and chevron at least")
+      XCTAssertLessThan(try brandWidth(), 12, "mini draws the brand dot alone, no word")
+      assertRests("no agent")
+      let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
 
-      // A bound agent puts the counter beside the dot; mini widens for it.
+      // A bound agent adds no counter to mini.
       state.applyChannelRoster(roster(open: false))
       state.setPresentationMode(.mini)
       settleHeader()
-      XCTAssertEqual(headerControls().count, restingControls + 1, "the counter joins mini")
-      XCTAssertLessThan(try brandWidth(), 12, "the counter, not cs, follows the dot")
-      XCTAssertGreaterThan(panel.frame.width, DictationOverlayWindow.miniFloorWidth)
-      assertHugsContent("counter 1 ▾")
-      XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
-      let counting = panel.frame.width
+      XCTAssertEqual(headerControls().count, restingControls, "no counter joins mini")
+      XCTAssertLessThan(try brandWidth(), 12)
+      assertRests("bound agent")
+      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls stay put")
 
-      // The agent records: the counter becomes the open digit with its dot
-      // and mini narrows with it; the 164 pt variant is this same rule. With
-      // the map on, the chord keeps mini (bus intercom spec §14 W3).
+      // The agent records: a live take. With the map on the chord keeps mini
+      // (bus intercom spec §14 W3), and mini grows by its take.
       state.applyChannelRoster(roster(open: true))
       XCTAssertEqual(state.presentationMode, .mini, "the chord keeps mini while the map is on")
+      XCTAssertTrue(state.miniTakeLive)
       settleHeader()
-      XCTAssertEqual(headerControls().count, restingControls + 1, "capture adds no control")
-      assertHugsContent("recording counter")
-      XCTAssertLessThan(panel.frame.width, counting, "the open digit is narrower than 1 ▾")
-      XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
+      panel.settleFrameTransition()
+      settleHeader()
+      XCTAssertEqual(
+        panel.frame.width,
+        DictationOverlayWindow.miniFloorWidth
+          + DictationOverlayWindow.miniTakeWidth(live: true, openDigits: ["4"]),
+        accuracy: 0.5, "waveform, clock and one digit")
+      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls stay put")
+      XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5, "the top edge stays")
 
       state.applyChannelRoster([])
+      XCTAssertFalse(state.miniTakeLive)
       settleHeader()
-      XCTAssertEqual(headerControls().count, restingControls, "the agents button stays")
-      XCTAssertEqual(
-        panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5)
-      XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
+      panel.settleFrameTransition()
+      settleHeader()
+      XCTAssertEqual(headerControls().count, restingControls, "the Agents button stays")
+      assertRests("after the take")
+      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls stay put")
     }
   }
 
