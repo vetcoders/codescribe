@@ -2919,15 +2919,18 @@ struct OverlayChannelStatusView: View {
   /// terracotta; "zzz" when the agent sleeps under the moon (do not
   /// disturb behind a receipt: the mailbox keeps every message for when it
   /// wakes); a ring for a gone follower; a faint ring without a liveness
-  /// claim. The fate of a message stays with the message in the window and
+  /// claim (a known moon without one is no sleeper either). The fate of a
+  /// message stays with the message in the window and
   /// on the chip's hover card. Delivery, presence and new replies never
   /// share this dot.
   func presenceDotKind(for channel: OverlayChannelDelivery) -> OverlayAgentDotKind {
     if unavailable { return .idle }
     if hasDeadFollower(channel) { return .sleeping }
     if isOpen(channel) { return .listening }
-    if isQuiet(channel) { return .asleep }
-    return hudStates[channel.channel]?.followerAlive == true ? .present : .idle
+    // Sleep needs a confirmed live reader behind the moon: with no liveness
+    // claim a known moon is still no proof of a mailbox that will wake.
+    guard hudStates[channel.channel]?.followerAlive == true else { return .idle }
+    return isQuiet(channel) ? .asleep : .present
   }
 
   /// Do not disturb as the ledger paints it, only behind a receipt: a polled

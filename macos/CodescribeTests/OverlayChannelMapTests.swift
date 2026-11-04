@@ -299,13 +299,14 @@ final class OverlayChannelMapTests: XCTestCase {
   /// a receipt stays unconfirmed, a stalled follower is flagged, and unread
   /// Monika, 2026-11-04: the dot before the name sleeps ("zzz") under the
   /// moon, only behind a receipt; a polled moon without one is unconfirmed.
-  /// The microphone wins over the moon; a gone follower is a ring either way.
+  /// The microphone wins over the moon; a gone follower is a ring either way;
+  /// without a liveness claim the moon proves nothing (Olek's QC).
   func testPresenceDotSleepsUnderAReceiptedMoon() throws {
     func identity(_ digit: String) -> AgentPlaybackIdentity {
       AgentPlaybackIdentity(provider: "codex", session: "dot-moon-\(digit)", bus: "/dev/null")
     }
     var channels: [OverlayChannelDelivery] = []
-    for (digit, open) in [("2", false), ("3", false), ("4", true), ("5", false)] {
+    for (digit, open) in [("2", false), ("3", false), ("4", true), ("5", false), ("6", false)] {
       var channel = OverlayChannelDelivery(
         channel: digit, agent: "agent-\(digit)", deliveryID: "moon-\(digit)",
         stage: .sent, isOpen: open)
@@ -317,12 +318,14 @@ final class OverlayChannelMapTests: XCTestCase {
     let previousReceipts = ledger.receipted
     defer { ledger.noteReceipts(previousReceipts) }
     // 3 has no receipt: its moon is unconfirmed.
-    ledger.noteReceipts([identity("2"), identity("4"), identity("5")])
+    ledger.noteReceipts([identity("2"), identity("4"), identity("5"), identity("6")])
     let roster = OverlayChannelStatusView(
       channels: channels, unavailable: false, palette: .dark, animates: false,
       hudStates: [
         "2": hud(alive: true, session: "s2"), "3": hud(alive: true, session: "s3"),
         "4": hud(open: true, alive: true, session: "s4"), "5": hud(alive: false, session: "s5"),
+        // 6: a receipted moon with no liveness claim is no sleeper.
+        "6": hud(alive: nil, session: "s6"),
       ])
     let dots = Dictionary(
       uniqueKeysWithValues: channels.map { ($0.channel, roster.presenceDotKind(for: $0)) })
@@ -330,6 +333,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(dots["3"], .present, "a polled moon without a receipt stays online")
     XCTAssertEqual(dots["4"], .listening, "the open microphone wins over the moon")
     XCTAssertEqual(dots["5"], .sleeping, "a gone follower is a ring under the moon too")
+    XCTAssertEqual(dots["6"], .idle, "no liveness claim: a faint ring, not zzz")
   }
 
   /// is the conversation's count.
