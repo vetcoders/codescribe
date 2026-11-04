@@ -13,6 +13,7 @@ alternative arrangements; this document does not select one as the final UI.
 | Row footer, action grouping, broadcast row and compact channel pills    | `OverlayChannelStatusView.swift`                                                        |
 | Numbered channel pill: rail pills, map chips, counter, open-channel dot | `OverlayChannelPill.swift`                                                              |
 | Channel map in the bar: rows, name widths, counter, its click           | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
+| Hover card of an agent's chip in the bar                                | `OverlayChannelChipHoverCard.swift`                                                     |
 | Header, bar rows (`OverlayBarLayout`), embedded list/rail and hover     | `DictationOverlayView.swift`                                                            |
 | List width, docking threshold and rail/pill dimensions                  | `OverlayAgentDrawerLayout.swift`                                                        |
 | Native mini/midi/expanded window size, position and morph               | `DictationOverlayWindow.swift`                                                          |
@@ -178,10 +179,47 @@ The channel map in the expanded bar (`midi`) is another surface
 of the same projections. `OverlayChannelStatusView.channelMapModel` builds
 `OverlayChannelMapModel` from the roster's rows, `hudStates`, current
 conversations, the selection and unread counts. It lists the bound agents
-1–9, with lease names capitalised for display only; channel 0 joins it only
-while the microphone broadcasts on it. A chip calls
-`selectChannelConversation`, the rail pill's selection path, and its hint
-names the channel, the whole name and the chord (`5 · Kuba · Ctrl+5`). Mini
+1–9, with lease names capitalised for display only, led by channel 0's chip:
+the digit alone, `(0)` with no word, first in the single row and first in
+the second row of a two-row bar, at rest as well as while the microphone
+broadcasts on it (Monika, 2026-11-04), when the violet open-channel dot
+lights it. It is not an agent: the counter, `OverlayChannelMapModel.count`
+and the 1–5 / 6–9 row split count agents only. With no agent bound and no
+broadcast the map is empty. A chip calls `selectChannelConversation`, the
+rail pill's selection path; `(0)` selects the All conversation the same way
+and never opens a microphone.
+
+Hovering `(0)` opens channel 0's message carousel: the same
+`OverlayRosterMessageHint` (`OverlayRosterPreviewSession`, the last five
+messages, withdrawn ones hidden) over the same All conversation, with the
+same open action, as the Bus window's pinned All row
+(`OverlayChannelStatusView.channelZeroMessageHint`, handed to the map as
+`channelZeroHint`). The map keeps no messages of its own.
+
+Hovering an agent's chip opens its card (`OverlayChannelChipHoverCard`), not
+the old `5 · Kuba · Ctrl+5`, which only repeated the button (Monika,
+2026-11-04). The card is a tight, non-interactive panel in the header's
+hint window (`OverlayHeaderControlChrome` with `hintContent`, sized from its
+measured lines, 200–240 pt) and states three facts kept apart, each from
+the projection the roster row reads (`channelChipStatus`, carried as
+`OverlayChannelMapChip.status`):
+
+1. **Presence** from the roster snapshot's `followerAlive`: `true` reads
+   "Online" for the current sample, `false` only "Not active" (a capped
+   discovery can report false for a live agent, so never a sure "Offline"),
+   `nil` "No data". A stalled follower (`hasStalledFollower`) adds "Not
+   reading". Neither the delivery dot (`statusDotKind`) nor the channel 0
+   policy stands in for presence.
+2. **Channel 0** from the policy as `OverlayBroadcastPolicyLedger` paints it,
+   behind a receipt (`policyKnown`): "In channel 0", "Not in channel 0", or
+   "Policy not confirmed" instead of the fail-open "on"; the moon adds "Do
+   not disturb".
+3. **Unread** from `unreadCounts`: "N unread", or no line.
+
+The first line names the digit, the whole name and the provider; the chord
+(`Ctrl+5`) is the last, small line. The card is one accessibility element
+whose label reads every line, and the chip's accessibility value carries the
+same facts. The fate of the last message is not on the card. Mini
 carries no map and no counter (Monika, 2026-11-04): the interactive list of
 agents under the Agents button (✦), described below, replaces the counter
 that stood there since 2026-10-22. The vertical layout's stacked counter
@@ -307,8 +345,8 @@ violet on their circle with the pulsing open-channel dot; the selected
 conversation keeps its fill and the amber unread dot stays independent of
 both. The waveform and the clock are drawn at rest too, at their fixed
 widths, so the bar has no hole at rest and a take alone never changes its
-length. Channel 0's circle joins the map while it broadcasts, so a broadcast
-widens the bar by that one circle, less than the waveform and clock. The
+length. Channel 0's circle is on the map at rest too, so a broadcast only
+lights it and never changes the bar's width. The
 header microphone is the stop, as before. No recording state reduces the map
 to one digit without a name or leaves an empty gap (anti-pattern 09).
 

@@ -66,6 +66,8 @@ Commit: %@
 Model
 Plan
 OK
+# Channel chip hover card presence: "Online" is the word Polish uses as well (chip card contract, 2026-11-04).
+Online
 # Widget size picker: Monika named the small form "Mini" in both languages (2026-11-04).
 Mini
 

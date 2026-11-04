@@ -7,7 +7,8 @@ import XCTest
 /// Review renders of the redesigned bar (Monika's bar brief, 2026-11-04,
 /// §10 and §11E), drawn before an app is built: mini at rest and during a
 /// take, the bar with one to nine agents, its narrowest and widest widths,
-/// a take in the bar, the agents list under ✦ and the mini ⇄ bar round trip.
+/// a take in the bar, the agents list under ✦, an agent chip's hover card
+/// and the mini ⇄ bar round trip.
 /// Every scene renders in dark and in light.
 ///
 /// The assertions only make sure each render shows the intended state and
@@ -86,6 +87,9 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     state.setPresentationMode(mode)
     XCTAssertTrue(state.channelMapInHeader, "the horizontal map is on")
     XCTAssertEqual(state.channelMapLayoutModel.count, agents.count)
+    XCTAssertEqual(
+      state.channelMapLayoutModel.chips.map(\.digit), ["0"] + agents.map(\.0),
+      "(0) leads the agents' chips")
     XCTAssertEqual(state.presentationMode, mode)
     return (state, conversations)
   }
@@ -440,6 +444,45 @@ final class OverlayBarReviewRenderTests: XCTestCase {
       try renderAlone(
         OverlayAgentsHoverList(model: model, palette: look.palette),
         size: OverlayAgentsHoverList.size(rows: rows), look: look, name: "bar-hover-list-9")
+    }
+  }
+
+  // MARK: - 9. An agent chip's hover card
+
+  /// The card under a chip, alone: online with an unread reply and the
+  /// chord; not active without a confirmed channel 0 policy; no data, off
+  /// channel 0 under the moon, with a stalled-follower flag.
+  func testRenderChipHoverCards() throws {
+    let cards: [(String, String, String, OverlayChannelChipStatus)] = [
+      (
+        "bar-9-hover-card", "5", "Kuba",
+        OverlayChannelChipStatus(
+          presence: .online, reception: .member, unread: 2, provider: "codex")
+      ),
+      (
+        "bar-9-hover-card-inactive", "3", "Lena",
+        OverlayChannelChipStatus(presence: .inactive, reception: .unknown, provider: "claude")
+      ),
+      (
+        "bar-9-hover-card-unknown", "7", "Maksymilian",
+        OverlayChannelChipStatus(
+          presence: .unknown, stalled: true, reception: .off, quiet: true, provider: "codex")
+      ),
+    ]
+    for (name, digit, agent, status) in cards {
+      let chip = OverlayChannelMapChip(
+        digit: digit, name: agent, disconnected: status.presence == .inactive,
+        microphoneOpen: false, unread: status.unread > 0, selectable: true, selected: false,
+        status: status)
+      let size = OverlayChannelChipHoverCard.size(chip: chip, status: status, modifier: .control)
+      let lines = OverlayChannelChipHoverCard.lines(chip: chip, status: status, modifier: .control)
+      XCTAssertEqual(lines.last?.text, "Ctrl+" + digit, "\(name): the chord is the last line")
+      for look in Look.allCases {
+        try renderAlone(
+          OverlayChannelChipHoverCard(
+            chip: chip, status: status, modifier: .control, palette: look.palette),
+          size: size, look: look, name: name)
+      }
     }
   }
 

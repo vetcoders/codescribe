@@ -1596,15 +1596,59 @@ struct OverlayChannelStatusView: View {
   /// projections. Bound digits come from the roster snapshot (`hudStates`),
   /// names from the same rows the list shows, unread marks from the same
   /// counts, the selected chip from the same selection as a rail pill's, and
-  /// a chip is clickable only where a rail pill would be.
+  /// a chip is clickable only where a rail pill would be. Each agent's hover
+  /// card reads the same projections as its row (`channelChipStatus`).
   var channelMapModel: OverlayChannelMapModel {
     let current = onSelectConversation == nil ? [] : currentConversations
+    var statuses: [String: OverlayChannelChipStatus] = [:]
+    for channel in channels where channel.channel != "0" {
+      statuses[channel.channel] = channelChipStatus(for: channel, current: current)
+    }
     return OverlayChannelMapModel(
       channels: channels, hudStates: hudStates,
       selectedDigit: currentConversations.first(where: { $0.id == selectedConversationID })?
         .channel,
       selectableDigits: Set(current.map(\.channel)),
-      unreadDigits: Set(current.filter { (unreadCounts[$0.id] ?? 0) > 0 }.map(\.channel)))
+      unreadDigits: Set(current.filter { (unreadCounts[$0.id] ?? 0) > 0 }.map(\.channel)),
+      statuses: statuses)
+  }
+
+  /// An agent chip's hover-card facts, each from the projection its roster
+  /// row reads: presence from the snapshot's `followerAlive` and the stall
+  /// (`hasStalledFollower`), never from the delivery dot; reception from
+  /// the channel 0 policy as the ledger paints it, with `policyKnown`
+  /// telling a receipt from the fail-open default; unread from the same
+  /// counts as the chip's dot; the provider from the conversation's owner,
+  /// else the roster snapshot.
+  func channelChipStatus(
+    for channel: OverlayChannelDelivery, current: [OverlayConversation]
+  ) -> OverlayChannelChipStatus {
+    let ledger = OverlayBroadcastPolicyLedger.shared
+    let policy =
+      channel.broadcastIdentity.map { ledger.policy(for: $0, polled: channel.broadcastPolicy) }
+      ?? channel.broadcastPolicy
+    let conversation = current.first { $0.channel == channel.channel }
+    return OverlayChannelChipStatus(
+      followerAlive: hudStates[channel.channel]?.followerAlive,
+      stalled: hasStalledFollower(channel), policy: policy,
+      policyKnown: ledger.policyKnown(channel.broadcastIdentity),
+      unread: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
+      provider: conversation?.owner?.provider ?? hudStates[channel.channel]?.provider)
+  }
+
+  /// Channel 0's message carousel for the map's `(0)` chip: the same
+  /// `OverlayRosterMessageHint` over the same All conversation, with the
+  /// same open action, as the Bus window's pinned All row. Nil without that
+  /// conversation or a way to open it.
+  var channelZeroMessageHint: OverlayRosterMessageHint? {
+    guard onSelectConversation != nil,
+      let broadcast = currentConversations.first(where: { $0.channel == "0" })
+    else { return nil }
+    return OverlayRosterMessageHint(
+      conversation: broadcast, palette: palette, textScale: textScale,
+      emptyHint: String(localized: "View conversation without changing the microphone"),
+      isOpen: broadcast.id == selectedConversationID,
+      onOpen: { onSelectConversation?(broadcast.id) })
   }
 
   /// A map chip's click: the digit's current conversation, through the same

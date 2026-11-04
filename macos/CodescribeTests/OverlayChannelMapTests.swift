@@ -6,7 +6,8 @@ import XCTest
 
 /// Falsifiers for the overlay's channel map (bus intercom spec §5.1, §5.5, §13,
 /// decision D1; bus brief 2026-11-04 §4, §5, §11C): one pill per bound agent,
-/// channel 0 only while it broadcasts, names measured in the pill's font
+/// led by channel 0's nameless chip (lit while it broadcasts), each agent's
+/// hover card from the roster's projections, names measured in the pill's font
 /// (whole up to six letters, else five and an ellipsis, four at the floor) and
 /// cut longest first, stacked pills in the bar's single row for 1–5 agents and
 /// chips in its second row for 6–9, the violet dot on an open channel's digit,
@@ -133,8 +134,9 @@ final class OverlayChannelMapTests: XCTestCase {
     return model(channels: channels, hudStates: hudStates)
   }
 
+  /// The agents' name widths, without channel 0's nameless chip.
   private func nameWidths(_ names: [String]) -> OverlayChannelMapNameWidths {
-    OverlayChannelMapNameWidths(chips: named(names).chips, scale: 1)
+    OverlayChannelMapNameWidths(chips: named(names).agents, scale: 1)
   }
 
   /// A row of the map's pills at the given name widths, as the window and the
@@ -146,7 +148,7 @@ final class OverlayChannelMapTests: XCTestCase {
 
   // MARK: - Projection (§13.2)
 
-  func testOnlyBoundAgentDigitsFollowInOrderWithoutChannelZero() {
+  func testChannelZeroLeadsTheBoundAgentDigitsInOrder() {
     let map = model(
       channels: [
         delivery("5", "Kuba"), delivery("3", "Igor"),
@@ -159,9 +161,12 @@ final class OverlayChannelMapTests: XCTestCase {
         "0": hud(alive: nil), "3": hud(session: "s3"), "5": hud(session: "s5"),
         "10": hud(session: "s10"),
       ])
-    XCTAssertEqual(map.chips.map(\.digit), ["3", "5"], "no 0 All on the map")
-    XCTAssertEqual(map.chips.map(\.name), ["Igor", "Kuba"])
-    XCTAssertFalse(map.chips.contains(where: \.isBroadcast))
+    XCTAssertEqual(map.chips.map(\.digit), ["0", "3", "5"], "(0) leads at rest")
+    XCTAssertEqual(map.chips.map(\.name), ["", "Igor", "Kuba"], "no All label")
+    XCTAssertTrue(map.chips[0].isBroadcast)
+    XCTAssertFalse(map.chips[0].microphoneOpen, "at rest channel 0 carries no open dot")
+    XCTAssertNil(map.chips[0].status, "channel 0's hover is its carousel, not a card")
+    XCTAssertEqual(map.agents.map(\.digit), ["3", "5"])
     XCTAssertEqual(map.count, 2, "the counter counts agents")
     XCTAssertEqual(map.counterFigure, "2")
   }
@@ -179,7 +184,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(map.chips.isEmpty, "channel 0 is not an agent")
   }
 
-  func testChannelZeroAppearsOnlyWhileTheMicrophoneBroadcasts() {
+  func testBroadcastLightsChannelZeroWithoutResizingTheMap() {
     let map = scenario(open: ["0"])
     XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3", "5"])
     let zero = map.chips[0]
@@ -205,6 +210,18 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(zero.hint(modifier: .control), "0 · Ctrl+0")
     XCTAssertEqual(
       zero.accessibilityLabel(modifier: .control), "Channel 0, shortcut Ctrl 0, microphone open")
+    // At rest the same chip leads, without the dot, and the bar keeps its
+    // width: (0) is always there, so a broadcast only lights it.
+    let rest = scenario()
+    XCTAssertEqual(rest.chips.map(\.digit), ["0", "2", "3", "5"])
+    XCTAssertFalse(rest.chips[0].microphoneOpen)
+    XCTAssertEqual(
+      rest.chips[0].accessibilityLabel(modifier: .control), "Channel 0, shortcut Ctrl 0")
+    XCTAssertEqual(rest.chips[0].accessibilityLabel(modifier: .unbound), "Channel 0")
+    XCTAssertEqual(
+      DictationOverlayWindow.midiBarGeometry(map: map, textScale: 1),
+      DictationOverlayWindow.midiBarGeometry(map: rest, textScale: 1),
+      "a broadcast resizes nothing")
     // Broadcasting with no agent bound still shows the open channel.
     let alone = model(channels: [], hudStates: ["0": hud(open: true, alive: nil)])
     XCTAssertEqual(alone.chips.map(\.digit), ["0"])
@@ -214,8 +231,8 @@ final class OverlayChannelMapTests: XCTestCase {
 
   func testDeadFollowerDimsItsChipAndKeepsItsDigit() {
     let map = scenario(dead: ["3"])
-    XCTAssertEqual(map.chips.map(\.digit), ["2", "3", "5"])
-    XCTAssertEqual(map.chips.map(\.disconnected), [false, true, false])
+    XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3", "5"])
+    XCTAssertEqual(map.chips.map(\.disconnected), [false, false, true, false])
   }
 
   func testUnreadSelectableAndSelectedComeFromTheRoster() {
@@ -223,10 +240,118 @@ final class OverlayChannelMapTests: XCTestCase {
       channels: [delivery("2", "Miksa"), delivery("3", "Igor")],
       hudStates: ["0": hud(alive: nil), "2": hud(session: "s2"), "3": hud(session: "s3")],
       selected: "3", selectable: ["0", "2"], unread: ["3"])
-    XCTAssertEqual(map.chips.map(\.selectable), [true, false])
-    XCTAssertEqual(map.chips.map(\.unread), [false, true])
-    XCTAssertEqual(map.chips.map(\.selected), [false, true])
+    XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3"])
+    XCTAssertEqual(map.chips.map(\.selectable), [true, true, false])
+    XCTAssertEqual(map.chips.map(\.unread), [false, false, true])
+    XCTAssertEqual(map.chips.map(\.selected), [false, false, true])
     XCTAssertTrue(map.anyUnread)
+  }
+
+  // MARK: - Hover card status (Monika, 2026-11-04)
+
+  /// Three separate facts: presence from `followerAlive` (false is only
+  /// "not active", nil no data), the stall as its own flag, reception from
+  /// the channel 0 policy only behind a receipt, the moon only when known.
+  func testChipStatusKeepsPresenceReceptionAndUnreadApart() {
+    func status(
+      alive: Bool?, stalled: Bool = false, policy: AgentBroadcastPolicy = .on,
+      known: Bool = true, unread: Int = 0, provider: String? = "codex"
+    ) -> OverlayChannelChipStatus {
+      OverlayChannelChipStatus(
+        followerAlive: alive, stalled: stalled, policy: policy, policyKnown: known,
+        unread: unread, provider: provider)
+    }
+    XCTAssertEqual(status(alive: true).presence, .online)
+    XCTAssertEqual(status(alive: false).presence, .inactive, "false is not a sure offline")
+    XCTAssertEqual(status(alive: nil).presence, .unknown)
+    XCTAssertTrue(status(alive: true, stalled: true).stalled)
+    XCTAssertEqual(status(alive: true, stalled: true).presence, .online, "a stall is separate")
+    XCTAssertEqual(status(alive: true, policy: .on).reception, .member)
+    XCTAssertEqual(status(alive: true, policy: .off).reception, .off)
+    XCTAssertEqual(
+      status(alive: true, policy: .on, known: false).reception, .unknown,
+      "the fail-open default is not a receipt")
+    XCTAssertFalse(status(alive: true, policy: .quiet, known: false).quiet)
+    XCTAssertTrue(status(alive: true, policy: .quiet).quiet)
+    XCTAssertTrue(status(alive: true, policy: .offQuiet).quiet)
+    XCTAssertEqual(status(alive: true, policy: .offQuiet).reception, .off)
+    XCTAssertEqual(
+      status(alive: nil, policy: .on).reception, .member,
+      "reception never decides presence, presence never decides reception")
+    XCTAssertEqual(status(alive: true, unread: 3).unread, 3)
+    XCTAssertEqual(status(alive: true, unread: -1).unread, 0)
+    XCTAssertNil(status(alive: true, provider: "").provider)
+  }
+
+  /// The model hands each agent its status by digit; channel 0 has none.
+  func testModelCarriesEachAgentsStatus() {
+    let online = OverlayChannelChipStatus(presence: .online, reception: .member, unread: 1)
+    let map = OverlayChannelMapModel(
+      channels: [delivery("2", "Miksa"), delivery("3", "Igor")],
+      hudStates: ["2": hud(session: "s2"), "3": hud(session: "s3")],
+      selectableDigits: [], unreadDigits: [], statuses: ["2": online])
+    XCTAssertEqual(map.chips.map(\.status), [nil, online, nil])
+    XCTAssertEqual(map.count, 2, "statuses add no agent")
+  }
+
+  /// The roster fills the card from the projections its rows read: a green
+  /// delivery dot beside a dead follower stays "not active", a policy without
+  /// a receipt stays unconfirmed, a stalled follower is flagged, and unread
+  /// is the conversation's count.
+  func testRosterFillsTheCardFromItsRowProjections() throws {
+    func identity(_ digit: String) -> AgentPlaybackIdentity {
+      AgentPlaybackIdentity(provider: "codex", session: "chip-status-\(digit)", bus: "/dev/null")
+    }
+    let names = ["2": "miksa", "3": "igor", "4": "hania", "5": "kuba"]
+    let policies: [String: AgentBroadcastPolicy] = [
+      "2": .on, "3": .off, "4": .off, "5": .quiet,
+    ]
+    let digits = ["2", "3", "4", "5"]
+    var channels: [OverlayChannelDelivery] = []
+    for digit in digits {
+      var channel = OverlayChannelDelivery(
+        channel: digit, agent: names[digit] ?? "", deliveryID: "chip-\(digit)",
+        stage: .received, isOpen: false)
+      channel.broadcastIdentity = identity(digit)
+      channel.broadcastPolicy = policies[digit] ?? .on
+      channels.append(channel)
+    }
+    var stalled = hud(alive: true, session: "s5")
+    stalled.unreadSince = .distantPast
+    let hudStates: [String: OverlayChannelHudProjection] = [
+      "2": hud(alive: true, session: "s2"), "3": hud(alive: false, session: "s3"),
+      "4": hud(alive: nil, session: "s4"), "5": stalled,
+    ]
+    let leases = ["a", "b", "c", "d"]
+    let conversations = try digits.enumerated().map { index, digit in
+      try ownerConversation(
+        names[digit] ?? "", channel: digit, session: "s\(digit)", lease: leases[index])
+    }
+    let ledger = OverlayBroadcastPolicyLedger.shared
+    let previousReceipts = ledger.receipted
+    defer { ledger.noteReceipts(previousReceipts) }
+    ledger.noteReceipts([identity("2"), identity("3"), identity("5")])
+
+    let roster = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: hudStates, conversations: conversations,
+      unreadCounts: [conversations[0].id: 3], onSelectConversation: { _ in })
+    let statuses = Dictionary(
+      uniqueKeysWithValues: roster.channelMapModel.agents.map { ($0.digit, $0.status) })
+    XCTAssertEqual(statuses["2"]??.presence, .online)
+    XCTAssertEqual(statuses["2"]??.reception, .member)
+    XCTAssertEqual(statuses["2"]??.unread, 3)
+    XCTAssertEqual(statuses["2"]??.provider, "codex")
+    XCTAssertEqual(
+      statuses["3"]??.presence, .inactive, "the received dot is a delivery, not presence")
+    XCTAssertEqual(statuses["3"]??.reception, .off)
+    XCTAssertEqual(statuses["4"]??.presence, .unknown)
+    XCTAssertEqual(statuses["4"]??.reception, .unknown, "no receipt: unconfirmed, not off")
+    XCTAssertEqual(statuses["5"]??.presence, .online)
+    XCTAssertEqual(statuses["5"]??.stalled, true)
+    XCTAssertEqual(statuses["5"]??.quiet, true)
+    XCTAssertEqual(statuses["5"]??.unread, 0)
+    XCTAssertNil(roster.channelMapModel.chips.first?.status, "(0) has no card")
   }
 
   // MARK: - Names (§13.5)
@@ -238,10 +363,10 @@ final class OverlayChannelMapTests: XCTestCase {
         "0": hud(alive: nil), "3": hud(session: "s3"), "4": hud(session: "s4"),
         "6": hud(session: "s6"),
       ])
-    XCTAssertEqual(map.chips.map(\.name), ["Igor", "Hania", "Konfig"])
-    XCTAssertEqual(map.chips.map(\.digit), ["3", "4", "6"], "identity stays the digit")
+    XCTAssertEqual(map.agents.map(\.name), ["Igor", "Hania", "Konfig"])
+    XCTAssertEqual(map.agents.map(\.digit), ["3", "4", "6"], "identity stays the digit")
     XCTAssertEqual(map.counterHint, "3 Igor · 4 Hania · 6 Konfig")
-    XCTAssertEqual(map.chips[1].hint(modifier: .control), "4 · Hania · Ctrl+4")
+    XCTAssertEqual(map.agents[1].hint(modifier: .control), "4 · Hania · Ctrl+4")
     XCTAssertEqual(OverlayChannelMapChip.displayName("ąbc"), "Ąbc", "the first grapheme only")
     XCTAssertEqual(OverlayChannelMapChip.displayName("miksa-igor"), "Miksa-igor")
     XCTAssertEqual(OverlayChannelMapChip.displayName("Kuba"), "Kuba")
@@ -256,7 +381,7 @@ final class OverlayChannelMapTests: XCTestCase {
         open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
         unreadSinceUnixMs: nil)
     ])
-    XCTAssertEqual(state.channelMapLayoutModel.chips.map(\.name), ["Igor"])
+    XCTAssertEqual(state.channelMapLayoutModel.agents.map(\.name), ["Igor"])
     XCTAssertEqual(state.channelRosterNames["3"], "igor", "the lease keeps its name")
   }
 
@@ -264,13 +389,13 @@ final class OverlayChannelMapTests: XCTestCase {
 
   func testOpenChannelCarriesTheDotInPlace() {
     let map = scenario(open: ["5"])
-    XCTAssertEqual(map.chips.map(\.digit), ["2", "3", "5"], "no second row, no reorder")
-    XCTAssertEqual(map.chips.map(\.microphoneOpen), [false, false, true])
+    XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3", "5"], "no second row, no reorder")
+    XCTAssertEqual(map.chips.map(\.microphoneOpen), [false, false, false, true])
     XCTAssertEqual(map.openDigits, ["5"])
     XCTAssertEqual(map.counterFigure, "5", "the collapsed counter shows the open digit")
     XCTAssertEqual(map.count, 3, "the agent count returns when the channel closes")
     XCTAssertEqual(
-      map.chips[2].accessibilityLabel(modifier: .control),
+      map.agents[2].accessibilityLabel(modifier: .control),
       "Channel 5, Kuba, shortcut Ctrl 5, microphone open")
     XCTAssertTrue(map.counterAccessibilityValue.hasPrefix("Microphone open on channel 5"))
     for form in [OverlayChannelPill.Form.stacked, .chip] {
@@ -290,7 +415,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertFalse(map.microphoneOpen)
     XCTAssertEqual(map.counterFigure, "3", "the counter counts agents")
     XCTAssertEqual(
-      map.chips[2].accessibilityLabel(modifier: .control), "Channel 5, Kuba, shortcut Ctrl 5")
+      map.agents[2].accessibilityLabel(modifier: .control), "Channel 5, Kuba, shortcut Ctrl 5")
   }
 
   func testRecordingCounterHugsItsCircledDigit() {
@@ -426,7 +551,7 @@ final class OverlayChannelMapTests: XCTestCase {
     }
     // Larger text measures wider names; a runaway name stops at the cap.
     XCTAssertGreaterThan(
-      OverlayChannelMapNameWidths(chips: named(names).chips, scale: 1.2).full[0], full[0])
+      OverlayChannelMapNameWidths(chips: named(names).agents, scale: 1.2).full[0], full[0])
     XCTAssertEqual(
       OverlayChannelPill.nameWidth(String(repeating: "W", count: 80), scale: 1),
       OverlayChannelPill.maxNameWidth)
@@ -615,10 +740,11 @@ final class OverlayChannelMapTests: XCTestCase {
       OverlayChannelPill.chipWidth(nameWidth: 30, form: .chip, scale: 1))
   }
 
-  /// The bar's pills show their hint (`5 · Kuba · Ctrl+5`): the map leaves
-  /// the pill's default on and names the agent and the chord in it.
+  /// The bar's pills keep their hint on: an agent's chip shows its hover
+  /// card, built from the chip's status, with the plain `5 · Kuba · Ctrl+5`
+  /// as the fallback; only channel 0 gives its hover to the carousel.
   func testBarPillsShowTheirHint() throws {
-    let kuba = scenario().chips[2]
+    let kuba = scenario().agents[2]
     let pill = OverlayChannelPill(
       form: .chip, display: OverlayChannelPill.Display(figure: kuba.digit, name: kuba.name),
       hint: kuba.hint(modifier: .control), accessibilityText: "", identifier: "hint-probe",
@@ -627,8 +753,11 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(pill.showsHint)
     XCTAssertEqual(pill.hint, "5 · Kuba · Ctrl+5")
     let mapView = try overlaySource("OverlayChannelMapView.swift")
-    XCTAssertFalse(mapView.contains("showsHint"), "the bar's pills keep the hint on")
+    XCTAssertTrue(
+      mapView.contains("showsHint: !(chip.isBroadcast && channelZeroHint != nil)"),
+      "only channel 0 with its carousel turns the pill's own hint off")
     XCTAssertTrue(mapView.contains("hint: chip.hint(modifier: modifier)"))
+    XCTAssertTrue(mapView.contains("hintCard: hintCard(chip)"), "agents show their card")
   }
 
   /// Unread, dimming and the badge stay on every pill whatever its name width.
@@ -638,9 +767,9 @@ final class OverlayChannelMapTests: XCTestCase {
       hudStates: [
         "2": hud(open: true, session: "s2"), "3": hud(alive: false, session: "s3"),
       ], unread: ["3"])
-    XCTAssertEqual(marked.chips.map(\.microphoneOpen), [true, false])
-    XCTAssertEqual(marked.chips.map(\.disconnected), [false, true])
-    XCTAssertEqual(marked.chips.map(\.unread), [false, true])
+    XCTAssertEqual(marked.agents.map(\.microphoneOpen), [true, false])
+    XCTAssertEqual(marked.agents.map(\.disconnected), [false, true])
+    XCTAssertEqual(marked.agents.map(\.unread), [false, true])
   }
 
   func testStripPillsStopScalingWhereTheRowWouldGrow() {
@@ -664,7 +793,7 @@ final class OverlayChannelMapTests: XCTestCase {
   }
 
   func testChipHintNamesTheChordFromTheSetting() {
-    let kuba = scenario().chips[2]
+    let kuba = scenario().agents[2]
     XCTAssertEqual(kuba.hint(modifier: .control), "5 · Kuba · Ctrl+5")
     XCTAssertEqual(kuba.hint(modifier: .function), "5 · Kuba · Fn+5")
     XCTAssertEqual(
@@ -675,7 +804,7 @@ final class OverlayChannelMapTests: XCTestCase {
   /// and no hint names a chord that does not exist.
   func testNoChordWhenBothKeysRecord() {
     XCTAssertEqual(OverlayChannelChordModifier(setting: "off"), .unbound)
-    let kuba = scenario().chips[2]
+    let kuba = scenario().agents[2]
     XCTAssertEqual(kuba.hint(modifier: .unbound), "5 · Kuba")
     XCTAssertEqual(kuba.accessibilityLabel(modifier: .unbound), "Channel 5, Kuba")
     XCTAssertFalse(kuba.accessibilityLabel(modifier: .unbound).contains("shortcut"))
@@ -707,10 +836,11 @@ final class OverlayChannelMapTests: XCTestCase {
     let view = DictationOverlayView(state: state)
     let roster = view.channelStatusView
     let map = roster.channelMapModel
-    XCTAssertEqual(map.chips.map(\.digit), ["2", "3"])
-    XCTAssertEqual(map.chips.map(\.name), ["Lena", "Astra"])
-    XCTAssertEqual(map.chips.map(\.selectable), [true, true])
-    XCTAssertEqual(map.chips.map(\.selected), [false, false])
+    XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3"])
+    XCTAssertEqual(map.chips.map(\.name), ["", "Lena", "Astra"])
+    XCTAssertEqual(
+      map.chips.map(\.selectable), [true, true, true], "(0) selects the All conversation")
+    XCTAssertEqual(map.chips.map(\.selected), [false, false, false])
 
     roster.selectChannelConversation("3")
     XCTAssertEqual(state.selectedConversationID, astra.id, "the exact owner's conversation")
@@ -721,10 +851,17 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertFalse(state.channelHudStates.values.contains(where: \.open))
     XCTAssertEqual(
       DictationOverlayView(state: state).channelStatusView.channelMapModel.chips.map(\.selected),
-      [false, true], "the selected conversation's pill wears the selection fill")
+      [false, false, true], "the selected conversation's pill wears the selection fill")
 
+    // (0)'s click is the same path: the All conversation, no microphone.
     roster.selectChannelConversation("0")
     XCTAssertEqual(state.selectedConversationID, broadcast.id)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertTrue(state.pendingChannelToggles.isEmpty, "(0) is not a microphone")
+    XCTAssertFalse(state.channelHudStates.values.contains(where: \.open))
+    XCTAssertEqual(
+      DictationOverlayView(state: state).channelStatusView.channelMapModel.chips.map(\.selected),
+      [true, false, false])
     // A digit with no current conversation is not an identity.
     roster.selectChannelConversation("7")
     XCTAssertEqual(state.selectedConversationID, broadcast.id)
@@ -924,7 +1061,8 @@ final class OverlayChannelMapTests: XCTestCase {
 
   // MARK: - Hosted expanded bar
 
-  /// Two agents: one row of stacked pills, at the bar's measured size.
+  /// Two agents after `(0)`: one row of stacked pills, at the bar's measured
+  /// size.
   func testExpandedBarShowsStackedPillsAndAPillClickSelects() throws {
     let (state, _, _, astra) = try armedState()
     state.setPresentationMode(.midi)
@@ -956,9 +1094,8 @@ final class OverlayChannelMapTests: XCTestCase {
       XCTAssertGreaterThan(
         chip.height, OverlayChannelPill.headerHeight, "the name sits under the circle")
     }
-    XCTAssertTrue(
-      try NativeAccessibilityProbe.query("overlay-channel-chip-0").elements.isEmpty,
-      "no 0 All chip while channel 0 is closed")
+    let zero = try NativeAccessibilityProbe.waitForElements("overlay-channel-chip-0").elements
+    XCTAssertEqual(zero.first?.role, "AXButton", "(0) leads the row while channel 0 is closed")
     XCTAssertTrue(
       try NativeAccessibilityProbe.query("overlay-channel-map-toggle").elements.isEmpty,
       "the bar shows its pills, not the counter")

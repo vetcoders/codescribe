@@ -325,8 +325,8 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
 
     // An open microphone does not resize the bar: the dot overlaps the
-    // circle. Channel 0 is on the map only while it broadcasts, so a
-    // broadcast adds exactly its circle's pill. Compared on the projection.
+    // circle. Channel 0's chip leads the map at rest as well, so a broadcast
+    // only lights it and resizes nothing. Compared on the projection.
     func map(open: Bool, broadcast: Bool = false) -> OverlayChannelMapModel {
       OverlayChannelMapModel(
         channels: [
@@ -347,11 +347,8 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(natural(map(open: true)), closed, "the open-channel dot adds no width")
     let broadcasting = map(open: false, broadcast: true)
     XCTAssertEqual(broadcasting.chips.map(\.digit), ["0", "3"])
-    XCTAssertEqual(
-      natural(broadcasting) - closed,
-      OverlayChannelPill.chipWidth(nameWidth: 0, form: .stacked, scale: 1)
-        + OverlayChannelMapView.chipSpacing, accuracy: 1,
-      "channel 0's circle while it broadcasts, nothing reserved for it otherwise")
+    XCTAssertEqual(map(open: false).chips.map(\.digit), ["0", "3"], "(0) leads at rest")
+    XCTAssertEqual(natural(broadcasting), closed, "a broadcast lights (0) in place")
   }
 
   /// Mini carries no counter (Monika, 2026-11-04, bus brief §3): at rest it

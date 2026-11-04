@@ -3605,8 +3605,8 @@ final class OverlayState {
   /// of a live take. Mini grows by the waveform, the clock and the open
   /// channels' circles while a take is live (`miniTakeLive`), so its width
   /// follows the take and the chord; the bar's waveform and clock keep their
-  /// width at rest, so a take alone never resizes the bar, and only channel
-  /// 0's circle, which the map shows while it broadcasts, changes it.
+  /// width at rest, so a take alone never resizes the bar; channel 0's
+  /// circle leads the map at rest too, so a broadcast does not resize it.
   private func noteChannelMapLayout() {
     let map = channelMapLayoutModel
     let key =

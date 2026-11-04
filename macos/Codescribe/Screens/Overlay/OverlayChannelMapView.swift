@@ -12,11 +12,17 @@ import SwiftUI
 /// name or a digit. In the vertical layout it is the stacked counter alone,
 /// beside the brand. Mini carries no map (Monika, 2026-11-04).
 ///
+/// Channel 0's chip, the digit alone, leads the row (Monika, 2026-11-04);
+/// hovering it opens channel 0's message carousel, the same
+/// `OverlayRosterMessageHint` over the same conversation as the All row of
+/// the Bus window. An agent's chip shows its hover card
+/// (`OverlayChannelChipHoverCard`): presence, channel 0 reception and unread
+/// replies, the chord last.
+///
 /// A chip selects that channel's conversation through the roster's own
-/// selection path, exactly as its rail pill does (decision D1), and names the
-/// agent and the chord in its hint. The counter changes the overlay's form
-/// through its action. Neither a chip nor the counter opens a microphone or
-/// retargets a capture.
+/// selection path, exactly as its rail pill does (decision D1). The counter
+/// changes the overlay's form through its action. Neither a chip nor the
+/// counter opens a microphone or retargets a capture.
 struct OverlayChannelMapView: View {
   enum Placement: Equatable {
     /// The expanded bar: stacked pills in its single row or chips in its
@@ -43,6 +49,9 @@ struct OverlayChannelMapView: View {
   let onCounter: () -> Void
   /// The roster supplies the same menu as the rail and floating intercom.
   var agentPillMenu: ((String) -> OverlayBroadcastPolicyMenu)? = nil
+  /// Channel 0's carousel, built by the roster over its own All
+  /// conversation; nil leaves the chip its one-line hint.
+  var channelZeroHint: OverlayRosterMessageHint? = nil
   /// The vertical layout's counter: stacked cards that open the
   /// Intercom group. The header decides; the map only draws it.
   var stacked = false
@@ -113,18 +122,41 @@ struct OverlayChannelMapView: View {
             animates: animates),
           hint: chip.hint(modifier: modifier),
           accessibilityText: chip.accessibilityLabel(modifier: modifier),
-          accessibilityValue: chip.disconnected ? String(localized: "Disconnected") : "",
+          accessibilityValue: accessibilityValue(chip),
           identifier: "overlay-channel-chip-\(chip.digit)",
-          palette: palette, textScale: scale
+          palette: palette, textScale: scale,
+          // Channel 0's hover belongs to its carousel: one hint per pill.
+          showsHint: !(chip.isBroadcast && channelZeroHint != nil),
+          hintCard: hintCard(chip)
         ) {
           onSelectChannel(chip.digit)
         }
         .fixedSize()
+        .modifier(OptionalChannelZeroHint(hint: chip.isBroadcast ? channelZeroHint : nil))
         .modifier(
           agentPillMenu?(chip.digit)
             ?? OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
       }
     }
+  }
+
+  /// An agent's hover card, measured from its own lines.
+  private func hintCard(_ chip: OverlayChannelMapChip) -> OverlayChannelPill.HintCard? {
+    guard !chip.isBroadcast, let status = chip.status else { return nil }
+    let card = OverlayChannelChipHoverCard(
+      chip: chip, status: status, modifier: modifier, palette: palette)
+    return OverlayChannelPill.HintCard(
+      title: card.accessibilityText, content: AnyView(card),
+      size: OverlayChannelChipHoverCard.size(chip: chip, status: status, modifier: modifier))
+  }
+
+  /// VoiceOver hears the card's facts on the chip itself; without a status
+  /// a gone follower still reads as Disconnected.
+  private func accessibilityValue(_ chip: OverlayChannelMapChip) -> String {
+    if let status = chip.status {
+      return OverlayChannelChipHoverCard.spokenStatus(status).joined(separator: ". ")
+    }
+    return chip.disconnected ? String(localized: "Disconnected") : ""
   }
 
   private func counterPill(scale: CGFloat) -> some View {
@@ -177,5 +209,19 @@ struct OverlayChannelMapSlot: Layout {
   func width(proposed: CGFloat?, range: ClosedRange<CGFloat>) -> CGFloat {
     guard let proposed, proposed.isFinite else { return range.upperBound }
     return min(max(proposed, range.lowerBound), range.upperBound)
+  }
+}
+
+/// Channel 0's carousel on its chip, or nothing on every other chip.
+private struct OptionalChannelZeroHint: ViewModifier {
+  let hint: OverlayRosterMessageHint?
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let hint {
+      content.modifier(hint)
+    } else {
+      content
+    }
   }
 }
