@@ -15158,6 +15158,17 @@
         }
       }
     },
+    "Reception policy unknown" : {
+      "comment" : "Agents list: no reception receipt has been read for this agent yet",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Polityka odbioru nieznana"
+          }
+        }
+      }
+    },
     "Recheck" : {
       "comment" : "Recheck local Whisper availability without downloading",
       "localizations" : {
@@ -24003,6 +24014,17 @@
         }
       }
     },
+    "in channel 0" : {
+      "comment" : "Agents list row: member of channel 0",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "na kanale 0"
+          }
+        }
+      }
+    },
     "incomplete coverage" : {
       "localizations" : {
         "pl" : {
@@ -24396,6 +24418,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "teraz"
+          }
+        }
+      }
+    },
+    "off channel 0" : {
+      "comment" : "Agents list row: not on channel 0",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "poza kanałem 0"
           }
         }
       }

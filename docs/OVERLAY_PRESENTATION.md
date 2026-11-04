@@ -183,12 +183,47 @@ while the microphone broadcasts on it. A chip calls
 `selectChannelConversation`, the rail pill's selection path. The counter calls
 `OverlayState.activateChannelMapCounter`: in mini it selects compact, in
 compact it asks the window owner, through `onRestoreMidiNaturalWidth`, to drop
-a width the user set (`FloatingOverlayPanel.restoreMidiNaturalWidth`). There is
-no map popover; the counter's hint lists the agents. While the map is
+a width the user set (`FloatingOverlayPanel.restoreMidiNaturalWidth`). The
+interactive list of agents lives under the Agents button (✦), described
+below. While the map is
 enabled, a channel the controller opens in mini or compact keeps that form
 (`OverlayState.channelOpenExpandsSurface`): the selection follows the open
 channel and the strip shows its digit, and the Agents canvas unfolds for it
 only with the map off or when the overlay is already expanded.
+
+Hovering the Agents button (✦), in mini and in the expanded bar, opens a
+small list of the bound agents after a short pause
+(`OverlayAgentsHoverListChrome`, `OverlayChannelMapHoverView.swift`). It
+replaces the button's "Agents" hint; while agent capture is open, or with no
+agent bound, the button keeps its one-line hint, because a click then stops
+the capture or opens the Agents canvas. A click on ✦ keeps its action
+(`OverlayState.toggleAgentSidebar`). The list rides the shared interactive
+hint panel (`OverlayHeaderControlChrome`, as the roster's message preview):
+it is a child window of the overlay, stays while the pointer crosses from ✦
+onto it, and closes 220 ms after the pointer has left both; Esc closes it.
+While the pointer is over the list it holds mini's auto-hide and the
+auto-collapse through `OverlayState.setPointerHovering`. The content reads a
+live model, so a roster or policy refresh repaints rows without re-showing,
+raising or re-timing the panel. No hint opens from inside the list: the
+shared hint panel is the list itself.
+
+One low row per agent 1–9 in ascending order (channel 0 has none), no header
+or cards, sized to its rows so nine fit without scrolling. Columns: the
+numbered `OverlayChannelPill` chip with the agent's name, the roster's status
+dot (`statusDotKind`), the antenna (channel-0 membership), the moon (do not
+disturb) and the amber unread dot. The chip opens the channel's conversation
+through `onSelectConversation`, the path `selectChannelConversation` uses.
+The antenna and the moon are sibling buttons with their own hit targets;
+they change reception through `OverlayBroadcastPolicyLedger.change`, never
+open the conversation and never close the list, are dimmed while a change is
+pending and repaint from the read-back receipt. When no helper receipt has
+been read for an agent (`OverlayBroadcastPolicyLedger.policyKnown`, fed by
+`broadcastPolicyReceipts`), both marks show a grey outline that switches
+nothing, "Reception policy unknown", instead of the fail-open "on". The dots
+are decoration for VoiceOver: each row carries one label with every state
+(`5 · Kuba · Listening · in channel 0 · Do not disturb · 2 unread replies`),
+the marks their own; identifiers are `overlay-agents-hover-row-<digit>`,
+`-open-`, `-antenna-` and `-moon-<digit>`.
 
 `OverlayChannelPill` is the single owner of the numbered pill visual: the rail
 pill, the map's chips and its counter render the digit through it, from

@@ -2237,7 +2237,9 @@ final class OverlayState {
     let identities = Set(bound.values.map(\.identity))
       .union(conversations.compactMap { playbackIdentity(for: $0) })
     let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
-    let broadcastSnapshot = await RealAgentBridgeInstaller.broadcastPolicySnapshot(for: identities)
+    // Receipts only: the row projection below fails open to `.on`, and the
+    // ledger keeps which identities actually had a receipt.
+    let broadcastReceipts = await RealAgentBridgeInstaller.broadcastPolicyReceipts(for: identities)
     let globalSnapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot()
     let panelFocusAvailable = await detectAgentPanelFocusAvailability()
     guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else {
@@ -2251,10 +2253,9 @@ final class OverlayState {
     applyBoundAgents(bound)
     // A reception change during this poll makes its receipts older than the
     // change's read-back; the next poll paints them instead.
-    if broadcastLedger.admitsPoll(startedAt: broadcastRevision),
-      broadcastPolicies != broadcastSnapshot
-    {
-      broadcastPolicies = broadcastSnapshot
+    if broadcastLedger.admitsPoll(startedAt: broadcastRevision) {
+      if broadcastPolicies != broadcastReceipts { broadcastPolicies = broadcastReceipts }
+      broadcastLedger.noteReceipts(Set(broadcastReceipts.keys))
     }
     if !globalPlaybackPending, globalPlaybackMuted != globalSnapshot {
       globalPlaybackMuted = globalSnapshot
