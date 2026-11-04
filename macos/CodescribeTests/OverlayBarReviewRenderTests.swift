@@ -611,7 +611,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
       order: 5, emittedAt: "2026-11-04T17:38:00Z", owner: nil,
       recipients: [
         OverlayConversationRecipient(
-          owner: kaja, deliveryID: "d-kaja-1", queued: true, accepted: true, acknowledged: true)
+          owner: kaja, deliveryID: "d-kaja-1", queued: true, accepted: true, acknowledged: false)
       ],
       deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "",
       sourceChannel: "8")
@@ -666,7 +666,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     ch7.broadcastIdentity = identity("7")
     ch7.broadcastPolicy = .off
     var ch8 = OverlayChannelDelivery(
-      channel: "8", agent: "kaja", deliveryID: "d-kaja-1", stage: .received, isOpen: false)
+      channel: "8", agent: "kaja", deliveryID: "d-kaja-1", stage: .queued, isOpen: false)
     ch8.broadcastIdentity = identity("8")
     ch8.broadcastPolicy = .quiet
     var ch9 = OverlayChannelDelivery(
@@ -693,8 +693,12 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         ],
         conversations: conversations, selectedConversationID: borysConv.id,
         unreadCounts: unreads, onSelectConversation: { _ in })
+      XCTAssertEqual(roster.deliveryReceiptDisplay(for: ch2, conversation: borysConv)?.symbol, "double-check")
       XCTAssertEqual(roster.deliveryReceiptDisplay(for: ch2, conversation: borysConv)?.isRead, true)
-      XCTAssertEqual(roster.deliveryReceiptDisplay(for: ch8, conversation: kajaConv)?.isRead, true)
+      XCTAssertEqual(roster.deliveryReceiptDisplay(for: ch8, conversation: kajaConv)?.symbol, "checkmark")
+      XCTAssertEqual(roster.deliveryReceiptDisplay(for: ch8, conversation: kajaConv)?.isRead, false)
+      XCTAssertEqual(roster.deliveryReceiptDisplay(for: ch9, conversation: olekConv)?.symbol, "double-check")
+      XCTAssertEqual(roster.deliveryReceiptDisplay(for: ch9, conversation: olekConv)?.isRead, false)
       XCTAssertNil(roster.deliveryReceiptDisplay(for: ch6, conversation: miksaConv))
       try renderAlone(
         roster.monitorBody(maximumHeight: 540).padding(10),

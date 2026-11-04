@@ -145,10 +145,10 @@ struct OverlayRosterSyncMark: View {
 
 /// Compact projection of a frozen recipient's delivery evidence: the words
 /// the conversation bubble uses for the same receipt, and the glyph that
-/// stands for them in the name row. One glyph per state, so the row reads
-/// the whole vocabulary: `pause.circle` held, `clock` queued or addressed
-/// with no receipt yet, `checkmark` accepted or delivered, `double-check`
-/// read, `forward.end` skipped off channel 0, `circle.dotted` no receipt.
+/// stands for them in the name row: `pause.circle` held, `clock` queued or
+/// addressed with no receipt yet, `checkmark` accepted (`✓` grey),
+/// `double-check` delivered (`✓✓` grey) or read (`✓✓` olive via `isRead`),
+/// `circle.dotted` no receipt.
 struct OverlayRosterReceipt {
   let symbol: String
   let text: String

@@ -343,7 +343,8 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertEqual(queued.text, String(localized: "Queued"))
     XCTAssertEqual(accepted.symbol, "checkmark")
     XCTAssertEqual(accepted.text, String(localized: "Queue accepted"))
-    XCTAssertEqual(delivered.symbol, "checkmark")
+    XCTAssertFalse(accepted.isRead)
+    XCTAssertEqual(delivered.symbol, "double-check")
     XCTAssertEqual(delivered.text, String(localized: "Delivered"))
     XCTAssertFalse(delivered.isRead)
     XCTAssertEqual(read.symbol, "double-check")
@@ -353,12 +354,11 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertTrue(acknowledged.isRead)
     XCTAssertEqual(noReceipt.symbol, "circle.dotted")
     XCTAssertEqual(noReceipt.text, OverlayConversationView.noReceiptText)
-    // The bug Maciej saw on 2981: delivered drew the double check. Five states
-    // on the 1-on-1 row (skipped broadcasts stay on channel 0), five glyphs;
-    // only Read is the double shape.
-    XCTAssertNotEqual(delivered.symbol, read.symbol, "one check reached, two checks read")
-    let vocabulary = [held, queued, delivered, read, noReceipt].map(\.symbol)
-    XCTAssertEqual(Set(vocabulary).count, 5, "one glyph per state: \(vocabulary)")
+    // Contract: accepted = 1 grey check (`checkmark`), delivered = 2 grey
+    // checks (`double-check`, `isRead == false`), read = 2 olive checks
+    // (`double-check`, `isRead == true`).
+    let vocabulary = [held, queued, accepted, delivered, noReceipt].map(\.symbol)
+    XCTAssertEqual(Set(vocabulary).count, 5, "five distinct shapes across states: \(vocabulary)")
     XCTAssertEqual(
       [held, addressed, queued, accepted, delivered, noReceipt]
         .filter(\.isRead).count, 0, "only Read is read")

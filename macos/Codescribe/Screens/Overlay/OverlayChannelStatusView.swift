@@ -2435,7 +2435,7 @@ struct OverlayChannelStatusView: View {
         {
           switch state {
           case .read: return display("double-check", String(localized: "Read"), isRead: true)
-          case .delivered: return display("checkmark", String(localized: "Delivered"))
+          case .delivered: return display("double-check", String(localized: "Delivered"))
           case .skipped: continue
           case .noReceipt: return display("circle.dotted", OverlayConversationView.noReceiptText)
           }
