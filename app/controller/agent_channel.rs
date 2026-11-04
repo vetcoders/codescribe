@@ -3788,13 +3788,23 @@ mod tests {
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("clock")
             .as_secs_f64();
+        let ada_lease =
+            active_names::follower_lease_id("claude-code", "ada-session").expect("ada lease id");
         std::fs::write(
-            bridge.join("leases/ada.json"),
+            bridge.join("leases").join(format!("{ada_lease}.json")),
             format!(
-                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"ada","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session","pending":[{{"kind":"seal","delivery_id":"aaaaaaaaaaaaaaaaaaaaaaaa","emitted_at":"2026-10-14T12:00:00Z"}},{{"kind":"seal","delivery_id":"bbbbbbbbbbbbbbbbbbbbbbbb","emitted_at":"2026-10-14T11:00:00Z"}}]}}"#,
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"{ada_lease}","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session","pending":[{{"kind":"seal","delivery_id":"aaaaaaaaaaaaaaaaaaaaaaaa","emitted_at":"2026-10-14T12:00:00Z"}},{{"kind":"seal","delivery_id":"bbbbbbbbbbbbbbbbbbbbbbbb","emitted_at":"2026-10-14T11:00:00Z"}}]}}"#,
             ),
         )
         .expect("lease");
+        // An arbitrary non-canonical `leases/leon.json` does not satisfy Leon's canonical lookup.
+        std::fs::write(
+            bridge.join("leases/leon.json"),
+            format!(
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"leon","name":"leon","active":true,"heartbeat_unix":{now},"provider":"codex","provider_session_id":"leon-session"}}"#,
+            ),
+        )
+        .expect("non-canonical lease");
 
         let controller = RecordingController::new_without_keychain();
         let roster = controller.channel_roster_states_at(&binding, &bridge).await;
@@ -3826,7 +3836,7 @@ mod tests {
         assert_eq!(
             roster[2].follower_alive,
             Some(false),
-            "no lease means nobody is listening"
+            "no canonical lease means nobody is listening"
         );
         assert_eq!(
             roster[2].unread_since, None,
@@ -3850,10 +3860,12 @@ mod tests {
         .expect("binding");
         let bridge = dir.path().join("bridge");
         std::fs::create_dir_all(bridge.join("leases")).expect("leases dir");
+        let leon_lease =
+            active_names::follower_lease_id("codex", THREAD).expect("leon lease id");
         std::fs::write(
-            bridge.join("leases/leon.json"),
+            bridge.join("leases").join(format!("{leon_lease}.json")),
             format!(
-                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"leon","name":"leon","active":false,"heartbeat_unix":1000.0,"provider":"codex","provider_session_id":"{THREAD}","codex":{{"thread_id":"{THREAD}","app_bundle_id":"com.openai.codex","rollout":true,"remote":false}}}}"#,
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"{leon_lease}","name":"leon","active":false,"heartbeat_unix":1000.0,"provider":"codex","provider_session_id":"{THREAD}","codex":{{"thread_id":"{THREAD}","app_bundle_id":"com.openai.codex","rollout":true,"remote":false}}}}"#,
             ),
         )
         .expect("lease");

@@ -1424,4 +1424,176 @@ mod tests {
             "equal-mtime tie-breaker must be deterministic and unaffected by oversized or non-regular newest entries"
         );
     }
+
+    #[test]
+    fn follower_observation_validates_canonical_lease_and_preserves_unknown_on_errors_or_mismatch() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        let provider = "claude-code";
+        let session = "ada-session";
+        let lease_id = follower_lease_id(provider, session).unwrap();
+
+        // Arbitrary filename `leases/ada.json` does not satisfy canonical lookup;
+        // readable directory + ENOENT on `<lease_id>.json` means `alive: Some(false)`.
+        write_session_lease(temp.path(), "ada.json", provider, session, true, now - 1.0);
+        let missing = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(missing.alive, Some(false));
+        assert!(missing.hosts.is_none());
+        assert!(missing.unread_since.is_none());
+
+        // Write > 64 newer leases for other sessions so `ada-session` would be
+        // evicted from a 64-file directory scan, then write Ada's canonical lease
+        // with an older mtime but still-fresh heartbeat.
+        let now_sys = SystemTime::now();
+        for idx in 0..80 {
+            let other_session = format!("other-{idx:03}");
+            let other_id = follower_lease_id("codex", &other_session).unwrap();
+            let other_path = dir.join(format!("{other_id}.json"));
+            fs::write(
+                &other_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "schema": LEASE_SCHEMA,
+                    "lease_id": other_id,
+                    "name": format!("agent-{idx}"),
+                    "active": true,
+                    "heartbeat_unix": now - 1.0,
+                    "provider": "codex",
+                    "provider_session_id": other_session,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            set_file_mtime(&other_path, now_sys);
+        }
+
+        let canonical_path = dir.join(format!("{lease_id}.json"));
+        fs::write(
+            &canonical_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": lease_id,
+                "name": "ada",
+                "active": true,
+                "heartbeat_unix": now - 5.0,
+                "provider": provider,
+                "provider_session_id": session,
+                "frame": {"pane_id": 1, "window_id": 2},
+                "terminal": {"host": "iterm2", "host_bundle_id": "com.googlecode.iterm2"},
+                "pending": [
+                    {"kind": "seal", "delivery_id": "111111111111111111111111", "emitted_at": "2026-10-14T12:00:00Z"},
+                    {"kind": "seal", "delivery_id": "222222222222222222222222", "emitted_at": "2026-10-14T11:00:00Z"}
+                ],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        set_file_mtime(&canonical_path, now_sys - Duration::from_secs(30));
+
+        let live = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(live.alive, Some(true), "canonical lease must stay live despite >64 newer leases");
+        assert_eq!(
+            live.hosts,
+            Some(FollowerHosts {
+                frame_pane: true,
+                terminal_tab: true,
+            })
+        );
+        let expected_oldest = chrono::DateTime::parse_from_rfc3339("2026-10-14T11:00:00Z")
+            .unwrap()
+            .timestamp_millis() as f64
+            / 1000.0;
+        let expected_newer = chrono::DateTime::parse_from_rfc3339("2026-10-14T12:00:00Z")
+            .unwrap()
+            .timestamp_millis() as f64
+            / 1000.0;
+        assert_eq!(live.unread_since, Some(expected_oldest));
+
+        // Acknowledging the oldest delivery updates `unread_since` even on a cache hit.
+        let ack_dir = temp.path().join("acknowledgments").join(&lease_id);
+        fs::create_dir_all(&ack_dir).unwrap();
+        fs::write(ack_dir.join("222222222222222222222222.json"), b"{}").unwrap();
+        let after_partial_ack = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(after_partial_ack.alive, Some(true));
+        assert_eq!(after_partial_ack.unread_since, Some(expected_newer));
+
+        // Future heartbeat -> unknown (`alive: None`).
+        fs::write(
+            &canonical_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": lease_id,
+                "name": "ada",
+                "active": true,
+                "heartbeat_unix": now + 3_600.0,
+                "provider": provider,
+                "provider_session_id": session,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let future = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(future.alive, None, "future heartbeat must be treated as unknown");
+
+        // Expired heartbeat -> `alive: Some(false)`.
+        fs::write(
+            &canonical_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": lease_id,
+                "name": "ada",
+                "active": true,
+                "heartbeat_unix": now - (LEASE_TTL_SECONDS + 10.0),
+                "provider": provider,
+                "provider_session_id": session,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let expired = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(expired.alive, Some(false));
+
+        // Mismatched `provider_session_id`, `provider`, or `lease_id` -> unknown (`alive: None`).
+        for bad in [
+            serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": lease_id,
+                "active": true,
+                "heartbeat_unix": now - 1.0,
+                "provider": provider,
+                "provider_session_id": "foreign-session",
+            }),
+            serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": "00000000000000000000000000000000",
+                "active": true,
+                "heartbeat_unix": now - 1.0,
+                "provider": provider,
+                "provider_session_id": session,
+            }),
+        ] {
+            fs::write(&canonical_path, serde_json::to_vec(&bad).unwrap()).unwrap();
+            let obs = follower_observation_at(temp.path(), provider, session);
+            assert_eq!(obs.alive, None, "mismatched lease identity must report unknown");
+        }
+
+        // Non-regular directory at canonical path -> unknown (`alive: None`).
+        fs::remove_file(&canonical_path).unwrap();
+        fs::create_dir(&canonical_path).unwrap();
+        assert_eq!(follower_observation_at(temp.path(), provider, session).alive, None);
+        fs::remove_dir(&canonical_path).unwrap();
+
+        // Unreadable `leases` directory (I/O error on `read_dir` after ENOENT) -> unknown (`alive: None`).
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable_dir = follower_observation_at(temp.path(), provider, session);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(unreadable_dir.alive, None, "unreadable leases directory must report unknown, not dead");
+    }
 }
