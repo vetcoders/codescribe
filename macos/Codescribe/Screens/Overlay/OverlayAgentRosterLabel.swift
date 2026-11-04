@@ -118,9 +118,10 @@ struct OverlayAgentUnreadBadge: View {
     Text(verbatim: String(count))
       .font(.system(size: 11 * textScale, weight: .semibold))
       .monospacedDigit()
-      .foregroundStyle(palette.agentAccent.color)
+      // New replies in the text tone: amber means warning, violet your voice.
+      .foregroundStyle(palette.primaryText.color)
       .frame(width: badgeDiameter, height: badgeDiameter)
-      .background(palette.agentAccent.color.opacity(0.12), in: Circle())
+      .background(palette.primaryText.color.opacity(0.12), in: Circle())
       .fixedSize()
       .accessibilityLabel("\(count) unread replies")
   }

@@ -112,7 +112,7 @@ struct OverlayAgentsHoverListChrome: ViewModifier {
 
 /// The agents under ✦: one low row per agent, no header or cards. Columns:
 /// numbered pill with the name (opens the conversation), status dot, antenna
-/// (channel 0), moon (do not disturb), the unread dot in the agent accent. The antenna and the
+/// (channel 0), moon (do not disturb), the unread dot in the text tone. The antenna and the
 /// moon are sibling buttons, never nested in the pill, and switch reception
 /// through `OverlayBroadcastPolicyLedger` without opening or closing anything.
 /// No hint opens from inside the list: the shared hint panel is the list.
@@ -246,9 +246,9 @@ private struct OverlayAgentsHoverListRow: View {
           identifier: "overlay-agents-hover-moon-\(row.digit)"
         ) { $0.moon.toggle() }
       }
-      // New replies wear the agent accent: amber means warning elsewhere.
+      // New replies in the text tone: amber means warning, violet your voice.
       Circle()
-        .fill(palette.agentAccent.color)
+        .fill(palette.primaryText.color)
         .frame(
           width: OverlayAgentsHoverList.unreadDiameter,
           height: OverlayAgentsHoverList.unreadDiameter

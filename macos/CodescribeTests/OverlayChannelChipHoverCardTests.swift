@@ -90,8 +90,8 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     XCTAssertEqual(card[0].text, "5 · Kuba")
     XCTAssertEqual(card[0].trailing, "Codex")
     XCTAssertEqual(card[3].text, "2 unread")
-    // New replies wear the agent accent, not the warning amber (Monika, 2026-11-04).
-    XCTAssertEqual(card[3].tone, .agent)
+    // New replies in the text tone: not the warning amber, not the voice violet.
+    XCTAssertEqual(card[3].tone, .primary)
     XCTAssertEqual(card.last?.text, "Ctrl+5")
     XCTAssertEqual(card.last?.tone, .muted)
     XCTAssertLessThan(

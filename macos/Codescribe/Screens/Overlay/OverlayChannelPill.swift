@@ -105,7 +105,7 @@ struct OverlayChannelPill: View {
           if stackedFace {
             if display.unread {
               Circle()
-                .fill(palette.agentAccent.color)
+                .fill(palette.primaryText.color)
                 .frame(width: 4, height: 4)
                 .padding(3)
                 .accessibilityHidden(true)
@@ -117,7 +117,7 @@ struct OverlayChannelPill: View {
             .offset(x: 7 * textScale, y: -5 * textScale)
           } else if display.unread && form != .stacked {
             Circle()
-              .fill(palette.agentAccent.color)
+              .fill(palette.primaryText.color)
               .frame(width: 6 * textScale, height: 6 * textScale)
               .offset(x: 1, y: -1)
               .accessibilityHidden(true)
@@ -294,7 +294,7 @@ struct OverlayChannelPill: View {
         // form draws it at the capsule's corner.
         if form == .stacked && display.unread {
           Circle()
-            .fill(palette.agentAccent.color)
+            .fill(palette.primaryText.color)
             .frame(width: 6 * textScale, height: 6 * textScale)
             .offset(x: 1, y: -1)
             .accessibilityHidden(true)

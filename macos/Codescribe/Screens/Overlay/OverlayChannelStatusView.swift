@@ -1424,7 +1424,7 @@ struct OverlayChannelStatusView: View {
       headerGlyph
         .contentShape(Circle())
         .overlay(alignment: .topTrailing) {
-          if unreadCounts.values.contains(where: { $0 > 0 }) {
+          if attentionUnread {
             Circle()
               .fill(palette.primaryText.color)
               .frame(width: 5, height: 5)
@@ -1453,6 +1453,17 @@ struct OverlayChannelStatusView: View {
 
   var monitorBody: some View {
     monitorBody(maximumHeight: 480)
+  }
+
+  /// The Agents button's dot: "you have a message" on channel 0 or in your
+  /// inbox (10), never an agent's own channel 1–9 (Monika, 2026-11-04). Those
+  /// have their chips, rows and the list; this dot is the shared and the
+  /// personal mailbox, the ones mini has no other sign for.
+  var attentionUnread: Bool {
+    currentConversations.contains { conversation in
+      (conversation.channel == "0" || conversation.isHumanInbox)
+        && (unreadCounts[conversation.id] ?? 0) > 0
+    }
   }
 
   var broadcastMembers: [OverlayChannelDelivery] {
@@ -2915,7 +2926,7 @@ struct OverlayChannelStatusView: View {
   /// sealed utterance, so a channel silent for hours stayed green on an old
   /// receipt while a replying agent went amber on a newer one without its
   /// receipt. Now: a live follower is a filled olive dot; an open microphone
-  /// terracotta; "zzz" when the agent sleeps under the moon (do not
+  /// to it the agent violet, your voice's colour; "zzz" when the agent sleeps under the moon (do not
   /// disturb: the mailbox keeps every message for when it wakes); a ring for a gone follower; a faint ring without a liveness
   /// claim (a moon without one is no sleeper either). The fate of a
   /// message stays with the message in the window and
@@ -3395,7 +3406,9 @@ struct OverlayAgentStatusDot: View {
   private var tone: OverlayColorToken {
     switch kind {
     case .broadcast: palette.agentAccent
-    case .listening: palette.listeningStatus
+    // Your voice to agents is violet, as the waveform and the chip's circle
+    // (Monika, 2026-11-04); terracotta stays with dictation outside the bus.
+    case .listening: palette.agentAccent
     case .received, .present: palette.successStatus
     case .waiting: palette.processingStatus
     case .asleep, .sleeping, .idle: palette.mutedText

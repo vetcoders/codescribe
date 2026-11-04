@@ -124,6 +124,26 @@ final class OverlayAgentsHoverListTests: XCTestCase {
     XCTAssertEqual(dots["5"], .idle, "no liveness claim: a faint ring")
   }
 
+  /// Monika, 2026-11-04: the Agents button's dot says a message waits on
+  /// channel 0 or in the inbox (10); an agent's own unread stays on its chip.
+  func testAgentsButtonDotCountsChannelZeroAndTheInboxOnly() throws {
+    let kuba = try conversation("5", session: "s5", lease: "b")
+    let all = OverlayConversation(id: "all", channel: "0", name: "All", owner: nil, messages: [])
+    let inbox = OverlayConversation(id: "10", channel: "10", name: "Inbox", owner: nil, messages: [])
+    XCTAssertTrue(inbox.isHumanInbox)
+    func view(_ unread: [String: Int]) -> OverlayChannelStatusView {
+      OverlayChannelStatusView(
+        channels: [delivery("0", "All"), delivery("5", "Kuba")], unavailable: false,
+        palette: .dark, animates: false,
+        hudStates: ["0": hud(session: nil, alive: nil), "5": hud(session: "s5")],
+        conversations: [all, kuba, inbox], unreadCounts: unread)
+    }
+    XCTAssertFalse(view([kuba.id: 3]).attentionUnread, "an agent's own replies: its chip, not ✦")
+    XCTAssertTrue(view([all.id: 1]).attentionUnread, "channel 0")
+    XCTAssertTrue(view([inbox.id: 2]).attentionUnread, "the inbox")
+    XCTAssertFalse(view([:]).attentionUnread)
+  }
+
   func testNoAgentsMeansNoRows() {
     let view = OverlayChannelStatusView(
       channels: [delivery("0", "All")], unavailable: false, palette: .dark, animates: false,
