@@ -146,9 +146,12 @@ include whether the attachment was added before, during or after capture.
 ### Preview and Markup
 
 Open an attachment's preview to inspect it. In a **nightly build**, preview uses
-its own movable, resizable window and supported images offer **Markup**. Save the edited
-image to update the draft attachment; the annotated copy does not overwrite
-the original source file. Review the resulting attachment before sending it.
+its own compact, movable, resizable window. The whole image initially fits the
+available area; use **Fit** to return to that view after zooming. The source path
+is under the **Path** disclosure, while Copy path, Reveal in Finder and Open
+remain available. Supported draft images offer **Markup**. Save the edited image
+to update the draft attachment; the annotated copy does not overwrite the
+original source file. Review the resulting attachment before sending it.
 
 Markup availability is a build distinction. The presence of a preview in a
 public release does not imply that its annotation action is available there.
