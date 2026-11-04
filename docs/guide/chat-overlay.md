@@ -159,6 +159,11 @@ The message's status distinguishes publication, queue acceptance and recipient
 read/ACK. A **Read N/M** state counts recipients that acknowledged the delivery.
 It does not certify that their requested work is done or correct.
 
+The existing receipt glyphs keep their shape: delivery stays neutral grey,
+while explicit read/ACK uses the palette's theme-adaptive olive. The individual
+Read label uses the same olive; the aggregate Read N/M remains a neutral count.
+Receipt colour is separate from agent presence and voice activity.
+
 An external agent's response can arrive as text and, if configured and unmuted,
 as speech. Playback state is separate from message delivery. A missing voice
 response does not by itself prove the text was lost.

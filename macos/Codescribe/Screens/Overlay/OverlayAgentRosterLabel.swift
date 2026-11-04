@@ -177,7 +177,8 @@ private struct OverlayRosterReceiptMark: View {
           .font(.system(size: 11 * textScale, weight: .medium))
       }
     }
-    .foregroundStyle(receipt.isRead ? palette.bodyText.color : palette.mutedText.color)
+    // Read/ACK uses the shared adaptive olive; delivery stays neutral.
+    .foregroundStyle(receipt.isRead ? palette.successStatus.color : palette.mutedText.color)
     .help(Text(verbatim: receipt.helpText))
     .accessibilityLabel(Text(verbatim: receipt.helpText))
     .accessibilityIdentifier("overlay-agent-receipt-\(receipt.symbol)")

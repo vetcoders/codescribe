@@ -1018,7 +1018,8 @@ struct OverlayConversationView: View {
         ForEach(message.recipients, id: \.owner.id) { recipient in
           Text(Self.receiptStatusText(for: recipient))
             .font(.system(size: 10 * textScale))
-            .foregroundStyle(palette.mutedText.color)
+            .foregroundStyle(
+              recipient.acknowledged ? palette.successStatus.color : palette.mutedText.color)
             .lineLimit(1)
             .truncationMode(.tail)
             .help(Text(verbatim: Self.receiptStatusText(for: recipient)))
