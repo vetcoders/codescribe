@@ -82,12 +82,51 @@ struct ChannelBinding {
     audience: String,
 }
 
+#[derive(Clone, PartialEq, Eq, Default)]
+struct ScanFingerprint {
+    bus_meta: Option<(SystemTime, u64)>,
+    ack_mtime: Option<SystemTime>,
+    leases_mtime: Option<SystemTime>,
+    binding_meta: Option<(SystemTime, u64)>,
+    channels_mtime: Option<SystemTime>,
+}
+
+fn path_meta(path: &Path) -> Option<(SystemTime, u64)> {
+    fs::metadata(path).ok().map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()))
+}
+
+fn dir_mtime(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).ok().and_then(|m| m.modified().ok())
+}
+
+fn compute_scan_fingerprint(bridge_home: &Path, fallback_bus: &Path) -> ScanFingerprint {
+    ScanFingerprint {
+        bus_meta: path_meta(fallback_bus),
+        ack_mtime: dir_mtime(&bridge_home.join("acknowledgments")),
+        leases_mtime: dir_mtime(&bridge_home.join("leases")),
+        binding_meta: path_meta(&bridge_home.join(BINDING_FILENAME)),
+        channels_mtime: dir_mtime(&bridge_home.join("channels")),
+    }
+}
+
+static LAST_SCAN_FINGERPRINTS: std::sync::Mutex<Option<HashMap<PathBuf, ScanFingerprint>>> =
+    std::sync::Mutex::new(None);
+
 /// Watch the bridge home and append missing seal receipts.
 ///
 /// `fallback_bus` is used when a lease does not name its own bus file.
 pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
     if !bridge_home.is_dir() {
         return Ok(ScanStats::default());
+    }
+    let current_fp = compute_scan_fingerprint(bridge_home, fallback_bus);
+    if cursor_path(bridge_home).is_file() {
+        let cache = LAST_SCAN_FINGERPRINTS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(map) = cache.as_ref() {
+            if map.get(bridge_home) == Some(&current_fp) {
+                return Ok(ScanStats::default());
+            }
+        }
     }
     let mut cursor = load_cursor(bridge_home)?;
     let mut dirty = !cursor_path(bridge_home).is_file();
@@ -278,6 +317,11 @@ pub fn scan(bridge_home: &Path, fallback_bus: &Path) -> io::Result<ScanStats> {
     if dirty {
         write_cursor(bridge_home, &cursor)?;
     }
+    if let Ok(mut cache) = LAST_SCAN_FINGERPRINTS.lock() {
+        cache
+            .get_or_insert_with(HashMap::new)
+            .insert(bridge_home.to_path_buf(), current_fp);
+    }
     Ok(stats)
 }
 
@@ -297,7 +341,9 @@ pub(crate) fn append_json_line(bus: &Path, value: &Value) -> io::Result<()> {
     // A dedicated channel bus may precede its directory (W5); a receipt
     // must not vanish over a missing parent.
     if let Some(parent) = bus.parent() {
-        std::fs::create_dir_all(parent)?;
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
     }
     let file = shared_bus_file(bus)?;
     super::transcript_bus_maintenance::generation::append(bus, &file, &encoded)
