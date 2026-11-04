@@ -185,8 +185,9 @@ private struct OverlayRosterReceiptMark: View {
   }
 }
 
-/// One check for a copy that reached the agent's side, two for one it read;
-/// the second check sits a third of the width behind the first.
+/// One check for queue acceptance, two for delivery or explicit read/ACK.
+/// Delivered and Read share the shape; their colour is set by the receipt mark.
+/// The second check sits a third of the width behind the first.
 private struct OverlayRosterCheckmarks: Shape {
   let count: Int
 

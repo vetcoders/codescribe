@@ -155,14 +155,17 @@ public release does not imply that its annotation action is available there.
 
 ## Delivery and read states
 
-The message's status distinguishes publication, queue acceptance and recipient
-read/ACK. A **Read N/M** state counts recipients that acknowledged the delivery.
-It does not certify that their requested work is done or correct.
+The message's status distinguishes publication, queue acceptance, delivery and
+recipient read/ACK. A **Read N/M** state counts recipients that acknowledged the
+delivery. It does not certify that their requested work is done or correct.
 
-The existing receipt glyphs keep their shape: delivery stays neutral grey,
-while explicit read/ACK uses the palette's theme-adaptive olive. The individual
-Read label uses the same olive; the aggregate Read N/M remains a neutral count.
-Receipt colour is separate from agent presence and voice activity.
+The sidebar shows a single neutral grey check for **Queue accepted**, two
+neutral grey checks for **Delivered**, and the same two checks in the palette's
+theme-adaptive olive for **Read**. Queue acceptance alone does not confirm
+delivery to the recipient's mailbox. Delivered and Read differ only in colour,
+not in shape. The individual Read label uses the same olive; the aggregate
+Read N/M remains a neutral count. Receipt colour is separate from agent presence
+and voice activity.
 
 An external agent's response can arrive as text and, if configured and unmuted,
 as speech. Playback state is separate from message delivery. A missing voice
