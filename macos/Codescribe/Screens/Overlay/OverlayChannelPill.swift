@@ -203,7 +203,7 @@ struct OverlayChannelPill: View {
       case .rail:
         HStack(spacing: 3) {
           if let symbol = display.symbol {
-            Image(systemName: symbol).font(.system(size: 12 * textScale))
+            mailboxSymbol(symbol)
           } else {
             OverlayAgentStatusDot(kind: display.dot ?? .idle, palette: palette)
             figure(display.figure, size: 12)
@@ -213,8 +213,7 @@ struct OverlayChannelPill: View {
       case .chip:
         HStack(spacing: Self.chipGap * textScale) {
           if let symbol = display.symbol {
-            Image(systemName: symbol)
-              .font(.system(size: 12 * textScale))
+            mailboxSymbol(symbol)
               .frame(width: Self.digitCircle * textScale, height: Self.digitCircle * textScale)
           } else {
             circledDigit(display.figure)
@@ -284,6 +283,12 @@ struct OverlayChannelPill: View {
       .monospacedDigit()
       .lineLimit(1)
       .fixedSize()
+  }
+
+  /// The numberless mailbox's symbol: drawn here once, whatever the form.
+  private func mailboxSymbol(_ name: String) -> some View {
+    Image(systemName: name)
+      .font(.system(size: 12 * textScale))
   }
 
   /// A chip's or the recording counter's digit in its circle; while the

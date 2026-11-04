@@ -176,6 +176,51 @@ final class OverlayAgentsHoverListTests: XCTestCase {
       channels: [delivery("0", "All")], unavailable: false, palette: .dark, animates: false,
       hudStates: ["0": hud(session: nil, alive: nil)])
     XCTAssertTrue(view.agentsHoverRows.isEmpty)
+    XCTAssertTrue(view.hoverListRows.isEmpty, "without a current conversation there is no mailbox row")
+  }
+
+  /// Monika, 2026-11-04 (Round II): channel 0 (`0 · All`) and your inbox
+  /// (`10 · Your Inbox`) lead the list under ✦ in the sidebar's pinned order,
+  /// open their conversations through `conversationID`, carry unread counts
+  /// without presence or reception marks, and still appear when zero agents
+  /// are bound.
+  func testHoverListRowsLeadWithChannelZeroAndInboxBeforeAgents() throws {
+    let miksa = try conversation("2", session: "s2", lease: "a")
+    let kuba = try conversation("5", session: "s5", lease: "b")
+    let all = OverlayConversation(id: "all", channel: "0", name: "All", owner: nil, messages: [])
+    let inbox = OverlayConversation.humanInbox(messages: [])
+    XCTAssertTrue(inbox.isHumanInbox)
+
+    let view = OverlayChannelStatusView(
+      channels: [delivery("5", "Kuba"), delivery("0", "All"), delivery("2", "Miksa")],
+      unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "0": hud(session: nil, alive: nil), "2": hud(session: "s2"), "5": hud(session: "s5"),
+      ],
+      conversations: [miksa, all, inbox, kuba],
+      unreadCounts: [all.id: 1, inbox.id: 2, kuba.id: 4])
+
+    let rows = view.hoverListRows
+    XCTAssertEqual(rows.map(\.digit), ["0", "10", "2", "5"], "0 and 10 lead in pinned order")
+    XCTAssertEqual(rows.map(\.kind), [.broadcast, .inbox, .agent, .agent])
+    XCTAssertEqual(rows.map(\.mailbox), [true, true, false, false])
+    XCTAssertEqual(
+      rows.map(\.name), [String(localized: "All"), inbox.displayTitle, "Miksa", "Kuba"])
+    XCTAssertEqual(rows.map(\.conversationID), [all.id, inbox.id, miksa.id, kuba.id])
+    XCTAssertEqual(rows.map(\.unread), [1, 2, 0, 4])
+    XCTAssertNil(rows[0].identity)
+    XCTAssertNil(rows[1].identity)
+    XCTAssertFalse(rows[0].microphoneOpen)
+    XCTAssertFalse(rows[1].microphoneOpen)
+
+    let mailboxesOnly = OverlayChannelStatusView(
+      channels: [delivery("0", "All")], unavailable: false, palette: .dark, animates: false,
+      hudStates: ["0": hud(session: nil, alive: nil)],
+      conversations: [all, inbox], unreadCounts: [inbox.id: 1])
+    XCTAssertTrue(mailboxesOnly.agentsHoverRows.isEmpty)
+    XCTAssertEqual(mailboxesOnly.hoverListRows.map(\.digit), ["0", "10"])
+    XCTAssertEqual(mailboxesOnly.hoverListRows.map(\.conversationID), [all.id, inbox.id])
+    XCTAssertEqual(mailboxesOnly.hoverListRows.map(\.unread), [0, 1])
   }
 
   // MARK: - Ledger receipts
@@ -306,6 +351,16 @@ final class OverlayAgentsHoverListTests: XCTestCase {
       nameWidth: 40, form: .chip, scale: 1, presenceDot: true)
     XCTAssertEqual(
       dotted - bare, OverlayAgentStatusDot.diameter + OverlayChannelPill.chipGap, accuracy: 0.001)
+    // A mailbox row has no presence dot, so its chip width omits the dot slot.
+    let mailboxLong = OverlayAgentsHoverRow(
+      kind: .inbox, digit: "10", name: "Konstantynopolitańczyk", conversationID: "10",
+      dot: .idle, status: "", microphoneOpen: false, disconnected: false, identity: nil,
+      policy: .on, unread: 0)
+    let mailboxSize = OverlayAgentsHoverList.size(rows: [mailboxLong])
+    XCTAssertEqual(
+      long.width - mailboxSize.width,
+      OverlayAgentStatusDot.diameter + OverlayChannelPill.chipGap, accuracy: 0.001,
+      "a mailbox chip omits the presence dot width")
   }
 
   /// A scratch home with a managed copy of the real helper, the same

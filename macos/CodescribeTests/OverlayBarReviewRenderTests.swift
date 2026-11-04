@@ -404,19 +404,23 @@ final class OverlayBarReviewRenderTests: XCTestCase {
 
   // MARK: - 7. The agents list under ✦
 
-  /// Nine rows from the roster's own projection: channel 1 open (listening
-  /// dot), an unread reply on 4, agent 6 off channel 0 (`member = false`),
-  /// agent 7 under the moon (zzz), agent 8 stalled (olive with "!"), agent 9
-  /// without a liveness claim ("?") and without a helper receipt.
+  /// Eleven rows from the roster's own projection (channel 0 and your inbox
+  /// above the nine agents): channel 1 open (listening dot), an unread reply
+  /// on 0 and 4, agent 6 off channel 0 (`member = false`), agent 7 under the
+  /// moon (zzz), agent 8 stalled (olive with "!"), agent 9 without a liveness
+  /// claim ("?") and without a helper receipt.
   func testRenderAgentsHoverListWithNineAgents() throws {
     func identity(_ digit: String) -> AgentPlaybackIdentity {
       AgentPlaybackIdentity(provider: "codex", session: "review-\(digit)", bus: "/dev/null")
     }
     let policies: [String: AgentBroadcastPolicy] = ["6": .off, "7": .quiet]
-    let conversations = try nine.enumerated().map { index, agent in
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let inbox = OverlayConversation.humanInbox(messages: [])
+    let agentConversations = try nine.enumerated().map { index, agent in
       try ownerConversation(agent.1, channel: agent.0, lease: String(index, radix: 16))
     }
-    let unreadConversation = try XCTUnwrap(conversations.first { $0.channel == "4" })
+    let conversations = [all, inbox] + agentConversations
+    let unreadConversation = try XCTUnwrap(agentConversations.first { $0.channel == "4" })
     var hudStates: [String: OverlayChannelHudProjection] = [:]
     var channels: [OverlayChannelDelivery] = []
     let stale = Date().addingTimeInterval(-OverlayState.followerStallHorizon - 60)
@@ -441,11 +445,15 @@ final class OverlayBarReviewRenderTests: XCTestCase {
       let roster = OverlayChannelStatusView(
         channels: channels, unavailable: false, palette: look.palette, animates: false,
         hudStates: hudStates, conversations: conversations,
-        unreadCounts: [unreadConversation.id: 2])
-      let rows = roster.agentsHoverRows
-      XCTAssertEqual(rows.map(\.digit), nine.map(\.0))
-      XCTAssertEqual(rows.map(\.name), nine.map(\.1))
-      XCTAssertEqual(rows.first?.dot, .listening, "the open channel's row reads as listening")
+        unreadCounts: [all.id: 1, unreadConversation.id: 2])
+      let rows = roster.hoverListRows
+      XCTAssertEqual(rows.map(\.digit), ["0", "10"] + nine.map(\.0))
+      XCTAssertEqual(rows.prefix(2).map(\.kind), [.broadcast, .inbox])
+      XCTAssertEqual(rows.dropFirst(2).map(\.name), nine.map(\.1))
+      XCTAssertEqual(rows.first { $0.digit == "0" }?.unread, 1)
+      XCTAssertEqual(
+        rows.first { $0.digit == "1" }?.dot, .listening,
+        "the open channel's row reads as listening")
       XCTAssertEqual(rows.first { $0.digit == "4" }?.unread, 2)
       XCTAssertEqual(rows.first { $0.digit == "6" }?.policy.member, false)
       XCTAssertEqual(rows.first { $0.digit == "7" }?.policy.moon, true)
