@@ -17,7 +17,10 @@ Markup is nightly-only.
 The overlay can be a minimal control, a compact strip or an expanded conversation.
 Use its presentation control or context menu to choose the form. Moving the
 window sets its position; resizing changes how much content it shows. The
-expanded view supports edge and corner resizing.
+expanded view supports edge and corner resizing. While you drag, a light
+outline with the window's header follows the pointer and the content waits;
+on release the window takes that size and lays the conversation out once.
+The compact strip resizes live.
 
 The header gives access to transcription, agents and pinning. Pinning controls **Always on Top**. Unpinning removes that window level; it
 should leave the overlay visible in place, without hiding or sending it behind
@@ -37,9 +40,10 @@ does not create another agent identity or another conversation history.
 ## Main agent view and sidebar
 
 Open the roster to choose the conversation you want to read. Its full sidebar
-shows names and conversation previews. Drag the divider to resize it; narrowing
-past the compact threshold leaves a **numbered rail**. Drag it wider to recover
-the full list. The numbered rail remains a navigation entry point.
+shows names and conversation previews. Drag the divider to resize it: a guide
+line follows the pointer and both panes keep their widths until you release.
+Releasing past the compact threshold leaves a **numbered rail**. Drag it wider
+to recover the full list. The numbered rail remains a navigation entry point.
 
 The current interface uses that divider rather than separate left/right
 collapse buttons. Available row actions live in the agent's **More (…)** menu.

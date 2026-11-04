@@ -271,7 +271,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let header = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomHeader: View {",
       to: "struct OverlayIntercomWindowProjection:")
-    XCTAssertTrue(header.contains("OverlayIntercomResizeAnchor()"))
+    XCTAssertTrue(header.contains("OverlayResizeAnchor()"))
     XCTAssertTrue(header.contains("onDrag: { controller.beginGroupDrag() }"))
   }
 

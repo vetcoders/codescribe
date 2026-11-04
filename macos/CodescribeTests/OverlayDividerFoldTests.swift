@@ -21,31 +21,10 @@ final class OverlayDividerFoldTests: XCTestCase {
     }
   }
 
-  func testDrawerWidthAllowsDraggingBelowTheRowMinimumButStopsAtTheRail() {
-    for scale in scales {
-      let rail = OverlayAgentDrawerLayout.railWidth(textScale: scale)
-      let dragged = OverlayAgentDrawerLayout.drawerWidth(
-        textScale: scale, preferredWidth: 120, windowWidth: 1_200 * scale,
-        minimumWidth: rail)
-      XCTAssertEqual(dragged, 120 * scale, accuracy: 0.001)
-      XCTAssertLessThan(dragged, OverlayAgentDrawerLayout.contentMinimumWidth(textScale: scale))
-      XCTAssertEqual(
-        OverlayAgentDrawerLayout.drawerWidth(
-          textScale: scale, preferredWidth: 0, windowWidth: 1_200 * scale,
-          minimumWidth: rail),
-        rail, accuracy: 0.001)
-      XCTAssertEqual(
-        OverlayAgentDrawerLayout.drawerWidth(
-          textScale: scale, preferredWidth: 0, minimumWidth: 100 * scale),
-        100 * scale, accuracy: 0.001, "the supplied minimum is already in window points")
-    }
-  }
-
-  func testDraggingStillLeavesTheConversationMinimumAtWideWindowSizes() {
+  func testAWideDividerReleaseStillLeavesTheConversationMinimum() {
     for scale in scales {
       let width = OverlayAgentDrawerLayout.drawerWidth(
-        textScale: scale, preferredWidth: 900, windowWidth: 1_200 * scale,
-        minimumWidth: OverlayAgentDrawerLayout.railWidth(textScale: scale))
+        textScale: scale, preferredWidth: 900, windowWidth: 1_200 * scale)
       XCTAssertEqual(width, 880 * scale, accuracy: 0.001)
       XCTAssertEqual(1_200 * scale - width, 320 * scale, accuracy: 0.001)
     }
@@ -71,16 +50,29 @@ final class OverlayDividerFoldTests: XCTestCase {
     XCTAssertEqual(OverlayAgentDrawerLayout.railUnfoldDrag, 40)
   }
 
-  func testBothPaneWidthProjectionsUseTheRailMinimumOnlyDuringDragging() throws {
+  /// "ten niskobudżetowy układ w sensie przeciągania i resizingu z … floating
+  /// przenieść" (Maciej, 2026-11-03): while the divider is dragged only its
+  /// guide moves. Neither pane width reads the drag, and release commits it.
+  func testADividerDragMovesOnlyItsGuideUntilRelease() throws {
     let source = try overlaySource("DictationOverlayView.swift")
+    XCTAssertFalse(source.contains("agentDrawerResize:"), "no canvas state follows the pointer")
     let geometry = try section(
-      source, from: "let dragMinimumWidth: CGFloat?", to: "let canvasHidden =")
-    XCTAssertTrue(
-      compact(geometry).contains(
-        "let dragMinimumWidth: CGFloat? = agentDrawerResize == nil ? nil : railWidth"))
+      source, from: "let drawerWidth =", to: "let canvasHidden =")
     XCTAssertEqual(
-      geometry.components(separatedBy: "minimumWidth: dragMinimumWidth").count - 1, 2,
-      "both the visible column and the conversation's stable split width follow the drag")
+      geometry.components(separatedBy: "preferredWidth: CGFloat(preferredAgentDrawerWidth)")
+        .count - 1, 2, "both pane projections read only the committed width")
+    let divider = try section(
+      source, from: "private struct OverlayAgentDrawerDivider", to: "\n}\n")
+    XCTAssertTrue(divider.contains("@GestureState private var translation: CGFloat?"))
+    XCTAssertTrue(divider.contains(".updating($translation)"))
+    XCTAssertFalse(divider.contains(".onChanged"))
+    XCTAssertTrue(
+      compact(divider).contains(".onEnded { value in onCommit(value.translation.width) }"))
+    let handle = try section(
+      source, from: "private func agentDrawerResizeHandle(", to: ".accessibilityElement()")
+    XCTAssertTrue(
+      compact(handle).contains(
+        "commitAgentDrawerWidth((width - translation) / textScale, windowWidth: windowWidth)"))
   }
 
   func testReleasingBelowTheFoldThresholdFoldsBeforeRememberingAWidth() throws {
