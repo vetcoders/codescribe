@@ -393,33 +393,36 @@ final class OverlayChannelMapTests: XCTestCase {
 
   // MARK: - Names (§13.5)
 
-  func testLeaseNamesAreCapitalisedOnTheMapOnly() {
+  func testLeaseNamesPreserveEnteredSpellingOnTheMap() {
     let map = model(
-      channels: [delivery("3", "igor"), delivery("4", "hania"), delivery("6", "konfig")],
+      channels: [
+        delivery("3", "div0"), delivery("4", "iOS"), delivery("6", "Łucja"),
+        delivery("7", "McKay"),
+      ],
       hudStates: [
         "0": hud(alive: nil), "3": hud(session: "s3"), "4": hud(session: "s4"),
-        "6": hud(session: "s6"),
+        "6": hud(session: "s6"), "7": hud(session: "s7"),
       ])
-    XCTAssertEqual(map.agents.map(\.name), ["Igor", "Hania", "Konfig"])
-    XCTAssertEqual(map.agents.map(\.digit), ["3", "4", "6"], "identity stays the digit")
-    XCTAssertEqual(map.counterHint, "3 Igor · 4 Hania · 6 Konfig")
-    XCTAssertEqual(map.agents[1].hint(modifier: .control), "4 · Hania · Ctrl+4")
+    XCTAssertEqual(map.agents.map(\.name), ["div0", "iOS", "Łucja", "McKay"])
+    XCTAssertEqual(map.agents.map(\.digit), ["3", "4", "6", "7"], "identity stays the digit")
+    XCTAssertEqual(map.counterHint, "3 div0 · 4 iOS · 6 Łucja · 7 McKay")
+    XCTAssertEqual(map.agents[1].hint(modifier: .control), "4 · iOS · Ctrl+4")
+    XCTAssertEqual(OverlayChannelMapChip.displayName("codex"), "Codex", "provider label formatting")
     XCTAssertEqual(OverlayChannelMapChip.displayName("ąbc"), "Ąbc", "the first grapheme only")
-    XCTAssertEqual(OverlayChannelMapChip.displayName("miksa-igor"), "Miksa-igor")
     XCTAssertEqual(OverlayChannelMapChip.displayName("Kuba"), "Kuba")
     XCTAssertEqual(OverlayChannelMapChip.displayName(""), "")
   }
 
-  func testCapitalisationLeavesTheRosterLeaseNamesAlone() {
+  func testMapAndRosterKeepTheSuppliedLeaseNameSpelling() {
     let state = OverlayState.previewFormatted()
     state.applyChannelRoster([
       CsChannelRosterState(
-        channel: "3", audience: "igor", provider: "codex", providerSessionId: "igor-session",
+        channel: "3", audience: "div0", provider: "codex", providerSessionId: "div0-session",
         open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
         unreadSinceUnixMs: nil)
     ])
-    XCTAssertEqual(state.channelMapLayoutModel.agents.map(\.name), ["Igor"])
-    XCTAssertEqual(state.channelRosterNames["3"], "igor", "the lease keeps its name")
+    XCTAssertEqual(state.channelMapLayoutModel.agents.map(\.name), ["div0"])
+    XCTAssertEqual(state.channelRosterNames["3"], "div0", "the lease keeps its name")
   }
 
   // MARK: - Open-channel dot (§13.3, §14)
@@ -876,7 +879,7 @@ final class OverlayChannelMapTests: XCTestCase {
     let roster = view.channelStatusView
     let map = roster.channelMapModel
     XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3"])
-    XCTAssertEqual(map.chips.map(\.name), ["", "Lena", "Astra"])
+    XCTAssertEqual(map.chips.map(\.name), ["", "lena", "astra"])
     XCTAssertEqual(
       map.chips.map(\.selectable), [true, true, true], "(0) selects the All conversation")
     XCTAssertEqual(map.chips.map(\.selected), [false, false, false])
