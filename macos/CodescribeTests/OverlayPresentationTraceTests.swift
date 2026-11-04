@@ -307,6 +307,35 @@ final class OverlayPresentationTraceTests: XCTestCase {
     withExtendedLifetime(state) {}
   }
 
+  /// Folding the bar to mini is a bar-to-bar morph (A1 `barMorph` guard): no
+  /// departing layout is pinned and the trace names no fold, so mini's
+  /// leading-aligned row is never clipped. Mini lands 36 pt tall at the
+  /// bar's upper-right corner.
+  func testBarToMiniMorphIsNoFoldAndPinsNothing() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let (state, panel) = try makePanel("bar-to-mini")
+    panel.setFrameOrigin(NSPoint(x: 400, y: 400))
+    BackgroundTestWindow.present(panel)
+    defer { panel.orderOut(nil) }
+    panel.setPresentationMode(.midi)
+    let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
+    let bar = panel.frame
+
+    let mark = trace.recorded
+    panel.setPresentationMode(.mini, animated: true)
+    let began = try XCTUnwrap(
+      trace.entries(after: mark).first { $0.kind == .frameTransitionBegan })
+    XCTAssertNotEqual(began.note, "fold", "bar -> mini is not a fold")
+    XCTAssertNil(root.pinnedContentSize, "bar -> mini pins no departing layout")
+    XCTAssertTrue(pump(untilCompleted: try XCTUnwrap(began.generation)))
+    XCTAssertEqual(panel.frame.width, panel.miniSize.width, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.maxX, bar.maxX, accuracy: 0.5, "the right edge stays")
+    XCTAssertEqual(panel.frame.maxY, bar.maxY, accuracy: 0.5, "the top edge stays")
+    XCTAssertEqual(root.contentFrame, root.bounds)
+    withExtendedLifetime(state) {}
+  }
+
   /// A fold that catches an unroll keeps the size the unroll already holds:
   /// the layout on screen never changes size mid-flight, in either direction.
   /// The fold then covers that held layout until it lands on mini.

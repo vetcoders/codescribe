@@ -2921,7 +2921,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       })
     panel.contentView?.layoutSubtreeIfNeeded()
     XCTAssertEqual(panel.frame.height, before, accuracy: 0.5)
-    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
   }
 
   func testChannelChromeIsOutsideCollapseGateAndDragStillPrecedesGlass() throws {

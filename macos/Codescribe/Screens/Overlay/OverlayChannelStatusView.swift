@@ -765,6 +765,10 @@ final class OverlayBroadcastPolicyLedger {
   /// Receipts read back after this app's own writes, shown until a poll that
   /// started after the last write reports.
   private(set) var readBacks: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
+  /// Identities whose helper receipt the last admitted poll actually read.
+  /// The poll's policy fails open to `.on`; this set lets a surface tell
+  /// "no receipt" from "on" instead of pretending the agent listens.
+  private(set) var receipted: Set<AgentPlaybackIdentity> = []
   @ObservationIgnored private(set) var revision: UInt64 = 0
   @ObservationIgnored private let write:
     @MainActor (AgentBroadcastPolicy, AgentPlaybackIdentity) async throws -> Void
@@ -794,6 +798,20 @@ final class OverlayBroadcastPolicyLedger {
 
   func isPending(_ identity: AgentPlaybackIdentity?) -> Bool {
     identity.map { pending.contains($0) } ?? false
+  }
+
+  /// A receipt was read for this agent, by a poll or after this app's own
+  /// write. False before the first poll and while the helper has none.
+  func policyKnown(_ identity: AgentPlaybackIdentity?) -> Bool {
+    guard let identity else { return false }
+    return readBacks[identity] != nil || receipted.contains(identity)
+  }
+
+  /// Called with an admitted poll's receipts, in the same step that paints
+  /// its policies. Equal sets write nothing, so a quiet poll invalidates no
+  /// reader.
+  func noteReceipts(_ identities: Set<AgentPlaybackIdentity>) {
+    if receipted != identities { receipted = identities }
   }
 
   /// Edits one axis of the latest policy. A second change while one is in
@@ -1135,6 +1153,10 @@ struct OverlayChannelStatusView: View {
   /// Explicitly show this agent in the list. Unlike the header toggle, this
   /// callback never closes a panel or stops a recording.
   var onShowAgentInMonitor: ((String) -> Void)? = nil
+  /// The pointer over the agents list under ✦. The list is a child window, so
+  /// the overlay's own hover ends when the pointer moves onto it; this keeps
+  /// mini's auto-hide and the auto-collapse held while the list is in use.
+  var onAgentsListHover: ((Bool) -> Void)? = nil
   var headerSelected = false
   /// The recording agent is on screen: a press stops its capture.
   var agentMicrophoneStops = false
@@ -1298,6 +1320,7 @@ struct OverlayChannelStatusView: View {
     // observation scope needs this hover-driven dependency.
     if includesGestureFocus { view.gestureFocusID = state.agentGestureFocusID }
     view.onGestureHover = { state.hoverAgentGestureTarget($0) }
+    view.onAgentsListHover = { state.setPointerHovering($0) }
     view.onShowAgentInMonitor = { [view] digit in
       if let channel = view.channels.first(where: { $0.channel == digit }),
         let conversation = view.conversation(for: channel)
@@ -1412,9 +1435,10 @@ struct OverlayChannelStatusView: View {
     .csFocusOutline()
     .fixedSize()
     .modifier(
-      OverlayHeaderControlChrome(
-        title: headerTitle, accent: .agents, palette: palette,
-        selected: headerSelected)
+      OverlayAgentsHoverListChrome(
+        title: headerTitle, palette: palette, selected: headerSelected,
+        rows: agentCaptureOpen ? [] : agentsHoverRows,
+        onOpen: { onSelectConversation?($0) }, onHover: onAgentsListHover)
     )
     .accessibilityLabel(
       agentMicrophoneStops ? String(localized: "Stop recording") : String(localized: "Agents")
@@ -2791,7 +2815,7 @@ struct OverlayChannelStatusView: View {
     }
   }
 
-  private func shortStatus(for channel: OverlayChannelDelivery) -> String {
+  func shortStatus(for channel: OverlayChannelDelivery) -> String {
     if unavailable { return String(localized: "Status unavailable") }
     if hasDeadFollower(channel) { return String(localized: "Disconnected") }
     if hasStalledFollower(channel) {

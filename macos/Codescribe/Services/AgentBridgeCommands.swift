@@ -601,15 +601,26 @@ extension RealAgentBridgeInstaller {
     for identities: Set<AgentPlaybackIdentity>,
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async -> [AgentPlaybackIdentity: AgentBroadcastPolicy] {
+    // Unlike playback mute's fail-closed silence, policy fails open to on:
+    // a broken receipt must never silently disconnect an agent.
+    let receipts = await broadcastPolicyReceipts(for: identities, installer: installer)
+    return Dictionary(uniqueKeysWithValues: identities.map { ($0, receipts[$0] ?? .on) })
+  }
+
+  /// Only the identities whose helper receipt was read and belongs to them.
+  /// A missing key means "no receipt": callers that paint the agents list
+  /// show that as unknown instead of the fail-open `.on`.
+  @MainActor
+  static func broadcastPolicyReceipts(
+    for identities: Set<AgentPlaybackIdentity>,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async -> [AgentPlaybackIdentity: AgentBroadcastPolicy] {
     let root = installer.bridgeRoot
     return await Task.detached(priority: .utility) {
       var result: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
       for identity in identities {
-        result[identity] = .on
         let path = root.appendingPathComponent(
           "runtime/broadcast-policy/\(identity.storageKey).json")
-        // Unlike playback mute's fail-closed silence, policy fails open to on:
-        // a broken receipt must never silently disconnect an agent.
         guard let handle = try? FileHandle(forReadingFrom: path) else { continue }
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: 65537), data.count <= 65536,

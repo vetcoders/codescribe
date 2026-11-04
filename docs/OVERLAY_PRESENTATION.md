@@ -12,8 +12,8 @@ alternative arrangements; this document does not select one as the final UI.
 | Agent name, clock, descriptor and message preview                       | `OverlayAgentRosterLabel.swift`                                                         |
 | Row footer, action grouping, broadcast row and compact channel pills    | `OverlayChannelStatusView.swift`                                                        |
 | Numbered channel pill: rail pills, map chips, counter, open-channel dot | `OverlayChannelPill.swift`                                                              |
-| Channel map in mini and compact: tiers, counter, its click              | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
-| Header, waveform placement, embedded list/rail and hover region         | `DictationOverlayView.swift`                                                            |
+| Channel map in the bar: rows, name widths, counter, its click           | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
+| Header, bar rows (`OverlayBarLayout`), embedded list/rail and hover     | `DictationOverlayView.swift`                                                            |
 | List width, docking threshold and rail/pill dimensions                  | `OverlayAgentDrawerLayout.swift`                                                        |
 | Native mini/midi/expanded window size, position and morph               | `DictationOverlayWindow.swift`                                                          |
 | Overlay colors                                                          | `OverlayAppearancePalette.swift`, projecting `CSPalette` in `DesignSystem/Tokens.swift` |
@@ -174,42 +174,196 @@ the audience are text.
 User-message bubbles retain a quiet warm outline using `terracottaDeep` at
 `CSAlpha.selectionStroke` strength. Incoming bubbles use the neutral panel edge.
 
-The channel map in mini and compact is another surface of the same
-projections. `OverlayChannelStatusView.channelMapModel` builds
+The channel map in the expanded bar (`midi`) is another surface
+of the same projections. `OverlayChannelStatusView.channelMapModel` builds
 `OverlayChannelMapModel` from the roster's rows, `hudStates`, current
 conversations, the selection and unread counts. It lists the bound agents
 1–9, with lease names capitalised for display only; channel 0 joins it only
 while the microphone broadcasts on it. A chip calls
-`selectChannelConversation`, the rail pill's selection path. The counter calls
-`OverlayState.activateChannelMapCounter`: in mini it selects compact, in
-compact it asks the window owner, through `onRestoreMidiNaturalWidth`, to drop
-a width the user set (`FloatingOverlayPanel.restoreMidiNaturalWidth`). There is
-no map popover; the counter's hint lists the agents. While the map is
-enabled, a channel the controller opens in mini or compact keeps that form
+`selectChannelConversation`, the rail pill's selection path, and its hint
+names the channel, the whole name and the chord (`5 · Kuba · Ctrl+5`). Mini
+carries no map and no counter (Monika, 2026-11-04): the interactive list of
+agents under the Agents button (✦), described below, replaces the counter
+that stood there since 2026-10-22. The vertical layout's stacked counter
+stays in the bar and the window (`OverlayChannelMapView.Placement.counter`);
+its click calls `OverlayState.activateChannelMapCounter`, which brings the
+Intercom group forward. While the map is enabled, a
+channel the controller opens in mini or the bar keeps that form
 (`OverlayState.channelOpenExpandsSurface`): the selection follows the open
-channel and the strip shows its digit, and the Agents canvas unfolds for it
-only with the map off or when the overlay is already expanded.
+channel, and the Agents canvas unfolds for it only with the map off or when
+the overlay is already expanded.
+
+Hovering the Agents button (✦), in mini and in the expanded bar, opens a
+small list of the bound agents after a short pause
+(`OverlayAgentsHoverListChrome`, `OverlayChannelMapHoverView.swift`). It
+replaces the button's "Agents" hint; while agent capture is open, or with no
+agent bound, the button keeps its one-line hint, because a click then stops
+the capture or opens the Agents canvas. A click on ✦ keeps its action
+(`OverlayState.toggleAgentSidebar`). The list rides the shared interactive
+hint panel (`OverlayHeaderControlChrome`, as the roster's message preview):
+it is a child window of the overlay, stays while the pointer crosses from ✦
+onto it, and closes 220 ms after the pointer has left both; Esc closes it.
+While the pointer is over the list it holds mini's auto-hide and the
+auto-collapse through `OverlayState.setPointerHovering`. The content reads a
+live model, so a roster or policy refresh repaints rows without re-showing,
+raising or re-timing the panel. No hint opens from inside the list: the
+shared hint panel is the list itself.
+
+One low row per agent 1–9 in ascending order (channel 0 has none), no header
+or cards, sized to its rows so nine fit without scrolling. Columns: the
+numbered `OverlayChannelPill` chip with the agent's name, the roster's status
+dot (`statusDotKind`), the antenna (channel-0 membership), the moon (do not
+disturb) and the amber unread dot. The chip opens the channel's conversation
+through `onSelectConversation`, the path `selectChannelConversation` uses.
+The antenna and the moon are sibling buttons with their own hit targets;
+they change reception through `OverlayBroadcastPolicyLedger.change`, never
+open the conversation and never close the list, are dimmed while a change is
+pending and repaint from the read-back receipt. When no helper receipt has
+been read for an agent (`OverlayBroadcastPolicyLedger.policyKnown`, fed by
+`broadcastPolicyReceipts`), both marks show a grey outline that switches
+nothing, "Reception policy unknown", instead of the fail-open "on". The dots
+are decoration for VoiceOver: each row carries one label with every state
+(`5 · Kuba · Listening · in channel 0 · Do not disturb · 2 unread replies`),
+the marks their own; identifiers are `overlay-agents-hover-row-<digit>`,
+`-open-`, `-antenna-` and `-moon-<digit>`.
 
 `OverlayChannelPill` is the single owner of the numbered pill visual: the rail
 pill, the map's chips and its counter render the digit through it, from
 immutable display values and one action, and an open channel's digit carries
 a small dot in the agent accent there (spec §14: a dot, no symbol, never
 `MIC →` text; the microphone and megaphone signs belong to the Agents header
-button). The dot overlaps the digit's circle, so it adds no width, and pulses
-only while the pill animates and Reduce Motion is off. It receives
-no `OverlayState`, conversation or command. Compact's strip picks the first
-tier that fits its width: named chips, digit-only chips (the selected
-conversation's chip keeps its name), the counter, nothing. Every threshold is
-measured from the same text metrics the pill draws with, and the window owner
-sizes compact from them too: `FloatingOverlayPanel.setMidiNaturalWidth`
-receives `DictationOverlayWindow.midiNaturalWidth`, bounded by the 820 pt
-`midiChannelMapBudget`, whenever `OverlayState.onChannelMapLayoutChanged`
-reports new agents or names. The same hook, which also fires when the open
-digits change, feeds `FloatingOverlayPanel.setChannelMapPresentation` with
-`DictationOverlayWindow.miniNaturalWidth`: mini is as wide as its content, its
-130 pt floor of controls plus the counter as drawn, at the same header scale
-as compact. Placement and the saved position still describe the 200 pt
-`miniPlacementSize` strip, with mini drawn at its trailing edge.
+button; mini's take adds no sign for channel 0). The dot overlaps the
+digit's circle, so it adds no width, and pulses only while the pill animates
+and Reduce Motion is off. It receives
+no `OverlayState`, conversation or command.
+
+The bar with the horizontal map is as wide as its content (bus brief
+2026-11-04 §4, §5, §8, §11C). `OverlayBarLayout` sets the brand, a waveform of
+one fixed width (82 pt, the same at rest and while recording, so a take never
+changes the bar's length), the clock, the map and the tools side by side;
+nothing stretches between them. Its two arrangements:
+
+- **One row, preferred for 1–5 agents.** The map follows the clock as
+  `.stacked` pills: the circled digit with the name under it, one button with
+  its caption included. The row is the taller of the 26 pt header row and a
+  stacked pill: the circle, the open-channel dot's reach below it and the
+  caption's line height, all at the header text scale.
+- **Two rows, preferred for 6–9 agents.** The first row holds the brand, the
+  waveform and clock, and the tools at its trailing edge; the second row holds
+  every agent in digit order as `.chip` pills, the name beside the digit. No
+  divider and no spacer: the rows are 26 pt and 22 pt with a 2 pt gap, and the
+  bar is as wide as the wider row.
+
+Measured width decides inside that preference. Names are measured in the
+pill's own font (`OverlayChannelMapNameWidths`): whole up to six letters in
+the default bar, otherwise five letters and `…`; whole when the user widens
+the bar; four letters and `…` at the floor, so names of up to five letters
+never lose a letter and `Lena` and `Lena…` still differ. When a row has less
+room than its names, one common cap cuts the longest names first; the font
+never shrinks, captions never overlap and circles never overlap. A single row
+the user narrows below its shortest names becomes two rows. No tier drops a
+name, shows only digits (an empty name is the exception), collapses the map
+into a counter or `+N`, or hides a channel or a tool.
+
+The window owns the geometry. `DictationOverlayWindow.midiBarGeometry`
+measures the bar from the same values: 32 pt of side padding, the brand
+(close dot, 5 pt, word), the waveform, the clock (`00:00` in the 11 pt mono
+face), the map row and the 141 pt of tools, with 10 pt between items and 8 pt
+between the clock and the map. It yields `OverlayMidiBarGeometry`: the natural
+width (preferred names), the resize minimum (shortest names, in two rows when
+that is narrower), the maximum (every name whole, so widening never opens a
+hole), and the height for a width. `FloatingOverlayPanel.setMidiBarGeometry`
+receives it whenever `OverlayState.onChannelMapLayoutChanged` reports new
+agents, names or open digits, and when the text scale changes. The height is
+rounded once there; the header reads its row count from the height the window
+gives it, so the layout and the frame never disagree. `applyPlacement` and
+the anchors use `FloatingOverlayPanel.midiSize`, and the bar keeps its
+upper-right corner when its size settles, so a second row grows downward.
+
+Resizing the bar moves only its left or right edge, through 8 pt bands (the
+close dot's hit circle starts 8.5 pt from the left edge). The edge stops at
+the measured minimum and maximum, and the height follows the rows the width
+holds. Only a width the edge really moved is remembered
+(`noteUserMidiWidth`): a press that does not move the frame, a push against a
+limit included, keeps the remembered width, and an agent leaving for a moment
+narrows the bar without overwriting it. The panel never carries AppKit's
+`.resizable` style: on a borderless panel its native resize corner swallowed
+the close dot's first points, so `FloatingOverlayPanel.allowsUserResize`
+gates every edge band instead. Without the horizontal map, or with no agent
+and no broadcast, the bar keeps its classic 410 × 46 floor with a flexible
+waveform.
+
+While a take records (bus brief §6, §11D) the map stays as it is: every
+bound agent keeps its digit and name, and the addressees, the channels the
+microphone feeds (`OverlayChannelMapChip.microphoneOpen`), wear the recording
+violet on their circle with the pulsing open-channel dot; the selected
+conversation keeps its fill and the amber unread dot stays independent of
+both. The waveform and the clock are drawn at rest too, at their fixed
+widths, so the bar has no hole at rest and a take alone never changes its
+length. Channel 0's circle joins the map while it broadcasts, so a broadcast
+widens the bar by that one circle, less than the waveform and clock. The
+header microphone is the stop, as before. No recording state reduces the map
+to one digit without a name or leaves an empty gap (anti-pattern 09).
+
+### Mini
+
+Mini at rest (Monika, 2026-11-04, bus brief §3) reads, from the left: the
+brand dot (the close button), transcription (`transcriptionPreviewButton`),
+the microphone, the Agents button (✦) and the preview chevron, in the bar's
+glyphs, palette and 22 pt controls. No counter, waveform, timer or map. With
+the channel map disabled the `codescribe` word follows the dot, as before;
+with it enabled the dot stands alone. Mini is as wide and as tall as its
+content, nothing reserved for hidden elements: 7 pt from a control to the
+capsule's edge on every side (`DictationOverlayWindow.miniInset`), 4 pt
+between controls (`miniControlSpacing`) and two 2 pt row gaps around the
+closed centre (`miniRowSpacing`), so 14 + 9 + 4 + 100 = 127 pt wide
+(`miniFloorWidth`) and 22 + 14 = 36 pt tall (`miniHeight`); the word adds
+6 pt and its measured width (`miniBrandWidth`). Mini does not scale with the
+text size. The same hook feeds `FloatingOverlayPanel.setChannelMapPresentation`
+with the map switch only. Placement and the saved position still describe the
+200 × 46 pt `miniPlacementSize` strip, with mini drawn at its upper-right
+corner (`applyPlacement`, `originForPersistence`).
+
+While a take is live (`OverlayState.miniTakeLive`: a dictation from its start
+to the controller's stop, or any channel, channel 0 included, with its
+microphone open), mini grows slightly and stays mini (Monika, 2026-11-04,
+bus brief §6, §11D, decision 12.2). Between the brand and the transcription
+button it shows the bar's 82 pt waveform, the clock (`00:00`, the same
+counter as the bar) and the addressees: one circled digit per open channel,
+in digit order, drawn by `OverlayChannelPill` in the counter form's
+open-channel look (15 pt circle, recording violet, the open-channel dot),
+with no names and no count or `+N`. A broadcast on channel 0 adds no
+addressee: the Agents button already wears its megaphone, and a second one
+beside the clock repeated the sign. A dictation alone shows no addressees.
+A circle selects that channel's conversation, as a bar chip does. The row's
+gaps open from 2 pt to the
+4 pt its controls keep, so mini grows by the waveform, the clock, the
+addressees and those gaps (`DictationOverlayWindow.miniTakeWidth`), never by
+more. The upper-right corner stays: mini grows leftward past the strip, and
+placement draws the measured width instead of clipping to 200 pt. Nothing
+remembers the wider width, so when the take ends mini returns to its resting
+127 pt (or brand-word) width. The change rides
+`OverlayState.onChannelMapLayoutChanged`, which also fires when the
+`recording` flag or the open digits change, into
+`FloatingOverlayPanel.setMiniTake(width:)`. On a visible panel it glides at
+the morph speed with one layout held at the upper-right corner (growing, the
+take's row; folding, the departing row), so the tools never move and are
+never clipped; with Reduce Motion it is one step. The Agents button keeps
+its stop meaning during an agent take, and the background click still
+toggles mini and the bar.
+
+A still click on mini's free background opens the bar; a still click on the
+bar's free background (its `overlay-header*` drag regions) folds it back to
+mini (`OverlayState.advancePresentationFromHeader`, decision 12.1). From the
+window a header click returns to the bar. Controls, an agent's circle, the
+8 pt resize bands and a drag past the 3 pt threshold never switch the form;
+the window opens from the chevron, ✦ and the menus. The chevron's context
+menu picks the form directly: **Mini / Bar / Window**.
+
+Folding the bar to mini follows the native bounds: a bar-to-bar morph holds
+no layout (`barMorph` in `FloatingOverlayPanel.setPresentationMode`), because
+pinning the bar's size would clip the leading-aligned mini row from the left.
+Mini lands at the right edge of the bar it left (`miniFrame.maxX`).
 
 Moving controls must not turn a whole row into one button or nest buttons
 inside another button. A folded rail pill already selects that conversation,
@@ -342,7 +496,7 @@ widget; a separate transcription canvas retains its capture presentation.
 Drafts, recipients and microphone state do not change with this visibility.
 
 Automatic collapse set to Never also excludes folding when another window of
-this application becomes key. An explicit Compact/Mini choice remains available.
+this application becomes key. An explicit Bar/Mini choice remains available.
 Window presence and layering keep their existing owner; Never is not a new pin policy.
 
 The transcription and agents canvases use the same native panel, with a last
@@ -385,14 +539,14 @@ to follow the new owner.
 
 ### Channel map opt-in
 
-Settings → Creator → **Channel map in the overlay** controls the map's mini
-counter and compact chips together. It is off for an absent preference.
+Settings → Creator → **Channel map in the overlay** controls the bar's pills
+and whether mini shows the brand word. It is off for an absent preference.
 `OverlayChannelMapPreference` owns this process-only chrome choice in the app
 preference domain, as `AppearancePreference` does; it is not core configuration.
 Creator and every overlay observe that same owner. The view's change handler
 asks its existing window owner to refit, including while a take is open.
-When disabled, mini draws `cs` at its earlier 200 pt width (164 while an agent
-records), and compact's natural width is 410. The microphone, selected owner,
+When disabled, mini draws the `codescribe` word beside its dot, and the bar
+keeps its classic 410 × 46 size. The microphone, selected owner,
 transcript and explicit resize choice are retained.
 
 ### Intercom layouts and independent panes

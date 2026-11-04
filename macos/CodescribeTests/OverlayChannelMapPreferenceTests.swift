@@ -146,10 +146,10 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  /// Mini with the map off is as wide as its row: the measured brand word
-  /// with the dot, the gaps and the 81 pt trailing controls, idle and while
-  /// capturing alike. The former fixed 200 pt (164 capturing) clipped the
-  /// fold control at the capsule's edge (Maciej, 2026-10-30 14:24).
+  /// Mini with the map off is its controls plus the measured brand word
+  /// after its 6 pt gap (bus brief 2026-11-04 §3): never narrower than its
+  /// controls, so the chevron is never clipped at the capsule's edge
+  /// (Maciej, 2026-10-30 14:24).
   func testMiniBrandWidthIsTheMeasuredWordRowAndNeverNarrowerThanItsControls() {
     typealias W = DictationOverlayWindow
     let font = NSFont.systemFont(ofSize: W.miniWordSize, weight: .bold)
@@ -157,28 +157,44 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
       ceil(
         ("codescribe" as NSString).size(withAttributes: [.font: font, .kern: W.miniWordTracking])
           .width) + 1
-    let row =
-      W.miniOuterPadding + W.miniBrandDot + W.miniBrandGap + word + 2 * W.miniWordRowSpacing
-      + W.miniTrailingControls
-    XCTAssertEqual(W.miniBrandWidth, ceil(row + W.miniWordClosedCentre))
-    XCTAssertGreaterThanOrEqual(W.miniBrandWidth, row, "the fold control is never clipped")
+    let row = W.miniFloorWidth + W.miniBrandGap + word
+    XCTAssertEqual(W.miniBrandWidth, ceil(row))
+    XCTAssertGreaterThanOrEqual(W.miniBrandWidth, row, "the chevron is never clipped")
     XCTAssertGreaterThan(W.miniBrandWidth, W.miniFloorWidth)
     XCTAssertEqual(W.miniBrandWidth, W.miniBrandWidth.rounded(.up), "whole points")
   }
 
-  func testDisabledPanelUsesTheBrandRowWidthIdleAndCapturing() throws {
+  /// The map setting picks mini's resting width, the brand word or the dot
+  /// alone; a live take adds its measured width on top and nothing remembers
+  /// it (bus brief 2026-11-04 §3, §6). Mini is 36 pt tall either way.
+  func testPanelMiniSizeFollowsTheMapSettingAndTheTake() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let panel = FloatingOverlayPanel(
       contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
     defer { panel.invalidatePresence() }
-    panel.setChannelMapPresentation(enabled: false, capturing: false, naturalWidth: 160)
-    XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniBrandWidth)
-    panel.setChannelMapPresentation(enabled: false, capturing: true, naturalWidth: 160)
-    XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniBrandWidth)
-    panel.setChannelMapPresentation(enabled: true, capturing: true, naturalWidth: 160)
-    XCTAssertEqual(panel.miniSize.width, 160)
-    panel.setMidiNaturalWidth(DictationOverlayWindow.midiSize.width)
+    panel.setChannelMapPresentation(enabled: false)
+    XCTAssertEqual(
+      panel.miniSize,
+      NSSize(
+        width: DictationOverlayWindow.miniBrandWidth, height: DictationOverlayWindow.miniHeight))
+    panel.setChannelMapPresentation(enabled: true)
+    XCTAssertEqual(
+      panel.miniSize,
+      NSSize(
+        width: DictationOverlayWindow.miniFloorWidth, height: DictationOverlayWindow.miniHeight))
+    let take = DictationOverlayWindow.miniTakeWidth(live: true, openDigits: ["2", "5"])
+    panel.setMiniTake(width: take)
+    XCTAssertEqual(panel.miniTakeWidth, take)
+    XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniFloorWidth + take)
+    XCTAssertEqual(
+      panel.miniSize.height, DictationOverlayWindow.miniHeight, "a take adds no height")
+    panel.setMiniTake(width: 0)
+    XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniFloorWidth, "back to rest")
+    // Without the horizontal map the bar is the classic 410 × 46 strip.
+    panel.setMidiBarGeometry(.classic)
     XCTAssertEqual(panel.midiPresentationWidth, 410)
+    XCTAssertEqual(
+      panel.midiSize, NSSize(width: 410, height: DictationOverlayWindow.collapsedHeight))
   }
 }
 

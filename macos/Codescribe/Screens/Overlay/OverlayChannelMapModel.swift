@@ -38,7 +38,7 @@ enum OverlayChannelChordModifier: Equatable, Sendable {
   func spokenShortcut(digit: String) -> String? { keyName.map { $0 + " " + digit } }
 }
 
-/// One channel of the collapsed overlay's map: a bound digit and its agent,
+/// One channel of the overlay's map: a bound digit and its agent,
 /// or channel 0 while the microphone broadcasts on it. Display values only;
 /// the conversation and its exact owner are resolved by the roster when the
 /// chip is clicked.
@@ -56,28 +56,18 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
   let unread: Bool
   /// A current conversation exists for the digit, so a click can select it.
   let selectable: Bool
-  /// The selected conversation is on this channel: when the strip drops the
-  /// names, this chip keeps its own.
+  /// The selected conversation is on this channel: the circle wears the
+  /// violet selection fill.
   let selected: Bool
 
   var id: String { digit }
   var isBroadcast: Bool { digit == "0" }
 
-  /// Whether the chip shows its name at a presentation: every agent chip
-  /// with names, only the selected one with digits, channel 0 never.
-  func showsName(in presentation: OverlayChannelMapPresentation) -> Bool {
-    guard !isBroadcast else { return false }
-    switch presentation {
-    case .chips: return true
-    case .digits: return selected
-    case .counter, .hidden: return false
-    }
-  }
-
   /// The floating hint: `5 · Kuba · Ctrl+5`, or `0 · Ctrl+0`; without a
-  /// chord `5 · Kuba` or `0`.
+  /// chord `5 · Kuba` or `0`. It names the agent in full whatever the bar
+  /// cuts its caption to.
   func hint(modifier: OverlayChannelChordModifier) -> String {
-    var parts = isBroadcast ? [digit] : [digit, name]
+    var parts = isBroadcast || name.isEmpty ? [digit] : [digit, name]
     if let shortcut = modifier.shortcut(digit: digit) { parts.append(shortcut) }
     return parts.joined(separator: " · ")
   }
@@ -135,36 +125,75 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
   }
 }
 
-/// What the compact strip shows of the map at a given width (spec §13.1).
-enum OverlayChannelMapPresentation: Equatable, Sendable {
-  /// Every chip with its agent's name, in digit order.
-  case chips
-  /// Digit-only chips; the selected conversation's chip keeps its name.
-  case digits
-  /// One counter pill: `4 ▾`, or the open channel's digit with the badge.
-  case counter
-  /// Not even the counter fits; the map yields so the actions and the fold
-  /// button keep their place.
-  case hidden
+/// The widths the expanded bar's map gives its chips' names (bus brief
+/// 2026-11-04 §5, §11C). Every value is a string measured in the pill's own
+/// font (`OverlayChannelPill.nameFont`); channel 0 and an agent with an empty
+/// name have zero, so their pill is the circle alone.
+struct OverlayChannelMapNameWidths: Equatable, Sendable {
+  /// Each name whole, up to `OverlayChannelPill.maxNameWidth`: the widest
+  /// the bar grows to when the user widens it.
+  let full: [CGFloat]
+  /// The default bar's names: whole up to six letters, else five and `…`.
+  let preferred: [CGFloat]
+  /// A narrowed bar's floor: whole up to five letters, else four and `…`.
+  let shortest: [CGFloat]
+
+  init(full: [CGFloat], preferred: [CGFloat], shortest: [CGFloat]) {
+    self.full = full
+    self.preferred = preferred
+    self.shortest = shortest
+  }
+
+  @MainActor
+  init(chips: [OverlayChannelMapChip], scale: CGFloat) {
+    let names = chips.map { $0.isBroadcast ? "" : $0.name }
+    full = names.map { $0.isEmpty ? 0 : OverlayChannelPill.nameWidth($0, scale: scale) }
+    preferred = names.map { name in
+      guard !name.isEmpty else { return 0 }
+      return name.count <= OverlayChannelPill.preferredNameLength
+        ? OverlayChannelPill.nameWidth(name, scale: scale)
+        : OverlayChannelPill.truncatedNameWidth(
+          name, prefix: OverlayChannelPill.preferredNamePrefix, scale: scale)
+    }
+    shortest = names.map { name in
+      name.isEmpty
+        ? 0
+        : OverlayChannelPill.truncatedNameWidth(
+          name, prefix: OverlayChannelPill.shortestNamePrefix, scale: scale)
+    }
+  }
+
+  /// One cap for every name: a name narrower than the cap stays whole, a
+  /// wider one is cut to the cap but never below its shortest width.
+  func capped(at cap: CGFloat) -> [CGFloat] {
+    zip(full, shortest).map { full, shortest in
+      full == 0 ? 0 : max(shortest, min(full, cap))
+    }
+  }
+
+  /// The names a row of `available` points shows: whole when they fit, else
+  /// the largest common cap that fits, so the longest names give way first
+  /// and short ones keep every letter. The cap is a whole point, rounded
+  /// down from the bisection, so a name never ends on a fractional width;
+  /// a smaller cap never widens the row, so the rounded row still fits.
+  /// Below the shortest widths the row keeps them; the window's resize
+  /// minimum never proposes less. A nil width is the layout's ideal-size
+  /// probe, which the whole names answer.
+  func fitted(available: CGFloat?, rowWidth: ([CGFloat]) -> CGFloat) -> [CGFloat] {
+    guard let available, available.isFinite, rowWidth(full) > available + 0.5 else { return full }
+    guard rowWidth(shortest) < available + 0.5 else { return shortest }
+    var low: CGFloat = 0
+    var high = full.max() ?? 0
+    // Half a point of cap is below what the ellipsis truncation can show.
+    while high - low > 0.5 {
+      let cap = (low + high) / 2
+      if rowWidth(capped(at: cap)) <= available + 0.5 { low = cap } else { high = cap }
+    }
+    return capped(at: low.rounded(.down))
+  }
 }
 
-/// Display values for the horizontal intercom's existing agent commands.
-/// The header resolves availability through the roster; the map owns no
-/// capture, playback preference or panel destination.
-struct OverlayChannelMapControls: Equatable, Sendable {
-  var microphoneEnabled = false
-  var muted: Bool? = nil
-  var playbackEnabled = false
-  var speaking = false
-  var focusSymbol: String? = nil
-  var focusLabel = ""
-  var focusEnabled = false
-  var focusPending = false
-  var focusSucceeded = false
-  var focusFailed = false
-}
-
-/// The collapsed overlay's channel map (bus intercom spec §5.1, §6, §13): a
+/// The overlay's channel map (bus intercom spec §5.1, §6, §13): a
 /// projection of the same roster snapshot the Agents canvas reads. It holds
 /// no state, polls nothing and never names a session; a click resolves the
 /// conversation through the roster's existing selection path.
@@ -244,69 +273,27 @@ struct OverlayChannelMapModel: Equatable, Sendable {
     return counterHint.isEmpty ? open : open + ". " + counterHint
   }
 
-  /// The chips' measured widths at a presentation.
-  @MainActor
-  func chipWidths(for presentation: OverlayChannelMapPresentation, scale: CGFloat) -> [CGFloat] {
-    chips.map {
-      OverlayChannelPill.chipWidth(
-        name: $0.showsName(in: presentation) ? $0.name : nil, scale: scale)
-    }
-  }
+  /// The expanded bar keeps 1–5 agents in its single row, names under the
+  /// circles, and gives 6–9 a second row, names beside them (bus brief
+  /// 2026-11-04 §4). Measured width decides inside that preference: a single
+  /// row the user narrowed below its shortest names takes two rows.
+  static let singleRowAgentLimit = 5
 
+  /// A row of the map's pills at the given name widths: each pill's
+  /// measured width in its form and the gaps between them.
   @MainActor
-  func rowWidth(
-    for presentation: OverlayChannelMapPresentation, scale: CGFloat, spacing: CGFloat
+  static func rowWidth(
+    nameWidths: [CGFloat], form: OverlayChannelPill.Form, scale: CGFloat, spacing: CGFloat
   ) -> CGFloat {
-    Self.rowWidth(chipWidths: chipWidths(for: presentation, scale: scale), spacing: spacing)
+    rowWidth(
+      chipWidths: nameWidths.map {
+        OverlayChannelPill.chipWidth(nameWidth: $0, form: form, scale: scale)
+      }, spacing: spacing)
   }
 
   /// The chips' row: their measured widths and the gaps between them.
   static func rowWidth(chipWidths: [CGFloat], spacing: CGFloat) -> CGFloat {
     guard !chipWidths.isEmpty else { return 0 }
     return chipWidths.reduce(0, +) + spacing * CGFloat(chipWidths.count - 1)
-  }
-
-  /// Named chips when their row fits, else digit-only chips, else the
-  /// counter, else nothing. Half a point absorbs the layout's fractional
-  /// rounding. A nil width is the layout's ideal-size probe, which the named
-  /// row answers.
-  static func presentation(
-    availableWidth: CGFloat?, namedWidth: CGFloat, digitsWidth: CGFloat, counterWidth: CGFloat
-  ) -> OverlayChannelMapPresentation {
-    guard namedWidth > 0 else { return .hidden }
-    guard let availableWidth, availableWidth.isFinite else { return .chips }
-    if availableWidth + 0.5 >= namedWidth { return .chips }
-    if availableWidth + 0.5 >= digitsWidth { return .digits }
-    if availableWidth + 0.5 >= counterWidth { return .counter }
-    return .hidden
-  }
-
-  /// The width the map claims for a proposal: the width of what it shows.
-  /// Reporting the shown row's or the counter's width, not the proposal,
-  /// hands the rest back to the waveform.
-  static func occupiedWidth(
-    availableWidth: CGFloat?, namedWidth: CGFloat, digitsWidth: CGFloat, counterWidth: CGFloat,
-    preferredWidths: [CGFloat] = []
-  ) -> CGFloat {
-    // Rich named rows give up their extra controls before any name goes away.
-    // Every candidate is measured from the same button frames the map draws.
-    if namedWidth > 0,
-      let preferred = preferredWidths.first(where: { width in
-        let fits = availableWidth.map { !$0.isFinite || $0 + 0.5 >= width }
-        return width > 0 && (fits ?? true)
-      })
-    {
-      return preferred
-    }
-    return
-      switch presentation(
-        availableWidth: availableWidth, namedWidth: namedWidth, digitsWidth: digitsWidth,
-        counterWidth: counterWidth)
-    {
-    case .chips: namedWidth
-    case .digits: digitsWidth
-    case .counter: counterWidth
-    case .hidden: 0
-    }
   }
 }

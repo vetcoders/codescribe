@@ -129,7 +129,10 @@ struct OverlayRecordingControls: View {
     }
     .fixedSize()
     .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-recording-controls")
+    // Mini splits the pair around the Agents button: the chevron-only
+    // instance takes its own identifier, so each id names one element.
+    .accessibilityIdentifier(
+      showsRecordingButton ? "overlay-recording-controls" : "overlay-recording-controls-preview")
     .contextMenu {
       agentsMenuItem
       Button("My dictation", systemImage: "waveform") { onShowDictation?() }
@@ -270,9 +273,12 @@ struct OverlayRecordingControls: View {
           "Widget size",
           selection: Binding(get: { presentationMode }, set: { onPresentationSelect($0) })
         ) {
-          Text("Collapse widget").tag(OverlayPresentationMode.mini)
-          Text("Compact").tag(OverlayPresentationMode.midi)
-          Text("Expanded").tag(OverlayPresentationMode.expanded)
+          Text("Mini", comment: "Widget size picker: the small tool capsule")
+            .tag(OverlayPresentationMode.mini)
+          Text("Bar", comment: "Widget size picker: the bar with the channel map")
+            .tag(OverlayPresentationMode.midi)
+          Text("Window", comment: "Widget size picker: the transcription and agents window")
+            .tag(OverlayPresentationMode.expanded)
         }
         .pickerStyle(.inline)
         .accessibilityIdentifier("overlay-presentation-picker")
@@ -377,12 +383,150 @@ enum OverlayHeaderDensity: Equatable {
   }
   var waveformMinWidth: CGFloat {
     switch self {
-    // Mini is as wide as its content (spec §13.4): its centre closes, so the
-    // counter sits as close to the agents button as the trailing controls
-    // sit to one another.
+    // Mini is as wide as its content (bus brief 2026-11-04 §3): its centre
+    // closes, so the brand sits as close to the first control as the
+    // controls sit to one another.
     case .mini: return 0
     case .midi: return 56
     case .expanded: return 12
+    }
+  }
+}
+
+/// The expanded bar's shared measures (bus brief 2026-11-04 §4, §8, §11C). The
+/// header lays its rows out with them and the window owner sizes the bar from
+/// the same values (`DictationOverlayWindow.midiBarGeometry`).
+@MainActor
+enum OverlayBarMetrics {
+  /// The gap between the bar's items, in every form but mini.
+  static let itemSpacing: CGFloat = 10
+  /// The bar's waveform keeps one width at rest and while recording, so a
+  /// take starting never changes the bar's length: mini and compact's 24
+  /// `WaveformView` compact bars of 1.5 pt with their 23 gaps of 2 pt.
+  static let waveformWidth: CGFloat = 82
+  /// Between the bar's first row and its chips: with the 2 pt the 22 pt tools
+  /// leave inside the 26 pt row, 4 pt between a tool and a chip.
+  static let rowGap: CGFloat = 2
+
+  /// The single row: the header row, raised to a stacked pill's height.
+  @MainActor
+  static func singleRowHeight(textScale: CGFloat) -> CGFloat {
+    max(
+      OverlayHeaderDensity.rowHeight,
+      OverlayChannelPill.stackedHeight(scale: OverlayChannelPill.headerScale(textScale)))
+  }
+
+  /// Two rows: the header row, the gap and a chip row.
+  static let twoRowHeight =
+    OverlayHeaderDensity.rowHeight + rowGap + OverlayChannelPill.headerHeight
+}
+
+/// The expanded bar with its channel map: brand, waveform and timer lead, the
+/// tools close the row at its trailing edge, and nothing stretches between
+/// them. With up to five agents the map's stacked pills sit after the timer
+/// in one row; with more, or when the window owner gives the bar two rows'
+/// height because the user narrowed it below the single row's floor, the map
+/// is a second row of chips under the first. The window owns that choice
+/// through the height it gives the bar, so the layout never picks a row
+/// count the frame does not have. The map takes the width left between the
+/// timer and the tools; the window's resize limits keep it within the map's
+/// own floor and ceiling.
+struct OverlayBarLayout: Layout {
+  enum Part: Equatable {
+    case leading, waveform, timer, map, tools
+  }
+
+  struct PartKey: LayoutValueKey {
+    static let defaultValue: Part = .leading
+  }
+
+  let agentCount: Int
+  let singleRowHeight: CGFloat
+  let twoRowHeight: CGFloat
+  /// The header row the brand, the clock and the tools sit in.
+  let rowHeight: CGFloat
+  let chipRowHeight: CGFloat
+  let rowGap: CGFloat
+  let spacing: CGFloat
+  let mapGap: CGFloat
+
+  /// The bar's layout for the map's agents at the overlay's text scale.
+  @MainActor
+  init(agentCount: Int, textScale: CGFloat) {
+    self.agentCount = agentCount
+    singleRowHeight = OverlayBarMetrics.singleRowHeight(textScale: textScale)
+    twoRowHeight = OverlayBarMetrics.twoRowHeight
+    rowHeight = OverlayHeaderDensity.rowHeight
+    chipRowHeight = OverlayChannelPill.headerHeight
+    rowGap = OverlayBarMetrics.rowGap
+    spacing = OverlayBarMetrics.itemSpacing
+    mapGap = OverlayChannelMapView.leadingGap
+  }
+
+  private func twoRows(_ proposal: ProposedViewSize) -> Bool {
+    if agentCount > OverlayChannelMapModel.singleRowAgentLimit { return true }
+    guard let height = proposal.height, height.isFinite else { return false }
+    return height + 0.5 >= twoRowHeight
+  }
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    let height = twoRows(proposal) ? twoRowHeight : singleRowHeight
+    if let width = proposal.width, width.isFinite { return CGSize(width: width, height: height) }
+    // The ideal-size probe: the first row's items, the map in it or under it.
+    let two = twoRows(proposal)
+    var row: CGFloat = 0
+    var map: CGFloat = 0
+    for subview in subviews {
+      switch subview[PartKey.self] {
+      case .map:
+        map = subview.sizeThatFits(
+          ProposedViewSize(width: nil, height: two ? chipRowHeight : height)
+        ).width
+      case .leading, .waveform, .timer, .tools:
+        row += subview.sizeThatFits(.unspecified).width + spacing
+      }
+    }
+    row = max(0, row - spacing)
+    let width = two ? max(row, map) : row + (map > 0 ? mapGap + map : 0)
+    return CGSize(width: width, height: height)
+  }
+
+  func placeSubviews(
+    in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) {
+    let two = twoRows(proposal)
+    let firstRowMid = two ? bounds.minY + rowHeight / 2 : bounds.midY
+    var x = bounds.minX
+    var map: LayoutSubview?
+    var tools: LayoutSubview?
+    for subview in subviews {
+      switch subview[PartKey.self] {
+      case .map: map = subview
+      case .tools: tools = subview
+      case .leading, .waveform, .timer:
+        let size = subview.sizeThatFits(.unspecified)
+        subview.place(
+          at: CGPoint(x: x, y: firstRowMid), anchor: .leading, proposal: ProposedViewSize(size))
+        x += size.width + (subview[PartKey.self] == .timer ? 0 : spacing)
+      }
+    }
+    var trailing = bounds.maxX
+    if let tools {
+      let size = tools.sizeThatFits(.unspecified)
+      tools.place(
+        at: CGPoint(x: bounds.maxX, y: firstRowMid), anchor: .trailing,
+        proposal: ProposedViewSize(size))
+      trailing = bounds.maxX - size.width - spacing
+    }
+    guard let map else { return }
+    if two {
+      map.place(
+        at: CGPoint(x: bounds.minX, y: bounds.minY + rowHeight + rowGap), anchor: .topLeading,
+        proposal: ProposedViewSize(width: bounds.width, height: chipRowHeight))
+    } else {
+      x += mapGap
+      let proposal = ProposedViewSize(width: max(0, trailing - x), height: singleRowHeight)
+      map.place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading, proposal: proposal)
     }
   }
 }
@@ -1172,8 +1316,17 @@ struct DictationOverlayView: View {
       // every AppKit frame step and puts controls at fractional positions
       // that overlap their neighbours mid-morph.
       .transaction { $0.animation = nil }
-      .padding(.horizontal, 16 - OverlayHeaderDensity.clipInset)
-      .padding(.vertical, 10 - OverlayHeaderDensity.clipInset)
+      // Mini hugs its controls: 7 pt from a 22 pt control to the capsule's
+      // edge on every side (`DictationOverlayWindow.miniInset`).
+      .padding(
+        .horizontal,
+        (state.isMini ? DictationOverlayWindow.miniInset : 16) - OverlayHeaderDensity.clipInset
+      )
+      .padding(
+        .vertical,
+        (state.isMini ? DictationOverlayWindow.miniVerticalPadding : 10)
+          - OverlayHeaderDensity.clipInset
+      )
       .coordinateSpace(name: "overlay-header")
       // Keep the explicit drag region above the passive glass background.
       // OverlayResizeHitTests verifies header dragging across its width.
@@ -1209,7 +1362,9 @@ struct DictationOverlayView: View {
     OverlayCloseButton(palette: palette) { state.relayIntent(.close) }
   }
 
-  private func recordingControls(compact: Bool, showsMicrophone: Bool = true) -> some View {
+  private func recordingControls(
+    compact: Bool, showsMicrophone: Bool = true, showsPreview: Bool = true
+  ) -> some View {
     var controls = OverlayRecordingControls(
       canFinish: state.recording && !state.transcribing,
       presentationMode: state.presentationMode, compact: compact, palette: palette,
@@ -1218,6 +1373,7 @@ struct DictationOverlayView: View {
       isFinalizing: state.isFinalizingDictation,
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
+    controls.showsPreviewButton = showsPreview
     controls.onShowDictation = state.showTranscription
     controls.onShowAgents = { state.showAgentMonitor() }
     controls.onPresentationSelect = state.setPresentationMode
@@ -1226,25 +1382,47 @@ struct DictationOverlayView: View {
 
   private func justifiedHeader(density: OverlayHeaderDensity) -> some View {
     let mini = density == .mini
-    // Mini's row gaps are half the 8 pt between its trailing controls, so the
-    // gap across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
+    // Mini's row gaps are half the 4 pt between its controls, so the gap
+    // across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
     // Every use below is mini's: one mini in both layouts.
     let mapEnabled = state.channelMapInMini
-    let horizontalMap = density == .midi && state.channelMapInHeader && channelMap != nil
+    let map = channelMap
+    let horizontalMap = density == .midi && state.channelMapInHeader && map != nil
     // The vertical layout's stacked counter is the visible way to the Intercom
-    // group, so it keeps the brand's side in compact and expanded as in mini.
-    let leadingCounter = mini || state.channelMapCounterStacked
-    return HStack(spacing: mini ? (mapEnabled ? DictationOverlayWindow.miniRowSpacing : 6) : 10) {
+    // group, so it keeps the brand's side in every form, mini included
+    // (Maciej, 2026-10-23). The horizontal mini has no counter (Monika,
+    // 2026-11-04: the Agents list replaces it), so there `channelMap` is nil.
+    let leadingCounter = state.channelMapCounterStacked
+    // Mini while a take is live (Monika, 2026-11-04, bus brief §6, §11D): it
+    // grows by the waveform, the clock and the addressees, and its gaps open
+    // to the 4 pt its controls keep (`DictationOverlayWindow.miniTakeWidth`).
+    // It never becomes the bar; after the take it folds back to rest.
+    let miniTake = mini && state.miniTakeLive
+    let fixedWaveform = horizontalMap || miniTake
+    // The expanded bar with its map is as wide as its content (bus brief
+    // 2026-11-04 §4, §8): `OverlayBarLayout` sets the items side by side with
+    // no stretching centre. Every other header keeps its row. One child list
+    // serves both layouts, so the close dot and the recording controls keep
+    // their identity through every morph.
+    let layout =
+      horizontalMap
+      ? AnyLayout(
+        OverlayBarLayout(agentCount: map?.model.count ?? 0, textScale: textScale))
+      : AnyLayout(
+        HStackLayout(
+          spacing: mini
+            ? (miniTake
+              ? DictationOverlayWindow.miniControlSpacing : DictationOverlayWindow.miniRowSpacing)
+            : OverlayBarMetrics.itemSpacing))
+    return layout {
       // The shared lockup, with the close button in the brand dot's place.
-      // Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini. Its
-      // brand dot leads, and the channel counter takes the word's place: the
-      // agent count, the agents on hover, the open channel's digit with the
-      // violet open-channel dot (spec §14). This replaces Maciej's 2026-10-20 rule that mini
-      // always reads "cs"; his agents button and its stop meaning stay.
+      // With the channel map enabled mini shows the dot alone (Monika,
+      // 2026-10-22, bus intercom spec §13.4); the horizontal mini's counter
+      // left on 2026-11-04 for the Agents list (bus brief §3), the vertical
+      // mini keeps its stacked counter after the dot, at the word's gap.
+      // Without the map mini keeps the word.
       HStack(
-        spacing: state.channelMapCounterStacked
-          ? (mini ? DictationOverlayWindow.miniStackedBrandGap : 12)
-          : DictationOverlayWindow.miniBrandGap
+        spacing: state.channelMapCounterStacked && !mini ? 12 : DictationOverlayWindow.miniBrandGap
       ) {
         Wordmark(size: density.brandSize, spacing: mini ? 6 : 5, showsWord: !mini || !mapEnabled) {
           closeButton
@@ -1259,24 +1437,27 @@ struct DictationOverlayView: View {
             identifier: mini
               ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
         }
-        if leadingCounter, let map = channelMap {
+        if leadingCounter, let map {
           refreshingChordModifier(map)
         }
       }
+      .layoutValue(key: OverlayBarLayout.PartKey.self, value: .leading)
 
-      // The flexible centre keeps one identity in every density; in mini it
-      // collapses to a spacer so the recording controls stay trailing.
+      // The flexible centre keeps one identity in every density; in mini at
+      // rest it collapses to a spacer so the recording controls stay
+      // trailing. The expanded bar with its map and mini during a take give
+      // it the bar's one fixed width instead.
       chromeWaveform(barCount: density.waveformBars)
         .frame(
-          minWidth: mini && !mapEnabled ? 4 : density.waveformMinWidth,
-          maxWidth: horizontalMap ? 120 : .infinity
+          minWidth: fixedWaveform ? OverlayBarMetrics.waveformWidth : density.waveformMinWidth,
+          maxWidth: fixedWaveform ? OverlayBarMetrics.waveformWidth : .infinity
         )
         .layoutPriority(-1)
-        .opacity(mini ? 0 : 1)
-        .allowsHitTesting(!mini)
-        .accessibilityHidden(mini)
+        .opacity(mini && !miniTake ? 0 : 1)
+        .allowsHitTesting(!mini || miniTake)
+        .accessibilityHidden(mini && !miniTake)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(mini ? "" : "overlay-header-center")
+        .accessibilityIdentifier(mini && !miniTake ? "" : "overlay-header-center")
         .background {
           GeometryReader { geometry in
             Color.clear.preference(
@@ -1289,30 +1470,36 @@ struct DictationOverlayView: View {
           .allowsHitTesting(false)
           .accessibilityHidden(true)
         }
-      if !mini {
-        // The compact strip carries the channel map between the clock and the
-        // actions (bus intercom spec §5.1). The map brings its own leading
-        // gap, so where it yields its place the strip keeps today's spacing.
-        HStack(spacing: 0) {
-          sessionTimer
-            .allowsHitTesting(false)
-          if density == .midi, state.channelMapInHeader, let map = channelMap {
-            refreshingChordModifier(map)
-          }
-        }
-        // Names and their separate actions take useful width before the
-        // audio meter expands. The map itself degrades when the window is
-        // genuinely narrow; global controls retain their fixed width.
-        .layoutPriority(horizontalMap ? 1 : 0)
+        .layoutValue(key: OverlayBarLayout.PartKey.self, value: .waveform)
+      if !mini || miniTake {
+        sessionTimer
+          .allowsHitTesting(false)
+          .layoutValue(key: OverlayBarLayout.PartKey.self, value: .timer)
       }
-      if horizontalMap {
-        Spacer(minLength: 0)
-          .layoutPriority(-2)
+      // The vertical layout's stacked counter already circles the open
+      // digits beside the brand, so only the horizontal mini adds the row.
+      if miniTake, !state.channelMapCounterStacked {
+        miniAddressees
+      }
+      // The expanded bar's channel map (bus intercom spec §5.1): stacked pills
+      // after the clock, or the bar's second row (`OverlayBarLayout`).
+      if horizontalMap, let map {
+        refreshingChordModifier(map)
+          .layoutValue(key: OverlayBarLayout.PartKey.self, value: .map)
       }
 
-      HStack(spacing: 8) {
-        if !mini {
-          transcriptionPreviewButton
+      HStack(spacing: mini ? DictationOverlayWindow.miniControlSpacing : 8) {
+        transcriptionPreviewButton
+        if mini {
+          // Mini at rest, from the brand (Monika, 2026-11-04, bus brief §3):
+          // transcription, microphone, Agents, chevron. The Agents button
+          // stays whether or not an agent records (Maciej, 2026-10-20): while
+          // any channel records, a press is that capture's stop, never
+          // channel 0 or the monitor.
+          recordingControls(compact: false, showsPreview: false)
+          channelStatusView
+          recordingControls(compact: false, showsMicrophone: false)
+        } else {
           if let error = state.expansionPreferenceError {
             OverlayMicrophoneGlyph(
               symbol: "exclamationmark.triangle.fill", tint: palette.primaryText.color
@@ -1323,21 +1510,16 @@ struct DictationOverlayView: View {
           }
           channelStatusView
           OverlayPinButton(state: state, palette: palette)
-        } else {
-          // Maciej, 2026-10-20: mini always carries the agents button beside
-          // the ordinary microphone, whether or not an agent records. Single-agent
-          // capture uses a microphone; only All uses the left-facing megaphone
-          // (Founder, 2026-10-22). While any channel records, a press here is
-          // that capture's stop, never channel 0 or the monitor.
-          channelStatusView
+          recordingControls(compact: false)
         }
-        recordingControls(compact: false)
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier(mini ? "" : "overlay-header-trailing")
+      .layoutValue(key: OverlayBarLayout.PartKey.self, value: .tools)
     }
-    .frame(height: OverlayHeaderDensity.rowHeight)
+    // The bar's layout answers its own one- or two-row height.
+    .frame(height: horizontalMap ? nil : OverlayHeaderDensity.rowHeight)
     .accessibilityIdentifier(mini ? "overlay-mini-widget" : "")
   }
 
@@ -1365,69 +1547,70 @@ struct DictationOverlayView: View {
     .accessibilityIdentifier("overlay-transcription-preview")
   }
 
-  /// The collapsed header's channel map, or nil while no agent is bound and
-  /// channel 0 is closed. Mini shows its counter, compact its chips. A chip
-  /// selects its conversation through the roster, as a rail pill does; the
-  /// counter switches mini to compact, or returns a narrowed compact strip to
-  /// its natural width (spec §13.4). Wide named chips have separate audio and
-  /// panel controls. The vertical layout has no chips: its counter, as stacked
-  /// cards that open the Intercom group, stays in every form, so widening the
-  /// overlay never removes the way to the group.
+  /// The header's channel map, or nil while no agent is bound and channel 0
+  /// is closed. The expanded bar shows its pills; the horizontal mini shows
+  /// none (Monika, 2026-11-04: the Agents list replaces its counter). A pill
+  /// selects its conversation through the roster, as a rail pill does. The
+  /// vertical layout has no pills: its counter, as stacked cards that open
+  /// the Intercom group, stays in every form, mini included (Maciej,
+  /// 2026-10-23), so narrowing the overlay never removes the way to the group.
   /// Internal so tests can drive the header's same values.
   var channelMap: OverlayChannelMapView? {
-    let counterOnly = state.presentationMode == .mini || state.channelMapCounterStacked
-    guard counterOnly ? state.channelMapInMini : state.channelMapInHeader else { return nil }
+    guard state.presentationMode != .mini || state.channelMapCounterStacked else { return nil }
+    let counterOnly = state.channelMapCounterStacked
+    guard counterOnly || state.channelMapInHeader else { return nil }
     let roster = channelStatusView
     let model = roster.channelMapModel
     guard !model.chips.isEmpty else { return nil }
-    var controls: [String: OverlayChannelMapControls] = [:]
-    for channel in roster.channels {
-      let digit = channel.channel
-      let focusState = roster.panelFocusStates[digit]
-      let showsFocus = roster.showsPanelFocusButton(for: channel)
-      controls[digit] = OverlayChannelMapControls(
-        microphoneEnabled: !roster.unavailable && roster.onToggleChannel != nil
-          && !roster.pendingToggleChannels.contains(digit)
-          && OverlayChannelStatusView.toggleDigit(for: digit) != nil
-          && !roster.hasDeadFollower(channel),
-        muted: roster.mutedChannels[digit],
-        playbackEnabled: roster.onTogglePlayback != nil
-          && !roster.pendingMuteChannels.contains(digit),
-        speaking: roster.conversation(for: channel)?.replySpeaking == true,
-        focusSymbol: showsFocus
-          ? roster.panelFocusSymbol(
-            focusState,
-            target: roster.panelFocusTarget(for: channel)
-              ?? (roster.hasCodexCloudThread(channel) ? .codexThread : nil)) : nil,
-        focusLabel: showsFocus ? roster.panelFocusHelp(for: channel, state: focusState) : "",
-        focusEnabled: !roster.panelFocusUnreachable(channel),
-        focusPending: focusState?.isRequesting == true,
-        focusSucceeded: focusState?.isSucceeded == true,
-        focusFailed: focusState?.isFailed == true)
-    }
     return OverlayChannelMapView(
-      model: model, placement: counterOnly ? .mini : .strip,
+      model: model, placement: counterOnly ? .counter : .strip,
       modifier: state.agentChannelModifier, palette: palette,
       textScale: textScale, animates: overlayVisible,
       onSelectChannel: { roster.selectChannelConversation($0) },
       onCounter: { state.activateChannelMapCounter() },
-      controls: controls,
-      onToggleMicrophone: { digit in
-        guard let channel = roster.channels.first(where: { $0.channel == digit }) else { return }
-        roster.toggle(channel)
-      },
-      onTogglePlayback: { roster.onTogglePlayback?($0) },
-      onFocusChannel: { digit in
-        guard let channel = roster.channels.first(where: { $0.channel == digit }),
-          roster.showsPanelFocusButton(for: channel),
-          !roster.panelFocusUnreachable(channel),
-          roster.panelFocusStates[digit]?.isRequesting != true,
-          let owner = roster.archiveCandidates[digit]
-        else { return }
-        roster.onFocusAgentPanel?(owner)
-      },
       agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) },
       stacked: state.channelMapCounterStacked)
+  }
+
+  /// Mini's addressees while a take is live (Monika, 2026-11-04, bus brief
+  /// §6, §11D): one circled digit per channel the microphone feeds, in digit
+  /// order, drawn by the map's own pill in the form the counter used for open
+  /// channels, with the violet open-channel dot; no names and no `+N`. For
+  /// channel 0 the Agents button's left-facing megaphone stands in for the
+  /// circles. A dictation alone has none. A circle selects its conversation,
+  /// as a bar chip does; the megaphone is a sign, not a control. The window
+  /// sizes mini from the same values (`DictationOverlayWindow.miniAddresseesWidth`).
+  @ViewBuilder
+  private var miniAddressees: some View {
+    let roster = channelStatusView
+    let open = roster.channelMapModel.chips.filter(\.microphoneOpen)
+    let modifier = state.agentChannelModifier
+    // A broadcast on channel 0 draws no addressee: the Agents button already
+    // wears the megaphone for it (render review, 2026-11-04).
+    if open.contains(where: \.isBroadcast) {
+      EmptyView()
+    } else if !open.isEmpty {
+      HStack(spacing: DictationOverlayWindow.miniControlSpacing) {
+        ForEach(open) { chip in
+          OverlayChannelPill(
+            form: .counter,
+            display: OverlayChannelPill.Display(
+              figure: chip.digit, disconnected: chip.disconnected, microphoneOpen: true,
+              openDigits: [chip.digit], unread: chip.unread, selected: chip.selected,
+              enabled: chip.selectable, animates: overlayVisible),
+            hint: chip.hint(modifier: modifier),
+            accessibilityText: chip.accessibilityLabel(modifier: modifier),
+            identifier: "overlay-mini-addressee-\(chip.digit)",
+            palette: palette, textScale: 1
+          ) {
+            roster.selectChannelConversation(chip.digit)
+          }
+          .fixedSize()
+        }
+      }
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("overlay-mini-addressees")
+    }
   }
 
   /// Hints name the chord with the stored modifier, which no settings event
@@ -1522,7 +1705,7 @@ struct DictationOverlayView: View {
   /// the stamp so the displayed value is the session's true length.
   @ViewBuilder
   private var sessionTimer: some View {
-    if !state.isMini {
+    if !state.isMini || state.miniTakeLive {
       TimelineView(
         .animation(minimumInterval: 1, paused: !overlayVisible || state.sessionTimerPaused)
       ) { _ in

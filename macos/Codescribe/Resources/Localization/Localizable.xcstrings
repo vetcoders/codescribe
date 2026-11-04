@@ -3970,6 +3970,17 @@
         }
       }
     },
+    "Bar" : {
+      "comment" : "Widget size picker: the bar with the channel map",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Belka"
+          }
+        }
+      }
+    },
     "Bar (beta)" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -11373,6 +11384,17 @@
         }
       }
     },
+    "Mini" : {
+      "comment" : "Widget size picker: the small tool capsule",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Mini"
+          }
+        }
+      }
+    },
     "Minimize" : {
       "localizations" : {
         "pl" : {
@@ -15222,6 +15244,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ostatnie nagrania"
+          }
+        }
+      }
+    },
+    "Reception policy unknown" : {
+      "comment" : "Agents list: no reception receipt has been read for this agent yet",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Polityka odbioru nieznana"
           }
         }
       }
@@ -22210,6 +22243,17 @@
         }
       }
     },
+    "Window" : {
+      "comment" : "Widget size picker: the transcription and agents window",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Okno"
+          }
+        }
+      }
+    },
     "Wire" : {
       "localizations" : {
         "pl" : {
@@ -24071,6 +24115,17 @@
         }
       }
     },
+    "in channel 0" : {
+      "comment" : "Agents list row: member of channel 0",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "na kanale 0"
+          }
+        }
+      }
+    },
     "incomplete coverage" : {
       "localizations" : {
         "pl" : {
@@ -24464,6 +24519,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "teraz"
+          }
+        }
+      }
+    },
+    "off channel 0" : {
+      "comment" : "Agents list row: not on channel 0",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "poza kanałem 0"
           }
         }
       }
