@@ -431,7 +431,13 @@ def build_prune_plan(
             session_groups: dict[str, list[Path]] = {}
             for fname in files:
                 fpath = root_path / fname
-                session_id = fname.split(".", 1)[0]
+                if fname.startswith(".refused-"):
+                    ref_parts = fname[len(".refused-"):].split("-", 3)
+                    session_id = ref_parts[3].split(".", 1)[0] if len(ref_parts) == 4 else fname
+                elif fname.startswith("."):
+                    session_id = fname
+                else:
+                    session_id = fname.split(".", 1)[0]
                 session_groups.setdefault(session_id, []).append(fpath)
 
             for session_id, group_files in session_groups.items():

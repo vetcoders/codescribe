@@ -584,6 +584,51 @@ class TestPruneRuntimeToTrash(unittest.TestCase):
         self.assertTrue(active_log1.exists())
         self.assertTrue(active_log2.exists())
 
+    def test_refused_audio_retention_grouped_with_session(self) -> None:
+        """Verify .refused-<ts>-<dev>-<ino>-<session_id>.audio-retention.json groups with <session_id>."""
+        sessions_dir = self.codescribe_root / "sessions"
+        takes_dir = self.codescribe_root / "takes"
+        sessions_dir.mkdir(parents=True)
+        takes_dir.mkdir(parents=True)
+
+        # Old session with a .refused-* receipt
+        old_wav = sessions_dir / "agent-channel-1-aaaa.wav"
+        old_wav.write_text("OLD_WAV")
+        self.set_age(old_wav, 14)
+
+        old_take = takes_dir / "codescribe_recording_111.wav"
+        old_take.write_text("OLD_TAKE")
+        self.set_age(old_take, 14)
+
+        old_refused = sessions_dir / ".refused-1792108205-16777229-678472258-agent-channel-1-aaaa.audio-retention.json"
+        old_refused.write_text(json.dumps({
+            "session_id": "agent-channel-1-aaaa",
+            "files": [
+                {"relative": "sessions/agent-channel-1-aaaa.wav"},
+                {"relative": "takes/codescribe_recording_111.wav"},
+            ],
+        }))
+        self.set_age(old_refused, 14)
+
+        # Fresh session with a .refused-* receipt must NOT block the old one
+        fresh_refused = sessions_dir / ".refused-1793451081-16777231-730587796-agent-channel-2-bbbb.audio-retention.json"
+        fresh_refused.write_text(json.dumps({
+            "session_id": "agent-channel-2-bbbb",
+            "files": [],
+        }))
+        self.set_age(fresh_refused, 2)
+
+        plan = prune_mod.build_prune_plan(
+            codescribe_root=self.codescribe_root,
+            trash_root=self.trash_root,
+            days=7,
+        )
+        candidate_paths = {c.path.resolve() for c in plan.candidates}
+        self.assertIn(old_wav.resolve(), candidate_paths)
+        self.assertIn(old_take.resolve(), candidate_paths)
+        self.assertIn(old_refused.resolve(), candidate_paths)
+        self.assertNotIn(fresh_refused.resolve(), candidate_paths)
+
 
 if __name__ == "__main__":
     unittest.main()
