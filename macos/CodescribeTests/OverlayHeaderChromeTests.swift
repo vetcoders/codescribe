@@ -381,7 +381,11 @@ final class OverlayHeaderChromeTests: XCTestCase {
     }
 
     let roster = try source("Overlay/OverlayChannelStatusView.swift")
-    XCTAssertTrue(roster.contains("title: headerTitle, accent: .agents, palette: palette"))
+    // The Agents button wraps the one hover chrome in its list chrome
+    // (bar redesign, 2026-11-04): the title and the agents hue stay.
+    XCTAssertTrue(roster.contains("OverlayAgentsHoverListChrome(\n        title: headerTitle, palette: palette"))
+    let listChrome = try source("Overlay/OverlayChannelMapHoverView.swift")
+    XCTAssertTrue(listChrome.contains("title: title, accent: .agents, palette: palette"))
     XCTAssertTrue(
       roster.contains("guard agentCaptureOpen else { return String(localized: \"Agents\") }"),
       "without an agent recording the hover chrome still says Agents")
