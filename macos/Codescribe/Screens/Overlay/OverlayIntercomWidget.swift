@@ -1977,7 +1977,7 @@ private struct OverlayIntercomCard: View {
   }
 
   private var name: String {
-    conversation.map { OverlayChannelMapChip.displayName($0.name) } ?? identity.name
+    conversation?.name ?? identity.name
   }
 
   var body: some View {

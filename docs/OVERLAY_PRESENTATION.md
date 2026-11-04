@@ -186,7 +186,8 @@ The channel map in the expanded bar (`midi`) is another surface
 of the same projections. `OverlayChannelStatusView.channelMapModel` builds
 `OverlayChannelMapModel` from the roster's rows, `hudStates`, current
 conversations, the selection and unread counts. It lists the bound agents
-1–9, with lease names capitalised for display only, led by channel 0's chip:
+1–9, preserving each name's entered spelling from the roster without changing
+capitalisation (Monika, 2026-11-05), led by channel 0's chip:
 the digit alone, `(0)` with no word, first in the single row and first in
 the second row of a two-row bar, at rest as well as while the microphone
 broadcasts on it (Monika, 2026-11-04), when the violet open-channel dot
@@ -195,6 +196,10 @@ and the 1–5 / 6–9 row split count agents only. With no agent bound and no
 broadcast the map is empty. A chip calls `selectChannelConversation`, the
 rail pill's selection path; `(0)` selects the All conversation the same way
 and never opens a microphone.
+
+The floating Intercom also preserves the supplied spelling of agent names.
+Changing a display name's case never changes its conversation/provider/session/
+lease identity. Provider labels retain their separate human-readable formatting.
 
 Hovering `(0)` opens channel 0's message carousel: the same
 `OverlayRosterMessageHint` (`OverlayRosterPreviewSession`, the last five

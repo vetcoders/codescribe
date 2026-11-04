@@ -111,8 +111,9 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
 /// chip is clicked.
 struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
   let digit: String
-  /// The agent's name as the map shows it: the lease name with a capital
-  /// first letter (bus intercom spec §13.5). Channel 0 has none.
+  /// The agent's name exactly as the roster supplies it. The Bus preserves
+  /// its entered spelling; the map must not infer capitalisation.
+  /// Channel 0 has none.
   let name: String
   /// The follower behind the channel is gone: the chip dims like the
   /// roster's Disconnected row. The digit stays, because the chord still
@@ -194,9 +195,8 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
           "Compact overlay channel chip when no key plus digit opens a channel: digit, agent name")
   }
 
-  /// A lease name as the map prints it: the first grapheme upper-cased for
-  /// the current locale (`igor` → `Igor`). Leases, bindings and identifiers
-  /// keep the name as the bus has it.
+  /// A provider identifier for the status card (`codex` → `Codex`). Agent
+  /// names do not use this formatting: their spelling belongs to the Bus.
   static func displayName(_ name: String) -> String {
     guard let first = name.first else { return name }
     return String(first).uppercased(with: .current) + String(name.dropFirst())
@@ -306,7 +306,7 @@ struct OverlayChannelMapModel: Equatable, Sendable {
       placed.insert(digit)
       agents.append(
         OverlayChannelMapChip(
-          digit: digit, name: OverlayChannelMapChip.displayName(channel.agent),
+          digit: digit, name: channel.agent,
           disconnected: hud.followerAlive == false, microphoneOpen: hud.open,
           unread: unreadDigits.contains(digit), selectable: selectableDigits.contains(digit),
           selected: digit == selectedDigit, status: statuses[digit]))
