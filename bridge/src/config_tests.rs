@@ -24,17 +24,6 @@ mod api_key_probe_tests {
     }
 }
 
-/// Reject unknown Keychain accounts before touching the Keychain.
-fn ensure_known_account(account: &str) -> Result<(), CsError> {
-    if keychain::is_known_account(account) {
-        Ok(())
-    } else {
-        Err(CsError::Config {
-            msg: format!("unknown keychain account: {account}"),
-        })
-    }
-}
-
 /// Covers the destructive reset path against real temp directories: what the
 /// reset scope resolves to, that data lands recoverably in a Trash stand-in,
 /// that the audit log only ever grows, and that the cross-volume fallback
