@@ -4091,7 +4091,7 @@ class SessionLease:
                          if self.terminal else None),
         }
 
-    def queue_delivery(self, payload: dict[str, Any]) -> bool:
+    def queue_delivery(self, payload: dict[str, Any], *, draining_journal: bool = False) -> bool:
         delivery_id = payload["delivery_id"]
         refusal = self.channel_publication_refusals.get(payload.get("session_id"))
         if (refusal is not None and self.admits_channel_event(refusal)
@@ -4115,8 +4115,12 @@ class SessionLease:
                 self.persist(active=True)
             return False
         deadline = hold_timestamp(payload.get("hold_until"))
+        # A resumed reader can encounter both an expired message and its timely
+        # withdrawal in the unread tail. Stage the message until that tail is
+        # drained; ready_held owns deadline promotion after all controls apply.
         waiting = (payload.get("kind") in TERMINAL_KINDS and deadline is not None
-                   and deadline > time.time() and not payload.get("hold_released"))
+                   and (draining_journal or deadline > time.time())
+                   and not payload.get("hold_released"))
         if waiting and retained is not None:
             return False
         if self.coalesce and payload.get("kind") in DRAFT_KINDS:
@@ -5570,7 +5574,7 @@ def run(args: argparse.Namespace) -> int:
                 if not lease and (hold_timestamp(payload.get("hold_until")) or 0) > time.time():
                     remaining.pop(0)
                     continue
-                if not lease or lease.queue_delivery(payload):
+                if not lease or lease.queue_delivery(payload, draining_journal=next_cursor is not None):
                     publish(payload)
                     wake = not lease or delivery_broadcast_policy(lease.root, payload) == "on"
                     if wake and native and effective_wakeup(args) == "codex-queue":
@@ -9869,6 +9873,7 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             raise ValueError("channel bindings unavailable")
         owners = []
         skipped = []
+        offline = set()
         for channel, binding in sorted(bindings.items()):
             bound, refusal = binding_identity(channel, binding)
             if bound is None:
@@ -9884,7 +9889,12 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                     or args.channel is not None and args.channel != channel):
                 continue
             refusal = owner_refusal(root, owner)
-            if refusal is not None:
+            if broadcast and refusal == "not_listening":
+                # A reader stopping does not remove its original held copy.
+                # Inspect its same-owner checkpoint and tail before deciding
+                # whether it belongs to this control's frozen audience.
+                offline.add(owner["lease_id"])
+            elif refusal is not None:
                 if broadcast:
                     skipped.append(note_skipped_broadcast_channel(channel, bound, refusal))
                     continue
@@ -9936,7 +9946,8 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             if not matched:
                 if broadcast:
                     skipped.append(note_skipped_broadcast_channel(
-                        owner["channel"], {**owner, "name": owner["audience"]}, "not_held"))
+                        owner["channel"], {**owner, "name": owner["audience"]},
+                        "not_listening" if owner["lease_id"] in offline else "not_held"))
                     continue
                 raise ValueError("message is no longer held by this conversation")
             # A release already handed the message over; nothing is held any more.
@@ -9979,8 +9990,8 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                 time.sleep(0.1)
             if waiting:
                 raise ValueError(
-                    "message already delivered; it can no longer be changed" if len(waiting) == len(plans)
-                    else f"message already delivered to {len(waiting)} of {len(plans)} agents")
+                    f"held control recorded but not confirmed by {len(waiting)} of {len(plans)} "
+                    "agent readers; delivery state is uncertain, check receipts before retrying")
     emit({"kind": "delivery_control_published", "control_kind": kind, "identity": identity,
           "control_id": control_id, "recipients": receipts, "skipped": skipped})
     return 0
