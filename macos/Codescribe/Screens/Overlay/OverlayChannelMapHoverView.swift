@@ -125,7 +125,6 @@ struct OverlayAgentsHoverList: View {
   static let horizontalPadding: CGFloat = 8
   static let verticalPadding: CGFloat = 4
   static let columnGap: CGFloat = 6
-  static let dotColumn: CGFloat = 10
   static let markSize: CGFloat = 18
   static let markGap: CGFloat = 2
   static let unreadDiameter: CGFloat = 6
@@ -138,11 +137,11 @@ struct OverlayAgentsHoverList: View {
     let chip =
       rows.map {
         OverlayChannelPill.chipWidth(
-          nameWidth: OverlayChannelPill.nameWidth($0.name, scale: 1), form: .chip, scale: 1)
+          nameWidth: OverlayChannelPill.nameWidth($0.name, scale: 1), form: .chip, scale: 1,
+          presenceDot: true)
       }.max() ?? 0
     let width =
-      2 * horizontalPadding + chip + 4 * columnGap + dotColumn + 2 * markSize + markGap
-      + unreadDiameter
+      2 * horizontalPadding + chip + 3 * columnGap + 2 * markSize + markGap + unreadDiameter
     let count = CGFloat(rows.count)
     return CGSize(
       width: max(minimumWidth, ceil(width)),
@@ -217,19 +216,18 @@ private struct OverlayAgentsHoverListRow: View {
 
   var body: some View {
     HStack(spacing: OverlayAgentsHoverList.columnGap) {
+      // The presence dot sits between the digit and the name, as on the
+      // Bus window's roster rows (Monika, 2026-11-04): `nr · dot · name`.
       OverlayChannelPill(
         form: .chip,
         display: OverlayChannelPill.Display(
-          figure: row.digit, name: row.name, disconnected: row.disconnected,
+          figure: row.digit, name: row.name, dot: row.dot, disconnected: row.disconnected,
           microphoneOpen: row.microphoneOpen, enabled: row.conversationID != nil),
         hint: "", accessibilityText: String(localized: "Open conversation"),
         identifier: "overlay-agents-hover-open-\(row.digit)", palette: palette,
         textScale: 1, showsHint: false,
         action: { if let id = row.conversationID { onOpen(id) } })
       Spacer(minLength: 0)
-      OverlayAgentStatusDot(kind: row.dot, palette: palette)
-        .frame(width: OverlayAgentsHoverList.dotColumn)
-        .accessibilityHidden(true)
       // Two states each, as the roster's marks and the context menu's
       // checkmark (Monika, 2026-11-04): lit or not. No third, greyed state
       // for a policy the helper has not receipted; a receipt only confirms

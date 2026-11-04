@@ -406,7 +406,8 @@ final class OverlayBarReviewRenderTests: XCTestCase {
 
   /// Nine rows from the roster's own projection: channel 1 open (listening
   /// dot), an unread reply on 4, agent 6 off channel 0 (`member = false`),
-  /// agent 7 under the moon, agent 9 without a helper receipt (unknown marks).
+  /// agent 7 under the moon (zzz), agent 8 stalled (olive with "!"), agent 9
+  /// without a liveness claim ("?") and without a helper receipt.
   func testRenderAgentsHoverListWithNineAgents() throws {
     func identity(_ digit: String) -> AgentPlaybackIdentity {
       AgentPlaybackIdentity(provider: "codex", session: "review-\(digit)", bus: "/dev/null")
@@ -418,10 +419,13 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     let unreadConversation = try XCTUnwrap(conversations.first { $0.channel == "4" })
     var hudStates: [String: OverlayChannelHudProjection] = [:]
     var channels: [OverlayChannelDelivery] = []
+    let stale = Date().addingTimeInterval(-OverlayState.followerStallHorizon - 60)
     for (digit, name) in nine {
       hudStates[digit] = OverlayChannelHudProjection(
-        open: digit == "1", loud: false, autosealDeadline: nil, followerAlive: true,
-        provider: "codex", providerSessionID: "review-\(digit)")
+        open: digit == "1", loud: false, autosealDeadline: nil,
+        followerAlive: digit == "9" ? nil : true,
+        provider: "codex", providerSessionID: "review-\(digit)",
+        unreadSince: digit == "8" ? stale : nil)
       var delivery = OverlayChannelDelivery(
         channel: digit, agent: name, deliveryID: nil, stage: nil, isOpen: false)
       delivery.broadcastIdentity = identity(digit)
@@ -445,6 +449,9 @@ final class OverlayBarReviewRenderTests: XCTestCase {
       XCTAssertEqual(rows.first { $0.digit == "4" }?.unread, 2)
       XCTAssertEqual(rows.first { $0.digit == "6" }?.policy.member, false)
       XCTAssertEqual(rows.first { $0.digit == "7" }?.policy.moon, true)
+      XCTAssertEqual(rows.first { $0.digit == "7" }?.dot, .asleep, "the moon: zzz")
+      XCTAssertEqual(rows.first { $0.digit == "8" }?.dot, .stalled, "past the horizon: !")
+      XCTAssertEqual(rows.first { $0.digit == "9" }?.dot, .idle, "no liveness claim: ?")
       XCTAssertFalse(ledger.policyKnown(identity("9")), "no receipt: unknown, not on")
       XCTAssertTrue(ledger.policyKnown(identity("1")))
       let model = OverlayAgentsHoverListModel()

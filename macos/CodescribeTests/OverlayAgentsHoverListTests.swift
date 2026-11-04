@@ -37,11 +37,12 @@ final class OverlayAgentsHoverListTests: XCTestCase {
   }
 
   private func hud(
-    session: String?, alive: Bool? = true, open: Bool = false
+    session: String?, alive: Bool? = true, open: Bool = false, unreadSince: Date? = nil
   ) -> OverlayChannelHudProjection {
     OverlayChannelHudProjection(
       open: open, loud: false, autosealDeadline: nil, followerAlive: alive,
-      provider: session == nil ? nil : "codex", providerSessionID: session)
+      provider: session == nil ? nil : "codex", providerSessionID: session,
+      unreadSince: unreadSince)
   }
 
   private func delivery(_ channel: String, _ agent: String) -> OverlayChannelDelivery {
@@ -121,7 +122,33 @@ final class OverlayAgentsHoverListTests: XCTestCase {
     XCTAssertEqual(dots["6"], .sleeping, "an old receipt does not keep a gone follower green")
     XCTAssertEqual(dots["8"], .present, "a sent utterance without a receipt is not amber")
     XCTAssertEqual(dots["3"], .listening, "the open microphone wins")
-    XCTAssertEqual(dots["5"], .idle, "no liveness claim: a faint ring")
+    XCTAssertEqual(dots["5"], .idle, "no liveness claim: a question mark")
+  }
+
+  /// Monika, 2026-11-04 (decision 2): a live reader past the stall horizon
+  /// keeps its olive and gains a "!"; it is neither zzz nor a greyed row.
+  /// The moon comes first, since a sleeper acknowledges nothing by design.
+  func testStallKeepsOliveWithABangAndTheMoonComesFirst() throws {
+    let stale = Date().addingTimeInterval(-OverlayState.followerStallHorizon - 60)
+    let fresh = Date().addingTimeInterval(-60)
+    var moon = delivery("7", "Nela")
+    moon.broadcastPolicy = .quiet
+    let view = OverlayChannelStatusView(
+      channels: [delivery("2", "Miksa"), delivery("4", "Igor"), moon, delivery("8", "Kaja")],
+      unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "2": hud(session: "s2", unreadSince: stale),
+        "4": hud(session: "s4", unreadSince: fresh),
+        "7": hud(session: "s7", unreadSince: stale),
+        "8": hud(session: "s8", alive: false, unreadSince: stale),
+      ])
+    let dots = Dictionary(
+      uniqueKeysWithValues: view.agentsHoverRows.map { ($0.digit, $0.dot) })
+    XCTAssertEqual(dots["2"], .stalled, "past the horizon: olive with a bang")
+    XCTAssertEqual(dots["4"], .present, "a fresh backlog is no stall")
+    XCTAssertEqual(dots["7"], .asleep, "the moon comes before the stall")
+    XCTAssertEqual(dots["8"], .sleeping, "a gone follower is a ring, never a stall")
+    XCTAssertFalse(view.hasDeadFollower(delivery("2", "Miksa")), "the stall greys no row")
   }
 
   /// Monika, 2026-11-04: the Agents button's dot says a message waits on
@@ -269,9 +296,16 @@ final class OverlayAgentsHoverListTests: XCTestCase {
       rows: [row("1", name: "Bo"), row("2", name: "Konstantynopolitańczyk")])
     let longChip = OverlayChannelPill.chipWidth(
       nameWidth: OverlayChannelPill.nameWidth("Konstantynopolitańczyk", scale: 1), form: .chip,
-      scale: 1)
+      scale: 1, presenceDot: true)
     XCTAssertGreaterThanOrEqual(long.width, longChip, "the widest name sets the width")
     XCTAssertGreaterThanOrEqual(long.width, one.width)
+    // The list's chip carries the presence dot between the digit and the
+    // name; the bar's chip does not, and is narrower by the dot and a gap.
+    let bare = OverlayChannelPill.chipWidth(nameWidth: 40, form: .chip, scale: 1)
+    let dotted = OverlayChannelPill.chipWidth(
+      nameWidth: 40, form: .chip, scale: 1, presenceDot: true)
+    XCTAssertEqual(
+      dotted - bare, OverlayAgentStatusDot.diameter + OverlayChannelPill.chipGap, accuracy: 0.001)
   }
 
   /// A scratch home with a managed copy of the real helper, the same

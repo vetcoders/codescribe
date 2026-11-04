@@ -64,7 +64,11 @@ enum OverlayAgentGlyph: CaseIterable, Equatable, Sendable {
     switch self {
     case .attached: palette.mutedText
     case .open: palette.listeningStatus
-    case .awaitingReceipt, .unavailable: palette.processingStatus
+    // Waiting for a receipt is not a warning (Monika, 2026-11-04): the
+    // message's fate reads in checkmarks and text, never in amber.
+    case .awaitingReceipt: palette.mutedText
+    // Amber stays with transient technical warnings only.
+    case .unavailable: palette.processingStatus
     case .acknowledged: palette.successStatus
     }
   }
@@ -321,8 +325,11 @@ struct OverlayRosterRowSelection: ViewModifier {
       }
       .overlay(alignment: .leading) {
         if selected {
+          // The open conversation is marked in the text tone, not violet:
+          // in the bus violet means your voice and terracotta the
+          // microphone (Monika, 2026-11-04, decision 4).
           Capsule()
-            .fill(palette.agentAccent.color)
+            .fill(palette.primaryText.color)
             .frame(width: 3)
             .padding(.vertical, 3)
             .allowsHitTesting(false)
@@ -2939,7 +2946,13 @@ struct OverlayChannelStatusView: View {
     // Sleep needs a confirmed live reader behind the moon: with no liveness
     // claim a known moon is still no proof of a mailbox that will wake.
     guard hudStates[channel.channel]?.followerAlive == true else { return .idle }
-    return isQuiet(channel) ? .asleep : .present
+    if isQuiet(channel) { return .asleep }
+    // The moon comes before the stall: a sleeper acknowledges nothing by
+    // design. A live reader that has not read past the stall horizon keeps
+    // its olive and gains the "!" (Monika, 2026-11-04): no fourth colour,
+    // no zzz, no greyed row.
+    if hasStalledFollower(channel) { return .stalled }
+    return .present
   }
 
   /// Do not disturb as the ledger paints it: the same policy the roster's
@@ -3370,8 +3383,13 @@ struct OverlayRosterMessagePreview: View {
 
 /// Roster status dot kinds, mapped to palette tones by `OverlayAgentStatusDot`;
 /// the shared channel's `broadcast` draws an antenna instead of a dot.
+/// The presence dot's looks (Monika, 2026-11-04): `present` olive, `stalled`
+/// olive with a bold "!", `asleep` "zzz", `sleeping` an empty ring for a
+/// gone follower, `idle` a "?" in a circle when there is no liveness claim,
+/// `listening` violet with the microphone open; `broadcast` is channel 0's
+/// antenna.
 enum OverlayAgentDotKind {
-  case broadcast, listening, present, asleep, sleeping, idle
+  case broadcast, listening, present, stalled, asleep, sleeping, idle
 }
 
 /// Glass rows and their controls morph as one group on macOS 26; older
@@ -3396,9 +3414,11 @@ struct OverlayAgentStatusDot: View {
   let kind: OverlayAgentDotKind
   let palette: OverlayAppearancePalette
 
+  static let diameter: CGFloat = 8
+
   private var filled: Bool {
     switch kind {
-    case .broadcast, .listening, .present: true
+    case .broadcast, .listening, .present, .stalled: true
     case .asleep, .sleeping, .idle: false
     }
   }
@@ -3409,7 +3429,7 @@ struct OverlayAgentStatusDot: View {
     // Your voice to agents is violet, as the waveform and the chip's circle
     // (Monika, 2026-11-04); terracotta stays with dictation outside the bus.
     case .listening: palette.agentAccent
-    case .present: palette.successStatus
+    case .present, .stalled: palette.successStatus
     case .asleep, .sleeping, .idle: palette.mutedText
     }
   }
@@ -3428,18 +3448,37 @@ struct OverlayAgentStatusDot: View {
         .font(.system(size: 7 * textScale, weight: .bold, design: .rounded))
         .foregroundStyle(tone.color)
         .fixedSize()
-        .frame(width: 10 * textScale, height: 8 * textScale)
+        .frame(width: 10 * textScale, height: Self.diameter * textScale)
+        .accessibilityHidden(true)
+    } else if kind == .idle {
+      // No liveness claim: a "?" in a circle, the dot's size, in the muted
+      // tone (Monika, 2026-11-04, decision 7). Not "!", which is the stall.
+      Image(systemName: "questionmark.circle")
+        .font(.system(size: Self.diameter * textScale, weight: .semibold))
+        .foregroundStyle(tone.color)
+        .frame(width: Self.diameter * textScale, height: Self.diameter * textScale)
         .accessibilityHidden(true)
     } else {
       Circle()
         .fill(filled ? tone.color : .clear)
         .overlay {
           if !filled {
-            Circle()
-              .strokeBorder(tone.color.opacity(kind == .idle ? 0.5 : 1), lineWidth: 1.5)
+            Circle().strokeBorder(tone.color, lineWidth: 1.5)
           }
         }
-        .frame(width: 8 * textScale, height: 8 * textScale)
+        .overlay {
+          if kind == .stalled {
+            // The stall's "!" in the panel's background tone, so it is dark
+            // on the light olive of the dark theme and light on the dark
+            // olive of the light theme; the dot itself does not grow.
+            Text(verbatim: "!")
+              .font(.system(size: 7 * textScale, weight: .heavy, design: .rounded))
+              .foregroundStyle(palette.desktopBackground.color)
+              .fixedSize()
+              .accessibilityHidden(true)
+          }
+        }
+        .frame(width: Self.diameter * textScale, height: Self.diameter * textScale)
     }
   }
 }

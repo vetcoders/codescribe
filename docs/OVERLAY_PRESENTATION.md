@@ -256,19 +256,22 @@ shared hint panel is the list itself.
 
 One low row per agent 1–9 in ascending order (channel 0 has none), no header
 or cards, sized to its rows so nine fit without scrolling. Columns: the
-numbered `OverlayChannelPill` chip with the agent's name, the presence dot
-(`presenceDotKind`), the antenna (channel-0 membership), the moon (do not
-disturb) and the unread dot in the text tone. The presence dot is the one
-status dot before an agent's name everywhere (this list, the Bus window's
-roster, the Intercom, a fiszka) and shows the agent alone (Monika,
-2026-11-04): filled olive while its follower is alive, the agent violet with
+numbered `OverlayChannelPill` chip carrying the presence dot
+(`presenceDotKind`) between the digit and the agent's name (`nr · dot · name`, as the Bus window's roster rows; Monika, 2026-11-04), the antenna
+(channel-0 membership), the moon (do not disturb) and the unread dot in the
+text tone. The presence dot is the one status dot before an agent's name
+everywhere (this list, the Bus window's roster, the Intercom, a fiszka) and
+shows the agent alone (Monika, 2026-11-04): filled olive while its follower
+is alive, the same olive with a bold "!" in the panel's background tone
+while a live reader has not read past the stall horizon (no fourth colour,
+no zzz, no greyed row; the card says "Not reading"), the agent violet with
 the microphone open to it (your voice to agents is violet, as the waveform
-and the chip's circle; terracotta stays with dictation outside the bus), "zzz" while a live agent sleeps under the moon as the bus
-paints it (the mailbox keeps every message for when it wakes), a ring for a
-gone follower (a new
-direct message to it is refused, not queued), a faint ring without a
-liveness claim. A stalled reader keeps its olive dot and says "Not reading"
-on the chip's hover card, since a backlog promises no waking. The dot never
+and the chip's circle; terracotta stays with dictation outside the bus),
+"zzz" while a live agent sleeps under the moon as the bus paints it (the
+mailbox keeps every message for when it wakes; the moon comes before the
+stall, since a sleeper acknowledges nothing), an empty ring for a gone
+follower (a new direct message to it is refused, not queued), and a "?" in a
+circle without a liveness claim. The dot never
 reads the stage of the last sealed utterance: the former dot kept a channel
 silent for hours green on an old receipt and turned a replying agent amber
 on a newer one. The fate of a message stays with the message in the window
@@ -295,13 +298,17 @@ the marks their own; identifiers are `overlay-agents-hover-row-<digit>`,
 
 `OverlayChannelPill` is the single owner of the numbered pill visual: the rail
 pill, the map's chips and its counter render the digit through it, from
-immutable display values and one action, and an open channel's digit carries
-a small dot in the agent accent there (spec §14: a dot, no symbol, never
-`MIC →` text; the microphone and megaphone signs belong to the Agents header
-button; mini's take adds no sign for channel 0). The dot overlaps the
-digit's circle, so it adds no width, and pulses only while the pill animates
-and Reduce Motion is off. It receives
-no `OverlayState`, conversation or command.
+immutable display values and one action. An open channel's circle and pill
+wear the recording violet and nothing else (spec §14; never `MIC →` text; the
+microphone and megaphone signs belong to the Agents header button; mini's
+take adds no sign for channel 0). The pulsing open-channel dot on the
+circle's rim went on 2026-11-04 (Monika, decision 3: the violet circle and
+the violet waveform say it). The selected conversation's fill is neutral, in
+the text tone, on the pill and on the roster row's leading bar alike (decision
+4): in the bus violet means your voice and terracotta the microphone, so the
+bus is the one surface where "choice = terracotta" does not apply. The bar's
+chips carry no presence dot; the agents list's chip does, between the digit
+and the name. It receives no `OverlayState`, conversation or command.
 
 The bar with the horizontal map is as wide as its content (bus brief
 2026-11-04 §4, §5, §8, §11C). `OverlayBarLayout` sets the brand, a waveform of
