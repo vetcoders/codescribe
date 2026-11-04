@@ -195,7 +195,7 @@ and never opens a microphone.
 Hovering `(0)` opens channel 0's message carousel: the same
 `OverlayRosterMessageHint` (`OverlayRosterPreviewSession`, the last five
 messages, withdrawn ones hidden) over the same All conversation, with the
-same open action, as the Bus window's pinned All row
+same open action, as the Bus window's All row
 (`OverlayChannelStatusView.channelZeroMessageHint`, handed to the map as
 `channelZeroHint`). The map keeps no messages of its own.
 
@@ -258,7 +258,7 @@ live model, so a roster or policy refresh repaints rows without re-showing,
 raising or re-timing the panel. No hint opens from inside the list: the
 shared hint panel is the list itself.
 
-Two quick-access rows lead the list, in the sidebar's pinned order (Monika,
+Two quick-access rows lead the list, in the sidebar's order (Monika,
 2026-11-04): channel 0 as the circled 0 with "All", and your inbox (10) as
 the envelope with its name, each a chip that opens that conversation through
 `onSelectConversation` without touching the microphone, with the unread dot
@@ -779,12 +779,18 @@ Hiding the roster chooses the rail, and hovering that rail cannot undo the fold.
 Open nonzero capture uses a violet microphone; only an open channel zero uses
 the outlined broadcast megaphone. These glyphs project routing and never choose it.
 
-### Pinned All row
+### All and inbox rows
 
-The full Agents column renders `0 · All` immediately below its header, outside
-the scroll viewport. Only channels 1–9 and saved conversations scroll below it.
-All retains its three-line preview, recipient counts, microphone/megaphone and
-playback controls. There is one All row and one projection of its state.
-Height and text-scale changes reduce the agents' viewport, leaving All in place;
-the final agent remains reachable by scrolling. Keyboard focus can land on All,
-but scroll-to-selected only targets IDs inside the scrolling content.
+The full Agents column lists `0 · All` and your inbox as its first two rows,
+in the rail's order, then channels 1–9 and the saved conversations: one list,
+scrolled together (Monika, 2026-11-04: one sidebar, no separate card on top).
+Until then the two sat on a pinned card over the list, on the composer's
+surface (Maciej, 2026-10-30); the card and its surface are gone, and the
+monitor's pinned slot stays empty. Each mailbox row wears the agents' glass,
+padding, selection bar, hover and gesture focus ring. All keeps its
+three-line preview, recipient counts, microphone/megaphone and playback
+controls; there is one All row and one projection of its state. The inbox
+row shows the envelope where an agent's digit and presence dot stand (it
+has neither), its name, the last message's preview, the unread badge and the
+clock (`inboxRow`, identifier `overlay-inbox-row`). Keyboard focus and
+scroll-to-selected reach both rows like any other.

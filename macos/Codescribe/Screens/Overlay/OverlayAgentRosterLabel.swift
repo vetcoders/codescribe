@@ -11,7 +11,10 @@ struct OverlayAgentRosterLabel: View {
   let preview: String?
   let timestamp: Date?
   let unreadCount: Int
-  let dot: OverlayAgentDotKind
+  /// Nil for a mailbox: your inbox has no presence to show.
+  let dot: OverlayAgentDotKind?
+  /// A mailbox's glyph where an agent's digit and dot stand (the envelope).
+  var symbol: String? = nil
   let statusLabel: String
   let statusDetail: String
   /// Rendered right after the name: the caller's own control, such as the
@@ -41,13 +44,22 @@ struct OverlayAgentRosterLabel: View {
                 .fixedSize()
                 .accessibilityIdentifier("overlay-agent-digit-\(channel)")
             }
-            OverlayAgentStatusDot(kind: dot, palette: palette)
-              .fixedSize()
-              .accessibilityLabel(Text(verbatim: statusLabel))
-              .accessibilityValue(Text(verbatim: statusDetail))
-              .accessibilityIdentifier(
-                channel.map { "overlay-channel-delivery-\($0)" } ?? "overlay-channel-delivery"
-              )
+            if let symbol {
+              Image(systemName: symbol)
+                .font(.system(size: 12 * textScale))
+                .foregroundStyle(palette.mutedText.color)
+                .frame(width: 16 * textScale)
+                .accessibilityHidden(true)
+            }
+            if let dot {
+              OverlayAgentStatusDot(kind: dot, palette: palette)
+                .fixedSize()
+                .accessibilityLabel(Text(verbatim: statusLabel))
+                .accessibilityValue(Text(verbatim: statusDetail))
+                .accessibilityIdentifier(
+                  channel.map { "overlay-channel-delivery-\($0)" } ?? "overlay-channel-delivery"
+                )
+            }
             Text(verbatim: title)
               .font(.system(size: 14 * textScale, weight: .semibold))
               .lineLimit(1)
