@@ -460,7 +460,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       panel.invalidatePresence()
     }
     XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
-    XCTAssertFalse(panel.styleMask.contains(.resizable), "MINI is a drag surface")
+    XCTAssertFalse(panel.allowsUserResize, "MINI is a drag surface")
+    XCTAssertFalse(
+      panel.styleMask.contains(.resizable), "the panel never carries AppKit's resize style")
   }
 
   func testRouterRestoresCanvasAndDrawerFromMidiWithoutChangingCapture() throws {
@@ -515,7 +517,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(panel.frame.size, frame.size)
       XCTAssertEqual(panel.frame.maxY, frame.maxY, accuracy: 0.5)
-      XCTAssertTrue(panel.styleMask.contains(.resizable))
+      XCTAssertTrue(panel.allowsUserResize, "the expanded canvas resizes through its own bands")
+      XCTAssertFalse(panel.styleMask.contains(.resizable))
       panel.setPresentationMode(.mini, animated: false)
       XCTAssertFalse(panel.isFrameTransitioning)
       // Mini is content-sized (spec §13.4): the panel's measured mini.

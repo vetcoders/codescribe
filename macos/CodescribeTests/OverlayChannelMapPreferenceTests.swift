@@ -177,8 +177,11 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     XCTAssertEqual(panel.miniSize.width, DictationOverlayWindow.miniBrandWidth)
     panel.setChannelMapPresentation(enabled: true, capturing: true, naturalWidth: 160)
     XCTAssertEqual(panel.miniSize.width, 160)
-    panel.setMidiNaturalWidth(DictationOverlayWindow.midiSize.width)
+    // Without the horizontal map the bar is the classic 410 × 46 strip.
+    panel.setMidiBarGeometry(.classic)
     XCTAssertEqual(panel.midiPresentationWidth, 410)
+    XCTAssertEqual(
+      panel.midiSize, NSSize(width: 410, height: DictationOverlayWindow.collapsedHeight))
   }
 }
 
