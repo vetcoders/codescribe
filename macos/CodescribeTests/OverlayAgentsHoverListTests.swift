@@ -85,11 +85,43 @@ final class OverlayAgentsHoverListTests: XCTestCase {
     // Every field is the roster's own projection, not a second status.
     for (row, channel) in zip(rows, ["2", "3", "5"]) {
       let source = try XCTUnwrap(view.channels.first { $0.channel == channel })
-      XCTAssertEqual(row.dot, view.statusDotKind(for: source), channel)
+      XCTAssertEqual(row.dot, view.presenceDotKind(for: source), channel)
       XCTAssertEqual(row.status, view.shortStatus(for: source), channel)
       XCTAssertEqual(row.policy, source.broadcastPolicy, channel)
       XCTAssertEqual(row.identity, source.broadcastIdentity, channel)
     }
+  }
+
+  /// Monika, 2026-11-04: channels silent for hours showed green on an old
+  /// receipt and replying agents amber on a newer unreceipted one. The list's
+  /// dot reads presence; the roster's own dot still reads the stage.
+  func testListDotIsPresenceAloneNotTheLastUtterancesStage() throws {
+    let view = OverlayChannelStatusView(
+      channels: [
+        OverlayChannelDelivery(
+          channel: "6", agent: "Miksa", deliveryID: "d6", stage: .received, isOpen: false),
+        OverlayChannelDelivery(
+          channel: "8", agent: "Kaja", deliveryID: "d8", stage: .sent, isOpen: false),
+        OverlayChannelDelivery(
+          channel: "3", agent: "Igor", deliveryID: "d3", stage: .received, isOpen: false),
+        OverlayChannelDelivery(
+          channel: "5", agent: "Kuba", deliveryID: nil, stage: nil, isOpen: false),
+      ],
+      unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "6": hud(session: "s6", alive: false), "8": hud(session: "s8"),
+        "3": hud(session: "s3", open: true), "5": hud(session: nil, alive: nil),
+      ])
+    let dots = Dictionary(
+      uniqueKeysWithValues: view.agentsHoverRows.map { ($0.digit, $0.dot) })
+    XCTAssertEqual(dots["6"], .sleeping, "an old receipt does not keep a gone follower green")
+    XCTAssertEqual(dots["8"], .present, "a sent utterance without a receipt is not amber")
+    XCTAssertEqual(dots["3"], .listening, "the open microphone wins")
+    XCTAssertEqual(dots["5"], .idle, "no liveness claim: a faint ring")
+    XCTAssertEqual(
+      view.statusDotKind(for: view.channels[0]), .received,
+      "the roster's own dot still reads the stage")
+    XCTAssertEqual(view.statusDotKind(for: view.channels[1]), .waiting)
   }
 
   func testNoAgentsMeansNoRows() {

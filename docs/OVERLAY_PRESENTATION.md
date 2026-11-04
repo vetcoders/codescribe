@@ -256,9 +256,16 @@ shared hint panel is the list itself.
 
 One low row per agent 1–9 in ascending order (channel 0 has none), no header
 or cards, sized to its rows so nine fit without scrolling. Columns: the
-numbered `OverlayChannelPill` chip with the agent's name, the roster's status
-dot (`statusDotKind`), the antenna (channel-0 membership), the moon (do not
-disturb) and the amber unread dot. The chip opens the channel's conversation
+numbered `OverlayChannelPill` chip with the agent's name, the presence dot
+(`presenceDotKind`), the antenna (channel-0 membership), the moon (do not
+disturb) and the amber unread dot. The presence dot is the agent alone
+(Monika, 2026-11-04): filled olive while its follower is alive, terracotta
+with the microphone open, a ring for a gone follower, a faint ring without a
+liveness claim. It does not read the stage of the last sealed utterance, as
+the roster's `statusDotKind` does: that dot kept a channel silent for hours
+green on an old receipt and turned a replying agent amber on a newer one.
+The fate of a message stays with the message in the window and on the chip's
+hover card. The chip opens the channel's conversation
 through `onSelectConversation`, the path `selectChannelConversation` uses.
 The antenna and the moon are sibling buttons with their own hit targets;
 they change reception through `OverlayBroadcastPolicyLedger.change`, never

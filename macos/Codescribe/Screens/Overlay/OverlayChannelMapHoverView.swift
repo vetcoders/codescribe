@@ -10,7 +10,8 @@ struct OverlayAgentsHoverRow: Equatable, Identifiable {
   let name: String
   /// The channel's current conversation; nil leaves the row unopenable.
   let conversationID: String?
-  /// `OverlayChannelStatusView.statusDotKind(for:)`.
+  /// `OverlayChannelStatusView.presenceDotKind(for:)`: presence alone, not
+  /// the stage of the last utterance (Monika, 2026-11-04).
   let dot: OverlayAgentDotKind
   /// `OverlayChannelStatusView.shortStatus(for:)`, read by VoiceOver.
   let status: String
@@ -38,7 +39,7 @@ extension OverlayChannelStatusView {
         let conversation = conversation(for: channel)
         return OverlayAgentsHoverRow(
           digit: channel.channel, name: channel.agent, conversationID: conversation?.id,
-          dot: statusDotKind(for: channel), status: shortStatus(for: channel),
+          dot: presenceDotKind(for: channel), status: shortStatus(for: channel),
           microphoneOpen: isOpen(channel), disconnected: hasDeadFollower(channel),
           identity: channel.broadcastIdentity, policy: channel.broadcastPolicy,
           unread: conversation.flatMap { unreadCounts[$0.id] } ?? 0)

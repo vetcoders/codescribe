@@ -2917,6 +2917,20 @@ struct OverlayChannelStatusView: View {
     }
   }
 
+  /// The agents list's dot (Monika, 2026-11-04): the agent's presence alone.
+  /// `statusDotKind` folds the stage of the last sealed utterance into the
+  /// dot, so a channel silent for hours stayed green on an old receipt while
+  /// a replying agent went amber on a newer one without its receipt. Here a
+  /// live follower is a filled olive dot, an open microphone terracotta, a
+  /// gone follower a ring, no liveness claim a faint ring. The fate of a
+  /// message stays with the message and on the chip's hover card.
+  func presenceDotKind(for channel: OverlayChannelDelivery) -> OverlayAgentDotKind {
+    if unavailable { return .idle }
+    if hasDeadFollower(channel) { return .sleeping }
+    if isOpen(channel) { return .listening }
+    return hudStates[channel.channel]?.followerAlive == true ? .present : .idle
+  }
+
   func statusHelp(for channel: OverlayChannelDelivery) -> String {
     shortStatus(for: channel) + ". " + detail(for: channel)
   }
@@ -3335,7 +3349,7 @@ struct OverlayRosterMessagePreview: View {
 /// Roster status dot kinds, mapped to palette tones by `OverlayAgentStatusDot`;
 /// the shared channel's `broadcast` draws an antenna instead of a dot.
 enum OverlayAgentDotKind {
-  case broadcast, listening, received, waiting, sleeping, idle
+  case broadcast, listening, received, waiting, present, sleeping, idle
 }
 
 /// Glass rows and their controls morph as one group on macOS 26; older
@@ -3361,7 +3375,7 @@ struct OverlayAgentStatusDot: View {
 
   private var filled: Bool {
     switch kind {
-    case .broadcast, .listening, .received, .waiting: true
+    case .broadcast, .listening, .received, .waiting, .present: true
     case .sleeping, .idle: false
     }
   }
@@ -3370,7 +3384,7 @@ struct OverlayAgentStatusDot: View {
     switch kind {
     case .broadcast: palette.agentAccent
     case .listening: palette.listeningStatus
-    case .received: palette.successStatus
+    case .received, .present: palette.successStatus
     case .waiting: palette.processingStatus
     case .sleeping, .idle: palette.mutedText
     }
