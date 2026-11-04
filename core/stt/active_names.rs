@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -231,8 +232,7 @@ fn canonical_name(value: &str) -> Option<String> {
 /// Canonical lease identity shared with channel admission.
 pub fn follower_lease_id(provider: &str, session: &str) -> Option<String> {
     let provider = provider.trim().to_lowercase();
-    let session = session.trim();
-    if provider.is_empty() || session.is_empty() {
+    if provider.is_empty() || session.trim().is_empty() {
         return None;
     }
     let identity = format!("{provider}\0{session}");
@@ -246,6 +246,50 @@ pub struct FollowerObservation {
     pub hosts: Option<FollowerHosts>,
     pub unread_since: Option<f64>,
 }
+
+// Cached facts exclude message bodies and other payloads. Retaining only the
+// delivery IDs and timestamps needed to recheck ACK markers bounds memory.
+const MAX_FOLLOWER_CACHE_ENTRIES: usize = 16;
+const MAX_FOLLOWER_FACT_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FollowerLeaseStamp {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl FollowerLeaseStamp {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+
+struct FollowerLeaseFacts {
+    provider: String,
+    session: String,
+    lease_id: String,
+    active: bool,
+    heartbeat_unix: f64,
+    hosts: FollowerHosts,
+    pending: Vec<(String, f64)>,
+    pending_complete: bool,
+}
+
+struct CachedFollowerLease {
+    stamp: FollowerLeaseStamp,
+    facts: FollowerLeaseFacts,
+}
+
+static FOLLOWER_LEASES: OnceLock<Mutex<HashMap<PathBuf, CachedFollowerLease>>> = OnceLock::new();
 
 /// Inspect only the lease named by the owner; absence from a directory listing
 /// is never used as a liveness claim. Unknown covers unreadable or invalid data.
@@ -272,19 +316,41 @@ pub fn follower_observation_at(root: &Path, provider: &str, session: &str) -> Fo
     if !metadata.is_file() || metadata.len() > MAX_LEASE_BYTES {
         return unknown;
     }
-    let file = match fs::File::open(&path) {
-        Ok(file) => file,
-        Err(_) => return unknown,
-    };
-    let Ok(metadata) = file.metadata() else {
+    let stamp = FollowerLeaseStamp::from_metadata(&metadata);
+    let cache = FOLLOWER_LEASES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(cached) = cache.get(&path).filter(|cached| cached.stamp == stamp) {
+        let observation = observe_follower_facts(root, provider, session, &lease_id, &cached.facts);
+        if cached.facts.pending_complete || observation.alive != Some(true) {
+            return observation;
+        }
+    }
+    // Never retain an older generation after a failed or changed read.
+    cache.remove(&path);
+    let Ok(mut file) = fs::File::open(&path) else {
         return unknown;
     };
-    if !metadata.is_file() || metadata.len() > MAX_LEASE_BYTES {
+    let Ok(opened) = file.metadata() else {
+        return unknown;
+    };
+    if !opened.is_file() || FollowerLeaseStamp::from_metadata(&opened) != stamp {
         return unknown;
     }
     let mut bytes = Vec::new();
-    if file.take(MAX_LEASE_BYTES + 1).read_to_end(&mut bytes).is_err()
+    if (&mut file)
+        .take(MAX_LEASE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
         || bytes.len() as u64 > MAX_LEASE_BYTES
+    {
+        return unknown;
+    }
+    let (Ok(after), Ok(current)) = (file.metadata(), fs::symlink_metadata(&path)) else {
+        return unknown;
+    };
+    if !current.is_file()
+        || FollowerLeaseStamp::from_metadata(&after) != stamp
+        || FollowerLeaseStamp::from_metadata(&current) != stamp
     {
         return unknown;
     }
@@ -294,33 +360,102 @@ pub fn follower_observation_at(root: &Path, provider: &str, session: &str) -> Fo
     if lease.schema != LEASE_SCHEMA
         || lease.provider.as_deref().map(|value| value.trim().to_lowercase())
             != Some(provider.trim().to_lowercase())
-        || lease.provider_session_id.as_deref() != Some(session.trim())
+        || lease.provider_session_id.as_deref() != Some(session)
         || lease.lease_id.as_deref() != Some(lease_id.as_str())
     {
         return unknown;
     }
-    // Sampling after the read avoids declaring a concurrently refreshed lease
-    // future-dated merely because parsing a large mailbox took time.
+    let mut pending = Vec::new();
+    let mut facts_bytes = provider.len() + session.len() + lease_id.len();
+    let mut pending_complete = true;
+    for entry in &lease.pending {
+        if !entry
+            .kind
+            .as_deref()
+            .is_some_and(|kind| TERMINAL_KINDS.contains(&kind))
+        {
+            continue;
+        }
+        let (Some(id), Some(stamp)) = (entry.delivery_id.as_deref(), entry.emitted_at.as_deref())
+        else {
+            continue;
+        };
+        if let Ok(time) = chrono::DateTime::parse_from_rfc3339(stamp) {
+            facts_bytes =
+                facts_bytes.saturating_add(id.len() + std::mem::size_of::<(String, f64)>());
+            if facts_bytes > MAX_FOLLOWER_FACT_BYTES {
+                pending.clear();
+                pending_complete = false;
+                break;
+            }
+            pending.push((id.to_string(), time.timestamp_millis() as f64 / 1000.0));
+        }
+    }
+    let facts = FollowerLeaseFacts {
+        provider: provider.trim().to_lowercase(),
+        session: session.to_string(),
+        lease_id: lease_id.clone(),
+        active: lease.active,
+        heartbeat_unix: lease.heartbeat_unix,
+        hosts: FollowerHosts {
+            frame_pane: lease.has_frame_pane(),
+            terminal_tab: lease.has_terminal_host(),
+        },
+        pending,
+        pending_complete,
+    };
+    let mut observation = observe_follower_facts(root, provider, session, &lease_id, &facts);
+    if observation.alive == Some(true) && !pending_complete {
+        observation.unread_since = oldest_unread(root, &lease_id, &lease);
+    }
+    if provider.len() + session.len() + lease_id.len() <= MAX_FOLLOWER_FACT_BYTES {
+        if cache.len() >= MAX_FOLLOWER_CACHE_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(path, CachedFollowerLease { stamp, facts });
+    }
+    observation
+}
+
+fn observe_follower_facts(
+    root: &Path,
+    provider: &str,
+    session: &str,
+    lease_id: &str,
+    facts: &FollowerLeaseFacts,
+) -> FollowerObservation {
+    let unknown = FollowerObservation::default();
+    if facts.provider != provider.trim().to_lowercase()
+        || facts.session != session
+        || facts.lease_id != lease_id
+    {
+        return unknown;
+    }
+    // The clock and ACK markers are sampled again on every cache hit.
     let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
         return unknown;
     };
-    let age = now.as_secs_f64() - lease.heartbeat_unix;
+    let age = now.as_secs_f64() - facts.heartbeat_unix;
     if !age.is_finite() || age < 0.0 {
         return unknown;
     }
-    if !lease.active || age > LEASE_TTL_SECONDS {
+    if !facts.active || age > LEASE_TTL_SECONDS {
         return FollowerObservation {
             alive: Some(false),
             ..unknown
         };
     }
+    let markers = root.join("acknowledgments").join(lease_id);
+    let unread_since = facts
+        .pending
+        .iter()
+        .filter(|(id, _)| !markers.join(format!("{id}.json")).is_file())
+        .map(|(_, time)| *time)
+        .reduce(f64::min);
     FollowerObservation {
         alive: Some(true),
-        hosts: Some(FollowerHosts {
-            frame_pane: lease.has_frame_pane(),
-            terminal_tab: lease.has_terminal_host(),
-        }),
-        unread_since: oldest_unread(root, &lease_id, &lease),
+        hosts: Some(facts.hosts),
+        unread_since,
     }
 }
 

@@ -1123,8 +1123,8 @@ pub fn resolve_digit(digit: u8, path: &Path) -> Result<BoundAgentSession, Channe
     };
     let audience = entry.audience.trim();
     let provider = entry.provider.trim();
-    let provider_session_id = entry.provider_session_id.trim();
-    if audience.is_empty() || provider.is_empty() || provider_session_id.is_empty() {
+    let provider_session_id = entry.provider_session_id.as_str();
+    if audience.is_empty() || provider.is_empty() || provider_session_id.trim().is_empty() {
         return Err(ChannelOpenRefusal::BindingMalformed {
             path: path.display().to_string(),
             detail: format!("digit {digit} must name audience, provider, and provider_session_id"),
@@ -2449,17 +2449,26 @@ impl RecordingController {
                 unread_since: None,
             });
         }
+        let mut ambiguous_open_channels = BTreeSet::new();
         if let Ok(file) = load_binding(binding) {
             for (digit, entry) in &file.bindings {
                 if digit.len() != 1 || !digit.chars().all(|c| ('1'..='9').contains(&c)) {
                     continue;
                 }
-                if states.iter().any(|state| &state.channel == digit) {
+                if let Some(state) = states.iter().find(|state| &state.channel == digit) {
+                    // A channel opened before this change may have lost the
+                    // original whitespace. Never promote that into a match.
+                    if entry.provider_session_id != entry.provider_session_id.trim()
+                        && state.provider_session_id.as_deref()
+                            == Some(entry.provider_session_id.trim())
+                    {
+                        ambiguous_open_channels.insert(digit.clone());
+                    }
                     continue;
                 }
                 let provider = Some(entry.provider.trim().to_string()).filter(|s| !s.is_empty());
-                let session =
-                    Some(entry.provider_session_id.trim().to_string()).filter(|s| !s.is_empty());
+                let session = Some(entry.provider_session_id.clone())
+                    .filter(|s| !s.trim().is_empty());
                 states.push(ChannelHudState {
                     open: false,
                     loud: false,
@@ -2491,8 +2500,11 @@ impl RecordingController {
             else {
                 continue;
             };
-            let key = (provider.trim().to_lowercase(), session.trim().to_string());
-            if key.0.is_empty() || key.1.is_empty() {
+            if ambiguous_open_channels.contains(&state.channel) {
+                continue;
+            }
+            let key = (provider.trim().to_lowercase(), session.to_string());
+            if key.0.is_empty() || key.1.trim().is_empty() {
                 continue;
             }
             let observation = observations.entry(key.clone()).or_insert_with(|| {
@@ -2504,7 +2516,8 @@ impl RecordingController {
             state.unread_since = observation.unread_since.map(|since| {
                 SystemTime::UNIX_EPOCH + Duration::from_secs_f64(since.max(0.0))
             });
-            if let Some(thread) = codex_threads.get(&key) {
+            let thread_key = (key.0.clone(), key.1.trim().to_string());
+            if let Some(thread) = codex_threads.get(&thread_key) {
                 state.codex_thread_url = Some(format!("codex://threads/{}", thread.thread_id));
                 state.codex_thread_local = Some(thread.rollout);
             }

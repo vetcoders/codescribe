@@ -474,7 +474,8 @@ does not need changes to these owners.
   validated lease. A fresh active heartbeat means alive; a verified inactive,
   expired or absent lease means not alive. Unreadable, invalid or mismatched
   evidence makes no liveness claim. An owner omitted from a bounded lease
-  discovery is not thereby disconnected. Capture-open remains independent.
+  discovery is not thereby disconnected. Session identity keeps its original
+  bytes, including whitespace. Capture-open remains independent.
 - Capture-open, follower-alive, queued, acknowledged, unread and speaking are
   different facts. ACK confirms receipt, not task completion. Color, elapsed
   time, a hover animation or an unread badge must not manufacture a receipt.
