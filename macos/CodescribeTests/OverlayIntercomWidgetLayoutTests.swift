@@ -350,7 +350,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       }
       defer { if supplementaryDraft { try? FileManager.default.removeItem(at: attachmentURL) } }
       state.conversationDrafts[conversation.id] = retainedDraft
-      state.publishConversationText = { _, _, _, _ in XCTFail("Mounting a preview must not send") }
+      state.publishConversationText = { _, _, _, _ in
+        XCTFail("Mounting a preview must not send")
+        return .empty
+      }
       let keyWindow = NSApp.keyWindow
       let generation = state.captureGeneration
       let suite = "CodescribeTests.compact.\(UUID().uuidString)"

@@ -2994,16 +2994,24 @@ final class OverlayState {
   @ObservationIgnored private var otherComposerOwnsCapture: (() -> Bool)?
   private(set) var pendingTextMessages: Set<String> = []
   private(set) var textMessageErrors: [String: String] = [:]
+  var publishedMessageSkips: [String: [AgentBusSkippedRecipient]] = [:]
   private(set) var conversationFocusRevision: UInt64 = 0
   @ObservationIgnored var publishConversationText:
     @MainActor (
       OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
-    ) async throws -> Void =
+    ) async throws -> AgentBusTextPublication =
       {
         owner, text, reply, alsoSentTo in
         try await RealAgentBridgeInstaller.sendBusText(
           owner: owner, text: text, userReplyTo: reply, alsoSentTo: alsoSentTo)
       }
+
+  static func formatSkippedRecipientsNotice(_ skipped: [AgentBusSkippedRecipient]) -> String? {
+    guard !skipped.isEmpty else { return nil }
+    return skipped.map { item in
+      "Skipped \(item.displayName) (channel \(item.channel)): \(item.reasonText)"
+    }.joined(separator: "; ")
+  }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
     // The open conversation is the destination. A linked draft goes to every
@@ -3044,7 +3052,7 @@ final class OverlayState {
       : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
     guard !outgoing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     do {
-      try await publishConversationText(destination.owner, outgoing, reply, [])
+      let publication = try await publishConversationText(destination.owner, outgoing, reply, [])
       // A newer draft or reply belongs to the Founder, even if publication finishes late.
       if conversationDraftRevisions[conversation.id] == draftRevision,
         conversationReplyRevisions[conversation.id] == replyRevision,
@@ -3054,6 +3062,14 @@ final class OverlayState {
         if conversationReplies[conversation.id] == reply {
           conversationReplies.removeValue(forKey: conversation.id)
         }
+      }
+      if !publication.skipped.isEmpty {
+        if !publication.messageID.isEmpty {
+          publishedMessageSkips[publication.messageID] = publication.skipped
+        }
+        textMessageErrors[conversation.id] = Self.formatSkippedRecipientsNotice(publication.skipped)
+      } else {
+        textMessageErrors.removeValue(forKey: conversation.id)
       }
     } catch {
       textMessageErrors[conversation.id] = error.userFacingMessage
@@ -3139,8 +3155,11 @@ final class OverlayState {
           }.compactMap { resolveComposerRecipient($0.recipient)?.owner }
         )
         .filter { $0.id != destination.owner?.id }.sorted { $0.id < $1.id }
-        try await publishConversationText(
+        let publication = try await publishConversationText(
           destination.owner, recipient.payload, recipient.reply, alsoSentTo)
+        if !publication.skipped.isEmpty, !publication.messageID.isEmpty {
+          publishedMessageSkips[publication.messageID] = publication.skipped
+        }
         // Membership can retire while the publication is in flight. Its
         // receipt still belongs to an unchanged, still-current exact owner.
         if draftPublicationIsCurrent(recipient) {

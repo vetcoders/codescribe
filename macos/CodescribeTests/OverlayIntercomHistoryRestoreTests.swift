@@ -33,7 +33,10 @@ final class OverlayIntercomHistoryRestoreTests: XCTestCase {
           autosealDeadlineUnixMs: nil, followerAlive: false, unreadSinceUnixMs: nil)
       ])
       state.archiveAgentCommand = { _, _ in }
-      state.publishConversationText = { _, _, _, _ in XCTFail("Window restoration must not send") }
+      state.publishConversationText = { _, _, _, _ in
+        XCTFail("Window restoration must not send")
+        return .empty
+      }
       state.conversationDrafts[conversation.id] = "History draft stays with its exact owner"
       let identity = OverlayIntercomCardIdentity(digit: "2", conversation: conversation)
       let instance = OverlayIntercomInstance(

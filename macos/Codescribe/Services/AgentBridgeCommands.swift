@@ -284,6 +284,93 @@ enum OverlayDeliveryControl: String, CaseIterable, Sendable {
   case revise, withdraw, release
 }
 
+/// One bound channel skipped by `cs-bus --send-text` during a channel-0 broadcast.
+struct AgentBusSkippedRecipient: Codable, Equatable, Sendable {
+  let channel: String
+  let reason: String
+  let audience: String?
+  let name: String?
+  let provider: String?
+  let providerSessionID: String?
+  let leaseID: String?
+  let bus: String?
+
+  enum CodingKeys: String, CodingKey {
+    case channel, reason, audience, name, provider, bus
+    case providerSessionID = "provider_session_id"
+    case leaseID = "lease_id"
+  }
+
+  init(
+    channel: String,
+    reason: String,
+    audience: String? = nil,
+    name: String? = nil,
+    provider: String? = nil,
+    providerSessionID: String? = nil,
+    leaseID: String? = nil,
+    bus: String? = nil
+  ) {
+    self.channel = channel
+    self.reason = reason
+    self.audience = audience
+    self.name = name
+    self.provider = provider
+    self.providerSessionID = providerSessionID
+    self.leaseID = leaseID
+    self.bus = bus
+  }
+
+  var owner: OverlayConversationOwner? {
+    guard let provider, !provider.isEmpty,
+      let providerSessionID, !providerSessionID.isEmpty,
+      let leaseID, !leaseID.isEmpty
+    else { return nil }
+    var row: [String: Any] = [
+      "provider": provider,
+      "provider_session_id": providerSessionID,
+      "lease_id": leaseID,
+      "channel": channel,
+    ]
+    if let name, !name.isEmpty { row["name"] = name }
+    if let audience, !audience.isEmpty { row["audience"] = audience }
+    return OverlayConversationOwner(row: row)
+  }
+
+  var displayName: String {
+    if let name, !name.isEmpty { return name }
+    if let audience, !audience.isEmpty { return audience }
+    return "channel \(channel)"
+  }
+
+  var reasonText: String {
+    reason.replacingOccurrences(of: "_", with: " ")
+  }
+}
+
+/// Receipt decoded from `cs-bus --send-text` stdout (`kind == "message_published"`).
+struct AgentBusTextPublication: Equatable, Sendable {
+  let messageID: String
+  let holdUntil: String?
+  let recipients: [OverlayConversationOwner]
+  let skipped: [AgentBusSkippedRecipient]
+
+  init(
+    messageID: String,
+    holdUntil: String? = nil,
+    recipients: [OverlayConversationOwner] = [],
+    skipped: [AgentBusSkippedRecipient] = []
+  ) {
+    self.messageID = messageID
+    self.holdUntil = holdUntil
+    self.recipients = recipients
+    self.skipped = skipped
+  }
+
+  static let empty = AgentBusTextPublication(
+    messageID: "", holdUntil: nil, recipients: [], skipped: [])
+}
+
 enum AgentBusMessageValidationError: LocalizedError {
   case messageTooLong
   case emptyRevision
@@ -663,14 +750,48 @@ extension RealAgentBridgeInstaller {
     return output.fileHandleForReading.readDataToEndOfFile()
   }
 
+  static func decodeBusTextPublication(from data: Data) -> AgentBusTextPublication {
+    guard let text = String(data: data, encoding: .utf8) else { return .empty }
+    let decoder = JSONDecoder()
+    for line in text.split(whereSeparator: \.isNewline).reversed() {
+      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty,
+        let lineData = trimmed.data(using: .utf8),
+        let row = (try? JSONSerialization.jsonObject(with: lineData)) as? [String: Any],
+        row["kind"] as? String == "message_published"
+      else { continue }
+      let messageID = (row["message_id"] as? String) ?? ""
+      let holdUntil = row["hold_until"] as? String
+      let recipients = (row["recipients"] as? [[String: Any]] ?? []).compactMap(
+        OverlayConversationOwner.init(row:))
+      let skipped: [AgentBusSkippedRecipient]
+      if let rawSkipped = row["skipped"],
+        JSONSerialization.isValidJSONObject(rawSkipped),
+        let skippedData = try? JSONSerialization.data(withJSONObject: rawSkipped),
+        let decoded = try? decoder.decode([AgentBusSkippedRecipient].self, from: skippedData)
+      {
+        skipped = decoded
+      } else {
+        skipped = []
+      }
+      return AgentBusTextPublication(
+        messageID: messageID,
+        holdUntil: holdUntil,
+        recipients: recipients,
+        skipped: skipped)
+    }
+    return .empty
+  }
+
   /// Written user messages share the installed canonical bus publisher and follower.
   @MainActor
+  @discardableResult
   static func sendBusText(
     owner: OverlayConversationOwner?, text: String, holdSeconds: UInt32? = nil,
     userReplyTo: OverlayUserReplyReference? = nil,
     alsoSentTo: [OverlayConversationOwner] = [],
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
-  ) async throws {
+  ) async throws -> AgentBusTextPublication {
     let executable = installer.commandURL("cs-bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
@@ -684,13 +805,14 @@ extension RealAgentBridgeInstaller {
     let root = installer.bridgeRoot
     let message = ConversationAttachmentPointer.extract(from: text)
     let hold = holdSeconds ?? CodescribeConfig().loadSettings().agentSendHoldSec
-    try await Task.detached(priority: .userInitiated) {
+    return try await Task.detached(priority: .userInitiated) {
       var arguments = try busTextArguments(
         holdSeconds: hold, owner: owner, root: root, userReplyTo: userReplyTo,
         alsoSentTo: alsoSentTo)
       for path in message.paths { arguments += ["--attach-file", path] }
       let process = Process()
       let input = Pipe()
+      let output = Pipe()
       // The helper names its refusal on stderr ("channel was rebound or its
       // agent is not listening…"); swallowing it left the Founder with a
       // bare "could not be sent" and no culprit (P0, 2026-10-17).
@@ -698,7 +820,7 @@ extension RealAgentBridgeInstaller {
       process.executableURL = executable
       process.arguments = arguments
       process.standardInput = input
-      process.standardOutput = FileHandle.nullDevice
+      process.standardOutput = output
       process.standardError = diagnostics
       // Bound text fits in the pipe; writing happens off the UI thread.
       guard message.text.utf8.count <= 65536 else {
@@ -710,6 +832,7 @@ extension RealAgentBridgeInstaller {
       // Reading to EOF first keeps a chatty helper from filling the pipe
       // and deadlocking against waitUntilExit.
       let refusalData = diagnostics.fileHandleForReading.readDataToEndOfFile()
+      let outputData = output.fileHandleForReading.readDataToEndOfFile()
       process.waitUntilExit()
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {
         let headline =
@@ -730,6 +853,7 @@ extension RealAgentBridgeInstaller {
             NSLocalizedDescriptionKey: refusal.isEmpty ? headline : headline + "\n" + refusal
           ])
       }
+      return decodeBusTextPublication(from: outputData)
     }.value
   }
 

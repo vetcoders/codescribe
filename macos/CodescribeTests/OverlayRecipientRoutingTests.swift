@@ -39,10 +39,11 @@ final class OverlayRecipientRoutingTests: XCTestCase {
       seven = try Self.agent("7", session: "routing-seven")
       apply([all, inbox, four, six, seven])
       state.publishConversationText = { [weak self] owner, text, _, peers in
-        guard let self else { return }
+        guard let self else { return .empty }
         publications.append(
           Publication(owner: owner?.id, text: text, alsoSentTo: peers.map(\.id).sorted()))
         if let id = owner?.id, refusing.contains(id) { throw CocoaError(.fileWriteNoPermission) }
+        return .empty
       }
     }
 

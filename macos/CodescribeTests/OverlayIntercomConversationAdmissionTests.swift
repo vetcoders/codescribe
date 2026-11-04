@@ -53,7 +53,10 @@ final class OverlayIntercomConversationAdmissionTests: XCTestCase {
     ])
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
     state.conversationDrafts[conversation.id] = "Preserve shared draft"
-    state.publishConversationText = { _, _, _, _ in XCTFail("Rendering must not send") }
+    state.publishConversationText = { _, _, _, _ in
+      XCTFail("Rendering must not send")
+      return .empty
+    }
     let generation = state.captureGeneration
     let keyBefore = NSApp.keyWindow
     let suite = "CodescribeTests.compact-conversation.\(UUID().uuidString)"

@@ -285,6 +285,7 @@ final class OverlayComposerSyncTests: XCTestCase {
       XCTAssertEqual(text, expectedText, "Co-addressing must never become user text")
       calls.append((owner.id, text, reference))
       if owner.id == agents[1].id && refuseSecond { throw CocoaError(.fileWriteNoPermission) }
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(calls.map { $0.0 }, agents.map(\.id))
@@ -318,6 +319,7 @@ final class OverlayComposerSyncTests: XCTestCase {
         state.setConversationDraft("New private draft", for: agents[1].id)
         await state.sendConversationText(agents[1])
       }
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(
@@ -343,6 +345,7 @@ final class OverlayComposerSyncTests: XCTestCase {
       XCTAssertEqual(peers.map(\.id), [agents[1].id])
       XCTAssertFalse(peers.contains { $0.id == successor.id })
       self.apply([agents[0], successor], to: state)
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(
@@ -541,6 +544,7 @@ final class OverlayComposerSyncTests: XCTestCase {
       delivered.append(owner.id)
       XCTAssertEqual(text, "New shared words")
       XCTAssertEqual(Set(peers.map(\.id)), expected.subtracting([owner.id]))
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(Set(delivered), expected)
@@ -568,6 +572,7 @@ final class OverlayComposerSyncTests: XCTestCase {
       let owner = try XCTUnwrap(owner)
       delivered.append(owner.id)
       XCTAssertEqual(Set(peers.map(\.id)), expected.subtracting([owner.id]))
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(Set(delivered), expected)
