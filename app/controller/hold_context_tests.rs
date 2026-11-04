@@ -1443,7 +1443,7 @@ mod refusal_recovery_tests {
         // wall-clock duration varies; preserve its captured value verbatim.
         let (prefix, fields) = line.split_once("stop_to_delivery_ms=").unwrap();
         let target = module_path!()
-            .strip_suffix("::refusal_recovery_tests")
+            .strip_suffix("::tests::refusal_recovery_tests")
             .unwrap();
         assert_eq!(
             prefix,
@@ -4290,7 +4290,7 @@ mod hold_start_terminal_lifecycle_falsifiers {
             )
             .args([
                 "--exact",
-                "controller::hold_start_terminal_lifecycle_falsifiers::keyup_between_bus_start_and_rec_hold_ends_the_session_exactly_once",
+                "controller::tests::hold_start_terminal_lifecycle_falsifiers::keyup_between_bus_start_and_rec_hold_ends_the_session_exactly_once",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -4444,7 +4444,7 @@ mod capture_failure_recovery_tests {
         if std::env::var_os("CS_PRIVATE_RECOVERY_CHILD").is_none() {
             let store = tempfile::tempdir().unwrap();
             let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["controller::capture_failure_recovery_tests::an_archive_failure_recovers_confirmed_prefix_and_unconfirmed_pcm_before_retention", "--exact", "--test-threads=1"])
+                .args(["controller::tests::capture_failure_recovery_tests::an_archive_failure_recovers_confirmed_prefix_and_unconfirmed_pcm_before_retention", "--exact", "--test-threads=1"])
                 .env("CS_PRIVATE_RECOVERY_CHILD", "1")
                 .env("CODESCRIBE_DATA_DIR", store.path())
                 .output().unwrap();

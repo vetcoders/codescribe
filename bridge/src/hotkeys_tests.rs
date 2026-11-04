@@ -652,7 +652,7 @@ mod mode_binding_tests {
         let status = Command::new(std::env::current_exe().expect("resolve test binary"))
             .args([
                 "--exact",
-                "hotkeys::mode_binding_tests::fleet_red_test_logging_isolated",
+                "hotkeys::hotkeys_tests::mode_binding_tests::fleet_red_test_logging_isolated",
                 "--nocapture",
             ])
             .env(CHILD_ENV, "1")

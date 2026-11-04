@@ -272,7 +272,7 @@ mod reset_tests {
             )
             .args([
                 "--exact",
-                "config::reset_tests::reset_scope_follows_data_dir_and_moves_live_data_to_trash",
+                "config::config_tests::reset_tests::reset_scope_follows_data_dir_and_moves_live_data_to_trash",
                 "--nocapture",
             ])
             .env(CHILD_FLAG, "1")
@@ -446,7 +446,7 @@ mod reset_tests {
             )
             .args([
                 "--exact",
-                "config::reset_tests::reset_partial_move_failure_reports_progress_and_requires_relaunch",
+                "config::config_tests::reset_tests::reset_partial_move_failure_reports_progress_and_requires_relaunch",
                 "--nocapture",
             ])
             .env(CHILD_FLAG, "1")
