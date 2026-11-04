@@ -3449,6 +3449,8 @@ struct OverlayAgentStatusDot: View {
   let palette: OverlayAppearancePalette
 
   static let diameter: CGFloat = 8
+  /// The sleeping mark is wider than the dot: three rising z's.
+  static let sleepWidth: CGFloat = 12
 
   private var filled: Bool {
     switch kind {
@@ -3477,12 +3479,13 @@ struct OverlayAgentStatusDot: View {
         .frame(width: 12 * textScale, height: 8 * textScale)
         .accessibilityHidden(true)
     } else if kind == .asleep {
-      // The sleeping agent: Monika's "zzz" in the muted tone, no new colour.
-      Text(verbatim: "zzz")
-        .font(.system(size: 7 * textScale, weight: .bold, design: .rounded))
+      // The sleeping agent: the system's "zzz", three z's rising to the
+      // upper right as in the sleeping face, not a flat word (Monika,
+      // 2026-11-04 20:04Z: "zbyt literalnie"); the muted tone, no new colour.
+      Image(systemName: "zzz")
+        .font(.system(size: 9 * textScale, weight: .bold))
         .foregroundStyle(tone.color)
-        .fixedSize()
-        .frame(width: 10 * textScale, height: Self.diameter * textScale)
+        .frame(width: Self.sleepWidth * textScale, height: Self.diameter * textScale)
         .accessibilityHidden(true)
     } else if kind == .idle {
       // No liveness claim: a "?" in a circle, the dot's size, in the muted
@@ -3665,6 +3668,7 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
               }
               .accessibilityIdentifier("overlay-agent-monitor-pinned-mailboxes")
           }
+          .clipped()
           .onChange(of: scrollTargetID) { _, target in
             guard let target else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover)) {

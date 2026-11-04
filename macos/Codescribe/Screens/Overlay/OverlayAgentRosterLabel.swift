@@ -38,9 +38,11 @@ struct OverlayAgentRosterLabel: View {
               Text(verbatim: channel)
                 .font(.system(size: 11 * textScale, weight: .medium, design: .monospaced))
                 .foregroundStyle(palette.mutedText.color)
+                .fixedSize()
                 .accessibilityIdentifier("overlay-agent-digit-\(channel)")
             }
             OverlayAgentStatusDot(kind: dot, palette: palette)
+              .fixedSize()
               .accessibilityLabel(Text(verbatim: statusLabel))
               .accessibilityValue(Text(verbatim: statusDetail))
               .accessibilityIdentifier(
@@ -55,12 +57,15 @@ struct OverlayAgentRosterLabel: View {
               .accessibilityIdentifier("overlay-agent-title-\(channel ?? "0")")
             if let titleAccessory {
               titleAccessory
+                .fixedSize()
             }
             if let receipt {
               OverlayRosterReceiptMark(receipt: receipt, palette: palette, textScale: textScale)
+                .fixedSize()
             }
             if let trailingMarks {
               trailingMarks
+                .fixedSize()
             }
             Spacer(minLength: 4)
             if unreadCount > 0, let conversationID {
@@ -73,6 +78,7 @@ struct OverlayAgentRosterLabel: View {
                 .font(.system(size: 11 * textScale))
                 .foregroundStyle(palette.mutedText.color)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .accessibilityIdentifier(
                   "overlay-agent-timestamp-\(conversationID ?? channel ?? "0")")
             }

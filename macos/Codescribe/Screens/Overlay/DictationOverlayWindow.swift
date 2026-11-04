@@ -483,6 +483,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// first, and its completion lands here again.
   func setMidiBarGeometry(_ geometry: OverlayMidiBarGeometry) {
     guard geometry != midiBar else { return }
+    // Back from 6–9 agents to 1–5 the bar changes form: the width the user
+    // gave the two-row bar is forgotten, so the single row settles at its
+    // natural width instead of two rows kept by a stale width (Monika,
+    // 2026-11-04, 8.52–8.53 PM screenshots).
+    if !midiBar.singleRowMinimumWidth.isFinite, geometry.singleRowMinimumWidth.isFinite {
+      midiUserWidth = nil
+      midiShrunkByUser = false
+    }
     midiBar = geometry
     if presentationMode == .midi, !isFrameTransitioning, !isUserResizing {
       minSize = presentationMinimumSize
@@ -1489,7 +1497,7 @@ enum DictationOverlayWindow {
   @MainActor
   static func miniTakeWidth(live: Bool, openDigits: [String]) -> CGFloat {
     guard live else { return 0 }
-    var width = OverlayBarMetrics.waveformWidth + 2 * miniControlSpacing + midiTimerWidth
+    var width = OverlayBarMetrics.miniWaveformWidth + 2 * miniControlSpacing + midiTimerWidth
     let addressees = miniAddresseesWidth(openDigits: openDigits)
     if addressees > 0 { width += miniControlSpacing + addressees }
     return ceil(width)
@@ -1610,12 +1618,14 @@ enum DictationOverlayWindow {
         naturalWidth: singleRow(names.preferred),
         minimumWidth: min(singleRowMinimum, twoRows(names.shortest)),
         maximumWidth: singleRow(names.full), singleRowMinimumWidth: singleRowMinimum,
-        singleRowHeight: singleRowHeight, twoRowHeight: twoRowHeight)
+        singleRowHeight: singleRowHeight, twoRowHeight: twoRowHeight,
+        twoRowMaximumWidth: twoRows(names.full))
     } else {
       geometry = OverlayMidiBarGeometry(
         naturalWidth: twoRows(names.preferred), minimumWidth: twoRows(names.shortest),
         maximumWidth: twoRows(names.full), singleRowMinimumWidth: .infinity,
-        singleRowHeight: singleRowHeight, twoRowHeight: twoRowHeight)
+        singleRowHeight: singleRowHeight, twoRowHeight: twoRowHeight,
+        twoRowMaximumWidth: twoRows(names.full))
     }
     if let visibleWidth, visibleWidth.isFinite {
       geometry.naturalWidth = min(geometry.naturalWidth, visibleWidth)
@@ -2066,6 +2076,10 @@ struct OverlayMidiBarGeometry: Equatable, Sendable {
   var singleRowMinimumWidth: CGFloat
   var singleRowHeight: CGFloat
   var twoRowHeight: CGFloat
+  /// Every name whole in two rows. With 1–5 agents the widths between this
+  /// and `singleRowMinimumWidth` are a dead band: two rows with a hole after
+  /// the chips. `clampedWidth` snaps across it. Zero for the classic bar.
+  var twoRowMaximumWidth: CGFloat = 0
 
   /// No horizontal map: the 410 × 46 floor, widened freely.
   static let classic = OverlayMidiBarGeometry(
@@ -2075,7 +2089,15 @@ struct OverlayMidiBarGeometry: Equatable, Sendable {
     twoRowHeight: DictationOverlayWindow.collapsedHeight)
 
   func clampedWidth(_ width: CGFloat) -> CGFloat {
-    min(max(width, minimumWidth), maximumWidth)
+    let width = min(max(width, minimumWidth), maximumWidth)
+    // The dead band: wider than every name in two rows, narrower than one
+    // row of the shortest names. The bar is either form, never the hole
+    // between them (Monika, 2026-11-04): the nearer edge wins.
+    guard twoRowMaximumWidth < singleRowMinimumWidth, width > twoRowMaximumWidth,
+      width < singleRowMinimumWidth
+    else { return width }
+    return width - twoRowMaximumWidth < singleRowMinimumWidth - width
+      ? twoRowMaximumWidth : singleRowMinimumWidth
   }
 
   func height(forWidth width: CGFloat) -> CGFloat {

@@ -51,18 +51,21 @@ conversation never opens its microphone. Long names retain their full tooltip
 and accessibility label.
 
 Hovering the row's navigation area or a folded-rail entry for 350 ms opens
-the last loaded message in the shared `OverlayHintPanel`. The same message
-as the inline preview is used, including outgoing user messages; original
+a compact bounded carousel (up to five recent loaded messages, starting at the
+latest) in the shared `OverlayHintPanel`. Original
 paragraphs, rich formatting and attachments use `OverlayConversationMessageContent`.
-The preview is bounded to the display and scrollable. An already selected
-conversation has no duplicate hover preview. Clicking an unselected preview
-uses that row's existing conversation-navigation command; hovering alone never
-selects it. Its pointer target stays
-open while the cursor crosses the gap or rests on the preview, then dismisses
-after leaving both targets. The window cannot become key. It mounts no
+The card is narrow (`260 × textScale`), fits short messages to their content
+height, and scrolls only when a message exceeds its `180 × textScale` ceiling;
+pagination controls appear only when more than one message is loaded. An already
+selected conversation has no duplicate hover preview. Clicking an unselected
+preview's header or body uses that row's existing conversation-navigation
+command; hovering or stepping the carousel never selects it. Its pointer target
+stays open while the cursor crosses the gap or rests on the preview, then
+dismisses after leaving both targets. The window cannot become key. It mounts no
 composer, changes no recipient, acknowledges no
 message, and fetches no saved history. Audio and menu controls keep their own
-action hints. Empty entries retain their existing navigation hint.
+action hints. Empty entries retain their existing navigation hint without
+opening an empty preview card.
 
 The more menu contains channel-zero membership, Do not disturb, the detected
 client/terminal destination and removal into saved conversations. The same
@@ -312,9 +315,16 @@ and the name. It receives no `OverlayState`, conversation or command.
 
 The bar with the horizontal map is as wide as its content (bus brief
 2026-11-04 §4, §5, §8, §11C). `OverlayBarLayout` sets the brand, a waveform of
-one fixed width (82 pt, the same at rest and while recording, so a take never
+one fixed width (110 pt, the same at rest and while recording, so a take never
 changes the bar's length), the clock, the map and the tools side by side;
-nothing stretches between them. Its two arrangements:
+nothing stretches between them. In the two-row bar the first row ends after
+the clock, so its slack before the tools goes to the waveform, up to 170 pt
+(`waveformMaximumWidth`), never to a hole. With 1–5 agents the widths between
+every name whole in two rows and one row of the shortest names are a hole
+after the chips: `OverlayMidiBarGeometry.clampedWidth` snaps a dragged edge
+across that band to the nearer form, and when the roster drops from 6–9 to
+1–5 agents the width the user gave the two-row bar is forgotten, so the
+single row settles at its natural width. Its two arrangements:
 
 - **One row, preferred for 1–5 agents.** The map follows the clock as
   `.stacked` pills: the circled digit with the name under it, one button with
@@ -401,7 +411,7 @@ While a take is live (`OverlayState.miniTakeLive`: a dictation from its start
 to the controller's stop, or any channel, channel 0 included, with its
 microphone open), mini grows slightly and stays mini (Monika, 2026-11-04,
 bus brief §6, §11D, decision 12.2). Between the brand and the transcription
-button it shows the bar's 82 pt waveform, the clock (`00:00`, the same
+button it shows its own 82 pt waveform (`miniWaveformWidth`), the clock (`00:00`, the same
 counter as the bar) and the addressees: one circled digit per open channel,
 in digit order, drawn by `OverlayChannelPill` in the counter form's
 open-channel look (15 pt circle, recording violet, the open-channel dot),

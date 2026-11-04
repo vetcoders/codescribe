@@ -402,9 +402,17 @@ enum OverlayBarMetrics {
   /// The gap between the bar's items, in every form but mini.
   static let itemSpacing: CGFloat = 10
   /// The bar's waveform keeps one width at rest and while recording, so a
-  /// take starting never changes the bar's length: mini and compact's 24
-  /// `WaveformView` compact bars of 1.5 pt with their 23 gaps of 2 pt.
-  static let waveformWidth: CGFloat = 82
+  /// take starting never changes the bar's length: 32 `WaveformView` compact
+  /// bars of 1.5 pt with their 31 gaps of 2 pt (Monika, 2026-11-04: "troszkę
+  /// dłuższa"; the strip draws as many bars as its width holds, so a longer
+  /// strip costs no second render path).
+  static let waveformWidth: CGFloat = 110
+  /// In the two-row bar the chips leave the first row's end free: the
+  /// waveform takes that slack, up to this width, so the clock stands right
+  /// after it instead of a hole.
+  static let waveformMaximumWidth: CGFloat = 170
+  /// Mini's take keeps its own, shorter strip: 24 bars with their 23 gaps.
+  static let miniWaveformWidth: CGFloat = 82
   /// Between the bar's first row and its chips: with the 2 pt the 22 pt tools
   /// leave inside the 26 pt row, 4 pt between a tool and a chip.
   static let rowGap: CGFloat = 2
@@ -450,6 +458,8 @@ struct OverlayBarLayout: Layout {
   let rowGap: CGFloat
   let spacing: CGFloat
   let mapGap: CGFloat
+  /// The widest the waveform grows into the two-row bar's first-row slack.
+  let waveformMaximumWidth: CGFloat
 
   /// The bar's layout for the map's agents at the overlay's text scale.
   @MainActor
@@ -462,6 +472,7 @@ struct OverlayBarLayout: Layout {
     rowGap = OverlayBarMetrics.rowGap
     spacing = OverlayBarMetrics.itemSpacing
     mapGap = OverlayChannelMapView.leadingGap
+    waveformMaximumWidth = OverlayBarMetrics.waveformMaximumWidth
   }
 
   private func twoRows(_ proposal: ProposedViewSize) -> Bool {
@@ -498,6 +509,22 @@ struct OverlayBarLayout: Layout {
   ) {
     let two = twoRows(proposal)
     let firstRowMid = two ? bounds.minY + rowHeight / 2 : bounds.midY
+    // With the chips in their own row the first row ends after the clock;
+    // the slack before the tools goes to the waveform, up to its maximum,
+    // so a widened bar lengthens the strip instead of opening a hole.
+    var waveformSlack: CGFloat = 0
+    if two {
+      var row: CGFloat = 0
+      for subview in subviews {
+        switch subview[PartKey.self] {
+        case .leading, .waveform: row += subview.sizeThatFits(.unspecified).width + spacing
+        case .timer: row += subview.sizeThatFits(.unspecified).width
+        case .tools: row += spacing + subview.sizeThatFits(.unspecified).width
+        case .map: break
+        }
+      }
+      waveformSlack = max(0, bounds.width - row)
+    }
     var x = bounds.minX
     var map: LayoutSubview?
     var tools: LayoutSubview?
@@ -506,7 +533,10 @@ struct OverlayBarLayout: Layout {
       case .map: map = subview
       case .tools: tools = subview
       case .leading, .waveform, .timer:
-        let size = subview.sizeThatFits(.unspecified)
+        var size = subview.sizeThatFits(.unspecified)
+        if subview[PartKey.self] == .waveform {
+          size.width = min(waveformMaximumWidth, size.width + waveformSlack)
+        }
         subview.place(
           at: CGPoint(x: x, y: firstRowMid), anchor: .leading, proposal: ProposedViewSize(size))
         x += size.width + (subview[PartKey.self] == .timer ? 0 : spacing)
@@ -1380,6 +1410,11 @@ struct DictationOverlayView: View {
     // It never becomes the bar; after the take it folds back to rest.
     let miniTake = mini && state.miniTakeLive
     let fixedWaveform = horizontalMap || miniTake
+    // The bar's strip and mini's take strip have their own fixed widths; in
+    // the two-row bar the layout may lengthen the strip into the first row's
+    // slack, never past `waveformMaximumWidth`.
+    let fixedWaveformWidth =
+      horizontalMap ? OverlayBarMetrics.waveformWidth : OverlayBarMetrics.miniWaveformWidth
     // The expanded bar with its map is as wide as its content (bus brief
     // 2026-11-04 §4, §8): `OverlayBarLayout` sets the items side by side with
     // no stretching centre. Every other header keeps its row. One child list
@@ -1430,8 +1465,10 @@ struct DictationOverlayView: View {
       // it the bar's one fixed width instead.
       chromeWaveform(barCount: density.waveformBars)
         .frame(
-          minWidth: fixedWaveform ? OverlayBarMetrics.waveformWidth : density.waveformMinWidth,
-          maxWidth: fixedWaveform ? OverlayBarMetrics.waveformWidth : .infinity
+          minWidth: fixedWaveform ? fixedWaveformWidth : density.waveformMinWidth,
+          maxWidth: horizontalMap
+            ? OverlayBarMetrics.waveformMaximumWidth
+            : fixedWaveform ? fixedWaveformWidth : .infinity
         )
         .layoutPriority(-1)
         .opacity(mini && !miniTake ? 0 : 1)

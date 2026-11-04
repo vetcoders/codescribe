@@ -642,6 +642,44 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(classic.height(forWidth: 2_000), DictationOverlayWindow.collapsedHeight)
   }
 
+  /// With 1–5 agents the widths between every name whole in two rows and one
+  /// row of the shortest names are a hole after the chips: the bar snaps to
+  /// the nearer form instead (Monika, 2026-11-04). Without the band, and for
+  /// 6–9 agents, the clamp is unchanged.
+  @MainActor
+  func testMidiBarSnapsAcrossTheDeadBandBetweenTwoRowsAndOneRow() throws {
+    let bar = OverlayMidiBarGeometry(
+      naturalWidth: 500, minimumWidth: 380, maximumWidth: 560, singleRowMinimumWidth: 450,
+      singleRowHeight: 51, twoRowHeight: 70, twoRowMaximumWidth: 400)
+    XCTAssertEqual(bar.clampedWidth(400), 400, "every name whole in two rows")
+    XCTAssertEqual(bar.clampedWidth(410), 400, "nearer the two-row edge: two rows")
+    XCTAssertEqual(bar.clampedWidth(440), 450, "nearer the single row: one row")
+    XCTAssertEqual(bar.clampedWidth(449.6), 450, "half a point of rounding is one row")
+    XCTAssertEqual(bar.clampedWidth(450), 450)
+    XCTAssertEqual(bar.height(forWidth: bar.clampedWidth(410)), 70)
+    XCTAssertEqual(bar.height(forWidth: bar.clampedWidth(440)), 51)
+    let noBand = OverlayMidiBarGeometry(
+      naturalWidth: 500, minimumWidth: 380, maximumWidth: 560, singleRowMinimumWidth: 450,
+      singleRowHeight: 51, twoRowHeight: 70, twoRowMaximumWidth: 470)
+    XCTAssertEqual(noBand.clampedWidth(440), 440, "two rows that reach the single row: no band")
+    let many = OverlayMidiBarGeometry(
+      naturalWidth: 500, minimumWidth: 380, maximumWidth: 560, singleRowMinimumWidth: .infinity,
+      singleRowHeight: 51, twoRowHeight: 70, twoRowMaximumWidth: 560)
+    XCTAssertEqual(many.clampedWidth(440), 440, "6–9 agents: two rows at every width")
+
+    let (_, panel) = try makeMidiMapPanel(key: "Resize.midiMap.dropToOneRow")
+    defer { panel.invalidatePresence() }
+    panel.setMidiBarGeometry(many)
+    XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
+    XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: 90, y: 0)))
+    panel.endUserResize()
+    XCTAssertTrue(panel.midiShrunkByUser)
+    panel.setMidiBarGeometry(bar)
+    XCTAssertFalse(panel.midiShrunkByUser)
+    XCTAssertEqual(panel.frame.width, 500, accuracy: 0.5, "6–9 -> 1–5 resets to natural 1-row width")
+    XCTAssertEqual(panel.frame.height, 51, accuracy: 0.5, "6–9 -> 1–5 returns to 1-row height")
+  }
+
   @MainActor
   func testExpandedCornersReachCompactFormsAtTheirDraggedEdges() throws {
     let state = OverlayState.previewFormatted()

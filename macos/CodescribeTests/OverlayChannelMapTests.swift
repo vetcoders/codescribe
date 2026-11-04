@@ -510,8 +510,9 @@ final class OverlayChannelMapTests: XCTestCase {
     let dictation = W.miniTakeWidth(live: true, openDigits: [])
     XCTAssertEqual(
       dictation,
-      ceil(OverlayBarMetrics.waveformWidth + 2 * W.miniControlSpacing + W.midiTimerWidth),
+      ceil(OverlayBarMetrics.miniWaveformWidth + 2 * W.miniControlSpacing + W.midiTimerWidth),
       "a dictation alone: waveform and clock, no addressees")
+    XCTAssertEqual(OverlayBarMetrics.miniWaveformWidth, 82, "mini keeps its 24-bar strip")
     XCTAssertEqual(W.miniAddresseesWidth(openDigits: []), 0)
 
     let circle = OverlayChannelPill.counterWidth(figure: "", openDigitCount: 1, scale: 1)
@@ -522,7 +523,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(
       W.miniTakeWidth(live: true, openDigits: ["2", "5"]),
       ceil(
-        OverlayBarMetrics.waveformWidth + 2 * W.miniControlSpacing + W.midiTimerWidth
+        OverlayBarMetrics.miniWaveformWidth + 2 * W.miniControlSpacing + W.midiTimerWidth
           + W.miniControlSpacing + 2 * circle + W.miniControlSpacing))
     XCTAssertGreaterThan(
       W.miniTakeWidth(live: true, openDigits: ["2", "5"]),
@@ -698,7 +699,8 @@ final class OverlayChannelMapTests: XCTestCase {
         + OverlayBarMetrics.waveformWidth + W.midiTimerWidth + OverlayChannelMapView.leadingGap
         + OverlayBarMetrics.itemSpacing + W.midiTrailingControls)
     XCTAssertEqual(OverlayBarMetrics.itemSpacing, 10)
-    XCTAssertEqual(OverlayBarMetrics.waveformWidth, 82)
+    XCTAssertEqual(OverlayBarMetrics.waveformWidth, 110, "32 bars of 1.5 pt with 31 gaps of 2 pt")
+    XCTAssertEqual(OverlayBarMetrics.waveformMaximumWidth, 170)
     XCTAssertEqual(OverlayBarMetrics.rowGap, 2)
     for names in [["Miksa", "Igor", "Kuba"], ["Miksa", "Igor", "Kuba", "Konstanty"], ["Lena"]] {
       let map = named(names)

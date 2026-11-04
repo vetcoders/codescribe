@@ -716,9 +716,9 @@ final class OverlayBusWindowTests: XCTestCase {
         """)
     let host = NSHostingView(
       rootView: OverlayRosterMessagePreview(name: target.name, message: message, palette: .dark)
-        .frame(width: 380, height: 280)
+        .frame(width: 260, height: 180)
         .environment(\.colorScheme, .dark))
-    host.frame = NSRect(x: 0, y: 0, width: 380, height: 280)
+    host.frame = NSRect(x: 0, y: 0, width: 260, height: 180)
     host.layoutSubtreeIfNeeded()
     let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
     host.cacheDisplay(in: host.bounds, to: bitmap)
@@ -728,6 +728,90 @@ final class OverlayBusWindowTests: XCTestCase {
     attachment.name = "Bus-last-message-hover-preview"
     attachment.lifetime = .keepAlways
     add(attachment)
+  }
+
+  func testRosterHoverFitsCompactContentSuppressesOpenConversationAndRemeasuresOnStep()
+    async throws
+  {
+    var target = try conversation("2")
+    let shortMsg = OverlayConversationMessage(
+      id: "reply:short", kind: .reply, text: "Zrobione. Nowy build działa.", order: 1,
+      emittedAt: "2026-10-29T10:01:00Z", owner: target.owner, recipients: [],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+    let longText =
+      "## Detailed review\n\n"
+      + String(repeating: "This paragraph expands the preview to its bounded ceiling.\n\n", count: 12)
+    let longMsg = OverlayConversationMessage(
+      id: "reply:long", kind: .reply, text: longText, order: 2,
+      emittedAt: "2026-10-29T10:02:00Z", owner: target.owner, recipients: [],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+
+    // 1. Selected (open) conversation suppresses duplicate hover preview.
+    target = withMessages(target, [shortMsg])
+    do {
+      let (panel, host) = previewPanel(
+        AnyView(
+          Text("Tola").frame(maxWidth: .infinity, maxHeight: .infinity)
+            .modifier(
+              OverlayRosterMessageHint(
+                conversation: target, palette: .dark, textScale: 1, isOpen: true))))
+      defer {
+        setPreviewHover(false, in: host)
+        panel.contentView = nil
+        panel.orderOut(nil)
+      }
+      XCTAssertGreaterThan(setPreviewHover(true, in: host), 0)
+      try await Task.sleep(for: .milliseconds(450))
+      XCTAssertNil(
+        OverlayHintPanel.shared.presentedPanel,
+        "an already open conversation must not present a duplicate hover preview")
+    }
+
+    // 2. Empty conversation presents only a compact tooltip chip, never a tall card.
+    let emptyTarget = try conversation("3", lease: "c")
+    do {
+      let (panel, host) = previewPanel(
+        AnyView(
+          Text("Lena").frame(maxWidth: .infinity, maxHeight: .infinity)
+            .modifier(
+              OverlayRosterMessageHint(
+                conversation: emptyTarget, palette: .dark, textScale: 1, isOpen: false))))
+      defer {
+        setPreviewHover(false, in: host)
+        panel.contentView = nil
+        panel.orderOut(nil)
+      }
+      XCTAssertGreaterThan(setPreviewHover(true, in: host), 0)
+      try await Task.sleep(for: .milliseconds(100))
+      let hintFrame = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel).frame
+      XCTAssertLessThan(hintFrame.height, 48, "empty conversation shows only a compact tooltip chip")
+      setPreviewHover(false, in: host)
+      try await Task.sleep(for: .milliseconds(250))
+    }
+
+    // 3. Short message fits its natural compact height (< 130 pt), long message caps at 180 pt.
+    target = withMessages(target, [longMsg, shortMsg])
+    var openedCount = 0
+    let (panel, host) = previewPanel(
+      AnyView(
+        Text("Tola").frame(maxWidth: .infinity, maxHeight: .infinity)
+          .modifier(
+            OverlayRosterMessageHint(
+              conversation: target, palette: .dark, textScale: 1, isOpen: false,
+              onOpen: { openedCount += 1 }))))
+    defer {
+      setPreviewHover(false, in: host)
+      panel.contentView = nil
+      panel.orderOut(nil)
+    }
+    XCTAssertGreaterThan(setPreviewHover(true, in: host), 0)
+    try await Task.sleep(for: .milliseconds(450))
+    let shortFrame = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel).frame
+    XCTAssertEqual(shortFrame.width, 260, accuracy: 1)
+    XCTAssertLessThan(
+      shortFrame.height, 135,
+      "a short 1-line message must hug its content instead of reserving 180/280 pt")
+    XCTAssertEqual(openedCount, 0, "hovering never selects the conversation")
   }
 
   func testHorizontalWindowReviewInDarkSplitLayout() throws {
