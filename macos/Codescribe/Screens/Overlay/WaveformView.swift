@@ -63,7 +63,10 @@ final class AudioLevelMeter {
     let target = pow(linear, 0.7)
     let current = gain ?? 0
     let smoothing = target > current ? 0.6 : 0.15
-    gain = current + (target - current) * smoothing
+    let newGain = current + (target - current) * smoothing
+    if gain == nil || abs(newGain - current) >= 0.005 {
+      gain = newGain
+    }
     assessInput(rms: Double(rms), db: db, speechActive: speechActive, now: now)
   }
 
@@ -97,9 +100,9 @@ final class AudioLevelMeter {
     // Advisory thresholds, not transcript admission or an accuracy score.
     // A recovery margin keeps normal syllable-level variation from flashing.
     if speechDB < -46 {
-      hasLowInputSignal = true
+      if !hasLowInputSignal { hasLowInputSignal = true }
     } else if speechDB > -42 {
-      hasLowInputSignal = false
+      if hasLowInputSignal { hasLowInputSignal = false }
     }
     speechSeconds = 0
     speechEnergy = 0
@@ -580,7 +583,12 @@ final class WaveformMotionView: NSView {
   /// Read the meter and scale the sweep: a bar peaks at the measured level and
   /// never drops below the resting core, so silence stays a flat line.
   func refreshGain() {
-    guard let configuration, configuration.isVisible, !configuration.transcribing else { return }
+    guard let configuration, configuration.isVisible, !configuration.transcribing,
+      window != nil, window?.isVisible == true
+    else {
+      stopGainPolling()
+      return
+    }
     showGain(configuration.meter?.gain, animated: true)
   }
 

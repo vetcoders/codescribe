@@ -609,7 +609,7 @@ final class OverlayState {
   /// Rust's linear history of this take as last read, with its session.
   /// Read-only: navigation sends a step, never these bytes.
   private(set) var documentVersions: CsDocumentVersions?
-  private var documentVersionsSessionId: String?
+  @ObservationIgnored private var documentVersionsSessionId: String?
   /// Fence for versions reads: only the newest request may land.
   @ObservationIgnored private var documentVersionsReadGeneration: UInt64 = 0
   /// One Undo/Redo/version pick in flight; a second is refused until the
@@ -617,26 +617,26 @@ final class OverlayState {
   private(set) var pendingNavigation: OverlayPendingNavigation?
   /// One live pass owns its ticket until both the commit ACK and its
   /// authenticated projection arrive. A new take drops the whole ticket.
-  private var retranscribeTicket: OverlayRetranscribeTicket?
+  @ObservationIgnored private var retranscribeTicket: OverlayRetranscribeTicket?
   @ObservationIgnored private var retranscribeTickets: UInt64 = 0
   var retranscribePending: Bool { retranscribeTicket != nil }
   /// A transcript reopened from history. While set it owns the canvas and
   /// every canvas action; the projected take behind it keeps its own state.
   private(set) var archivedTranscript: OverlayArchivedTranscript?
   /// Editor payload for the archive, the twin of `revisionDraft`.
-  private var archiveDraft = ""
+  @ObservationIgnored private var archiveDraft = ""
   /// The unaccepted retranscription `archiveDraft` was filled with, if any.
-  private var archiveGeneratedWork: OverlayArchiveGeneratedWork?
+  @ObservationIgnored private var archiveGeneratedWork: OverlayArchiveGeneratedWork?
   private(set) var archiveActionPending = false
   private(set) var archiveActionError: String?
   /// Fence for archive presentation: bumped on every open, leave and action,
   /// so a late result can only repaint the archive request that started it.
   /// It fences painting only; Rust's revision chain owns what was accepted.
-  private var archiveGeneration: UInt64 = 0
+  @ObservationIgnored private var archiveGeneration: UInt64 = 0
   /// Admission ticket for history opens. A read that finishes after a newer
   /// request, a dismissed list, a close or a new take holds a stale ticket.
   @ObservationIgnored private var historyOpenAdmission: UInt64 = 0
-  private var chromeBehindArchive: OverlayProjectedChrome?
+  @ObservationIgnored private var chromeBehindArchive: OverlayProjectedChrome?
   private(set) var userRevisionProvenance: String?
   private(set) var canPaste = false
   private(set) var canInsert = false
@@ -1056,9 +1056,9 @@ final class OverlayState {
       restartAutoHideCountdown()
     }
   }
-  var onRecordingPreparing: (() -> Void)?
-  var onRecordingStarted: (() -> Void)?
-  var onRecordingStopped: (() -> Void)?
+  @ObservationIgnored var onRecordingPreparing: (() -> Void)?
+  @ObservationIgnored var onRecordingStarted: (() -> Void)?
+  @ObservationIgnored var onRecordingStopped: (() -> Void)?
   @ObservationIgnored var onPresentationStatus: (() -> Void)?
   /// Presentation-only invalidation seam. The window controller may use the
   /// already-admitted projection to grow its canvas; no transcript bytes leave
@@ -1074,7 +1074,7 @@ final class OverlayState {
   /// recoverable instead of painting a success the composer never saw.
   @ObservationIgnored var onComposerTranscript: ((String, String) -> ComposerDeliveryReceipt)?
   /// Content-free success seam. No transcript crosses this callback.
-  var onSuccessfulDictation: (() -> Void)?
+  @ObservationIgnored var onSuccessfulDictation: (() -> Void)?
 
   /// Strong refs for the one ordered Rust-callback ingress.
   @ObservationIgnored private let listener: CsTranscriptionListener
@@ -1193,25 +1193,25 @@ final class OverlayState {
   /// enforce anything. That residual capacity boundary is disclosed, not fixed
   /// here; closing it needs an owner outside this fence.
   private(set) var supersededTakes: [OverlaySupersededTake] = []
-  private var agentSessionArmed = false
-  private var agentFinalTranscriptAppeared = false
-  private var agentAutoSendCancelled = false
-  private var agentDeliveryStarted = false
-  private var toastTask: Task<Void, Never>?
+  @ObservationIgnored private var agentSessionArmed = false
+  @ObservationIgnored private var agentFinalTranscriptAppeared = false
+  @ObservationIgnored private var agentAutoSendCancelled = false
+  @ObservationIgnored private var agentDeliveryStarted = false
+  @ObservationIgnored private var toastTask: Task<Void, Never>?
   /// One-shot guard for the in-place Speech Recognition request+retry. macOS
   /// never re-prompts once the scope is determined, so a second attempt in
   /// the same app run could only loop on the terminal error.
-  private var speechAuthRequestAttempted = false
+  @ObservationIgnored private var speechAuthRequestAttempted = false
   /// Belt-and-suspenders guard against an orphaned optimistic "starting" overlay.
   /// The Rust bridge now guarantees a terminal event for every preparing it shows
   /// (`compensate_orphaned_preparing`); this watchdog is the second layer: if no
   /// started/activity/stopped/finish arrives within `warmupWatchdogNanos`, the
   /// overlay dismisses itself instead of hanging on "starting" forever.
-  private var warmupWatchdogTask: Task<Void, Never>?
+  @ObservationIgnored private var warmupWatchdogTask: Task<Void, Never>?
   private static let warmupWatchdogNanos: UInt64 = 4_000_000_000
 
   // MARK: Activity-anchored auto-hide for terminal outcomes
-  private var autoHideTask: Task<Void, Never>?
+  @ObservationIgnored private var autoHideTask: Task<Void, Never>?
   private(set) var autoHideDeadline: TimeInterval?
   /// Whole seconds until an armed, untouched Agent take sends itself. The
   /// footer shows it; `nil` while no such countdown runs (auto-send off, the
@@ -1356,7 +1356,7 @@ final class OverlayState {
   }
   // Microphone controls observe membership, not the messages of every agent.
   // This is derived only from the reader's inventory and controller roster.
-  private var currentMicrophoneOwners: [String: OverlayConversationOwner] = [:]
+  @ObservationIgnored private var currentMicrophoneOwners: [String: OverlayConversationOwner] = [:]
 
   private func refreshCurrentMicrophoneOwners() {
     let current = OverlayChannelStatusView.currentConversations(
@@ -1622,7 +1622,12 @@ final class OverlayState {
   /// stored in `observedReplyIDs`.
   @ObservationIgnored private var composerTypingDeadline: TimeInterval?
   static let composerTypingHorizon: TimeInterval = 15
-  private var conversationIsVisible = false
+  @ObservationIgnored private(set) var conversationIsVisible = false
+  @ObservationIgnored private(set) var intercomWidgetIsVisible = false
+
+  var isDeliveryObservationActive: Bool {
+    conversationIsVisible || intercomWidgetIsVisible || selectedConversationID != nil
+  }
 
   var selectedConversation: OverlayConversation? {
     conversations.first { $0.id == selectedConversationID }
@@ -2657,6 +2662,10 @@ final class OverlayState {
     markVisibleConversationRead()
   }
 
+  func setIntercomVisible(_ visible: Bool) {
+    intercomWidgetIsVisible = visible
+  }
+
   private func markVisibleConversationRead() {
     guard conversationIsVisible, !isCollapsed, !showsAgentMonitor, let selectedConversation else {
       return
@@ -2717,7 +2726,9 @@ final class OverlayState {
     applyChannelDelivery(snapshot.deliveries)
     reconcileAgentPanelFocusResults(snapshot.panelFocusResults)
     let projected = snapshot.conversations.map { $0.projectingDelivery(at: now) }
-    activeCaptureAttachmentSessions = snapshot.activeCaptureAttachmentSessions
+    if activeCaptureAttachmentSessions != snapshot.activeCaptureAttachmentSessions {
+      activeCaptureAttachmentSessions = snapshot.activeCaptureAttachmentSessions
+    }
     resolveWaitingCaptureAttachments(in: projected)
     recoverClosedCaptureAttachments(in: projected)
     guard conversations != projected else {
@@ -3507,7 +3518,8 @@ final class OverlayState {
           guard !Task.isCancelled, let self else { return }
           self.applyChannelRoster(snapshot)
         }
-        do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+        let interval: Duration = (self?.isDeliveryObservationActive == true) ? .milliseconds(500) : .milliseconds(2000)
+        do { try await Task.sleep(for: interval) } catch { return }
       }
     }
     let readHistory: @MainActor @Sendable () async -> Void = { [weak self] in
@@ -3539,7 +3551,8 @@ final class OverlayState {
         }
         guard !Task.isCancelled else { return }
         await self?.refreshPlaybackMutes()
-        do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+        let interval: Duration = (self?.isDeliveryObservationActive == true) ? .milliseconds(500) : .milliseconds(2000)
+        do { try await Task.sleep(for: interval) } catch { return }
       }
     }
     let observation = Task {
@@ -4607,10 +4620,6 @@ final class OverlayState {
   var insertCaretInCodescribeProbe: () -> Bool = {
     guard let keyWindow = NSApp.keyWindow else { return false }
     return keyWindow.firstResponder is NSTextView
-  }
-
-  func pasteToPreviousApp() {
-    relayInsertPasteIntent()
   }
 
   /// Whisper a short footer chip next to `local apple`. Never a floating pill
