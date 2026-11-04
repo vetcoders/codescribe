@@ -305,58 +305,94 @@ final class OverlayChannelMapTests: XCTestCase {
       "the open digit is narrower than 3 ▾")
   }
 
-  // MARK: - Mini width (§13.4)
+  // MARK: - Mini width (bus brief 2026-11-04 §3)
 
-  /// Mini is as wide as its content: no fixed 200 or 164 pt. The floor is its
-  /// controls; the counter adds its brand gap and its own measured width.
-  func testMiniWidthIsItsControlsPlusTheCounterAsDrawn() {
+  /// Mini is as wide and as tall as its content and carries no channel
+  /// counter: 7 pt insets, a 9 pt close dot, the closed centre and four 22 pt
+  /// controls 4 pt apart. With the map enabled that is 127 × 36; without it
+  /// the brand word adds its gap and its measured width.
+  func testMiniIsItsControlsWithoutACounter() {
     let floor = DictationOverlayWindow.miniFloorWidth
+    XCTAssertEqual(DictationOverlayWindow.miniInset, 7)
+    XCTAssertEqual(DictationOverlayWindow.miniControl, 22)
+    XCTAssertEqual(DictationOverlayWindow.miniControlSpacing, 4)
+    XCTAssertEqual(DictationOverlayWindow.miniOuterPadding, 2 * DictationOverlayWindow.miniInset)
+    XCTAssertEqual(
+      DictationOverlayWindow.miniTrailingControls, 100, "4 × 22 controls + 3 × 4 gaps")
+    XCTAssertEqual(
+      2 * DictationOverlayWindow.miniRowSpacing, DictationOverlayWindow.miniControlSpacing,
+      "across the closed centre, the gap the controls keep")
     XCTAssertEqual(
       floor,
       DictationOverlayWindow.miniOuterPadding + DictationOverlayWindow.miniBrandDot
         + 2 * DictationOverlayWindow.miniRowSpacing + DictationOverlayWindow.miniTrailingControls)
-    XCTAssertEqual(floor, 130, "32 padding + 9 dot + 2 × 4 gaps + 81 trailing controls")
+    XCTAssertEqual(floor, 127, "14 padding + 9 dot + 2 × 2 gaps + 100 controls")
+    XCTAssertEqual(DictationOverlayWindow.miniHeight, 36, "22 pt control + 2 × 7 pt insets")
     XCTAssertEqual(
-      2 * DictationOverlayWindow.miniRowSpacing, 8,
-      "across the closed centre, the gap the trailing controls keep")
+      DictationOverlayWindow.miniBrandWidth,
+      ceil(floor + DictationOverlayWindow.miniBrandGap + DictationOverlayWindow.brandWordWidth),
+      "without the map mini keeps the word after its 6 pt gap")
     XCTAssertEqual(
-      DictationOverlayWindow.miniNaturalWidth(
-        map: model(channels: [], hudStates: [:]), textScale: 1),
-      floor, "no channel: mini is its controls")
-
-    let resting = scenario()
-    XCTAssertEqual(
-      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1),
-      ceil(
-        floor + DictationOverlayWindow.miniBrandGap
-          + OverlayChannelPill.counterWidth(figure: "3", openDigitCount: 0, scale: 1)))
-    let recording = scenario(open: ["5"])
-    XCTAssertEqual(
-      DictationOverlayWindow.miniNaturalWidth(map: recording, textScale: 1),
-      ceil(
-        floor + DictationOverlayWindow.miniBrandGap
-          + OverlayChannelPill.counterWidth(figure: "3", openDigitCount: 1, scale: 1)),
-      "the recording variant is the same rule with the recording counter")
-    XCTAssertLessThan(
-      DictationOverlayWindow.miniNaturalWidth(map: recording, textScale: 1),
-      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1))
-    XCTAssertGreaterThan(
-      DictationOverlayWindow.miniNaturalWidth(map: scenario(open: ["2", "5"]), textScale: 1),
-      DictationOverlayWindow.miniNaturalWidth(map: recording, textScale: 1),
-      "two open digits widen the capsule instead of clipping it")
-    // Broadcasting with no agent bound still shows the open 0.
-    XCTAssertGreaterThan(
-      DictationOverlayWindow.miniNaturalWidth(
-        map: model(channels: [], hudStates: ["0": hud(open: true, alive: nil)]), textScale: 1),
-      floor)
-    // Larger text grows the counter, and the capsule with it, up to the
-    // strip's scale ceiling.
-    XCTAssertGreaterThan(
-      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1.2),
-      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1))
-    XCTAssertEqual(
-      DictationOverlayWindow.minimumSize(for: .mini).width, floor,
+      DictationOverlayWindow.minimumSize(for: .mini), NSSize(width: floor, height: 36),
       "mini's floor is its controls")
+  }
+
+  /// A live take grows mini (bus brief 2026-11-04 §6, §11D): zero at rest;
+  /// a dictation adds the 82 pt waveform and the clock with their 4 pt gaps;
+  /// an agent take adds one 19 pt circled digit per open channel, 4 pt apart;
+  /// channel 0 shows the 22 pt megaphone instead.
+  func testMiniTakeWidthIsWaveformClockAndAddressees() {
+    typealias W = DictationOverlayWindow
+    XCTAssertEqual(W.miniTakeWidth(live: false, openDigits: []), 0, "at rest mini adds nothing")
+    XCTAssertEqual(W.miniTakeWidth(live: false, openDigits: ["3"]), 0)
+    let dictation = W.miniTakeWidth(live: true, openDigits: [])
+    XCTAssertEqual(
+      dictation,
+      ceil(OverlayBarMetrics.waveformWidth + 2 * W.miniControlSpacing + W.midiTimerWidth),
+      "a dictation alone: waveform and clock, no addressees")
+    XCTAssertEqual(W.miniAddresseesWidth(openDigits: []), 0)
+
+    let circle = OverlayChannelPill.counterWidth(figure: "", openDigitCount: 1, scale: 1)
+    XCTAssertEqual(circle, 19, "15 pt circle with its 2 pt padding")
+    XCTAssertEqual(W.miniAddresseesWidth(openDigits: ["3"]), circle)
+    XCTAssertEqual(
+      W.miniAddresseesWidth(openDigits: ["2", "3", "5"]), 3 * circle + 2 * W.miniControlSpacing)
+    XCTAssertEqual(
+      W.miniTakeWidth(live: true, openDigits: ["2", "5"]),
+      ceil(
+        OverlayBarMetrics.waveformWidth + 2 * W.miniControlSpacing + W.midiTimerWidth
+          + W.miniControlSpacing + 2 * circle + W.miniControlSpacing))
+    XCTAssertGreaterThan(
+      W.miniTakeWidth(live: true, openDigits: ["2", "5"]),
+      W.miniTakeWidth(live: true, openDigits: ["5"]), "each open channel adds its digit")
+
+    XCTAssertEqual(
+      W.miniAddresseesWidth(openDigits: ["0"]), OverlayMicrophoneGlyph.diameter,
+      "channel 0: the megaphone")
+    XCTAssertEqual(
+      W.miniAddresseesWidth(openDigits: ["0", "3"]), OverlayMicrophoneGlyph.diameter,
+      "a broadcast shows the megaphone alone")
+    XCTAssertEqual(
+      W.miniTakeWidth(live: true, openDigits: ["0"]),
+      ceil(dictation + W.miniControlSpacing + OverlayMicrophoneGlyph.diameter))
+  }
+
+  /// `miniTakeLive` is a dictation or any open channel, channel 0 included.
+  func testMiniTakeLiveFollowsDictationAndOpenChannels() throws {
+    let (state, broadcast, lena, astra) = try armedState()
+    XCTAssertFalse(state.miniTakeLive, "at rest")
+    let conversations = [broadcast, lena, astra]
+    state.applyChannelRoster(chordRoster(conversations, open: ["3"]))
+    XCTAssertTrue(state.miniTakeLive, "an open agent channel")
+    state.applyChannelRoster(chordRoster(conversations, open: ["0"]))
+    XCTAssertTrue(state.miniTakeLive, "a broadcast on 0")
+    state.applyChannelRoster(chordRoster(conversations, open: []))
+    XCTAssertFalse(state.miniTakeLive, "the take ended")
+    state.handleRecordingStarted()
+    XCTAssertTrue(state.recording)
+    XCTAssertTrue(state.miniTakeLive, "a dictation")
+    state.finishControllerRecording()
+    XCTAssertFalse(state.miniTakeLive, "the controller's stop ends it")
   }
 
   // MARK: - Names (bus brief 2026-11-04 §5, §11C)
@@ -697,30 +733,34 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  func testMiniCounterSwitchesToCompactAndNothingElse() throws {
+  /// Mini carries no channel map (Monika, 2026-11-04: the Agents list
+  /// replaces its counter), and a stray counter call in mini changes nothing.
+  func testMiniHasNoChannelMapAndTheCounterCallIsANoOp() throws {
     let (state, _, _, _) = try armedState()
     state.setPresentationMode(.mini)
+    XCTAssertTrue(state.channelMapInMini, "the map setting still shapes mini")
     let surface = state.windowContentSurface
     let generation = state.captureGeneration
     var restored = 0
     state.onRestoreMidiNaturalWidth = { restored += 1 }
-    let map = try XCTUnwrap(DictationOverlayView(state: state).channelMap)
-    XCTAssertEqual(map.placement, .mini, "mini shows the counter, never the chips")
-    XCTAssertEqual(map.model.counterFigure, "2")
-    XCTAssertEqual(map.model.counterHint, "2 Lena · 3 Astra")
-    map.onCounter()
-    XCTAssertEqual(state.presentationMode, .midi, "the counter opens compact, as the toggle does")
+    XCTAssertNil(DictationOverlayView(state: state).channelMap, "mini shows no counter")
+    state.activateChannelMapCounter()
+    XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
     XCTAssertEqual(restored, 0)
     XCTAssertNil(state.selectedConversationID, "no conversation is chosen")
     XCTAssertEqual(state.windowContentSurface, surface)
     XCTAssertEqual(state.captureGeneration, generation)
-    XCTAssertTrue(state.pendingChannelToggles.isEmpty, "the counter is not a microphone")
+    XCTAssertTrue(state.pendingChannelToggles.isEmpty, "nothing touches the microphone")
   }
 
-  func testVerticalMiniCounterOpensTheIntercomAndNothingElse() throws {
+  /// The vertical layout keeps its stacked counter in the bar, never in mini;
+  /// the counter leads to the Intercom group and keeps the form.
+  func testVerticalCounterLivesInTheBarAndOpensTheIntercomAndNothingElse() throws {
     let (state, _, _, _) = try armedState()
     state.channelMapPreference.selectLayout(.vertical)
     state.setPresentationMode(.mini)
+    XCTAssertNil(DictationOverlayView(state: state).channelMap, "mini has no counter")
+    state.setPresentationMode(.midi)
     let surface = state.windowContentSurface
     let generation = state.captureGeneration
     var revealed = 0
@@ -728,12 +768,12 @@ final class OverlayChannelMapTests: XCTestCase {
     state.onRevealIntercom = { revealed += 1 }
     state.onRestoreMidiNaturalWidth = { restored += 1 }
     let map = try XCTUnwrap(DictationOverlayView(state: state).channelMap)
-    XCTAssertEqual(map.placement, .mini)
+    XCTAssertEqual(map.placement, .counter)
     XCTAssertTrue(map.stacked)
     XCTAssertEqual(map.model.counterFigure, "2", "the badge carries the same agent count")
     map.onCounter()
     XCTAssertEqual(revealed, 1, "the counter leads to the Intercom group")
-    XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
+    XCTAssertEqual(state.presentationMode, .midi, "the bar stays the bar")
     XCTAssertEqual(restored, 0)
     XCTAssertNil(state.selectedConversationID)
     XCTAssertEqual(state.windowContentSurface, surface)
@@ -741,18 +781,24 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  @MainActor
-  func testMiniIsAsWideInBothLayoutsUpToTheCounter() throws {
+  /// One mini in both layouts: with the map enabled it is the 127 × 36
+  /// capsule of its controls, whatever the layout or the agent count.
+  func testMiniIsOneSizeInBothLayouts() throws {
     let (state, _, _, _) = try armedState()
-    let map = state.channelMapLayoutModel
-    let strip = DictationOverlayWindow.miniNaturalWidth(map: map, textScale: 1)
-    let stacked = DictationOverlayWindow.miniNaturalWidth(map: map, textScale: 1, stacked: true)
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 200, height: 46),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    for layout in [OverlayIntercomLayout.horizontal, .vertical] {
+      state.channelMapPreference.selectLayout(layout)
+      XCTAssertTrue(state.channelMapInMini, "\(layout)")
+      panel.setChannelMapPresentation(enabled: state.channelMapInMini)
+      XCTAssertEqual(panel.miniSize, NSSize(width: 127, height: 36), "\(layout)")
+    }
+    panel.setChannelMapPresentation(enabled: false)
     XCTAssertEqual(
-      stacked,
-      ceil(
-        DictationOverlayWindow.miniFloorWidth + DictationOverlayWindow.miniStackedBrandGap
-          + OverlayChannelPill.headerHeight))
-    XCTAssertLessThanOrEqual(abs(stacked - strip), 12, "one mini, one counter slot")
+      panel.miniSize,
+      NSSize(width: DictationOverlayWindow.miniBrandWidth, height: 36),
+      "without the map mini keeps the brand word")
   }
 
   func testCompactCounterRestoresTheNaturalWidthAndNothingElse() throws {
@@ -797,9 +843,9 @@ final class OverlayChannelMapTests: XCTestCase {
     }
   }
 
-  /// With the map on, a chord in mini or compact keeps the form: the strip's
-  /// chip or counter shows the open digit, so the chord is readable without
-  /// unfolding. The selection follows the open channel as before.
+  /// With the map on, a chord in mini or compact keeps the form: the bar's
+  /// chip shows the open digit and mini's Agents button the capture, so the
+  /// chord is readable without unfolding. The selection follows the open channel as before.
   func testChordKeepsMiniAndCompactWhileTheMapIsOn() throws {
     for form in [OverlayPresentationMode.mini, .midi] {
       let (state, broadcast, lena, astra) = try armedState()
@@ -1088,8 +1134,8 @@ final class OverlayChannelMapTests: XCTestCase {
       "the expanded bar with its map is laid out by its content, not stretched")
     XCTAssertFalse(header.contains("Spacer("), "no stretching centre in the header")
     XCTAssertTrue(
-      header.contains("let leadingCounter = mini || state.channelMapCounterStacked"),
-      "mini and every vertical form keep the counter beside the brand")
+      header.contains("let leadingCounter = !mini && state.channelMapCounterStacked"),
+      "the vertical bar and window keep the counter beside the brand; mini has none")
     XCTAssertTrue(
       header.contains("if leadingCounter, let map {"),
       "the leading counter is the way to the Intercom group, not a microphone")
@@ -1100,6 +1146,10 @@ final class OverlayChannelMapTests: XCTestCase {
     let map = try section(
       of: overlay, from: "var channelMap: OverlayChannelMapView?",
       to: "var channelStatusView: OverlayChannelStatusView")
+    XCTAssertTrue(
+      map.contains("guard state.presentationMode != .mini else { return nil }"),
+      "mini carries no channel map")
+    XCTAssertTrue(map.contains("placement: counterOnly ? .counter : .strip"))
     XCTAssertTrue(map.contains("roster.selectChannelConversation($0)"))
     XCTAssertTrue(map.contains("state.activateChannelMapCounter()"))
     XCTAssertFalse(map.contains("showAgentMonitor"), "the W1 seam is gone")

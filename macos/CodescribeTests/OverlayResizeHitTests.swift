@@ -347,11 +347,15 @@ final class OverlayResizeHitTests: XCTestCase {
       "channel 0's circle while it broadcasts, nothing reserved for it otherwise")
   }
 
-  /// Mini is as wide as its content (spec §13.4): the counter's figure, the
-  /// agent count or the open digits, resizes it at its upper-right pin, one
-  /// step, as the bar follows its pills.
+  /// Mini carries no counter (Monika, 2026-11-04, bus brief §3): at rest it
+  /// is the 127 × 36 capsule of its controls whatever the roster. An open
+  /// channel is a live take (§6, §11D): mini grows leftward by the waveform,
+  /// the clock and the channel's circled digit, at its upper-right pin, and
+  /// folds back to 127 after the take. The saved position is the 200 × 46
+  /// placement strip at the same upper-right corner; the take's width is not
+  /// remembered.
   @MainActor
-  func testMiniFollowsItsCounterAtTheUpperRightPin() throws {
+  func testMiniGrowsByItsTakeAtTheUpperRightPinAndFoldsBackAfterIt() throws {
     let state = OverlayState.previewFormatted()
     optIntoChannelMap(state)
     let panel = try XCTUnwrap(
@@ -364,11 +368,12 @@ final class OverlayResizeHitTests: XCTestCase {
     let visible = try XCTUnwrap((panel.screen ?? NSScreen.main)?.visibleFrame)
     panel.setFrameOrigin(
       NSPoint(x: visible.maxX - 40 - panel.frame.width, y: visible.maxY - 40 - panel.frame.height))
-    XCTAssertEqual(panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5)
+    let rest = NSSize(
+      width: DictationOverlayWindow.miniFloorWidth, height: DictationOverlayWindow.miniHeight)
+    XCTAssertEqual(rest, NSSize(width: 127, height: 36))
+    XCTAssertEqual(panel.frame.width, rest.width, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, rest.height, accuracy: 0.5)
     let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
-    func natural() -> CGFloat {
-      DictationOverlayWindow.miniNaturalWidth(map: state.channelMapLayoutModel, textScale: 1)
-    }
     func roster(open: Bool) -> [CsChannelRosterState] {
       let row = mapRosterRow("3", "Igor")
       return [
@@ -379,31 +384,27 @@ final class OverlayResizeHitTests: XCTestCase {
           autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil),
       ]
     }
+    let take = DictationOverlayWindow.miniTakeWidth(live: true, openDigits: ["3"])
+    XCTAssertGreaterThan(take, 0)
 
-    state.applyChannelRoster(roster(open: false))
-    let counting = natural()
-    XCTAssertGreaterThan(counting, DictationOverlayWindow.miniFloorWidth)
-    XCTAssertEqual(panel.frame.width, counting, accuracy: 0.5, "the counter widens mini")
-    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
-    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls keep their point")
-    XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
-
-    // Opening the channel turns the counter into its digit. With the map on,
-    // the chord keeps mini (bus intercom spec §14 W3).
-    state.applyChannelRoster(roster(open: true))
-    XCTAssertEqual(state.presentationMode, .mini, "the chord keeps mini while the map is on")
-    panel.settleFrameTransition()
-    XCTAssertLessThan(natural(), counting)
-    XCTAssertEqual(panel.frame.width, natural(), accuracy: 0.5, "mini narrows to the digit")
-    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
-
-    state.applyChannelRoster(roster(open: false))
-    XCTAssertEqual(panel.frame.width, counting, accuracy: 0.5, "the count returns")
-    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
-    // The saved position is the placement strip at the same trailing edge.
-    XCTAssertEqual(
-      panel.originForPersistence.x, pin.x - DictationOverlayWindow.miniPlacementSize.width,
-      accuracy: 0.5)
+    for open in [false, true, false] {
+      state.applyChannelRoster(roster(open: open))
+      XCTAssertEqual(state.presentationMode, .mini, "the chord keeps mini while the map is on")
+      XCTAssertEqual(state.miniTakeLive, open, "an open channel is a live take")
+      panel.settleFrameTransition()
+      XCTAssertEqual(
+        panel.frame.width, rest.width + (open ? take : 0), accuracy: 0.5,
+        open ? "the take widens mini" : "mini rests at its controls")
+      XCTAssertEqual(panel.frame.height, rest.height, accuracy: 0.5, "open \(open)")
+      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls keep their point")
+      XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5, "the top edge stays")
+      XCTAssertEqual(
+        panel.originForPersistence,
+        NSPoint(
+          x: pin.x - DictationOverlayWindow.miniPlacementSize.width,
+          y: pin.y - DictationOverlayWindow.miniPlacementSize.height),
+        "open \(open): the placement strip shares mini's upper-right corner")
+    }
   }
 
   /// A take must not cost the bar its width or its names (bus intercom spec
@@ -1257,11 +1258,17 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertLessThanOrEqual(panel.frame.width, 420, "midi remains a compact control strip")
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-    XCTAssertEqual(
-      panel.frame.minX + (try XCTUnwrap(recorder.frames.stop)).midX, micX, accuracy: 0.5)
+    // Mini sets the Agents button between the microphone and the chevron
+    // (bus brief 2026-11-04 §3); the bar keeps them side by side. The chevron
+    // closes both rows at the shared upper-right pin, so it keeps its point;
+    // the microphone stays on screen inside the strip.
+    let midiMic = try XCTUnwrap(recorder.frames.stop)
+    XCTAssertGreaterThan(panel.frame.minX + midiMic.midX, micX, "the mic moves toward the chevron")
+    XCTAssertGreaterThanOrEqual(midiMic.minX, 0)
+    XCTAssertLessThanOrEqual(midiMic.maxX, panel.frame.width)
     XCTAssertEqual(
       panel.frame.minX + (try XCTUnwrap(recorder.frames.preview)).midX, foldX, accuracy: 0.5)
-    XCTAssertEqual(try XCTUnwrap(recorder.frames.stop).size, mic.size)
+    XCTAssertEqual(midiMic.size, mic.size)
     XCTAssertEqual(try XCTUnwrap(recorder.frames.preview).size, fold.size)
   }
 
