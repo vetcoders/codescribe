@@ -24,7 +24,9 @@ struct OverlayChannelPill: View {
     case stacked
     /// The vertical layout's collapsed map in the bar and the window: the
     /// stacked cards, or the circled digits of the channels the microphone
-    /// feeds. Mini has no counter (Monika, 2026-11-04).
+    /// feeds. Mini has no counter (Monika, 2026-11-04); during a take it
+    /// draws each open channel as this form's single circled digit (bus
+    /// brief §6, §11D).
     case counter
   }
 

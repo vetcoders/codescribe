@@ -232,8 +232,9 @@ pill, the map's chips and its counter render the digit through it, from
 immutable display values and one action, and an open channel's digit carries
 a small dot in the agent accent there (spec §14: a dot, no symbol, never
 `MIC →` text; the microphone and megaphone signs belong to the Agents header
-button). The dot overlaps the digit's circle, so it adds no width, and pulses
-only while the pill animates and Reduce Motion is off. It receives
+button; mini's take shows channel 0 as that megaphone). The dot overlaps the
+digit's circle, so it adds no width, and pulses only while the pill animates
+and Reduce Motion is off. It receives
 no `OverlayState`, conversation or command.
 
 The bar with the horizontal map is as wide as its content (bus brief
@@ -292,6 +293,18 @@ gates every edge band instead. Without the horizontal map, or with no agent
 and no broadcast, the bar keeps its classic 410 × 46 floor with a flexible
 waveform.
 
+While a take records (bus brief §6, §11D) the map stays as it is: every
+bound agent keeps its digit and name, and the addressees, the channels the
+microphone feeds (`OverlayChannelMapChip.microphoneOpen`), wear the recording
+violet on their circle with the pulsing open-channel dot; the selected
+conversation keeps its fill and the amber unread dot stays independent of
+both. The waveform and the clock are drawn at rest too, at their fixed
+widths, so the bar has no hole at rest and a take alone never changes its
+length. Channel 0's circle joins the map while it broadcasts, so a broadcast
+widens the bar by that one circle, less than the waveform and clock. The
+header microphone is the stop, as before. No recording state reduces the map
+to one digit without a name or leaves an empty gap (anti-pattern 09).
+
 ### Mini
 
 Mini at rest (Monika, 2026-11-04, bus brief §3) reads, from the left: the
@@ -310,6 +323,33 @@ text size. The same hook feeds `FloatingOverlayPanel.setChannelMapPresentation`
 with the map switch only. Placement and the saved position still describe the
 200 × 46 pt `miniPlacementSize` strip, with mini drawn at its upper-right
 corner (`applyPlacement`, `originForPersistence`).
+
+While a take is live (`OverlayState.miniTakeLive`: a dictation from its start
+to the controller's stop, or any channel, channel 0 included, with its
+microphone open), mini grows slightly and stays mini (Monika, 2026-11-04,
+bus brief §6, §11D, decision 12.2). Between the brand and the transcription
+button it shows the bar's 82 pt waveform, the clock (`00:00`, the same
+counter as the bar) and the addressees: one circled digit per open channel,
+in digit order, drawn by `OverlayChannelPill` in the counter form's
+open-channel look (15 pt circle, recording violet, the open-channel dot),
+with no names and no count or `+N`; for channel 0 the Agents button's
+left-facing megaphone stands in for the circles. A dictation alone shows no
+addressees. A circle selects that channel's conversation, as a bar chip
+does; the megaphone is a sign only. The row's gaps open from 2 pt to the
+4 pt its controls keep, so mini grows by the waveform, the clock, the
+addressees and those gaps (`DictationOverlayWindow.miniTakeWidth`), never by
+more. The upper-right corner stays: mini grows leftward past the strip, and
+placement draws the measured width instead of clipping to 200 pt. Nothing
+remembers the wider width, so when the take ends mini returns to its resting
+127 pt (or brand-word) width. The change rides
+`OverlayState.onChannelMapLayoutChanged`, which also fires when the
+`recording` flag or the open digits change, into
+`FloatingOverlayPanel.setMiniTake(width:)`. On a visible panel it glides at
+the morph speed with one layout held at the upper-right corner (growing, the
+take's row; folding, the departing row), so the tools never move and are
+never clipped; with Reduce Motion it is one step. The Agents button keeps
+its stop meaning during an agent take, and the background click still
+toggles mini and the bar.
 
 A still click on mini's free background opens the bar; a still click on the
 bar's free background (its `overlay-header*` drag regions) folds it back to
