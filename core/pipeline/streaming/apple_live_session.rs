@@ -411,7 +411,8 @@ impl LiveConsultationCapture {
             }
             // The async session keeps draining providers, approvals and answer
             // publication. Microphone capture has already ended at this point.
-            thread::sleep(LIVE_WORKER_QUANTUM);
+            thread::yield_now();
+            thread::sleep(Duration::from_millis(2));
         }
         if self.queue.pending_groups() > 0 {
             self.report_refusal(events);
