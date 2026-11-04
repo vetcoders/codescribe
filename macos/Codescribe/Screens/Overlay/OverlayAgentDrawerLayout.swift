@@ -37,11 +37,10 @@ enum OverlayAgentDrawerLayout {
   /// Clamp a remembered width to the current split instead of replacing the
   /// conversation with a full-width roster when the window becomes narrower.
   static func drawerWidth(
-    textScale: CGFloat, preferredWidth: CGFloat = 300, windowWidth: CGFloat = .infinity,
-    minimumWidth: CGFloat? = nil
+    textScale: CGFloat, preferredWidth: CGFloat = 300, windowWidth: CGFloat = .infinity
   ) -> CGFloat {
     let preferred = preferredWidth.isFinite ? preferredWidth : 300
-    let width = max(minimumWidth ?? contentMinimumWidth(textScale: textScale), preferred * textScale)
+    let width = max(contentMinimumWidth(textScale: textScale), preferred * textScale)
     guard windowWidth.isFinite else { return width }
     let available = max(0, windowWidth)
     let conversation =
@@ -52,8 +51,8 @@ enum OverlayAgentDrawerLayout {
 
   static func minimumConversationWidth(textScale: CGFloat) -> CGFloat { 320 * textScale }
 
-  /// The narrowest width the list's rows are laid out at. A divider dragged
-  /// narrower clips them from the trailing side, leaving their pills.
+  /// The narrowest width the list's rows are laid out at. A window too narrow
+  /// for them clips them from the trailing side, leaving their pills.
   static func contentMinimumWidth(textScale: CGFloat) -> CGFloat { 240 * textScale }
 
   /// The divider is the list's only fold: released narrower than this, the

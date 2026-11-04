@@ -135,7 +135,8 @@ final class OverlayResizeHitTests: XCTestCase {
     for event in events { panel.sendEvent(event) }
     try await Task.sleep(for: .milliseconds(50))
     XCTAssertTrue(panel.isUserResizing)
-    XCTAssertEqual(panel.frame.width, initial.width + 30, accuracy: 0.5)
+    XCTAssertEqual(panel.resizeGestureFrame.width, initial.width + 30, accuracy: 0.5)
+    XCTAssertEqual(panel.frame, initial, "expanded content waits for release behind the preview")
     let cancelledFrame = panel.frame
     let lateEvent = mouseEvent(
       .leftMouseDragged, at: NSPoint(x: -28, y: 200),
@@ -145,6 +146,8 @@ final class OverlayResizeHitTests: XCTestCase {
     try await Task.sleep(for: .milliseconds(50))
     XCTAssertFalse(panel.isUserResizing)
     XCTAssertEqual(panel.frame, cancelledFrame)
+    XCTAssertEqual(panel.alphaValue, 1, "a cancelled preview gives the panel back")
+    XCTAssertFalse(panel.ignoresMouseEvents)
   }
 
   @MainActor
@@ -158,16 +161,18 @@ final class OverlayResizeHitTests: XCTestCase {
       let initial = panel.frame
       XCTAssertTrue(panel.beginUserResize(edge: edge, at: .zero))
       XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: 80, y: 60)))
-      XCTAssertEqual(panel.frame.maxX, initial.maxX + 80, accuracy: 0.5)
-      XCTAssertEqual(panel.frame.minX, initial.minX, accuracy: 0.5)
+      let shown = panel.resizeGestureFrame
+      XCTAssertEqual(shown.maxX, initial.maxX + 80, accuracy: 0.5)
+      XCTAssertEqual(shown.minX, initial.minX, accuracy: 0.5)
       if edge == .topRight {
-        XCTAssertEqual(panel.frame.maxY, initial.maxY + 60, accuracy: 0.5)
-        XCTAssertEqual(panel.frame.minY, initial.minY, accuracy: 0.5)
+        XCTAssertEqual(shown.maxY, initial.maxY + 60, accuracy: 0.5)
+        XCTAssertEqual(shown.minY, initial.minY, accuracy: 0.5)
       } else {
-        XCTAssertEqual(panel.frame.minY, initial.minY + 60, accuracy: 0.5)
-        XCTAssertEqual(panel.frame.maxY, initial.maxY, accuracy: 0.5)
+        XCTAssertEqual(shown.minY, initial.minY + 60, accuracy: 0.5)
+        XCTAssertEqual(shown.maxY, initial.maxY, accuracy: 0.5)
       }
       panel.endUserResize()
+      XCTAssertEqual(panel.frame, shown, "release commits the frame the preview showed")
     }
   }
 
@@ -196,9 +201,10 @@ final class OverlayResizeHitTests: XCTestCase {
       let start = panel.frame
       XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
       XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: 2_000, y: 0)))
-      XCTAssertEqual(panel.frame.width, floor.width, accuracy: 0.5)
-      XCTAssertGreaterThanOrEqual(panel.frame.height, floor.height)
-      XCTAssertEqual(panel.frame.maxX, start.maxX, accuracy: 0.5)
+      let shown = panel.resizeGestureFrame
+      XCTAssertEqual(shown.width, floor.width, accuracy: 0.5)
+      XCTAssertGreaterThanOrEqual(shown.height, floor.height)
+      XCTAssertEqual(shown.maxX, start.maxX, accuracy: 0.5)
       XCTAssertEqual(state.presentationMode, mode)
       panel.endUserResize()
       panel.settleFrameTransition()
@@ -209,10 +215,11 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertTrue(panel.beginUserResize(edge: .bottomLeft, at: .zero))
     for delta in [CGFloat(100), 500, 2_000] {
       _ = panel.updateUserResize(to: NSPoint(x: delta, y: delta))
-      XCTAssertGreaterThanOrEqual(panel.frame.width, DictationOverlayWindow.minSize.width)
-      XCTAssertGreaterThanOrEqual(panel.frame.height, DictationOverlayWindow.minSize.height)
-      XCTAssertEqual(panel.frame.maxX, start.maxX, accuracy: 0.5)
-      XCTAssertEqual(panel.frame.maxY, start.maxY, accuracy: 0.5)
+      let shown = panel.resizeGestureFrame
+      XCTAssertGreaterThanOrEqual(shown.width, DictationOverlayWindow.minSize.width)
+      XCTAssertGreaterThanOrEqual(shown.height, DictationOverlayWindow.minSize.height)
+      XCTAssertEqual(shown.maxX, start.maxX, accuracy: 0.5)
+      XCTAssertEqual(shown.maxY, start.maxY, accuracy: 0.5)
       XCTAssertEqual(state.presentationMode, .expanded)
     }
     panel.endUserResize()
@@ -942,7 +949,7 @@ final class OverlayResizeHitTests: XCTestCase {
     let pointer = NSPoint(x: start.maxX, y: start.midY)
     XCTAssertTrue(panel.beginUserResize(edge: .right, at: pointer))
     XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: pointer.x + 48, y: pointer.y)))
-    let resized = panel.frame
+    let resized = panel.resizeGestureFrame
     XCTAssertEqual(resized.width, start.width + 48, accuracy: 0.5)
     for loud in [false, true, false] {
       state.applyChannelRoster([
@@ -951,7 +958,8 @@ final class OverlayResizeHitTests: XCTestCase {
           open: true, loud: loud, autosealDeadlineUnixMs: nil, followerAlive: true,
           unreadSinceUnixMs: nil)
       ])
-      XCTAssertEqual(panel.frame, resized, "passive roster updates must not re-anchor a drag")
+      XCTAssertEqual(
+        panel.resizeGestureFrame, resized, "passive roster updates must not re-anchor a drag")
     }
     XCTAssertFalse(panel.updateUserResize(to: NSPoint(x: pointer.x + 48, y: pointer.y)))
     panel.endUserResize()
