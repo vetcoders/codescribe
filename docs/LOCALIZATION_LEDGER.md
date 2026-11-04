@@ -325,6 +325,13 @@ Swift-side notes:
   key-verification failure separately from failure to save the verified key
   on this Mac; checking and saving use separate catches. No bridge error
   prose is parsed to determine the summary.
+- The Details line itself was English in the Polish interface (Founder,
+  2026-11-04: "license signature verification failed"). `LicenseReasonCopy`
+  (`Core/CsErrorPresentation.swift`) now recognises the six stable `LicenseError`
+  reasons and says them in the interface language; an unknown reason stays
+  verbatim. This is the one place Swift matches bridge prose, kept because the
+  Rust side documents those strings as stable; the contract change remains
+  B3's: `CsError::License` should carry the reason as a code.
 - `OnboardingViewModel.lastError` receives bridge text at five sites and is read
   by no view. Those messages never reach a person today.
 

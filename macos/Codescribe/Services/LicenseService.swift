@@ -92,6 +92,9 @@ struct LicenseKeychainError: LocalizedError {
 
 private func licenseErrorDetails(_ error: Error) -> String {
   switch error {
+  case .License(let reason) as CsError:
+    // The core's stable reason, said in the interface language.
+    return LicenseReasonCopy.sentence(reason)
   case let bridgeError as CsError:
     return bridgeError.userFacingMessage
   case let keychainError as LicenseKeychainError:

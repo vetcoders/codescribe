@@ -1694,12 +1694,6 @@
         "pl" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "needs_review",
-                  "value" : "%lld nieprzeczytana"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "needs_review",
@@ -1710,6 +1704,12 @@
                 "stringUnit" : {
                   "state" : "needs_review",
                   "value" : "%lld nieprzeczytanych"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "%lld nieprzeczytana"
                 }
               },
               "other" : {
@@ -4822,16 +4822,16 @@
     "Channel %@, shortcut %@" : {
       "comment" : "Overlay channel 0 chip at rest: digit, the channel chord (e.g. Ctrl 0)",
       "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Kanał %1$@, skrót %2$@"
-          }
-        },
         "en" : {
           "stringUnit" : {
             "state" : "new",
             "value" : "Channel %1$@, shortcut %2$@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kanał %1$@, skrót %2$@"
           }
         }
       }
@@ -9971,6 +9971,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nieprawidłowy klucz"
+          }
+        }
+      }
+    },
+    "Invalid license payload: %@" : {
+      "comment" : "License details. The placeholder is the core's reason, in English",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nieprawidłowa treść licencji: %@"
           }
         }
       }
@@ -20215,6 +20226,61 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie można sprawdzić ścieżki instalacji."
+          }
+        }
+      }
+    },
+    "The license key has an unsupported prefix." : {
+      "comment" : "License details: the key does not start with a known prefix",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz licencji ma nieobsługiwany prefiks."
+          }
+        }
+      }
+    },
+    "The license key must have three dot-separated parts." : {
+      "comment" : "License details: the key's shape is wrong",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz licencji musi mieć trzy części oddzielone kropkami."
+          }
+        }
+      }
+    },
+    "The license payload is not valid base64url." : {
+      "comment" : "License details: the key's middle part is not decodable",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Treść licencji nie jest poprawnym base64url."
+          }
+        }
+      }
+    },
+    "The license signature could not be verified." : {
+      "comment" : "License details: the signature does not match the payload",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zweryfikować podpisu licencji."
+          }
+        }
+      }
+    },
+    "The license signature is not a valid Ed25519 signature." : {
+      "comment" : "License details: the key's last part is not a signature",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podpis licencji nie jest poprawnym podpisem Ed25519."
           }
         }
       }
