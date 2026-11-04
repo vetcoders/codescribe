@@ -224,9 +224,32 @@ struct OverlayConversationView: View {
           owner: owner, busPath: message.busPath, text: text)
       }
 
+  static func isSkippedBroadcast(
+    _ message: OverlayConversationMessage, for owner: OverlayConversationOwner
+  ) -> Bool {
+    guard message.kind == .user,
+      let recipient = message.recipients.first(where: {
+        $0.owner.provider == owner.provider
+          && $0.owner.providerSessionID == owner.providerSessionID
+          && $0.owner.leaseID == owner.leaseID
+      })
+    else { return false }
+    if recipient.broadcastSkipped == true { return true }
+    guard let deliveryID = recipient.deliveryID,
+      let state = message.receipt?.deliveries.first(where: { $0.deliveryID == deliveryID })?.state
+    else { return false }
+    return state == .skipped
+  }
+
+  static func visibleMessages(in conversation: OverlayConversation) -> [OverlayConversationMessage] {
+    guard let owner = conversation.owner else { return conversation.messages }
+    return conversation.messages.filter { !isSkippedBroadcast($0, for: owner) }
+  }
+
   var orderedMessages: [OverlayConversationMessage] {
-    guard let messageWindowLimit else { return conversation.messages }
-    return Array(conversation.messages.suffix(max(0, messageWindowLimit)))
+    let visible = Self.visibleMessages(in: conversation)
+    guard let messageWindowLimit else { return visible }
+    return Array(visible.suffix(max(0, messageWindowLimit)))
   }
   private var followsLatest: Bool { scrollFollow.followingLive }
   private var contentInset: CGFloat { presentation == .intercom ? 12 : 20 }

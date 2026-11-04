@@ -2070,7 +2070,8 @@ struct OverlayChannelStatusView: View {
     let conversation = conversation(for: channel)
     let receiptText =
       deliveryReceiptDisplay(for: channel, conversation: conversation)?.text
-      ?? deliveryReceiptText(for: channel, conversation: conversation)
+      ?? (conversation == nil && !channel.broadcastSkipped
+        ? deliveryReceiptText(for: channel, conversation: nil) : nil)
     let descriptor = agentDescriptor(for: channel)
     let status = statusHelp(for: channel)
     // Keep the full descriptor in the tooltip as well as the visible row.
@@ -2252,7 +2253,7 @@ struct OverlayChannelStatusView: View {
     includePreview: Bool, titleAccessory: AnyView?,
     headerOnly: Bool, contentOnly: Bool, trailingMarks: AnyView?
   ) -> some View {
-    let last = conversation?.messages.last
+    let last = conversation.flatMap { OverlayConversationView.visibleMessages(in: $0).last }
     return OverlayAgentRosterLabel(
       title: title, channel: statusChannel?.channel, conversationID: conversation?.id,
       descriptor: statusChannel.flatMap { agentDescriptor(for: $0) },
@@ -2400,7 +2401,7 @@ struct OverlayChannelStatusView: View {
   ) -> OverlayRosterReceipt? {
     guard !unavailable else { return nil }
     if let conversation, let owner = conversation.owner {
-      for message in conversation.messages.reversed()
+      for message in OverlayConversationView.visibleMessages(in: conversation).reversed()
       where message.kind == .user && message.showsDeliveryReceipts {
         guard
           let recipient = message.recipients.first(where: {
@@ -2435,14 +2436,14 @@ struct OverlayChannelStatusView: View {
           switch state {
           case .read: return display("double-check", String(localized: "Read"), isRead: true)
           case .delivered: return display("checkmark", String(localized: "Delivered"))
-          case .skipped: return display("forward.end", OverlayConversationView.skippedBroadcastText)
+          case .skipped: continue
           case .noReceipt: return display("circle.dotted", OverlayConversationView.noReceiptText)
           }
         }
         // The bubble's words for the frozen recipient, one glyph each: an
         // accepted copy is one check, a queued or merely addressed one waits.
         let text = OverlayConversationView.receiptStatusText(for: recipient)
-        if recipient.broadcastSkipped == true { return display("forward.end", text) }
+        if recipient.broadcastSkipped == true { continue }
         if recipient.accepted { return display("checkmark", text) }
         return display("clock", text)
       }
@@ -3099,6 +3100,12 @@ final class OverlayRosterPreviewSession: ObservableObject {
   private var latestConversation: OverlayConversation?
   private var latestWithdrawnIDs: Set<String> = []
 
+  private static func previewIDs(in conversation: OverlayConversation?) -> [String] {
+    guard let conversation else { return [] }
+    return Array(
+      OverlayConversationView.visibleMessages(in: conversation).suffix(Self.maxMessages).map(\.id))
+  }
+
   init(
     conversation: OverlayConversation? = nil,
     withdrawnIDs: Set<String> = []
@@ -3109,7 +3116,7 @@ final class OverlayRosterPreviewSession: ObservableObject {
       conversationID = conversation.id
       self.conversation = conversation
       self.withdrawnIDs = withdrawnIDs
-      ids = Array(conversation.messages.suffix(Self.maxMessages).map(\.id))
+      ids = Self.previewIDs(in: conversation)
       index = max(0, ids.count - 1)
     }
   }
@@ -3136,7 +3143,7 @@ final class OverlayRosterPreviewSession: ObservableObject {
     conversationID = conversation.id
     self.conversation = conversation
     self.withdrawnIDs = latestWithdrawnIDs
-    ids = Array(conversation.messages.suffix(Self.maxMessages).map(\.id))
+    ids = Self.previewIDs(in: conversation)
     index = max(0, ids.count - 1)
   }
 
@@ -3147,7 +3154,7 @@ final class OverlayRosterPreviewSession: ObservableObject {
       conversationID = conversation?.id
       self.conversation = conversation
       self.withdrawnIDs = withdrawnIDs
-      ids = Array((conversation?.messages ?? []).suffix(Self.maxMessages).map(\.id))
+      ids = Self.previewIDs(in: conversation)
       index = max(0, ids.count - 1)
       return
     }
@@ -3166,7 +3173,7 @@ final class OverlayRosterPreviewSession: ObservableObject {
     conversationID = latestConversation?.id
     conversation = latestConversation
     withdrawnIDs = latestWithdrawnIDs
-    ids = Array((latestConversation?.messages ?? []).suffix(Self.maxMessages).map(\.id))
+    ids = Self.previewIDs(in: latestConversation)
     index = max(0, ids.count - 1)
   }
 
@@ -3176,8 +3183,8 @@ final class OverlayRosterPreviewSession: ObservableObject {
   }
 
   func message(for id: String) -> OverlayConversationMessage? {
-    guard !isWithdrawn(id) else { return nil }
-    return conversation?.messages.first { $0.id == id }
+    guard !isWithdrawn(id), let conversation else { return nil }
+    return OverlayConversationView.visibleMessages(in: conversation).first { $0.id == id }
   }
 }
 

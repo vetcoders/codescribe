@@ -318,9 +318,22 @@ final class OverlayBusWindowTests: XCTestCase {
     let delivered = try display { $0.receipt = receipt(.delivered) }
     let read = try display { $0.receipt = receipt(.read) }
     let acknowledged = try display { $0.recipients[0].acknowledged = true }
-    let skipped = try display { $0.receipt = receipt(.skipped) }
-    let skippedByFollower = try display { $0.recipients[0].broadcastSkipped = true }
     let noReceipt = try display { $0.receipt = receipt(.noReceipt) }
+    var skippedMessage = try outgoing(in: conversation)
+    skippedMessage.receipt = receipt(.skipped)
+    let skippedConversation = withMessages(conversation, [skippedMessage])
+    XCTAssertNil(
+      roster(skippedConversation).deliveryReceiptDisplay(
+        for: row, conversation: skippedConversation))
+    XCTAssertTrue(OverlayConversationView.visibleMessages(in: skippedConversation).isEmpty)
+    var skippedByFollowerMessage = try outgoing(in: conversation)
+    skippedByFollowerMessage.recipients[0].broadcastSkipped = true
+    let skippedByFollowerConversation = withMessages(conversation, [skippedByFollowerMessage])
+    XCTAssertNil(
+      roster(skippedByFollowerConversation).deliveryReceiptDisplay(
+        for: row, conversation: skippedByFollowerConversation))
+    XCTAssertTrue(
+      OverlayConversationView.visibleMessages(in: skippedByFollowerConversation).isEmpty)
 
     XCTAssertEqual(held.symbol, "pause.circle")
     XCTAssertEqual(held.text, String(localized: "Held"))
@@ -338,18 +351,16 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertTrue(read.isRead)
     XCTAssertEqual(acknowledged.symbol, "double-check")
     XCTAssertTrue(acknowledged.isRead)
-    XCTAssertEqual(skipped.symbol, "forward.end")
-    XCTAssertEqual(skipped.text, OverlayConversationView.skippedBroadcastText)
-    XCTAssertEqual(skippedByFollower.symbol, "forward.end")
     XCTAssertEqual(noReceipt.symbol, "circle.dotted")
     XCTAssertEqual(noReceipt.text, OverlayConversationView.noReceiptText)
-    // The bug Maciej saw on 2981: delivered drew the double check. Six states,
-    // six glyphs; only Read is the double shape.
+    // The bug Maciej saw on 2981: delivered drew the double check. Five states
+    // on the 1-on-1 row (skipped broadcasts stay on channel 0), five glyphs;
+    // only Read is the double shape.
     XCTAssertNotEqual(delivered.symbol, read.symbol, "one check reached, two checks read")
-    let vocabulary = [held, queued, delivered, read, skipped, noReceipt].map(\.symbol)
-    XCTAssertEqual(Set(vocabulary).count, 6, "one glyph per state: \(vocabulary)")
+    let vocabulary = [held, queued, delivered, read, noReceipt].map(\.symbol)
+    XCTAssertEqual(Set(vocabulary).count, 5, "one glyph per state: \(vocabulary)")
     XCTAssertEqual(
-      [held, addressed, queued, accepted, delivered, skipped, skippedByFollower, noReceipt]
+      [held, addressed, queued, accepted, delivered, noReceipt]
         .filter(\.isRead).count, 0, "only Read is read")
     let label = try String(
       contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -388,7 +399,6 @@ final class OverlayBusWindowTests: XCTestCase {
     for (state, words, read) in [
       (OverlayReceiptState.State.delivered, String(localized: "Delivered"), false),
       (.read, String(localized: "Read"), true),
-      (.skipped, OverlayConversationView.skippedBroadcastText, false),
       (.noReceipt, OverlayConversationView.noReceiptText, false),
     ] {
       message.receipt = OverlayMessageReceipt(
@@ -404,6 +414,15 @@ final class OverlayBusWindowTests: XCTestCase {
       XCTAssertEqual(display.text, words)
       XCTAssertEqual(display.isRead, read)
     }
+    message.receipt = OverlayMessageReceipt(
+      messageID: message.id,
+      deliveries: [
+        .init(
+          deliveryID: "delivery", name: "Tola", channel: "2", state: .skipped,
+          wake: nil, deliveredAt: nil, at: nil)
+      ])
+    conversation = withMessages(conversation, [message])
+    XCTAssertNil(roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
     message.receipt = OverlayMessageReceipt(
       messageID: message.id,
       deliveries: [

@@ -142,7 +142,7 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
   func testSizeIsMeasuredFromTheLinesWithinTheCardBounds() {
     let short = OverlayChannelChipStatus(presence: .online, reception: .member)
     let full = OverlayChannelChipStatus(
-      presence: .online, stalled: true, reception: .unknown, quiet: true, unread: 12,
+      presence: .online, stalled: true, reception: .off, quiet: true, unread: 12,
       provider: "claude")
     let small = OverlayChannelChipHoverCard.size(
       chip: chip(status: short), status: short, modifier: .control)

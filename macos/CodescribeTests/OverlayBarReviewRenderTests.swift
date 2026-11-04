@@ -476,7 +476,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
       ),
       (
         "bar-9-hover-card-inactive", "3", "Lena",
-        OverlayChannelChipStatus(presence: .inactive, reception: .unknown, provider: "claude")
+        OverlayChannelChipStatus(presence: .inactive, reception: .off, provider: "claude")
       ),
       (
         "bar-9-hover-card-unknown", "7", "Maksymilian",
@@ -513,5 +513,271 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     state.advancePresentationFromHeader()
     XCTAssertEqual(state.presentationMode, .mini, "the bar folds back to mini")
     try renderMini(state, scene: "mini-to-bar-and-back-mini")
+  }
+
+  // MARK: - 10. Sidebar receipts, bubble receipts and narrow rail (Tor B & Tor C)
+
+  func testRenderSidebarReceiptsAndRail() throws {
+    func makeOwner(_ name: String, channel: String, lease: String) throws
+      -> OverlayConversationOwner
+    {
+      try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": "review-\(channel)",
+          "lease_id": String(repeating: lease, count: 32), "channel": channel, "name": name,
+        ]))
+    }
+    let borys = try makeOwner("borys", channel: "2", lease: "2")
+    let miksa = try makeOwner("miksa", channel: "6", lease: "6")
+    let nela = try makeOwner("nela", channel: "7", lease: "7")
+    let kaja = try makeOwner("kaja", channel: "8", lease: "8")
+    let olek = try makeOwner("olek", channel: "9", lease: "9")
+
+    let broadcastMsg = OverlayConversationMessage(
+      id: "typed:0123456789abcdef00000100", kind: .user,
+      text: "Przeczytajcie o kolorach i znacznikach busa.",
+      order: 1, emittedAt: "2026-11-04T17:31:00Z", owner: nil,
+      recipients: [
+        OverlayConversationRecipient(
+          owner: borys, deliveryID: "d-borys-0", queued: true, accepted: true, acknowledged: true),
+        OverlayConversationRecipient(
+          owner: miksa, deliveryID: "d-miksa-0", queued: false, accepted: false,
+          acknowledged: false, broadcastSkipped: true),
+      ],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "",
+      sourceChannel: "0",
+      sentTo: [
+        OverlayConversationReach(name: "borys", channel: "2"),
+        OverlayConversationReach(name: "olek", channel: "9"),
+      ],
+      receipt: OverlayMessageReceipt(
+        messageID: "0123456789abcdef00000100",
+        sentTo: [
+          OverlayConversationReach(name: "borys", channel: "2"),
+          OverlayConversationReach(name: "olek", channel: "9"),
+        ],
+        deliveries: [
+          .init(
+            deliveryID: "d-borys-0", name: "borys", channel: "2", state: .read,
+            wake: "on", deliveredAt: "2026-11-04T17:31:01Z", at: "2026-11-04T17:31:05Z"),
+          .init(
+            deliveryID: "d-miksa-0", name: "miksa", channel: "6", state: .skipped,
+            wake: nil, deliveredAt: nil, at: "2026-11-04T17:31:01Z"),
+        ]))
+
+    let borysMsg = OverlayConversationMessage(
+      id: "typed:0123456789abcdef00000101", kind: .user,
+      text: "Borys, zintegruj wszystkie trzy tory i zrób screeny.",
+      order: 2, emittedAt: "2026-11-04T17:36:00Z", owner: nil,
+      recipients: [
+        OverlayConversationRecipient(
+          owner: borys, deliveryID: "d-borys-1", queued: true, accepted: true, acknowledged: true)
+      ],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "",
+      sourceChannel: "2")
+
+    let olekMsg = OverlayConversationMessage(
+      id: "typed:0123456789abcdef00000102", kind: .user,
+      text: "Olek, przygotuj słownik kolorów z kodu.",
+      order: 3, emittedAt: "2026-11-04T17:37:00Z", owner: nil,
+      recipients: [
+        OverlayConversationRecipient(
+          owner: olek, deliveryID: "d-olek-1", queued: true, accepted: true, acknowledged: false)
+      ],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "",
+      sourceChannel: "9",
+      receipt: OverlayMessageReceipt(
+        messageID: "0123456789abcdef00000102",
+        deliveries: [
+          .init(
+            deliveryID: "d-olek-1", name: "olek", channel: "9", state: .delivered,
+            wake: "on", deliveredAt: "2026-11-04T17:37:01Z", at: "2026-11-04T17:37:01Z")
+        ]))
+
+    let nelaMsg = OverlayConversationMessage(
+      id: "typed:0123456789abcdef00000103", kind: .user,
+      text: "Nela, czekam na potwierdzenie.",
+      order: 4, emittedAt: "2026-11-04T17:20:00Z", owner: nil,
+      recipients: [
+        OverlayConversationRecipient(
+          owner: nela, deliveryID: "d-nela-1", queued: true, accepted: false, acknowledged: false)
+      ],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "",
+      sourceChannel: "7")
+
+    let kajaMsg = OverlayConversationMessage(
+      id: "typed:0123456789abcdef00000104", kind: .user,
+      text: "Kaja, sprawdź mapę popoverów i kropkę przed imieniem.",
+      order: 5, emittedAt: "2026-11-04T17:38:00Z", owner: nil,
+      recipients: [
+        OverlayConversationRecipient(
+          owner: kaja, deliveryID: "d-kaja-1", queued: true, accepted: true, acknowledged: true)
+      ],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "",
+      sourceChannel: "8")
+
+    let allConv = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [broadcastMsg])
+    let inboxConv = OverlayConversation.humanInbox(messages: [])
+    let borysConv = OverlayConversation(
+      id: borys.id, channel: "2", name: "borys", owner: borys, messages: [borysMsg])
+    // miksa only has the skipped broadcast in raw messages; visibleMessages filters it out!
+    let miksaConv = OverlayConversation(
+      id: miksa.id, channel: "6", name: "miksa", owner: miksa, messages: [broadcastMsg])
+    let nelaConv = OverlayConversation(
+      id: nela.id, channel: "7", name: "nela", owner: nela, messages: [nelaMsg])
+    let kajaConv = OverlayConversation(
+      id: kaja.id, channel: "8", name: "kaja", owner: kaja, messages: [kajaMsg])
+    let olekConv = OverlayConversation(
+      id: olek.id, channel: "9", name: "olek", owner: olek, messages: [olekMsg])
+
+    let stale = Date().addingTimeInterval(-OverlayState.followerStallHorizon - 120)
+    let hudStates: [String: OverlayChannelHudProjection] = [
+      "2": .init(
+        open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+        provider: "codex", providerSessionID: "review-2"),
+      "6": .init(
+        open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+        provider: "codex", providerSessionID: "review-6"),
+      "7": .init(
+        open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+        provider: "codex", providerSessionID: "review-7", unreadSince: stale),
+      "8": .init(
+        open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+        provider: "codex", providerSessionID: "review-8"),
+      "9": .init(
+        open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+        provider: "codex", providerSessionID: "review-9"),
+    ]
+    func identity(_ ch: String) -> AgentPlaybackIdentity {
+      AgentPlaybackIdentity(provider: "codex", session: "review-\(ch)", bus: "/dev/null")
+    }
+    var ch2 = OverlayChannelDelivery(
+      channel: "2", agent: "borys", deliveryID: "d-borys-1", stage: .received, isOpen: false)
+    ch2.broadcastIdentity = identity("2")
+    ch2.broadcastPolicy = .on
+    var ch6 = OverlayChannelDelivery(
+      channel: "6", agent: "miksa", deliveryID: "d-miksa-0", stage: .sent, isOpen: false)
+    ch6.broadcastIdentity = identity("6")
+    ch6.broadcastPolicy = .off
+    ch6.broadcastSkipped = true
+    var ch7 = OverlayChannelDelivery(
+      channel: "7", agent: "nela", deliveryID: "d-nela-1", stage: .queued, isOpen: false)
+    ch7.broadcastIdentity = identity("7")
+    ch7.broadcastPolicy = .off
+    var ch8 = OverlayChannelDelivery(
+      channel: "8", agent: "kaja", deliveryID: "d-kaja-1", stage: .received, isOpen: false)
+    ch8.broadcastIdentity = identity("8")
+    ch8.broadcastPolicy = .quiet
+    var ch9 = OverlayChannelDelivery(
+      channel: "9", agent: "olek", deliveryID: "d-olek-1", stage: .queued, isOpen: false)
+    ch9.broadcastIdentity = identity("9")
+    ch9.broadcastPolicy = .on
+
+    let ledger = OverlayBroadcastPolicyLedger.shared
+    let previousReceipts = ledger.receipted
+    defer { ledger.noteReceipts(previousReceipts) }
+    ledger.noteReceipts(Set(["2", "6", "7", "8", "9"].map(identity)))
+
+    let conversations = [allConv, inboxConv, borysConv, miksaConv, nelaConv, kajaConv, olekConv]
+    let channels = [ch2, ch6, ch7, ch8, ch9]
+    let unreads = [kajaConv.id: 2, olekConv.id: 4]
+
+    for look in Look.allCases {
+      let roster = OverlayChannelStatusView(
+        channels: channels, unavailable: false, palette: look.palette, animates: false,
+        hudStates: hudStates,
+        agentDescriptors: [
+          "2": "agy · Codescribe", "6": "Codex · Codescribe", "7": "Codex · Vibecrafted",
+          "8": "Claude Code · Codescribe", "9": "Codex · Codescribe",
+        ],
+        conversations: conversations, selectedConversationID: borysConv.id,
+        unreadCounts: unreads, onSelectConversation: { _ in })
+      XCTAssertEqual(roster.deliveryReceiptDisplay(for: ch2, conversation: borysConv)?.isRead, true)
+      XCTAssertEqual(roster.deliveryReceiptDisplay(for: ch8, conversation: kajaConv)?.isRead, true)
+      XCTAssertNil(roster.deliveryReceiptDisplay(for: ch6, conversation: miksaConv))
+      try renderAlone(
+        roster.monitorBody(maximumHeight: 540).padding(10),
+        size: CGSize(width: 300, height: 540), look: look, name: "bus-sidebar-receipts")
+      try renderAlone(
+        roster.railBody(maximumHeight: 300).padding(6),
+        size: CGSize(width: 64, height: 300), look: look, name: "bus-narrow-rail")
+
+      let bubbleConv = OverlayConversation(
+        id: borys.id, channel: "2", name: "borys", owner: borys,
+        messages: [borysMsg, broadcastMsg])
+      let convView = OverlayConversationView(
+        conversation: bubbleConv, palette: look.palette, topInset: 8, bottomInset: 8,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+        draft: .constant(""), sending: false, sendError: nil, onSend: {},
+        hidesNavigation: true, showsComposer: false)
+      try renderAlone(
+        convView, size: CGSize(width: 380, height: 220), look: look, name: "bus-bubble-receipts")
+
+      let intercomState = OverlayState()
+      intercomState.applyConversationSnapshot(
+        .init(deliveries: channels, conversations: conversations))
+      let staleMs = Int64(stale.timeIntervalSince1970 * 1_000)
+      intercomState.applyChannelRoster([
+        .init(
+          channel: "2", audience: "borys", provider: "codex", providerSessionId: "review-2",
+          open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+          unreadSinceUnixMs: nil),
+        .init(
+          channel: "6", audience: "miksa", provider: "codex", providerSessionId: "review-6",
+          open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+          unreadSinceUnixMs: nil),
+        .init(
+          channel: "7", audience: "nela", provider: "codex", providerSessionId: "review-7",
+          open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+          unreadSinceUnixMs: staleMs),
+        .init(
+          channel: "8", audience: "kaja", provider: "codex", providerSessionId: "review-8",
+          open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+          unreadSinceUnixMs: nil),
+        .init(
+          channel: "9", audience: "olek", provider: "codex", providerSessionId: "review-9",
+          open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+          unreadSinceUnixMs: nil),
+      ])
+      let suite = "CodescribeTests.intercom-render.\(UUID().uuidString)"
+      let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+      defer { defaults.removePersistentDomain(forName: suite) }
+      let store = OverlayIntercomDesktopStore(defaults: defaults)
+      let ctrlTight = OverlayIntercomWidgetController(
+        state: intercomState, textScale: TextScaleController(key: suite + ".t"), desktopStore: store)
+      let ctrlWide = OverlayIntercomWidgetController(
+        state: intercomState, textScale: TextScaleController(key: suite + ".w"), desktopStore: store)
+      let id2 = OverlayIntercomCardIdentity(digit: "2", conversation: borysConv)
+      let id7 = OverlayIntercomCardIdentity(digit: "7", conversation: nelaConv)
+      let id8 = OverlayIntercomCardIdentity(digit: "8", conversation: kajaConv)
+      let intercomPreview = VStack(alignment: .leading, spacing: 10) {
+        Text(verbatim: "Intercom fiszki — wąskie (230 pt) i szerokie (320 pt)")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(look.palette.mutedText.color)
+        HStack(alignment: .top, spacing: 12) {
+          VStack(spacing: 6) {
+            ctrlTight.offscreenCard(id2, width: 230, height: 46, scale: 1)
+              .frame(width: 230, height: 46)
+            ctrlTight.offscreenCard(id7, width: 230, height: 46, scale: 1)
+              .frame(width: 230, height: 46)
+            ctrlTight.offscreenCard(id8, width: 230, height: 46, scale: 1)
+              .frame(width: 230, height: 46)
+          }
+          VStack(spacing: 6) {
+            ctrlWide.offscreenCard(id2, width: 320, height: 46, scale: 1)
+              .frame(width: 320, height: 46)
+            ctrlWide.offscreenCard(id7, width: 320, height: 46, scale: 1)
+              .frame(width: 320, height: 46)
+            ctrlWide.offscreenCard(id8, width: 320, height: 46, scale: 1)
+              .frame(width: 320, height: 46)
+          }
+        }
+      }
+      .padding(12)
+      try renderAlone(
+        intercomPreview, size: CGSize(width: 590, height: 200), look: look,
+        name: "bus-intercom-fiszki")
+    }
   }
 }

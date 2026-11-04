@@ -1278,14 +1278,13 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(
       pill.components(separatedBy: "Text(verbatim: text)").count - 1, 1,
       "one drawing of the digit")
-    // Spec §14: the open channel's digit carries one violet dot, drawn once,
-    // and no symbol; the microphone and megaphone signs live on the Agents
-    // button only.
-    XCTAssertEqual(
-      pill.components(separatedBy: "Circle()\n      .fill(palette.agentAccent.color)").count - 1, 1,
-      "one drawing of the open-channel dot")
+    // Monika, 2026-11-04 (decision 3): the open channel's violet circle and
+    // waveform are enough; no pulsing open-channel dot on the chip's circle.
     let pillView = try section(
       of: pill, from: "struct OverlayChannelPill: View", to: "// MARK: Header metrics")
+    XCTAssertFalse(
+      pillView.contains("openChannelDot"),
+      "the pulsing open-channel dot on the chip circle is gone")
     // Symbols replace a figure: the stacked counter and the numberless human
     // mailbox. Neither adds a glyph to a numbered agent's digit.
     XCTAssertEqual(
@@ -1296,9 +1295,6 @@ final class OverlayChannelMapTests: XCTestCase {
       "the stacked counter uses the shared header glyph exactly once")
     XCTAssertFalse(pillView.contains("mic.fill"), "the microphone glyph left the digit")
     XCTAssertFalse(pillView.contains("megaphone"), "the megaphone stays on the Agents button")
-    XCTAssertTrue(
-      pillView.contains("if display.animates && !reduceMotion"),
-      "the dot pulses only while the pill animates and Reduce Motion is off")
     for forbidden in [
       "OverlayState", "onToggleChannel", "toggleAgentChannel", "OverlayConversation",
       "onSelectConversation",
