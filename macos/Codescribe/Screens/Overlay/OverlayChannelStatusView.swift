@@ -1451,16 +1451,11 @@ struct OverlayChannelStatusView: View {
   func monitorBody(maximumHeight: CGFloat, focusRevision: UInt64 = 0) -> some View {
     OverlayTextScaleReader { scale in
       var installed = self
-      installed.textScale = scale * Self.messageListScale
+      installed.textScale = scale
       return installed.scaledMonitorBody(
         maximumHeight: maximumHeight, focusRevision: focusRevision)
     }
   }
-
-  /// The list reads at the message list's zoom: a row's preview (13 points)
-  /// lands on the message body size and the rest of the row keeps its
-  /// proportions. The rail keeps the window's scale, like the header's pills.
-  static var messageListScale: CGFloat { OverlayConversationMessageContent.bodyFontSize / 13 }
 
   /// The folded list (Maciej, 2026-10-19: "zostawia pigułki"): one pill per
   /// row of the list, channel 0 first. The list's minimal view: its divider
@@ -2290,17 +2285,18 @@ struct OverlayChannelStatusView: View {
     HStack(spacing: 4) {
       if channel.broadcastPolicy.moon {
         Image(systemName: "moon.fill")
+          .foregroundStyle(palette.primaryText.color)
           .help(Text("Do not disturb"))
           .accessibilityLabel(Text("Do not disturb"))
       }
       if !channel.broadcastPolicy.member {
         Image(systemName: "antenna.radiowaves.left.and.right.slash")
+          .foregroundStyle(palette.mutedText.color)
           .help(Text("Off channel 0"))
           .accessibilityLabel(Text("Off channel 0"))
       }
     }
     .font(.system(size: 11 * textScale))
-    .foregroundStyle(palette.mutedText.color)
   }
 
   func deliveryReceiptDisplay(

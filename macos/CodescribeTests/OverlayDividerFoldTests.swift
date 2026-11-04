@@ -196,19 +196,73 @@ final class OverlayDividerFoldTests: XCTestCase {
   }
 
   func testRosterMessageScaleMatchesTheConversationBodyFont() {
-    XCTAssertEqual(
-      OverlayChannelStatusView.messageListScale,
-      OverlayConversationMessageContent.bodyFontSize / 13, accuracy: 0.001)
+    XCTAssertEqual(OverlayConversationMessageContent.bodyFontSize, 13, accuracy: 0.001)
   }
 
   func testOnlyTheExpandedRosterMultipliesTheWindowTextScaleByMessageScale() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
-    let monitor = try section(source, from: "func monitorBody(", to: "static var messageListScale:")
-    XCTAssertTrue(monitor.contains("installed.textScale = scale * Self.messageListScale"))
-    XCTAssertTrue(monitor.contains("return installed.scaledMonitorBody("))
+    let monitor = try section(source, from: "func monitorBody(", to: "func railBody(")
+    XCTAssertTrue(
+      compact(monitor).contains(
+        "installed.textScale = scale return installed.scaledMonitorBody("))
+    XCTAssertFalse(monitor.contains("messageListScale"))
     let rail = try section(source, from: "func railBody(", to: "private func scaledRailBody(")
     XCTAssertTrue(compact(rail).contains("installed.textScale = scale return installed.scaledRailBody("))
     XCTAssertFalse(rail.contains("messageListScale"))
+  }
+
+  func testCompactReceptionIndicatorsGiveMoonPrimaryContrastAndAntennaMutedContrast() throws {
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let indicators = try section(
+      source, from: "func compactReceptionIndicators(for channel: OverlayChannelDelivery)",
+      to: "func deliveryReceiptDisplay(")
+    let compactIndicators = compact(indicators)
+    XCTAssertTrue(
+      compactIndicators.contains(
+        "Image(systemName: \"moon.fill\") .foregroundStyle(palette.primaryText.color)"))
+    XCTAssertTrue(
+      compactIndicators.contains(
+        "Image(systemName: \"antenna.radiowaves.left.and.right.slash\") .foregroundStyle(palette.mutedText.color)"
+      ))
+  }
+
+  func testMessageBubbleWrapsFooterActionsAndKeepsLeadingFrameAlignmentOnNarrowWidth() throws {
+    let source = try overlaySource("OverlayConversationView.swift")
+    let row = try section(
+      source, from: "private func messageRow(", to: "func messageBubble(")
+    XCTAssertTrue(
+      compact(row).contains(
+        "if message.kind == .user { Spacer(minLength: 0) } messageBubble(message) .frame(maxWidth: maxBubbleWidth, alignment: .leading)"
+      ))
+    let bubble = try section(
+      source, from: "func messageBubble(", to: "private func messageActions(")
+    XCTAssertTrue(
+      compact(bubble).contains(
+        "ViewThatFits(in: .horizontal) { messageActions(message, stacked: false) messageActions(message, stacked: true) }"
+      ))
+    let footer = try section(
+      source, from: "private struct OverlayConversationMessageFooter",
+      to: "private var footerRow: some View")
+    XCTAssertTrue(
+      compact(footer).contains("if adaptsToWidth { ViewThatFits(in: .horizontal) { footerRow"))
+  }
+
+  func testPerformCopyChordTriesSelectedBubbleFragmentWhenFirstResponderIsAnEmptyTextView() throws {
+    let source = try overlaySource("DictationOverlayWindow.swift")
+    let chord = try section(
+      source, from: "func performCopyChord(_ event: NSEvent) -> Bool {",
+      to: "return NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)")
+    let compactChord = compact(chord)
+    XCTAssertTrue(compactChord.contains("let before = NSPasteboard.general.changeCount"))
+    XCTAssertTrue(
+      compactChord.contains(
+        "_ = textView.nextResponder?.tryToPerform(#selector(NSText.copy(_:)), with: nil)"))
+    XCTAssertTrue(
+      compactChord.contains(
+        "if NSPasteboard.general.changeCount == before { _ = NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self) }"
+      ))
+    XCTAssertTrue(
+      compactChord.contains("if NSPasteboard.general.changeCount != before { return true }"))
   }
 
   private func overlaySource(_ name: String) throws -> String {

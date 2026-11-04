@@ -1995,6 +1995,14 @@ extension NSPanel {
         textView.copy(nil)
         return true
       }
+      let before = NSPasteboard.general.changeCount
+      _ = textView.nextResponder?.tryToPerform(#selector(NSText.copy(_:)), with: nil)
+      if NSPasteboard.general.changeCount == before {
+        _ = NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
+      }
+      if NSPasteboard.general.changeCount != before {
+        return true
+      }
     } else if let responder = firstResponder,
       responder.responds(to: #selector(NSText.copy(_:))),
       responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
