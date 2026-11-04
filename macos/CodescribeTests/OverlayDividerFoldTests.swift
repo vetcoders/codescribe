@@ -276,10 +276,10 @@ final class OverlayDividerFoldTests: XCTestCase {
     let column = try section(
       overlay, from: "private func agentDrawerColumn(",
       to: "private func commitAgentDrawerWidth(")
-    XCTAssertTrue(
-      compact(column).contains(
-        "let contentMinimum = agentDrawerResize == nil ? width : OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale)"
-      ))
+    // After the resize-without-reflow merge the column is never mid-drag, so
+    // the list's minimum is the column width itself.
+    XCTAssertTrue(compact(column).contains("let contentMinimum = width"))
+    XCTAssertTrue(compact(column).contains(".frame(width: max(width, contentMinimum))"))
     let conversation = try overlaySource("OverlayConversationView.swift")
     let body = try section(
       conversation, from: "ScrollViewReader { proxy in", to: ".onChange(of: replyNavigationID)")
