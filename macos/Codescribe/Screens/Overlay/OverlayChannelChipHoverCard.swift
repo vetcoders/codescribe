@@ -71,9 +71,9 @@ struct OverlayChannelChipHoverCard: View {
   static let symbolWidth: CGFloat = 14
   static let symbolGap: CGFloat = 5
   static let trailingGap: CGFloat = 8
-  static let titleSize: CGFloat = 12
-  static let lineSize: CGFloat = 11
-  static let shortcutSize: CGFloat = 10
+  nonisolated static let titleSize: CGFloat = 12
+  nonisolated static let lineSize: CGFloat = 11
+  nonisolated static let shortcutSize: CGFloat = 10
   /// A tight card: wide enough for its longest line, within these bounds.
   static let minWidth: CGFloat = 200
   static let maxWidth: CGFloat = 240
