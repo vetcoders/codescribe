@@ -2037,6 +2037,7 @@ final class OverlayPresence {
     if panel.level != policy.windowLevel {
       panel.level = policy.windowLevel
     }
+    OverlayHintPanel.shared.synchronizeLevel(with: panel)
     // Unpinning keeps a visible overlay at the front of the normal band once.
     // Later app activations leave its order alone; screenshot lifting is unchanged.
     // Neither transition brings an ordered-out panel back on screen.

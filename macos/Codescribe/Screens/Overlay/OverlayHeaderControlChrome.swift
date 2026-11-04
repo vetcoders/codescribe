@@ -236,6 +236,15 @@ final class OverlayHintPanel {
     self.owner === owner && presentedPanel != nil
   }
 
+  /// The child takes its parent's level and follows the parent's presence
+  /// policy. A hint left at the default normal level sits under a foreground
+  /// application while the pinned bar floats above it, so the pointer and the
+  /// clicks over a list hanging below the bar reach that application instead.
+  func synchronizeLevel(with parent: NSWindow) {
+    guard let panel, panel.parent === parent, panel.level != parent.level else { return }
+    panel.level = parent.level
+  }
+
   func show(
     _ title: String, palette: OverlayAppearancePalette, below anchor: NSView,
     owner: OverlayHintAnchor, leading: Bool = false, withinWindow: Bool = false,
@@ -257,6 +266,9 @@ final class OverlayHintPanel {
     // parent or attempt to attach the panel as a child of itself.
     guard parent !== panel else { return }
     let opening = self.owner !== owner || !panel.isVisible
+    // Ordering follows a real presentation change only: a data refresh of an
+    // open list must not raise it again.
+    let presenting = opening || panel.parent !== parent
     if opening {
       closeCallback?()
       closeCallback = onClose
@@ -304,8 +316,11 @@ final class OverlayHintPanel {
       panel.parent?.removeChildWindow(panel)
       parent.addChildWindow(panel, ordered: .above)
     }
+    synchronizeLevel(with: parent)
     self.title = title
-    panel.orderFront(nil)
+    // The overlay is used while another app is active. Present the child at
+    // the front of its level without making it key.
+    if presenting { panel.orderFrontRegardless() }
   }
 
   func hide(owner: OverlayHintAnchor, allowPointerRetention: Bool = false) {
