@@ -1315,12 +1315,13 @@ final class OverlayState {
   var channelMapInHeader: Bool {
     channelMapEnabled && channelMapPreference.layout == .horizontal
   }
-  /// Mini is one widget in both layouts. It carries no channel counter
-  /// (Monika, 2026-11-04: the Agents list replaces it); with the map enabled
-  /// it drops the brand word, so the map setting still shapes mini.
+  /// With the map enabled mini drops the brand word, so the map setting
+  /// still shapes mini. The horizontal mini carries no channel counter
+  /// (Monika, 2026-11-04: the Agents list replaces it); the vertical mini
+  /// keeps its stacked counter (`channelMapCounterStacked`).
   var channelMapInMini: Bool { channelMapEnabled }
-  /// The vertical layout's counter in the bar and the window wears stacked
-  /// cards and leads to the Intercom group.
+  /// The vertical layout's counter in mini, the bar and the window wears
+  /// stacked cards and leads to the Intercom group (Maciej, 2026-10-23).
   var channelMapCounterStacked: Bool { channelMapEnabled && !channelMapInHeader }
 
   /// The view observes the same presentation preference as Creator. Refitting
@@ -3598,8 +3599,8 @@ final class OverlayState {
     onChannelMapLayoutChanged?()
   }
 
-  /// The channel counter's click (bus intercom spec §13.4). Mini has no
-  /// counter (Monika, 2026-11-04). Compact shows the counter when the user
+  /// The channel counter's click (bus intercom spec §13.4). The horizontal
+  /// mini has no counter (Monika, 2026-11-04). Compact shows the counter when the user
   /// narrowed it, so there the click returns the strip to its natural width
   /// and the chips come back. In the vertical layout the chips live in the
   /// Intercom group, so the same click brings that group forward (Maciej,

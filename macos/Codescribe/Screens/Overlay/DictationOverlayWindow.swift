@@ -137,18 +137,25 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
   private var miniFrame: NSRect?
   /// With the channel map enabled mini shows the brand dot alone; without it
-  /// the word as well. Mini carries no channel counter (Monika, 2026-11-04).
+  /// the word as well. The horizontal mini carries no channel counter
+  /// (Monika, 2026-11-04).
   private var channelMapEnabled = false
+  /// The vertical layout's stacked counter in mini with its gap after the
+  /// dot (`DictationOverlayWindow.miniStackedCounterWidth`); zero while mini
+  /// shows no counter.
+  private(set) var miniStackedCounterWidth: CGFloat = 0
   /// What a live take adds to mini (`DictationOverlayWindow.miniTakeWidth`):
   /// the waveform, the clock and the addressees; zero at rest. Nothing
   /// remembers it, so mini folds back to its resting width when the take ends.
   private(set) var miniTakeWidth: CGFloat = 0
   /// Mini is as wide and as tall as its content (bus brief 2026-11-04 §3,
-  /// §6): at rest, or grown by a live take.
+  /// §6): at rest, with the vertical layout's stacked counter, or grown by a
+  /// live take.
   var miniSize: NSSize {
     let rest =
       channelMapEnabled
-      ? DictationOverlayWindow.miniFloorWidth : DictationOverlayWindow.miniBrandWidth
+      ? DictationOverlayWindow.miniFloorWidth + miniStackedCounterWidth
+      : DictationOverlayWindow.miniBrandWidth
     return NSSize(width: rest + miniTakeWidth, height: DictationOverlayWindow.miniHeight)
   }
 
@@ -524,12 +531,17 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   /// Mini is as wide as its content (Maciej, 2026-10-19: a gap beside the
   /// brand is "simply brzydka"; bus brief 2026-11-04 §3): enabling the map
-  /// drops the brand word and narrows it. The upper-right corner stays, so
-  /// the controls keep their screen position. A morph in flight lands on the
-  /// size it started with; its completion settles here.
-  func setChannelMapPresentation(enabled: Bool) {
-    guard enabled != channelMapEnabled else { return }
+  /// drops the brand word and narrows it; the vertical layout's stacked
+  /// counter widens it by `stackedCounterWidth`. The upper-right corner
+  /// stays, so the controls keep their screen position. A morph in flight
+  /// lands on the size it started with; its completion settles here.
+  func setChannelMapPresentation(enabled: Bool, stackedCounterWidth: CGFloat = 0) {
+    let counter = enabled ? stackedCounterWidth : 0
+    guard enabled != channelMapEnabled || abs(counter - miniStackedCounterWidth) > 0.5 else {
+      return
+    }
     channelMapEnabled = enabled
+    miniStackedCounterWidth = counter
     settleMiniWidth()
   }
 
@@ -1424,6 +1436,22 @@ enum DictationOverlayWindow {
     return ceil(width)
   }
 
+  /// The vertical layout's stacked counter in mini (Maciej, 2026-10-23: the
+  /// way to the Intercom group stays in every form): the counter as it is
+  /// drawn, the stacked cards or the open digits, after the word's 6 pt gap
+  /// beside the dot. Zero in the horizontal layout and while the map holds
+  /// no channel, where mini shows no counter.
+  @MainActor
+  static func miniStackedCounterWidth(
+    map: OverlayChannelMapModel, stacked: Bool, textScale: CGFloat
+  ) -> CGFloat {
+    guard stacked, !map.chips.isEmpty else { return 0 }
+    let counter = OverlayChannelPill.counterWidth(
+      figure: String(map.count), openDigitCount: map.openDigits.count,
+      scale: OverlayChannelPill.headerScale(textScale), stacked: true)
+    return ceil(miniBrandGap + counter)
+  }
+
   /// The take's addressees in mini: channel 0's megaphone, else the open
   /// channels' circled digits 4 pt apart; zero without an open channel.
   @MainActor
@@ -1660,7 +1688,10 @@ enum DictationOverlayWindow {
     let fitToChannelMap = { [weak panel, weak state] (scale: CGFloat) in
       guard let panel, let state else { return }
       let map = state.channelMapLayoutModel
-      panel.setChannelMapPresentation(enabled: state.channelMapInMini)
+      panel.setChannelMapPresentation(
+        enabled: state.channelMapInMini,
+        stackedCounterWidth: miniStackedCounterWidth(
+          map: map, stacked: state.channelMapCounterStacked, textScale: scale))
       panel.setMiniTake(
         width: miniTakeWidth(live: state.miniTakeLive, openDigits: map.openDigits))
       panel.setMidiBarGeometry(

@@ -1662,11 +1662,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       roster.contains("tint: OverlayRecordingLight.agent.color, mirrored: broadcasting"))
     XCTAssertTrue(roster.contains("scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
     let header = try headerSource(try overlaySource())
-    // Spec §13.4: mini draws the dot without the word; the counter follows,
-    // beside the brand in mini and in every vertical form.
-    XCTAssertTrue(header.contains("showsWord: !mini"))
-    XCTAssertTrue(header.contains("let leadingCounter = mini || state.channelMapCounterStacked"))
-    XCTAssertTrue(header.contains("if leadingCounter, let map = channelMap {"))
+    // Spec §13.4: with the map enabled mini draws the dot without the word.
+    // Monika, 2026-11-04: the Agents list replaces the horizontal mini's
+    // counter, so only the vertical layout's stacked counter follows the
+    // brand, in every form (`channelMap` is nil in the horizontal mini).
+    XCTAssertTrue(header.contains("showsWord: !mini || !mapEnabled"))
+    XCTAssertTrue(header.contains("let leadingCounter = state.channelMapCounterStacked"))
+    XCTAssertTrue(header.contains("if leadingCounter, let map {"))
     XCTAssertFalse(header.contains("short: mini"))
     XCTAssertFalse(header.contains("miniAgentMicrophone"))
   }

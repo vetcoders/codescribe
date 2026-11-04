@@ -129,7 +129,10 @@ struct OverlayRecordingControls: View {
     }
     .fixedSize()
     .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-recording-controls")
+    // Mini splits the pair around the Agents button: the chevron-only
+    // instance takes its own identifier, so each id names one element.
+    .accessibilityIdentifier(
+      showsRecordingButton ? "overlay-recording-controls" : "overlay-recording-controls-preview")
     .contextMenu {
       agentsMenuItem
       Button("My dictation", systemImage: "waveform") { onShowDictation?() }
@@ -1384,9 +1387,10 @@ struct DictationOverlayView: View {
     let map = channelMap
     let horizontalMap = density == .midi && state.channelMapInHeader && map != nil
     // The vertical layout's stacked counter is the visible way to the Intercom
-    // group, so it keeps the brand's side in compact and expanded. Mini has
-    // no counter (Monika, 2026-11-04: the Agents list replaces it).
-    let leadingCounter = !mini && state.channelMapCounterStacked
+    // group, so it keeps the brand's side in every form, mini included
+    // (Maciej, 2026-10-23). The horizontal mini has no counter (Monika,
+    // 2026-11-04: the Agents list replaces it), so there `channelMap` is nil.
+    let leadingCounter = state.channelMapCounterStacked
     // Mini while a take is live (Monika, 2026-11-04, bus brief §6, §11D): it
     // grows by the waveform, the clock and the addressees, and its gaps open
     // to the 4 pt its controls keep (`DictationOverlayWindow.miniTakeWidth`).
@@ -1411,9 +1415,10 @@ struct DictationOverlayView: View {
     return layout {
       // The shared lockup, with the close button in the brand dot's place.
       // With the channel map enabled mini shows the dot alone (Monika,
-      // 2026-10-22, bus intercom spec §13.4); its counter left mini on
-      // 2026-11-04 for the Agents list (bus brief §3). Without the map mini
-      // keeps the word.
+      // 2026-10-22, bus intercom spec §13.4); the horizontal mini's counter
+      // left on 2026-11-04 for the Agents list (bus brief §3), the vertical
+      // mini keeps its stacked counter after the dot, at the word's gap.
+      // Without the map mini keeps the word.
       HStack(
         spacing: state.channelMapCounterStacked && !mini ? 12 : DictationOverlayWindow.miniBrandGap
       ) {
@@ -1539,14 +1544,15 @@ struct DictationOverlayView: View {
   }
 
   /// The header's channel map, or nil while no agent is bound and channel 0
-  /// is closed. The expanded bar shows its pills; mini shows none (Monika,
-  /// 2026-11-04: the Agents list replaces mini's counter). A pill selects its
-  /// conversation through the roster, as a rail pill does. The vertical
-  /// layout has no pills: its counter, as stacked cards that open the
-  /// Intercom group, stays in the bar and the window.
+  /// is closed. The expanded bar shows its pills; the horizontal mini shows
+  /// none (Monika, 2026-11-04: the Agents list replaces its counter). A pill
+  /// selects its conversation through the roster, as a rail pill does. The
+  /// vertical layout has no pills: its counter, as stacked cards that open
+  /// the Intercom group, stays in every form, mini included (Maciej,
+  /// 2026-10-23), so narrowing the overlay never removes the way to the group.
   /// Internal so tests can drive the header's same values.
   var channelMap: OverlayChannelMapView? {
-    guard state.presentationMode != .mini else { return nil }
+    guard state.presentationMode != .mini || state.channelMapCounterStacked else { return nil }
     let counterOnly = state.channelMapCounterStacked
     guard counterOnly || state.channelMapInHeader else { return nil }
     let roster = channelStatusView

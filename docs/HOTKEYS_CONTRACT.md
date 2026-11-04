@@ -40,13 +40,17 @@ pauses terminal auto-hide; it does not change the capture route or window size.
 Mini at rest is, from the left, the brand dot (the close button),
 transcription, the microphone, the Agents button (✦, its hover list replaces
 the former channel counter) and the preview chevron (Monika, 2026-11-04, bus
-brief §3). It carries no channel counter, waveform, timer or map. Mini is as
-wide and as tall as its content (`FloatingOverlayPanel.miniSize`): 7 pt from
-a 22 pt control to the capsule's edge on every side, 4 pt between controls,
-and two 2 pt gaps around the closed centre, so 127 × 36 pt with the channel
-map enabled (`DictationOverlayWindow.miniFloorWidth`) and that plus 6 pt and
-the `codescribe` word with the map disabled (`miniBrandWidth`). Toggling the
-map resizes it in one step at its upper-right pin. A take in mini keeps the
+brief §3). In the horizontal layout it carries no channel counter, waveform,
+timer or map. The vertical layout keeps its stacked counter after the brand
+dot in mini too, as the way to the Intercom group (Maciej, 2026-10-23); a
+click reveals the group and keeps mini. Mini is as wide and as tall as its
+content (`FloatingOverlayPanel.miniSize`): 7 pt from a 22 pt control to the
+capsule's edge on every side, 4 pt between controls, and two 2 pt gaps
+around the closed centre, so 127 × 36 pt with the channel map enabled
+(`DictationOverlayWindow.miniFloorWidth`), plus 6 pt and the stacked counter
+in the vertical layout (`miniStackedCounterWidth`), and the floor plus 6 pt
+and the `codescribe` word with the map disabled (`miniBrandWidth`). Toggling
+the map or its layout resizes it in one step at its upper-right pin. A take in mini keeps the
 microphone's stop in place; mini's recording form is a separate cut.
 Folding the bar to mini follows the native bounds: no layout is held during
 a bar-to-bar morph, so mini's row is never clipped mid-fold.
