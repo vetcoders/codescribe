@@ -3371,7 +3371,7 @@ struct OverlayRosterMessagePreview: View {
 /// Roster status dot kinds, mapped to palette tones by `OverlayAgentStatusDot`;
 /// the shared channel's `broadcast` draws an antenna instead of a dot.
 enum OverlayAgentDotKind {
-  case broadcast, listening, received, waiting, present, asleep, sleeping, idle
+  case broadcast, listening, present, asleep, sleeping, idle
 }
 
 /// Glass rows and their controls morph as one group on macOS 26; older
@@ -3398,7 +3398,7 @@ struct OverlayAgentStatusDot: View {
 
   private var filled: Bool {
     switch kind {
-    case .broadcast, .listening, .received, .waiting, .present: true
+    case .broadcast, .listening, .present: true
     case .asleep, .sleeping, .idle: false
     }
   }
@@ -3409,8 +3409,7 @@ struct OverlayAgentStatusDot: View {
     // Your voice to agents is violet, as the waveform and the chip's circle
     // (Monika, 2026-11-04); terracotta stays with dictation outside the bus.
     case .listening: palette.agentAccent
-    case .received, .present: palette.successStatus
-    case .waiting: palette.processingStatus
+    case .present: palette.successStatus
     case .asleep, .sleeping, .idle: palette.mutedText
     }
   }

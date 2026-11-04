@@ -20,7 +20,6 @@ struct OverlayChannelChipHoverCard: View {
     case primary
     case success
     case muted
-    case processing
     case agent
 
     func color(in palette: OverlayAppearancePalette) -> Color {
@@ -28,7 +27,6 @@ struct OverlayChannelChipHoverCard: View {
       case .primary: palette.primaryText.color
       case .success: palette.successStatus.color
       case .muted: palette.mutedText.color
-      case .processing: palette.processingStatus.color
       case .agent: palette.agentAccent.color
       }
     }
@@ -134,7 +132,7 @@ struct OverlayChannelChipHoverCard: View {
         tone: .primary, trailing: status.provider.map(providerName)),
       Line(
         kind: .presence, text: presenceText(status),
-        tone: status.stalled ? .processing : (status.presence == .online ? .success : .muted),
+        tone: status.stalled ? .muted : (status.presence == .online ? .success : .muted),
         symbol: presenceSymbol(status)),
       Line(
         kind: .reception, text: receptionText(status),

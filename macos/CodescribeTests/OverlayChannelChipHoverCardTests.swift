@@ -54,7 +54,8 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
   func testStallIsFlaggedBesidePresence() {
     let stalled = OverlayChannelChipStatus(presence: .online, stalled: true, reception: .member)
     XCTAssertEqual(line(.presence, in: stalled)?.text, "Online · Not reading")
-    XCTAssertEqual(line(.presence, in: stalled)?.tone, .processing)
+    // No amber in the bus (Monika, 2026-11-04): a stall reads in the muted tone.
+    XCTAssertEqual(line(.presence, in: stalled)?.tone, .muted)
     XCTAssertEqual(line(.presence, in: stalled)?.symbol, "zzz")
   }
 
