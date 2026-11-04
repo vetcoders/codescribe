@@ -3054,6 +3054,17 @@ impl From<ApiKeyLivenessResult> for CsApiKeyProbeResult {
     }
 }
 
+/// Reject unknown Keychain accounts before touching the Keychain.
+fn ensure_known_account(account: &str) -> Result<(), CsError> {
+    if keychain::is_known_account(account) {
+        Ok(())
+    } else {
+        Err(CsError::Config {
+            msg: format!("unknown keychain account: {account}"),
+        })
+    }
+}
+
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod config_tests;
