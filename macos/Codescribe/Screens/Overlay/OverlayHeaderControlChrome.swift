@@ -53,6 +53,10 @@ struct OverlayHeaderControlChrome: ViewModifier {
   var showsHint = true
   var hintContent: AnyView? = nil
   var hintSize: CGSize? = nil
+  /// For compact message cards, `hintSize.height` is a ceiling, not empty space.
+  var hintFitsContentHeight = false
+  /// The content owner invalidates measurement after a carousel step or live edit.
+  var hintContentRevision: UInt64 = 0
   var hintDelay: TimeInterval = 0
   var hintInteractive = false
   var onHintOpen: (() -> Void)? = nil
@@ -111,6 +115,8 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .onChange(of: hintLeading) { _, _ in syncHint(inside: hovered) }
       .onChange(of: hintWithinWindow) { _, _ in syncHint(inside: hovered) }
       .onChange(of: hintSize) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: hintFitsContentHeight) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: hintContentRevision) { _, _ in syncHint(inside: hovered) }
       .onChange(of: hintInteractive) { _, _ in syncHint(inside: hovered) }
       .onChange(of: palette) { _, _ in syncHint(inside: hovered) }
       .onDisappear {
@@ -130,7 +136,8 @@ struct OverlayHeaderControlChrome: ViewModifier {
     }
     anchor.show(
       title, palette: palette, leading: hintLeading, withinWindow: hintWithinWindow,
-      content: hintContent, size: hintSize, interactive: hintInteractive, delay: hintDelay,
+      content: hintContent, size: hintSize, fitsContentHeight: hintFitsContentHeight,
+      interactive: hintInteractive, delay: hintDelay,
       onOpen: onHintOpen, onClose: onHintClose)
   }
 }
@@ -147,6 +154,7 @@ final class OverlayHintAnchor {
   func show(
     _ title: String, palette: OverlayAppearancePalette, leading: Bool = false,
     withinWindow: Bool = false, content: AnyView? = nil, size: CGSize? = nil,
+    fitsContentHeight: Bool = false,
     interactive: Bool = false, delay: TimeInterval = 0,
     onOpen: (() -> Void)? = nil, onClose: (() -> Void)? = nil
   ) {
@@ -163,13 +171,14 @@ final class OverlayHintAnchor {
         self.pendingHint = nil
         self.show(
           title, palette: palette, leading: leading, withinWindow: withinWindow,
-          content: content, size: size, interactive: interactive,
+          content: content, size: size, fitsContentHeight: fitsContentHeight, interactive: interactive,
           onOpen: onOpen, onClose: onClose)
       }
     } else if let view {
       OverlayHintPanel.shared.show(
         title, palette: palette, below: view, owner: self, leading: leading,
-        withinWindow: withinWindow, content: content, size: size, interactive: interactive,
+        withinWindow: withinWindow, content: content, size: size,
+        fitsContentHeight: fitsContentHeight, interactive: interactive,
         onOpen: onOpen, onClose: onClose)
     }
   }
@@ -248,7 +257,8 @@ final class OverlayHintPanel {
   func show(
     _ title: String, palette: OverlayAppearancePalette, below anchor: NSView,
     owner: OverlayHintAnchor, leading: Bool = false, withinWindow: Bool = false,
-    content: AnyView? = nil, size desiredSize: CGSize? = nil, interactive: Bool = false,
+    content: AnyView? = nil, size desiredSize: CGSize? = nil,
+    fitsContentHeight: Bool = false, interactive: Bool = false,
     onOpen: (() -> Void)? = nil, onClose: (() -> Void)? = nil
   ) {
     guard let parent = anchor.window, parent.isVisible else { return }
@@ -281,9 +291,18 @@ final class OverlayHintPanel {
     self.interactive = interactive
     let size: NSSize
     if let content, let desiredSize {
-      size = NSSize(
+      let maximum = NSSize(
         width: min(desiredSize.width, bounds.width - 2 * Self.screenInset),
         height: min(desiredSize.height, bounds.height - 2 * Self.screenInset))
+      if fitsContentHeight {
+        // Measure the existing rich view at its real width. No character-count
+        // estimate or second text renderer decides the card's height.
+        controller.rootView = AnyView(content.frame(width: maximum.width))
+        let fitted = controller.sizeThatFits(in: maximum)
+        size = NSSize(width: maximum.width, height: min(maximum.height, max(1, fitted.height)))
+      } else {
+        size = maximum
+      }
       controller.rootView = AnyView(
         content.frame(width: size.width, height: size.height)
           .background {

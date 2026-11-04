@@ -3095,6 +3095,8 @@ final class OverlayRosterPreviewSession: ObservableObject {
   @Published var withdrawnIDs: Set<String> = []
   @Published var ids: [String] = []
   @Published var index = 0
+  /// Presentation invalidation only; the conversation and selected ID own content.
+  @Published private(set) var contentRevision: UInt64 = 0
   private var conversationID: String?
   private var isOpen = false
   private var latestConversation: OverlayConversation?
@@ -3127,11 +3129,13 @@ final class OverlayRosterPreviewSession: ObservableObject {
   func stepOlder() {
     guard canStepOlder else { return }
     index -= 1
+    contentRevision &+= 1
   }
 
   func stepNewer() {
     guard canStepNewer else { return }
     index += 1
+    contentRevision &+= 1
   }
 
   func openLatest(ownerID: String?) {
@@ -3145,9 +3149,11 @@ final class OverlayRosterPreviewSession: ObservableObject {
     self.withdrawnIDs = latestWithdrawnIDs
     ids = Self.previewIDs(in: conversation)
     index = max(0, ids.count - 1)
+    contentRevision &+= 1
   }
 
   func update(_ conversation: OverlayConversation?, withdrawnIDs: Set<String> = []) {
+    defer { contentRevision &+= 1 }
     latestConversation = conversation
     latestWithdrawnIDs = withdrawnIDs
     if !isOpen {
@@ -3175,6 +3181,7 @@ final class OverlayRosterPreviewSession: ObservableObject {
     withdrawnIDs = latestWithdrawnIDs
     ids = Self.previewIDs(in: latestConversation)
     index = max(0, ids.count - 1)
+    contentRevision &+= 1
   }
 
   func isWithdrawn(_ id: String) -> Bool {
@@ -3211,8 +3218,11 @@ struct OverlayRosterMessageHint: ViewModifier {
 
   @ViewBuilder
   func body(content: Content) -> some View {
-    let preview: AnyView? = conversation.map { _ in
-      AnyView(
+    // Keep one modifier tree when the first message arrives. Frozen IDs also
+    // retain an already open withdrawn slot until the preview closes.
+    let preview: AnyView? = conversation.flatMap { _ in
+      guard !session.ids.isEmpty else { return nil }
+      return AnyView(
         OverlayRosterMessagePreview(session: session, palette: palette, onOpen: onOpen)
           .environment(\.csTextScale, textScale)
           .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light))
@@ -3223,9 +3233,10 @@ struct OverlayRosterMessageHint: ViewModifier {
     content.modifier(
       OverlayHeaderControlChrome(
         title: resolvedTitle,
-        accent: nil, palette: palette, hintLeading: true,
+        accent: nil, palette: palette, hintLeading: true, showsHint: !isOpen,
         hintContent: preview,
-        hintSize: preview == nil ? nil : CGSize(width: 380 * textScale, height: 280 * textScale),
+        hintSize: preview == nil ? nil : CGSize(width: 260 * textScale, height: 180 * textScale),
+        hintFitsContentHeight: preview != nil, hintContentRevision: session.contentRevision,
         hintDelay: preview == nil ? 0 : 0.35, hintInteractive: preview != nil,
         onHintOpen: { [session = session, ownerID = conversation?.id] in
           session.openLatest(ownerID: ownerID)
@@ -3245,8 +3256,9 @@ struct OverlayRosterMessageHint: ViewModifier {
   }
 }
 
-/// A bounded carousel over loaded messages; it never selects a conversation
-/// or publishes read evidence. Each slot resolves its live message by ID.
+/// A bounded carousel over loaded messages. Hover never selects a conversation
+/// or publishes read evidence; a body click uses the existing navigation command.
+/// Each slot resolves its live message by ID.
 struct OverlayRosterMessagePreview: View {
   @Environment(\.csTextScale) private var textScale
   @ObservedObject var session: OverlayRosterPreviewSession
@@ -3286,25 +3298,40 @@ struct OverlayRosterMessagePreview: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 6 * textScale) {
       header(id: selectedID)
+        .contentShape(Rectangle())
+        .onTapGesture { onOpen?() }
       if let selectedID {
-        ScrollView(.vertical) {
+        ViewThatFits(in: .vertical) {
           slot(id: selectedID)
+            .fixedSize(horizontal: false, vertical: true)
+          ScrollView(.vertical) {
+            slot(id: selectedID)
+          }
         }
         .id(selectedID)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        navigation
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .contentShape(Rectangle())
+        .onTapGesture { onOpen?() }
+        if session.ids.count > 1 { navigation }
       } else {
         Text("No messages yet")
           .font(.system(size: 12 * textScale))
           .foregroundStyle(palette.mutedText.color)
-          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+          .frame(maxWidth: .infinity, alignment: .topLeading)
       }
     }
-    .padding(12)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(palette.desktopBackground.color.opacity(0.9))
+    .padding(10 * textScale)
+    .frame(maxWidth: .infinity, alignment: .topLeading)
+    .background(palette.primaryText.color.opacity(CSAlpha.fill))
+    .background(palette.desktopBackground.color)
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(palette.border.color, lineWidth: 1)
+        .allowsHitTesting(false)
+    }
     .contentShape(Rectangle())
     .accessibilityAction(named: Text("Open conversation")) { onOpen?() }
     .accessibilityIdentifier("overlay-roster-message-preview")
