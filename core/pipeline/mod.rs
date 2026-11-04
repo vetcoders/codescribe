@@ -6,6 +6,8 @@
 pub mod acoustic_ledger;
 /// Event contracts: EngineEvent, sinks trait, and shared pipeline types.
 pub mod contracts;
+/// Experimental speaker diarization and attribution cells (T01 speakrs, T02 Nemotron 3, T03 sealed embedding).
+pub mod diarization;
 /// Engine tuning catalog: live-engine knobs with unit, range and trade-off.
 pub mod engine_tuning;
 /// Light+ — deterministic, idempotent sentence shaping (L2 floor, no LLM).
