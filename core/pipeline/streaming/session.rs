@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::mpsc as std_mpsc;
 
 use anyhow::{Result, anyhow};
 use tokio::sync::mpsc;
@@ -26,13 +27,20 @@ use crate::stt::tail_provider::{
 };
 use crate::stt::tail_provider::{TailProviderPayload, TailProviderRequest};
 
+type LocalSttJob = Box<dyn FnOnce() + Send + 'static>;
+
+struct LocalExecutionWorker {
+    sender: Option<std_mpsc::Sender<LocalSttJob>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
 /// Actual execution handles outlive result receivers and ledger accounting.
 /// Live and Stop requests from the same PCM plan share this spawn seam.
-/// No closure captures the owner itself: the last owner may safely join in Drop.
+/// Uses a reusable worker thread to preserve thread-local caches (such as Silero ONNX).
 #[derive(Default)]
 pub(crate) struct LocalExecutionOwner {
     control: crate::stt::LocalExecutionControl,
-    handles: StdMutex<Vec<std::thread::JoinHandle<()>>>,
+    worker: StdMutex<Option<LocalExecutionWorker>>,
 }
 
 impl LocalExecutionOwner {
@@ -46,66 +54,88 @@ impl LocalExecutionOwner {
         T: Send + 'static,
         F: FnOnce(&crate::stt::LocalExecutionControl) -> Result<T> + Send + 'static,
     {
-        let mut handles = self
-            .handles
+        self.control.check()?;
+        let mut worker_guard = self
+            .worker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.control.check()?;
-        // Reap finished requests during long captures; never accumulate one
-        // native handle per utterance until Stop.
-        let mut index = 0;
-        while index < handles.len() {
-            if handles[index].is_finished() {
-                if handles.swap_remove(index).join().is_err() {
-                    warn!("local execution worker panicked");
-                }
-            } else {
-                index += 1;
+        let worker = match worker_guard.as_mut() {
+            Some(w) if w.sender.is_some() => w,
+            _ => {
+                let (tx, rx) = std_mpsc::channel::<LocalSttJob>();
+                let handle = std::thread::Builder::new()
+                    .name("local-stt".into())
+                    .spawn(move || {
+                        while let Ok(job) = rx.recv() {
+                            job();
+                        }
+                    })?;
+                *worker_guard = Some(LocalExecutionWorker {
+                    sender: Some(tx),
+                    handle: Some(handle),
+                });
+                worker_guard.as_mut().unwrap()
             }
-        }
+        };
+        let sender_chan = worker
+            .sender
+            .as_ref()
+            .ok_or_else(|| anyhow!("local execution worker stopped"))?;
         let control = self.control.clone();
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        let handle = std::thread::Builder::new()
-            .name("local-stt".into())
-            .spawn(move || {
-                let result = control.check().and_then(|()| work(&control));
-                // A native call may return after cancellation. Its label is never
-                // a successful completion, even if the provider ignored control.
-                let result = control.check().and(result);
-                let _ = sender.send(result);
-            })?;
-        handles.push(handle);
+        let job: LocalSttJob = Box::new(move || {
+            let result = control.check().and_then(|()| work(&control));
+            let result = control.check().and(result);
+            let _ = sender.send(result);
+        });
+        sender_chan
+            .send(job)
+            .map_err(|_| anyhow!("local execution worker thread hung up"))?;
         Ok(receiver)
     }
 
     pub(crate) async fn close_and_join(&self) {
         self.control.cancel();
+        {
+            let mut worker = self
+                .worker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(w) = worker.as_mut() {
+                w.sender.take();
+            }
+        }
         loop {
             let finished = {
-                let handles = self
-                    .handles
+                let worker = self
+                    .worker
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                handles.iter().all(std::thread::JoinHandle::is_finished)
+                worker
+                    .as_ref()
+                    .and_then(|w| w.handle.as_ref())
+                    .map_or(true, std::thread::JoinHandle::is_finished)
             };
             if finished {
                 break;
             }
-            // Retain handles inside self across every await, including caller
-            // cancellation. Native calls can exceed the useful-work budget.
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         self.join_retained();
     }
 
     fn join_retained(&self) {
-        let mut handles = self
-            .handles
+        let mut worker = self
+            .worker
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for handle in handles.drain(..) {
-            if handle.join().is_err() {
-                warn!("local execution worker panicked while joining");
+        if let Some(mut w) = worker.take() {
+            w.sender.take();
+            if let Some(handle) = w.handle.take() {
+                if handle.join().is_err() {
+                    warn!("local execution worker panicked while joining");
+                }
             }
         }
     }
@@ -114,8 +144,6 @@ impl LocalExecutionOwner {
 impl Drop for LocalExecutionOwner {
     fn drop(&mut self) {
         self.control.cancel();
-        // Cancellation/panic fallback: blocking is honest here. Dropping a
-        // handle would detach native work; no hard release bound is claimed.
         self.join_retained();
     }
 }

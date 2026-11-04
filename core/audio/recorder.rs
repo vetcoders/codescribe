@@ -842,24 +842,22 @@ impl Recorder {
                             failed.store(true, Ordering::SeqCst);
                         }
                     }
+                    let cap = if spill_send_failed
+                        .as_ref()
+                        .is_some_and(|failed| failed.load(Ordering::SeqCst))
+                    {
+                        None
+                    } else {
+                        buffer_cap_samples
+                    };
                     {
                         let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
-                        // If the writer receiver died, retain future PCM in RAM.
-                        // Previously evicted samples still require the spill source.
-                        let cap = if spill_send_failed
-                            .as_ref()
-                            .is_some_and(|failed| failed.load(Ordering::SeqCst))
-                        {
-                            None
-                        } else {
-                            buffer_cap_samples
-                        };
                         append_mono_i16_samples(&mut buf, &buffer_start_offset, &mono_i16, cap);
                     }
 
                     // Feed audio to local VAD (non-blocking)
                     if let Some(ref tx) = vad_tx {
-                        let _ = tx.try_send(mono_samples.clone());
+                        let _ = tx.try_send(mono_samples);
                     }
 
                     // Read latest speech probability from local VAD
