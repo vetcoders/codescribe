@@ -203,6 +203,13 @@ the capture or opens the Agents canvas. A click on ✦ keeps its action
 hint panel (`OverlayHeaderControlChrome`, as the roster's message preview):
 it is a child window of the overlay, stays while the pointer crosses from ✦
 onto it, and closes 220 ms after the pointer has left both; Esc closes it.
+The panel takes its parent's window level (`OverlayHintPanel.synchronizeLevel`)
+and follows it when `OverlayPresence` moves the overlay between rest, normal
+and capture levels; it is ordered above its parent and raised to the front
+of that level only when it is presented, not on a data refresh. A list left
+at the normal level hung under the foreground application below a pinned
+bar: the pointer never entered it, so it closed after the grace, and clicks
+reached the application beneath.
 While the pointer is over the list it holds mini's auto-hide and the
 auto-collapse through `OverlayState.setPointerHovering`. The content reads a
 live model, so a roster or policy refresh repaints rows without re-showing,
