@@ -30,6 +30,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   // MARK: - Rosters
 
   private let one = [("3", "Lena")]
+  private let three = [("1", "As"), ("3", "Lena"), ("6", "Nina")]
   private let four = [("1", "As"), ("3", "Lena"), ("4", "Lena2"), ("6", "Nina")]
   private var five: [(String, String)] { four + [("8", "Igor")] }
   private var six: [(String, String)] { five + [("2", "Konstantyna")] }
@@ -325,6 +326,13 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   func testRenderBarWithOneAgent() throws {
     let (state, _) = try barState(one, mode: .midi)
     let size = try renderBar(state, scene: "bar-1")
+    XCTAssertEqual(size.height, barGeometry(state).singleRowHeight, "one row")
+  }
+
+  /// Three agents (Monika, 2026-11-04: the bar at three beside six and nine).
+  func testRenderBarWithThreeAgents() throws {
+    let (state, _) = try barState(three, mode: .midi)
+    let size = try renderBar(state, scene: "bar-3")
     XCTAssertEqual(size.height, barGeometry(state).singleRowHeight, "one row")
   }
 
