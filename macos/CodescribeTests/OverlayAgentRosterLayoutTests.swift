@@ -54,7 +54,8 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       [
         "Text(verbatim: identity.displayDigit)", "OverlayReceptionMarks(",
         "OverlayIntercomStatusMark(",
-        "Text(verbatim: name)", "OverlayIntercomFocusButton(", "audioSlot(",
+        // The name and its inline descriptor share OverlayIntercomNameLine.
+        "OverlayIntercomNameLine( name: name,", "OverlayIntercomFocusButton(", "audioSlot(",
       ], in: String(card[richRow.lowerBound...]))
 
     let instance = try sourceSection(
@@ -270,7 +271,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let header = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomHeader: View {",
       to: "struct OverlayIntercomWindowProjection:")
-    XCTAssertTrue(header.contains("OverlayIntercomResizeAnchor()"))
+    XCTAssertTrue(header.contains("OverlayResizeAnchor()"))
     XCTAssertTrue(header.contains("onDrag: { controller.beginGroupDrag() }"))
   }
 

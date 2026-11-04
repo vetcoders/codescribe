@@ -587,7 +587,9 @@ for line in sys.stdin:
         assert any(p.get('text') == 'hello' for p in params['prompt'])
         if mode == 'attachments':
             assert any(p.get('type') == 'image' and p['data'] == 'AQID' for p in params['prompt'])
-        if mode == 'cancel': continue
+        if mode == 'cancel':
+            send(dict(method='session/update', params=dict(sessionId='session-fixture', update=dict(sessionUpdate='agent_message_chunk', content=dict(type='text', text='cancel-ready')))))
+            continue
         if mode == 'exit-desc':
             child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
             record('descendant:' + str(child.pid))
@@ -640,8 +642,15 @@ for line in sys.stdin:
         )]
     }
 
+    /// Budget for one fixture turn, interpreter start included. On a hosted
+    /// macOS runner the first `/usr/bin/python3` launches of the suite cost
+    /// about three seconds: in a green run every ACP test finished 3.1–3.6 s
+    /// after the suite started, against 0.12 s each on a warm machine. Every
+    /// budget that covers a fixture's start uses this one.
+    const FIXTURE_TURN_BUDGET: Duration = Duration::from_secs(10);
+
     async fn collect(mut rx: mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(FIXTURE_TURN_BUDGET, async {
             let mut events = Vec::new();
             while let Some(event) = rx.recv().await {
                 events.push(event);
@@ -818,17 +827,16 @@ for line in sys.stdin:
     async fn acp_parent_exit_is_observed_even_when_descendant_holds_stdout() {
         let root = tempfile::tempdir().unwrap();
         let provider = AcpProvider::new(fixture(root.path(), "exit-desc")).unwrap();
-        let events = tokio::time::timeout(
-            Duration::from_secs(3),
-            collect(
-                provider
-                    .stream(&messages(), &[], &StreamOptions::default())
-                    .await
-                    .unwrap(),
-            ),
+        // The descendant holds stdout for 60 s. A client that waited for that
+        // EOF would overrun the turn budget by 50 s, so collect's own bound
+        // proves the dead parent is observed without it.
+        let events = collect(
+            provider
+                .stream(&messages(), &[], &StreamOptions::default())
+                .await
+                .unwrap(),
         )
-        .await
-        .expect("dead parent must not depend on inherited stdout EOF");
+        .await;
         assert!(
             events
                 .iter()
@@ -959,22 +967,21 @@ for line in sys.stdin:
     async fn acp_cancel_notifies_and_reaps_child() {
         let root = tempfile::tempdir().unwrap();
         let provider = AcpProvider::new(fixture(root.path(), "cancel")).unwrap();
-        let rx = provider
+        let mut rx = provider
             .stream(&messages(), &[], &StreamOptions::default())
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let receipt =
-                    std::fs::read_to_string(root.path().join("receipt")).unwrap_or_default();
-                if receipt.contains("session/prompt") {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        // Wait for the real protocol path to deliver readiness. Polling the
+        // receipt file neither observes transport errors nor proves that the
+        // client has consumed the agent's prompt state before cancellation.
+        // Readiness is part of the turn, so it gets the turn's budget: this is
+        // the suite's first test, and the hosted runner's cold interpreter
+        // start ran past a separate five-second bound (two runs, 2026-11-03).
+        let ready = tokio::time::timeout(FIXTURE_TURN_BUDGET, rx.recv())
+            .await
+            .expect("ACP fixture must signal readiness within the turn budget")
+            .expect("ACP stream closed before cancellation readiness");
+        assert_eq!(ready, AgentEvent::TextDelta("cancel-ready".into()));
         provider.cancel();
         let events = collect(rx).await;
         assert!(

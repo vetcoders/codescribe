@@ -189,6 +189,15 @@ does not waive failed assertions, zero-test protection or the independent
 per-test ceiling. The comparison is retained in the local PR 178 release
 receipts (`swift-timing-independent.json`).
 
+On 2026-11-03 the budget was rebaselined to **300 s**. The 2461-test suite
+(70 skipped) took 243.6 s and 246.3 s in two full runs on dragon: 0.099–0.100 s
+per test against 0.109 s on 2026-10-19, so each test got faster while the suite
+grew by 687 tests. The 300 s limit leaves about 22% headroom. The slowest test
+(`OverlayHeaderChromeTests.testSelectedControlsWearAPastelOfTheirModeAndStillAnswerHover`,
+9.85 s) sits 0.15 s under the per-test ceiling, which is the gate the next
+render case added to it will break. `scripts/tests/test-swift-target-root-test.sh`
+keeps its over-budget fixtures above this default.
+
 An over-budget run still requires investigation of the test harness and host
 load. Do not raise a limit merely to hide a slow test or a blocking operation;
 any later coverage-driven rebaseline needs the same comparison of common tests.

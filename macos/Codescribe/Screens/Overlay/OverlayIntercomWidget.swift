@@ -50,7 +50,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     case expanded(OverlayIntercomCardIdentity, CGRect)
   }
   @ObservationIgnored private var resizeTarget: ResizeTarget?
-  @ObservationIgnored private var resizePreview: OverlayIntercomResizePreview?
+  @ObservationIgnored private var resizePreview: OverlayResizePreview?
   @ObservationIgnored private var reconcileAfterResize = false
   @ObservationIgnored private var groupedIdleClock: OverlayAutoCollapse?
   @ObservationIgnored private var menuTracking = 0
@@ -1282,12 +1282,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   ) {
     if resizePreview == nil {
       groupedIdleClock?.suspend()
-      resizePreview = OverlayIntercomResizePreview(
-        panels: panels(), group: group,
+      resizePreview = OverlayResizePreview(
+        windows: panels(), group: group,
         headerHeight: OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale),
         palette: OverlayAppearancePalette.resolve(
           NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? ColorScheme.dark : ColorScheme.light))
+            ? ColorScheme.dark : ColorScheme.light),
+        restore: { window in
+          if let view = window.contentView { OverlayIntercomResizeView.cancelTracking(in: view) }
+        })
     }
     resizePreview?.update(frame: frame)
   }
@@ -1584,11 +1587,11 @@ private struct OverlayIntercomHeader: View {
       .accessibilityIdentifier("overlay-intercom-menu")
       .help("Intercom menu")
       .background {
-        if !content.showsCount { OverlayIntercomResizeAnchor() }
+        if !content.showsCount { OverlayResizeAnchor() }
       }
       if content.showsCount {
         Spacer(minLength: IntercomHeaderMetrics.spacerMinimum)
-          .background(OverlayIntercomResizeAnchor())
+          .background(OverlayResizeAnchor())
         Text(verbatim: chips.count.formatted()).csMono(10)
           .frame(width: metrics.countWidth).allowsHitTesting(false)
       }
@@ -2002,7 +2005,10 @@ private struct OverlayIntercomCard: View {
       expanded
       ? OverlayIntercomWidgetLayout.conversationCornerRadius
       : OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
-    let showsContext = (expanded || content != .header) && conversation != nil
+    // An open conversation's bar is one row (Maciej, 2026-11-03: "jest za
+    // gruby … żeby on był jednorzędowy"). Its descriptor rides the name line;
+    // only a resting card's context tier keeps the separate metadata line.
+    let showsContext = !expanded && content != .header && conversation != nil
     let titleBarHeight =
       OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       + (showsContext ? OverlayIntercomWidgetLayout.contextStripHeight(scale: scale) : 0)
@@ -2185,8 +2191,10 @@ private struct OverlayIntercomCard: View {
     // A header-only card has no context strip below it, so the metadata joins
     // the name line instead of vanishing with the card height (Maciej,
     // 2026-10-28: "meta … na niskim … powinien wchodzić w skład linii").
+    // An expanded card's one-row bar carries it the same way (Maciej,
+    // 2026-11-03): visible, never on a second strip of the plate.
     let inlineDescriptor: String? = {
-      guard !expanded, row.marks, contentTier == .header, let conversation else { return nil }
+      guard row.marks, expanded || contentTier == .header, let conversation else { return nil }
       let text =
         (state.conversationAgentDescriptor(conversation)
         ?? conversation.owner?.provider)?
@@ -2260,7 +2268,7 @@ private struct OverlayIntercomCard: View {
             } else {
               Text(verbatim: identity.displayDigit).csMono(10)
                 .foregroundStyle(detached ? palette.mutedText.color : palette.primaryText.color)
-                .background(OverlayIntercomResizeAnchor())
+                .background(OverlayResizeAnchor())
               OverlayIntercomStatusMark(
                 roster: roster, channel: channelRow,
                 kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle,
@@ -2335,15 +2343,11 @@ private struct OverlayIntercomCard: View {
             }
           } label: {
             HStack(spacing: 6) {
-              Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
-                .layoutPriority(1)
-              if let inlineDescriptor {
-                Text(verbatim: inlineDescriptor).csFont(10)
-                  .foregroundStyle(palette.mutedText.color)
-                  .lineLimit(1)
-                  .truncationMode(.middle)
-                  .accessibilityIdentifier("overlay-intercom-context-\(identity.digit)")
-              }
+              OverlayIntercomNameLine(
+                name: name, descriptor: inlineDescriptor, palette: palette,
+                descriptorIdentifier: "overlay-intercom-context-\(identity.digit)"
+              )
+              .layoutPriority(1)
               // The client focus button lives beside the name, not out with
               // the audio pair (Maciej, 2026-10-28).
               if row.slots >= 3 {
@@ -2383,7 +2387,7 @@ private struct OverlayIntercomCard: View {
           .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
           .modifier(nameHint)
         }
-        .background(OverlayIntercomResizeAnchor())
+        .background(OverlayResizeAnchor())
         .opacity(detached ? 0.72 : 1)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
@@ -2715,6 +2719,60 @@ private struct OverlayIntercomConversationBody: View {
   }
 }
 
+/// The agent's name and, when it can be read, its descriptor on one line.
+/// The name always keeps its letters. The descriptor steps down in readable
+/// forms — in full, provider · repository, truncated in the middle to a
+/// readable minimum, the repository alone — before it goes, never as a sliver
+/// that costs the name its width (a 220 pt fiszka rendered "Klau…" beside a
+/// one-glyph descriptor). Maciej, 2026-11-03: the metadata must stay visible.
+private struct OverlayIntercomNameLine: View {
+  @Environment(\.csTextScale) private var scale
+  let name: String
+  let descriptor: String?
+  let palette: OverlayAppearancePalette
+  let descriptorIdentifier: String
+
+  var body: some View {
+    if let descriptor {
+      // `AgentPlaybackBinding.descriptor` joins provider, model and repository
+      // with " · ". A shorter descriptor repeats a form; a repeat never fits
+      // where its first try did not, so ViewThatFits just moves on.
+      let parts = descriptor.components(separatedBy: " · ")
+      let edges =
+        parts.count > 2 ? [parts[0], parts[parts.count - 1]].joined(separator: " · ") : descriptor
+      ViewThatFits(in: .horizontal) {
+        line(descriptor, idealWidth: nil)
+        line(edges, idealWidth: nil)
+        line(
+          descriptor,
+          idealWidth: OverlayIntercomWidgetLayout.minimumReadableDescriptorWidth(scale: scale))
+        line(parts.last ?? descriptor, idealWidth: nil)
+        nameText
+      }
+    } else {
+      nameText
+    }
+  }
+
+  private var nameText: some View {
+    Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
+  }
+
+  /// `idealWidth` only changes what ViewThatFits measures; laid out, the
+  /// descriptor takes the width left after the name and truncates within it.
+  private func line(_ descriptor: String, idealWidth: CGFloat?) -> some View {
+    HStack(spacing: 6) {
+      nameText.layoutPriority(1)
+      Text(verbatim: descriptor).csFont(10)
+        .foregroundStyle(palette.mutedText.color)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .frame(idealWidth: idealWidth)
+        .accessibilityIdentifier(descriptorIdentifier)
+    }
+  }
+}
+
 /// Only metadata already projected for this exact conversation is shown.
 /// The canonical descriptor supplies provider, model and declared repository
 /// on one line. Execution coordinates remain outside the card's metadata row.
@@ -2964,10 +3022,9 @@ private struct OverlayIntercomInstanceCard: View {
       mini
       ? OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
       : OverlayIntercomWidgetLayout.conversationCornerRadius
-    let showsContext = !mini && conversation != nil
-    let titleBarHeight =
-      OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-      + (showsContext ? OverlayIntercomWidgetLayout.contextStripHeight(scale: scale) : 0)
+    // The window's bar is one row (Maciej, 2026-11-03: "jest za gruby …
+    // żeby on był jednorzędowy"); the descriptor rides its name line.
+    let titleBarHeight = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
     return intercomGlassContainer(
       ZStack(alignment: .top) {
         VStack(spacing: 0) {
@@ -3003,26 +3060,13 @@ private struct OverlayIntercomInstanceCard: View {
           }
         }
         .accessibilitySortPriority(0)
-        VStack(spacing: 0) {
-          headerRow(
-            instance, conversation: conversation, palette: palette, roster: roster,
-            audioBelowName: audioBelowName
-          )
-          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-          // The detached fiszka keeps the same metadata line as its group card;
-          // the agent's provider, model and repository must not vanish with the
-          // detach (Maciej, 2026-10-28).
-          if showsContext, let conversation {
-            OverlayIntercomConversationContext(
-              descriptor: state.conversationAgentDescriptor(conversation)
-                ?? conversation.owner?.provider,
-              palette: palette
-            )
-            .frame(
-              height: OverlayIntercomWidgetLayout.contextStripHeight(scale: scale),
-              alignment: .top)
-          }
-        }
+        // The agent's provider, model and repository must not vanish with the
+        // detach (Maciej, 2026-10-28); they ride the name line of this one row.
+        headerRow(
+          instance, conversation: conversation, palette: palette, roster: roster,
+          audioBelowName: audioBelowName
+        )
+        .frame(height: titleBarHeight)
         // Same plate as the docked card: composer glass above the rows, opaque
         // when Reduce Transparency is on. The header's drag grip stays inside it.
         .modifier(OverlayComposerSurface(palette: palette))
@@ -3073,9 +3117,12 @@ private struct OverlayIntercomInstanceCard: View {
     // #183). Only the exact owner's row is this window's to control.
     let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
     // A wide mini fiszka carries the metadata inside the name line; there is
-    // no context strip to hold it (Maciej, 2026-10-28).
+    // no context strip to hold it (Maciej, 2026-10-28). An open window's bar
+    // is one row too (Maciej, 2026-11-03), so it carries the metadata at every
+    // text tier: the name keeps priority and the descriptor truncates in the
+    // middle, provider first and repository last.
     let instanceDescriptor: String? = {
-      guard mini, layout.controls.marks, let conversation else { return nil }
+      guard !mini || layout.controls.marks, let conversation else { return nil }
       let text =
         (state.conversationAgentDescriptor(conversation)
         ?? conversation.owner?.provider)?
@@ -3083,20 +3130,16 @@ private struct OverlayIntercomInstanceCard: View {
       return (text?.isEmpty ?? true) ? nil : text
     }()
     let nameRow = HStack(spacing: 6) {
-      Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
-        .layoutPriority(1)
-      if let instanceDescriptor {
-        Text(verbatim: instanceDescriptor).csFont(10)
-          .foregroundStyle(palette.mutedText.color)
-          .lineLimit(1)
-          .truncationMode(.middle)
-          .accessibilityIdentifier("overlay-intercom-instance-context-\(instance.digit)")
-      }
+      OverlayIntercomNameLine(
+        name: instance.name, descriptor: instanceDescriptor, palette: palette,
+        descriptorIdentifier: "overlay-intercom-instance-context-\(instance.digit)"
+      )
+      .layoutPriority(1)
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     .contentShape(Rectangle())
-    .background(OverlayIntercomResizeAnchor())
+    .background(OverlayResizeAnchor())
     return HStack(spacing: 3) {
       if !mini && !instance.isHumanInbox {
         Text(verbatim: instance.displayDigit).csMono(10).foregroundStyle(palette.mutedText.color)
@@ -3408,183 +3451,6 @@ private final class OverlayIntercomResizeView: NSView {
   override func resetCursorRects() {
     discardCursorRects()
     addCursorRect(bounds, cursor: .crosshair)
-  }
-}
-
-/// Measures the live header's flexible region once, before its bitmap is frozen.
-/// It paints nothing and never participates in the header's hit testing.
-private struct OverlayIntercomResizeAnchor: NSViewRepresentable {
-  func makeNSView(context: Context) -> OverlayIntercomResizeAnchorView {
-    OverlayIntercomResizeAnchorView()
-  }
-  func updateNSView(_ nsView: OverlayIntercomResizeAnchorView, context: Context) {}
-}
-
-private final class OverlayIntercomResizeAnchorView: NSView {
-  override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-  static func find(in view: NSView) -> OverlayIntercomResizeAnchorView? {
-    if let anchor = view as? OverlayIntercomResizeAnchorView { return anchor }
-    for child in view.subviews {
-      if let anchor = find(in: child) { return anchor }
-    }
-    return nil
-  }
-}
-
-/// Transient native feedback owned by the existing window controller. It has
-/// no document, draft or delivery state and performs no SwiftUI layout work.
-@MainActor
-private final class OverlayIntercomResizePreview {
-  private let panel: NSPanel
-  private let drawing: OverlayIntercomResizePreviewView
-  private let sources: [(panel: OverlayIntercomPanel, alpha: CGFloat, ignoresMouseEvents: Bool)]
-  private var finished = false
-
-  init(
-    panels: [OverlayIntercomPanel], group: Bool, headerHeight: CGFloat,
-    palette: OverlayAppearancePalette
-  ) {
-    sources = panels.map { ($0, $0.alphaValue, $0.ignoresMouseEvents) }
-    let headers: [OverlayIntercomResizePreviewView.Header?] = panels.map { panel in
-      guard let view = panel.contentView else { return nil }
-      let height = min(headerHeight, view.bounds.height)
-      let rect = NSRect(
-        x: view.bounds.minX,
-        y: view.isFlipped ? view.bounds.minY : view.bounds.maxY - height,
-        width: view.bounds.width, height: height)
-      guard !rect.isEmpty,
-        let bitmap = view.bitmapImageRepForCachingDisplay(in: rect)
-      else { return nil }
-      view.cacheDisplay(in: rect, to: bitmap)
-      guard let image = bitmap.cgImage else { return nil }
-      let anchor = OverlayIntercomResizeAnchorView.find(in: view)
-      // The one-point cut is in the existing gap after the name/spacer, so
-      // only empty chrome stretches; labels and right controls stay 1:1.
-      let splitX = anchor.map { $0.convert($0.bounds, to: view).maxX - rect.minX + 1 }
-      return OverlayIntercomResizePreviewView.Header(
-        image: NSImage(cgImage: image, size: rect.size),
-        splitX: min(rect.width, max(0, splitX ?? rect.width)))
-    }
-    drawing = OverlayIntercomResizePreviewView(
-      headers: headers, group: group, headerHeight: headerHeight, palette: palette)
-    panel = NSPanel(
-      contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
-      backing: .buffered, defer: false)
-    panel.isReleasedWhenClosed = false
-    panel.isOpaque = false
-    panel.backgroundColor = .clear
-    panel.hasShadow = false
-    panel.ignoresMouseEvents = true
-    panel.hidesOnDeactivate = false
-    panel.level =
-      panels.map(\.level).max(by: { $0.rawValue < $1.rawValue })
-      ?? OverlayIntercomPanel.passiveLevel
-    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-    panel.contentView = drawing
-    for source in sources {
-      source.panel.ignoresMouseEvents = true
-      source.panel.alphaValue = 0
-    }
-  }
-
-  func update(frame: CGRect) {
-    guard !finished else { return }
-    panel.setFrame(frame, display: true)
-    drawing.needsDisplay = true
-    if !panel.isVisible { panel.orderFrontRegardless() }
-  }
-
-  func finish() {
-    guard !finished else { return }
-    finished = true
-    for source in sources {
-      if let view = source.panel.contentView {
-        OverlayIntercomResizeView.cancelTracking(in: view)
-        view.layoutSubtreeIfNeeded()
-      }
-      source.panel.alphaValue = source.alpha
-      source.panel.ignoresMouseEvents = source.ignoresMouseEvents
-    }
-    // Settlement is atomic. An old fade must never dim the next gesture or
-    // leave a second header over newly interactive controls.
-    panel.close()
-  }
-}
-
-private final class OverlayIntercomResizePreviewView: NSView {
-  struct Header {
-    let image: NSImage
-    let splitX: CGFloat
-  }
-  let headers: [Header?]
-  let group: Bool
-  let headerHeight: CGFloat
-  let palette: OverlayAppearancePalette
-
-  init(
-    headers: [Header?], group: Bool, headerHeight: CGFloat,
-    palette: OverlayAppearancePalette
-  ) {
-    self.headers = headers
-    self.group = group
-    self.headerHeight = headerHeight
-    self.palette = palette
-    super.init(frame: .zero)
-  }
-  required init?(coder: NSCoder) { return nil }
-  override var isOpaque: Bool { false }
-  override func draw(_ dirtyRect: NSRect) {
-    let count = max(0, headers.count - 1)
-    let rowHeight =
-      group && count > 0
-      ? (bounds.height - headerHeight) / CGFloat(count) - OverlayIntercomWidgetLayout.gap
-      : bounds.height
-    var top = bounds.maxY
-    for (index, header) in headers.enumerated() {
-      let height = group && index == 0 ? headerHeight : rowHeight
-      let rect = NSRect(x: bounds.minX, y: top - height, width: bounds.width, height: height)
-      guard height > 0 else { continue }
-      let path = NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10)
-      palette.desktopBackground.nsColor.withAlphaComponent(0.92).setFill()
-      path.fill()
-      palette.agentAccent.nsColor.withAlphaComponent(0.45).setStroke()
-      path.lineWidth = 1
-      path.stroke()
-      if let header {
-        NSGraphicsContext.saveGraphicsState()
-        path.addClip()
-        let image = header.image
-        let rightWidth = image.size.width - header.splitX
-        let rightX = rect.maxX - rightWidth
-        let y = rect.maxY - image.size.height
-        // Extend the empty gutter, not glyphs. The captured trailing fragment
-        // includes the original right inset and follows the new frame exactly.
-        if rightX > rect.minX + header.splitX, header.splitX >= 1 {
-          image.draw(
-            in: NSRect(
-              x: rect.minX + header.splitX, y: y,
-              width: rightX - rect.minX - header.splitX, height: image.size.height),
-            from: NSRect(x: header.splitX - 1, y: 0, width: 1, height: image.size.height),
-            operation: .sourceOver, fraction: 1)
-        }
-        let leftWidth = min(header.splitX, max(0, rightX - rect.minX))
-        if leftWidth > 0 {
-          image.draw(
-            in: NSRect(x: rect.minX, y: y, width: leftWidth, height: image.size.height),
-            from: NSRect(x: 0, y: 0, width: leftWidth, height: image.size.height),
-            operation: .sourceOver, fraction: 1)
-        }
-        if rightWidth > 0 {
-          image.draw(
-            in: NSRect(x: rightX, y: y, width: rightWidth, height: image.size.height),
-            from: NSRect(x: header.splitX, y: 0, width: rightWidth, height: image.size.height),
-            operation: .sourceOver, fraction: 1)
-        }
-        NSGraphicsContext.restoreGraphicsState()
-      }
-      top = rect.minY - OverlayIntercomWidgetLayout.gap
-    }
   }
 }
 

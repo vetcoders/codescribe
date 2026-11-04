@@ -2089,6 +2089,31 @@ class ColdLifecycleScanTests(unittest.TestCase):
         popen.assert_not_called()
         self.assertEqual(reason, "take_live")
 
+    def test_a_wait_cut_mid_read_still_reports_the_live_take(self):
+        # The take deadline can expire inside the last pass, before it reaches
+        # the end of a bus whose rows show a live take. The refusal reads to
+        # the end first, so it names the take, not unread history. Under load
+        # PlaybackQueueTests' rebound case hit this in 2 of 60 parallel runs.
+        self.write_rows([self.row("session_started", "live")])
+        player = MagicMock()
+        player.poll.return_value = 0
+
+        def cut_wait(bus, cursor, *, bridge_root=None, **_kwargs):
+            if not cursor:
+                cursor.update(
+                    DEMUX._load_lifecycle_cursor(bus, bridge_root, time.monotonic() + 1))
+            return False
+
+        with (
+            patch.object(DEMUX, "_wait_for_take_end", side_effect=cut_wait),
+            patch.object(subprocess, "Popen", return_value=player) as popen,
+        ):
+            spoken, _, reason = DEMUX._play_pcm_24k(
+                b"\0\0" * 2400, playback_root=self.root, bus=self.bus)
+        self.assertFalse(spoken)
+        popen.assert_not_called()
+        self.assertEqual(reason, "take_live")
+
     def test_a_take_in_a_saved_prefix_still_refuses_the_next_reply(self):
         # Saved progress keeps the open identity: resuming must not forget it.
         self.write_rows([

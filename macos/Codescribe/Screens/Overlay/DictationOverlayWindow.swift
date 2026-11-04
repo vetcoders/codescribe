@@ -126,6 +126,15 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var requestedResizeSize: NSSize?
   private var pendingResizePoint: NSPoint?
   private var resizePaintTask: Task<Void, Never>?
+  /// Expanded content never reflows at pointer frequency. The panel keeps its
+  /// frame and hides behind the fiszka's resize preview, which alone follows
+  /// the pointer; release commits the frame in one layout pass ("to dokładnie
+  /// zrobiliśmy we floating", Maciej, 2026-11-03). Compact and mini are light
+  /// strips and keep resizing live.
+  private var resizePreview: OverlayResizePreview?
+  /// The hidden panel is click-through, so the rest of the gesture reaches it
+  /// through one local monitor, as on fiszki.
+  private var resizePreviewMonitor: Any?
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
   private var expandedSizes: [OverlayContentSurface: NSSize] = [:]
   fileprivate(set) var contentSurface: OverlayContentSurface = .transcription
@@ -176,6 +185,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var frameTransitionGeneration: UInt64 = 0
   private(set) var isFrameTransitioning = false
   var isUserResizing: Bool { resizeStart != nil }
+  /// The frame a resize gesture currently shows: the preview's while expanded
+  /// content waits for release, otherwise the panel's own.
+  var resizeGestureFrame: NSRect { resizePreview?.frame ?? frame }
   var isUserDragging: Bool { dragStart != nil }
   var sizeForPersistence: NSSize {
     expandedSize
@@ -761,15 +773,61 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       edge: resizeStart.edge, start: resizeStart.frame,
       dx: point.x - resizeStart.mouse.x, dy: point.y - resizeStart.mouse.y,
       minSize: DictationOverlayWindow.minimumSize(for: presentationMode))
-    guard target != frame else { return false }
+    guard target != resizeGestureFrame else { return false }
+    if presentationMode == .expanded {
+      showResizePreview(target)
+      return true
+    }
     // Do not force an intermediate paint while hosting geometry is invalidated.
     setFrame(target, display: false)
     return true
   }
 
+  private func showResizePreview(_ target: NSRect) {
+    if resizePreview == nil {
+      resizePreview = OverlayResizePreview(
+        windows: [self], group: false, headerHeight: OverlayTranscriptActionsLayout.headerHeight,
+        palette: OverlayAppearancePalette.resolve(
+          effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? ColorScheme.dark : ColorScheme.light),
+        cornerRadius: CSRadius.window)
+      resizePreviewMonitor = NSEvent.addLocalMonitorForEvents(
+        matching: [.leftMouseDragged, .leftMouseUp]
+      ) { [weak self] event in
+        let consumed = MainActor.assumeIsolated { () -> Bool in
+          guard let self, self.isUserResizing else { return false }
+          let point = self.screenPoint(for: event)
+          if event.type == .leftMouseUp {
+            self.pendingResizePoint = point
+            self.endUserResize()
+          } else {
+            self.scheduleUserResize(to: point)
+          }
+          return true
+        }
+        return consumed ? nil : event
+      }
+    }
+    resizePreview?.update(frame: target)
+  }
+
+  /// Release lays the panel out once at the preview's last frame before it
+  /// becomes visible again; a cancelled gesture keeps the original frame.
+  private func settleResizePreview(commit: Bool) {
+    if let resizePreviewMonitor { NSEvent.removeMonitor(resizePreviewMonitor) }
+    resizePreviewMonitor = nil
+    guard let preview = resizePreview else { return }
+    resizePreview = nil
+    if commit, let target = preview.frame, target != frame {
+      setFrame(target, display: true)
+    }
+    preview.finish()
+  }
+
   func endUserResize() {
     flushPendingResize()
     guard let resizeStart else { return }
+    settleResizePreview(commit: true)
     let requested = requestedResizeSize ?? frame.size
     let changed = frame.size != resizeStart.frame.size || requested != resizeStart.frame.size
     if changed, pendingResizePresentation == nil, presentationMode == .expanded {
@@ -805,6 +863,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   /// Closing a panel must not flush a deferred show or revive its geometry.
   private func cancelUserResize() {
+    settleResizePreview(commit: false)
     resizePaintTask?.cancel()
     resizePaintTask = nil
     pendingResizePoint = nil

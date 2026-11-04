@@ -145,8 +145,9 @@ bounded to 120 seconds; timeout leaves a text-only bus reply with
 `spoken: false` and `reason: playback_busy`. Immediately after acquiring the
 lock, the helper checks the canonical application bus, even when the reply uses a
 channel bus. A live take waits up to another 120 seconds, then refuses playback
-with `reason: take_live`. A wait that ends before every source has been read
-refuses with `reason: history_unread`. An utterance seal alone does not end
+with `reason: take_live`. When the wait ends, the helper finishes one bounded
+read (0.5 s) of anything the last pass did not reach; only sources still unread
+after it refuse with `reason: history_unread`. An utterance seal alone does not end
 that take.
 If a take starts while afplay is still playing, the helper stops it and reports
 `reason: take_started`. Continue the reply in text. A take that starts after

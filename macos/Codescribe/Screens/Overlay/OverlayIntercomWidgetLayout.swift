@@ -280,6 +280,11 @@ enum OverlayIntercomWidgetLayout {
     ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 10 * scale))) + 6
   }
 
+  /// Below this width a middle-truncated descriptor on the name line stops
+  /// reading as provider…repository ("Claude C…codescribe" at 10 pt) and is
+  /// dropped instead of squeezing the name.
+  static func minimumReadableDescriptorWidth(scale: CGFloat) -> CGFloat { 80 * scale }
+
   /// OverlayConversationView.messageBubble: route + two prose lines + footer,
   /// 5pt between its three sections and 12pt padding on either edge. The list
   /// adds 8pt top/bottom, 12pt before its 1pt bottom anchor. Optional taller content

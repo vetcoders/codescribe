@@ -7569,6 +7569,16 @@ def _play_pcm_24k(
             ):
                 if control is not None and control.stopped():
                     return False, "playback stopped", "stopped"
+                # The deadline can cut the last pass mid-read. One bounded read
+                # to the end lets the reason say what the rows show, not how far
+                # that pass got: under load a live take came back as
+                # history_unread (2 of 60 parallel runs on dragon, 2026-11-03).
+                if not _lifecycle_cursor_caught_up(cursor):
+                    installation_idle(
+                        speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
+                        deadline=time.monotonic() + PLAYBACK_SCAN_SECONDS,
+                        channel_released=released,
+                    )
                 # An open start in a partly read prefix is not a live take.
                 if _lifecycle_cursor_caught_up(cursor) and _cursor_holds_take(cursor, released):
                     return False, "live take wait timed out", "take_live"
