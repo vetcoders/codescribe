@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// The one numbered channel pill (bus intercom spec §5.5). The folded Agents
-/// rail and the overlay's channel map, in the expanded bar and in mini, draw a
+/// rail and the overlay's channel map, in the bar and the window, draw a
 /// channel's digit only through this view; they differ in the form and in the
 /// action they hand it.
 ///
@@ -22,8 +22,9 @@ struct OverlayChannelPill: View {
     /// digit with the agent's name under it, one button for both (bus brief
     /// 2026-11-04 §4). The bar grows by the caption line, never the circle.
     case stacked
-    /// The collapsed map in mini: the agent count and `▾`, or the circled
-    /// digits of the channels the microphone feeds.
+    /// The vertical layout's collapsed map in the bar and the window: the
+    /// stacked cards, or the circled digits of the channels the microphone
+    /// feeds. Mini has no counter (Monika, 2026-11-04).
     case counter
   }
 
@@ -331,8 +332,7 @@ extension OverlayChannelPill {
   static let stackedPadding: CGFloat = 2
   static let stackedFocusRadius: CGFloat = 6
   static let counterPadding: CGFloat = 5
-  /// The recording counter hugs its circled digit; mini, which is as wide as
-  /// its content, narrows with it (`DictationOverlayWindow.miniNaturalWidth`).
+  /// The recording counter hugs its circled digit.
   static let counterRecordingPadding: CGFloat = 2
   static let counterGap: CGFloat = 2
   static let digitCircle: CGFloat = 15

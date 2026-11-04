@@ -2,23 +2,32 @@
 
 ## Overlay conversation viewing and speech
 
-The channel map in mini and compact is opt-in in Settings → Creator →
-**Channel map in the overlay**, off by default. With it off, mini keeps `cs` and
-its earlier 200 × 46 pt size (164 × 46 while an agent records); compact's natural
-width is 410 pt. An explicit user resize stays respected. The map geometry below
-applies when that switch is enabled. The switch changes presentation only.
+The channel map in compact is opt-in in Settings → Creator →
+**Channel map in the overlay**, off by default. With it off, mini keeps the
+`codescribe` word beside its brand dot; compact's natural width is 410 pt. An
+explicit user resize stays respected. The map geometry below applies when that
+switch is enabled. The switch changes presentation only.
 
-Overlay size is selected explicitly. Each ordinary preview-button click advances
-mini → compact (midi) → regular (full transcript) → mini. The upper-right corner
-is the shared pin: the strip grows leftward and the transcript grows downward,
-with display containment applied when the full target cannot fit. The context
-menu also selects any of the three modes directly. Mini is not resizable and is
-as wide as its content; midi supports horizontal resize; regular supports edge
-and corner resize around that same pin. Settled native floors are mini
-130 × 46 pt (its controls), midi 410 × 46 pt and regular 320 × 260 pt. Screen
+Overlay size is selected explicitly. A still click on the free background of
+mini or the bar (compact, midi) switches between them, round and round: mini →
+bar → mini (`OverlayState.advancePresentationFromHeader`, Monika 2026-11-04,
+bus brief §12.1). Free background is the draggable chrome
+(`FloatingOverlayPanel.isPresentationClickHit`): all of mini outside its
+controls, and the bar's `overlay-header*` drag regions. A control, an agent's
+circle, the 8 pt resize bands and a drag that moved 3 pt or more never switch
+the form. From the window (regular, full transcript) a header click returns to
+the bar. The window opens only from the preview chevron (mini and bar → the
+transcription window; the window → mini), the Agents button and the menus.
+The upper-right corner is the shared pin: the strip grows leftward and the
+transcript grows downward, with display containment applied when the full
+target cannot fit. The preview control's context menu selects any of the three
+forms directly (**Mini / Bar / Window**). Mini is not resizable and is as wide
+and as tall as its content; midi supports horizontal resize; regular supports
+edge and corner resize around that same pin. Settled native floors are mini
+127 × 36 pt (its controls), midi 410 × 46 pt and regular 320 × 260 pt. Screen
 anchors, the saved position and resize gestures reason in a 200 × 46 pt mini
 placement strip (`DictationOverlayWindow.miniPlacementSize`); mini is drawn at
-that strip's trailing edge. During a drag, the painted frame respects the current form's floor.
+that strip's upper-right corner. During a drag, the painted frame respects the current form's floor.
 The panel separately retains the requested gesture size: on release, requested
 height of at least 153 pt selects regular; below that, requested width below
 305 pt selects mini and larger width selects midi. Thus release-to-fold remains
@@ -28,17 +37,21 @@ readability floor. Moving the window relocates the pin. Pointer entry
 and departure preserve that selection. Hover still provides button feedback and
 pauses terminal auto-hide; it does not change the capture route or window size.
 
-Mini and compact carry the channel map (`docs/guide/chat-overlay.md`, "Channel
-map in the collapsed overlay"). Mini's header is the brand dot, the channel
-counter, the agents button, the microphone and the form control; it no longer
-reads "cs". Mini is as wide as its content (`DictationOverlayWindow.miniNaturalWidth`):
-its 130 pt floor (32 pt padding, the 9 pt dot, two 4 pt gaps around the closed
-centre, 81 pt of trailing controls) plus, with a channel on the map, 6 pt and
-the counter as drawn, the agent count with `▾` or the open channel's digit with
-the violet open-channel dot. It resizes in one step at its upper-right pin when the
-counter changes, opening and closing a microphone included; there is no
-separate width while an agent records. No two neighbouring controls stand
-further apart than the 8 pt between the trailing controls.
+Mini at rest is, from the left, the brand dot (the close button),
+transcription, the microphone, the Agents button (✦, its hover list replaces
+the former channel counter) and the preview chevron (Monika, 2026-11-04, bus
+brief §3). It carries no channel counter, waveform, timer or map. Mini is as
+wide and as tall as its content (`FloatingOverlayPanel.miniSize`): 7 pt from
+a 22 pt control to the capsule's edge on every side, 4 pt between controls,
+and two 2 pt gaps around the closed centre, so 127 × 36 pt with the channel
+map enabled (`DictationOverlayWindow.miniFloorWidth`) and that plus 6 pt and
+the `codescribe` word with the map disabled (`miniBrandWidth`). Toggling the
+map resizes it in one step at its upper-right pin. A take in mini keeps the
+microphone's stop in place; mini's recording form is a separate cut.
+Folding the bar to mini follows the native bounds: no layout is held during
+a bar-to-bar morph, so mini's row is never clipped mid-fold.
+The bar (compact) carries the channel map (`docs/guide/chat-overlay.md`,
+"Channel map in the collapsed overlay").
 The expanded bar (compact) is as wide as its content when it carries the
 horizontal map (`docs/OVERLAY_PRESENTATION.md`, channel map section): brand,
 an 82 pt waveform that keeps its width at rest and during a take, the session
@@ -63,9 +76,9 @@ ever hidden, and no `+N` or digit-only tier exists. Without the horizontal map
 the bar keeps its 410 × 46 pt floor. Chip hints read
 `5 · Kuba · Ctrl+5` with the Agent channel modifier in effect
 (`AGENT_CHANNEL_MODIFIER` after the one-key-one-role rule, Ctrl or Fn) and never
-assume Ctrl. A chip click is passive selection, like a rail pill. The mini
-counter's click changes form only: it selects compact, as the form control's
-"Expand to compact widget" does. Neither ever opens or closes a channel's
+assume Ctrl. A chip click is passive selection, like a rail pill. The
+vertical layout's stacked counter, in the bar and the window, brings the
+Intercom group forward. Neither ever opens or closes a channel's
 microphone or retargets a running capture. The map adds no hotkey and no chord
 of its own.
 
@@ -142,8 +155,8 @@ flicker on a live window.
 Opening a capture channel follows the exact provider/session conversation and
 scrolls to its newest message. In mini and compact with the channel map on
 (Creator preference `codescribe.overlay.channel_map`), the chord keeps that
-form: the conversation is selected, the strip's chip or counter shows the open
-digit, and the overlay does not unfold onto the Agents canvas. With the map
+form: the conversation is selected, the bar's chip or counter shows the open
+digit (mini shows none), and the overlay does not unfold onto the Agents canvas. With the map
 off, or when the overlay is already expanded, the Agents canvas unfolds onto
 the conversation (the overlay's expand-by-default preference permitting).
 Incoming replies, a dictation take start and the preferred expansion keep

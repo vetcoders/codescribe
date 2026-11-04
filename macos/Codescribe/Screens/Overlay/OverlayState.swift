@@ -797,13 +797,15 @@ final class OverlayState {
     }
   }
 
-  /// The header is an upward switch (header-click cut, 2026-10-17): mini opens
-  /// midi, and from there every click alternates midi <-> expanded. The header
-  /// never folds back to mini; the preview control keeps that exit.
+  /// A still click on the bar's free background switches its size (Monika,
+  /// 2026-11-04, bus brief §12.1): mini opens the bar and the bar folds back
+  /// to mini, round and round. The window is never opened from here: the
+  /// chevron, the Agents button and the menu open it. From the window a
+  /// header click still returns to the bar.
   func advancePresentationFromHeader() {
     switch presentationMode {
     case .mini: setPresentationMode(.midi)
-    case .midi: setPresentationMode(.expanded)
+    case .midi: setPresentationMode(.mini)
     case .expanded: setPresentationMode(.midi)
     }
   }
@@ -1308,12 +1310,12 @@ final class OverlayState {
   var channelMapInHeader: Bool {
     channelMapEnabled && channelMapPreference.layout == .horizontal
   }
-  /// Mini is one widget in both layouts and keeps its channel counter; only
-  /// the counter's face and destination differ (Maciej, 2026-10-23: mini "nie
-  /// musi i nie powinna się rozgałęziać inaczej niż jednym przyciskiem").
+  /// Mini is one widget in both layouts. It carries no channel counter
+  /// (Monika, 2026-11-04: the Agents list replaces it); with the map enabled
+  /// it drops the brand word, so the map setting still shapes mini.
   var channelMapInMini: Bool { channelMapEnabled }
-  /// The vertical layout's counter wears stacked cards and leads to the
-  /// Intercom group instead of compact.
+  /// The vertical layout's counter in the bar and the window wears stacked
+  /// cards and leads to the Intercom group.
   var channelMapCounterStacked: Bool { channelMapEnabled && !channelMapInHeader }
 
   /// The view observes the same presentation preference as Creator. Refitting
@@ -3582,24 +3584,19 @@ final class OverlayState {
     onChannelMapLayoutChanged?()
   }
 
-  /// The channel counter's click (bus intercom spec §13.4). Mini switches to
-  /// compact, where the chips are clickable, as the form toggle's "Expand to
-  /// compact widget" does. Compact shows the counter when the user narrowed
-  /// it, so there the click returns the strip to its natural width and the
-  /// chips come back. In the vertical layout the chips live in the Intercom
-  /// group, so the same click brings that group forward (Maciej, 2026-10-23:
-  /// "musi zaprowadzić w inne miejsce po prostu"). None selects a
-  /// conversation or touches capture.
+  /// The channel counter's click (bus intercom spec §13.4). Mini has no
+  /// counter (Monika, 2026-11-04). Compact shows the counter when the user
+  /// narrowed it, so there the click returns the strip to its natural width
+  /// and the chips come back. In the vertical layout the chips live in the
+  /// Intercom group, so the same click brings that group forward (Maciej,
+  /// 2026-10-23: "musi zaprowadzić w inne miejsce po prostu"). None selects
+  /// a conversation or touches capture.
   func activateChannelMapCounter() {
     if channelMapCounterStacked {
       onRevealIntercom?()
       return
     }
-    switch presentationMode {
-    case .mini: setPresentationMode(.midi)
-    case .midi: onRestoreMidiNaturalWidth?()
-    case .expanded: break
-    }
+    if presentationMode == .midi { onRestoreMidiNaturalWidth?() }
   }
 
   func refreshAgentChannelModifier() {

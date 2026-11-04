@@ -9,8 +9,8 @@ import SwiftUI
 /// circle). The bar's layout tells the map its row through the height it
 /// proposes (`OverlayChannelMapSlot`); the map gives the names the width the
 /// row leaves them, cutting the longest first, and never drops a channel, a
-/// name or a digit. In mini it is the counter alone, in the place the "cs"
-/// wordmark had.
+/// name or a digit. In the vertical layout it is the stacked counter alone,
+/// beside the brand. Mini carries no map (Monika, 2026-11-04).
 ///
 /// A chip selects that channel's conversation through the roster's own
 /// selection path, exactly as its rail pill does (decision D1), and names the
@@ -22,8 +22,9 @@ struct OverlayChannelMapView: View {
     /// The expanded bar: stacked pills in its single row or chips in its
     /// second row.
     case strip
-    /// Mini's header: the counter only; mini's width follows it.
-    case mini
+    /// The vertical layout's header in the bar and the window: the stacked
+    /// counter only.
+    case counter
   }
 
   /// The map's distance from the session timer in the bar's single row.
@@ -38,17 +39,17 @@ struct OverlayChannelMapView: View {
   let animates: Bool
   /// A chip's digit; the roster resolves the conversation and its owner.
   let onSelectChannel: (String) -> Void
-  /// The counter's click (spec §13.4): mini switches to the expanded bar.
+  /// The counter's click (spec §13.4): the vertical layout's Intercom group.
   let onCounter: () -> Void
   /// The roster supplies the same menu as the rail and floating intercom.
   var agentPillMenu: ((String) -> OverlayBroadcastPolicyMenu)? = nil
-  /// The vertical layout's mini counter: stacked cards that open the
+  /// The vertical layout's counter: stacked cards that open the
   /// Intercom group. The header decides; the map only draws it.
   var stacked = false
 
   var body: some View {
     switch placement {
-    case .mini:
+    case .counter:
       counterPill(scale: OverlayChannelPill.headerScale(textScale))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("overlay-channel-map")

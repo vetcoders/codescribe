@@ -3970,6 +3970,17 @@
         }
       }
     },
+    "Bar" : {
+      "comment" : "Widget size picker: the bar with the channel map",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Belka"
+          }
+        }
+      }
+    },
     "Bar (beta)" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -11335,6 +11346,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Środkowy przycisk myszy jako Fn"
+          }
+        }
+      }
+    },
+    "Mini" : {
+      "comment" : "Widget size picker: the small tool capsule",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Mini"
           }
         }
       }
@@ -22149,6 +22171,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozmiar widżetu"
+          }
+        }
+      }
+    },
+    "Window" : {
+      "comment" : "Widget size picker: the transcription and agents window",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Okno"
           }
         }
       }

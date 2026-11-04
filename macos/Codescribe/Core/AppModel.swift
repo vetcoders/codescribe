@@ -636,7 +636,7 @@ final class OverlayController: ObservableObject {
     } else {
       origin = OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
     }
-    // Mini is as wide as its content (bus intercom spec §13.4).
+    // Mini is as wide and as tall as its content (bus brief 2026-11-04 §3).
     let drawn =
       state.presentationMode == .mini
       ? (panel as? FloatingOverlayPanel)?.miniSize ?? size : size
@@ -647,10 +647,10 @@ final class OverlayController: ObservableObject {
       panel.setContentSize(drawn)
       return
     }
-    // The placement strip's trailing edge is the shared upper-right pin.
+    // The placement strip's upper-right corner is the shared pin.
     let frame = NSRect(
-      x: origin.x + size.width - drawn.width, y: origin.y, width: drawn.width,
-      height: drawn.height)
+      x: origin.x + size.width - drawn.width, y: origin.y + size.height - drawn.height,
+      width: drawn.width, height: drawn.height)
     OverlayPresentationTrace.shared.record(
       .placementApplied, mode: state.presentationMode, frame: panel.frame, target: frame,
       note: state.freeMotion ? "free_motion" : "anchor=\(state.placementAnchor)")
