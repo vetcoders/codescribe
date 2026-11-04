@@ -174,6 +174,22 @@ impl CentroidTrackerConfig {
         }
     }
 
+    pub fn for_rate(embedding_dim: usize, sample_rate_hz: u32) -> Self {
+        let rate = u64::from(sample_rate_hz.max(1));
+        Self {
+            embedding_dim,
+            sample_rate_hz: sample_rate_hz.max(1),
+            min_embedding_samples: (rate * 800) / 1_000,
+            min_centroid_update_samples: (rate * 1_500) / 1_000,
+            max_clusters: 8,
+            cosine_new_cluster_threshold: 0.70,
+            enrolled_match_threshold: 0.80,
+            enrolled_match_margin: 0.05,
+            ema_weight: 0.15,
+            max_carry_gap_samples: (rate * 500) / 1_000,
+        }
+    }
+
     fn validate(&self) -> Result<(), AttributionError> {
         let bounded = |value: f32| value.is_finite() && (0.0..=1.0).contains(&value);
         if self.embedding_dim == 0
@@ -893,6 +909,337 @@ impl SealedSpanEmbedder for OrtWeSpeakerEmbedder {
     }
 }
 
+/// Pinned local WeSpeaker ResNet34-LM ONNX model (`Wespeaker/wespeaker-voxceleb-resnet34-LM`, CC-BY-4.0).
+pub const WESPEAKER_MODEL_FILENAME: &str = "wespeaker-voxceleb-resnet34-LM.onnx";
+pub const WESPEAKER_MODEL_SHA256: &str =
+    "7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068";
+pub const WESPEAKER_EMBEDDING_DIM: usize = 256;
+
+static SHARED_WESPEAKER: std::sync::LazyLock<Option<Arc<OrtWeSpeakerEmbedder>>> =
+    std::sync::LazyLock::new(|| {
+        let path = resolve_wespeaker_model_path()?;
+        match OrtWeSpeakerEmbedder::from_file(
+            &path,
+            WESPEAKER_EMBEDDING_DIM,
+            FbankConfig::default(),
+        ) {
+            Ok(embedder) => {
+                tracing::info!(
+                    event = "wespeaker_embedder_loaded",
+                    path = %path.display(),
+                    dim = WESPEAKER_EMBEDDING_DIM,
+                    sha256 = WESPEAKER_MODEL_SHA256,
+                    "Loaded WeSpeaker ONNX speaker embedder"
+                );
+                Some(Arc::new(embedder))
+            }
+            Err(error) => {
+                tracing::warn!(
+                    event = "wespeaker_embedder_load_failed",
+                    path = %path.display(),
+                    %error,
+                    "WeSpeaker ONNX speaker embedder unavailable"
+                );
+                None
+            }
+        }
+    });
+
+/// Resolve the local WeSpeaker ONNX model path from `Config::config_dir()/models`
+/// or `~/.codescribe/models/wespeaker-voxceleb-resnet34-LM.onnx`.
+pub fn resolve_wespeaker_model_path() -> Option<std::path::PathBuf> {
+    let candidate = crate::config::Config::config_dir()
+        .join("models")
+        .join(WESPEAKER_MODEL_FILENAME);
+    if candidate.is_file() {
+        return Some(candidate);
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    let fallback = home
+        .join(".codescribe")
+        .join("models")
+        .join(WESPEAKER_MODEL_FILENAME);
+    fallback.is_file().then_some(fallback)
+}
+
+/// Process-wide cached WeSpeaker ONNX embedder (`wespeaker-voxceleb-resnet34-LM.onnx`).
+pub fn shared_wespeaker_embedder() -> Option<Arc<OrtWeSpeakerEmbedder>> {
+    SHARED_WESPEAKER.clone()
+}
+
+/// Per-utterance speaker attribution receipt emitted immediately when an occurrence seals.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UtteranceSpeakerReceipt {
+    pub schema: String,
+    pub session: String,
+    pub capture_epoch: u64,
+    pub span_id: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub sample_rate_hz: u32,
+    pub speaker_label: Option<String>,
+    pub decision_kind: String,
+    pub cosine_sim: Option<f32>,
+    pub dynamic_cluster_count: usize,
+    pub word_indices: Vec<usize>,
+    pub model_sha256: String,
+}
+
+/// Session-level speaker diarization summary written at terminal seal (`STOP`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TakeDiarizationSummary {
+    pub schema: String,
+    pub session: String,
+    pub capture_epoch: u64,
+    pub sample_rate_hz: u32,
+    pub model_filename: String,
+    pub model_sha256: String,
+    pub dynamic_cluster_count: usize,
+    pub utterances: Vec<UtteranceSpeakerReceipt>,
+}
+
+/// Live per-session speaker attribution observer driven by `AppleSealState` on
+/// each occurrence seal and finalized at `seal_terminal`. Never mutates `WordSlot`
+/// or `AcousticLedger`.
+pub struct LiveSessionSpeakerTracker {
+    session: String,
+    capture_epoch: u64,
+    sample_rate_hz: u32,
+    tracker: OnlineCentroidTracker,
+    attributed_occurrences: BTreeSet<crate::pipeline::acoustic_ledger::OccurrenceIdentity>,
+    next_span_id: u64,
+    last_cluster_label: Option<(String, u64)>,
+    max_carry_gap_samples: u64,
+    receipts: Vec<UtteranceSpeakerReceipt>,
+}
+
+impl LiveSessionSpeakerTracker {
+    pub fn for_session(session: &str, capture_epoch: u64, sample_rate_hz: u32) -> Self {
+        let config = CentroidTrackerConfig::for_rate(WESPEAKER_EMBEDDING_DIM, sample_rate_hz);
+        let max_carry_gap_samples = config.max_carry_gap_samples;
+        let safe_session = if session.is_empty() {
+            "unknown-session".to_string()
+        } else {
+            session.to_string()
+        };
+        let tracker = OnlineCentroidTracker::new(safe_session.clone(), capture_epoch, config)
+            .expect("valid rate-scaled CentroidTrackerConfig");
+        Self {
+            session: safe_session,
+            capture_epoch,
+            sample_rate_hz: sample_rate_hz.max(1),
+            tracker,
+            attributed_occurrences: BTreeSet::new(),
+            next_span_id: 0,
+            last_cluster_label: None,
+            max_carry_gap_samples,
+            receipts: Vec::new(),
+        }
+    }
+
+    /// Attribute a newly sealed occurrence and emit an immediate sidecar line + INFO log.
+    pub fn observe_sealed_occurrence(
+        &mut self,
+        ledger: &AcousticLedger,
+        occurrence: &crate::pipeline::acoustic_ledger::OccurrenceIdentity,
+        pcm: &[f32],
+        pcm_sample_start: u64,
+    ) -> Vec<UtteranceSpeakerReceipt> {
+        if !ledger.is_sealed(occurrence) || self.attributed_occurrences.contains(occurrence) {
+            return Vec::new();
+        }
+        let Some(slots) = ledger.slots_of(occurrence) else {
+            return Vec::new();
+        };
+        if slots.is_empty() {
+            return Vec::new();
+        }
+        let Some(embedder) = shared_wespeaker_embedder() else {
+            return Vec::new();
+        };
+        let max_gap = u64::from(self.sample_rate_hz) / 2;
+        let mut spans = group_word_slots_into_sealed_spans(slots, max_gap, self.capture_epoch);
+        if spans.is_empty() {
+            return Vec::new();
+        }
+        let sample_rate_hz = self.sample_rate_hz;
+        let mut emitted = Vec::with_capacity(spans.len());
+        for span in &mut spans {
+            span.span_id = self.next_span_id;
+            self.next_span_id += 1;
+            let attribution = self.tracker.attribute_sealed(
+                SealedEmbeddingInput {
+                    ledger,
+                    slots,
+                    span,
+                    pcm_sample_start,
+                    pcm,
+                    sample_rate_hz,
+                },
+                |slice| {
+                    let pcm_16k = if sample_rate_hz == 16_000 {
+                        slice.to_vec()
+                    } else {
+                        crate::audio::loader::resample_to_16k(slice, sample_rate_hz)
+                            .map_err(|_| AttributionError::InferenceFailed)?
+                    };
+                    embedder
+                        .embed_sealed_pcm(&pcm_16k)
+                        .map_err(|_| AttributionError::InferenceFailed)
+                },
+            );
+            let Ok(attr) = attribution else {
+                continue;
+            };
+            let (speaker_label, decision_kind, cosine_sim) = match &attr.decision {
+                AttributionDecision::EnrolledSpeaker {
+                    speaker_id,
+                    cosine_sim,
+                } => {
+                    self.last_cluster_label = Some((speaker_id.clone(), span.sample_end));
+                    (
+                        Some(speaker_id.clone()),
+                        "enrolled_speaker".to_string(),
+                        Some(*cosine_sim),
+                    )
+                }
+                AttributionDecision::DynamicCluster {
+                    cluster_id,
+                    cosine_sim,
+                } => {
+                    let label = format!("SPEAKER_{cluster_id:02}");
+                    self.last_cluster_label = Some((label.clone(), span.sample_end));
+                    (
+                        Some(label),
+                        "dynamic_cluster".to_string(),
+                        Some(*cosine_sim),
+                    )
+                }
+                AttributionDecision::ShortSpanCarryOver {
+                    inherited_speaker, ..
+                } => {
+                    let inherited = inherited_speaker.clone().or_else(|| {
+                        self.last_cluster_label.as_ref().and_then(|(lbl, end)| {
+                            (span.sample_start.saturating_sub(*end) <= self.max_carry_gap_samples)
+                                .then(|| lbl.clone())
+                        })
+                    });
+                    (inherited, "short_span_carry_over".to_string(), None)
+                }
+                AttributionDecision::RejectedStaleEpoch { .. } => {
+                    (None, "rejected_stale_epoch".to_string(), None)
+                }
+            };
+            let receipt = UtteranceSpeakerReceipt {
+                schema: "codescribe.utterance-speaker-receipt.v1".to_string(),
+                session: self.session.clone(),
+                capture_epoch: self.capture_epoch,
+                span_id: span.span_id,
+                sample_start: span.sample_start,
+                sample_end: span.sample_end,
+                sample_rate_hz: self.sample_rate_hz,
+                speaker_label: speaker_label.clone(),
+                decision_kind,
+                cosine_sim,
+                dynamic_cluster_count: self.tracker.dynamic_cluster_count(),
+                word_indices: span.word_indices.clone(),
+                model_sha256: WESPEAKER_MODEL_SHA256.to_string(),
+            };
+            tracing::info!(
+                event = "utterance_speaker_attributed",
+                session_id = %self.session,
+                capture_epoch = self.capture_epoch,
+                span_id = receipt.span_id,
+                sample_start = receipt.sample_start,
+                sample_end = receipt.sample_end,
+                speaker_label = ?receipt.speaker_label,
+                decision_kind = %receipt.decision_kind,
+                cosine_sim = ?receipt.cosine_sim,
+                dynamic_clusters = receipt.dynamic_cluster_count,
+                "Attributed speaker to sealed utterance span"
+            );
+            self.append_jsonl_sidecar(&receipt);
+            self.receipts.push(receipt.clone());
+            emitted.push(receipt);
+        }
+        self.attributed_occurrences.insert(occurrence.clone());
+        emitted
+    }
+
+    /// Finalize speaker attribution at `seal_terminal` (`STOP`) and write `~/.codescribe/sessions/<session>.diarization.json`.
+    pub fn finalize_take(
+        &mut self,
+        ledger: &AcousticLedger,
+        sealed_occurrences: &[crate::pipeline::acoustic_ledger::OccurrenceIdentity],
+        mut resolve_pcm: impl FnMut(u64, u64) -> Option<(u64, Vec<f32>)>,
+    ) -> Option<TakeDiarizationSummary> {
+        for occ in sealed_occurrences {
+            if !self.attributed_occurrences.contains(occ)
+                && let Some((pcm_start, pcm)) = resolve_pcm(occ.sample_start, occ.sample_end)
+            {
+                let _ = self.observe_sealed_occurrence(ledger, occ, &pcm, pcm_start);
+            }
+        }
+        let summary = TakeDiarizationSummary {
+            schema: "codescribe.take-diarization.v1".to_string(),
+            session: self.session.clone(),
+            capture_epoch: self.capture_epoch,
+            sample_rate_hz: self.sample_rate_hz,
+            model_filename: WESPEAKER_MODEL_FILENAME.to_string(),
+            model_sha256: WESPEAKER_MODEL_SHA256.to_string(),
+            dynamic_cluster_count: self.tracker.dynamic_cluster_count(),
+            utterances: self.receipts.clone(),
+        };
+        self.write_summary_sidecar(&summary);
+        tracing::info!(
+            event = "take_diarization_completed",
+            session_id = %self.session,
+            capture_epoch = self.capture_epoch,
+            utterances = summary.utterances.len(),
+            dynamic_clusters = summary.dynamic_cluster_count,
+            "Completed take speaker diarization summary"
+        );
+        Some(summary)
+    }
+
+    fn valid_sidecar_session(session: &str) -> bool {
+        (8..=80).contains(&session.len())
+            && session
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    }
+
+    fn append_jsonl_sidecar(&self, receipt: &UtteranceSpeakerReceipt) {
+        if !Self::valid_sidecar_session(&self.session) {
+            return;
+        }
+        let sessions_dir = crate::config::Config::config_dir().join("sessions");
+        let _ = std::fs::create_dir_all(&sessions_dir);
+        let path = sessions_dir.join(format!("{}.diarization.jsonl", self.session));
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            && let Ok(mut line) = serde_json::to_vec(receipt)
+        {
+            line.push(b'\n');
+            let _ = std::io::Write::write_all(&mut file, &line);
+        }
+    }
+
+    fn write_summary_sidecar(&self, summary: &TakeDiarizationSummary) {
+        if !Self::valid_sidecar_session(&self.session) {
+            return;
+        }
+        let sessions_dir = crate::config::Config::config_dir().join("sessions");
+        let _ = std::fs::create_dir_all(&sessions_dir);
+        let path = sessions_dir.join(format!("{}.diarization.json", self.session));
+        if let Ok(bytes) = serde_json::to_vec_pretty(summary) {
+            let _ = std::fs::write(path, bytes);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1119,5 +1466,68 @@ mod tests {
                 / num_frames as f32;
             assert!(mean.abs() < 1e-4, "CMN bin {bin} mean={mean}");
         }
+    }
+
+    #[test]
+    fn real_wespeaker_onnx_and_live_session_speaker_tracker_write_sidecars() {
+        let Some(model_path) = resolve_wespeaker_model_path() else {
+            panic!(
+                "expected WeSpeaker ONNX model at ~/.codescribe/models/wespeaker-voxceleb-resnet34-LM.onnx"
+            );
+        };
+        let embedder = OrtWeSpeakerEmbedder::from_file(
+            &model_path,
+            WESPEAKER_EMBEDDING_DIM,
+            FbankConfig::default(),
+        )
+        .expect("load real WeSpeaker ONNX model");
+        let signal_a: Vec<f32> = (0..32_000)
+            .map(|i| {
+                let t = i as f32 / 16_000.0;
+                (2.0 * std::f32::consts::PI * 140.0 * t).sin() * 0.3
+                    + (2.0 * std::f32::consts::PI * 420.0 * t).sin() * 0.15
+            })
+            .collect();
+        let emb_a = embedder
+            .embed_sealed_pcm(&signal_a)
+            .expect("embed signal_a");
+        assert_eq!(emb_a.dim, WESPEAKER_EMBEDDING_DIM);
+
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _guard = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        let session_id = "test-live-diarization-session";
+        let (mut ledger, _) = sealed_ledger_with_slots(session_id, 1, 0, 32_000, &[(0, 32_000)]);
+        let occ1 = OccurrenceIdentity::new(session_id, 1, 0, 32_000);
+        let occ2 = seal_owner_in_ledger(&mut ledger, session_id, 1, 33_600, 40_000, 2);
+
+        let mut live = LiveSessionSpeakerTracker::for_session(session_id, 1, 16_000);
+        let r1 = live.observe_sealed_occurrence(&ledger, &occ1, &signal_a, 0);
+        assert_eq!(r1.len(), 1);
+        assert_eq!(r1[0].speaker_label.as_deref(), Some("SPEAKER_00"));
+        assert_eq!(r1[0].decision_kind, "dynamic_cluster");
+
+        let short_pcm = vec![0.1_f32; 6_400];
+        let r2 = live.observe_sealed_occurrence(&ledger, &occ2, &short_pcm, 33_600);
+        assert_eq!(r2.len(), 1);
+        assert_eq!(r2[0].speaker_label.as_deref(), Some("SPEAKER_00"));
+        assert_eq!(r2[0].decision_kind, "short_span_carry_over");
+
+        let summary = live
+            .finalize_take(&ledger, &[occ1, occ2], |_, _| None)
+            .expect("summary written");
+        assert_eq!(summary.utterances.len(), 2);
+        assert_eq!(summary.dynamic_cluster_count, 1);
+        assert!(
+            temp.path()
+                .join("sessions")
+                .join(format!("{session_id}.diarization.jsonl"))
+                .is_file()
+        );
+        assert!(
+            temp.path()
+                .join("sessions")
+                .join(format!("{session_id}.diarization.json"))
+                .is_file()
+        );
     }
 }

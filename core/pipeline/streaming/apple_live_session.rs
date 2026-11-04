@@ -2304,6 +2304,8 @@ struct AppleSealState {
     dictation_witness_requests: u64,
     /// Locale handed to the witness decode, captured at session start.
     dictation_witness_language: Option<String>,
+    /// Observational speaker attribution tracker on sealed occurrences and terminal seal.
+    speaker_tracker: crate::pipeline::diarization::sealed_embedding::LiveSessionSpeakerTracker,
 }
 
 /// Capture-clock allowance for a final; the scheduled frontier is the hold.
@@ -2736,6 +2738,36 @@ impl AppleSealState {
         }
     }
 
+    fn observe_sealed_occurrence_speaker(&mut self, occurrence: &OccurrenceIdentity) {
+        let Some(window) = self.window_by_samples(occurrence.sample_start, occurrence.sample_end)
+        else {
+            return;
+        };
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = self.speaker_tracker.observe_sealed_occurrence(
+            &ledger,
+            occurrence,
+            &window.samples,
+            window.sample_start,
+        );
+    }
+
+    fn finalize_take_speaker_diarization(&mut self, sealed_occurrences: &[OccurrenceIdentity]) {
+        for occ in sealed_occurrences {
+            self.observe_sealed_occurrence_speaker(occ);
+        }
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = self
+            .speaker_tracker
+            .finalize_take(&ledger, sealed_occurrences, |_, _| None);
+    }
+
     /// Decoder-only view. Acoustic qualification and fence measurements keep
     /// using window_by_samples, whose raw authority is unchanged.
     fn recognizer_window_by_samples(&self, start: u64, end: u64) -> Option<ResolvedAudioWindow> {
@@ -2851,6 +2883,12 @@ impl AppleSealState {
     fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self {
         let session_id_for_energy = session_id.clone();
         let speech_progress = SpeechProgress::new(session_id.clone(), capture_epoch, sample_rate);
+        let speaker_tracker =
+            crate::pipeline::diarization::sealed_embedding::LiveSessionSpeakerTracker::for_session(
+                &session_id,
+                capture_epoch,
+                sample_rate,
+            );
         let state = Self {
             capture_turn: CaptureTurnIntent::HandsFree,
             session_id,
@@ -2971,6 +3009,7 @@ impl AppleSealState {
             dictation_witness_live_closed: false,
             dictation_witness_requests: 0,
             dictation_witness_language: None,
+            speaker_tracker,
         };
         state
             .acoustic_ledger
@@ -4027,6 +4066,7 @@ impl AppleSealState {
                     &owner,
                 );
                 drop(ledger);
+                self.observe_sealed_occurrence_speaker(&owner);
                 self.emit_pending_seal(ev_tx, id);
             }
         }
@@ -7405,6 +7445,7 @@ fn admit_ledger_label<'a>(
         &occurrence,
     );
     drop(ledger);
+    state.observe_sealed_occurrence_speaker(&occurrence);
     Some(receipt)
 }
 
@@ -11335,6 +11376,7 @@ fn apple_stream_worker(
         .seal_terminal(&state.session_id, state.capture_epoch);
     match terminal {
         Ok(receipt) => {
+            state.finalize_take_speaker_diarization(&receipt.sealed_occurrences);
             let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
         }
         Err(refusal) => report_terminal_seal_refusal(&ev_tx, refusal),
