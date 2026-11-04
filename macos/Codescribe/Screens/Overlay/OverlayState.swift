@@ -1139,7 +1139,12 @@ final class OverlayState {
   private var projectionOrder: [String: (sequence: UInt64, revision: UInt64, epoch: UInt64)] = [:]
   private var endedProjectionSessions: Set<String> = []
 
-  private(set) var recording = false
+  /// A change refits mini to its take (`miniTakeLive`, `noteChannelMapLayout`).
+  private(set) var recording = false {
+    didSet {
+      if recording != oldValue { noteChannelMapLayout() }
+    }
+  }
   /// Reason from `on_no_speech`, captured before the terminal stop.
   private var pendingNoSpeechMessage: String?
   /// The exact rendered text at the terminal projection.
@@ -1328,8 +1333,8 @@ final class OverlayState {
   /// reaches the overlay, so the map re-reads it when it appears and when the
   /// pointer enters it, before any hint is shown.
   private(set) var agentChannelModifier: OverlayChannelChordModifier = .control
-  /// The window owner refits mini and compact to the channel map (see
-  /// `noteChannelMapLayout`).
+  /// The window owner refits mini and compact to the channel map, and mini
+  /// to a live take (see `noteChannelMapLayout`).
   @ObservationIgnored var onChannelMapLayoutChanged: (() -> Void)?
   /// The window owner returns compact to its natural width, forgetting a
   /// width the user gave it (see `activateChannelMapCounter`).
@@ -3480,6 +3485,13 @@ final class OverlayState {
     channelAudioCaptureActive
       || (recording && !finalized && !transcribing && !isFinalPass && mode == .listening)
   }
+
+  /// A take is live for mini (Monika, 2026-11-04, bus brief §6, §11D): a
+  /// dictation from its start to the controller's stop, or any channel,
+  /// channel 0 included, with its microphone open. Mini then shows the
+  /// waveform, the clock and the addressees between the brand and its tools,
+  /// and folds back to its resting width when the take ends.
+  var miniTakeLive: Bool { recording || channelAudioCaptureActive }
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
 
@@ -3569,16 +3581,18 @@ final class OverlayState {
       unreadDigits: [])
   }
 
-  /// Reports a change of the map's agents or names, or of its open digits.
-  /// Mini's counter turns from the agent count into the open digits, so
-  /// mini's width follows the chord; compact's natural width ignores open
-  /// microphones (channel 0's chip included), so the chord never resizes the
-  /// strip and its refit is a no-op.
+  /// Reports a change of the map's agents or names, of its open digits, or
+  /// of a live take. Mini grows by the waveform, the clock and the open
+  /// channels' circles while a take is live (`miniTakeLive`), so its width
+  /// follows the take and the chord; the bar's waveform and clock keep their
+  /// width at rest, so a take alone never resizes the bar, and only channel
+  /// 0's circle, which the map shows while it broadcasts, changes it.
   private func noteChannelMapLayout() {
     let map = channelMapLayoutModel
     let key =
       map.agents.map { $0.digit + "\u{1F}" + $0.name }
       + ["\u{1E}" + map.openDigits.joined(separator: ",")]
+      + ["\u{1D}" + (miniTakeLive ? "take" : "")]
     guard key != channelMapLayoutKey else { return }
     channelMapLayoutKey = key
     onChannelMapLayoutChanged?()

@@ -1387,6 +1387,12 @@ struct DictationOverlayView: View {
     // group, so it keeps the brand's side in compact and expanded. Mini has
     // no counter (Monika, 2026-11-04: the Agents list replaces it).
     let leadingCounter = !mini && state.channelMapCounterStacked
+    // Mini while a take is live (Monika, 2026-11-04, bus brief §6, §11D): it
+    // grows by the waveform, the clock and the addressees, and its gaps open
+    // to the 4 pt its controls keep (`DictationOverlayWindow.miniTakeWidth`).
+    // It never becomes the bar; after the take it folds back to rest.
+    let miniTake = mini && state.miniTakeLive
+    let fixedWaveform = horizontalMap || miniTake
     // The expanded bar with its map is as wide as its content (bus brief
     // 2026-11-04 §4, §8): `OverlayBarLayout` sets the items side by side with
     // no stretching centre. Every other header keeps its row. One child list
@@ -1398,7 +1404,10 @@ struct DictationOverlayView: View {
         OverlayBarLayout(agentCount: map?.model.count ?? 0, textScale: textScale))
       : AnyLayout(
         HStackLayout(
-          spacing: mini ? DictationOverlayWindow.miniRowSpacing : OverlayBarMetrics.itemSpacing))
+          spacing: mini
+            ? (miniTake
+              ? DictationOverlayWindow.miniControlSpacing : DictationOverlayWindow.miniRowSpacing)
+            : OverlayBarMetrics.itemSpacing))
     return layout {
       // The shared lockup, with the close button in the brand dot's place.
       // With the channel map enabled mini shows the dot alone (Monika,
@@ -1427,20 +1436,21 @@ struct DictationOverlayView: View {
       }
       .layoutValue(key: OverlayBarLayout.PartKey.self, value: .leading)
 
-      // The flexible centre keeps one identity in every density; in mini it
-      // collapses to a spacer so the recording controls stay trailing. The
-      // expanded bar with its map gives it one fixed width instead.
+      // The flexible centre keeps one identity in every density; in mini at
+      // rest it collapses to a spacer so the recording controls stay
+      // trailing. The expanded bar with its map and mini during a take give
+      // it the bar's one fixed width instead.
       chromeWaveform(barCount: density.waveformBars)
         .frame(
-          minWidth: horizontalMap ? OverlayBarMetrics.waveformWidth : density.waveformMinWidth,
-          maxWidth: horizontalMap ? OverlayBarMetrics.waveformWidth : .infinity
+          minWidth: fixedWaveform ? OverlayBarMetrics.waveformWidth : density.waveformMinWidth,
+          maxWidth: fixedWaveform ? OverlayBarMetrics.waveformWidth : .infinity
         )
         .layoutPriority(-1)
-        .opacity(mini ? 0 : 1)
-        .allowsHitTesting(!mini)
-        .accessibilityHidden(mini)
+        .opacity(mini && !miniTake ? 0 : 1)
+        .allowsHitTesting(!mini || miniTake)
+        .accessibilityHidden(mini && !miniTake)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(mini ? "" : "overlay-header-center")
+        .accessibilityIdentifier(mini && !miniTake ? "" : "overlay-header-center")
         .background {
           GeometryReader { geometry in
             Color.clear.preference(
@@ -1454,10 +1464,13 @@ struct DictationOverlayView: View {
           .accessibilityHidden(true)
         }
         .layoutValue(key: OverlayBarLayout.PartKey.self, value: .waveform)
-      if !mini {
+      if !mini || miniTake {
         sessionTimer
           .allowsHitTesting(false)
           .layoutValue(key: OverlayBarLayout.PartKey.self, value: .timer)
+      }
+      if miniTake {
+        miniAddressees
       }
       // The expanded bar's channel map (bus intercom spec §5.1): stacked pills
       // after the clock, or the bar's second row (`OverlayBarLayout`).
@@ -1547,6 +1560,50 @@ struct DictationOverlayView: View {
       onCounter: { state.activateChannelMapCounter() },
       agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) },
       stacked: state.channelMapCounterStacked)
+  }
+
+  /// Mini's addressees while a take is live (Monika, 2026-11-04, bus brief
+  /// §6, §11D): one circled digit per channel the microphone feeds, in digit
+  /// order, drawn by the map's own pill in the form the counter used for open
+  /// channels, with the violet open-channel dot; no names and no `+N`. For
+  /// channel 0 the Agents button's left-facing megaphone stands in for the
+  /// circles. A dictation alone has none. A circle selects its conversation,
+  /// as a bar chip does; the megaphone is a sign, not a control. The window
+  /// sizes mini from the same values (`DictationOverlayWindow.miniAddresseesWidth`).
+  @ViewBuilder
+  private var miniAddressees: some View {
+    let roster = channelStatusView
+    let open = roster.channelMapModel.chips.filter(\.microphoneOpen)
+    let modifier = state.agentChannelModifier
+    if let broadcast = open.first(where: \.isBroadcast) {
+      OverlayMicrophoneGlyph(
+        symbol: "megaphone", tint: OverlayRecordingLight.agent.color, mirrored: true)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: broadcast.accessibilityLabel(modifier: modifier)))
+        .accessibilityIdentifier("overlay-mini-addressee-0")
+    } else if !open.isEmpty {
+      HStack(spacing: DictationOverlayWindow.miniControlSpacing) {
+        ForEach(open) { chip in
+          OverlayChannelPill(
+            form: .counter,
+            display: OverlayChannelPill.Display(
+              figure: chip.digit, disconnected: chip.disconnected, microphoneOpen: true,
+              openDigits: [chip.digit], unread: chip.unread, selected: chip.selected,
+              enabled: chip.selectable, animates: overlayVisible),
+            hint: chip.hint(modifier: modifier),
+            accessibilityText: chip.accessibilityLabel(modifier: modifier),
+            identifier: "overlay-mini-addressee-\(chip.digit)",
+            palette: palette, textScale: 1
+          ) {
+            roster.selectChannelConversation(chip.digit)
+          }
+          .fixedSize()
+        }
+      }
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("overlay-mini-addressees")
+    }
   }
 
   /// Hints name the chord with the stored modifier, which no settings event
@@ -1641,7 +1698,7 @@ struct DictationOverlayView: View {
   /// the stamp so the displayed value is the session's true length.
   @ViewBuilder
   private var sessionTimer: some View {
-    if !state.isMini {
+    if !state.isMini || state.miniTakeLive {
       TimelineView(
         .animation(minimumInterval: 1, paused: !overlayVisible || state.sessionTimerPaused)
       ) { _ in

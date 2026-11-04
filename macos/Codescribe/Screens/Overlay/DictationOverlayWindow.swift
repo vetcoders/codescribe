@@ -139,12 +139,17 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// With the channel map enabled mini shows the brand dot alone; without it
   /// the word as well. Mini carries no channel counter (Monika, 2026-11-04).
   private var channelMapEnabled = false
-  /// Mini is as wide and as tall as its content (bus brief 2026-11-04 §3).
+  /// What a live take adds to mini (`DictationOverlayWindow.miniTakeWidth`):
+  /// the waveform, the clock and the addressees; zero at rest. Nothing
+  /// remembers it, so mini folds back to its resting width when the take ends.
+  private(set) var miniTakeWidth: CGFloat = 0
+  /// Mini is as wide and as tall as its content (bus brief 2026-11-04 §3,
+  /// §6): at rest, or grown by a live take.
   var miniSize: NSSize {
-    NSSize(
-      width: channelMapEnabled
-        ? DictationOverlayWindow.miniFloorWidth : DictationOverlayWindow.miniBrandWidth,
-      height: DictationOverlayWindow.miniHeight)
+    let rest =
+      channelMapEnabled
+      ? DictationOverlayWindow.miniFloorWidth : DictationOverlayWindow.miniBrandWidth
+    return NSSize(width: rest + miniTakeWidth, height: DictationOverlayWindow.miniHeight)
   }
 
   /// The expanded bar's measured geometry (`DictationOverlayWindow.midiBarGeometry`):
@@ -528,7 +533,20 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     settleMiniWidth()
   }
 
-  private func settleMiniWidth() {
+  /// A take started or ended, or its open channels changed (Monika,
+  /// 2026-11-04, bus brief §6, §11D): mini grows leftward by the waveform,
+  /// the clock and the addressees, and folds back after the take. The
+  /// upper-right corner stays, so the tools keep their screen position. The
+  /// change glides on a visible panel unless Reduce Motion is on; a morph,
+  /// drag or resize in flight settles first, and its completion lands here.
+  func setMiniTake(width: CGFloat) {
+    guard abs(width - miniTakeWidth) > 0.5 else { return }
+    miniTakeWidth = width
+    settleMiniWidth(
+      animated: isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+  }
+
+  private func settleMiniWidth(animated: Bool = false) {
     guard presentationMode == .mini, !isFrameTransitioning, !isUserDragging, !isUserResizing,
       abs(frame.width - miniSize.width) > 0.5 || abs(frame.height - miniSize.height) > 0.5
     else { return }
@@ -537,14 +555,37 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     defer { OverlayController.isApplyingFrame = wasApplyingFrame }
     minSize = miniSize
     contentMinSize = minSize
-    // One step, no morph: the header swaps the brand word in the same pass,
-    // so an animated width would clip the trailing controls while the strip
-    // widens.
-    setFrame(
+    let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+    let target = DictationOverlayWindow.visibleExpansionFrame(
       NSRect(
         x: frame.maxX - miniSize.width, y: frame.maxY - miniSize.height, width: miniSize.width,
         height: miniSize.height),
-      display: true)
+      in: visible)
+    guard animated else {
+      // One step, no morph: the header swaps the brand word in the same
+      // pass, so an animated width would clip the trailing controls while
+      // the strip widens.
+      setFrame(target, display: true)
+      return
+    }
+    // A take's glide holds one layout at the window's upper-right corner, as
+    // a morph does: growing, the take's row, which the widening window
+    // reveals; folding, the departing row, which the narrowing window
+    // covers. The header never lays out at an intermediate width, so the
+    // tools are never clipped and never move.
+    frameTransitionGeneration &+= 1
+    let generation = frameTransitionGeneration
+    frameTransitionTarget = target
+    transitionTop = frame.maxY
+    transitionRight = frame.maxX
+    isFrameTransitioning = true
+    let container = contentView as? OverlayContentContainer
+    container?.pinnedContentSize = target.width > frame.width ? target.size : frame.size
+    lastMorphDuration = DictationOverlayWindow.presentationDuration(from: frame, to: target)
+    OverlayPresentationTrace.shared.record(
+      .frameTransitionBegan, from: .mini, mode: .mini, animated: true, frame: frame,
+      target: target, generation: generation, note: "mini_take")
+    animateFrame(to: target, generation: generation)
   }
 
   func settleFrameTransition() {
@@ -1324,9 +1365,12 @@ enum DictationOverlayWindow {
   /// below the midpoint between it and compact's floor (305 pt). Mini itself
   /// is drawn at its natural size (`miniSize`), at this strip's upper-right
   /// corner (the shared pin), so positions saved before content-sized mini
-  /// land where they did. Mini does not scale with the text size; its widest
-  /// form, with the brand word, is 133 pt plus the word (`miniBrandWidth`;
-  /// about 65 pt by estimate, not yet measured on screen), within the strip.
+  /// land where they did. Mini does not scale with the text size; at rest its
+  /// widest form, with the brand word, is 133 pt plus the word
+  /// (`miniBrandWidth`; about 65 pt by estimate, not yet measured on screen),
+  /// within the strip. A live take grows mini past the strip's left edge
+  /// (`miniTakeWidth`); the upper-right pin keeps the strip's right edge, so
+  /// placement draws the measured width and never clips it.
   static let miniPlacementSize = NSSize(width: 200, height: collapsedHeight)
   /// Mini at rest (Monika, 2026-11-04, bus brief §3), measured at text
   /// scale 1: the 9 pt close dot, then transcription, microphone, Agents and
@@ -1335,7 +1379,8 @@ enum DictationOverlayWindow {
   /// on every side. The empty centre between the brand and the controls has
   /// no minimum in mini and a 2 pt row gap on either side, so it closes to
   /// the 4 pt the controls keep between them. Nothing is reserved for hidden
-  /// elements: no counter, waveform or timer.
+  /// elements at rest: no counter, waveform or timer; a live take adds them
+  /// (`miniTakeWidth`).
   static let miniInset: CGFloat = 7
   static let miniControl: CGFloat = 22
   static let miniControlCount: CGFloat = 4
@@ -1361,6 +1406,34 @@ enum DictationOverlayWindow {
   /// controls.
   static let miniFloorWidth =
     miniOuterPadding + miniBrandDot + 2 * miniRowSpacing + miniTrailingControls
+
+  /// Mini while a take is live (Monika, 2026-11-04, bus brief §6, §11D):
+  /// between the brand and the tools the bar's 82 pt waveform, the `00:00`
+  /// clock and, for an agent take, one circled digit per open channel
+  /// (`OverlayChannelPill` in its counter form, 19 pt) or, for channel 0,
+  /// the 22 pt megaphone; a dictation alone has no addressees. The row's gaps
+  /// open from 2 pt to the 4 pt the controls keep, so the take adds the
+  /// waveform, the clock, the addressees and one 4 pt gap per new item; zero
+  /// at rest. Like the rest of mini it does not scale with the text size.
+  @MainActor
+  static func miniTakeWidth(live: Bool, openDigits: [String]) -> CGFloat {
+    guard live else { return 0 }
+    var width = OverlayBarMetrics.waveformWidth + 2 * miniControlSpacing + midiTimerWidth
+    let addressees = miniAddresseesWidth(openDigits: openDigits)
+    if addressees > 0 { width += miniControlSpacing + addressees }
+    return ceil(width)
+  }
+
+  /// The take's addressees in mini: channel 0's megaphone, else the open
+  /// channels' circled digits 4 pt apart; zero without an open channel.
+  @MainActor
+  static func miniAddresseesWidth(openDigits: [String]) -> CGFloat {
+    if openDigits.contains("0") { return OverlayMicrophoneGlyph.diameter }
+    guard !openDigits.isEmpty else { return 0 }
+    let count = CGFloat(openDigits.count)
+    let circle = OverlayChannelPill.counterWidth(figure: "", openDigitCount: 1, scale: 1)
+    return count * circle + (count - 1) * miniControlSpacing
+  }
 
   /// Mini with the brand word, while the channel map is disabled: the floor
   /// plus the word after its gap. Measured the way the floor is, so the
@@ -1581,13 +1654,15 @@ enum DictationOverlayWindow {
     panel.onResizePresentationSelected = { [weak state] mode in
       state?.setPresentationMode(mode)
     }
-    // Mini's brand word and the bar's geometry follow the channel map (bus
-    // intercom spec 5.1; bus brief 2026-11-04 §3, §4): one projection, one
-    // hook, both forms.
+    // Mini's brand word, mini's take and the bar's geometry follow the
+    // channel map (bus intercom spec 5.1; bus brief 2026-11-04 §3, §4, §6):
+    // one projection, one hook, both forms.
     let fitToChannelMap = { [weak panel, weak state] (scale: CGFloat) in
       guard let panel, let state else { return }
       let map = state.channelMapLayoutModel
       panel.setChannelMapPresentation(enabled: state.channelMapInMini)
+      panel.setMiniTake(
+        width: miniTakeWidth(live: state.miniTakeLive, openDigits: map.openDigits))
       panel.setMidiBarGeometry(
         state.channelMapInHeader
           ? midiBarGeometry(
