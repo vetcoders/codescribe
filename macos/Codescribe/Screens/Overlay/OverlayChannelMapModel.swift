@@ -38,8 +38,75 @@ enum OverlayChannelChordModifier: Equatable, Sendable {
   func spokenShortcut(digit: String) -> String? { keyName.map { $0 + " " + digit } }
 }
 
-/// One channel of the overlay's map: a bound digit and its agent,
-/// or channel 0 while the microphone broadcasts on it. Display values only;
+/// What the hover card of an agent's chip states (Monika, 2026-11-04): three
+/// separate facts, never folded into one value, each read from a projection
+/// the roster row already shows.
+///
+/// 1. Presence is the roster snapshot's `followerAlive`: `true` is online in
+///    the current sample, `false` only "not active" (a capped discovery can
+///    report false for a live agent), `nil` no data. A stall (alive, backlog
+///    unread past the horizon) is its own flag. The delivery dot and the
+///    channel 0 policy never stand in for presence.
+/// 2. Reception is the channel 0 policy with its receipt: a policy without a
+///    read receipt is unconfirmed, not "on". The moon is do-not-disturb.
+/// 3. Unread is the conversation's count of new replies.
+struct OverlayChannelChipStatus: Equatable, Sendable {
+  enum Presence: Equatable, Sendable {
+    case online
+    case inactive
+    case unknown
+  }
+
+  enum Reception: Equatable, Sendable {
+    case member
+    case off
+    case unknown
+  }
+
+  let presence: Presence
+  /// Alive by heartbeat, yet its backlog unread past the stall horizon.
+  let stalled: Bool
+  let reception: Reception
+  /// Do-not-disturb, only when a receipt confirms it.
+  let quiet: Bool
+  let unread: Int
+  /// The agent's provider (`codex`, `claude`) when the roster names one.
+  let provider: String?
+
+  init(
+    presence: Presence, stalled: Bool = false, reception: Reception, quiet: Bool = false,
+    unread: Int = 0, provider: String? = nil
+  ) {
+    self.presence = presence
+    self.stalled = stalled
+    self.reception = reception
+    self.quiet = quiet
+    self.unread = unread
+    self.provider = provider
+  }
+
+  /// The card's facts from the roster's projections: the snapshot's
+  /// liveness claim, its stall, the (fail-open) channel 0 policy and whether
+  /// a receipt stands behind it, and the unread count.
+  init(
+    followerAlive: Bool?, stalled: Bool, policy: AgentBroadcastPolicy, policyKnown: Bool,
+    unread: Int, provider: String?
+  ) {
+    switch followerAlive {
+    case true?: presence = .online
+    case false?: presence = .inactive
+    case nil: presence = .unknown
+    }
+    self.stalled = stalled
+    reception = policyKnown ? (policy.member ? .member : .off) : .unknown
+    quiet = policyKnown && policy.moon
+    self.unread = max(0, unread)
+    self.provider = provider.flatMap { $0.isEmpty ? nil : $0 }
+  }
+}
+
+/// One channel of the overlay's map: a bound digit and its agent, or
+/// channel 0, which leads the map whenever it is shown. Display values only;
 /// the conversation and its exact owner are resolved by the roster when the
 /// chip is clicked.
 struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
@@ -59,13 +126,17 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
   /// The selected conversation is on this channel: the circle wears the
   /// violet selection fill.
   let selected: Bool
+  /// The agent's state for its hover card; channel 0 has none (its hover is
+  /// the channel's message carousel).
+  var status: OverlayChannelChipStatus? = nil
 
   var id: String { digit }
   var isBroadcast: Bool { digit == "0" }
 
-  /// The floating hint: `5 · Kuba · Ctrl+5`, or `0 · Ctrl+0`; without a
-  /// chord `5 · Kuba` or `0`. It names the agent in full whatever the bar
-  /// cuts its caption to.
+  /// The plain hint: `5 · Kuba · Ctrl+5`, or `0 · Ctrl+0`; without a chord
+  /// `5 · Kuba` or `0`. It names the agent in full whatever the bar cuts its
+  /// caption to. An agent's chip with a status shows its hover card instead
+  /// (`OverlayChannelChipHoverCard`), whose last line is the chord.
   func hint(modifier: OverlayChannelChordModifier) -> String {
     var parts = isBroadcast || name.isEmpty ? [digit] : [digit, name]
     if let shortcut = modifier.shortcut(digit: digit) { parts.append(shortcut) }
@@ -76,13 +147,16 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
     guard let shortcut = modifier.spokenShortcut(digit: digit) else {
       return accessibilityLabelWithoutShortcut
     }
-    // Channel 0 is on the map only while the microphone broadcasts on it.
     if isBroadcast {
-      return String(
-        localized: "Channel \(digit), shortcut \(shortcut), microphone open",
-        comment:
-          "Collapsed overlay channel 0 chip while broadcasting: digit, the channel chord (e.g. Ctrl 0)"
-      )
+      return microphoneOpen
+        ? String(
+          localized: "Channel \(digit), shortcut \(shortcut), microphone open",
+          comment:
+            "Collapsed overlay channel 0 chip while broadcasting: digit, the channel chord (e.g. Ctrl 0)"
+        )
+        : String(
+          localized: "Channel \(digit), shortcut \(shortcut)",
+          comment: "Overlay channel 0 chip at rest: digit, the channel chord (e.g. Ctrl 0)")
     }
     return microphoneOpen
       ? String(
@@ -98,11 +172,15 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
   /// VoiceOver label while both keys record dictation and no chord exists.
   private var accessibilityLabelWithoutShortcut: String {
     if isBroadcast {
-      return String(
-        localized: "Channel \(digit), microphone open",
-        comment:
-          "Collapsed overlay channel 0 chip while broadcasting, when no key plus digit opens a channel"
-      )
+      return microphoneOpen
+        ? String(
+          localized: "Channel \(digit), microphone open",
+          comment:
+            "Collapsed overlay channel 0 chip while broadcasting, when no key plus digit opens a channel"
+        )
+        : String(
+          localized: "Channel \(digit)",
+          comment: "Overlay channel 0 chip at rest, when no key plus digit opens a channel")
     }
     return microphoneOpen
       ? String(
@@ -198,20 +276,24 @@ struct OverlayChannelMapNameWidths: Equatable, Sendable {
 /// no state, polls nothing and never names a session; a click resolves the
 /// conversation through the roster's existing selection path.
 struct OverlayChannelMapModel: Equatable, Sendable {
-  /// Channel 0 while the microphone broadcasts on it, then the agents.
+  /// Channel 0, then the agents.
   let chips: [OverlayChannelMapChip]
 
-  /// The bound digits 1–9 in order, the agents; channel 0 leads only while
-  /// the microphone is open on it (spec §13.2). A digit is bound when the
-  /// roster snapshot carries it (`hudStates`); delivery history alone does
-  /// not put a channel on the map. Channel 10 and other non-chord channels
-  /// stay off it, since no chord reaches them.
+  /// Channel 0's chip, then the bound digits 1–9 in order, the agents
+  /// (Monika, 2026-11-04: `(0)` leads the row, under the codescribe dot, at
+  /// rest as well as while the microphone broadcasts on it). A digit is
+  /// bound when the roster snapshot carries it (`hudStates`); delivery
+  /// history alone does not put a channel on the map. Channel 10 and other
+  /// non-chord channels stay off it, since no chord reaches them. With no
+  /// agent and no broadcast the map is empty: channel 0 alone is no map.
+  /// `statuses` carries each agent's hover-card facts by digit.
   init(
     channels: [OverlayChannelDelivery],
     hudStates: [String: OverlayChannelHudProjection],
     selectedDigit: String? = nil,
     selectableDigits: Set<String>,
-    unreadDigits: Set<String>
+    unreadDigits: Set<String>,
+    statuses: [String: OverlayChannelChipStatus] = [:]
   ) {
     var agents: [OverlayChannelMapChip] = []
     var placed: Set<String> = []
@@ -227,20 +309,21 @@ struct OverlayChannelMapModel: Equatable, Sendable {
           digit: digit, name: OverlayChannelMapChip.displayName(channel.agent),
           disconnected: hud.followerAlive == false, microphoneOpen: hud.open,
           unread: unreadDigits.contains(digit), selectable: selectableDigits.contains(digit),
-          selected: digit == selectedDigit))
+          selected: digit == selectedDigit, status: statuses[digit]))
     }
-    guard hudStates["0"]?.open == true else {
-      chips = agents
+    let broadcasting = hudStates["0"]?.open == true
+    guard broadcasting || !agents.isEmpty else {
+      chips = []
       return
     }
-    let broadcast = OverlayChannelMapChip(
-      digit: "0", name: "", disconnected: false, microphoneOpen: true,
+    let zero = OverlayChannelMapChip(
+      digit: "0", name: "", disconnected: false, microphoneOpen: broadcasting,
       unread: unreadDigits.contains("0"), selectable: selectableDigits.contains("0"),
       selected: selectedDigit == "0")
-    chips = [broadcast] + agents
+    chips = [zero] + agents
   }
 
-  /// The bound agents, without channel 0's broadcast chip.
+  /// The bound agents, without channel 0's chip.
   var agents: [OverlayChannelMapChip] { chips.filter { !$0.isBroadcast } }
 
   /// The counter counts agents; channel 0 is not one.
@@ -275,8 +358,9 @@ struct OverlayChannelMapModel: Equatable, Sendable {
 
   /// The expanded bar keeps 1–5 agents in its single row, names under the
   /// circles, and gives 6–9 a second row, names beside them (bus brief
-  /// 2026-11-04 §4). Measured width decides inside that preference: a single
-  /// row the user narrowed below its shortest names takes two rows.
+  /// 2026-11-04 §4). The limit counts agents; channel 0's chip leads either
+  /// row and is not one. Measured width decides inside that preference: a
+  /// single row the user narrowed below its shortest names takes two rows.
   static let singleRowAgentLimit = 5
 
   /// A row of the map's pills at the given name widths: each pill's

@@ -1574,8 +1574,10 @@ enum DictationOverlayWindow {
   /// the single row's shortest names takes two rows, so the minimum is the
   /// narrower of the two. With 6–9 agents the bar always has two rows: the
   /// first row's items over the chips, as wide as the wider of them. Channel
-  /// 0's circle is in the map only while it broadcasts. No agent and no
-  /// broadcast is the classic bar. Every width is bounded by the screen.
+  /// 0's circle leads either row and is measured like any pill with a
+  /// nameless caption; it is not an agent, so it never moves the 1–5 / 6–9
+  /// split. No agent and no broadcast is the classic bar. Every width is
+  /// bounded by the screen.
   @MainActor
   static func midiBarGeometry(
     map: OverlayChannelMapModel, textScale: CGFloat, visibleWidth: CGFloat? = nil

@@ -77,10 +77,11 @@ longer resize the bar (the names shorten, then one row becomes two); wider, it
 is kept and grows only when the natural width exceeds it. Only an edge that
 really moved the frame writes that width. No channel, name or header action is
 ever hidden, and no `+N` or digit-only tier exists. Without the horizontal map
-the bar keeps its 410 × 46 pt floor. Chip hints read
-`5 · Kuba · Ctrl+5` with the Agent channel modifier in effect
-(`AGENT_CHANNEL_MODIFIER` after the one-key-one-role rule, Ctrl or Fn) and never
-assume Ctrl. A chip click is passive selection, like a rail pill. The
+the bar keeps its 410 × 46 pt floor. An agent chip's hover card ends with the
+chord (`Ctrl+5`), and the plain hint reads `0 · Ctrl+0`, with the Agent channel
+modifier in effect (`AGENT_CHANNEL_MODIFIER` after the one-key-one-role rule,
+Ctrl or Fn), never assuming Ctrl; without a chord neither names one. A chip
+click, `(0)` included, is passive selection, like a rail pill. The
 vertical layout's stacked counter, in the bar and the window, brings the
 Intercom group forward. Neither ever opens or closes a channel's
 microphone or retargets a running capture. The map adds no hotkey and no chord

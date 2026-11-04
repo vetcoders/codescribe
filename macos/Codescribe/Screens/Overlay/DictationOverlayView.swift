@@ -1551,6 +1551,7 @@ struct DictationOverlayView: View {
       onSelectChannel: { roster.selectChannelConversation($0) },
       onCounter: { state.activateChannelMapCounter() },
       agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) },
+      channelZeroHint: roster.channelZeroMessageHint,
       stacked: state.channelMapCounterStacked)
   }
 

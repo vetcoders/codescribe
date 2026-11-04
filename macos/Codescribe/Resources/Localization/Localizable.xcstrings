@@ -1688,6 +1688,41 @@
         }
       }
     },
+    "%lld unread" : {
+      "comment" : "Channel chip hover card: new replies from the agent not read yet",
+      "localizations" : {
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "%lld nieprzeczytana"
+                }
+              },
+              "few" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "%lld nieprzeczytane"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "%lld nieprzeczytanych"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "%lld nieprzeczytane"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld unread replies" : {
       "localizations" : {
         "en" : {
@@ -4694,6 +4729,17 @@
         }
       }
     },
+    "Channel %@" : {
+      "comment" : "Overlay channel 0 chip at rest, when no key plus digit opens a channel",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kanał %@"
+          }
+        }
+      }
+    },
     "Channel %@, %@" : {
       "comment" : "Compact overlay channel chip when no key plus digit opens a channel: digit, agent name",
       "localizations" : {
@@ -4769,6 +4815,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kanał %@, mikrofon otwarty"
+          }
+        }
+      }
+    },
+    "Channel %@, shortcut %@" : {
+      "comment" : "Overlay channel 0 chip at rest: digit, the channel chord (e.g. Ctrl 0)",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kanał %1$@, skrót %2$@"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Channel %1$@, shortcut %2$@"
           }
         }
       }
@@ -9582,6 +9645,17 @@
         }
       }
     },
+    "In channel 0" : {
+      "comment" : "Channel chip hover card: a receipt confirms broadcasts reach this agent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "W kanale 0"
+          }
+        }
+      }
+    },
     "In reply to: %@" : {
       "comment" : "Excerpt of the explicitly associated addressed utterance",
       "localizations" : {
@@ -12340,6 +12414,17 @@
         }
       }
     },
+    "No data" : {
+      "comment" : "Channel chip hover card: the roster makes no liveness claim for the agent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Brak danych"
+          }
+        }
+      }
+    },
     "No effort sent; the model decides" : {
       "comment" : "Model default reasoning entry",
       "localizations" : {
@@ -12791,6 +12876,17 @@
         }
       }
     },
+    "Not active" : {
+      "comment" : "Channel chip hover card: no live follower reported; cautious, not offline",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nieaktywny"
+          }
+        }
+      }
+    },
     "Not calibrated" : {
       "localizations" : {
         "pl" : {
@@ -12873,6 +12969,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie przyznano"
+          }
+        }
+      }
+    },
+    "Not in channel 0" : {
+      "comment" : "Channel chip hover card: a receipt confirms the agent left channel 0",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Poza kanałem 0"
           }
         }
       }
@@ -13394,6 +13501,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakup jednorazowy"
+          }
+        }
+      }
+    },
+    "Online" : {
+      "comment" : "Channel chip hover card: the agent's follower is alive in the roster sample",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Online"
           }
         }
       }
@@ -14358,6 +14476,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wskaźnik nagrywania przy kursorze"
+          }
+        }
+      }
+    },
+    "Policy not confirmed" : {
+      "comment" : "Channel chip hover card: no helper receipt for the agent's channel 0 policy yet",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Brak potwierdzenia polityki"
           }
         }
       }

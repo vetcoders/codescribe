@@ -75,10 +75,23 @@ struct OverlayChannelPill: View {
   /// The rail passes the roster's text scale; mini and the expanded bar pass
   /// `headerScale(_:)`, which also sizes the bar's rows.
   let textScale: CGFloat
-  /// The floating hint: `5 · Kuba · Ctrl+5` on the bar's chips, the agent
-  /// list on the counter, the roster's own hints on the rail.
+  /// The floating hint: the agent's hover card on the bar's chips
+  /// (`hintCard`), else `0 · Ctrl+0`; the agent list on the counter, the
+  /// roster's own hints on the rail.
   var showsHint = true
+  /// A bar chip's hover card (`OverlayChannelChipHoverCard`) in place of
+  /// the one-line hint; the rail and the counter keep their text hints.
+  var hintCard: HintCard? = nil
   let action: () -> Void
+
+  /// Content for the header's floating hint panel, with the size measured
+  /// from it. `title` is what the card says, so a change of any fact
+  /// refreshes an open card.
+  struct HintCard {
+    let title: String
+    let content: AnyView
+    let size: CGSize
+  }
 
   var body: some View {
     Button(action: action) {
@@ -122,7 +135,8 @@ struct OverlayChannelPill: View {
     .modifier(OverlayDisconnectedRowDim(disconnected: display.disconnected))
     .modifier(
       OverlayChannelPillHint(
-        form: form, hint: hint, palette: palette, enabled: showsHint, stacked: stackedFace)
+        form: form, hint: hint, card: hintCard, palette: palette, enabled: showsHint,
+        stacked: stackedFace)
     )
     .accessibilityLabel(Text(verbatim: accessibilityText))
     .accessibilityValue(Text(verbatim: spokenValue))
@@ -450,10 +464,13 @@ extension OverlayChannelPill {
 
 /// The rail shows the shared floating hint beside the pill, as the bubbles and
 /// header controls do. In mini and the expanded bar the header is the whole
-/// panel, so the bar's pills use the header's floating hint window.
+/// panel, so the bar's pills use the header's floating hint window: a chip
+/// or stacked pill with a card shows the card there (non-interactive, after
+/// the same delay as the one-line hint), anything else its text.
 private struct OverlayChannelPillHint: ViewModifier {
   let form: OverlayChannelPill.Form
   let hint: String
+  let card: OverlayChannelPill.HintCard?
   let palette: OverlayAppearancePalette
   let enabled: Bool
   let stacked: Bool
@@ -464,7 +481,12 @@ private struct OverlayChannelPillHint: ViewModifier {
       switch form {
       case .rail:
         content.overlayFastHint(hint, palette: palette, leading: true)
-      case .chip, .stacked, .counter:
+      case .chip, .stacked:
+        content.modifier(
+          OverlayHeaderControlChrome(
+            title: card?.title ?? hint, accent: nil, palette: palette,
+            hintContent: card?.content, hintSize: card?.size))
+      case .counter:
         content.modifier(
           OverlayHeaderControlChrome(title: hint, accent: stacked ? .state : nil, palette: palette))
       }
