@@ -474,7 +474,6 @@ struct DictationOverlayView: View {
   @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
   @AppStorage(OverlayAgentDrawerLayout.widthDefaultsKey) private var preferredAgentDrawerWidth =
     300.0
-  @State private var agentDrawerResize: (start: CGFloat, width: CGFloat)?
   @State private var overlayVisible = false
   @State private var headerHeight: CGFloat = 48
   @State private var footerHeight: CGFloat = 0
@@ -618,16 +617,14 @@ struct DictationOverlayView: View {
         let conversationEdgeWidth = min(
           geometry.size.width,
           OverlayAgentDrawerLayout.conversationEdgeWidth(textScale: textScale))
-        // A dragged divider may narrow the list down to its rail: past the
-        // fold width it folds there on release.
-        let dragMinimumWidth: CGFloat? = agentDrawerResize == nil ? nil : railWidth
+        // A dragged divider moves only its own guide; both panes keep these
+        // widths until release (`OverlayAgentDrawerDivider`).
         let drawerWidth =
-          conversationFolded && agentDrawerResize == nil
+          conversationFolded
           ? max(0, geometry.size.width - conversationEdgeWidth)
           : OverlayAgentDrawerLayout.drawerWidth(
-            textScale: textScale,
-            preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
-            windowWidth: geometry.size.width, minimumWidth: dragMinimumWidth)
+            textScale: textScale, preferredWidth: CGFloat(preferredAgentDrawerWidth),
+            windowWidth: geometry.size.width)
         let canvasWidth = max(
           0,
           geometry.size.width
@@ -638,11 +635,10 @@ struct DictationOverlayView: View {
         // text out at the folding cell's width wrapped it one character per
         // line in the edge column, and a stalled frame kept it there
         // (Founder, 2026-10-26). The width follows the window, the preferred
-        // drawer width, a drag of the divider and the text scale, never the slide.
+        // drawer width and the text scale, never the slide or a divider drag.
         let splitDrawerWidth = OverlayAgentDrawerLayout.drawerWidth(
-          textScale: textScale,
-          preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
-          windowWidth: geometry.size.width, minimumWidth: dragMinimumWidth)
+          textScale: textScale, preferredWidth: CGFloat(preferredAgentDrawerWidth),
+          windowWidth: geometry.size.width)
         let conversationContentWidth = max(
           0,
           geometry.size.width
@@ -834,10 +830,6 @@ struct DictationOverlayView: View {
         .onAppear { state.setAgentDrawerDocked(docked) }
         .onChange(of: docked) { _, docked in
           state.setAgentDrawerDocked(docked)
-          if !docked { agentDrawerResize = nil }
-        }
-        .onChange(of: columnShown) { _, shown in
-          if !shown { agentDrawerResize = nil }
         }
         // The keyboard follows what is on screen: the composer under the list
         // lets it go, and the list's selected row takes it.
@@ -986,7 +978,7 @@ struct DictationOverlayView: View {
     // The list lays out at its new width at once and only the column's frame
     // slides over it, anchored to the window edge: a row never re-wraps its
     // title and preview inside a half-way frame. A
-    // divider dragged toward the rail keeps the rows' leading pills in view.
+    // window too narrow for the rows keeps their leading pills in view.
     .animation(nil, value: width)
     .frame(width: width, alignment: width < contentMinimum ? .leading : .trailing)
     .frame(maxHeight: .infinity, alignment: .top)
@@ -1095,25 +1087,11 @@ struct DictationOverlayView: View {
   }
 
   private func agentDrawerResizeHandle(width: CGFloat, windowWidth: CGFloat) -> some View {
-    Rectangle()
-      .fill(palette.border.color)
-      .frame(width: 1 / max(displayScale, 1))
-      .frame(width: 10, alignment: .leading)
-      .contentShape(Rectangle())
-      .background { OverlayMenuCursorRegion(cursor: .resizeLeftRight) }
-      .gesture(
-        DragGesture(minimumDistance: 0, coordinateSpace: .named("overlay-canvas"))
-          .onChanged { value in
-            let start = agentDrawerResize?.start ?? width / textScale
-            agentDrawerResize = (start, start - value.translation.width / textScale)
-          }
-          .onEnded { value in
-            let start = agentDrawerResize?.start ?? width / textScale
-            commitAgentDrawerWidth(
-              start - value.translation.width / textScale, windowWidth: windowWidth)
-            agentDrawerResize = nil
-          }
-      )
+    OverlayAgentDrawerDivider(
+      width: width, windowWidth: windowWidth, palette: palette, displayScale: displayScale
+    ) { translation in
+      commitAgentDrawerWidth((width - translation) / textScale, windowWidth: windowWidth)
+    }
       .accessibilityElement()
       .accessibilityLabel(String(localized: "Resize agents sidebar"))
       .accessibilityValue(Text(verbatim: "\(Int(width))"))
@@ -1139,7 +1117,6 @@ struct DictationOverlayView: View {
       }
       .accessibilityIdentifier("overlay-agent-sidebar-resize")
       .padding(.top, headerHeight)
-      .onDisappear { agentDrawerResize = nil }
   }
 
   // MARK: Header
@@ -1275,6 +1252,9 @@ struct DictationOverlayView: View {
         .accessibilityHidden(mini)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(mini ? "" : "overlay-header-center")
+        // The resize preview stretches the one-point gap after the meter, so
+        // the clock and the trailing controls keep their place at the edge.
+        .background { OverlayResizeAnchor() }
         .background {
           GeometryReader { geometry in
             Color.clear.preference(
@@ -2065,4 +2045,48 @@ struct OverlayObservationScope<Content: View>: View {
   @ViewBuilder let content: () -> Content
 
   var body: some View { content() }
+}
+
+/// The list's divider. While it is dragged only its guide follows the
+/// pointer: the conversation and the list keep their widths, so neither
+/// re-wraps Markdown at pointer frequency, and release commits the split in
+/// one layout pass. The drag lives in this view's own gesture state, so the
+/// overlay above it is not re-evaluated per pointer event either. This is the
+/// fiszka's resize rule ("ten niskobudżetowy układ w sensie przeciągania i
+/// resizingu z … floating przenieść", Maciej, 2026-11-03).
+private struct OverlayAgentDrawerDivider: View {
+  let width: CGFloat
+  let windowWidth: CGFloat
+  let palette: OverlayAppearancePalette
+  let displayScale: CGFloat
+  /// The pointer's horizontal travel at release, in window points.
+  let onCommit: (CGFloat) -> Void
+  @GestureState private var translation: CGFloat?
+
+  var body: some View {
+    Rectangle()
+      .fill(palette.border.color)
+      .frame(width: 1 / max(displayScale, 1))
+      .frame(width: 10, alignment: .leading)
+      .contentShape(Rectangle())
+      .background { OverlayMenuCursorRegion(cursor: .resizeLeftRight) }
+      .overlay(alignment: .leading) {
+        if let translation {
+          // The guide stays inside the window: from its leading edge to the
+          // list's own trailing edge.
+          Rectangle()
+            .fill(palette.agentAccent.color)
+            .frame(width: 2)
+            .offset(x: min(width, max(width - windowWidth, translation)))
+            .allowsHitTesting(false)
+        }
+      }
+      .gesture(
+        DragGesture(minimumDistance: 0, coordinateSpace: .named("overlay-canvas"))
+          .updating($translation) { value, translation, _ in
+            translation = value.translation.width
+          }
+          .onEnded { value in onCommit(value.translation.width) }
+      )
+  }
 }

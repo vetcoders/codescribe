@@ -1139,7 +1139,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(rail.components(separatedBy: ".allowsHitTesting(false)").count - 1, 1)
     XCTAssertEqual(rail.components(separatedBy: ".accessibilityHidden(true)").count - 1, 0)
     XCTAssertTrue(rail.contains("agentRailUnfoldHandle(width: width, windowWidth: windowWidth)"))
-    XCTAssertEqual(chrome.components(separatedBy: "DragGesture").count - 1, 2)
+    // The list divider's drag lives in its own view, so the canvas is not
+    // re-evaluated per pointer event; the rail's unfold drag stays here.
+    XCTAssertEqual(chrome.components(separatedBy: "DragGesture").count - 1, 1)
     let railHandle = try section(
       of: chrome, from: "private func agentRailUnfoldHandle",
       to: "private func agentDrawerResizeHandle")
@@ -1147,8 +1149,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(railHandle.contains("OverlayAgentDrawerLayout.railUnfoldDrag"))
     XCTAssertTrue(railHandle.contains(".accessibilityIdentifier(\"overlay-agent-rail-resize\")"))
     let handle = try section(
-      of: chrome, from: "private func agentDrawerResizeHandle", to: ".onEnded")
-    XCTAssertTrue(handle.contains("DragGesture"))
+      of: chrome, from: "private func agentDrawerResizeHandle", to: ".accessibilityElement()")
+    XCTAssertTrue(handle.contains("OverlayAgentDrawerDivider("))
+    let divider = try section(
+      of: source, from: "private struct OverlayAgentDrawerDivider", to: "\n}\n")
+    XCTAssertTrue(divider.contains("DragGesture"))
   }
 
   private func findTranscript(in view: NSView) -> LiveTranscriptNativeTextView? {
