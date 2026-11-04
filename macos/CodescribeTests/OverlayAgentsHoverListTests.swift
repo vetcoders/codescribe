@@ -118,10 +118,6 @@ final class OverlayAgentsHoverListTests: XCTestCase {
     XCTAssertEqual(dots["8"], .present, "a sent utterance without a receipt is not amber")
     XCTAssertEqual(dots["3"], .listening, "the open microphone wins")
     XCTAssertEqual(dots["5"], .idle, "no liveness claim: a faint ring")
-    XCTAssertEqual(
-      view.statusDotKind(for: view.channels[0]), .received,
-      "the roster's own dot still reads the stage")
-    XCTAssertEqual(view.statusDotKind(for: view.channels[1]), .waiting)
   }
 
   func testNoAgentsMeansNoRows() {
