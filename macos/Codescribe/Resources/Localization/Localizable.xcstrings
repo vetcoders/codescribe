@@ -11079,6 +11079,40 @@
         }
       }
     },
+    "Message unavailable" : {
+      "comment" : "Conversation hover preview",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message unavailable"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiadomość niedostępna"
+          }
+        }
+      }
+    },
+    "Message withdrawn" : {
+      "comment" : "Conversation hover preview",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message withdrawn"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiadomość wycofana"
+          }
+        }
+      }
+    },
     "Messages" : {
       "comment" : "Context panel fact: how many turns the conversation holds",
       "localizations" : {
@@ -11960,6 +11994,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nowe nagrania otwierają się z transkrypcją. Wyłącz, aby pokazywać tylko pasek nagrywania."
+          }
+        }
+      }
+    },
+    "Newer message" : {
+      "comment" : "Conversation hover preview",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Newer message"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nowsza wiadomość"
           }
         }
       }
@@ -13212,6 +13263,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Starsze"
+          }
+        }
+      }
+    },
+    "Older message" : {
+      "comment" : "Conversation hover preview",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Older message"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starsza wiadomość"
           }
         }
       }

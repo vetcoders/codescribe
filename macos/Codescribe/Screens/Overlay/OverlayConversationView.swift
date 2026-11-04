@@ -253,7 +253,9 @@ struct OverlayConversationView: View {
     GeometryReader { geometry in
       ScrollViewReader { proxy in
         trackedMessages(
-          maxBubbleWidth: Self.bubbleCap(contentWidth: geometry.size.width, textScale: textScale)
+          maxBubbleWidth: Self.bubbleCap(
+            contentWidth: max(0, geometry.size.width - OverlayResizeHit.scrollbarInset),
+            textScale: textScale)
         )
         .onChange(of: replyNavigationID) { _, id in
           guard let id else { return }

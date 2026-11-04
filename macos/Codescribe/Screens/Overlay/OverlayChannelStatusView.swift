@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// The agent channel in one fixed header slot.
@@ -1533,7 +1534,7 @@ struct OverlayChannelStatusView: View {
       display: railPillDisplay(conversation, channel: channel),
       hint: hint, accessibilityText: title, identifier: "overlay-agent-rail-\(digit)",
       palette: palette, textScale: textScale,
-      showsHint: conversation?.messages.isEmpty ?? true
+      showsHint: conversation == nil
     ) {
       if let conversation { onSelectConversation?(conversation.id) }
     }
@@ -2964,15 +2965,113 @@ struct OverlayChannelStatusView: View {
   }
 }
 
+/// A preview session freezes identity while open, never message bodies. Live
+/// edits and withdrawal evidence continue to update the selected slot.
+@MainActor
+final class OverlayRosterPreviewSession: ObservableObject {
+  static let maxMessages = 5
+  @Published var conversation: OverlayConversation?
+  @Published var withdrawnIDs: Set<String> = []
+  @Published var ids: [String] = []
+  @Published var index = 0
+  private var conversationID: String?
+  private var isOpen = false
+  private var latestConversation: OverlayConversation?
+  private var latestWithdrawnIDs: Set<String> = []
+
+  init(
+    conversation: OverlayConversation? = nil,
+    withdrawnIDs: Set<String> = []
+  ) {
+    latestConversation = conversation
+    latestWithdrawnIDs = withdrawnIDs
+    if let conversation {
+      conversationID = conversation.id
+      self.conversation = conversation
+      self.withdrawnIDs = withdrawnIDs
+      ids = Array(conversation.messages.suffix(Self.maxMessages).map(\.id))
+      index = max(0, ids.count - 1)
+    }
+  }
+
+  var canStepOlder: Bool { index > 0 }
+  var canStepNewer: Bool { index + 1 < ids.count }
+
+  func stepOlder() {
+    guard canStepOlder else { return }
+    index -= 1
+  }
+
+  func stepNewer() {
+    guard canStepNewer else { return }
+    index += 1
+  }
+
+  func openLatest(ownerID: String?) {
+    guard let conversation = latestConversation, conversation.id == ownerID else {
+      close()
+      return
+    }
+    isOpen = true
+    conversationID = conversation.id
+    self.conversation = conversation
+    self.withdrawnIDs = latestWithdrawnIDs
+    ids = Array(conversation.messages.suffix(Self.maxMessages).map(\.id))
+    index = max(0, ids.count - 1)
+  }
+
+  func update(_ conversation: OverlayConversation?, withdrawnIDs: Set<String> = []) {
+    latestConversation = conversation
+    latestWithdrawnIDs = withdrawnIDs
+    if !isOpen {
+      conversationID = conversation?.id
+      self.conversation = conversation
+      self.withdrawnIDs = withdrawnIDs
+      ids = Array((conversation?.messages ?? []).suffix(Self.maxMessages).map(\.id))
+      index = max(0, ids.count - 1)
+      return
+    }
+    guard let conversationID else { return }
+    guard conversation == nil || conversation?.id == conversationID else {
+      self.conversation = nil
+      self.withdrawnIDs = []
+      return
+    }
+    self.conversation = conversation
+    self.withdrawnIDs = withdrawnIDs
+  }
+
+  func close() {
+    isOpen = false
+    conversationID = latestConversation?.id
+    conversation = latestConversation
+    withdrawnIDs = latestWithdrawnIDs
+    ids = Array((latestConversation?.messages ?? []).suffix(Self.maxMessages).map(\.id))
+    index = max(0, ids.count - 1)
+  }
+
+  func isWithdrawn(_ id: String) -> Bool {
+    if withdrawnIDs.contains(id) { return true }
+    return conversation?.messages.first(where: { $0.id == id })?.withdrawn == true
+  }
+
+  func message(for id: String) -> OverlayConversationMessage? {
+    guard !isWithdrawn(id) else { return nil }
+    return conversation?.messages.first { $0.id == id }
+  }
+}
+
 /// A full-message hover is confined to navigation regions, leaving each audio
 /// control's own hint intact. It observes loaded conversation values only.
 struct OverlayRosterMessageHint: ViewModifier {
   let conversation: OverlayConversation?
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
+  var withdrawnIDs: Set<String> = []
   var emptyHint = ""
   var isOpen = false
   var onOpen: (() -> Void)? = nil
+  @StateObject private var session = OverlayRosterPreviewSession()
 
   static func fullText(in conversation: OverlayConversation) -> String? {
     guard let message = conversation.messages.last else { return nil }
@@ -2985,62 +3084,180 @@ struct OverlayRosterMessageHint: ViewModifier {
 
   @ViewBuilder
   func body(content: Content) -> some View {
-    let preview = conversation.flatMap { conversation -> AnyView? in
-      guard let message = conversation.messages.last else { return nil }
-      return AnyView(
-        OverlayRosterMessagePreview(
-          name: conversation.displayTitle, message: message, palette: palette, onOpen: onOpen
-        )
-        .environment(\.csTextScale, textScale)
-        .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light))
+    let preview: AnyView? = conversation.map { _ in
+      AnyView(
+        OverlayRosterMessagePreview(session: session, palette: palette, onOpen: onOpen)
+          .environment(\.csTextScale, textScale)
+          .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light))
     }
+    let resolvedTitle =
+      conversation.flatMap { Self.fullText(in: $0) }
+      ?? (conversation?.displayTitle ?? emptyHint)
     content.modifier(
       OverlayHeaderControlChrome(
-        title: conversation.flatMap { Self.fullText(in: $0) } ?? emptyHint,
-        accent: nil, palette: palette, hintLeading: true, showsHint: !isOpen,
+        title: resolvedTitle,
+        accent: nil, palette: palette, hintLeading: true,
         hintContent: preview,
         hintSize: preview == nil ? nil : CGSize(width: 380 * textScale, height: 280 * textScale),
-        hintDelay: preview == nil ? 0 : 0.35, hintInteractive: preview != nil)
+        hintDelay: preview == nil ? 0 : 0.35, hintInteractive: preview != nil,
+        onHintOpen: { [session = session, ownerID = conversation?.id] in
+          session.openLatest(ownerID: ownerID)
+        },
+        onHintClose: { [session = session] in
+          session.close()
+        })
     )
+    .onAppear { session.update(conversation, withdrawnIDs: withdrawnIDs) }
+    .onChange(of: conversation) { _, current in
+      session.update(current, withdrawnIDs: withdrawnIDs)
+    }
+    .onChange(of: withdrawnIDs) { _, current in
+      session.update(conversation, withdrawnIDs: current)
+    }
     .id(conversation?.id)
   }
 }
 
-/// A bounded, scrollable shell over the conversation's existing body renderer.
-/// It mounts no composer, routing command or read-receipt observer.
+/// A bounded carousel over loaded messages; it never selects a conversation
+/// or publishes read evidence. Each slot resolves its live message by ID.
 struct OverlayRosterMessagePreview: View {
   @Environment(\.csTextScale) private var textScale
-  let name: String
-  let message: OverlayConversationMessage
+  @ObservedObject var session: OverlayRosterPreviewSession
   let palette: OverlayAppearancePalette
   var onOpen: (() -> Void)? = nil
 
+  init(
+    session: OverlayRosterPreviewSession,
+    palette: OverlayAppearancePalette,
+    onOpen: (() -> Void)? = nil
+  ) {
+    self.session = session
+    self.palette = palette
+    self.onOpen = onOpen
+  }
+
+  init(
+    name: String,
+    message: OverlayConversationMessage,
+    palette: OverlayAppearancePalette,
+    onOpen: (() -> Void)? = nil
+  ) {
+    let conversation = OverlayConversation(
+      id: "preview:\(message.id)",
+      channel: message.owner?.channel ?? "0",
+      name: name,
+      owner: message.owner,
+      messages: [message]
+    )
+    self.session = OverlayRosterPreviewSession(conversation: conversation)
+    self.palette = palette
+    self.onOpen = onOpen
+  }
+
+  private var selectedID: String? {
+    session.ids.indices.contains(session.index) ? session.ids[session.index] : nil
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text(verbatim: name)
-        .font(.system(size: 12 * textScale, weight: .semibold))
-        .foregroundStyle(palette.primaryText.color)
-      ScrollView(.vertical) {
-        VStack(alignment: .leading, spacing: 8) {
-          let route = OverlayChannelStatusView.messageRoute(of: message)
-          if !route.label.isEmpty {
-            Text(verbatim: route.label)
-              .font(.system(size: 10 * textScale, weight: .bold))
-              .foregroundStyle(palette.mutedText.color)
-          }
-          OverlayConversationMessageContent(message: message, palette: palette)
+      header(id: selectedID)
+      if let selectedID {
+        ScrollView(.vertical) {
+          slot(id: selectedID)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .id(selectedID)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        navigation
+      } else {
+        Text("No messages yet")
+          .font(.system(size: 12 * textScale))
+          .foregroundStyle(palette.mutedText.color)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
     .padding(12)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(palette.desktopBackground.color.opacity(0.9))
     .contentShape(Rectangle())
-    .onTapGesture { onOpen?() }
     .accessibilityAction(named: Text("Open conversation")) { onOpen?() }
     .accessibilityIdentifier("overlay-roster-message-preview")
+  }
+
+  private func header(id: String?) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 6) {
+      Text(verbatim: session.conversation?.displayTitle ?? "")
+        .font(.system(size: 12 * textScale, weight: .semibold))
+        .foregroundStyle(palette.primaryText.color)
+        .lineLimit(1)
+      Spacer(minLength: 4)
+      if let id, let message = session.message(for: id) {
+        MessageTimestampLabel(date: MessageTimestamp.date(fromISO8601: message.emittedAt))
+          .font(.system(size: 10 * textScale))
+          .foregroundStyle(palette.mutedText.color)
+      }
+    }
+  }
+
+  private var navigation: some View {
+    HStack(spacing: 8) {
+      Spacer(minLength: 0)
+      Button {
+        session.stepOlder()
+      } label: {
+        Image(systemName: "chevron.left")
+          .frame(width: 20, height: 20)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(!session.canStepOlder)
+      .foregroundStyle(
+        session.canStepOlder ? palette.primaryText.color : palette.mutedText.color.opacity(0.45)
+      )
+      .accessibilityLabel(Text("Older message"))
+      .accessibilityIdentifier("overlay-roster-preview-older")
+      Text("\(session.index + 1) of \(session.ids.count)")
+        .monospacedDigit()
+        .foregroundStyle(palette.mutedText.color)
+        .accessibilityIdentifier("overlay-roster-preview-position")
+      Button {
+        session.stepNewer()
+      } label: {
+        Image(systemName: "chevron.right")
+          .frame(width: 20, height: 20)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(!session.canStepNewer)
+      .foregroundStyle(
+        session.canStepNewer ? palette.primaryText.color : palette.mutedText.color.opacity(0.45)
+      )
+      .accessibilityLabel(Text("Newer message"))
+      .accessibilityIdentifier("overlay-roster-preview-newer")
+      Spacer(minLength: 0)
+    }
+    .font(.system(size: 10 * textScale, weight: .medium))
+  }
+
+  @ViewBuilder
+  private func slot(id: String) -> some View {
+    if session.isWithdrawn(id) {
+      Text("Message withdrawn")
+        .foregroundStyle(palette.mutedText.color)
+    } else if let message = session.message(for: id) {
+      VStack(alignment: .leading, spacing: 8) {
+        let route = OverlayChannelStatusView.messageRoute(of: message).label
+        if !route.isEmpty {
+          Text(verbatim: route)
+            .font(.system(size: 10 * textScale, weight: .bold))
+            .foregroundStyle(palette.mutedText.color)
+        }
+        OverlayConversationMessageContent(message: message, palette: palette)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } else {
+      Text("Message unavailable")
+        .foregroundStyle(palette.mutedText.color)
+    }
   }
 }
 

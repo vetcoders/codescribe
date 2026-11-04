@@ -970,7 +970,9 @@ struct DictationOverlayView: View {
   private func agentDrawerColumn(
     maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
   ) -> some View {
-    let contentMinimum = OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale)
+    let contentMinimum =
+      agentDrawerResize == nil
+      ? width : OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale)
     return OverlayObservationScope {
       var roster = channelStatusView
       roster.gestureFocusID = state.agentGestureFocusID
