@@ -9,6 +9,15 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
   let channel: String
   let agent: String
+
+  /// The name a person reads for a binding: the spelling the agent gave at
+  /// attach (`display_name`), else the casefolded `audience` the helper
+  /// routes, seals and acks by (Monika, 2026-11-04: the Bus window showed
+  /// every agent in lowercase).
+  static func displayName(of binding: [String: Any]) -> String {
+    if let display = binding["display_name"] as? String, !display.isEmpty { return display }
+    return binding["audience"] as? String ?? ""
+  }
   let deliveryID: String?
   let stage: Stage?
   let isOpen: Bool
@@ -191,7 +200,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     func project(channel: String, binding: [String: Any], lease: [String: Any])
       -> OverlayChannelDelivery?
     {
-      guard let agent = binding["audience"] as? String, !agent.isEmpty,
+      guard let audience = binding["audience"] as? String, !audience.isEmpty,
         let provider = binding["provider"] as? String,
         let providerSession = binding["provider_session_id"] as? String, !providerSession.isEmpty,
         lease["schema"] as? String == "codescribe.agent-bridge.lease.v1",
@@ -199,6 +208,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         lease["provider_session_id"] as? String == providerSession,
         let leaseID = lease["lease_id"] as? String
       else { return nil }
+      // Seals, receipts and acks name the agent by its casefolded audience;
+      // the row people read carries the spelling the agent gave at attach.
+      let agent = audience
       let session = sessions[channel]
       let isOpen =
         session.map {
@@ -254,7 +266,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         }
       }
       var delivery = OverlayChannelDelivery(
-        channel: channel, agent: agent, deliveryID: deliveryID, stage: stage, isOpen: isOpen)
+        channel: channel, agent: OverlayChannelDelivery.displayName(of: binding),
+        deliveryID: deliveryID, stage: stage, isOpen: isOpen)
       delivery.broadcastSkipped = skipped
       return delivery
     }
@@ -263,7 +276,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       guard
         let owner = OverlayConversationOwner(
           lease: lease, channel: channel,
-          name: binding["audience"] as? String ?? ""),
+          name: OverlayChannelDelivery.displayName(of: binding)),
         lease["schema"] as? String == "codescribe.agent-bridge.lease.v1",
         owner.provider == binding["provider"] as? String,
         owner.providerSessionID == binding["provider_session_id"] as? String
@@ -1617,8 +1630,12 @@ struct OverlayConversationOwner: Codable, Equatable, Hashable, Sendable {
     self.provider = provider
     providerSessionID = session
     leaseID = lease
+    // The spelling the agent gave at attach (`display_name`), else the
+    // casefolded identity the helper routes by (Monika, 2026-11-04).
     name =
-      row["name"] as? String ?? row["agent"] as? String ?? row["audience"] as? String ?? provider
+      (row["display_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+      ?? row["name"] as? String ?? row["agent"] as? String ?? row["audience"] as? String
+      ?? provider
     channel = row["channel"] as? String ?? ""
   }
 

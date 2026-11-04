@@ -276,9 +276,22 @@ struct BindingEntry {
     /// Dedicated channel bus path written by the attach engine (W5).
     #[serde(default)]
     bus: Option<String>,
+    /// The name as the agent spelt it at attach; `audience` stays the
+    /// casefolded identity the helper routes by (Monika, 2026-11-04).
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 impl BindingEntry {
+    /// What a person reads: the attach spelling, else the audience.
+    fn display_name(&self) -> &str {
+        self.display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| self.audience.trim())
+    }
+
     fn bus(&self) -> Option<PathBuf> {
         self.bus
             .as_deref()
@@ -387,7 +400,8 @@ fn frozen_channel_recipients(
             continue;
         }
         recipients.push(serde_json::json!({
-            "channel": channel, "name": entry.audience.trim(), "audience": entry.audience.trim(),
+            "channel": channel, "name": entry.display_name(), "audience": entry.audience.trim(),
+            "display_name": entry.display_name(),
             "provider": provider, "provider_session_id": session, "lease_id": lease_id, "bus": bus,
         }));
     }
