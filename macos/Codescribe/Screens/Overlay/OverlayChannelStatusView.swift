@@ -1616,8 +1616,8 @@ struct OverlayChannelStatusView: View {
   /// An agent chip's hover-card facts, each from the projection its roster
   /// row reads: presence from the snapshot's `followerAlive` and the stall
   /// (`hasStalledFollower`), never from the delivery dot; reception from
-  /// the channel 0 policy as the ledger paints it, with `policyKnown`
-  /// telling a receipt from the fail-open default; unread from the same
+  /// the channel 0 policy as the ledger paints it, two states like the
+  /// roster's antenna and the context menu; unread from the same
   /// counts as the chip's dot; the provider from the conversation's owner,
   /// else the roster snapshot.
   func channelChipStatus(
@@ -1631,7 +1631,6 @@ struct OverlayChannelStatusView: View {
     return OverlayChannelChipStatus(
       followerAlive: hudStates[channel.channel]?.followerAlive,
       stalled: hasStalledFollower(channel), policy: policy,
-      policyKnown: ledger.policyKnown(channel.broadcastIdentity),
       unread: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
       provider: conversation?.owner?.provider ?? hudStates[channel.channel]?.provider)
   }
@@ -2917,9 +2916,8 @@ struct OverlayChannelStatusView: View {
   /// receipt while a replying agent went amber on a newer one without its
   /// receipt. Now: a live follower is a filled olive dot; an open microphone
   /// terracotta; "zzz" when the agent sleeps under the moon (do not
-  /// disturb behind a receipt: the mailbox keeps every message for when it
-  /// wakes); a ring for a gone follower; a faint ring without a liveness
-  /// claim (a known moon without one is no sleeper either). The fate of a
+  /// disturb: the mailbox keeps every message for when it wakes); a ring for a gone follower; a faint ring without a liveness
+  /// claim (a moon without one is no sleeper either). The fate of a
   /// message stays with the message in the window and
   /// on the chip's hover card. Delivery, presence and new replies never
   /// share this dot.
@@ -2933,14 +2931,15 @@ struct OverlayChannelStatusView: View {
     return isQuiet(channel) ? .asleep : .present
   }
 
-  /// Do not disturb as the ledger paints it, only behind a receipt: a polled
-  /// moon without one is unconfirmed and does not put the agent to sleep.
+  /// Do not disturb as the ledger paints it: the same policy the roster's
+  /// moon, the list's moon and the context menu show, two states and no
+  /// unconfirmed third (Monika, 2026-11-04).
   func isQuiet(_ channel: OverlayChannelDelivery) -> Bool {
     let ledger = OverlayBroadcastPolicyLedger.shared
-    guard let identity = channel.broadcastIdentity, ledger.policyKnown(identity) else {
-      return false
-    }
-    return ledger.policy(for: identity, polled: channel.broadcastPolicy).moon
+    let policy =
+      channel.broadcastIdentity.map { ledger.policy(for: $0, polled: channel.broadcastPolicy) }
+      ?? channel.broadcastPolicy
+    return policy.moon
   }
 
   func statusHelp(for channel: OverlayChannelDelivery) -> String {

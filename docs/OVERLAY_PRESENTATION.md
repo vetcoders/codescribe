@@ -211,9 +211,9 @@ the projection the roster row reads (`channelChipStatus`, carried as
    reading". The dot before the name (`presenceDotKind`) shows this same
    presence; neither it nor the channel 0 policy carries a delivery stage.
 2. **Channel 0** from the policy as `OverlayBroadcastPolicyLedger` paints it,
-   behind a receipt (`policyKnown`): "In channel 0", "Not in channel 0", or
-   "Policy not confirmed" instead of the fail-open "on"; the moon adds "Do
-   not disturb".
+   as painted: "In channel 0" or "Not in channel 0", two states like the
+   roster's antenna and the context menu's checkmark, with no unconfirmed
+   third (Monika, 2026-11-04); the moon adds "Do not disturb".
 3. **Unread** from `unreadCounts`: "N unread", or no line.
 
 The first line names the digit, the whole name and the provider; the chord
@@ -262,9 +262,9 @@ disturb) and the unread dot in the agent accent. The presence dot is the one
 status dot before an agent's name everywhere (this list, the Bus window's
 roster, the Intercom, a fiszka) and shows the agent alone (Monika,
 2026-11-04): filled olive while its follower is alive, terracotta with the
-microphone open, "zzz" while the agent sleeps under a receipted moon (the
-mailbox keeps every message for when it wakes; a polled moon without a
-receipt is unconfirmed and stays olive), a ring for a gone follower (a new
+microphone open, "zzz" while a live agent sleeps under the moon as the bus
+paints it (the mailbox keeps every message for when it wakes), a ring for a
+gone follower (a new
 direct message to it is refused, not queued), a faint ring without a
 liveness claim. A stalled reader keeps its olive dot and says "Not reading"
 on the chip's hover card, since a backlog promises no waking. The dot never
@@ -279,10 +279,11 @@ through `onSelectConversation`, the path `selectChannelConversation` uses.
 The antenna and the moon are sibling buttons with their own hit targets;
 they change reception through `OverlayBroadcastPolicyLedger.change`, never
 open the conversation and never close the list, are dimmed while a change is
-pending and repaint from the read-back receipt. When no helper receipt has
-been read for an agent (`OverlayBroadcastPolicyLedger.policyKnown`, fed by
-`broadcastPolicyReceipts`), both marks show a grey outline that switches
-nothing, "Reception policy unknown", instead of the fail-open "on". The dots
+pending and repaint from the read-back receipt. Each mark has exactly two
+looks, lit or not, the same state as the context menu's "Channel 0" and "Do
+not disturb" checkmarks (Monika, 2026-11-04); a policy the helper has not
+receipted draws as painted, never as a third, greyed mark, and the receipt
+only confirms this app's own click. The dots
 are decoration for VoiceOver: each row carries one label with every state
 (`5 · Kuba · Listening · in channel 0 · Do not disturb · 2 unread replies`),
 the marks their own; identifiers are `overlay-agents-hover-row-<digit>`,

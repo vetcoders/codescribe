@@ -19,8 +19,8 @@ struct OverlayAgentsHoverRow: Equatable, Identifiable {
   let microphoneOpen: Bool
   let disconnected: Bool
   let identity: AgentPlaybackIdentity?
-  /// The roster's (fail-open) policy; `policyKnown` says whether a receipt
-  /// stands behind it.
+  /// The roster's policy; the row draws it as the ledger paints it, the
+  /// same two states as the roster's marks and the context menu's checkmark.
   let policy: AgentBroadcastPolicy
   let unread: Int
 
@@ -213,7 +213,6 @@ private struct OverlayAgentsHoverListRow: View {
     row.identity.map { ledger.policy(for: $0, polled: row.policy) } ?? row.policy
   }
 
-  private var known: Bool { ledger.policyKnown(row.identity) }
   private var pending: Bool { ledger.isPending(row.identity) }
 
   var body: some View {
@@ -231,24 +230,21 @@ private struct OverlayAgentsHoverListRow: View {
       OverlayAgentStatusDot(kind: row.dot, palette: palette)
         .frame(width: OverlayAgentsHoverList.dotColumn)
         .accessibilityHidden(true)
+      // Two states each, as the roster's marks and the context menu's
+      // checkmark (Monika, 2026-11-04): lit or not. No third, greyed state
+      // for a policy the helper has not receipted; a receipt only confirms
+      // this app's own click.
       HStack(spacing: OverlayAgentsHoverList.markGap) {
-        if known {
-          mark(
-            symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
-            label: policy.statusHelp, identifier: "overlay-agents-hover-antenna-\(row.digit)"
-          ) { $0.member.toggle() }
-          // The moon speaks through its shape, as on the roster's marks.
-          mark(
-            symbol: policy.quietSymbol, lit: policy.moon, litColor: palette.primaryText.color,
-            unlitOpacity: 0.45, label: policy.quietHelp,
-            identifier: "overlay-agents-hover-moon-\(row.digit)"
-          ) { $0.moon.toggle() }
-        } else {
-          unknownMark(
-            symbol: "antenna.radiowaves.left.and.right",
-            identifier: "overlay-agents-hover-antenna-\(row.digit)")
-          unknownMark(symbol: "moon", identifier: "overlay-agents-hover-moon-\(row.digit)")
-        }
+        mark(
+          symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
+          label: policy.statusHelp, identifier: "overlay-agents-hover-antenna-\(row.digit)"
+        ) { $0.member.toggle() }
+        // The moon speaks through its shape, as on the roster's marks.
+        mark(
+          symbol: policy.quietSymbol, lit: policy.moon, litColor: palette.primaryText.color,
+          unlitOpacity: 0.45, label: policy.quietHelp,
+          identifier: "overlay-agents-hover-moon-\(row.digit)"
+        ) { $0.moon.toggle() }
       }
       // New replies wear the agent accent: amber means warning elsewhere.
       Circle()
@@ -269,24 +265,15 @@ private struct OverlayAgentsHoverListRow: View {
   /// One sentence with every state the dots and marks show.
   private var accessibilitySummary: String {
     var parts = [row.digit, row.name, row.status]
-    if known {
-      parts.append(
-        policy.member
-          ? String(localized: "in channel 0", comment: "Agents list row: member of channel 0")
-          : String(localized: "off channel 0", comment: "Agents list row: not on channel 0"))
-      if policy.moon { parts.append(String(localized: "Do not disturb")) }
-    } else {
-      parts.append(Self.unknownText)
-    }
+    parts.append(
+      policy.member
+        ? String(localized: "in channel 0", comment: "Agents list row: member of channel 0")
+        : String(localized: "off channel 0", comment: "Agents list row: not on channel 0"))
+    if policy.moon { parts.append(String(localized: "Do not disturb")) }
     if row.unread > 0 { parts.append(String(localized: "\(row.unread) unread replies")) }
     return parts.joined(separator: " · ")
   }
 
-  static var unknownText: String {
-    String(
-      localized: "Reception policy unknown",
-      comment: "Agents list: no reception receipt has been read for this agent yet")
-  }
 
   /// Held while any surface's change for this agent is in flight; the next
   /// paint comes from the read-back receipt, not a local flag.
@@ -313,19 +300,8 @@ private struct OverlayAgentsHoverListRow: View {
     .accessibilityIdentifier(identifier)
   }
 
-  /// No receipt: a grey outline that switches nothing.
-  private func unknownMark(symbol: String, identifier: String) -> some View {
-    Image(systemName: symbol)
-      .font(.system(size: 10))
-      .foregroundStyle(palette.mutedText.color.opacity(0.45))
-      .frame(width: OverlayAgentsHoverList.markSize, height: OverlayAgentsHoverList.markSize)
-      .help(Text(verbatim: Self.unknownText))
-      .accessibilityLabel(Text(verbatim: Self.unknownText))
-      .accessibilityIdentifier(identifier)
-  }
-
   private func apply(_ edit: @escaping (inout AgentBroadcastPolicy) -> Void) {
-    guard let identity = row.identity, known, !pending else { return }
+    guard let identity = row.identity, !pending else { return }
     let polled = policy
     Task { @MainActor in
       // A refused command leaves the mark as the receipt says; the pill menu

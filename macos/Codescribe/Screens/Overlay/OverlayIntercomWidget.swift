@@ -1993,6 +1993,9 @@ private struct OverlayIntercomCard: View {
       })
     let channelRow = current ? intercomChannelRow(state: state, digit: identity.digit) : nil
     let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
+    // The row greys only for a gone follower, the same state as the ring
+    // before the name; a stalled reader keeps its colour (Monika, 2026-11-04).
+    let disconnected = channelRow.map { roster.hasDeadFollower($0) } ?? false
     let audioBelowName =
       !expanded
       && controller.contentMetrics.audioFooterHeight(
@@ -2107,7 +2110,7 @@ private struct OverlayIntercomCard: View {
       }
     )
     .foregroundStyle(palette.primaryText.color)
-    .modifier(OverlayDisconnectedRowDim(disconnected: current && inactive))
+    .modifier(OverlayDisconnectedRowDim(disconnected: current && disconnected))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     // Header-only icons retain their compact row; text uses its measured space.
     .frame(
@@ -3017,6 +3020,9 @@ private struct OverlayIntercomInstanceCard: View {
       })
     let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
     let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
+    // The row greys only for a gone follower, the same state as the ring
+    // before the name; a stalled reader keeps its colour (Monika, 2026-11-04).
+    let disconnected = channelRow.map { roster.hasDeadFollower($0) } ?? false
     let audioBelowName = !mini && instanceAudioFooterHeight(instance) > 0
     let corner =
       mini
@@ -3075,7 +3081,7 @@ private struct OverlayIntercomInstanceCard: View {
     )
     .foregroundStyle(palette.primaryText.color)
     // Saved history keeps readable words; only its header marks the old owner.
-    .modifier(OverlayDisconnectedRowDim(disconnected: current && inactive))
+    .modifier(OverlayDisconnectedRowDim(disconnected: current && disconnected))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(
       OverlayCanvasBackdrop(

@@ -14480,17 +14480,6 @@
         }
       }
     },
-    "Policy not confirmed" : {
-      "comment" : "Channel chip hover card: no helper receipt for the agent's channel 0 policy yet",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Brak potwierdzenia polityki"
-          }
-        }
-      }
-    },
     "Polish" : {
       "comment" : "Dictation language choice\nDictation language name",
       "localizations" : {

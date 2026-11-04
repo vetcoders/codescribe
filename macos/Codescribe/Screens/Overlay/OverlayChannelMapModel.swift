@@ -47,8 +47,9 @@ enum OverlayChannelChordModifier: Equatable, Sendable {
 ///    report false for a live agent), `nil` no data. A stall (alive, backlog
 ///    unread past the horizon) is its own flag. The delivery dot and the
 ///    channel 0 policy never stand in for presence.
-/// 2. Reception is the channel 0 policy with its receipt: a policy without a
-///    read receipt is unconfirmed, not "on". The moon is do-not-disturb.
+/// 2. Reception is the channel 0 policy as the ledger paints it, two states
+///    like the roster's antenna and the context menu's checkmark (Monika,
+///    2026-11-04: no third, unconfirmed state). The moon is do-not-disturb.
 /// 3. Unread is the conversation's count of new replies.
 struct OverlayChannelChipStatus: Equatable, Sendable {
   enum Presence: Equatable, Sendable {
@@ -60,14 +61,13 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
   enum Reception: Equatable, Sendable {
     case member
     case off
-    case unknown
   }
 
   let presence: Presence
   /// Alive by heartbeat, yet its backlog unread past the stall horizon.
   let stalled: Bool
   let reception: Reception
-  /// Do-not-disturb, only when a receipt confirms it.
+  /// Do-not-disturb, as painted.
   let quiet: Bool
   let unread: Int
   /// The agent's provider (`codex`, `claude`) when the roster names one.
@@ -86,11 +86,11 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
   }
 
   /// The card's facts from the roster's projections: the snapshot's
-  /// liveness claim, its stall, the (fail-open) channel 0 policy and whether
-  /// a receipt stands behind it, and the unread count.
+  /// liveness claim, its stall, the channel 0 policy as painted, and the
+  /// unread count.
   init(
-    followerAlive: Bool?, stalled: Bool, policy: AgentBroadcastPolicy, policyKnown: Bool,
-    unread: Int, provider: String?
+    followerAlive: Bool?, stalled: Bool, policy: AgentBroadcastPolicy, unread: Int,
+    provider: String?
   ) {
     switch followerAlive {
     case true?: presence = .online
@@ -98,8 +98,8 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
     case nil: presence = .unknown
     }
     self.stalled = stalled
-    reception = policyKnown ? (policy.member ? .member : .off) : .unknown
-    quiet = policyKnown && policy.moon
+    reception = policy.member ? .member : .off
+    quiet = policy.moon
     self.unread = max(0, unread)
     self.provider = provider.flatMap { $0.isEmpty ? nil : $0 }
   }

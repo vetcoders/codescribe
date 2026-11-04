@@ -9,8 +9,7 @@ import SwiftUI
 /// 1. `5 · Kuba` and the provider;
 /// 2. presence: Online, Not active or No data, with "Not reading" when the
 ///    live follower stalls;
-/// 3. channel 0: in it, not in it, or its policy unconfirmed, with Do not
-///    disturb under the moon;
+/// 3. channel 0: in it or not, with Do not disturb under the moon;
 /// 4. the unread replies, when there are any;
 /// 5. the chord, last and small, the one line the button already said.
 ///
@@ -209,10 +208,6 @@ struct OverlayChannelChipHoverCard: View {
       reception = String(
         localized: "Not in channel 0",
         comment: "Channel chip hover card: a receipt confirms the agent left channel 0")
-    case .unknown:
-      reception = String(
-        localized: "Policy not confirmed",
-        comment: "Channel chip hover card: no helper receipt for the agent's channel 0 policy yet")
     }
     guard status.quiet else { return reception }
     return reception + " · " + String(localized: "Do not disturb")
@@ -238,7 +233,6 @@ struct OverlayChannelChipHoverCard: View {
     switch status.reception {
     case .member: return "antenna.radiowaves.left.and.right"
     case .off: return "antenna.radiowaves.left.and.right.slash"
-    case .unknown: return "questionmark.circle"
     }
   }
 

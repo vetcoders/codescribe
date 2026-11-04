@@ -250,16 +250,17 @@ final class OverlayChannelMapTests: XCTestCase {
   // MARK: - Hover card status (Monika, 2026-11-04)
 
   /// Three separate facts: presence from `followerAlive` (false is only
-  /// "not active", nil no data), the stall as its own flag, reception from
-  /// the channel 0 policy only behind a receipt, the moon only when known.
+  /// "not active", nil no data), the stall as its own flag, reception and
+  /// the moon from the channel 0 policy as painted (two states, no
+  /// unconfirmed third: Monika, 2026-11-04).
   func testChipStatusKeepsPresenceReceptionAndUnreadApart() {
     func status(
       alive: Bool?, stalled: Bool = false, policy: AgentBroadcastPolicy = .on,
-      known: Bool = true, unread: Int = 0, provider: String? = "codex"
+      unread: Int = 0, provider: String? = "codex"
     ) -> OverlayChannelChipStatus {
       OverlayChannelChipStatus(
-        followerAlive: alive, stalled: stalled, policy: policy, policyKnown: known,
-        unread: unread, provider: provider)
+        followerAlive: alive, stalled: stalled, policy: policy, unread: unread,
+        provider: provider)
     }
     XCTAssertEqual(status(alive: true).presence, .online)
     XCTAssertEqual(status(alive: false).presence, .inactive, "false is not a sure offline")
@@ -268,10 +269,6 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(status(alive: true, stalled: true).presence, .online, "a stall is separate")
     XCTAssertEqual(status(alive: true, policy: .on).reception, .member)
     XCTAssertEqual(status(alive: true, policy: .off).reception, .off)
-    XCTAssertEqual(
-      status(alive: true, policy: .on, known: false).reception, .unknown,
-      "the fail-open default is not a receipt")
-    XCTAssertFalse(status(alive: true, policy: .quiet, known: false).quiet)
     XCTAssertTrue(status(alive: true, policy: .quiet).quiet)
     XCTAssertTrue(status(alive: true, policy: .offQuiet).quiet)
     XCTAssertEqual(status(alive: true, policy: .offQuiet).reception, .off)
@@ -298,9 +295,10 @@ final class OverlayChannelMapTests: XCTestCase {
   /// delivery dot beside a dead follower stays "not active", a policy without
   /// a receipt stays unconfirmed, a stalled follower is flagged, and unread
   /// Monika, 2026-11-04: the dot before the name sleeps ("zzz") under the
-  /// moon, only behind a receipt; a polled moon without one is unconfirmed.
-  /// The microphone wins over the moon; a gone follower is a ring either way;
-  /// without a liveness claim the moon proves nothing (Olek's QC).
+  /// moon as the bus paints it, receipt or not (the same two states as the
+  /// roster's moon and the context menu). The microphone wins over the moon;
+  /// a gone follower is a ring either way; without a liveness claim the moon
+  /// proves nothing (Olek's QC).
   func testPresenceDotSleepsUnderAReceiptedMoon() throws {
     func identity(_ digit: String) -> AgentPlaybackIdentity {
       AgentPlaybackIdentity(provider: "codex", session: "dot-moon-\(digit)", bus: "/dev/null")
@@ -317,7 +315,7 @@ final class OverlayChannelMapTests: XCTestCase {
     let ledger = OverlayBroadcastPolicyLedger.shared
     let previousReceipts = ledger.receipted
     defer { ledger.noteReceipts(previousReceipts) }
-    // 3 has no receipt: its moon is unconfirmed.
+    // 3 has no receipt: the painted moon counts all the same.
     ledger.noteReceipts([identity("2"), identity("4"), identity("5"), identity("6")])
     let roster = OverlayChannelStatusView(
       channels: channels, unavailable: false, palette: .dark, animates: false,
@@ -330,7 +328,7 @@ final class OverlayChannelMapTests: XCTestCase {
     let dots = Dictionary(
       uniqueKeysWithValues: channels.map { ($0.channel, roster.presenceDotKind(for: $0)) })
     XCTAssertEqual(dots["2"], .asleep, "a receipted moon: zzz")
-    XCTAssertEqual(dots["3"], .present, "a polled moon without a receipt stays online")
+    XCTAssertEqual(dots["3"], .asleep, "a polled moon without a receipt sleeps too")
     XCTAssertEqual(dots["4"], .listening, "the open microphone wins over the moon")
     XCTAssertEqual(dots["5"], .sleeping, "a gone follower is a ring under the moon too")
     XCTAssertEqual(dots["6"], .idle, "no liveness claim: a faint ring, not zzz")
@@ -385,7 +383,7 @@ final class OverlayChannelMapTests: XCTestCase {
       statuses["3"]??.presence, .inactive, "the received dot is a delivery, not presence")
     XCTAssertEqual(statuses["3"]??.reception, .off)
     XCTAssertEqual(statuses["4"]??.presence, .unknown)
-    XCTAssertEqual(statuses["4"]??.reception, .unknown, "no receipt: unconfirmed, not off")
+    XCTAssertEqual(statuses["4"]??.reception, .off, "the painted policy, receipt or not")
     XCTAssertEqual(statuses["5"]??.presence, .online)
     XCTAssertEqual(statuses["5"]??.stalled, true)
     XCTAssertEqual(statuses["5"]??.quiet, true)

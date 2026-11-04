@@ -60,7 +60,7 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
 
   // MARK: - Channel 0
 
-  func testReceptionReadsMemberOffUnconfirmedAndTheMoon() {
+  func testReceptionReadsMemberOffAndTheMoon() {
     func reception(_ value: OverlayChannelChipStatus.Reception, quiet: Bool = false) -> String? {
       line(
         .reception,
@@ -68,7 +68,6 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     }
     XCTAssertEqual(reception(.member), "In channel 0")
     XCTAssertEqual(reception(.off), "Not in channel 0")
-    XCTAssertEqual(reception(.unknown), "Policy not confirmed")
     XCTAssertEqual(reception(.member, quiet: true), "In channel 0 · Do not disturb")
     XCTAssertEqual(reception(.off, quiet: true), "Not in channel 0 · Do not disturb")
     XCTAssertEqual(
@@ -128,9 +127,9 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     XCTAssertEqual(
       OverlayChannelChipHoverCard.accessibilityText(chip: kuba, status: status, modifier: .control),
       "Channel 5, Kuba, shortcut Ctrl 5. Codex. Online. In channel 0. 2 unread")
-    let inactive = OverlayChannelChipStatus(presence: .inactive, reception: .unknown)
+    let inactive = OverlayChannelChipStatus(presence: .inactive, reception: .off)
     XCTAssertEqual(
-      OverlayChannelChipHoverCard.spokenStatus(inactive), ["Not active", "Policy not confirmed"])
+      OverlayChannelChipHoverCard.spokenStatus(inactive), ["Not active", "Not in channel 0"])
     let unknown = OverlayChannelChipStatus(presence: .unknown, reception: .off, quiet: true)
     XCTAssertEqual(
       OverlayChannelChipHoverCard.spokenStatus(unknown),
