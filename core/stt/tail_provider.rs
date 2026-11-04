@@ -619,9 +619,8 @@ impl InProcessTailProvider {
             execution.record_vad_selection(speech.len());
         }
         let vad_selected_samples = vad_measured.then_some(speech.len() as u64);
-        let no_speech = speech.is_empty()
-            && (vad.no_speech_reason.as_deref() == Some("vad_no_speech_detected")
-                || vad.no_speech_reason.as_deref() == Some("vad_audio_too_short"));
+        let no_speech =
+            speech.is_empty() && vad.no_speech_reason.as_deref() == Some("vad_no_speech_detected");
         let execution_control = execution.execution_control(control);
         control.check()?;
         let (raw, word_segments) = if no_speech {

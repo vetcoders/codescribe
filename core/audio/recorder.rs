@@ -826,6 +826,7 @@ impl Recorder {
                 stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     let mono_samples = downmix_to_mono(data, native_channels);
+                    let mono_len = mono_samples.len();
 
                     // Send data to callback if present
                     if let Some(ref cb) = on_data {
@@ -880,7 +881,7 @@ impl Recorder {
                         // Check for silence using VAD (only after speech has been observed)
                         if seen_speech_clone.load(Ordering::SeqCst) {
                             if is_silence {
-                                silent_frames_clone.fetch_add(mono_samples.len(), Ordering::SeqCst);
+                                silent_frames_clone.fetch_add(mono_len, Ordering::SeqCst);
                             } else {
                                 silent_frames_clone.store(0, Ordering::SeqCst);
                             }

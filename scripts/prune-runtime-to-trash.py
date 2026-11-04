@@ -420,7 +420,72 @@ def build_prune_plan(
 
     expiry_seconds = days * 86400
 
-    # 4. Expired takes in codescribe_root/takes/*.wav
+    # 4. Expired sessions in codescribe_root/sessions/ (run BEFORE takes/transcriptions
+    # so retained .audio-retention.json receipts protect their owned takes/transcriptions).
+    sessions_dir = codescribe_root / "sessions"
+    if sessions_dir.is_dir():
+        for root, dirs, files in os.walk(sessions_dir):
+            dirs[:] = [d for d in dirs if d not in SAFE_PRESERVED_DIR_NAMES]
+            root_path = Path(root)
+
+            session_groups: dict[str, list[Path]] = {}
+            for fname in files:
+                fpath = root_path / fname
+                session_id = fname.split(".", 1)[0]
+                session_groups.setdefault(session_id, []).append(fpath)
+
+            for session_id, group_files in session_groups.items():
+                receipt_owned_paths: list[Path] = []
+                for fp in group_files:
+                    if fp.name.endswith(".audio-retention.json"):
+                        try:
+                            with fp.open("r", encoding="utf-8") as rf:
+                                rdata = json.load(rf)
+                            if isinstance(rdata, dict) and isinstance(rdata.get("files"), list):
+                                for entry in rdata["files"]:
+                                    if isinstance(entry, dict) and isinstance(entry.get("relative"), str):
+                                        owned = codescribe_root / entry["relative"]
+                                        if owned.exists():
+                                            receipt_owned_paths.append(owned)
+                        except Exception:
+                            pass
+
+                group_protected = any(
+                    is_path_safe_from_prune(fp, protected_paths) for fp in group_files
+                ) or any(
+                    is_path_safe_from_prune(op, protected_paths)
+                    or any(part in SAFE_PRESERVED_TRANSCRIPTION_DATES for part in op.parts)
+                    for op in receipt_owned_paths
+                )
+
+                all_expired = not group_protected
+                if all_expired:
+                    for fp in group_files + receipt_owned_paths:
+                        try:
+                            mtime = fp.stat().st_mtime
+                        except OSError:
+                            all_expired = False
+                            break
+                        if (now - mtime) <= expiry_seconds:
+                            all_expired = False
+                            break
+
+                if all_expired:
+                    for fp in group_files:
+                        if fp not in seen_paths:
+                            seen_paths.add(fp)
+                            candidates.append(PruneCandidate(
+                                path=fp,
+                                category="expired_sessions_and_transcriptions",
+                                is_dir=False,
+                                bytes=get_path_size(fp),
+                                mtime=fp.stat().st_mtime,
+                            ))
+                else:
+                    for op in receipt_owned_paths:
+                        protected_paths.add(op.resolve())
+
+    # 5. Expired takes in codescribe_root/takes/*.wav
     takes_dir = codescribe_root / "takes"
     if takes_dir.is_dir():
         for root, dirs, files in os.walk(takes_dir):
@@ -445,7 +510,7 @@ def build_prune_plan(
                             mtime=mtime,
                         ))
 
-    # 5. Expired replays in codescribe_root/replays/replay-*
+    # 6. Expired replays in codescribe_root/replays/replay-*
     replays_dir = codescribe_root / "replays"
     if replays_dir.is_dir():
         for item in replays_dir.iterdir():
@@ -466,7 +531,7 @@ def build_prune_plan(
                         mtime=mtime,
                     ))
 
-    # 6. Rotated logs in codescribe_root/data.noindex/logs/*.1
+    # 7. Rotated logs in codescribe_root/data.noindex/logs/*.1
     logs_dir = codescribe_root / "data.noindex" / "logs"
     if logs_dir.is_dir():
         for item in logs_dir.iterdir():
@@ -489,48 +554,6 @@ def build_prune_plan(
                         bytes=get_path_size(item),
                         mtime=mtime,
                     ))
-
-    # 7. Expired sessions in codescribe_root/sessions/
-    # Grouped by session ID prefix before first dot. A session is expired ONLY if ALL files
-    # in the session are older than expiry_seconds and none are protected.
-    sessions_dir = codescribe_root / "sessions"
-    if sessions_dir.is_dir():
-        for root, dirs, files in os.walk(sessions_dir):
-            dirs[:] = [d for d in dirs if d not in SAFE_PRESERVED_DIR_NAMES]
-            root_path = Path(root)
-
-            session_groups: dict[str, list[Path]] = {}
-            for fname in files:
-                fpath = root_path / fname
-                session_id = fname.split(".", 1)[0]
-                session_groups.setdefault(session_id, []).append(fpath)
-
-            for session_id, group_files in session_groups.items():
-                if any(is_path_safe_from_prune(fp, protected_paths) for fp in group_files):
-                    continue
-
-                all_expired = True
-                for fp in group_files:
-                    try:
-                        mtime = fp.stat().st_mtime
-                    except OSError:
-                        all_expired = False
-                        break
-                    if (now - mtime) <= expiry_seconds:
-                        all_expired = False
-                        break
-
-                if all_expired:
-                    for fp in group_files:
-                        if fp not in seen_paths:
-                            seen_paths.add(fp)
-                            candidates.append(PruneCandidate(
-                                path=fp,
-                                category="expired_sessions_and_transcriptions",
-                                is_dir=False,
-                                bytes=get_path_size(fp),
-                                mtime=fp.stat().st_mtime,
-                            ))
 
     # 8. Expired transcriptions in codescribe_root/transcriptions/
     # Only prune expired audio files (.m4a, .wav). NEVER prune text files (.txt, .md)

@@ -11890,7 +11890,6 @@ fn emit_direct_apple_events(
     }
 }
 
-
 #[cfg(test)]
 #[path = "apple_live_session_tests/c13a_lifecycle_tests.rs"]
 mod c13a_lifecycle_tests;
