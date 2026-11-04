@@ -5859,11 +5859,13 @@ impl EventSink for PresentationEmitter {
                     .manual_document_revision_receipt
                     .as_deref()
                     .is_some_and(|id| id.starts_with("light-plus-"));
+                let before_paint = matches!(receipt, MutationReceipt::Preserve { .. })
+                    .then(|| state.visible_projection());
                 let before_evidence = state.unanchored_evidence.len();
                 let revision = state.apply_ledger_mutation(&ledger, observation, receipt);
                 let evidence_changed = state.unanchored_evidence.len() != before_evidence;
                 let visible = state.visible_projection();
-                let coverage_changed = matches!(receipt, MutationReceipt::Preserve { .. }) && evidence_changed;
+                let coverage_changed = before_paint.is_some_and(|before| before != visible);
                 drop(state);
                 if evidence_changed {
                     self.repaint_cursor();

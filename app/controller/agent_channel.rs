@@ -2601,3 +2601,15 @@ impl RecordingController {
 #[cfg(test)]
 #[path = "agent_channel_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "agent_channel_capture_observer_tests.rs"]
+mod capture_observer_channel_ownership_tests;
+
+#[cfg(all(test, unix))]
+#[path = "agent_channel_archive_tests.rs"]
+mod archive_channel_serialization_tests;
+
+#[cfg(test)]
+#[path = "agent_channel_controls_tests.rs"]
+mod channel_transcription_controls_tests;

@@ -63,10 +63,7 @@ final class AudioLevelMeter {
     let target = pow(linear, 0.7)
     let current = gain ?? 0
     let smoothing = target > current ? 0.6 : 0.15
-    let newGain = current + (target - current) * smoothing
-    if gain == nil || abs(newGain - current) >= 0.005 {
-      gain = newGain
-    }
+    gain = current + (target - current) * smoothing
     assessInput(rms: Double(rms), db: db, speechActive: speechActive, now: now)
   }
 
@@ -583,12 +580,7 @@ final class WaveformMotionView: NSView {
   /// Read the meter and scale the sweep: a bar peaks at the measured level and
   /// never drops below the resting core, so silence stays a flat line.
   func refreshGain() {
-    guard let configuration, configuration.isVisible, !configuration.transcribing,
-      window != nil, window?.isVisible == true
-    else {
-      stopGainPolling()
-      return
-    }
+    guard let configuration, configuration.isVisible, !configuration.transcribing else { return }
     showGain(configuration.meter?.gain, animated: true)
   }
 

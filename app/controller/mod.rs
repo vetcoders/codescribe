@@ -125,37 +125,6 @@ use hotkey_policy::{
 };
 use transcript_delivery::TranscriptDeliveryTagger;
 
-/// In-process typed callback sinks to eliminate double JSON serialization on the 20-50 Hz hot path.
-pub type CompactProjectionSink =
-    Arc<dyn Fn(&crate::presentation::emitter::CompactProjection) + Send + Sync>;
-pub type TranscriptProjectionSink =
-    Arc<dyn Fn(&crate::presentation::transcript_bus::TranscriptBusEvidenceEvent) + Send + Sync>;
-
-static COMPACT_PROJECTION_SINK: std::sync::RwLock<Option<CompactProjectionSink>> =
-    std::sync::RwLock::new(None);
-static TRANSCRIPT_PROJECTION_SINK: std::sync::RwLock<Option<TranscriptProjectionSink>> =
-    std::sync::RwLock::new(None);
-
-pub fn register_compact_projection_sink(sink: CompactProjectionSink) {
-    if let Ok(mut guard) = COMPACT_PROJECTION_SINK.write() {
-        *guard = Some(sink);
-    }
-}
-
-pub fn register_transcript_projection_sink(sink: TranscriptProjectionSink) {
-    if let Ok(mut guard) = TRANSCRIPT_PROJECTION_SINK.write() {
-        *guard = Some(sink);
-    }
-}
-
-pub fn has_compact_projection_sink() -> bool {
-    COMPACT_PROJECTION_SINK.read().is_ok_and(|g| g.is_some())
-}
-
-pub fn has_transcript_projection_sink() -> bool {
-    TRANSCRIPT_PROJECTION_SINK.read().is_ok_and(|g| g.is_some())
-}
-
 /// Live overlay: ms of audio held before the first interim emit.
 const LIVE_PROFILE_BUFFER_DELAY_MS: u64 = 280;
 /// Live overlay typing animation speed in characters per second.
@@ -5185,22 +5154,17 @@ impl RecordingController {
         .with_cursor_observer(Arc::new(move |projection| {
             crate::os::hold_badge::update_voice_state(cursor_token, projection.voice);
             crate::os::tray_status::set_tray_voice_for_take(cursor_token, projection.voice);
-            if let Ok(guard) = COMPACT_PROJECTION_SINK.read()
-                && let Some(sink) = guard.as_ref()
-            {
-                sink(projection);
-            }
-            if compact_broadcast.receiver_count() > 0 {
-                match serde_json::to_string(projection) {
-                    Ok(json) => {
-                        let _ = compact_broadcast.send(IpcEvent {
-                            timestamp: chrono::Utc::now()
-                                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                            payload: IpcEventPayload::CompactProjection { json },
-                        });
-                    }
-                    Err(error) => tracing::warn!(%error, "compact projection serialization failed"),
+            // The overlay retains the complete reducer projection; pointer
+            // paint follows raw Apple partials through its separate observer.
+            match serde_json::to_string(projection) {
+                Ok(json) => {
+                    let _ = compact_broadcast.send(IpcEvent {
+                        timestamp: chrono::Utc::now()
+                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        payload: IpcEventPayload::CompactProjection { json },
+                    });
                 }
+                Err(error) => tracing::warn!(%error, "compact projection serialization failed"),
             }
         }))
         .with_sentence_pause_sec(options.sentence_pause_sec)
@@ -5236,23 +5200,16 @@ impl RecordingController {
         event_broadcast: &broadcast::Sender<IpcEvent>,
         event: &crate::presentation::transcript_bus::TranscriptBusEvidenceEvent,
     ) {
-        if let Ok(guard) = TRANSCRIPT_PROJECTION_SINK.read()
-            && let Some(sink) = guard.as_ref()
-        {
-            sink(event);
-        }
-        if event_broadcast.receiver_count() > 0 {
-            match serde_json::to_string(event) {
-                Ok(json) => {
-                    let _ = event_broadcast.send(IpcEvent {
-                        timestamp: chrono::Utc::now()
-                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                        payload: IpcEventPayload::TranscriptProjection { json },
-                    });
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "transcript projection serialization failed");
-                }
+        match serde_json::to_string(event) {
+            Ok(json) => {
+                let _ = event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::TranscriptProjection { json },
+                });
+            }
+            Err(error) => {
+                tracing::warn!(%error, "transcript projection serialization failed");
             }
         }
     }

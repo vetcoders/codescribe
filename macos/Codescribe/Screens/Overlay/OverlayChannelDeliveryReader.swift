@@ -85,29 +85,6 @@ actor OverlayChannelDeliveryReader {
   private var builtConversations: BuiltConversations?
   private var nextLineage: UInt64 = 0
 
-  private struct SnapshotSignature: Equatable {
-    let selectedOwner: OverlayConversationOwner?
-    let bindingsStamp: MetadataObjectStamp?
-    let archivesStamp: MetadataObjectStamp?
-    let leasesStamp: MetadataObjectStamp?
-    let busesStamp: MetadataObjectStamp?
-    let busStamps: [URL: MetadataObjectStamp?]
-    let wakeupsStamp: MetadataObjectStamp?
-    let receiptsStamp: MetadataObjectStamp?
-    let receiptDirStamps: [String: MetadataObjectStamp?]
-  }
-
-  private var cachedSnapshotSignature: SnapshotSignature?
-  private var cachedSnapshot: OverlayChannelDeliverySnapshot?
-
-  private func fileStamp(at path: String) -> MetadataObjectStamp? {
-    var metadata = Darwin.stat()
-    guard fstatat(AT_FDCWD, path, &metadata, 0) == 0 else {
-      return nil
-    }
-    return MetadataObjectStamp(metadata)
-  }
-
   /// Everything the conversation list is built from. Equal inputs build an
   /// equal list, and returning the same storage lets the main actor's equality
   /// check end at buffer identity.
@@ -203,50 +180,6 @@ actor OverlayChannelDeliveryReader {
   {
     if persisted == nil { persisted = OverlayDeliveryCursorStore.load(cacheRoot: cacheRoot) }
     let bindingsURL = root.appendingPathComponent("vc.agent-audience-binding.v1.json")
-    let archivesURL = root.appendingPathComponent("archives", isDirectory: true)
-    let leasesURL = root.appendingPathComponent("leases", isDirectory: true)
-    let busesURL = root.appendingPathComponent("buses", isDirectory: true)
-    let wakeupsURL = root.appendingPathComponent("wakeups", isDirectory: true)
-    let receiptsURL = root.appendingPathComponent("runtime/receipts", isDirectory: true)
-
-    var busStamps: [URL: MetadataObjectStamp?] = [:]
-    for busURL in buses.keys {
-      busStamps[busURL] = fileStamp(at: busURL.path)
-    }
-    let founderBusURL = root.appendingPathComponent("buses/channel-10.jsonl")
-    if busStamps[founderBusURL] == nil {
-      busStamps[founderBusURL] = fileStamp(at: founderBusURL.path)
-    }
-    if let sharedBus, busStamps[sharedBus] == nil {
-      busStamps[sharedBus] = fileStamp(at: sharedBus.path)
-    }
-
-    var receiptDirStamps: [String: MetadataObjectStamp?] = [:]
-    let receiptsPrefix = root.path + "/runtime/receipts/"
-    for cursor in buses.values {
-      for messageID in cursor.projection.receiptDirectories() {
-        if receiptDirStamps[messageID] == nil {
-          receiptDirStamps[messageID] = fileStamp(at: receiptsPrefix + messageID)
-        }
-      }
-    }
-
-    let signature = SnapshotSignature(
-      selectedOwner: selectedOwner,
-      bindingsStamp: fileStamp(at: bindingsURL.path),
-      archivesStamp: fileStamp(at: archivesURL.path),
-      leasesStamp: fileStamp(at: leasesURL.path),
-      busesStamp: fileStamp(at: busesURL.path),
-      busStamps: busStamps,
-      wakeupsStamp: fileStamp(at: wakeupsURL.path),
-      receiptsStamp: fileStamp(at: receiptsURL.path),
-      receiptDirStamps: receiptDirStamps
-    )
-
-    if let cached = cachedSnapshot, let cachedSig = cachedSnapshotSignature, cachedSig == signature {
-      return cached
-    }
-
     var bindings: [String: [String: Any]] = [:]
     if FileManager.default.fileExists(atPath: bindingsURL.path) {
       let file = try object(at: bindingsURL)
@@ -519,16 +452,13 @@ actor OverlayChannelDeliveryReader {
         panelFocusResults[requestID] = result
       }
     }
-    let snapshot = OverlayChannelDeliverySnapshot(
+    return OverlayChannelDeliverySnapshot(
       deliveries: deliveries, conversations: built.conversations,
       activeCaptureAttachmentSessions: Array(
         Set(buses.values.flatMap { $0.projection.activeCaptureAttachmentSessions })
       ).sorted { $0.id < $1.id },
       archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: built.historyReplyIDs,
       panelFocusResults: panelFocusResults)
-    cachedSnapshotSignature = signature
-    cachedSnapshot = snapshot
-    return snapshot
   }
 
   private func buildConversations(

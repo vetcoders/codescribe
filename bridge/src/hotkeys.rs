@@ -368,24 +368,6 @@ fn deliver_deferred_insert_and_notify() {
     }
 }
 
-fn register_direct_projection_sinks() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        codescribe::controller::register_compact_projection_sink(Arc::new(|proj| {
-            if let Some(listener) = current_transcription_listener(&shared_listener()) {
-                listener.on_compact_projection(proj.clone().into());
-            }
-        }));
-        codescribe::controller::register_transcript_projection_sink(Arc::new(|event| {
-            if let Some(listener) = current_transcription_listener(&shared_listener()) {
-                listener.on_transcript_projection(
-                    crate::recording::CsTranscriptProjectionEvent::from_bus_event(event),
-                );
-            }
-        }));
-    });
-}
-
 /// Get the shared controller, creating it (and its event forwarder) on first
 /// use. Lazy by design: `start()` installs the tap without paying
 /// `Config::load()` until the user actually invokes a shortcut.
@@ -395,7 +377,6 @@ fn ensure_controller(
 ) -> Arc<RecordingController> {
     let mut guard = controller_store.lock().unwrap_or_else(|e| e.into_inner());
     let controller = guard.get_or_insert_with(|| {
-        register_direct_projection_sinks();
         let controller = Arc::new(RecordingController::new_without_keychain());
         spawn_max_approval_forwarder(&controller, handle.clone());
         #[cfg(not(test))]
@@ -721,30 +702,26 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             notify_composer_dictation_redirected(current_app_action_listener())
         }
         IpcEventPayload::CompactProjection { json } => {
-            if !codescribe::controller::has_compact_projection_sink() && !json.is_empty() {
-                match serde_json::from_str::<codescribe::presentation::emitter::CompactProjection>(
-                    &json,
-                ) {
-                    Ok(event) => listener.on_compact_projection(event.into()),
-                    Err(error) => {
-                        tracing::warn!(%error, "compact projection transport rejected invalid schema")
-                    }
+            match serde_json::from_str::<codescribe::presentation::emitter::CompactProjection>(
+                &json,
+            ) {
+                Ok(event) => listener.on_compact_projection(event.into()),
+                Err(error) => {
+                    tracing::warn!(%error, "compact projection transport rejected invalid schema")
                 }
             }
         }
         IpcEventPayload::TranscriptProjection { json } => {
-            if !codescribe::controller::has_transcript_projection_sink() && !json.is_empty() {
-                match serde_json::from_str::<
-                    codescribe::presentation::transcript_bus::TranscriptBusEvidenceEvent,
-                >(&json)
-                {
-                    Ok(event) => listener
-                        .on_transcript_projection(CsTranscriptProjectionEvent::from_bus_event(&event)),
-                    Err(error) => tracing::warn!(
-                        %error,
-                        "transcript projection transport rejected invalid Bus schema"
-                    ),
-                }
+            match serde_json::from_str::<
+                codescribe::presentation::transcript_bus::TranscriptBusEvidenceEvent,
+            >(&json)
+            {
+                Ok(event) => listener
+                    .on_transcript_projection(CsTranscriptProjectionEvent::from_bus_event(&event)),
+                Err(error) => tracing::warn!(
+                    %error,
+                    "transcript projection transport rejected invalid Bus schema"
+                ),
             }
         }
         IpcEventPayload::PresentationStatus { json } => {
@@ -1140,7 +1117,6 @@ impl CodescribeHotkeys {
 
     /// Register the Swift overlay listener for the shared controller event stream.
     pub fn set_listener(&self, listener: Arc<dyn CsTranscriptionListener>) {
-        register_direct_projection_sinks();
         let listener_store = shared_listener();
         let mut guard = listener_store.write().unwrap_or_else(|e| e.into_inner());
         *guard = Some(listener);

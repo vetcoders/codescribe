@@ -1227,8 +1227,7 @@ final class OverlayContentContainer: NSView {
   /// existing scroll view, including when the pointer is over a corner.
   override func scrollWheel(with event: NSEvent) {
     let point = convert(event.locationInWindow, from: nil)
-    let hostingPoint = hosting.convert(event.locationInWindow, from: nil)
-    if let hitView = hosting.hitTest(hostingPoint) {
+    if let hitView = hosting.hitTest(point) {
       if let scroll = (hitView as? NSScrollView) ?? hitView.enclosingScrollView {
         scroll.scrollWheel(with: event)
         return

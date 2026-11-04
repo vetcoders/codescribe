@@ -617,14 +617,14 @@ final class OverlayState {
   private(set) var pendingNavigation: OverlayPendingNavigation?
   /// One live pass owns its ticket until both the commit ACK and its
   /// authenticated projection arrive. A new take drops the whole ticket.
-  @ObservationIgnored private var retranscribeTicket: OverlayRetranscribeTicket?
+  private var retranscribeTicket: OverlayRetranscribeTicket?
   @ObservationIgnored private var retranscribeTickets: UInt64 = 0
   var retranscribePending: Bool { retranscribeTicket != nil }
   /// A transcript reopened from history. While set it owns the canvas and
   /// every canvas action; the projected take behind it keeps its own state.
   private(set) var archivedTranscript: OverlayArchivedTranscript?
   /// Editor payload for the archive, the twin of `revisionDraft`.
-  @ObservationIgnored private var archiveDraft = ""
+  private var archiveDraft = ""
   /// The unaccepted retranscription `archiveDraft` was filled with, if any.
   @ObservationIgnored private var archiveGeneratedWork: OverlayArchiveGeneratedWork?
   private(set) var archiveActionPending = false
@@ -1356,7 +1356,7 @@ final class OverlayState {
   }
   // Microphone controls observe membership, not the messages of every agent.
   // This is derived only from the reader's inventory and controller roster.
-  @ObservationIgnored private var currentMicrophoneOwners: [String: OverlayConversationOwner] = [:]
+  private var currentMicrophoneOwners: [String: OverlayConversationOwner] = [:]
 
   private func refreshCurrentMicrophoneOwners() {
     let current = OverlayChannelStatusView.currentConversations(
