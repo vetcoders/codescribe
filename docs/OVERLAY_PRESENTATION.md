@@ -232,7 +232,7 @@ pill, the map's chips and its counter render the digit through it, from
 immutable display values and one action, and an open channel's digit carries
 a small dot in the agent accent there (spec §14: a dot, no symbol, never
 `MIC →` text; the microphone and megaphone signs belong to the Agents header
-button; mini's take shows channel 0 as that megaphone). The dot overlaps the
+button; mini's take adds no sign for channel 0). The dot overlaps the
 digit's circle, so it adds no width, and pulses only while the pill animates
 and Reduce Motion is off. It receives
 no `OverlayState`, conversation or command.
@@ -332,10 +332,11 @@ button it shows the bar's 82 pt waveform, the clock (`00:00`, the same
 counter as the bar) and the addressees: one circled digit per open channel,
 in digit order, drawn by `OverlayChannelPill` in the counter form's
 open-channel look (15 pt circle, recording violet, the open-channel dot),
-with no names and no count or `+N`; for channel 0 the Agents button's
-left-facing megaphone stands in for the circles. A dictation alone shows no
-addressees. A circle selects that channel's conversation, as a bar chip
-does; the megaphone is a sign only. The row's gaps open from 2 pt to the
+with no names and no count or `+N`. A broadcast on channel 0 adds no
+addressee: the Agents button already wears its megaphone, and a second one
+beside the clock repeated the sign. A dictation alone shows no addressees.
+A circle selects that channel's conversation, as a bar chip does. The row's
+gaps open from 2 pt to the
 4 pt its controls keep, so mini grows by the waveform, the clock, the
 addressees and those gaps (`DictationOverlayWindow.miniTakeWidth`), never by
 more. The upper-right corner stays: mini grows leftward past the strip, and

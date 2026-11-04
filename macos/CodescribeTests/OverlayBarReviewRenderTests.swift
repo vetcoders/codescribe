@@ -303,7 +303,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     try renderMini(state, scene: "mini-take-3")
   }
 
-  /// Channel 0: the megaphone stands for everyone.
+  /// Channel 0: no addressee row; the Agents button wears the megaphone.
   func testRenderMiniTakeToAll() throws {
     let (state, conversations) = try barState(four, mode: .mini)
     openChannels(["0"], conversations, in: state)

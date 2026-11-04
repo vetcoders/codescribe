@@ -340,7 +340,7 @@ final class OverlayChannelMapTests: XCTestCase {
   /// A live take grows mini (bus brief 2026-11-04 §6, §11D): zero at rest;
   /// a dictation adds the 82 pt waveform and the clock with their 4 pt gaps;
   /// an agent take adds one 19 pt circled digit per open channel, 4 pt apart;
-  /// channel 0 shows the 22 pt megaphone instead.
+  /// channel 0 adds no row: the Agents button already wears its megaphone.
   func testMiniTakeWidthIsWaveformClockAndAddressees() {
     typealias W = DictationOverlayWindow
     XCTAssertEqual(W.miniTakeWidth(live: false, openDigits: []), 0, "at rest mini adds nothing")
@@ -367,14 +367,12 @@ final class OverlayChannelMapTests: XCTestCase {
       W.miniTakeWidth(live: true, openDigits: ["5"]), "each open channel adds its digit")
 
     XCTAssertEqual(
-      W.miniAddresseesWidth(openDigits: ["0"]), OverlayMicrophoneGlyph.diameter,
-      "channel 0: the megaphone")
+      W.miniAddresseesWidth(openDigits: ["0"]), 0,
+      "channel 0 adds nothing: the Agents button already wears the megaphone")
     XCTAssertEqual(
-      W.miniAddresseesWidth(openDigits: ["0", "3"]), OverlayMicrophoneGlyph.diameter,
-      "a broadcast shows the megaphone alone")
-    XCTAssertEqual(
-      W.miniTakeWidth(live: true, openDigits: ["0"]),
-      ceil(dictation + W.miniControlSpacing + OverlayMicrophoneGlyph.diameter))
+      W.miniAddresseesWidth(openDigits: ["0", "3"]), 0,
+      "a broadcast shows no addressee row at all")
+    XCTAssertEqual(W.miniTakeWidth(live: true, openDigits: ["0"]), dictation)
   }
 
   /// `miniTakeLive` is a dictation or any open channel, channel 0 included.

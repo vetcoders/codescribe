@@ -1583,13 +1583,10 @@ struct DictationOverlayView: View {
     let roster = channelStatusView
     let open = roster.channelMapModel.chips.filter(\.microphoneOpen)
     let modifier = state.agentChannelModifier
-    if let broadcast = open.first(where: \.isBroadcast) {
-      OverlayMicrophoneGlyph(
-        symbol: "megaphone", tint: OverlayRecordingLight.agent.color, mirrored: true)
-        .allowsHitTesting(false)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(verbatim: broadcast.accessibilityLabel(modifier: modifier)))
-        .accessibilityIdentifier("overlay-mini-addressee-0")
+    // A broadcast on channel 0 draws no addressee: the Agents button already
+    // wears the megaphone for it (render review, 2026-11-04).
+    if open.contains(where: \.isBroadcast) {
+      EmptyView()
     } else if !open.isEmpty {
       HStack(spacing: DictationOverlayWindow.miniControlSpacing) {
         ForEach(open) { chip in

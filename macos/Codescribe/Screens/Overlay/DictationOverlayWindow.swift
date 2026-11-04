@@ -1452,11 +1452,13 @@ enum DictationOverlayWindow {
     return ceil(miniBrandGap + counter)
   }
 
-  /// The take's addressees in mini: channel 0's megaphone, else the open
-  /// channels' circled digits 4 pt apart; zero without an open channel.
+  /// The take's addressees in mini: the open channels' circled digits 4 pt
+  /// apart; zero without an open channel. A broadcast on channel 0 adds
+  /// nothing: the Agents button already wears the megaphone for it, and a
+  /// second one beside the clock repeated the sign (render review, 2026-11-04).
   @MainActor
   static func miniAddresseesWidth(openDigits: [String]) -> CGFloat {
-    if openDigits.contains("0") { return OverlayMicrophoneGlyph.diameter }
+    if openDigits.contains("0") { return 0 }
     guard !openDigits.isEmpty else { return 0 }
     let count = CGFloat(openDigits.count)
     let circle = OverlayChannelPill.counterWidth(figure: "", openDigitCount: 1, scale: 1)
