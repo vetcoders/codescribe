@@ -64,10 +64,11 @@ struct OverlayChannelMapView: View {
     let stackedHeight = OverlayChannelPill.stackedHeight(scale: scale)
     return OverlayChannelMapSlot(
       stackedHeight: stackedHeight, chipHeight: OverlayChannelPill.headerHeight,
-      stackedWidths: rowWidth(names.shortest, form: .stacked, scale: scale)
-        ... rowWidth(names.full, form: .stacked, scale: scale),
-      chipWidths: rowWidth(names.shortest, form: .chip, scale: scale)
-        ... rowWidth(names.full, form: .chip, scale: scale)
+      stackedWidths: rowWidth(
+        names.shortest, form: .stacked, scale: scale)...rowWidth(
+          names.full, form: .stacked, scale: scale),
+      chipWidths: rowWidth(
+        names.shortest, form: .chip, scale: scale)...rowWidth(names.full, form: .chip, scale: scale)
     ) {
       // The slot proposes exactly the size it claimed, so this reads the
       // same row the bar chose; no state, no feedback loop.

@@ -300,7 +300,8 @@ private struct OverlayAgentsHoverListRow: View {
     .buttonStyle(.plain)
     .conversationActionHover(
       restingColor: lit ? litColor : palette.mutedText.color.opacity(unlitOpacity),
-      hoverColor: palette.primaryText.color)
+      hoverColor: palette.primaryText.color
+    )
     .disabled(pending || row.identity == nil)
     .accessibilityLabel(Text(verbatim: label))
     .accessibilityIdentifier(identifier)

@@ -6008,17 +6008,6 @@
         }
       }
     },
-    "Compact" : {
-      "comment" : "Sidebar state",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kompaktowy"
-          }
-        }
-      }
-    },
     "Complete step 1 before checking this." : {
       "localizations" : {
         "pl" : {

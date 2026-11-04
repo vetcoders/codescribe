@@ -563,7 +563,8 @@ final class OverlayComposerSyncTests: XCTestCase {
     try staleChannelSeat(for: agents[1], in: state)
     let expected = Set([agents[0].id, agents[2].id])
     XCTAssertEqual(state.draftSyncRosterIDs(), expected)
-    let stale = try XCTUnwrap(state.draftSyncChoices(for: agents[0]).first { $0.id == agents[1].id })
+    let stale = try XCTUnwrap(
+      state.draftSyncChoices(for: agents[0]).first { $0.id == agents[1].id })
     XCTAssertFalse(stale.selected)
     XCTAssertFalse(stale.enabled)
     XCTAssertNotNil(stale.note)
@@ -595,15 +596,19 @@ final class OverlayComposerSyncTests: XCTestCase {
     apply(agents, to: state)
     state.selectConversation(agents[0].id)
     XCTAssertEqual(state.draftSyncRosterIDs(), Set(agents.map(\.id)))
-    XCTAssertEqual(state.draftSyncChoices(for: agents[0]).filter(\.selected).map(\.id), [agents[1].id])
+    XCTAssertEqual(
+      state.draftSyncChoices(for: agents[0]).filter(\.selected).map(\.id), [agents[1].id])
   }
 
-  private func staleChannelSeat(for conversation: OverlayConversation, in state: OverlayState) throws {
+  private func staleChannelSeat(for conversation: OverlayConversation, in state: OverlayState)
+    throws
+  {
     let owner = try XCTUnwrap(conversation.owner)
-    let stale = try XCTUnwrap(OverlayConversationOwner(row: [
-      "provider": owner.provider, "provider_session_id": owner.providerSessionID,
-      "lease_id": owner.leaseID, "channel": "7", "name": owner.name,
-    ]))
+    let stale = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": owner.provider, "provider_session_id": owner.providerSessionID,
+        "lease_id": owner.leaseID, "channel": "7", "name": owner.name,
+      ]))
     XCTAssertEqual(stale.id, owner.id, "The boundary is the channel coordinate, not a new session")
     let index = try XCTUnwrap(state.draftGroupIndex(for: conversation.id))
     let seat = try XCTUnwrap(state.conversationDraftGroups[index].participants[conversation.id])

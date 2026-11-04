@@ -90,10 +90,12 @@ final class OverlayDividerFoldTests: XCTestCase {
     let fold = try section(commit, from: "if preferred * textScale", to: "guard")
     XCTAssertEqual(
       compact(fold),
-      "if preferred * textScale < OverlayAgentDrawerLayout.railFoldWidth(textScale: textScale) { state.foldAgentList() return }")
+      "if preferred * textScale < OverlayAgentDrawerLayout.railFoldWidth(textScale: textScale) { state.foldAgentList() return }"
+    )
     XCTAssertTrue(
       compact(commit).contains(
-        "OverlayAgentDrawerLayout.rememberedWidth( textScale: textScale, preferredWidth: preferred, windowWidth: windowWidth)"))
+        "OverlayAgentDrawerLayout.rememberedWidth( textScale: textScale, preferredWidth: preferred, windowWidth: windowWidth)"
+      ))
     XCTAssertTrue(commit.contains("preferredAgentDrawerWidth = width"))
   }
 
@@ -103,20 +105,24 @@ final class OverlayDividerFoldTests: XCTestCase {
       source, from: "private func agentRail(", to: "private func agentRailUnfoldHandle(")
     XCTAssertTrue(
       compact(rail).contains(
-        ".overlay(alignment: .leading) { agentRailUnfoldHandle(width: width, windowWidth: windowWidth) }"))
+        ".overlay(alignment: .leading) { agentRailUnfoldHandle(width: width, windowWidth: windowWidth) }"
+      ))
     let handle = try section(
-      source, from: "private func agentRailUnfoldHandle(", to: "private func agentDrawerResizeHandle(")
+      source, from: "private func agentRailUnfoldHandle(",
+      to: "private func agentDrawerResizeHandle(")
     XCTAssertTrue(handle.contains(".accessibilityIdentifier(\"overlay-agent-rail-resize\")"))
     XCTAssertTrue(handle.contains("OverlayMenuCursorRegion(cursor: .resizeLeftRight)"))
     let drag = try section(handle, from: ".onEnded { value in", to: ".accessibilityElement()")
     XCTAssertTrue(
       compact(drag).contains(
-        "guard -value.translation.width >= OverlayAgentDrawerLayout.railUnfoldDrag else { return }"))
+        "guard -value.translation.width >= OverlayAgentDrawerLayout.railUnfoldDrag else { return }")
+    )
     XCTAssertTrue(
       compact(drag).contains("let dragged = (width - value.translation.width) / textScale"))
     XCTAssertTrue(
       compact(drag).contains(
-        "if dragged * textScale >= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale), let remembered = OverlayAgentDrawerLayout.rememberedWidth( textScale: textScale, preferredWidth: dragged, windowWidth: windowWidth) { preferredAgentDrawerWidth = remembered } state.unfoldAgentList()"))
+        "if dragged * textScale >= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale), let remembered = OverlayAgentDrawerLayout.rememberedWidth( textScale: textScale, preferredWidth: dragged, windowWidth: windowWidth) { preferredAgentDrawerWidth = remembered } state.unfoldAgentList()"
+      ))
   }
 
   func testDecrementingAtTheRowMinimumCommitsAWidthThatFoldsTheList() throws {
@@ -138,7 +144,8 @@ final class OverlayDividerFoldTests: XCTestCase {
   func testIncrementingTheRailDividerUnfoldsTheList() throws {
     let source = try overlaySource("DictationOverlayView.swift")
     let handle = try section(
-      source, from: "private func agentRailUnfoldHandle(", to: "private func agentDrawerResizeHandle(")
+      source, from: "private func agentRailUnfoldHandle(",
+      to: "private func agentDrawerResizeHandle(")
     let adjustable = try section(
       handle, from: ".accessibilityAdjustableAction", to: ".accessibilityIdentifier(")
     XCTAssertTrue(
@@ -154,7 +161,8 @@ final class OverlayDividerFoldTests: XCTestCase {
       source, from: "private func conversationRow(", to: "private func savedConversationDetail(")
     XCTAssertTrue(
       row.contains(
-        "Image(systemName: conversation.isHumanInbox ? \"envelope\" : saved ? \"clock\" : \"bubble.left\")"))
+        "Image(systemName: conversation.isHumanInbox ? \"envelope\" : saved ? \"clock\" : \"bubble.left\")"
+      ))
     XCTAssertFalse(source.contains("\"tray\""))
   }
 
@@ -162,11 +170,13 @@ final class OverlayDividerFoldTests: XCTestCase {
     let source = try overlaySource("OverlayIntercomWidget.swift")
     XCTAssertTrue(
       compact(source).contains(
-        "inbox, title: String(localized: \"Your Inbox\"), symbol: \"envelope\", identifier: \"overlay-intercom-inbox\""))
+        "inbox, title: String(localized: \"Your Inbox\"), symbol: \"envelope\", identifier: \"overlay-intercom-inbox\""
+      ))
     XCTAssertEqual(
       compact(source).components(
-        separatedBy: "if identity.isHumanInbox { Image(systemName: \"envelope\").csFont(11)")
-        .count - 1,
+        separatedBy: "if identity.isHumanInbox { Image(systemName: \"envelope\").csFont(11)"
+      )
+      .count - 1,
       2, "both icon and row cards identify the inbox with an envelope")
     XCTAssertTrue(
       compact(source).contains(
@@ -180,7 +190,8 @@ final class OverlayDividerFoldTests: XCTestCase {
       source,
       from: ".overlay(alignment: .bottom) {\n          ZStack {",
       to: ".overlay(alignment: .top) {")
-    XCTAssertTrue(jump.contains(".accessibilityIdentifier(\"overlay-conversation-jump-to-current\")"))
+    XCTAssertTrue(
+      jump.contains(".accessibilityIdentifier(\"overlay-conversation-jump-to-current\")"))
     XCTAssertTrue(jump.contains(".padding(.bottom, visibleComposerHeight + 10)"))
     XCTAssertFalse(
       compact(jump).contains("presentation"), "the jump offset applies to both presentations")
@@ -189,10 +200,12 @@ final class OverlayDividerFoldTests: XCTestCase {
   func testStandardComposerReportsItsHeightInsideTheBottomSafeAreaInset() throws {
     let source = try overlaySource("OverlayConversationView.swift")
     let inset = try section(
-      source, from: ".safeAreaInset(edge: .bottom, spacing: 0) {", to: ".overlay(alignment: .bottom) {")
+      source, from: ".safeAreaInset(edge: .bottom, spacing: 0) {",
+      to: ".overlay(alignment: .bottom) {")
     XCTAssertTrue(
       compact(inset).contains(
-        "if showsComposer && presentation == .standard { composer .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 } }"))
+        "if showsComposer && presentation == .standard { composer .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 } }"
+      ))
   }
 
   func testRosterMessageScaleMatchesTheConversationBodyFont() {
@@ -207,7 +220,8 @@ final class OverlayDividerFoldTests: XCTestCase {
         "installed.textScale = scale return installed.scaledMonitorBody("))
     XCTAssertFalse(monitor.contains("messageListScale"))
     let rail = try section(source, from: "func railBody(", to: "private func scaledRailBody(")
-    XCTAssertTrue(compact(rail).contains("installed.textScale = scale return installed.scaledRailBody("))
+    XCTAssertTrue(
+      compact(rail).contains("installed.textScale = scale return installed.scaledRailBody("))
     XCTAssertFalse(rail.contains("messageListScale"))
   }
 

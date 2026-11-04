@@ -132,7 +132,8 @@ struct OverlayRecordingControls: View {
     // Mini splits the pair around the Agents button: the chevron-only
     // instance takes its own identifier, so each id names one element.
     .accessibilityIdentifier(
-      showsRecordingButton ? "overlay-recording-controls" : "overlay-recording-controls-preview")
+      showsRecordingButton ? "overlay-recording-controls" : "overlay-recording-controls-preview"
+    )
     .contextMenu {
       agentsMenuItem
       Button("My dictation", systemImage: "waveform") { onShowDictation?() }
@@ -479,9 +480,10 @@ struct OverlayBarLayout: Layout {
     for subview in subviews {
       switch subview[PartKey.self] {
       case .map:
-        map = subview.sizeThatFits(
-          ProposedViewSize(width: nil, height: two ? chipRowHeight : height)
-        ).width
+        map =
+          subview.sizeThatFits(
+            ProposedViewSize(width: nil, height: two ? chipRowHeight : height)
+          ).width
       case .leading, .waveform, .timer, .tools:
         row += subview.sizeThatFits(.unspecified).width + spacing
       }

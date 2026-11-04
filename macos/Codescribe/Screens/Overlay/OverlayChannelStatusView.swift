@@ -636,7 +636,8 @@ struct OverlayAgentAudioControls: View {
             .padding(.trailing, flatPairInset)
             .frame(
               width: glyphBox, height: glyphBox,
-              alignment: chrome ? .center : .trailing)
+              alignment: chrome ? .center : .trailing
+            )
             .opacity(glyphOpacity)
         }
         .modifier(
@@ -670,7 +671,8 @@ struct OverlayAgentAudioControls: View {
           .padding(.leading, flatPairInset)
           .frame(
             width: glyphBox, height: glyphBox,
-            alignment: chrome ? .center : .leading)
+            alignment: chrome ? .center : .leading
+          )
           .opacity(glyphOpacity)
         }
         // Violet means speech is playing; enabled playback alone rests neutral.
@@ -697,7 +699,8 @@ struct OverlayAgentAudioControls: View {
             .padding(.leading, flatPairInset)
             .frame(
               width: glyphBox, height: glyphBox,
-              alignment: chrome ? .center : .leading)
+              alignment: chrome ? .center : .leading
+            )
             .opacity(glyphOpacity)
         }
         .modifier(

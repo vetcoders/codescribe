@@ -127,11 +127,12 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     if dragDistance > 0 { events.append((.leftMouseDragged, end)) }
     events.append((.leftMouseUp, end))
     for (index, item) in events.enumerated() {
-      let event = try XCTUnwrap(NSEvent.mouseEvent(
-        with: item.0, location: item.1, modifierFlags: [],
-        timestamp: ProcessInfo.processInfo.systemUptime,
-        windowNumber: window.windowNumber, context: nil, eventNumber: index + 1,
-        clickCount: 1, pressure: item.0 == .leftMouseUp ? 0 : 1))
+      let event = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: item.0, location: item.1, modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: window.windowNumber, context: nil, eventNumber: index + 1,
+          clickCount: 1, pressure: item.0 == .leftMouseUp ? 0 : 1))
       window.sendEvent(event)
       RunLoop.main.run(until: Date().addingTimeInterval(0.03))
     }
@@ -177,9 +178,11 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     let root = rig.card.contentView
     // Cross the outer display boundary deliberately instead of depending on
     // whichever header location a preceding native fixture left behind.
-    let outerDisplay = try XCTUnwrap(NSScreen.screens.min {
-      $0.visibleFrame.minX < $1.visibleFrame.minX
-    }).visibleFrame
+    let outerDisplay = try XCTUnwrap(
+      NSScreen.screens.min {
+        $0.visibleFrame.minX < $1.visibleFrame.minX
+      }
+    ).visibleFrame
     rig.card.setFrameOrigin(
       CGPoint(x: outerDisplay.minX + 10, y: outerDisplay.midY - rig.card.frame.height / 2))
     let initial = rig.card.frame
@@ -189,7 +192,8 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
       rig.controller.windowDidMove(
         Notification(name: NSWindow.didMoveNotification, object: rig.card))
       XCTAssertEqual(rig.store.load(), stored, "Pointer movement must not serialize desktop JSON")
-      XCTAssertEqual(rig.controller.desktop, desktop, "Pointer movement must not invalidate card bodies")
+      XCTAssertEqual(
+        rig.controller.desktop, desktop, "Pointer movement must not invalidate card bodies")
       XCTAssertTrue(rig.card.contentView === root, "The mounted editor survives tracking")
     }
     rig.controller.finishInstanceDrag(at: CGPoint(x: -10000, y: -10000))
@@ -226,7 +230,8 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
         + "transcribing=\(rig.state.transcribing), voice=\(rig.state.channelAudioCaptureActive), "
         + "pending=\(rig.state.pendingTextMessages.count), modal=\(NSApp.modalWindow != nil), "
         + "mouse=\(NSEvent.pressedMouseButtons), scheduled=\(clock.outstanding), "
-        + "menu=\(String(describing: Mirror(reflecting: rig.controller).descendant("menuTracking")))")
+        + "menu=\(String(describing: Mirror(reflecting: rig.controller).descendant("menuTracking")))"
+    )
     rig.verifyTruth()
   }
 
@@ -271,7 +276,8 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
       }
       XCTAssertTrue(isResize(CGPoint(x: right, y: top)), "Top-right is a visible resize corner")
       XCTAssertTrue(isResize(CGPoint(x: left, y: bottom)), "Bottom-left is a visible resize corner")
-      XCTAssertTrue(isResize(CGPoint(x: right, y: bottom)), "Bottom-right is a visible resize corner")
+      XCTAssertTrue(
+        isResize(CGPoint(x: right, y: bottom)), "Bottom-right is a visible resize corner")
       XCTAssertFalse(isResize(CGPoint(x: left, y: top)), "Top-left belongs to detach")
       XCTAssertFalse(isResize(CGPoint(x: root.bounds.midX, y: bottom)), "No invisible edge band")
       let point = CGPoint(x: right, y: bottom)
@@ -282,10 +288,11 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
       let alpha = rig.card.alphaValue
       let reconciliations = rig.controller.reconciliationRequests
       func event(_ type: NSEvent.EventType) throws -> NSEvent {
-        try XCTUnwrap(NSEvent.mouseEvent(
-          with: type, location: root.convert(point, to: nil), modifierFlags: [], timestamp: 0,
-          windowNumber: rig.card.windowNumber, context: nil, eventNumber: 1,
-          clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+        try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: type, location: root.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+            windowNumber: rig.card.windowNumber, context: nil, eventNumber: 1,
+            clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
       }
       handle.mouseDown(with: try event(.leftMouseDown))
       for _ in 0..<5 { handle.mouseDragged(with: try event(.leftMouseDragged)) }
@@ -303,7 +310,9 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
         handle.mouseUp(with: try event(.leftMouseUp))
         XCTAssertEqual(rig.controller.reconciliationRequests, reconciliations + 1)
         XCTAssertEqual(rig.store.load(), rig.controller.desktop)
-        XCTAssertEqual(try XCTUnwrap(rig.controller.desktop.groupWidth), Double(rig.header.frame.width), accuracy: 0.01)
+        XCTAssertEqual(
+          try XCTUnwrap(rig.controller.desktop.groupWidth), Double(rig.header.frame.width),
+          accuracy: 0.01)
       }
       rig.verifyTruth()
     }
@@ -359,12 +368,12 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     let location = root.convert(point, to: nil)
     let topRight = CGPoint(x: rig.card.frame.maxX, y: rig.card.frame.maxY)
     for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-      let event = try XCTUnwrap(NSEvent.mouseEvent(
-        with: type, location: location, modifierFlags: [], timestamp: 0,
-        windowNumber: rig.card.windowNumber, context: nil, eventNumber: 1,
-        clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
-      if type == .leftMouseDown { drag.mouseDown(with: event) }
-      else { drag.mouseUp(with: event) }
+      let event = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: type, location: location, modifierFlags: [], timestamp: 0,
+          windowNumber: rig.card.windowNumber, context: nil, eventNumber: 1,
+          clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+      if type == .leftMouseDown { drag.mouseDown(with: event) } else { drag.mouseUp(with: event) }
     }
     XCTAssertFalse(try XCTUnwrap(rig.instance).minimized)
     XCTAssertEqual(rig.card.frame.maxX, topRight.x, accuracy: 1)
