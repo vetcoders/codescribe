@@ -297,6 +297,41 @@ final class OverlayChannelMapTests: XCTestCase {
   /// The roster fills the card from the projections its rows read: a green
   /// delivery dot beside a dead follower stays "not active", a policy without
   /// a receipt stays unconfirmed, a stalled follower is flagged, and unread
+  /// Monika, 2026-11-04: the dot before the name sleeps ("zzz") under the
+  /// moon, only behind a receipt; a polled moon without one is unconfirmed.
+  /// The microphone wins over the moon; a gone follower is a ring either way.
+  func testPresenceDotSleepsUnderAReceiptedMoon() throws {
+    func identity(_ digit: String) -> AgentPlaybackIdentity {
+      AgentPlaybackIdentity(provider: "codex", session: "dot-moon-\(digit)", bus: "/dev/null")
+    }
+    var channels: [OverlayChannelDelivery] = []
+    for (digit, open) in [("2", false), ("3", false), ("4", true), ("5", false)] {
+      var channel = OverlayChannelDelivery(
+        channel: digit, agent: "agent-\(digit)", deliveryID: "moon-\(digit)",
+        stage: .sent, isOpen: open)
+      channel.broadcastIdentity = identity(digit)
+      channel.broadcastPolicy = .quiet
+      channels.append(channel)
+    }
+    let ledger = OverlayBroadcastPolicyLedger.shared
+    let previousReceipts = ledger.receipted
+    defer { ledger.noteReceipts(previousReceipts) }
+    // 3 has no receipt: its moon is unconfirmed.
+    ledger.noteReceipts([identity("2"), identity("4"), identity("5")])
+    let roster = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "2": hud(alive: true, session: "s2"), "3": hud(alive: true, session: "s3"),
+        "4": hud(open: true, alive: true, session: "s4"), "5": hud(alive: false, session: "s5"),
+      ])
+    let dots = Dictionary(
+      uniqueKeysWithValues: channels.map { ($0.channel, roster.presenceDotKind(for: $0)) })
+    XCTAssertEqual(dots["2"], .asleep, "a receipted moon: zzz")
+    XCTAssertEqual(dots["3"], .present, "a polled moon without a receipt stays online")
+    XCTAssertEqual(dots["4"], .listening, "the open microphone wins over the moon")
+    XCTAssertEqual(dots["5"], .sleeping, "a gone follower is a ring under the moon too")
+  }
+
   /// is the conversation's count.
   func testRosterFillsTheCardFromItsRowProjections() throws {
     func identity(_ digit: String) -> AgentPlaybackIdentity {

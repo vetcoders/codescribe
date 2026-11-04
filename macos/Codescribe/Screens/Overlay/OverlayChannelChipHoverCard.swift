@@ -145,7 +145,7 @@ struct OverlayChannelChipHoverCard: View {
     if status.unread > 0 {
       lines.append(
         Line(
-          kind: .unread, text: unreadText(status.unread), tone: .processing,
+          kind: .unread, text: unreadText(status.unread), tone: .agent,
           symbol: "circle.fill"))
     }
     if let shortcut = modifier.shortcut(digit: chip.digit) {

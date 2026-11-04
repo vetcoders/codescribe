@@ -1585,7 +1585,7 @@ struct OverlayChannelStatusView: View {
     let unreadCount = conversation.flatMap { unreadCounts[$0.id] } ?? 0
     return OverlayChannelPill.Display(
       figure: inbox ? "" : channel?.channel ?? "0", symbol: inbox ? "envelope" : nil,
-      dot: inbox ? nil : channel.map { statusDotKind(for: $0) } ?? .broadcast,
+      dot: inbox ? nil : channel.map { presenceDotKind(for: $0) } ?? .broadcast,
       disconnected: channel.map { hasDeadFollower($0) } ?? false,
       unread: unreadCount > 0, unreadCount: unreadCount,
       selected: conversation != nil && conversation?.id == selectedConversationID,
@@ -2080,7 +2080,7 @@ struct OverlayChannelStatusView: View {
               } label: {
                 rosterRowLabel(
                   title: conversation.name, statusChannel: channel, conversation: conversation,
-                  dot: statusDotKind(for: channel), headerOnly: true)
+                  dot: presenceDotKind(for: channel), headerOnly: true)
               }
               .buttonStyle(.plain)
               .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
@@ -2093,13 +2093,13 @@ struct OverlayChannelStatusView: View {
               } label: {
                 rosterRowLabel(
                   title: channel.agent, statusChannel: channel, conversation: conversation,
-                  dot: statusDotKind(for: channel), headerOnly: true)
+                  dot: presenceDotKind(for: channel), headerOnly: true)
               }
               .buttonStyle(.plain)
             } else {
               rosterRowLabel(
                 title: channel.agent, statusChannel: channel, conversation: conversation,
-                dot: statusDotKind(for: channel), headerOnly: true)
+                dot: presenceDotKind(for: channel), headerOnly: true)
             }
           }
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -2139,7 +2139,7 @@ struct OverlayChannelStatusView: View {
                 } label: {
                   rosterRowLabel(
                     title: conversation.name, statusChannel: channel, conversation: conversation,
-                    dot: statusDotKind(for: channel), contentOnly: true)
+                    dot: presenceDotKind(for: channel), contentOnly: true)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(verbatim: identityHint))
@@ -2151,7 +2151,7 @@ struct OverlayChannelStatusView: View {
               } else {
                 rosterRowLabel(
                   title: channel.agent, statusChannel: channel, conversation: conversation,
-                  dot: statusDotKind(for: channel), contentOnly: true)
+                  dot: presenceDotKind(for: channel), contentOnly: true)
               }
             }
             rosterRowState(channel, receiptText: receiptText)
@@ -2242,7 +2242,14 @@ struct OverlayChannelStatusView: View {
       preview: includePreview ? last.map { Self.drawerPreview(message: $0) } : nil,
       timestamp: last.flatMap { MessageTimestamp.date(fromISO8601: $0.emittedAt) },
       unreadCount: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
-      dot: dot, statusLabel: statusChannel.map { shortStatus(for: $0) } ?? "",
+      dot: dot,
+      // Beside the presence dot VoiceOver hears the same presence facts as the
+      // chip's hover card; the delivery stage stays with the message.
+      statusLabel: statusChannel.map {
+        OverlayChannelChipHoverCard.spokenStatus(
+          channelChipStatus(for: $0, current: currentConversations)
+        ).joined(separator: ". ")
+      } ?? "",
       statusDetail: statusChannel.map { detail(for: $0) } ?? "",
       titleAccessory: titleAccessory
         ?? statusChannel.map {
@@ -2903,32 +2910,34 @@ struct OverlayChannelStatusView: View {
   /// The roster dot shares the row's status predicates: lit while listening or
   /// with delivery progress, a ring for an asleep channel or one with no
   /// deliveries yet (mockup `.dot`).
-  func statusDotKind(for channel: OverlayChannelDelivery) -> OverlayAgentDotKind {
-    if unavailable { return .idle }
-    if hasDeadFollower(channel) { return .sleeping }
-    if isOpen(channel) { return .listening }
-    if hasStalledFollower(channel) { return .sleeping }
-    if channel.broadcastSkipped { return .idle }
-    switch channel.stage {
-    case .received: return .received
-    case .held: return .waiting
-    case .sent, .queued: return .waiting
-    case nil: return .idle
-    }
-  }
-
-  /// The agents list's dot (Monika, 2026-11-04): the agent's presence alone.
-  /// `statusDotKind` folds the stage of the last sealed utterance into the
-  /// dot, so a channel silent for hours stayed green on an old receipt while
-  /// a replying agent went amber on a newer one without its receipt. Here a
-  /// live follower is a filled olive dot, an open microphone terracotta, a
-  /// gone follower a ring, no liveness claim a faint ring. The fate of a
-  /// message stays with the message and on the chip's hover card.
+  /// The one status dot before an agent's name, in the roster, the agents
+  /// list under ✦, the Intercom and a fiszka (Monika, 2026-11-04): the
+  /// agent's presence alone. The former dot folded in the stage of the last
+  /// sealed utterance, so a channel silent for hours stayed green on an old
+  /// receipt while a replying agent went amber on a newer one without its
+  /// receipt. Now: a live follower is a filled olive dot; an open microphone
+  /// terracotta; "zzz" when the agent sleeps under the moon (do not
+  /// disturb behind a receipt: the mailbox keeps every message for when it
+  /// wakes); a ring for a gone follower; a faint ring without a liveness
+  /// claim. The fate of a message stays with the message in the window and
+  /// on the chip's hover card. Delivery, presence and new replies never
+  /// share this dot.
   func presenceDotKind(for channel: OverlayChannelDelivery) -> OverlayAgentDotKind {
     if unavailable { return .idle }
     if hasDeadFollower(channel) { return .sleeping }
     if isOpen(channel) { return .listening }
+    if isQuiet(channel) { return .asleep }
     return hudStates[channel.channel]?.followerAlive == true ? .present : .idle
+  }
+
+  /// Do not disturb as the ledger paints it, only behind a receipt: a polled
+  /// moon without one is unconfirmed and does not put the agent to sleep.
+  func isQuiet(_ channel: OverlayChannelDelivery) -> Bool {
+    let ledger = OverlayBroadcastPolicyLedger.shared
+    guard let identity = channel.broadcastIdentity, ledger.policyKnown(identity) else {
+      return false
+    }
+    return ledger.policy(for: identity, polled: channel.broadcastPolicy).moon
   }
 
   func statusHelp(for channel: OverlayChannelDelivery) -> String {
@@ -3349,7 +3358,7 @@ struct OverlayRosterMessagePreview: View {
 /// Roster status dot kinds, mapped to palette tones by `OverlayAgentStatusDot`;
 /// the shared channel's `broadcast` draws an antenna instead of a dot.
 enum OverlayAgentDotKind {
-  case broadcast, listening, received, waiting, present, sleeping, idle
+  case broadcast, listening, received, waiting, present, asleep, sleeping, idle
 }
 
 /// Glass rows and their controls morph as one group on macOS 26; older
@@ -3365,8 +3374,9 @@ private func overlayGlassGroup<Content: View>(_ content: Content) -> some View {
   }
 }
 
-/// The roster's status dot: filled while listening or with delivery progress,
-/// a ring for an asleep channel or one without deliveries (mockup `.dot`).
+/// The status dot before an agent's name (`presenceDotKind`): filled while
+/// the follower lives or the microphone is open, "zzz" under the moon, a ring
+/// for a gone follower or one without a liveness claim (mockup `.dot`).
 /// The shared channel wears an antenna: it has no reader of its own.
 struct OverlayAgentStatusDot: View {
   @Environment(\.csTextScale) private var textScale
@@ -3376,7 +3386,7 @@ struct OverlayAgentStatusDot: View {
   private var filled: Bool {
     switch kind {
     case .broadcast, .listening, .received, .waiting, .present: true
-    case .sleeping, .idle: false
+    case .asleep, .sleeping, .idle: false
     }
   }
 
@@ -3386,7 +3396,7 @@ struct OverlayAgentStatusDot: View {
     case .listening: palette.listeningStatus
     case .received, .present: palette.successStatus
     case .waiting: palette.processingStatus
-    case .sleeping, .idle: palette.mutedText
+    case .asleep, .sleeping, .idle: palette.mutedText
     }
   }
 
@@ -3397,6 +3407,14 @@ struct OverlayAgentStatusDot: View {
         .font(.system(size: 10 * textScale, weight: .semibold))
         .foregroundStyle(tone.color)
         .frame(width: 12 * textScale, height: 8 * textScale)
+        .accessibilityHidden(true)
+    } else if kind == .asleep {
+      // The sleeping agent: Monika's "zzz" in the muted tone, no new colour.
+      Text(verbatim: "zzz")
+        .font(.system(size: 7 * textScale, weight: .bold, design: .rounded))
+        .foregroundStyle(tone.color)
+        .fixedSize()
+        .frame(width: 10 * textScale, height: 8 * textScale)
         .accessibilityHidden(true)
     } else {
       Circle()

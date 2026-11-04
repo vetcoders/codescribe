@@ -2271,7 +2271,7 @@ private struct OverlayIntercomCard: View {
                 .background(OverlayResizeAnchor())
               OverlayIntercomStatusMark(
                 roster: roster, channel: channelRow,
-                kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle,
+                kind: channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle,
                 palette: palette, hints: false)
             }
           }
@@ -2332,7 +2332,7 @@ private struct OverlayIntercomCard: View {
           } else {
             OverlayIntercomStatusMark(
               roster: roster, channel: channelRow,
-              kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle,
+              kind: channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle,
               palette: palette)
           }
           Button {
@@ -2529,7 +2529,7 @@ private func intercomStatusDot(
   _ roster: OverlayChannelStatusView, state: OverlayState, digit: String
 ) -> OverlayAgentDotKind {
   guard let channel = intercomChannelRow(state: state, digit: digit) else { return .idle }
-  return roster.statusDotKind(for: channel)
+  return roster.presenceDotKind(for: channel)
 }
 
 /// The roster row behind a fiszka: the bus evidence the list reads.
@@ -3157,7 +3157,7 @@ private struct OverlayIntercomInstanceCard: View {
       } else if !mini {
         OverlayIntercomStatusMark(
           roster: roster, channel: channelRow,
-          kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle, palette: palette)
+          kind: channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle, palette: palette)
       } else if layout.tier == .icon {
         Image(systemName: "bubble.left").csFont(11)
           .overlayFastHint(instance.name, palette: palette)

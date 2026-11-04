@@ -86,15 +86,19 @@ final class OverlayAgentsHoverListTests: XCTestCase {
     for (row, channel) in zip(rows, ["2", "3", "5"]) {
       let source = try XCTUnwrap(view.channels.first { $0.channel == channel })
       XCTAssertEqual(row.dot, view.presenceDotKind(for: source), channel)
-      XCTAssertEqual(row.status, view.shortStatus(for: source), channel)
+      XCTAssertEqual(
+        row.status,
+        OverlayChannelChipHoverCard.spokenStatus(
+          view.channelChipStatus(for: source, current: view.currentConversations)
+        ).joined(separator: ". "), channel)
       XCTAssertEqual(row.policy, source.broadcastPolicy, channel)
       XCTAssertEqual(row.identity, source.broadcastIdentity, channel)
     }
   }
 
   /// Monika, 2026-11-04: channels silent for hours showed green on an old
-  /// receipt and replying agents amber on a newer unreceipted one. The list's
-  /// dot reads presence; the roster's own dot still reads the stage.
+  /// receipt and replying agents amber on a newer unreceipted one. The one
+  /// dot reads presence; no stage reaches it anywhere.
   func testListDotIsPresenceAloneNotTheLastUtterancesStage() throws {
     let view = OverlayChannelStatusView(
       channels: [

@@ -125,9 +125,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
               open: open, loud: false, autosealDeadline: nil, followerAlive: alive)
           ])
         XCTAssertEqual(roster.hasDeadFollower(channel), alive == false)
+        // Presence alone: the fixture's received stage never reaches the dot.
         let expected: OverlayAgentDotKind =
-          alive == false ? .sleeping : open ? .listening : .received
-        XCTAssertEqual(roster.statusDotKind(for: channel), expected)
+          alive == false ? .sleeping : open ? .listening : alive == true ? .present : .idle
+        XCTAssertEqual(roster.presenceDotKind(for: channel), expected)
       }
     }
   }

@@ -208,8 +208,8 @@ the projection the roster row reads (`channelChipStatus`, carried as
    "Online" for the current sample, `false` only "Not active" (a capped
    discovery can report false for a live agent, so never a sure "Offline"),
    `nil` "No data". A stalled follower (`hasStalledFollower`) adds "Not
-   reading". Neither the delivery dot (`statusDotKind`) nor the channel 0
-   policy stands in for presence.
+   reading". The dot before the name (`presenceDotKind`) shows this same
+   presence; neither it nor the channel 0 policy carries a delivery stage.
 2. **Channel 0** from the policy as `OverlayBroadcastPolicyLedger` paints it,
    behind a receipt (`policyKnown`): "In channel 0", "Not in channel 0", or
    "Policy not confirmed" instead of the fail-open "on"; the moon adds "Do
@@ -258,14 +258,23 @@ One low row per agent 1–9 in ascending order (channel 0 has none), no header
 or cards, sized to its rows so nine fit without scrolling. Columns: the
 numbered `OverlayChannelPill` chip with the agent's name, the presence dot
 (`presenceDotKind`), the antenna (channel-0 membership), the moon (do not
-disturb) and the amber unread dot. The presence dot is the agent alone
-(Monika, 2026-11-04): filled olive while its follower is alive, terracotta
-with the microphone open, a ring for a gone follower, a faint ring without a
-liveness claim. It does not read the stage of the last sealed utterance, as
-the roster's `statusDotKind` does: that dot kept a channel silent for hours
-green on an old receipt and turned a replying agent amber on a newer one.
-The fate of a message stays with the message in the window and on the chip's
-hover card. The chip opens the channel's conversation
+disturb) and the unread dot in the agent accent. The presence dot is the one
+status dot before an agent's name everywhere (this list, the Bus window's
+roster, the Intercom, a fiszka) and shows the agent alone (Monika,
+2026-11-04): filled olive while its follower is alive, terracotta with the
+microphone open, "zzz" while the agent sleeps under a receipted moon (the
+mailbox keeps every message for when it wakes; a polled moon without a
+receipt is unconfirmed and stays olive), a ring for a gone follower (a new
+direct message to it is refused, not queued), a faint ring without a
+liveness claim. A stalled reader keeps its olive dot and says "Not reading"
+on the chip's hover card, since a backlog promises no waking. The dot never
+reads the stage of the last sealed utterance: the former dot kept a channel
+silent for hours green on an old receipt and turned a replying agent amber
+on a newer one. The fate of a message stays with the message in the window
+and on the chip's hover card; the row's VoiceOver status reads the card's
+presence facts. New replies, wherever a dot or badge marks them (this list,
+the chips, the roster badge, the card), wear the agent accent, not the amber
+that means warning and waiting elsewhere. The chip opens the channel's conversation
 through `onSelectConversation`, the path `selectChannelConversation` uses.
 The antenna and the moon are sibling buttons with their own hit targets;
 they change reception through `OverlayBroadcastPolicyLedger.change`, never
@@ -349,7 +358,7 @@ While a take records (bus brief §6, §11D) the map stays as it is: every
 bound agent keeps its digit and name, and the addressees, the channels the
 microphone feeds (`OverlayChannelMapChip.microphoneOpen`), wear the recording
 violet on their circle with the pulsing open-channel dot; the selected
-conversation keeps its fill and the amber unread dot stays independent of
+conversation keeps its fill and the accent unread dot stays independent of
 both. The waveform and the clock are drawn at rest too, at their fixed
 widths, so the bar has no hole at rest and a take alone never changes its
 length. Channel 0's circle is on the map at rest too, so a broadcast only
@@ -671,7 +680,7 @@ a pulse when lit, one control height (channel 0 keeps the megaphone without
 the roster's larger tarcza) — painted flat on the fiszka with `chrome: false`,
 since the fiszka is the surface, not in glass circles of its own (Maciej,
 2026-10-23: "robisz to prosto na powierzchni fiszki"). Its status is one
-`OverlayAgentStatusDot` from `statusDotKind`, before the figure; after the
+`OverlayAgentStatusDot` from `presenceDotKind`, before the figure; after the
 name sit the agent's two reception marks (`OverlayReceptionMarks`): the
 channel-0 antenna (`broadcastPolicy.statusSymbol`, lit for a member) and the
 do-not-disturb moon (`quietSymbol`, filled while lit). Both are one-click

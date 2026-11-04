@@ -13,7 +13,8 @@ struct OverlayAgentsHoverRow: Equatable, Identifiable {
   /// `OverlayChannelStatusView.presenceDotKind(for:)`: presence alone, not
   /// the stage of the last utterance (Monika, 2026-11-04).
   let dot: OverlayAgentDotKind
-  /// `OverlayChannelStatusView.shortStatus(for:)`, read by VoiceOver.
+  /// The presence facts of the chip's hover card (`spokenStatus`), read by
+  /// VoiceOver beside the dot; the delivery stage stays with the message.
   let status: String
   let microphoneOpen: Bool
   let disconnected: Bool
@@ -39,7 +40,10 @@ extension OverlayChannelStatusView {
         let conversation = conversation(for: channel)
         return OverlayAgentsHoverRow(
           digit: channel.channel, name: channel.agent, conversationID: conversation?.id,
-          dot: presenceDotKind(for: channel), status: shortStatus(for: channel),
+          dot: presenceDotKind(for: channel),
+          status: OverlayChannelChipHoverCard.spokenStatus(
+            channelChipStatus(for: channel, current: currentConversations)
+          ).joined(separator: ". "),
           microphoneOpen: isOpen(channel), disconnected: hasDeadFollower(channel),
           identity: channel.broadcastIdentity, policy: channel.broadcastPolicy,
           unread: conversation.flatMap { unreadCounts[$0.id] } ?? 0)
@@ -108,7 +112,7 @@ struct OverlayAgentsHoverListChrome: ViewModifier {
 
 /// The agents under ✦: one low row per agent, no header or cards. Columns:
 /// numbered pill with the name (opens the conversation), status dot, antenna
-/// (channel 0), moon (do not disturb), amber unread dot. The antenna and the
+/// (channel 0), moon (do not disturb), the unread dot in the agent accent. The antenna and the
 /// moon are sibling buttons, never nested in the pill, and switch reception
 /// through `OverlayBroadcastPolicyLedger` without opening or closing anything.
 /// No hint opens from inside the list: the shared hint panel is the list.
@@ -246,8 +250,9 @@ private struct OverlayAgentsHoverListRow: View {
           unknownMark(symbol: "moon", identifier: "overlay-agents-hover-moon-\(row.digit)")
         }
       }
+      // New replies wear the agent accent: amber means warning elsewhere.
       Circle()
-        .fill(palette.processingStatus.color)
+        .fill(palette.agentAccent.color)
         .frame(
           width: OverlayAgentsHoverList.unreadDiameter,
           height: OverlayAgentsHoverList.unreadDiameter

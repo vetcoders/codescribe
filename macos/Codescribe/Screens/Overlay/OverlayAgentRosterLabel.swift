@@ -118,9 +118,9 @@ struct OverlayAgentUnreadBadge: View {
     Text(verbatim: String(count))
       .font(.system(size: 11 * textScale, weight: .semibold))
       .monospacedDigit()
-      .foregroundStyle(palette.processingStatus.color)
+      .foregroundStyle(palette.agentAccent.color)
       .frame(width: badgeDiameter, height: badgeDiameter)
-      .background(palette.processingStatus.color.opacity(0.12), in: Circle())
+      .background(palette.agentAccent.color.opacity(0.12), in: Circle())
       .fixedSize()
       .accessibilityLabel("\(count) unread replies")
   }
