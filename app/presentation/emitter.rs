@@ -146,10 +146,10 @@ enum EmitterCmd {
 }
 
 fn append_stream_delta(path: &std::path::Path, delta: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     let mut file = std::fs::OpenOptions::new()
         .create(true)

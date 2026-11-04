@@ -296,10 +296,10 @@ pub(crate) fn append_json_line(bus: &Path, value: &Value) -> io::Result<()> {
     encoded.push(b'\n');
     // A dedicated channel bus may precede its directory (W5); a receipt
     // must not vanish over a missing parent.
-    if let Some(parent) = bus.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = bus.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)?;
     }
     let file = shared_bus_file(bus)?;
     super::transcript_bus_maintenance::generation::append(bus, &file, &encoded)
