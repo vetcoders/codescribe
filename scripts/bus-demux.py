@@ -9975,7 +9975,8 @@ def send_peer_command(args: argparse.Namespace) -> int:
             raise ValueError("no channel bindings exist")
         rows: list[tuple[str, dict[str, Any], str]] = []
         sender_channel = None
-        sender_display = lease.get("display_name") if isinstance(lease.get("display_name"), str) else None
+        lease_display = lease.get("display_name") if isinstance(lease.get("display_name"), str) else None
+        sender_display = None
         for channel, binding in sorted((bindings or {}).items()):
             if not isinstance(binding, dict):
                 continue
@@ -9983,14 +9984,13 @@ def send_peer_command(args: argparse.Namespace) -> int:
                                            str(binding.get("provider_session_id") or ""))
             if owner_lease == lease_id:
                 sender_channel = str(channel)
-                # A follower started before the spelling was kept: the binding
-                # written at the same attach still has it.
                 sender_display = sender_display or binding_display_name(binding) or None
             rows.append((str(channel), binding, owner_lease))
         identity = os.urandom(12).hex()
         sender = {"name": sender_name, "provider": args.provider.casefold(),
                   "provider_session_id": args.session, "lease_id": lease_id,
-                  "channel": sender_channel, "display_name": sender_display or sender_name}
+                  "channel": sender_channel,
+                  "display_name": sender_display or lease_display or sender_name}
         if is_founder_target:
             bus = (root / "buses" / "channel-10.jsonl").resolve(strict=False)
             addressed = {"mode": "direct", "to": "10", "channel": "10",
@@ -10608,11 +10608,20 @@ def archive_agent(args: argparse.Namespace) -> dict[str, Any]:
                 or not isinstance(lease.get("bus"), str)
                 or str(Path(lease["bus"]).resolve(strict=False)) != bus):
             raise ValueError("agent mailbox is unreadable or changed; channel retained")
+        display_name = (
+            binding_display_name(current)
+            or (
+                lease.get("display_name").strip()
+                if isinstance(lease.get("display_name"), str) and lease.get("display_name").strip()
+                else None
+            )
+        )
         receipt = {
             "schema": AGENT_ARCHIVE_SCHEMA, "kind": "agent_archive",
             "provider": provider, "provider_session_id": args.session,
             "lease_id": lease_id, "channel": channel,
             "name": current.get("audience") or lease.get("name") or provider,
+            **({"display_name": display_name} if display_name else {}),
             "bus": lease["bus"], "archived_at": utc_now(), "released": True,
         }
         # Metadata precedes release. A failed binding write keeps the agent
@@ -11130,9 +11139,11 @@ def attach_command(args: argparse.Namespace) -> int:
                 installed = pid_record.get("configuration") or (lease_state or {}).get("wakeup_configuration")
                 migrating = (isinstance(lease_state, dict)
                              and lease_state.get("bus") not in (None, resolved_bus))
+                spelling_changed = (isinstance(lease_state, dict)
+                                    and lease_state.get("display_name") != display_name)
                 if pid is not None and not verified_follower(root, lease_id, args.session, pid):
                     raise OSError("existing follower identity could not be verified; retained")
-                if migrating or pid is not None and installed != configuration:
+                if migrating or pid is not None and (installed != configuration or spelling_changed):
                     with retirement_guard(root, lease_id, args.session) as (_, disposition):
                         if disposition not in HANDOVER_CLEAR_STATES:
                             raise OSError(f"existing follower {disposition}; retained")
@@ -11183,7 +11194,8 @@ def attach_command(args: argparse.Namespace) -> int:
                      and actual_entry == original_entry)
         if previous is not None:
             emit({"schema": TAKEOVER_RECEIPT_SCHEMA, "kind": "takeover_receipt",
-                  "channel": str(args.channel), "audience": name, "provider": args.provider.casefold(),
+                  "channel": str(args.channel), "audience": name, "display_name": display_name,
+                  "provider": args.provider.casefold(),
                   "provider_session_id": args.session,
                   "binding_changed": False if unchanged else None,
                   "binding_state": "unchanged" if unchanged else "uncertain",
@@ -11197,7 +11209,8 @@ def attach_command(args: argparse.Namespace) -> int:
     state = read_json(lease_path) or {}
     emit({
         "schema": ATTACH_RECEIPT_SCHEMA, "kind": "attach_receipt",
-        "channel": str(args.channel), "audience": name, "provider": args.provider.casefold(),
+        "channel": str(args.channel), "audience": name, "display_name": display_name,
+        "provider": args.provider.casefold(),
         "provider_session_id": args.session, "lease_id": lease_id,
         "cursor": state.get("cursor"), "resumed": resumed, "follower_pid": pid,
         "follower_spawned": child is not None, "follower_log": str(log_path),
@@ -11247,6 +11260,7 @@ def status_command(args: argparse.Namespace) -> int:
                              and verified_follower(root, lease_id, args.session, lease_pid))
     follower_alive = follower_verified
     channel = None
+    display_name = None
     binding = read_json(root / AUDIENCE_BINDING_FILENAME) or {}
     bindings = binding.get("bindings") if binding.get("schema") == AUDIENCE_BINDING_SCHEMA else None
     if isinstance(bindings, dict):
@@ -11260,9 +11274,11 @@ def status_command(args: argparse.Namespace) -> int:
                 and isinstance(state, dict) and entry.get("bus") == state.get("bus")
             ):
                 channel = str(slot)
+                display_name = binding_display_name(entry) or None
                 break
     name = state.get("name") if isinstance(state, dict) else None
-    display_name = state.get("display_name") if isinstance(state, dict) else None
+    if not display_name and isinstance(state, dict):
+        display_name = state.get("display_name")
     lifecycle = read_json(lifecycle_paths(root, lease_id)[0]) or {}
     watch = read_json(watch_record_path(root, lease_id)) or {}
     watch_pid = watch.get("pid")

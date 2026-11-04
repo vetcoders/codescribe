@@ -921,4 +921,33 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertFalse(state.conversationMicrophoneOpen(second))
     XCTAssertFalse(panel.isVisible, "review fixtures do not claim the user's desktop")
   }
+
+  func testDisplayNamePreservesAttachSpellingWhileMatchingAudience() throws {
+    let bindingWithDisplay: [String: Any] = [
+      "audience": "kaja",
+      "display_name": "Kaja",
+      "provider": "claude-code",
+      "provider_session_id": "session-kaja",
+    ]
+    let legacyBinding: [String: Any] = [
+      "audience": "borys",
+      "provider": "agy",
+      "provider_session_id": "session-borys",
+    ]
+    XCTAssertEqual(OverlayChannelDelivery.displayName(of: bindingWithDisplay), "Kaja")
+    XCTAssertEqual(OverlayChannelDelivery.displayName(of: legacyBinding), "borys")
+
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "claude-code",
+        "provider_session_id": "session-kaja",
+        "lease_id": String(repeating: "a", count: 32),
+        "audience": "kaja",
+        "name": "kaja",
+        "display_name": "Kaja",
+        "channel": "8",
+      ]))
+    XCTAssertEqual(owner.name, "Kaja")
+    XCTAssertEqual(owner.channel, "8")
+  }
 }

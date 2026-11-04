@@ -2469,7 +2469,7 @@ impl RecordingController {
                 if digit.len() != 1 || !digit.chars().all(|c| ('1'..='9').contains(&c)) {
                     continue;
                 }
-                if let Some(state) = states.iter().find(|state| &state.channel == digit) {
+                if let Some(state) = states.iter_mut().find(|state| &state.channel == digit) {
                     // A channel opened before this change may have lost the
                     // original whitespace. Never promote that into a match.
                     if entry.provider_session_id != entry.provider_session_id.trim()
@@ -2477,6 +2477,11 @@ impl RecordingController {
                             == Some(entry.provider_session_id.trim())
                     {
                         ambiguous_open_channels.insert(digit.clone());
+                    } else if state.provider.as_deref() == Some(entry.provider.trim())
+                        && state.provider_session_id.as_deref()
+                            == Some(entry.provider_session_id.as_str())
+                    {
+                        state.audience = entry.display_name().to_string();
                     }
                     continue;
                 }
@@ -2487,7 +2492,7 @@ impl RecordingController {
                     open: false,
                     loud: false,
                     channel: digit.clone(),
-                    audience: entry.audience.trim().to_string(),
+                    audience: entry.display_name().to_string(),
                     label: String::new(),
                     autoseal_secs: 0,
                     autoseal_deadline: None,
@@ -4147,9 +4152,9 @@ mod tests {
         let canonical_bus = bus.canonicalize().expect("canonical bus");
         std::fs::create_dir(dir.path().join("leases")).expect("leases");
         let bindings = serde_json::json!({"schema": "vc.agent-audience-binding.v1", "bindings": {
-            "1": {"audience": "Lena", "provider": "codex", "provider_session_id": "agent-a"},
-            "2": {"audience": "Adam", "provider": "codex", "provider_session_id": "agent-b"},
-            "3": {"audience": "Astra", "provider": "codex", "provider_session_id": "agent-c"}
+            "1": {"audience": "lena", "display_name": "Lena", "provider": "codex", "provider_session_id": "agent-a"},
+            "2": {"audience": "adam", "display_name": "Adam", "provider": "codex", "provider_session_id": "agent-b"},
+            "3": {"audience": "astra", "provider": "codex", "provider_session_id": "agent-c"}
         }});
         std::fs::write(&binding, serde_json::to_vec(&bindings).expect("json")).expect("binding");
         let admit = |session: &str, destination: &Path| {
@@ -4170,6 +4175,9 @@ mod tests {
         admit("agent-a", &canonical_bus);
         let frozen = frozen_channel_recipients(0, &binding, &bus);
         assert_eq!(frozen.len(), 1);
+        assert_eq!(frozen[0]["audience"], "lena");
+        assert_eq!(frozen[0]["name"], "Lena");
+        assert_eq!(frozen[0]["display_name"], "Lena");
         admit("agent-b", &canonical_bus);
         admit("agent-c", &dir.path().join("wrong.jsonl"));
         assert_eq!(
