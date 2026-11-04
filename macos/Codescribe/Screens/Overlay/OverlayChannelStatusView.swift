@@ -2414,7 +2414,11 @@ struct OverlayChannelStatusView: View {
           return OverlayRosterReceipt(symbol: symbol, text: text, helpText: detail, isRead: isRead)
         }
         if message.holdSecondsRemaining != nil {
-          return display("pause.circle", String(localized: "Held"))
+          // The hold is yours, not the recipient's: the row says "Held" under
+          // the preview and wears no mark beside the name until a receipt
+          // exists (Monika, 2026-11-04: the pause glyph that appeared after
+          // sending and turned into checkmarks read as an intruder).
+          return display("", String(localized: "Held"))
         }
         if recipient.acknowledged {
           return display("double-check", String(localized: "Read"), isRead: true)

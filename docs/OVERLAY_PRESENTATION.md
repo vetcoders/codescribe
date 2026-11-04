@@ -101,8 +101,12 @@ The compact receipt mark describes the newest completed user delivery to the
 exact frozen recipient. Delivered and read use the same compact double-check
 shape: muted ink means delivered; full body ink means read or the canonical agent
 acknowledgment.
-Queue admission and provider acceptance are not delivered/read evidence. Held,
-skipped and unreceipted deliveries keep distinct marks and explanations. The
+Queue admission and provider acceptance are not delivered/read evidence.
+Skipped and unreceipted deliveries keep distinct marks and explanations; a
+message still held for withdrawal says "Held" under the preview and wears no
+mark beside the name, since the hold is the sender's and no receipt exists yet
+(Monika, 2026-11-04: the pause glyph that appeared after sending and turned
+into checkmarks read as an intruder). The
 mark sits near the identity, separately from the last-preview clock; its help
 and accessibility text name the time of its own outgoing message. A later
 incoming reply must not lend its time to that receipt. The circular unread

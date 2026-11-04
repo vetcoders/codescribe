@@ -163,10 +163,12 @@ struct OverlayRosterSyncMark: View {
 
 /// Compact projection of a frozen recipient's delivery evidence: the words
 /// the conversation bubble uses for the same receipt, and the glyph that
-/// stands for them in the name row: `pause.circle` held, `clock` queued or
-/// addressed with no receipt yet, `checkmark` accepted (`✓` grey),
-/// `double-check` delivered (`✓✓` grey) or read (`✓✓` olive via `isRead`),
-/// `circle.dotted` no receipt.
+/// stands for them in the name row: `clock` queued or addressed with no
+/// receipt yet, `checkmark` accepted (`✓` grey), `double-check` delivered
+/// (`✓✓` grey) or read (`✓✓` olive via `isRead`), `circle.dotted` no
+/// receipt. An empty symbol draws no mark: a message still held for
+/// withdrawal has words under the preview and nothing beside the name
+/// (Monika, 2026-11-04).
 struct OverlayRosterReceipt {
   let symbol: String
   let text: String
@@ -182,6 +184,8 @@ private struct OverlayRosterReceiptMark: View {
   var body: some View {
     Group {
       switch receipt.symbol {
+      case "":
+        EmptyView()
       case "double-check":
         OverlayRosterCheckmarks(count: 2)
           .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
