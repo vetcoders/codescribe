@@ -335,7 +335,7 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertTrue(
       OverlayConversationView.visibleMessages(in: skippedByFollowerConversation).isEmpty)
 
-    XCTAssertEqual(held.symbol, "pause.circle")
+    XCTAssertEqual(held.symbol, "")
     XCTAssertEqual(held.text, String(localized: "Held"))
     XCTAssertEqual(addressed.symbol, "clock")
     XCTAssertEqual(addressed.text, String(localized: "Addressed"))
@@ -354,9 +354,10 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertTrue(acknowledged.isRead)
     XCTAssertEqual(noReceipt.symbol, "circle.dotted")
     XCTAssertEqual(noReceipt.text, OverlayConversationView.noReceiptText)
-    // Contract: accepted = 1 grey check (`checkmark`), delivered = 2 grey
-    // checks (`double-check`, `isRead == false`), read = 2 olive checks
-    // (`double-check`, `isRead == true`).
+    // Contract: held draws no symbol beside the name (`""`), accepted = 1 grey
+    // check (`checkmark`), delivered = 2 grey checks (`double-check`,
+    // `isRead == false`), read = 2 olive checks (`double-check`,
+    // `isRead == true`).
     let vocabulary = [held, queued, accepted, delivered, noReceipt].map(\.symbol)
     XCTAssertEqual(Set(vocabulary).count, 5, "five distinct shapes across states: \(vocabulary)")
     XCTAssertEqual(
@@ -368,6 +369,7 @@ final class OverlayBusWindowTests: XCTestCase {
         .appendingPathComponent("Codescribe/Screens/Overlay/OverlayAgentRosterLabel.swift"),
       encoding: .utf8
     ).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    XCTAssertTrue(label.contains("case \"\": EmptyView()"))
     XCTAssertTrue(label.contains("case \"double-check\": OverlayRosterCheckmarks(count: 2)"))
     XCTAssertTrue(label.contains("case \"checkmark\": OverlayRosterCheckmarks(count: 1)"))
     XCTAssertTrue(label.contains("default: Image(systemName: receipt.symbol)"))
