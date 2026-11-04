@@ -1474,7 +1474,9 @@ struct DictationOverlayView: View {
           .allowsHitTesting(false)
           .layoutValue(key: OverlayBarLayout.PartKey.self, value: .timer)
       }
-      if miniTake {
+      // The vertical layout's stacked counter already circles the open
+      // digits beside the brand, so only the horizontal mini adds the row.
+      if miniTake, !state.channelMapCounterStacked {
         miniAddressees
       }
       // The expanded bar's channel map (bus intercom spec §5.1): stacked pills

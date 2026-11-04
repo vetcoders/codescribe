@@ -1692,8 +1692,12 @@ enum DictationOverlayWindow {
         enabled: state.channelMapInMini,
         stackedCounterWidth: miniStackedCounterWidth(
           map: map, stacked: state.channelMapCounterStacked, textScale: scale))
+      // The vertical layout's stacked counter already circles the open digits
+      // in mini, so its take adds no addressee row (integrator, 2026-11-04).
       panel.setMiniTake(
-        width: miniTakeWidth(live: state.miniTakeLive, openDigits: map.openDigits))
+        width: miniTakeWidth(
+          live: state.miniTakeLive,
+          openDigits: state.channelMapCounterStacked ? [] : map.openDigits))
       panel.setMidiBarGeometry(
         state.channelMapInHeader
           ? midiBarGeometry(
