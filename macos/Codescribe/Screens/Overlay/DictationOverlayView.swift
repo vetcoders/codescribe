@@ -1108,9 +1108,11 @@ struct DictationOverlayView: View {
   private func agentDrawerColumn(
     maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
   ) -> some View {
-    let contentMinimum =
-      agentDrawerResize == nil
-      ? width : OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale)
+    // PR #223 (develop) removed the live divider drag state: a dragged divider
+    // moves only its guide and both panes keep their widths until release, so
+    // the column is never mid-drag here. Part 1's right-edge cut (C2.6) keeps
+    // the list laid out at the column width outside a drag.
+    let contentMinimum = width
     return OverlayObservationScope {
       var roster = channelStatusView
       roster.gestureFocusID = state.agentGestureFocusID
