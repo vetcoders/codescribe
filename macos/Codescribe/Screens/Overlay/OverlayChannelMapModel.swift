@@ -173,9 +173,12 @@ struct OverlayChannelMapNameWidths: Equatable, Sendable {
 
   /// The names a row of `available` points shows: whole when they fit, else
   /// the largest common cap that fits, so the longest names give way first
-  /// and short ones keep every letter. Below the shortest widths the row
-  /// keeps them; the window's resize minimum never proposes less. A nil
-  /// width is the layout's ideal-size probe, which the whole names answer.
+  /// and short ones keep every letter. The cap is a whole point, rounded
+  /// down from the bisection, so a name never ends on a fractional width;
+  /// a smaller cap never widens the row, so the rounded row still fits.
+  /// Below the shortest widths the row keeps them; the window's resize
+  /// minimum never proposes less. A nil width is the layout's ideal-size
+  /// probe, which the whole names answer.
   func fitted(available: CGFloat?, rowWidth: ([CGFloat]) -> CGFloat) -> [CGFloat] {
     guard let available, available.isFinite, rowWidth(full) > available + 0.5 else { return full }
     guard rowWidth(shortest) < available + 0.5 else { return shortest }
@@ -186,7 +189,7 @@ struct OverlayChannelMapNameWidths: Equatable, Sendable {
       let cap = (low + high) / 2
       if rowWidth(capped(at: cap)) <= available + 0.5 { low = cap } else { high = cap }
     }
-    return capped(at: low)
+    return capped(at: low.rounded(.down))
   }
 }
 

@@ -733,10 +733,12 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  /// Mini carries no channel map (Monika, 2026-11-04: the Agents list
-  /// replaces its counter), and a stray counter call in mini changes nothing.
-  func testMiniHasNoChannelMapAndTheCounterCallIsANoOp() throws {
+  /// The horizontal mini carries no channel map (Monika, 2026-11-04: the
+  /// Agents list replaces its counter), and a stray counter call there
+  /// changes nothing.
+  func testHorizontalMiniHasNoChannelMapAndTheCounterCallIsANoOp() throws {
     let (state, _, _, _) = try armedState()
+    state.channelMapPreference.selectLayout(.horizontal)
     state.setPresentationMode(.mini)
     XCTAssertTrue(state.channelMapInMini, "the map setting still shapes mini")
     let surface = state.windowContentSurface
@@ -753,26 +755,33 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty, "nothing touches the microphone")
   }
 
-  /// The vertical layout keeps its stacked counter in the bar, never in mini;
-  /// the counter leads to the Intercom group and keeps the form.
-  func testVerticalCounterLivesInTheBarAndOpensTheIntercomAndNothingElse() throws {
+  /// The vertical layout keeps its stacked counter in mini and in the bar
+  /// (Maciej, 2026-10-23: the way to the Intercom group stays in every
+  /// form); the counter leads to the Intercom group and keeps the form.
+  func testVerticalCounterLivesInMiniAndTheBarAndOpensTheIntercomAndNothingElse() throws {
     let (state, _, _, _) = try armedState()
     state.channelMapPreference.selectLayout(.vertical)
     state.setPresentationMode(.mini)
-    XCTAssertNil(DictationOverlayView(state: state).channelMap, "mini has no counter")
-    state.setPresentationMode(.midi)
     let surface = state.windowContentSurface
     let generation = state.captureGeneration
     var revealed = 0
     var restored = 0
     state.onRevealIntercom = { revealed += 1 }
     state.onRestoreMidiNaturalWidth = { restored += 1 }
+    let miniCounter = try XCTUnwrap(
+      DictationOverlayView(state: state).channelMap, "the vertical mini keeps its counter")
+    XCTAssertEqual(miniCounter.placement, .counter)
+    XCTAssertTrue(miniCounter.stacked)
+    miniCounter.onCounter()
+    XCTAssertEqual(revealed, 1, "mini's counter leads to the Intercom group")
+    XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
+    state.setPresentationMode(.midi)
     let map = try XCTUnwrap(DictationOverlayView(state: state).channelMap)
     XCTAssertEqual(map.placement, .counter)
     XCTAssertTrue(map.stacked)
     XCTAssertEqual(map.model.counterFigure, "2", "the badge carries the same agent count")
     map.onCounter()
-    XCTAssertEqual(revealed, 1, "the counter leads to the Intercom group")
+    XCTAssertEqual(revealed, 2, "the counter leads to the Intercom group")
     XCTAssertEqual(state.presentationMode, .midi, "the bar stays the bar")
     XCTAssertEqual(restored, 0)
     XCTAssertNil(state.selectedConversationID)
@@ -781,20 +790,38 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  /// One mini in both layouts: with the map enabled it is the 127 × 36
-  /// capsule of its controls, whatever the layout or the agent count.
-  func testMiniIsOneSizeInBothLayouts() throws {
+  /// With the map enabled the horizontal mini is the 127 × 36 capsule of
+  /// its controls; the vertical mini is wider by its stacked counter and the
+  /// 6 pt gap after the dot, as the counter is drawn.
+  func testVerticalMiniIsWiderByItsStackedCounter() throws {
     let (state, _, _, _) = try armedState()
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 100, y: 100, width: 200, height: 46),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-    for layout in [OverlayIntercomLayout.horizontal, .vertical] {
-      state.channelMapPreference.selectLayout(layout)
-      XCTAssertTrue(state.channelMapInMini, "\(layout)")
-      panel.setChannelMapPresentation(enabled: state.channelMapInMini)
-      XCTAssertEqual(panel.miniSize, NSSize(width: 127, height: 36), "\(layout)")
+    func fit() -> CGFloat {
+      let counter = DictationOverlayWindow.miniStackedCounterWidth(
+        map: state.channelMapLayoutModel, stacked: state.channelMapCounterStacked, textScale: 1)
+      panel.setChannelMapPresentation(
+        enabled: state.channelMapInMini, stackedCounterWidth: counter)
+      return counter
     }
-    panel.setChannelMapPresentation(enabled: false)
+    state.channelMapPreference.selectLayout(.horizontal)
+    XCTAssertTrue(state.channelMapInMini)
+    XCTAssertEqual(fit(), 0, "the horizontal mini has no counter")
+    XCTAssertEqual(panel.miniSize, NSSize(width: 127, height: 36))
+
+    state.channelMapPreference.selectLayout(.vertical)
+    let map = state.channelMapLayoutModel
+    let expected = ceil(
+      DictationOverlayWindow.miniBrandGap
+        + OverlayChannelPill.counterWidth(
+          figure: String(map.count), openDigitCount: map.openDigits.count,
+          scale: OverlayChannelPill.headerScale(1), stacked: true))
+    XCTAssertEqual(fit(), expected)
+    XCTAssertGreaterThan(expected, 0)
+    XCTAssertEqual(panel.miniSize, NSSize(width: 127 + expected, height: 36))
+
+    panel.setChannelMapPresentation(enabled: false, stackedCounterWidth: expected)
     XCTAssertEqual(
       panel.miniSize,
       NSSize(width: DictationOverlayWindow.miniBrandWidth, height: 36),
@@ -1134,8 +1161,8 @@ final class OverlayChannelMapTests: XCTestCase {
       "the expanded bar with its map is laid out by its content, not stretched")
     XCTAssertFalse(header.contains("Spacer("), "no stretching centre in the header")
     XCTAssertTrue(
-      header.contains("let leadingCounter = !mini && state.channelMapCounterStacked"),
-      "the vertical bar and window keep the counter beside the brand; mini has none")
+      header.contains("let leadingCounter = state.channelMapCounterStacked"),
+      "the vertical counter keeps the brand's side in every form")
     XCTAssertTrue(
       header.contains("if leadingCounter, let map {"),
       "the leading counter is the way to the Intercom group, not a microphone")
@@ -1147,8 +1174,8 @@ final class OverlayChannelMapTests: XCTestCase {
       of: overlay, from: "var channelMap: OverlayChannelMapView?",
       to: "var channelStatusView: OverlayChannelStatusView")
     XCTAssertTrue(
-      map.contains("guard state.presentationMode != .mini else { return nil }"),
-      "mini carries no channel map")
+      map.contains("guard state.presentationMode != .mini || state.channelMapCounterStacked"),
+      "only the vertical mini carries the map, as its stacked counter")
     XCTAssertTrue(map.contains("placement: counterOnly ? .counter : .strip"))
     XCTAssertTrue(map.contains("roster.selectChannelConversation($0)"))
     XCTAssertTrue(map.contains("state.activateChannelMapCounter()"))

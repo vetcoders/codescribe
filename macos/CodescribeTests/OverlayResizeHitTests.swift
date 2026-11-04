@@ -1254,20 +1254,28 @@ final class OverlayResizeHitTests: XCTestCase {
     let fold = try XCTUnwrap(recorder.frames.preview)
     let micX = panel.frame.minX + mic.midX
     let foldX = panel.frame.minX + fold.midX
+    let pinX = panel.frame.maxX
     state.setPresentationMode(.midi)
     XCTAssertLessThanOrEqual(panel.frame.width, 420, "midi remains a compact control strip")
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     // Mini sets the Agents button between the microphone and the chevron
     // (bus brief 2026-11-04 §3); the bar keeps them side by side. The chevron
-    // closes both rows at the shared upper-right pin, so it keeps its point;
-    // the microphone stays on screen inside the strip.
+    // closes both rows at the shared upper-right pin; the microphone stays on
+    // screen inside the strip.
     let midiMic = try XCTUnwrap(recorder.frames.stop)
     XCTAssertGreaterThan(panel.frame.minX + midiMic.midX, micX, "the mic moves toward the chevron")
     XCTAssertGreaterThanOrEqual(midiMic.minX, 0)
     XCTAssertLessThanOrEqual(midiMic.maxX, panel.frame.width)
+    // The panel's right edge stays in the pin. Mini hugs its controls with
+    // `miniInset` (7 pt) and the bar pads 16 pt per side (half of
+    // `midiOuterPadding`), so the bar's chevron stands that difference, 9 pt,
+    // further left than mini's.
+    XCTAssertEqual(panel.frame.maxX, pinX, accuracy: 0.5, "the upper-right pin holds")
+    let insetDelta = DictationOverlayWindow.midiOuterPadding / 2 - DictationOverlayWindow.miniInset
     XCTAssertEqual(
-      panel.frame.minX + (try XCTUnwrap(recorder.frames.preview)).midX, foldX, accuracy: 0.5)
+      panel.frame.minX + (try XCTUnwrap(recorder.frames.preview)).midX, foldX - insetDelta,
+      accuracy: 0.5)
     XCTAssertEqual(midiMic.size, mic.size)
     XCTAssertEqual(try XCTUnwrap(recorder.frames.preview).size, fold.size)
   }
