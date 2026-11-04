@@ -470,6 +470,11 @@ does not need changes to these owners.
 - The conversation's agent pill focuses an available, detected Frame pane.
   When that target is unavailable, the label stays passive; a new shell must
   not display an unsupported navigation option.
+- Roster follower liveness is derived from the bound or open owner's specific
+  validated lease. A fresh active heartbeat means alive; a verified inactive,
+  expired or absent lease means not alive. Unreadable, invalid or mismatched
+  evidence makes no liveness claim. An owner omitted from a bounded lease
+  discovery is not thereby disconnected. Capture-open remains independent.
 - Capture-open, follower-alive, queued, acknowledged, unread and speaking are
   different facts. ACK confirms receipt, not task completion. Color, elapsed
   time, a hover animation or an unread badge must not manufacture a receipt.

@@ -5,12 +5,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use directories::BaseDirs;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 const LEASE_SCHEMA: &str = "codescribe.agent-bridge.lease.v1";
 const BRIDGE_HOME_ENV: &str = "CODESCRIBE_AGENT_BRIDGE_HOME";
@@ -226,6 +228,102 @@ fn canonical_name(value: &str) -> Option<String> {
     )
 }
 
+/// Canonical lease identity shared with channel admission.
+pub fn follower_lease_id(provider: &str, session: &str) -> Option<String> {
+    let provider = provider.trim().to_lowercase();
+    let session = session.trim();
+    if provider.is_empty() || session.is_empty() {
+        return None;
+    }
+    let identity = format!("{provider}\0{session}");
+    Some(hex::encode(&Sha256::digest(identity.as_bytes())[..16]))
+}
+
+/// One verified lease observation for a specific roster owner.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FollowerObservation {
+    pub alive: Option<bool>,
+    pub hosts: Option<FollowerHosts>,
+    pub unread_since: Option<f64>,
+}
+
+/// Inspect only the lease named by the owner; absence from a directory listing
+/// is never used as a liveness claim. Unknown covers unreadable or invalid data.
+pub fn follower_observation_at(root: &Path, provider: &str, session: &str) -> FollowerObservation {
+    let unknown = FollowerObservation::default();
+    let Some(lease_id) = follower_lease_id(provider, session) else {
+        return unknown;
+    };
+    let directory = root.join("leases");
+    let path = directory.join(format!("{lease_id}.json"));
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            if fs::read_dir(&directory).is_err() {
+                return unknown;
+            }
+            return FollowerObservation {
+                alive: Some(false),
+                ..unknown
+            };
+        }
+        Err(_) => return unknown,
+    };
+    if !metadata.is_file() || metadata.len() > MAX_LEASE_BYTES {
+        return unknown;
+    }
+    let file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(_) => return unknown,
+    };
+    let Ok(metadata) = file.metadata() else {
+        return unknown;
+    };
+    if !metadata.is_file() || metadata.len() > MAX_LEASE_BYTES {
+        return unknown;
+    }
+    let mut bytes = Vec::new();
+    if file.take(MAX_LEASE_BYTES + 1).read_to_end(&mut bytes).is_err()
+        || bytes.len() as u64 > MAX_LEASE_BYTES
+    {
+        return unknown;
+    }
+    let Ok(lease) = serde_json::from_slice::<SessionLease>(&bytes) else {
+        return unknown;
+    };
+    if lease.schema != LEASE_SCHEMA
+        || lease.provider.as_deref().map(|value| value.trim().to_lowercase())
+            != Some(provider.trim().to_lowercase())
+        || lease.provider_session_id.as_deref() != Some(session.trim())
+        || lease.lease_id.as_deref() != Some(lease_id.as_str())
+    {
+        return unknown;
+    }
+    // Sampling after the read avoids declaring a concurrently refreshed lease
+    // future-dated merely because parsing a large mailbox took time.
+    let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return unknown;
+    };
+    let age = now.as_secs_f64() - lease.heartbeat_unix;
+    if !age.is_finite() || age < 0.0 {
+        return unknown;
+    }
+    if !lease.active || age > LEASE_TTL_SECONDS {
+        return FollowerObservation {
+            alive: Some(false),
+            ..unknown
+        };
+    }
+    FollowerObservation {
+        alive: Some(true),
+        hosts: Some(FollowerHosts {
+            frame_pane: lease.has_frame_pane(),
+            terminal_tab: lease.has_terminal_host(),
+        }),
+        unread_since: oldest_unread(root, &lease_id, &lease),
+    }
+}
+
 /// Provider sessions whose follower is live right now: lease schema, `active`,
 /// and a heartbeat no older than the shared TTL — the same convention the
 /// helper's `--status` reports. Pairs are `(provider, provider_session_id)`
@@ -315,36 +413,40 @@ pub fn unread_backlog_since_at(
         if provider.is_empty() || session.is_empty() || lease_id.is_empty() {
             return;
         }
-        let markers = root.join("acknowledgments").join(lease_id);
-        let since = lease
-            .pending
-            .iter()
-            .filter(|entry| {
-                entry
-                    .kind
-                    .as_deref()
-                    .is_some_and(|kind| TERMINAL_KINDS.contains(&kind))
-            })
-            .filter(|entry| {
-                entry
-                    .delivery_id
-                    .as_deref()
-                    .is_some_and(|id| !markers.join(format!("{id}.json")).is_file())
-            })
-            .filter_map(|entry| entry.emitted_at.as_deref())
-            .filter_map(|stamp| {
-                chrono::DateTime::parse_from_rfc3339(stamp)
-                    .ok()
-                    .map(|time| time.timestamp_millis() as f64 / 1000.0)
-            })
-            .fold(None, |oldest: Option<f64>, stamp| {
-                Some(oldest.map_or(stamp, |current| current.min(stamp)))
-            });
+        let since = oldest_unread(root, lease_id, lease);
         if let Some(since) = since {
             oldest.insert((provider.to_lowercase(), session.to_string()), since);
         }
     });
     oldest
+}
+
+fn oldest_unread(root: &Path, lease_id: &str, lease: &SessionLease) -> Option<f64> {
+    let markers = root.join("acknowledgments").join(lease_id);
+    lease
+        .pending
+        .iter()
+        .filter(|entry| {
+            entry
+                .kind
+                .as_deref()
+                .is_some_and(|kind| TERMINAL_KINDS.contains(&kind))
+        })
+        .filter(|entry| {
+            entry
+                .delivery_id
+                .as_deref()
+                .is_some_and(|id| !markers.join(format!("{id}.json")).is_file())
+        })
+        .filter_map(|entry| entry.emitted_at.as_deref())
+        .filter_map(|stamp| {
+            chrono::DateTime::parse_from_rfc3339(stamp)
+                .ok()
+                .map(|time| time.timestamp_millis() as f64 / 1000.0)
+        })
+        .fold(None, |oldest: Option<f64>, stamp| {
+            Some(oldest.map_or(stamp, |current| current.min(stamp)))
+        })
 }
 
 /// The bounded set of lease files: the `MAX_LEASE_FILES` freshest regular

@@ -348,8 +348,9 @@ fn frozen_channel_recipients(
         if provider.is_empty() || session.is_empty() {
             continue;
         }
-        let identity = format!("{provider}\0{session}");
-        let lease_id = hex::encode(Sha256::digest(identity.as_bytes()))[..32].to_string();
+        let Some(lease_id) = active_names::follower_lease_id(&provider, session) else {
+            continue;
+        };
         let lease_path = root.join("leases").join(format!("{lease_id}.json"));
         let lease: serde_json::Value = (|| {
             use std::io::{BufReader, Read};
@@ -2424,77 +2425,8 @@ impl RecordingController {
         binding: &Path,
         bridge_home: &Path,
     ) -> Vec<ChannelHudState> {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|duration| duration.as_secs_f64())
-            .unwrap_or(0.0);
-        let live = codescribe_core::stt::active_names::live_follower_hosts_at(
-            bridge_home,
-            now,
-            codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
-        );
-        let unread = codescribe_core::stt::active_names::unread_backlog_since_at(
-            bridge_home,
-            now,
-            codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
-        );
-        let codex_threads = codescribe_core::stt::active_names::codex_threads_at(bridge_home);
-        let alive = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
-            match (provider.as_deref(), session.as_deref()) {
-                (Some(provider), Some(session)) => {
-                    Some(live.contains_key(&(provider.to_lowercase(), session.to_string())))
-                }
-                _ => None,
-            }
-        };
-        let framed = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
-            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
-                return None;
-            };
-            live.get(&(provider.to_lowercase(), session.to_string()))
-                .map(|hosts| hosts.frame_pane)
-        };
-        let terminal = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
-            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
-                return None;
-            };
-            live.get(&(provider.to_lowercase(), session.to_string()))
-                .map(|hosts| hosts.terminal_tab)
-        };
-        let codex_thread = |provider: &Option<String>,
-                            session: &Option<String>|
-         -> (Option<String>, Option<bool>) {
-            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
-                return (None, None);
-            };
-            codex_threads
-                .get(&(provider.to_lowercase(), session.to_string()))
-                .map_or((None, None), |thread| {
-                    (
-                        Some(format!("codex://threads/{}", thread.thread_id)),
-                        Some(thread.rollout),
-                    )
-                })
-        };
-        let unread_since = |provider: &Option<String>,
-                            session: &Option<String>|
-         -> Option<SystemTime> {
-            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
-                return None;
-            };
-            unread
-                .get(&(provider.to_lowercase(), session.to_string()))
-                .map(|since| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(since.max(0.0)))
-        };
+        let codex_threads = active_names::codex_threads_at(bridge_home);
         let mut states = self.channel_hud_states().await;
-        for state in &mut states {
-            state.follower_alive = alive(&state.provider, &state.provider_session_id);
-            state.frame_detected = framed(&state.provider, &state.provider_session_id);
-            state.terminal_detected = terminal(&state.provider, &state.provider_session_id);
-            (state.codex_thread_url, state.codex_thread_local) =
-                codex_thread(&state.provider, &state.provider_session_id);
-            state.unread_since = unread_since(&state.provider, &state.provider_session_id);
-        }
         if !states.iter().any(|state| state.channel == "0") {
             states.push(ChannelHudState {
                 open: false,
@@ -2517,41 +2449,65 @@ impl RecordingController {
                 unread_since: None,
             });
         }
-        let Ok(file) = load_binding(binding) else {
-            states.sort_by(|a, b| a.channel.cmp(&b.channel));
-            return states;
-        };
-        for (digit, entry) in &file.bindings {
-            if digit.len() != 1 || !digit.chars().all(|c| ('1'..='9').contains(&c)) {
+        if let Ok(file) = load_binding(binding) {
+            for (digit, entry) in &file.bindings {
+                if digit.len() != 1 || !digit.chars().all(|c| ('1'..='9').contains(&c)) {
+                    continue;
+                }
+                if states.iter().any(|state| &state.channel == digit) {
+                    continue;
+                }
+                let provider = Some(entry.provider.trim().to_string()).filter(|s| !s.is_empty());
+                let session =
+                    Some(entry.provider_session_id.trim().to_string()).filter(|s| !s.is_empty());
+                states.push(ChannelHudState {
+                    open: false,
+                    loud: false,
+                    channel: digit.clone(),
+                    audience: entry.audience.trim().to_string(),
+                    label: String::new(),
+                    autoseal_secs: 0,
+                    autoseal_deadline: None,
+                    tts_ducking: false,
+                    opened_at: SystemTime::UNIX_EPOCH,
+                    utterance_silence_ms: 0,
+                    follower_alive: None,
+                    frame_detected: None,
+                    terminal_detected: None,
+                    codex_thread_url: None,
+                    codex_thread_local: None,
+                    unread_since: None,
+                    provider,
+                    provider_session_id: session,
+                });
+            }
+        }
+        // Open channels and bound rows can name the same owner. Read its lease
+        // once, then project presence, hosts and backlog from that observation.
+        let mut observations = BTreeMap::new();
+        for state in &mut states {
+            let (Some(provider), Some(session)) =
+                (state.provider.as_deref(), state.provider_session_id.as_deref())
+            else {
+                continue;
+            };
+            let key = (provider.trim().to_lowercase(), session.trim().to_string());
+            if key.0.is_empty() || key.1.is_empty() {
                 continue;
             }
-            if states.iter().any(|state| &state.channel == digit) {
-                continue;
-            }
-            let provider = Some(entry.provider.trim().to_string()).filter(|s| !s.is_empty());
-            let session =
-                Some(entry.provider_session_id.trim().to_string()).filter(|s| !s.is_empty());
-            let (codex_thread_url, codex_thread_local) = codex_thread(&provider, &session);
-            states.push(ChannelHudState {
-                open: false,
-                loud: false,
-                channel: digit.clone(),
-                audience: entry.audience.trim().to_string(),
-                label: String::new(),
-                autoseal_secs: 0,
-                autoseal_deadline: None,
-                tts_ducking: false,
-                opened_at: SystemTime::UNIX_EPOCH,
-                utterance_silence_ms: 0,
-                follower_alive: alive(&provider, &session),
-                frame_detected: framed(&provider, &session),
-                terminal_detected: terminal(&provider, &session),
-                codex_thread_url,
-                codex_thread_local,
-                unread_since: unread_since(&provider, &session),
-                provider,
-                provider_session_id: session,
+            let observation = observations.entry(key.clone()).or_insert_with(|| {
+                active_names::follower_observation_at(bridge_home, &key.0, &key.1)
             });
+            state.follower_alive = observation.alive;
+            state.frame_detected = observation.hosts.map(|hosts| hosts.frame_pane);
+            state.terminal_detected = observation.hosts.map(|hosts| hosts.terminal_tab);
+            state.unread_since = observation.unread_since.map(|since| {
+                SystemTime::UNIX_EPOCH + Duration::from_secs_f64(since.max(0.0))
+            });
+            if let Some(thread) = codex_threads.get(&key) {
+                state.codex_thread_url = Some(format!("codex://threads/{}", thread.thread_id));
+                state.codex_thread_local = Some(thread.rollout);
+            }
         }
         states.sort_by(|a, b| a.channel.cmp(&b.channel));
         states
