@@ -28,7 +28,7 @@ fi
 #     -f -s -` re-sign strips the linker-signed bit and fixes it permanently.
 developer_id="${MACOS_DEVELOPER_ID_APPLICATION:-}"
 
-for bin in codescribe qube-report qube-daemon codescribe-teacher codescribe-corpus; do
+for bin in codescribe; do
   target="$BIN_DIR/$bin"
   if [[ ! -f "$target" ]]; then
     echo "Skipping absent binary: $target"

@@ -1916,13 +1916,20 @@ class InstallCheckpointTests(unittest.TestCase):
         self.append("session_started")
         self.append("session_ended")
         read = DEMUX.GenerationFile.read
+        readline = DEMUX.GenerationFile.readline
 
         def forbid_prefix_replay(reader, width):
             if width > 256 and reader.tell() < cursor["offset"]:
                 raise AssertionError("installer reread the verified historical payload")
             return read(reader, width)
 
-        with patch.object(DEMUX.GenerationFile, "read", forbid_prefix_replay):
+        def forbid_prefix_readline(reader, *args, **kwargs):
+            if reader.tell() < cursor["offset"]:
+                raise AssertionError("installer reread the verified historical payload via readline")
+            return readline(reader, *args, **kwargs)
+
+        with patch.object(DEMUX.GenerationFile, "read", forbid_prefix_replay), \
+             patch.object(DEMUX.GenerationFile, "readline", forbid_prefix_readline):
             self.assertTrue(self.idle())
         self.assertEqual(closed.read_bytes(), original)
 

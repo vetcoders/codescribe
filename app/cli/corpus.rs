@@ -1,8 +1,7 @@
 //! Unattended corpus census and production-overlay replay.
 //!
-//! Reached as `codescribe corpus` and, for compatibility, as the standalone
-//! `codescribe-corpus` binary. Two properties survive that move only because
-//! they are handled explicitly:
+//! Reached as `codescribe corpus`. Two properties of the unified entry point
+//! are handled explicitly:
 //!
 //! - the Keychain lock. The legacy binary set `CODESCRIBE_DISABLE_KEYCHAIN`
 //!   as its first executable statement, before Clap ran. A subcommand cannot
@@ -543,7 +542,7 @@ pub fn main_with(command: CorpusCommand, invocation: Invocation) -> ExitCode {
     match run(command, invocation) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("codescribe-corpus: {error:#}");
+            eprintln!("codescribe corpus: {error:#}");
             ExitCode::from(2)
         }
     }

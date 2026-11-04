@@ -4301,7 +4301,7 @@ final class OverlayStateTests: XCTestCase {
     projectText("newest projected transcript", to: state, terminal: true, lifecycleTerminal: false)
 
     clock.now = 4
-    state.pasteToPreviousApp()
+    state.relayInsertPasteIntent()
     await fulfillment(of: [pasteCalled], timeout: 1)
     await Task.yield()
 
@@ -4325,7 +4325,7 @@ final class OverlayStateTests: XCTestCase {
     state.engine = engine
     state.insertCaretInCodescribeProbe = { true }
 
-    state.pasteToPreviousApp()
+    state.relayInsertPasteIntent()
     await fulfillment(of: [deferCalled], timeout: 1)
     await Task.yield()
 
@@ -4347,7 +4347,7 @@ final class OverlayStateTests: XCTestCase {
     state.engine = engine
     state.insertCaretInCodescribeProbe = { true }
 
-    state.pasteToPreviousApp()
+    state.relayInsertPasteIntent()
     await fulfillment(of: [deferCalled], timeout: 1)
     await Task.yield()
 
@@ -4367,7 +4367,7 @@ final class OverlayStateTests: XCTestCase {
     state.engine = engine
     state.insertCaretInCodescribeProbe = { false }
 
-    state.pasteToPreviousApp()
+    state.relayInsertPasteIntent()
     await fulfillment(of: [pasteCalled], timeout: 1)
     await Task.yield()
 
@@ -4453,7 +4453,7 @@ final class OverlayStateTests: XCTestCase {
     state.engine = engine
     state.insertCaretInCodescribeProbe = { false }
 
-    state.pasteToPreviousApp()
+    state.relayInsertPasteIntent()
     await fulfillment(of: [pasteCalled], timeout: 1)
     await Task.yield()
 
