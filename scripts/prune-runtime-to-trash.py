@@ -39,6 +39,14 @@ SAFE_PRESERVED_DIR_NAMES = frozenset({
     "bin",
 })
 
+SAFE_PRESERVED_TRANSCRIPTION_DATES = frozenset({
+    "2026-08-13",
+    "2026-07-25",
+    "2026-04-21",
+    "2026-02-11",
+    "2026-01-17",
+})
+
 
 def process_is_alive(pid: Any) -> bool:
     """Return True if the given PID corresponds to a running process."""
@@ -356,7 +364,7 @@ def build_prune_plan(
                             mtime=mtime,
                         ))
 
-        # 3. Expired bridge artifacts (acknowledgments, wakeups, receipts, reply-sources, reply-playback)
+        # 3. Expired bridge artifacts (acknowledgments, wakeups, receipts, reply-sources, reply-playback, speech)
         expiry_seconds = days * 86400
         bridge_dirs_to_check = [
             agent_bridge / "acknowledgments",
@@ -389,19 +397,160 @@ def build_prune_plan(
                             mtime=mtime,
                         ))
 
-    # 4. Expired sessions and transcriptions
-    expiry_seconds = days * 86400
-    for folder_name in ("sessions", "transcriptions"):
-        target_dir = codescribe_root / folder_name
-        if not target_dir.is_dir():
-            continue
+        # Check agent-bridge/speech/*.wav
+        speech_dir = agent_bridge / "speech"
+        if speech_dir.is_dir():
+            for item in speech_dir.iterdir():
+                if not item.is_file() or not item.name.endswith(".wav"):
+                    continue
+                try:
+                    mtime = item.stat().st_mtime
+                except OSError:
+                    continue
+                if (now - mtime) > expiry_seconds:
+                    if item not in seen_paths and not is_path_safe_from_prune(item, protected_paths):
+                        seen_paths.add(item)
+                        candidates.append(PruneCandidate(
+                            path=item,
+                            category="expired_bridge_files",
+                            is_dir=False,
+                            bytes=get_path_size(item),
+                            mtime=mtime,
+                        ))
 
-        for root, dirs, files in os.walk(target_dir):
-            # Exclude pinned or golden dirs from walking
+    expiry_seconds = days * 86400
+
+    # 4. Expired takes in codescribe_root/takes/*.wav
+    takes_dir = codescribe_root / "takes"
+    if takes_dir.is_dir():
+        for root, dirs, files in os.walk(takes_dir):
+            dirs[:] = [d for d in dirs if d not in SAFE_PRESERVED_DIR_NAMES]
+            root_path = Path(root)
+            for fname in files:
+                if not fname.endswith(".wav"):
+                    continue
+                fpath = root_path / fname
+                try:
+                    mtime = fpath.stat().st_mtime
+                except OSError:
+                    continue
+                if (now - mtime) > expiry_seconds:
+                    if fpath not in seen_paths and not is_path_safe_from_prune(fpath, protected_paths):
+                        seen_paths.add(fpath)
+                        candidates.append(PruneCandidate(
+                            path=fpath,
+                            category="expired_takes",
+                            is_dir=False,
+                            bytes=get_path_size(fpath),
+                            mtime=mtime,
+                        ))
+
+    # 5. Expired replays in codescribe_root/replays/replay-*
+    replays_dir = codescribe_root / "replays"
+    if replays_dir.is_dir():
+        for item in replays_dir.iterdir():
+            if not item.name.startswith("replay-"):
+                continue
+            try:
+                mtime = item.stat().st_mtime
+            except OSError:
+                continue
+            if (now - mtime) > expiry_seconds:
+                if item not in seen_paths and not is_path_safe_from_prune(item, protected_paths):
+                    seen_paths.add(item)
+                    candidates.append(PruneCandidate(
+                        path=item,
+                        category="expired_replays",
+                        is_dir=item.is_dir(),
+                        bytes=get_path_size(item),
+                        mtime=mtime,
+                    ))
+
+    # 6. Rotated logs in codescribe_root/data.noindex/logs/*.1
+    logs_dir = codescribe_root / "data.noindex" / "logs"
+    if logs_dir.is_dir():
+        for item in logs_dir.iterdir():
+            if not item.is_file():
+                continue
+            # NEVER touch active logs, only rotated logs ending with .1
+            if not item.name.endswith(".1"):
+                continue
+            try:
+                mtime = item.stat().st_mtime
+            except OSError:
+                continue
+            if (now - mtime) > expiry_seconds:
+                if item not in seen_paths and not is_path_safe_from_prune(item, protected_paths):
+                    seen_paths.add(item)
+                    candidates.append(PruneCandidate(
+                        path=item,
+                        category="rotated_logs",
+                        is_dir=False,
+                        bytes=get_path_size(item),
+                        mtime=mtime,
+                    ))
+
+    # 7. Expired sessions in codescribe_root/sessions/
+    # Grouped by session ID prefix before first dot. A session is expired ONLY if ALL files
+    # in the session are older than expiry_seconds and none are protected.
+    sessions_dir = codescribe_root / "sessions"
+    if sessions_dir.is_dir():
+        for root, dirs, files in os.walk(sessions_dir):
             dirs[:] = [d for d in dirs if d not in SAFE_PRESERVED_DIR_NAMES]
             root_path = Path(root)
 
+            session_groups: dict[str, list[Path]] = {}
             for fname in files:
+                fpath = root_path / fname
+                session_id = fname.split(".", 1)[0]
+                session_groups.setdefault(session_id, []).append(fpath)
+
+            for session_id, group_files in session_groups.items():
+                if any(is_path_safe_from_prune(fp, protected_paths) for fp in group_files):
+                    continue
+
+                all_expired = True
+                for fp in group_files:
+                    try:
+                        mtime = fp.stat().st_mtime
+                    except OSError:
+                        all_expired = False
+                        break
+                    if (now - mtime) <= expiry_seconds:
+                        all_expired = False
+                        break
+
+                if all_expired:
+                    for fp in group_files:
+                        if fp not in seen_paths:
+                            seen_paths.add(fp)
+                            candidates.append(PruneCandidate(
+                                path=fp,
+                                category="expired_sessions_and_transcriptions",
+                                is_dir=False,
+                                bytes=get_path_size(fp),
+                                mtime=fp.stat().st_mtime,
+                            ))
+
+    # 8. Expired transcriptions in codescribe_root/transcriptions/
+    # Only prune expired audio files (.m4a, .wav). NEVER prune text files (.txt, .md)
+    # or truth sidecars (.revisions.jsonl, .truth.json). Skip benchmark date subdirectories.
+    transcriptions_dir = codescribe_root / "transcriptions"
+    if transcriptions_dir.is_dir():
+        for root, dirs, files in os.walk(transcriptions_dir):
+            dirs[:] = [
+                d for d in dirs
+                if d not in SAFE_PRESERVED_DIR_NAMES and d not in SAFE_PRESERVED_TRANSCRIPTION_DATES
+            ]
+            root_path = Path(root)
+
+            if any(part in SAFE_PRESERVED_TRANSCRIPTION_DATES for part in root_path.parts):
+                continue
+
+            for fname in files:
+                if not (fname.endswith(".m4a") or fname.endswith(".wav")):
+                    continue
+
                 fpath = root_path / fname
                 try:
                     mtime = fpath.stat().st_mtime
