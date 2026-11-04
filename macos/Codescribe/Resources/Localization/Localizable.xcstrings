@@ -6441,6 +6441,7 @@
       }
     },
     "Copy" : {
+      "comment" : "Button: copy this code block\nButton: copy this message",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -23439,17 +23440,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "skopiowano"
-          }
-        }
-      }
-    },
-    "copy" : {
-      "comment" : "Button: copy this code block\nButton: copy this message",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "kopiuj"
           }
         }
       }

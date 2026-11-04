@@ -1897,8 +1897,8 @@ struct CopyMessageButton: View {
         CSIconView(icon: copied ? .check : .copy, size: 9, weight: .semibold)
         Text(
           copied
-            ? String(localized: "copied", comment: "Button state after copying")
-            : String(localized: "copy", comment: "Button: copy this message")
+            ? String(localized: "Copied", comment: "Button state after copying")
+            : String(localized: "Copy", comment: "Button: copy this message")
         )
         .font(labelFont)
       }
@@ -1925,7 +1925,7 @@ struct CopyMessageButton: View {
         comment: "Disabled copy control when the message is empty")
     }
     if copied {
-      return String(localized: "copied", comment: "Button state after copying")
+      return String(localized: "Copied", comment: "Button state after copying")
     }
     return String(localized: "Copy message")
   }

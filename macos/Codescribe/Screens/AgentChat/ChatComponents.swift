@@ -735,8 +735,8 @@ private struct CodeBlockView: View {
         CSIconView(icon: copied ? .check : .copy, size: 9, weight: .semibold)
         Text(
           copied
-            ? String(localized: "copied", comment: "Button state after copying")
-            : String(localized: "copy", comment: "Button: copy this code block")
+            ? String(localized: "Copied", comment: "Button state after copying")
+            : String(localized: "Copy", comment: "Button: copy this code block")
         )
         .font(CSFont.ui(10, .semibold))
       }
@@ -757,7 +757,7 @@ private struct CodeBlockView: View {
 
   private var codeCopyHint: String {
     copied
-      ? String(localized: "copied", comment: "Button state after copying")
+      ? String(localized: "Copied", comment: "Button state after copying")
       : String(localized: "Copy code")
   }
 }
