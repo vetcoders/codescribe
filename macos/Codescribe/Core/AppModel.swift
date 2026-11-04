@@ -619,12 +619,13 @@ final class OverlayController: ObservableObject {
     // Anchors and the saved origin describe the resting mini strip; mini is
     // drawn at its natural width at that strip's trailing edge (below).
     case .mini: size = DictationOverlayWindow.miniPlacementSize
+    // The bar is as wide and as tall as its measured content (bus brief
+    // 2026-11-04 §8): the window owner's size, never a fixed 410 × 46.
     case .midi:
+      let measured = (panel as? FloatingOverlayPanel)?.midiSize ?? DictationOverlayWindow.midiSize
       size = NSSize(
-        width: min(
-          DictationOverlayWindow.midiSize.width,
-          screen?.visibleFrame.width ?? .greatestFiniteMagnitude),
-        height: DictationOverlayWindow.collapsedHeight)
+        width: min(measured.width, screen?.visibleFrame.width ?? .greatestFiniteMagnitude),
+        height: measured.height)
     case .expanded:
       size = NSSize(
         width: clamped.width, height: max(clamped.height, DictationOverlayWindow.minSize.height))
