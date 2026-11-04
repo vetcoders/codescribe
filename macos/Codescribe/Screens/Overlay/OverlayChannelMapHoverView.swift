@@ -129,7 +129,12 @@ struct OverlayAgentsHoverList: View {
   /// Sized to its rows: nine agents fit without a scroll view.
   @MainActor
   static func size(rows: [OverlayAgentsHoverRow]) -> CGSize {
-    let chip = rows.map { OverlayChannelPill.chipWidth(name: $0.name, scale: 1) }.max() ?? 0
+    // Full names: the list is sized to its content, never truncated.
+    let chip =
+      rows.map {
+        OverlayChannelPill.chipWidth(
+          nameWidth: OverlayChannelPill.nameWidth($0.name, scale: 1), form: .chip, scale: 1)
+      }.max() ?? 0
     let width =
       2 * horizontalPadding + chip + 4 * columnGap + dotColumn + 2 * markSize + markGap
       + unreadDiameter
