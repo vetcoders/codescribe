@@ -189,6 +189,43 @@ class SendHoldTests(unittest.TestCase):
             self.assertEqual(lease.held, {})
             self.assertEqual(list(lease.pending), [row["delivery_id"]])
 
+    def test_withdraw_survives_a_large_occurrence_journal_without_rewriting_history(self):
+        lease = self.lease()
+        events = DEMUX.follower_paths(self.root, self.lease_id)[1]
+        events.parent.mkdir(parents=True, exist_ok=True)
+        historical = {"schema": DEMUX.EVENT_SCHEMA, "kind": "revised",
+                      "occurrences": [{"label": "word", "evidence": "x" * (1536 * 1024)}]}
+        DEMUX.emit_follower(historical, events, "2", human_output=False)
+        prefix = events.read_bytes()
+        row = self.payload(lease)
+        control = self.control(row, "withdraw")
+        with mock.patch.object(DEMUX.time, "time", return_value=NOW):
+            lease.queue_delivery(row)
+            lease.control_delivery(control)
+            lease.close()
+            resumed = self.lease()
+            with contextlib.redirect_stderr(io.StringIO()):
+                resumed.control_delivery(control)
+            self.assertFalse(resumed.queue_delivery(row))
+        self.assertTrue(events.read_bytes().startswith(prefix))
+        self.assertEqual((resumed.pending, resumed.held), ({}, {}))
+        self.assertEqual([item["kind"] for item in self.events()], ["revised", "delivery_withdrawn"])
+        self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease_id, row["delivery_id"]))
+
+    def test_withdraw_does_not_skip_incomplete_or_over_budget_journal_records(self):
+        lease = self.lease()
+        events = DEMUX.follower_paths(self.root, self.lease_id)[1]
+        events.parent.mkdir(parents=True, exist_ok=True)
+        receipt = {"schema": DEMUX.EVENT_SCHEMA, "kind": "delivery_withdrawn",
+                   "delivery_id": "f" * 24}
+        for raw in (b'{"kind":"revised"',
+                    json.dumps({"text": "x" * (8 * 1024 * 1024)}).encode() + b"\n"):
+            with self.subTest(bytes=len(raw)):
+                events.write_bytes(raw)
+                with self.assertRaisesRegex(ValueError, "incomplete or oversized journal row"):
+                    lease._record_hold_withdrawal(receipt)
+                self.assertEqual(events.read_bytes(), raw)
+
     def test_restart_preserves_hold_and_revision_then_expires_once(self):
         lease = self.lease()
         row = self.payload(lease)
