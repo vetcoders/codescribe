@@ -976,6 +976,29 @@ pub fn channel_session_silence(configured_sec: f32) -> Option<f32> {
 }
 
 impl StreamingRecorder {
+    /// Exercise the real channel stream/registry/archive without a device.
+    #[cfg(any(test, feature = "test-isolation"))]
+    pub fn begin_channel_session_for_test(
+        &mut self,
+        spec: ChannelSessionSpec,
+    ) -> Result<ChannelParticipation> {
+        self.spawn_shared_channel_stream(None, spec, None)
+            .map(|(participation, _)| participation)
+    }
+
+    /// Feed the production PCM registry, including its archive and clock.
+    #[cfg(any(test, feature = "test-isolation"))]
+    pub fn offer_channel_pcm_for_test(&self, samples: &[f32]) {
+        offer_pcm_to_feeds(
+            &mut self
+                .pcm_feeds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            samples,
+            &self.dropped_chunks,
+        );
+    }
+
     /// Count/replace recognition without replacing capture, PCM fan-out or WAV
     /// creation. Unit tests can enter `spawn_shared_channel_stream` directly;
     /// cross-crate harnesses opt into the existing test-isolation feature.
@@ -2801,6 +2824,10 @@ fn block_rms(samples: &[f32]) -> f32 {
 }
 
 /// Unit and opt-in e2e probes for RMS meters, VAD index sync, and corpus WER.
+#[cfg(test)]
+#[path = "streaming_recorder_shared_tests.rs"]
+mod streaming_recorder_shared_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
