@@ -416,47 +416,50 @@ A panel reads the role, never a bare number.
   status word's own 12 % tint. Secondary text is `CSColor.secondaryInk`, the
   label ink at 60 %; the system
   `secondaryLabelColor` reads 3.8:1 on a light card. A status hue drawn as a
-  word or an essential glyph takes its label rung — `terracottaText`,
-  `amberLight`, `dangerLight`, `oliveLight` — while dots, fills and borders
-  keep the base hue. Native sidebar List rows retain semantic `.secondary`
+  word or an essential glyph and the same hue as a dot, fill or border are
+  one system colour since 2026-11-05 (the label rungs are kept as names). Native sidebar List rows retain semantic `.secondary`
   styling so the system can resolve selected and inactive text.
   `DesignSystemAdaptiveTests` holds these pairs in standard and high-contrast
   appearances; light text rungs account for travertine's darkest tinted card.
-  The terracotta rungs are the brand hue with only its lightness moved in
-  OKLCH (C 0.13, H 39°), brick rather than a blend with black.
-- **Brand accent for state, chrome accent for controls.** `CSColor.brandAccent`
-  (`#BA5C3C` on paper, `#D97757` on ink; 3:1 as a mark on every sheet shade)
-  colours what reports state: the setup progress bar, the mark of a selected
-  choice and the icon of a wizard step — except the final summary's
-  not-ready verdict heading, which stays neutral `CSColor.secondaryInk`
-  rather than terracotta or red: the concrete blocking rows below it already
-  carry the warning in `dangerLight` (Founder, 2026-10-29). A selected choice
-  row is drawn by
-  `csChoice(selected:)` (the wash at `CSAlpha.selectionWash`, the one-point
-  edge at `CSAlpha.selectionStroke`), never by the prominent action surface.
-  `CSColor.chromeAccent` stays the macOS accent for focus, switches, sliders,
-  bordered and prominent buttons and the dictionary pins; actions read as
-  clickable through their shape, not through a hue, and their ink never
-  follows the system accent (Founder, 2026-10-24 and 2026-10-26). A link in
-  prose is the brand text rung (`terracottaText`, the brick), underlined, with
-  the pointing-hand pointer on hover, one style in the whole app (Founder,
-  2026-10-26): `csLink()` draws it, and
-  neither the chrome accent nor the system `.link` style draws a link. A determinate progress bar is `CSProgressBar`: the native
-  linear `ProgressView` on macOS paints the system accent and ignores
-  `.tint`, so a brand-coloured bar must draw its own track. Indeterminate
-  progress keeps the native spinner. A status word that is verified
-  ("Granted", "Ready") is `CSStatusBadge(mark: .verified)` — a thin check on
-  an olive capsule — and stored identity that nothing has tested ("Saved") is
-  the same capsule with the empty circle; `StatusPill` remains the dotted
-  live-activity pill. Audio's healthy recording summary and Whisper's ready
-  model status use the verified badge; saved provider keys and accounts use
-  the saved badge without claiming service liveness. Audio's committing
-  fragments row spells out "Enabled"/"Disabled" ("Włączone"/"Wyłączone" in
-  Polish). Blocked audio and missing or pending model states keep their
-  existing warning or neutral presentation. A problem is never terracotta:
-  `CSStatusBadge(mark: .blocked)` and the wizard's `OnboardingProblemText`
-  draw an error or a blocker in `dangerLight` behind the warning sign, and a
-  missing optional setting stays `secondaryInk` without one.
+  The one remaining terracotta rung (`terracottaLight`) is the brand hue
+  with only its lightness moved in OKLCH (C 0.13, H 39°).
+- **System colours, one meaning each; the brand only where it must.**
+  Founder, 2026-11-05 (canon:
+  `AI_notes/10_projects/codescribe/specs/2026-11-05_lista-rol-kolorow.md`):
+  every custom colour goes. Controls, selection, focus, progress and the
+  sidebar's icons follow the user's macOS accent (`CSColor.chromeAccent`);
+  `csChoice(selected:)` washes and edges the selected choice with that accent
+  and `CSProgressBar` fills with it. Text is the system label rungs
+  (`textHigh`/`textBody` = `labelColor`, `textMuted`/`secondaryInk` =
+  `secondaryLabelColor`, `textFaint` = `tertiaryLabelColor`); edges and
+  hairlines are `separatorColor`. A meaning that needs a colour takes one
+  system colour: `systemRed` for errors and destruction (`danger`,
+  `dangerLight`), `systemOrange` for a warning that needs an action, work in
+  progress and an uncertain word (`amber`, `amberLight`, `modeProcessing`),
+  `systemIndigo` for voice routed to an agent (`assistive`), `systemGreen`
+  only for the one "connected" presence dot of the agents list (the
+  Intercom widget, Maciej's file, still draws its success glyph through
+  that palette value until its owner moves it),
+  `systemYellow` for the silence lamp, `linkColor` for a link in prose
+  (`csLink()`). A correct state wears no colour: `CSStatusBadge(mark: .verified)` and `.saved` are secondary ink with a thin check or an empty
+  circle on a neutral capsule; `.blocked` keeps the system red behind the
+  warning sign. The brand terracotta (`CSColor.terracotta`,
+  `terracottaLight` as its label rung) stays for the dictation / listening
+  state only — the lamp, the waveform, the tray icon while dictating — and
+  the lockup `Wordmark` is the word alone, without a brand dot. Retired
+  roles (`brandAccent`, `olive*`, `eyebrowOlive`, `terracottaText`,
+  `terracottaDeep`, `terracottaTintBars`, `lexicon`, `ink`, `textFaintAlt`)
+  keep their names for one round pointing at their replacement, so every
+  consumer compiles while the screens migrate; they go once no use site
+  remains. Settings follows the same rule: a correct or ready state and an
+  active licence are secondary ink on a neutral capsule, the Save / Sign in
+  labels are primary ink on a neutral surface (readable under any accent),
+  the accent stays on selected controls and on the outline
+  of a shortcut being recorded, a low-confidence word is the warning
+  orange, and the three navigation rows of the user panel (Privacy, Terms,
+  Docs) are a neutral row with a secondary arrow, not a coloured link. The
+  earlier rules (brand accent for state, brick links, olive capsules —
+  2026-10-24/26) are superseded.
 
 ### Agent window header
 
