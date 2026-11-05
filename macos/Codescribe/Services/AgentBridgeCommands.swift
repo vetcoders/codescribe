@@ -868,7 +868,9 @@ extension RealAgentBridgeInstaller {
     }.value
   }
 
-  /// Stages files against one exact open channel capture row. The helper
+  /// Stages files against one exact open channel bus document. Despite its
+  /// name, target.captureSessionID is the row's session_id; occurrenceSessionID
+  /// carries the shared capture namespace. The helper
   /// rechecks session, epoch and source sequence under the bus append lock;
   /// stale targets fail so callers can keep the files in their draft.
   @MainActor

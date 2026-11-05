@@ -1307,7 +1307,7 @@ def terminal_seal_identity(event: dict[str, Any]) -> str:
 
 
 def channel_of_session(session_id: str) -> str | None:
-    """The channel digit a session belongs to, from its stable label prefix."""
+    """Digit of a bus document; a shared capture has no single channel digit."""
     match = re.match(r"agent-channel-(\d+)-", session_id or "")
     return match.group(1) if match else None
 

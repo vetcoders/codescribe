@@ -514,7 +514,10 @@ pub fn prepare_recorded_replay(
 
     let capture_turn = match card {
         Some(card) => card.capture_turn,
-        None if recorded_session.is_some_and(|session| session.starts_with("agent-channel-")) => {
+        None if recorded_session.is_some_and(|session| {
+            session.starts_with("agent-channels-") || session.starts_with("agent-channel-")
+        }) =>
+        {
             CaptureTurnIntent::AgentChannel
         }
         None => CaptureTurnIntent::HandsFree,

@@ -1554,6 +1554,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       }
     }
 
+    /// Parent bus document; shared occurrence/capture IDs are never stripped.
     static func channelSessionID(of session: String) -> String {
       guard let range = session.range(of: "-s", options: .backwards) else { return session }
       let prefix = String(session[..<range.lowerBound])

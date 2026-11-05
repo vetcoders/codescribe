@@ -29,7 +29,8 @@ pub(crate) struct ChannelCohortMember {
     pub digit: u8,
     pub channel: String,
     pub audience: String,
-    /// Capture identity (`agent-channel-{digit}-{uuid}`), not the agent's.
+    /// Bus document identity (`agent-channel-{digit}-{uuid}[-sN]`), not the
+    /// shared capture's `agent-channels-{uuid}` or the agent provider session.
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
