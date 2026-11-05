@@ -326,7 +326,7 @@ final class OverlayComposerAttachmentPreviewTests: XCTestCase {
       chatComposer.contains("attachmentPicker.cancel()"),
       "main chat composer cancels its active picker on disappear")
     let chatPick = try section(
-      of: chatComposer, from: "private func pickAttachments()", to: "// MARK: Paste")
+      of: chatComposer, from: "private func pickAttachments()", to: "// MARK: Drag & drop")
     XCTAssertTrue(
       chatPick.contains("attachmentPicker.present"),
       "main chat pickAttachments routes through attachmentPicker.present")
