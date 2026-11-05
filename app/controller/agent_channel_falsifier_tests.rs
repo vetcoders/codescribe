@@ -645,6 +645,640 @@ fn hound_duration(path: &Path) -> u64 {
     pcm.len() as u64
 }
 
+// These observers forward every event to the production presentation owner.
+// Counting at its input distinguishes a withheld seal from a reducer refusal.
+struct TerminalSealSink {
+    emitter: Arc<PresentationEmitter>,
+    receipts: StdMutex<Vec<String>>,
+}
+
+impl TerminalSealSink {
+    fn new(document: &Segment) -> Arc<Self> {
+        Arc::new(Self {
+            emitter: document.parts.emitter.clone(),
+            receipts: StdMutex::new(Vec::new()),
+        })
+    }
+}
+
+impl EventSink for TerminalSealSink {
+    fn on_capture_opened(&self, session: &str, epoch: u64) {
+        self.emitter.on_capture_opened(session, epoch);
+    }
+
+    fn on_event(&self, event: &EngineEvent) {
+        if let EngineEvent::LedgerSeal { receipt } = event
+            && !receipt.is_occurrence_seal()
+        {
+            self.receipts
+                .lock()
+                .unwrap()
+                .push(receipt.receipt_id.clone());
+        }
+        self.emitter.on_event(event);
+    }
+}
+
+fn terminal_seal(
+    ledger: &Arc<StdMutex<AcousticLedger>>,
+    capture: &str,
+) -> codescribe_core::pipeline::acoustic_ledger::LedgerSealReceipt {
+    let mut held = ledger.lock().unwrap();
+    let owners = held.qualified_occurrences().cloned().collect::<Vec<_>>();
+    for owner in owners {
+        held.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+        assert!(held.note_frontier_return(&owner, ObservationProducer::Whisper));
+    }
+    let seal = held.seal_terminal(capture, 1).unwrap();
+    assert!(!seal.is_occurrence_seal());
+    assert!(held.authenticates_seal(&seal));
+    seal
+}
+
+type TerminalScript = Vec<(u64, Vec<(u64, u64, &'static str)>)>;
+
+struct TerminalFake {
+    starts: Arc<AtomicU64>,
+    exits: Arc<AtomicU64>,
+    archives: Arc<StdMutex<Vec<std::path::PathBuf>>>,
+    fed: mpsc::UnboundedReceiver<u64>,
+    sealed: mpsc::UnboundedReceiver<String>,
+}
+
+fn terminal_fake(
+    recorder: &mut StreamingRecorder,
+    ledger: Arc<StdMutex<AcousticLedger>>,
+    script: TerminalScript,
+    refuse_authentication: bool,
+) -> TerminalFake {
+    let starts = Arc::new(AtomicU64::new(0));
+    let exits = Arc::new(AtomicU64::new(0));
+    let archives = Arc::new(StdMutex::new(Vec::new()));
+    let (fed_tx, fed) = mpsc::unbounded_channel();
+    let (seal_tx, sealed) = mpsc::unbounded_channel();
+    let (sc, ec, ac) = (starts.clone(), exits.clone(), archives.clone());
+    recorder.set_channel_recognizer_factory(Arc::new(move |mut pcm, sink, mut config| {
+        let (sc, ec, ac, ledger, script, fed_tx, seal_tx) = (
+            sc.clone(),
+            ec.clone(),
+            ac.clone(),
+            ledger.clone(),
+            script.clone(),
+            fed_tx.clone(),
+            seal_tx.clone(),
+        );
+        Box::pin(async move {
+            sc.fetch_add(1, Ordering::SeqCst);
+            let _exit = SessionDrop(ec);
+            assert!(Arc::ptr_eq(&ledger, &config.acoustic_ledger));
+            let mut sample_end = 0;
+            let mut steps = script.into_iter();
+            while let Some(block) = pcm.recv().await {
+                sample_end += block.len() as u64;
+                let (expected, words) = steps.next().expect("one script step per PCM block");
+                assert_eq!(sample_end, expected);
+                for (start, end, word) in words {
+                    sink.on_event(&mutation(&ledger, &config.session_id, start, end, 1, word));
+                }
+                sink.on_event(&EngineEvent::DecoderCovered {
+                    session_id: config.session_id.clone(),
+                    capture_epoch: 1,
+                    sample_end,
+                });
+                fed_tx.send(sample_end).unwrap();
+            }
+            assert_eq!(
+                steps.next(),
+                None,
+                "the fake must drain the whole scripted feed"
+            );
+            let terminal = config.terminal_audio.take().unwrap();
+            let archive = tokio::task::spawn_blocking(move || terminal.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(hound_duration(archive.path_for_test()), sample_end);
+            ac.lock().unwrap().push(archive.path_for_test().to_owned());
+            let mut receipt = terminal_seal(&ledger, &config.session_id);
+            if refuse_authentication {
+                receipt.receipt_id.push_str("-unauthenticated");
+                assert!(!ledger.lock().unwrap().authenticates_seal(&receipt));
+            }
+            let id = receipt.receipt_id.clone();
+            sink.on_event(&EngineEvent::LedgerSeal { receipt });
+            seal_tx.send(id).unwrap();
+            config.last_window_closed.take().unwrap().send(()).unwrap();
+            drop(config.lifecycle_events.take());
+        })
+    }));
+    TerminalFake {
+        starts,
+        exits,
+        archives,
+        fed,
+        sealed,
+    }
+}
+
+fn settlement_tail(
+    root: &Path,
+    closed: codescribe_core::audio::streaming_recorder::ClosedChannel,
+) -> SettleTail {
+    SettleTail {
+        shared_bus: root.join("shared.jsonl"),
+        closed: Some(closed),
+        retained_capture: None,
+        order: DeliveryOrder {
+            prior: None,
+            done: None,
+        },
+    }
+}
+
+fn delivered(document: &Segment) -> serde_json::Value {
+    let deliveries = rows(document)
+        .into_iter()
+        .filter(|r| {
+            r["status"] == "transcript_sealed" && r["schema"] == "codescribe.transcript-evidence.v1"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(deliveries.len(), 1, "exactly one delivery per seat");
+    deliveries.into_iter().next().unwrap()
+}
+
+async fn shared_terminal_path(finish: ChannelSegmentFinish) {
+    let root = tempfile::tempdir().unwrap();
+    let capture = "agent-channels-real-terminal";
+    let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+    let a = segment(
+        root.path(),
+        "agent-channel-2-real-terminal",
+        2,
+        capture,
+        ledger.clone(),
+        DeliverySeat::Primary,
+    );
+    let b = segment(
+        root.path(),
+        "agent-channel-0-real-terminal",
+        0,
+        capture,
+        ledger.clone(),
+        DeliverySeat::Primary,
+    );
+    let (sa, sb) = (TerminalSealSink::new(&a), TerminalSealSink::new(&b));
+    let mut recorder = StreamingRecorder::new().unwrap();
+    let mut fake = terminal_fake(
+        &mut recorder,
+        ledger.clone(),
+        vec![
+            (4_000, vec![(1_000, 2_000, "before")]),
+            (
+                7_000,
+                vec![(3_900, 4_200, "join"), (5_000, 6_000, "shared")],
+            ),
+            (9_000, vec![(6_800, 7_100, "tail"), (8_000, 8_500, "after")]),
+            (10_000, vec![(9_500, 9_900, "last")]),
+        ],
+        false,
+    );
+    let pa = recorder
+        .begin_channel_session_for_test(ChannelSessionSpec {
+            session_id: capture.into(),
+            runtime_settings: a.source.runtime_settings.clone(),
+            language: None,
+            acoustic_ledger: ledger.clone(),
+            participant: ChannelParticipantOpen {
+                owner: None,
+                sink: sa.clone(),
+            },
+        })
+        .unwrap();
+    recorder.offer_channel_pcm_for_test(&vec![0.25; 4_000]);
+    assert_eq!(fake.fed.recv().await, Some(4_000));
+    let pb = recorder
+        .join_channel_session(ChannelParticipantOpen {
+            owner: None,
+            sink: sb.clone(),
+        })
+        .unwrap();
+    assert_eq!(pb.start_sample, 4_000);
+    assert_eq!(raw(&a), ["before"]);
+    assert_eq!(raw(&b), Vec::<String>::new());
+    recorder.offer_channel_pcm_for_test(&vec![0.25; 3_000]);
+    assert_eq!(fake.fed.recv().await, Some(7_000));
+    assert_eq!(&raw(&a)[1..], raw(&b));
+    assert_eq!(raw(&b), ["join", "shared"]);
+    let closed_a = recorder.close_channel_session(pa.id).await;
+    assert!(!closed_a.released_stream());
+    recorder.offer_channel_pcm_for_test(&vec![0.25; 2_000]);
+    assert_eq!(fake.fed.recv().await, Some(9_000));
+    let mut oa = open(&a, pa.clone(), ledger.clone());
+    oa.timing.finish = ChannelSegmentFinish::LightPlus;
+    RecordingController::settle_closed_channel(
+        2,
+        oa,
+        ChannelSealReason::Hangup,
+        ChannelClose::Session,
+        settlement_tail(root.path(), closed_a),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        delivered(&a)["rendered_text"],
+        "Before. Join. Shared. Tail."
+    );
+    assert_eq!(delivered(&a)["delivered_revision"], "light_plus");
+    assert_eq!(fake.exits.load(Ordering::SeqCst), 0);
+    assert_eq!(fake.archives.lock().unwrap().len(), 0);
+    assert_eq!(recorder.channel_participant_count(), 1);
+    assert_eq!(recorder.capture_subscriber_count(), 1);
+    assert!(Arc::ptr_eq(
+        &recorder.shared_channel_view().unwrap().acoustic_ledger,
+        &ledger
+    ));
+    recorder.offer_channel_pcm_for_test(&vec![0.25; 1_000]);
+    assert_eq!(fake.fed.recv().await, Some(10_000));
+    assert_eq!(raw(&a), ["before", "join", "shared", "tail"]);
+    assert_eq!(raw(&b), ["join", "shared", "tail", "after", "last"]);
+    let before = b.parts.emitter.visible_canvas_snapshot().unwrap().revision;
+    assert!(b.parts.emitter.terminal_formatter_request().is_none());
+    let closed_b = recorder.close_channel_session(pb.id).await;
+    assert!(closed_b.released_stream());
+    let mut ob = open(&b, pb, ledger.clone());
+    ob.timing.finish = finish;
+    let reply = (finish == ChannelSegmentFinish::Formatter).then(|| formatter(&b.source.label));
+    let settle = RecordingController::settle_closed_channel(
+        0,
+        ob,
+        ChannelSealReason::Hangup,
+        ChannelClose::Session,
+        settlement_tail(root.path(), closed_b),
+    );
+    let inspect_seal = async {
+        let _seal_id = fake
+            .sealed
+            .recv()
+            .await
+            .expect("real seal sent through demux at EOF");
+        assert_eq!(*sa.receipts.lock().unwrap(), Vec::<String>::new());
+        assert_eq!(
+            *sb.receipts.lock().unwrap(),
+            Vec::<String>::new(),
+            "foreign terminal seal withheld from last seat"
+        );
+        assert_eq!(
+            b.parts.emitter.visible_canvas_snapshot().unwrap().revision,
+            before,
+            "withheld seal must not revise the last seat's words"
+        );
+        assert_eq!(raw(&b), ["join", "shared", "tail", "after", "last"]);
+        if let Some(reply) = reply {
+            reply
+                .send(AiFormatResult {
+                    text: "Join, shared, tail, after, last.".into(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                })
+                .unwrap();
+        }
+    };
+    let (result, ()) = tokio::join!(settle, inspect_seal);
+    result.unwrap();
+    let delivery = delivered(&b);
+    assert_eq!(
+        delivery["delivered_revision"],
+        if finish == ChannelSegmentFinish::Formatter {
+            "formatter"
+        } else {
+            "committed"
+        }
+    );
+    assert_eq!(
+        delivery["rendered_text"],
+        if finish == ChannelSegmentFinish::Formatter {
+            "Join, shared, tail, after, last."
+        } else {
+            "Join. Shared. Tail. After. Last"
+        }
+    );
+    assert_eq!(
+        delivery["delivered_revision_fallback"],
+        serde_json::Value::Null,
+        "last shared seat must not fall back to no_terminal_document"
+    );
+    assert_eq!(fake.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.exits.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.archives.lock().unwrap().len(), 1);
+    assert_eq!(
+        delivered(&a)["rendered_text"],
+        "Before. Join. Shared. Tail."
+    );
+    assert_eq!(raw(&a), ["before", "join", "shared", "tail"]);
+    assert_eq!(recorder.capture_subscriber_count(), 0);
+    assert_eq!(recorder.channel_participant_count(), 0);
+    assert!(recorder.shared_channel_view().is_none());
+    assert_eq!(ledger.lock().unwrap().qualified_occurrences().count(), 6);
+    {
+        let held = ledger.lock().unwrap();
+        assert_eq!(
+            held.qualified_occurrences()
+                .filter(|o| held.is_sealed(o))
+                .count(),
+            6
+        );
+    }
+    assert_eq!(
+        pa.demux
+            .intervals()
+            .iter()
+            .map(|i| (i.start_sample, i.end_sample))
+            .collect::<Vec<_>>(),
+        [(0, Some(7_000)), (4_000, Some(10_000))]
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn f15_agent_channel_last_shared_seat_formats_after_real_withheld_terminal_seal() {
+    shared_terminal_path(ChannelSegmentFinish::Formatter).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn f18_agent_channel_real_terminal_seal_path_delivers_each_seat_once() {
+    shared_terminal_path(ChannelSegmentFinish::Off).await;
+}
+
+#[tokio::test]
+async fn f16_agent_channel_lone_seat_keeps_terminal_tail_seal_past_detach() {
+    let root = tempfile::tempdir().unwrap();
+    let capture = "agent-channels-lone-terminal-tail";
+    let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+    let baseline_ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+    let document = segment(
+        root.path(),
+        "agent-channel-lone-tail",
+        2,
+        capture,
+        ledger.clone(),
+        DeliverySeat::Primary,
+    );
+    let baseline = segment(
+        root.path(),
+        "agent-channel-lone-control",
+        2,
+        capture,
+        baseline_ledger.clone(),
+        DeliverySeat::Primary,
+    );
+    let sink = TerminalSealSink::new(&document);
+    let demux = ChannelDemux::new(capture.into());
+    let mut recorder = StreamingRecorder::new().unwrap();
+    let id = recorder.register_channel_feed().id;
+    demux.attach(id, None, sink.clone(), 0);
+    demux.on_capture_opened(capture, 1);
+    baseline.parts.emitter.on_capture_opened(capture, 1);
+    // The occurrence is already in both documents when the seat detaches.
+    // Its midpoint, 250, is outside the resulting [0, 100) interval.
+    demux.on_event(&mutation(&ledger, capture, 200, 300, 1, "tail"));
+    baseline
+        .parts
+        .emitter
+        .on_event(&mutation(&baseline_ledger, capture, 200, 300, 1, "tail"));
+    demux.detach(id, 100);
+    assert_eq!(demux.intervals().len(), 1);
+    let receipt = terminal_seal(&ledger, capture);
+    let receipt_id = receipt.receipt_id.clone();
+    demux.on_event(&EngineEvent::LedgerSeal { receipt });
+    // Direct delivery is the pre-cut one-participation settlement corridor.
+    baseline.parts.emitter.on_event(&EngineEvent::LedgerSeal {
+        receipt: terminal_seal(&baseline_ledger, capture),
+    });
+    assert_eq!(*sink.receipts.lock().unwrap(), [receipt_id]);
+    assert_eq!(raw(&document), ["tail"]);
+    assert_eq!(raw(&document), raw(&baseline));
+    assert_eq!(
+        document
+            .parts
+            .emitter
+            .visible_canvas_snapshot()
+            .unwrap()
+            .revision,
+        baseline
+            .parts
+            .emitter
+            .visible_canvas_snapshot()
+            .unwrap()
+            .revision
+    );
+    assert_eq!(
+        document.parts.transcript_bus.channel_closing_text(),
+        baseline.parts.transcript_bus.channel_closing_text()
+    );
+    let request = document
+        .parts
+        .emitter
+        .terminal_formatter_request()
+        .expect("lone tail remains terminal");
+    let control = baseline
+        .parts
+        .emitter
+        .terminal_formatter_request()
+        .expect("baseline direct seal is terminal");
+    assert_eq!(
+        (request.source_revision, request.source_text),
+        (control.source_revision, control.source_text)
+    );
+    for s in [&document, &baseline] {
+        assert_eq!(
+            rows(s)
+                .iter()
+                .filter(|r| r["reducer_action"] == "record_ledger_terminal_seal")
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn f17_agent_channel_lone_refused_terminal_seal_preserves_nonterminal_baseline() {
+    let root = tempfile::tempdir().unwrap();
+    let capture = "agent-channels-lone-refused-terminal";
+    let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+    let document = segment(
+        root.path(),
+        "agent-channel-lone-refused",
+        2,
+        capture,
+        ledger.clone(),
+        DeliverySeat::Primary,
+    );
+    let sink = TerminalSealSink::new(&document);
+    let mut recorder = StreamingRecorder::new().unwrap();
+    let mut fake = terminal_fake(
+        &mut recorder,
+        ledger.clone(),
+        vec![(1_000, vec![(0, 800, "lone words")])],
+        true,
+    );
+    let p = recorder
+        .begin_channel_session_for_test(ChannelSessionSpec {
+            session_id: capture.into(),
+            runtime_settings: document.source.runtime_settings.clone(),
+            language: None,
+            acoustic_ledger: ledger.clone(),
+            participant: ChannelParticipantOpen {
+                owner: None,
+                sink: sink.clone(),
+            },
+        })
+        .unwrap();
+    recorder.offer_channel_pcm_for_test(&vec![0.25; 1_000]);
+    assert_eq!(fake.fed.recv().await, Some(1_000));
+    let before = document
+        .parts
+        .emitter
+        .visible_canvas_snapshot()
+        .unwrap()
+        .revision;
+    assert!(
+        document
+            .parts
+            .emitter
+            .terminal_formatter_request()
+            .is_none()
+    );
+    let closed = recorder.close_channel_session(p.id).await;
+    assert!(closed.released_stream());
+    assert_eq!(p.demux.intervals().len(), 1);
+    // A regression that calls the formatter still cannot contact a provider.
+    formatter(&document.source.label)
+        .send(AiFormatResult {
+            text: "Unexpected formatter call.".into(),
+            reasoning_text: None,
+            status: AiFormatStatus::Applied,
+        })
+        .unwrap();
+    RecordingController::settle_closed_channel(
+        2,
+        open(&document, p, ledger.clone()),
+        ChannelSealReason::Hangup,
+        ChannelClose::Session,
+        settlement_tail(root.path(), closed),
+    )
+    .await
+    .unwrap();
+    let seal_id = fake.sealed.recv().await.unwrap();
+    assert_eq!(*sink.receipts.lock().unwrap(), [seal_id]);
+    assert!(
+        FORMATTERS
+            .lock()
+            .unwrap()
+            .remove(&document.source.label)
+            .is_some(),
+        "a lone auth-refused seal must not create a terminal formatter request"
+    );
+    assert!(
+        document
+            .parts
+            .emitter
+            .terminal_formatter_request()
+            .is_none(),
+        "released lone seat keeps the !released_stream behavior from 29f53f7fb"
+    );
+    assert_eq!(
+        document
+            .parts
+            .emitter
+            .visible_canvas_snapshot()
+            .unwrap()
+            .revision,
+        before
+    );
+    assert_eq!(raw(&document), ["lone", "words"]);
+    assert_eq!(
+        rows(&document)
+            .iter()
+            .filter(|r| r["reducer_action"] == "record_ledger_terminal_seal")
+            .count(),
+        0
+    );
+    let delivery = delivered(&document);
+    assert_eq!(delivery["rendered_text"], "Lone words.");
+    assert_eq!(delivery["delivered_revision"], "light_plus");
+    assert_eq!(
+        delivery["delivered_revision_fallback"],
+        "no_terminal_document"
+    );
+    assert_eq!(fake.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.exits.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.archives.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn f19_agent_channel_shared_owner_of_every_occurrence_keeps_terminal_seal() {
+    let root = tempfile::tempdir().unwrap();
+    let capture = "agent-channels-shared-terminal-owner";
+    let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+    let a = segment(
+        root.path(),
+        "agent-channel-terminal-owner",
+        2,
+        capture,
+        ledger.clone(),
+        DeliverySeat::Primary,
+    );
+    let b = segment(
+        root.path(),
+        "agent-channel-silent-companion",
+        0,
+        capture,
+        ledger.clone(),
+        DeliverySeat::Primary,
+    );
+    let (sa, sb) = (TerminalSealSink::new(&a), TerminalSealSink::new(&b));
+    let demux = ChannelDemux::new(capture.into());
+    let mut recorder = StreamingRecorder::new().unwrap();
+    let ia = recorder.register_channel_feed().id;
+    demux.attach(ia, None, sa.clone(), 0);
+    demux.on_capture_opened(capture, 1);
+    demux.on_event(&mutation(&ledger, capture, 0, 100, 1, "owned"));
+    let ib = recorder.register_channel_feed().id;
+    demux.attach(ib, None, sb.clone(), 200);
+    demux.detach(ib, 300);
+    assert_eq!(demux.intervals().len(), 2);
+    let receipt = terminal_seal(&ledger, capture);
+    assert_eq!(
+        receipt.sealed_occurrences,
+        [OccurrenceIdentity::new(capture, 1, 0, 100)]
+    );
+    let receipt_id = receipt.receipt_id.clone();
+    demux.on_event(&EngineEvent::LedgerSeal { receipt });
+    assert_eq!(*sa.receipts.lock().unwrap(), [receipt_id]);
+    assert_eq!(*sb.receipts.lock().unwrap(), Vec::<String>::new());
+    assert_eq!(raw(&a), ["owned"]);
+    assert_eq!(raw(&b), Vec::<String>::new());
+    assert!(a.parts.emitter.terminal_formatter_request().is_some());
+    assert!(b.parts.emitter.terminal_formatter_request().is_none());
+    assert_eq!(
+        rows(&a)
+            .iter()
+            .filter(|r| r["reducer_action"] == "record_ledger_terminal_seal")
+            .count(),
+        1
+    );
+    assert_eq!(
+        rows(&b)
+            .iter()
+            .filter(|r| r["reducer_action"] == "record_ledger_terminal_seal")
+            .count(),
+        0
+    );
+}
+
 #[tokio::test]
 async fn f3_agent_channel_sealed_rows_keep_bus_capture_seat_and_refusal_identity() {
     let root = tempfile::tempdir().unwrap();
