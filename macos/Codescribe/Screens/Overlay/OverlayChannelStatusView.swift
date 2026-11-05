@@ -1480,7 +1480,7 @@ struct OverlayChannelStatusView: View {
     .modifier(
       OverlayAgentsHoverListChrome(
         title: headerTitle, palette: palette, selected: headerSelected,
-        rows: agentCaptureOpen ? [] : hoverListRows,
+        rows: (agentCaptureOpen || headerSelected) ? [] : hoverListRows,
         onOpen: { onSelectConversation?($0) }, onHover: onAgentsListHover)
     )
     .accessibilityLabel(

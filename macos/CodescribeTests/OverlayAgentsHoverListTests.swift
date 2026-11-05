@@ -411,4 +411,8 @@ final class OverlayAgentsHoverListTests: XCTestCase {
       try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: policy)) as? [String: Any])
     }
   }
+
+  func testHoverListOpenDelayIsOneSecond() {
+    XCTAssertEqual(OverlayAgentsHoverListChrome.openDelay, 1.0, accuracy: 0.001)
+  }
 }

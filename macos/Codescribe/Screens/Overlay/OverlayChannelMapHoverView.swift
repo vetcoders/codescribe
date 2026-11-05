@@ -108,12 +108,13 @@ final class OverlayAgentsHoverListModel {
 
 /// The ✦ button's hover: the agents list on the shared interactive hint
 /// panel (`OverlayHeaderControlChrome`, as the roster's message preview).
-/// With no row to show (no mailbox conversation and no agent), or while
-/// agent capture is open and a click stops it, the button keeps its one-line
+/// With no row to show (no mailbox conversation and no agent), while
+/// agent capture is open and a click stops it, or when the expanded Agents
+/// view is already presented (`selected`), the button keeps its one-line
 /// hint instead.
 struct OverlayAgentsHoverListChrome: ViewModifier {
   /// The pause before the list opens, so passing over ✦ opens nothing.
-  static let openDelay: TimeInterval = 0.3
+  static let openDelay: TimeInterval = 1.0
 
   let title: String
   let palette: OverlayAppearancePalette
