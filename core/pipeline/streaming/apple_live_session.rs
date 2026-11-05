@@ -12005,6 +12005,10 @@ fn emit_direct_apple_events(
 mod c13a_lifecycle_tests;
 
 #[cfg(test)]
+#[path = "channel_decoder_coverage_tests.rs"]
+mod channel_decoder_coverage_tests;
+
+#[cfg(test)]
 #[path = "apple_live_session_tests/layer1_frontier_contracts.rs"]
 mod layer1_frontier_contracts;
 
