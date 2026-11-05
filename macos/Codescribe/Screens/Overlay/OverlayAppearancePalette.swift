@@ -15,18 +15,18 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   let mutedText: OverlayColorToken
   let listeningStatus: OverlayColorToken
   let processingStatus: OverlayColorToken
+  /// The system green, drawn only by the presence dot of a connected agent
+  /// (Founder, 2026-11-05); every other correct state is ink and a glyph.
   let successStatus: OverlayColorToken
   let errorStatus: OverlayColorToken
-  /// The assistive violet (voice routed to an agent), raised for contrast on
-  /// either canvas; the Agents control's hover hue.
+  /// Voice routed to an agent: the system indigo; the Agents control's hover hue.
   let agentAccent: OverlayColorToken
-  /// A6 uncertain-word text: the processing orange at label strength. Distinct
-  /// from `processingStatus`, which wears the amber of engine completeness
-  /// warnings; this role means "the engine was unsure of THIS word".
+  /// A6 uncertain-word text: the same system orange as `processingStatus`
+  /// (Founder, 2026-11-05: one attention colour); the role still means "the
+  /// engine was unsure of THIS word".
   let uncertainWord: OverlayColorToken
-  /// Lexicon marker for `surface_rewritten` words (d5): the dictionary owns
-  /// this surface, so it gets the steel blue of `CSPalette.lexicon`, never the
-  /// uncertainty orange.
+  /// Lexicon marker for `surface_rewritten` words (d5): secondary ink; the
+  /// underline, not a colour, says the dictionary rewrote the word.
   let lexiconMarker: OverlayColorToken
   let shadowOpacity: Double
 
@@ -42,11 +42,13 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     mutedText = OverlayColorToken(CSPalette.textMuted, in: appearance)
     listeningStatus = OverlayColorToken(CSPalette.terracottaLight, in: appearance)
     processingStatus = OverlayColorToken(CSPalette.amberLight, in: appearance)
-    successStatus = OverlayColorToken(CSPalette.oliveStatus, in: appearance)
+    // The one green of the app: the connected agent's presence dot.
+    successStatus = OverlayColorToken(NSColor.systemGreen, in: appearance)
     errorStatus = OverlayColorToken(CSPalette.dangerLight, in: appearance)
     agentAccent = OverlayColorToken(CSPalette.assistiveLight, in: appearance)
     uncertainWord = OverlayColorToken(CSPalette.modeProcessingLight, in: appearance)
-    lexiconMarker = OverlayColorToken(CSPalette.lexicon, in: appearance)
+    // A word the dictionary rewrote: label ink with an underline, no colour.
+    lexiconMarker = OverlayColorToken(CSPalette.textHigh, in: appearance)
     shadowOpacity = appearance == .dark ? 0.20 : 0.16
   }
 

@@ -1368,15 +1368,15 @@ struct AudioPanel: View {
 
   private func statusColor(_ tone: AudioInputDisplayTone) -> Color {
     switch tone {
-    case .healthy: return CSColor.oliveLight
+    case .healthy: return CSColor.secondaryInk
     case .neutral, .pending: return CSColor.secondaryInk
     case .fallback: return CSColor.amberLight
     case .unavailable: return CSColor.dangerLight
     }
   }
 
-  /// A fact's value: a healthy one ("Ready") is the olive capsule with a check
-  /// (Founder, 2026-10-26); every other tone keeps its coloured word.
+  /// A healthy fact ("Ready") keeps its neutral capsule and check; only
+  /// facts requiring attention use a semantic warning or error colour.
   @ViewBuilder
   private func statusValue(_ fact: AudioReadinessFact) -> some View {
     if fact.tone == .healthy {

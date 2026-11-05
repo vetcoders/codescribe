@@ -7,7 +7,7 @@ import XCTest
 /// Native regression suite for the sidebar material behind the shared sidebar
 /// column of the Settings and Agent windows: translucency, hit-testing
 /// transparency, and accessibility contrast contracts. The column keeps the
-/// system glass (Monika, 2026-10-18).
+/// system glass (Founder, 2026-10-18).
 @MainActor
 final class CSSidebarMaterialTests: XCTestCase {
 

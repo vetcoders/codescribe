@@ -67,7 +67,7 @@ struct TrayRow: View {
   var titleColor: Color? = nil
   var titleWeight: Font.Weight = .medium
   var shortcut: String? = nil
-  var shortcutColor: Color = CSColor.textMuted
+  var shortcutColor: Color = CSColor.textTertiary
   /// Expansion state of the disclosure group this row heads; `nil` for plain
   /// action rows without a chevron.
   var disclosureExpanded: Bool? = nil
@@ -81,14 +81,14 @@ struct TrayRow: View {
 
   private var fillColor: Color {
     switch style {
-    case .primary: return CSColor.accentWash.opacity(0.13)
-    case .raised: return CSColor.surfaceRaised(0.04)
-    case .plain: return hovering ? CSColor.surfaceRaised(0.05) : .clear
+    case .primary: return Color.primary.opacity(CSAlpha.fill)
+    case .raised: return Color.primary.opacity(CSAlpha.subtle)
+    case .plain: return hovering ? Color.primary.opacity(CSAlpha.fill) : Color.clear
     }
   }
 
   private var borderColor: Color {
-    style == .primary ? CSColor.chromeAccent.opacity(0.24) : .clear
+    .clear
   }
 
   var body: some View {
@@ -178,7 +178,7 @@ struct TrayChildRow: View {
     .padding(.vertical, TrayRowScale.child.verticalPadding)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
-        .fill(hovering ? CSColor.surfaceRaised(0.05) : .clear)
+        .fill(hovering ? Color.primary.opacity(CSAlpha.fill) : Color.clear)
     )
     .contentShape(Rectangle())
   }
@@ -231,7 +231,7 @@ struct TrayHistoryRow: View {
     .padding(.vertical, TrayRowScale.child.verticalPadding)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
-        .fill(hovering ? CSColor.surfaceRaised(0.05) : .clear)
+        .fill(hovering ? Color.primary.opacity(CSAlpha.fill) : Color.clear)
     )
     .contentShape(Rectangle())
   }

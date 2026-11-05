@@ -3,7 +3,7 @@ import SwiftUI
 // One sidebar for every window. Agent and Settings had the same native
 // composition twice, with different widths, a different footer treatment and
 // a toggle only one of them showed; the two columns read as two products
-// (Monika, 2026-10-18: "musimy to ujednolicić"). Side by side she then chose
+// (Founder, 2026-10-18: the two had to be unified). Side by side she then chose
 // the Settings column as the reference, so the Agent rail adopts it rather
 // than the other way round.
 //

@@ -77,14 +77,14 @@ final class AgentWindowAppearanceTests: XCTestCase {
 
   func testCodeThemesDifferAndCarryKeyTokens() {
     XCTAssertNotEqual(CodeTheme.lightCSS, CodeTheme.darkCSS)
-    XCTAssertTrue(CodeTheme.lightCSS.contains("#090A0D"))
-    XCTAssertTrue(CodeTheme.darkCSS.contains("#D97757"))
+    XCTAssertTrue(CodeTheme.lightCSS.contains(CodeTheme.systemHex(.labelColor, dark: false)))
+    XCTAssertTrue(CodeTheme.darkCSS.contains(CodeTheme.systemHex(.systemIndigo, dark: true)))
   }
 
   // MARK: - Composer caret stays distinct from text ink
 
   func testComposerCaretDoesNotMatchSemanticTextInk() {
-    let caret = NSColor(CSColor.terracotta)
+    let caret = NSColor(CSColor.chromeAccent)
     for dark in [false, true] {
       let mode = dark ? "darkAqua" : "aqua"
       XCTAssertFalse(

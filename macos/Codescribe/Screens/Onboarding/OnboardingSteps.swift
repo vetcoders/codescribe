@@ -78,8 +78,8 @@ struct OnboardingProblemText: View {
 }
 
 /// A single radio-style selectable card: title + optional subtitle. The
-/// selected one carries the brand accent: a filled check, a wash and a
-/// one-point edge (Founder, 2026-10-26). Reused by every choice step.
+/// selected one carries the system accent: a filled check, a wash and a
+/// one-point edge. Reused by every choice step.
 struct OnboardingChoiceCard: View {
   let title: String
   let subtitle: String?
@@ -90,7 +90,7 @@ struct OnboardingChoiceCard: View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 12) {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-          .foregroundStyle(isSelected ? CSColor.brandAccent : CSColor.secondaryInk)
+          .foregroundStyle(isSelected ? CSColor.chromeAccent : CSColor.secondaryInk)
         VStack(alignment: .leading, spacing: 3) {
           Text(title).font(CSFont.ui(13, .semibold))
           if let subtitle {
@@ -125,10 +125,10 @@ private struct OnboardingCard<Content: View>: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 20)
       .padding(.vertical, 14)
-      .background(CSColor.chromeAccent.opacity(0.035), in: .rect(cornerRadius: CSRadius.chip))
+      .background(Color.primary.opacity(CSAlpha.subtle), in: .rect(cornerRadius: CSRadius.chip))
       .overlay {
         RoundedRectangle(cornerRadius: CSRadius.chip)
-          .strokeBorder(CSColor.chromeAccent.opacity(0.22), lineWidth: 1 / max(displayScale, 1))
+          .strokeBorder(CSColor.hairline(), lineWidth: 1 / max(displayScale, 1))
       }
   }
 }

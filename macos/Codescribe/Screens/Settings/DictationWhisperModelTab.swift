@@ -258,7 +258,7 @@ struct DictationWhisperModelTab: View {
   private var localWhisperRuntimeColor: Color {
     switch model.localWhisperRuntimeState {
     case .livePatchingConfigured:
-      CSColor.oliveLight
+      CSColor.secondaryInk
     case .livePatchingNotReady:
       CSColor.amberLight
     case .degradedEnvOverride, .notSelected:
@@ -504,14 +504,14 @@ struct DictationWhisperModelTab: View {
     selectedOption(catalog)?.label ?? catalog.configured
   }
 
-  /// How the selected-model status line reads: ready-ish (olive), missing
-  /// (amber), or still being read (secondary).
+  /// A ready or pending model uses neutral text; a missing model keeps the
+  /// semantic warning colour.
   enum ModelStatusTone: Equatable {
     case ready, missing, pending
 
     var color: Color {
       switch self {
-      case .ready: CSColor.oliveLight
+      case .ready: CSColor.secondaryInk
       case .missing: CSColor.amberLight
       case .pending: CSColor.secondaryInk
       }

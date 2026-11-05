@@ -143,7 +143,7 @@ struct ShortcutsPanel: View {
       HStack(spacing: 8) {
         Text(row.binding.visibleName)
           .font(SettingsScale.monoValue)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(Color.primary)
         CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.secondaryInk)
       }
       .padding(.horizontal, SettingsScale.controlInsetH)
@@ -181,10 +181,7 @@ struct ShortcutsPanel: View {
             .foregroundStyle(model.canSaveBindings ? Color.primary : CSColor.secondaryInk)
             .background(
               RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .fill(
-                  model.canSaveBindings
-                    ? CSColor.terracotta.opacity(0.9)
-                    : Color.primary.opacity(CSAlpha.fill))
+                .fill(Color.primary.opacity(CSAlpha.fill))
             )
         }
         .csFocusRing()
@@ -230,7 +227,7 @@ struct ShortcutsPanel: View {
       if let receipt = model.bindingSaveReceipt, let sentence = receipt.sentence {
         VStack(alignment: .leading, spacing: 3) {
           statusLine(
-            color: receipt.hasRejection ? CSColor.dangerLight : CSColor.oliveLight,
+            color: receipt.hasRejection ? CSColor.dangerLight : CSColor.secondaryInk,
             text: sentence
           )
           if let detail = receipt.failureDetail {
@@ -816,7 +813,7 @@ struct GestureTestRow: View {
         .foregroundStyle(Color.primary)
         Text(statusText)
           .font(SettingsScale.helper)
-          .foregroundStyle(outcome == .recognized ? CSColor.oliveLight : CSColor.secondaryInk)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("shortcuts-gesture-test-outcome")
       }

@@ -46,7 +46,6 @@ struct TrayMenuView: View {
       TrayDivider()
       TrayRow(
         icon: .power,
-        iconColor: CSColor.terracottaDeep,
         title: String(localized: "Quit"),
         shortcut: "⌘Q"
       ) { viewModel.onQuit() }
@@ -115,9 +114,7 @@ struct TrayMenuView: View {
         title: String(localized: "Agent"),
         titleColor: viewModel.agentAvailable ? CSColor.textBody : CSColor.textMuted,
         titleWeight: .semibold,
-        shortcut: "⇧⌘Space",
-        shortcutColor: TrayRow.primaryShortcutColor,
-        style: .primary
+        shortcut: "⇧⌘Space"
       ) { viewModel.onShowAgent() }
 
       TrayRow(icon: .dock, title: String(localized: "Show widget")) {
@@ -191,7 +188,7 @@ struct TrayMenuView: View {
         style: viewModel.quickSettingsExpanded ? .raised : .plain
       ) {
         withAnimation(TrayDisclosureChevron.animation) {
-          viewModel.quickSettingsExpanded.toggle()
+          viewModel.toggleQuickSettings()
         }
       }
 
@@ -253,7 +250,7 @@ struct TrayMenuView: View {
       icon: .send,
       title: String(localized: "Auto Paste"),
       shortcut: viewModel.pasteMode.visibleName,
-      shortcutColor: viewModel.pasteMode == .off ? CSColor.textMuted : CSColor.oliveLight,
+      shortcutColor: viewModel.pasteMode == .off ? CSColor.textMuted : CSColor.secondaryInk,
       scale: .child
     ) { viewModel.setPasteMode(viewModel.pasteMode.next) }
     .accessibilityLabel("Auto Paste")
@@ -270,7 +267,7 @@ struct TrayMenuView: View {
       title: String(localized: "Auto Format"),
       shortcut: viewModel.autoFormatLevel.visibleName,
       shortcutColor: viewModel.autoFormatLevel == .off
-        ? CSColor.textMuted : CSColor.oliveLight,
+        ? CSColor.textMuted : CSColor.secondaryInk,
       scale: .child
     ) { viewModel.setAutoFormatLevel(viewModel.autoFormatLevel.next) }
     .accessibilityLabel("Auto Format")
@@ -290,7 +287,7 @@ struct TrayMenuView: View {
         comment: "Tray row: size of the recording dot drawn next to the mouse cursor"),
       shortcut: viewModel.holdBadgeOption.visibleName,
       shortcutColor: viewModel.holdBadgeOption == .off
-        ? CSColor.textMuted : CSColor.oliveLight,
+        ? CSColor.textMuted : CSColor.secondaryInk,
       scale: .child
     ) { viewModel.setHoldBadgeOption(viewModel.holdBadgeOption.next) }
     .accessibilityLabel("Cursor indicator")
@@ -304,7 +301,7 @@ struct TrayMenuView: View {
     icon: CSIcon,
     title: String,
     isOn: Bool,
-    onColor: Color = CSColor.oliveLight,
+    onColor: Color = CSColor.secondaryInk,
     set: @escaping (Bool) -> Void
   ) -> some View {
     TrayRow(
@@ -337,7 +334,7 @@ struct TrayMenuView: View {
     if viewModel.isRecording {
       return trayStatus.status.assistive ? CSColor.assistive : CSColor.terracotta
     }
-    return viewModel.startInAssistive ? CSColor.assistive : CSColor.oliveLight
+    return viewModel.startInAssistive ? CSColor.assistive : CSColor.secondaryInk
   }
 
   // MARK: - Notes (nested disclosure)
@@ -350,7 +347,7 @@ struct TrayMenuView: View {
         disclosureExpanded: viewModel.notesExpanded,
         style: viewModel.notesExpanded ? .raised : .plain
       ) {
-        withAnimation(TrayDisclosureChevron.animation) { viewModel.notesExpanded.toggle() }
+        withAnimation(TrayDisclosureChevron.animation) { viewModel.toggleNotes() }
       }
 
       if viewModel.notesExpanded {
@@ -390,7 +387,7 @@ struct TrayMenuView: View {
         style: viewModel.diagnosticsExpanded ? .raised : .plain
       ) {
         withAnimation(TrayDisclosureChevron.animation) {
-          viewModel.diagnosticsExpanded.toggle()
+          viewModel.toggleDiagnostics()
         }
       }
 
@@ -410,14 +407,14 @@ struct TrayMenuView: View {
 
 // MARK: - Notes action result banner
 
-/// Transient confirmation row for the Notes actions. Olive check on success,
+/// Transient confirmation row for the Notes actions. Neutral check on success,
 /// danger cross on failure — a permission-free, always-visible replacement
 /// for the OS notification that an accessory app can't guarantee.
 private struct TrayNoteStatusRow: View {
   let status: TrayActionStatus
 
   private var isSuccess: Bool { status.kind == .success }
-  private var tint: Color { isSuccess ? CSColor.oliveLight : CSColor.dangerLight }
+  private var tint: Color { isSuccess ? CSColor.secondaryInk : CSColor.dangerLight }
 
   var body: some View {
     HStack(spacing: 6) {

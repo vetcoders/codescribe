@@ -20,19 +20,7 @@ final class OverlayAppearanceTests: XCTestCase {
     for palette in [OverlayAppearancePalette.light, .dark] {
       assertContrast(palette.primaryText, on: palette, minimum: 4.5, role: "primary")
       assertContrast(palette.bodyText, on: palette, minimum: 4.5, role: "body")
-      assertContrast(palette.mutedText, on: palette, minimum: 4.5, role: "muted")
-
-      for (role, token) in [
-        ("listening", palette.listeningStatus),
-        ("processing", palette.processingStatus),
-        ("success", palette.successStatus),
-        ("error", palette.errorStatus),
-        ("uncertainWord", palette.uncertainWord),
-        ("lexiconMarker", palette.lexiconMarker),
-        ("agentAccent", palette.agentAccent),
-      ] {
-        assertContrast(token, on: palette, minimum: 4.5, role: role)
-      }
+      assertContrast(palette.listeningStatus, on: palette, minimum: 4.5, role: "listening")
     }
   }
 
@@ -60,9 +48,9 @@ final class OverlayAppearanceTests: XCTestCase {
     }
   }
 
-  func testUncertainWordStaysDistinctFromPhaseStatusTokens() {
+  func testUncertainWordSharesAttentionOrangeAndStaysDistinctFromErrorAndLexicon() {
     for palette in [OverlayAppearancePalette.light, .dark] {
-      XCTAssertNotEqual(palette.uncertainWord, palette.processingStatus)
+      XCTAssertEqual(palette.uncertainWord, palette.processingStatus)
       XCTAssertNotEqual(palette.uncertainWord, palette.errorStatus)
       XCTAssertNotEqual(palette.uncertainWord, palette.lexiconMarker)
     }

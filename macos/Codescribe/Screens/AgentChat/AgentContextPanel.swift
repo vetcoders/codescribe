@@ -133,9 +133,9 @@ struct AgentLiveStatusPill: View {
     case .thinking:
       StatusPill(text: activity.statusLabel ?? "", color: CSColor.amberLight, rippling: true)
     case .answering:
-      StatusPill(text: activity.statusLabel ?? "", color: CSColor.terracottaText, rippling: true)
+      StatusPill(text: activity.statusLabel ?? "", color: CSColor.secondaryInk, rippling: true)
     case .usingTools:
-      StatusPill(text: activity.statusLabel ?? "", color: CSColor.oliveLight, rippling: true)
+      StatusPill(text: activity.statusLabel ?? "", color: CSColor.secondaryInk, rippling: true)
     case .awaitingApproval:
       StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.amberLight)
     case .stopping:

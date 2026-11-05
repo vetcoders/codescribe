@@ -313,7 +313,7 @@ struct WaveformView: View {
     if agentRouted || indicatorMode == .assistive {
       return i % 5 == 0 ? CSColor.assistiveLight : CSColor.modeAgent
     }
-    return i % 5 == 0 ? CSColor.terracottaTintBars : CSColor.modeRecording
+    return CSColor.modeRecording
   }
 }
 

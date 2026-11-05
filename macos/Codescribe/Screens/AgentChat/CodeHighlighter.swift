@@ -1,3 +1,4 @@
+import AppKit
 import HighlightSwift
 import SwiftUI
 
@@ -14,10 +15,10 @@ import SwiftUI
 //     actor (AppKit's HTML importer requires it), and only once per closed
 //     block, never per streaming delta.
 //
-// Theme: our own CSS maps highlight.js token classes onto the CSColor brand
-// palette (no bundled foreign theme) via HighlightColors.custom. The font is NOT
-// carried by the CSS — HighlightSwift strips `.font` from its output, so the
-// caller applies CSFont.mono uniformly and only the token *colours* come from
+// Theme: our own CSS maps highlight.js token classes onto macOS semantic system
+// colors (no bundled foreign theme, no custom brand hexes) via HighlightColors.custom.
+// The font is NOT carried by the CSS — HighlightSwift strips `.font` from its output,
+// so the caller applies CSFont.mono uniformly and only the token *colours* come from
 // here.
 
 enum CodeHighlighter {
@@ -25,7 +26,7 @@ enum CodeHighlighter {
   // and the JSContext it wraps — never warms during app launch.
   private static let engine = Highlight()
 
-  /// Highlight `code` with the brand token theme, off the main render path.
+  /// Highlight `code` with the system token theme, off the main render path.
   ///
   /// - Parameters:
   ///   - language: the fence info-string hint (`rust`, `ts`, …). When present
@@ -49,51 +50,47 @@ enum CodeHighlighter {
   }
 }
 
-/// highlight.js token-class → CSColor mapping, emitted as CSS for
-/// HighlightColors.custom. Hexes are the literal CSColor token values (Tokens.swift)
-/// so the code palette tracks the design system. No `background` rules — the code
-/// block keeps its own `surfaceRaised` fill.
+/// highlight.js token-class → macOS system color mapping, emitted as CSS for
+/// HighlightColors.custom. Every color is resolved from `NSColor` in `.darkAqua`
+/// or `.aqua` so the code palette uses Apple's semantic system hues without
+/// custom hex literals. No `background` rules — the code block keeps its own
+/// `codeWell` fill.
 enum CodeTheme {
-  // Dark Aqua. The agent window follows the system appearance, so this CSS
-  // is selected only when `colorScheme == .dark`.
-  //   base            → warm light ink #DFE2DB (the retired textBodyAlt dark value)
-  //   keyword/type    → terracotta   #D97757  (the one brand accent)
-  //   string/addition → oliveLight   #9DB178
-  //   number/meta     → amber        #D6B24E
-  //   title/function  → terracottaLight #E9B79F
-  //   comment         → textFaint    #6F7268
-  //   attr/operator   → textMuted    #9A9D97
-  //   doctag/strong   → textHigh     #F4F2EC
-  static let darkCSS = """
-    .hljs{color:#DFE2DB}
-    .hljs-comment,.hljs-quote{color:#6F7268}
-    .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type,.hljs-tag,.hljs-name,.hljs-template-tag{color:#D97757}
-    .hljs-string,.hljs-symbol,.hljs-bullet,.hljs-regexp,.hljs-char.escape_,.hljs-addition{color:#9DB178}
-    .hljs-number,.hljs-literal,.hljs-meta,.hljs-meta .hljs-keyword,.hljs-meta .hljs-string,.hljs-meta-keyword{color:#D6B24E}
-    .hljs-title,.hljs-title.class_,.hljs-title.function_,.hljs-section,.hljs-selector-id,.hljs-selector-class{color:#E9B79F}
-    .hljs-attr,.hljs-attribute,.hljs-property,.hljs-variable,.hljs-template-variable,.hljs-params,.hljs-operator,.hljs-punctuation,.hljs-subst,.hljs-selector-attr,.hljs-selector-pseudo{color:#9A9D97}
-    .hljs-doctag,.hljs-strong{color:#F4F2EC}
-    .hljs-deletion,.hljs-link{color:#D97757}
-    """
+  static let darkCSS: String = makeCSS(dark: true)
+  static let lightCSS: String = makeCSS(dark: false)
 
-  // Light Aqua. Selected when the window is not dark. Code sits on the white
-  // `codeWell`, so every rung below clears 5.7:1 there. Hexes are written
-  // plainly because hljs reads CSS; the token rungs use their light values:
-  //   base, doctag/strong       → near-black ink   #090A0D
-  //   keyword/type/title/link   → terracottaText   #862C08
-  //   number/literal/meta       → amberLight       #644200
-  //   comment/quote             → secondaryInk     #666666 (black 60 % on white)
-  //   string/addition           → olive            #5F6B3E
-  //   attr/operator             → attribute grey   #5D6058
-  static let lightCSS = """
-    .hljs{color:#090A0D}
-    .hljs-comment,.hljs-quote{color:#666666}
-    .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type,.hljs-tag,.hljs-name,.hljs-template-tag{color:#862C08}
-    .hljs-string,.hljs-symbol,.hljs-bullet,.hljs-regexp,.hljs-char.escape_,.hljs-addition{color:#5F6B3E}
-    .hljs-number,.hljs-literal,.hljs-meta,.hljs-meta .hljs-keyword,.hljs-meta .hljs-string,.hljs-meta-keyword{color:#644200}
-    .hljs-title,.hljs-title.class_,.hljs-title.function_,.hljs-section,.hljs-selector-id,.hljs-selector-class{color:#862C08}
-    .hljs-attr,.hljs-attribute,.hljs-property,.hljs-variable,.hljs-template-variable,.hljs-params,.hljs-operator,.hljs-punctuation,.hljs-subst,.hljs-selector-attr,.hljs-selector-pseudo{color:#5D6058}
-    .hljs-doctag,.hljs-strong{color:#090A0D}
-    .hljs-deletion,.hljs-link{color:#862C08}
-    """
+  static func systemHex(_ color: NSColor, dark: Bool) -> String {
+    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+    var resolved = color
+    appearance?.performAsCurrentDrawingAppearance {
+      resolved = color.usingColorSpace(.sRGB) ?? color
+    }
+    let srgb = resolved.usingColorSpace(.sRGB) ?? resolved
+    let r = Int(round(max(0, min(1, srgb.redComponent)) * 255))
+    let g = Int(round(max(0, min(1, srgb.greenComponent)) * 255))
+    let b = Int(round(max(0, min(1, srgb.blueComponent)) * 255))
+    return String(format: "#%02X%02X%02X", r, g, b)
+  }
+
+  private static func makeCSS(dark: Bool) -> String {
+    let base = systemHex(.labelColor, dark: dark)
+    let comment = systemHex(.secondaryLabelColor, dark: dark)
+    let keyword = systemHex(.systemIndigo, dark: dark)
+    let string = systemHex(.systemGreen, dark: dark)
+    let number = systemHex(.systemOrange, dark: dark)
+    let title = systemHex(.systemBlue, dark: dark)
+    let attr = systemHex(.secondaryLabelColor, dark: dark)
+    let deletion = systemHex(.systemRed, dark: dark)
+    return """
+      .hljs{color:\(base)}
+      .hljs-comment,.hljs-quote{color:\(comment)}
+      .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type,.hljs-tag,.hljs-name,.hljs-template-tag{color:\(keyword)}
+      .hljs-string,.hljs-symbol,.hljs-bullet,.hljs-regexp,.hljs-char.escape_,.hljs-addition{color:\(string)}
+      .hljs-number,.hljs-literal,.hljs-meta,.hljs-meta .hljs-keyword,.hljs-meta .hljs-string,.hljs-meta-keyword{color:\(number)}
+      .hljs-title,.hljs-title.class_,.hljs-title.function_,.hljs-section,.hljs-selector-id,.hljs-selector-class{color:\(title)}
+      .hljs-attr,.hljs-attribute,.hljs-property,.hljs-variable,.hljs-template-variable,.hljs-params,.hljs-operator,.hljs-punctuation,.hljs-subst,.hljs-selector-attr,.hljs-selector-pseudo{color:\(attr)}
+      .hljs-doctag,.hljs-strong{color:\(base)}
+      .hljs-deletion,.hljs-link{color:\(deletion)}
+      """
+  }
 }

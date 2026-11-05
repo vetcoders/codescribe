@@ -60,7 +60,7 @@ struct SettingsSaveButton: View {
     Button(action: action) {
       Text(title)
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(enabled ? CSColor.chromeAccent : CSColor.secondaryInk)
+        .foregroundStyle(enabled ? Color.primary : CSColor.secondaryInk)
         .padding(.horizontal, SettingsScale.controlInsetH)
         .padding(.vertical, SettingsScale.controlInsetV)
         .background(
@@ -720,7 +720,7 @@ struct AccountLoginRow: View {
           }
           .foregroundStyle(
             provider.accountLoginEnabled && !loginPending
-              ? CSColor.oliveLight : CSColor.secondaryInk
+              ? Color.primary : CSColor.secondaryInk
           )
         }
         .help(provider.accountStatusMessage)

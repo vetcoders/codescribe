@@ -182,7 +182,7 @@ struct DictionaryWordPins: View {
             ZStack(alignment: .leading) {
               Capsule().fill(Color.secondary.opacity(0.15)).frame(height: 4)
               ForEach(Array(ranges.enumerated()), id: \.offset) { _, range in
-                Rectangle().fill(CSColor.oliveStatus.opacity(0.8))
+                Rectangle().fill(CSColor.secondaryInk.opacity(0.8))
                   .frame(
                     width: max(
                       1, geometry.size.width * Double(range.end - range.start) / Double(end)),
@@ -496,7 +496,7 @@ enum DictionaryPinSpeechState: Sendable {
 
   var color: Color {
     switch self {
-    case .speech: CSColor.oliveLight
+    case .speech: CSColor.secondaryInk
     case .subFloor: CSColor.amberLight
     case .noSpeech, .noVAD: CSColor.secondaryInk
     }

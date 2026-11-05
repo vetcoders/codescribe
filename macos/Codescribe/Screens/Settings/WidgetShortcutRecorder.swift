@@ -186,7 +186,7 @@ struct WidgetShortcutRecorderPill: View {
       } label: {
         Text(verbatim: recording ? String(localized: "Press keys…", comment: "Widget shortcut recorder is waiting for a chord") : chord.label)
           .font(SettingsScale.monoValue)
-          .foregroundStyle(recording ? CSColor.secondaryInk : CSColor.terracottaText)
+          .foregroundStyle(Color.primary)
           .padding(.horizontal, SettingsScale.controlInsetH)
           .padding(.vertical, SettingsScale.controlInsetV)
           .background(
@@ -196,7 +196,7 @@ struct WidgetShortcutRecorderPill: View {
           .overlay(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
               .strokeBorder(
-                recording ? CSColor.terracotta.opacity(0.6) : Color.primary.opacity(CSAlpha.stroke),
+                recording ? CSColor.chromeAccent.opacity(0.6) : Color.primary.opacity(CSAlpha.stroke),
                 lineWidth: 1)
           )
       }

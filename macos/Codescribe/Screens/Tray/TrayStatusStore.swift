@@ -192,13 +192,13 @@ final class TrayStatusStore: ObservableObject {
     }
     switch status.tone {
     case .neutral:
-      return CSColor.oliveLight
+      return CSColor.secondaryInk
     case .active:
       return status.indicatorMode == .processing
         ? Color(nsColor: CSPalette.modeProcessingLight)
-        : CSColor.terracottaText
+        : CSColor.terracotta
     case .success:
-      return CSColor.oliveLight
+      return CSColor.secondaryInk
     case .warning:
       return Color(nsColor: CSPalette.modeProcessingLight)
     case .critical:

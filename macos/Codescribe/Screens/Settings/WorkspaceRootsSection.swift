@@ -136,13 +136,13 @@ struct WorkspaceRootsSection: View {
     }
   }
 
-  /// Green when the (tilde-expanded) path is an existing directory, amber
+  /// Neutral when the (tilde-expanded) path is an existing directory, warning
   /// otherwise — the tool will silently skip a root that does not resolve.
   private func existsDot(for path: String) -> some View {
     let trimmed = path.trimmingCharacters(in: .whitespaces)
     let valid = Self.directoryExists(trimmed)
     return Circle()
-      .fill(valid ? CSColor.oliveLight : CSColor.amberLight)
+      .fill(valid ? CSColor.secondaryInk : CSColor.amberLight)
       .frame(width: 7, height: 7)
   }
 

@@ -4,19 +4,15 @@ import SwiftUI
 // tokens render at the exact hex, bundled fonts load, and components look right.
 struct DesignGallery: View {
   private let swatches: [(String, Color)] = [
-    ("ink", CSColor.ink),
+    ("chromeAccent", CSColor.chromeAccent),
     ("terracotta", CSColor.terracotta),
-    ("brandAccent", CSColor.brandAccent),
-    ("terracottaText", CSColor.terracottaText),
     ("terracottaLight", CSColor.terracottaLight),
-    ("terracottaDeep", CSColor.terracottaDeep),
     ("assistive", CSColor.assistive),
     ("assistiveLight", CSColor.assistiveLight),
-    ("olive", CSColor.olive),
-    ("oliveLight", CSColor.oliveLight),
     ("amber", CSColor.amber),
+    ("danger", CSColor.danger),
     ("textHigh", CSColor.textHigh),
-    ("eyebrowOlive", CSColor.eyebrowOlive),
+    ("secondaryInk", CSColor.secondaryInk),
   ]
 
   var body: some View {
@@ -54,7 +50,7 @@ struct DesignGallery: View {
         // Components
         HStack(spacing: CSSpace.md) {
           StatusPill(text: "recording", color: CSColor.terracotta, rippling: true)
-          StaticStatusPill(text: "Idle", color: CSColor.oliveLight)
+          StaticStatusPill(text: "Idle")
           StaticStatusPill(text: "reasoned · 2.1s", color: CSColor.amber)
         }
 
@@ -71,7 +67,7 @@ struct DesignGallery: View {
       .padding(CSSpace.xl)
     }
     .frame(width: 560, height: 720)
-    .background(CSColor.ink)
+    .background(CSColor.windowCanvas)
     .onAppear { FontLoader.register() }
   }
 }
