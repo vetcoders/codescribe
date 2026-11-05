@@ -2,6 +2,51 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
+/// Each composer retains one file panel across repeated clicks and view updates.
+/// Both conversation surfaces use this owner for activation and window ordering.
+@MainActor
+final class ConversationAttachmentPicker {
+  private(set) var activePanel: NSOpenPanel?
+
+  static var presentationLevel: NSWindow.Level {
+    NSWindow.Level(
+      rawValue: max(
+        NSWindow.Level.modalPanel.rawValue,
+        max(
+          OverlayIntercomPanel.detachedLevel.rawValue,
+          OverlayPresencePolicy.rest.windowLevel.rawValue) + 1))
+  }
+
+  func present(
+    configure: (NSOpenPanel) -> Void,
+    completion: @escaping (NSApplication.ModalResponse, [URL]) -> Void
+  ) {
+    // A click in a nonactivating overlay must explicitly bring Codescribe forward.
+    NSApp.activate()
+    if let activePanel {
+      activePanel.makeKeyAndOrderFront(nil)
+      return
+    }
+
+    let panel = NSOpenPanel()
+    configure(panel)
+    panel.level = Self.presentationLevel
+    activePanel = panel
+    panel.begin { [weak self, weak panel] response in
+      guard let self, let panel, self.activePanel === panel else { return }
+      self.activePanel = nil
+      completion(response, response == .OK ? panel.urls : [])
+    }
+    panel.makeKeyAndOrderFront(nil)
+  }
+
+  func cancel() {
+    guard let activePanel else { return }
+    self.activePanel = nil
+    activePanel.cancel(nil)
+  }
+}
+
 /// One input surface; the conversation owner retains the draft and publishes it.
 struct OverlayConversationComposer: View {
   /// Restart admission needs a non-empty current keyboard recipient, not an
@@ -67,6 +112,7 @@ struct OverlayConversationComposer: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @State private var pasteError: String?
+  @State private var attachmentPicker = ConversationAttachmentPicker()
   /// A refused long Fn points here: hint line plus a lit microphone.
   @State private var microphoneHint = ComposerMicrophoneHintState()
   @State private var accessoryHeight: CGFloat = 30
@@ -154,6 +200,7 @@ struct OverlayConversationComposer: View {
           .accessibilityIdentifier("overlay-conversation-paste-error")
       }
     }
+    .onDisappear { attachmentPicker.cancel() }
   }
 
   /// The editor holds the prose; pasted attachments ride as pills.
@@ -196,14 +243,13 @@ struct OverlayConversationComposer: View {
   }
 
   private func pickAttachments() {
-    let picker = NSOpenPanel()
-    picker.canChooseFiles = true
-    picker.canChooseDirectories = false
-    picker.allowsMultipleSelection = true
-    picker.prompt = String(localized: "Attach")
-    picker.begin { response in
+    attachmentPicker.present { picker in
+      picker.canChooseFiles = true
+      picker.canChooseDirectories = false
+      picker.allowsMultipleSelection = true
+      picker.prompt = String(localized: "Attach")
+    } completion: { response, urls in
       guard response == .OK else { return }
-      let urls = picker.urls
       Task { @MainActor in
         // Use the very same bounded file admission and asset store as native
         // paste. The private board never changes the user's clipboard.
