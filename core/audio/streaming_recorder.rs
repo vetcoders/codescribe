@@ -1788,10 +1788,7 @@ impl StreamingRecorder {
                     (
                         std::mem::replace(&mut feed.sender, sender),
                         std::mem::replace(&mut feed.archive, archive_feed),
-                        std::mem::replace(
-                            &mut feed.delivered,
-                            Some(Arc::clone(&delivered_samples)),
-                        ),
+                        feed.delivered.replace(Arc::clone(&delivered_samples)),
                     )
                 };
                 // Outside the registry lock: the previous stream's session

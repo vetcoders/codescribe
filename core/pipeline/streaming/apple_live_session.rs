@@ -6057,6 +6057,9 @@ impl AppleSealState {
         for job in &self.refinement_pending {
             covered = covered.min(job.provider_request.identity.range.sample_start);
         }
+        if covered <= self.decoder_covered_samples {
+            return;
+        }
         if self.seal_ledger_enabled {
             let ledger = self
                 .acoustic_ledger
@@ -6064,6 +6067,9 @@ impl AppleSealState {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for owner in ledger.unsealed_qualified_occurrences() {
                 covered = covered.min(owner.sample_start);
+            }
+            if covered <= self.decoder_covered_samples {
+                return;
             }
             for gap in
                 uncovered_gap_ranges(&ledger, &self.session_id, self.capture_epoch, &speech, 0)
