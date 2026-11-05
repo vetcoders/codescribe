@@ -1682,15 +1682,19 @@ impl StreamingRecorder {
                 },
             ));
         }
-        let at_sample = self
-            .shared_channel_clock()
-            .ok_or_else(|| anyhow!("channel segment rotation found no shared stream clock"))?;
+        // Keep ingress fenced until the participation boundary is installed.
+        // Otherwise a new block can publish eligible words before hand-over.
+        let _boundary = self
+            .pcm_feeds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.next_capture_subscriber += 1;
         let next_id = CaptureSubscriberId(self.next_capture_subscriber);
         let shared = self
             .shared_channel
             .as_mut()
             .ok_or_else(|| anyhow!("channel segment rotation found no shared stream"))?;
+        let at_sample = shared.delivered_samples.load(Ordering::SeqCst);
         anyhow::ensure!(
             next.session_id == shared.demux.capture_session_id(),
             "next channel message names capture {} while the shared stream is {}",
@@ -1889,31 +1893,23 @@ impl StreamingRecorder {
             .map_or(0, |shared| shared.participants.len())
     }
 
-    /// Current position of the shared capture clock, read at a block boundary.
-    fn shared_channel_clock(&self) -> Option<u64> {
-        let shared = self.shared_channel.as_ref()?;
-        let _boundary = self
-            .pcm_feeds
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Some(shared.delivered_samples.load(Ordering::SeqCst))
-    }
-
     /// Attach one more channel to the open shared stream. Its interval starts
     /// at the current capture sample: nothing heard earlier reaches it.
     pub fn join_channel_session(
         &mut self,
         participant: ChannelParticipantOpen,
     ) -> Result<ChannelParticipation> {
-        let start_sample = self
-            .shared_channel_clock()
-            .ok_or_else(|| anyhow!("no shared channel capture is open to join"))?;
+        let _boundary = self
+            .pcm_feeds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.next_capture_subscriber += 1;
         let id = CaptureSubscriberId(self.next_capture_subscriber);
         let shared = self
             .shared_channel
             .as_mut()
             .ok_or_else(|| anyhow!("no shared channel capture is open to join"))?;
+        let start_sample = shared.delivered_samples.load(Ordering::SeqCst);
         let seat = shared
             .demux
             .attach(id, participant.owner, participant.sink, start_sample);
@@ -1945,14 +1941,20 @@ impl StreamingRecorder {
     /// the current capture sample; the shared stream, ledger and archive keep
     /// running for the others. The last participant releases the stream.
     pub async fn close_channel_session(&mut self, id: CaptureSubscriberId) -> ClosedChannel {
-        let end_sample = self.shared_channel_clock();
-        let participant = match (self.shared_channel.as_mut(), end_sample) {
-            (Some(shared), Some(end_sample)) if shared.participants.contains(&id) => {
-                shared.demux.detach(id, end_sample);
-                shared.participants.retain(|held| *held != id);
-                Some(Arc::clone(&shared.demux))
+        let participant = {
+            let _boundary = self
+                .pcm_feeds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match self.shared_channel.as_mut() {
+                Some(shared) if shared.participants.contains(&id) => {
+                    let end_sample = shared.delivered_samples.load(Ordering::SeqCst);
+                    shared.demux.detach(id, end_sample);
+                    shared.participants.retain(|held| *held != id);
+                    Some(Arc::clone(&shared.demux))
+                }
+                _ => None,
             }
-            _ => None,
         };
         let releases_stream = participant.is_some()
             && self
