@@ -162,7 +162,9 @@ struct OverlayPinButton: View {
     } label: {
       OverlayMicrophoneGlyph(
         symbol: pinned ? OverlayControlSymbols.pinned : OverlayControlSymbols.pin,
-        tint: pinned ? CSColor.chromeAccent : palette.mutedText.color,
+        // A window state wears no colour (Founder, 2026-11-05): the pinned
+        // glyph is primary ink on the neutral wash of its chrome.
+        tint: pinned ? palette.primaryText.color : palette.mutedText.color,
         plateOpacity: 0
       )
       .contentShape(Circle())

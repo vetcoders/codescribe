@@ -27,7 +27,10 @@ final class OverlayIntercomInteractionTests: XCTestCase {
       controller = OverlayIntercomWidgetController(
         state: state, textScale: TextScaleController(key: suite),
         desktopStore: store, diagnosticLog: log)
-      state.publishConversationText = { _, _, _, _ in XCTFail("Window actions must not send") }
+      state.publishConversationText = { _, _, _, _ in
+        XCTFail("Window actions must not send")
+        return .empty
+      }
     }
 
     func cleanup() {

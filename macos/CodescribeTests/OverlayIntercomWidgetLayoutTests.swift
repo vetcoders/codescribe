@@ -350,7 +350,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       }
       defer { if supplementaryDraft { try? FileManager.default.removeItem(at: attachmentURL) } }
       state.conversationDrafts[conversation.id] = retainedDraft
-      state.publishConversationText = { _, _, _, _ in XCTFail("Mounting a preview must not send") }
+      state.publishConversationText = { _, _, _, _ in
+        XCTFail("Mounting a preview must not send")
+        return .empty
+      }
       let keyWindow = NSApp.keyWindow
       let generation = state.captureGeneration
       let suite = "CodescribeTests.compact.\(UUID().uuidString)"
@@ -1110,9 +1113,9 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       "a draft with no visible card still gets a window to speak into")
   }
 
-  /// The All row sits in the pinned builder, outside the agents' ScrollView,
-  /// and appears exactly once.
-  func testAllRowIsBuiltOnceOutsideTheAgentsScroll() throws {
+  /// The All row and your inbox lead the sidebar's scrolling list as plain
+  /// roster rows, with an empty pinned slot and no separate card surface.
+  func testAllRowAndInboxLeadTheSidebarListWithEmptyPinnedSlot() throws {
     let url = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent().deletingLastPathComponent()
       .appendingPathComponent("Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
@@ -1121,13 +1124,32 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     let end = try XCTUnwrap(
       source.range(of: "var currentConversations", range: start.upperBound..<source.endIndex))
     let body = String(source[start.lowerBound..<end.lowerBound])
-    let pinned = try XCTUnwrap(body.range(of: "} pinned: { rowFocus in"))
+    let pinned = try XCTUnwrap(body.range(of: "} pinned: {"))
     let content = try XCTUnwrap(
       body.range(of: "} content: { rowFocus in", range: pinned.upperBound..<body.endIndex))
     let pinnedSection = body[pinned.upperBound..<content.lowerBound]
     let contentSection = body[content.upperBound...]
-    XCTAssertTrue(pinnedSection.contains("broadcastRow(broadcast, rowFocus: rowFocus)"))
-    XCTAssertFalse(contentSection.contains("broadcastRow("), "no second All inside the scroll")
+    XCTAssertTrue(pinnedSection.contains("_ in EmptyView()"))
+    XCTAssertFalse(pinnedSection.contains("broadcastRow("))
+    XCTAssertFalse(body.contains("OverlayComposerSurface"))
+    let broadcastCall = try XCTUnwrap(
+      contentSection.range(of: "broadcastRow(broadcast, rowFocus: rowFocus)"))
+    let inboxCall = try XCTUnwrap(
+      contentSection.range(
+        of: "inboxRow(inbox, rowFocus: rowFocus)",
+        range: broadcastCall.upperBound..<contentSection.endIndex))
+    XCTAssertNotNil(
+      contentSection.range(
+        of: "detailsContent(rowFocus: rowFocus)",
+        range: inboxCall.upperBound..<contentSection.endIndex))
     XCTAssertEqual(body.components(separatedBy: "broadcastRow(").count - 1, 1)
+
+    let inboxStart = try XCTUnwrap(source.range(of: "private func inboxRow("))
+    let inboxEnd = try XCTUnwrap(
+      source.range(of: "private func conversationRow(", range: inboxStart.upperBound..<source.endIndex))
+    let inboxBody = String(source[inboxStart.lowerBound..<inboxEnd.lowerBound])
+    XCTAssertTrue(inboxBody.contains("dot: nil"))
+    XCTAssertTrue(inboxBody.contains("symbol: \"envelope\""))
+    XCTAssertTrue(inboxBody.contains("overlay-inbox-row"))
   }
 }

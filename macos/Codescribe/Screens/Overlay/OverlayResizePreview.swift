@@ -157,7 +157,8 @@ final class OverlayResizePreviewView: NSView {
         roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: cornerRadius, yRadius: cornerRadius)
       palette.desktopBackground.nsColor.withAlphaComponent(0.92).setFill()
       path.fill()
-      palette.agentAccent.nsColor.withAlphaComponent(0.45).setStroke()
+      // The preview edge is chrome, not a voice state.
+      palette.primaryText.nsColor.withAlphaComponent(0.45).setStroke()
       path.lineWidth = 1
       path.stroke()
       if let header {

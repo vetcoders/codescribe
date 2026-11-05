@@ -82,10 +82,12 @@ final class OverlayDividerFoldTests: XCTestCase {
     let fold = try section(commit, from: "if preferred * textScale", to: "guard")
     XCTAssertEqual(
       compact(fold),
-      "if preferred * textScale < OverlayAgentDrawerLayout.railFoldWidth(textScale: textScale) { state.foldAgentList() return }")
+      "if preferred * textScale < OverlayAgentDrawerLayout.railFoldWidth(textScale: textScale) { state.foldAgentList() return }"
+    )
     XCTAssertTrue(
       compact(commit).contains(
-        "OverlayAgentDrawerLayout.rememberedWidth( textScale: textScale, preferredWidth: preferred, windowWidth: windowWidth)"))
+        "OverlayAgentDrawerLayout.rememberedWidth( textScale: textScale, preferredWidth: preferred, windowWidth: windowWidth)"
+      ))
     XCTAssertTrue(commit.contains("preferredAgentDrawerWidth = width"))
   }
 
@@ -95,20 +97,24 @@ final class OverlayDividerFoldTests: XCTestCase {
       source, from: "private func agentRail(", to: "private func agentRailUnfoldHandle(")
     XCTAssertTrue(
       compact(rail).contains(
-        ".overlay(alignment: .leading) { agentRailUnfoldHandle(width: width, windowWidth: windowWidth) }"))
+        ".overlay(alignment: .leading) { agentRailUnfoldHandle(width: width, windowWidth: windowWidth) }"
+      ))
     let handle = try section(
-      source, from: "private func agentRailUnfoldHandle(", to: "private func agentDrawerResizeHandle(")
+      source, from: "private func agentRailUnfoldHandle(",
+      to: "private func agentDrawerResizeHandle(")
     XCTAssertTrue(handle.contains(".accessibilityIdentifier(\"overlay-agent-rail-resize\")"))
     XCTAssertTrue(handle.contains("OverlayMenuCursorRegion(cursor: .resizeLeftRight)"))
     let drag = try section(handle, from: ".onEnded { value in", to: ".accessibilityElement()")
     XCTAssertTrue(
       compact(drag).contains(
-        "guard -value.translation.width >= OverlayAgentDrawerLayout.railUnfoldDrag else { return }"))
+        "guard -value.translation.width >= OverlayAgentDrawerLayout.railUnfoldDrag else { return }")
+    )
     XCTAssertTrue(
       compact(drag).contains("let dragged = (width - value.translation.width) / textScale"))
     XCTAssertTrue(
       compact(drag).contains(
-        "if dragged * textScale >= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale), let remembered = OverlayAgentDrawerLayout.rememberedWidth( textScale: textScale, preferredWidth: dragged, windowWidth: windowWidth) { preferredAgentDrawerWidth = remembered } state.unfoldAgentList()"))
+        "if dragged * textScale >= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale), let remembered = OverlayAgentDrawerLayout.rememberedWidth( textScale: textScale, preferredWidth: dragged, windowWidth: windowWidth) { preferredAgentDrawerWidth = remembered } state.unfoldAgentList()"
+      ))
   }
 
   func testDecrementingAtTheRowMinimumCommitsAWidthThatFoldsTheList() throws {
@@ -130,7 +136,8 @@ final class OverlayDividerFoldTests: XCTestCase {
   func testIncrementingTheRailDividerUnfoldsTheList() throws {
     let source = try overlaySource("DictationOverlayView.swift")
     let handle = try section(
-      source, from: "private func agentRailUnfoldHandle(", to: "private func agentDrawerResizeHandle(")
+      source, from: "private func agentRailUnfoldHandle(",
+      to: "private func agentDrawerResizeHandle(")
     let adjustable = try section(
       handle, from: ".accessibilityAdjustableAction", to: ".accessibilityIdentifier(")
     XCTAssertTrue(
@@ -146,7 +153,8 @@ final class OverlayDividerFoldTests: XCTestCase {
       source, from: "private func conversationRow(", to: "private func savedConversationDetail(")
     XCTAssertTrue(
       row.contains(
-        "Image(systemName: conversation.isHumanInbox ? \"envelope\" : saved ? \"clock\" : \"bubble.left\")"))
+        "Image(systemName: conversation.isHumanInbox ? \"envelope\" : saved ? \"clock\" : \"bubble.left\")"
+      ))
     XCTAssertFalse(source.contains("\"tray\""))
   }
 
@@ -154,11 +162,13 @@ final class OverlayDividerFoldTests: XCTestCase {
     let source = try overlaySource("OverlayIntercomWidget.swift")
     XCTAssertTrue(
       compact(source).contains(
-        "inbox, title: String(localized: \"Your Inbox\"), symbol: \"envelope\", identifier: \"overlay-intercom-inbox\""))
+        "inbox, title: String(localized: \"Your Inbox\"), symbol: \"envelope\", identifier: \"overlay-intercom-inbox\""
+      ))
     XCTAssertEqual(
       compact(source).components(
-        separatedBy: "if identity.isHumanInbox { Image(systemName: \"envelope\").csFont(11)")
-        .count - 1,
+        separatedBy: "if identity.isHumanInbox { Image(systemName: \"envelope\").csFont(11)"
+      )
+      .count - 1,
       2, "both icon and row cards identify the inbox with an envelope")
     XCTAssertTrue(
       compact(source).contains(
@@ -172,7 +182,8 @@ final class OverlayDividerFoldTests: XCTestCase {
       source,
       from: ".overlay(alignment: .bottom) {\n          ZStack {",
       to: ".overlay(alignment: .top) {")
-    XCTAssertTrue(jump.contains(".accessibilityIdentifier(\"overlay-conversation-jump-to-current\")"))
+    XCTAssertTrue(
+      jump.contains(".accessibilityIdentifier(\"overlay-conversation-jump-to-current\")"))
     XCTAssertTrue(jump.contains(".padding(.bottom, visibleComposerHeight + 10)"))
     XCTAssertFalse(
       compact(jump).contains("presentation"), "the jump offset applies to both presentations")
@@ -181,26 +192,171 @@ final class OverlayDividerFoldTests: XCTestCase {
   func testStandardComposerReportsItsHeightInsideTheBottomSafeAreaInset() throws {
     let source = try overlaySource("OverlayConversationView.swift")
     let inset = try section(
-      source, from: ".safeAreaInset(edge: .bottom, spacing: 0) {", to: ".overlay(alignment: .bottom) {")
+      source, from: ".safeAreaInset(edge: .bottom, spacing: 0) {",
+      to: ".overlay(alignment: .bottom) {")
     XCTAssertTrue(
       compact(inset).contains(
-        "if showsComposer && presentation == .standard { composer .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 } }"))
+        "if showsComposer && presentation == .standard { if isCovered { Color.clear.frame(height: composerHeight) .allowsHitTesting(false) .accessibilityHidden(true) } else { composer .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 } } }"
+      ))
+    let topOverlay = try section(
+      source, from: ".overlay(alignment: .top) {",
+      to: ".onChange(of: conversation.id)")
+    XCTAssertTrue(
+      compact(topOverlay).contains(
+        "} else if isCovered { Color.clear.frame(height: navigationHeight) .allowsHitTesting(false) .accessibilityHidden(true) } else { navigation"
+      ))
+    let roster = try overlaySource("OverlayChannelStatusView.swift")
+    let allRow = try section(
+      roster, from: "broadcastRow(broadcast, rowFocus: rowFocus)",
+      to: ".accessibilityIdentifier(\"overlay-channel-toggle-0\")")
+    XCTAssertTrue(
+      compact(allRow).contains(
+        "chrome: true, diameter: OverlayAgentAudioControls.rosterDiameter"))
   }
 
   func testRosterMessageScaleMatchesTheConversationBodyFont() {
-    XCTAssertEqual(
-      OverlayChannelStatusView.messageListScale,
-      OverlayConversationMessageContent.bodyFontSize / 13, accuracy: 0.001)
+    XCTAssertEqual(OverlayConversationMessageContent.bodyFontSize, 13, accuracy: 0.001)
   }
 
   func testOnlyTheExpandedRosterMultipliesTheWindowTextScaleByMessageScale() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
-    let monitor = try section(source, from: "func monitorBody(", to: "static var messageListScale:")
-    XCTAssertTrue(monitor.contains("installed.textScale = scale * Self.messageListScale"))
-    XCTAssertTrue(monitor.contains("return installed.scaledMonitorBody("))
+    let monitor = try section(source, from: "func monitorBody(", to: "func railBody(")
+    XCTAssertTrue(
+      compact(monitor).contains(
+        "installed.textScale = scale return installed.scaledMonitorBody("))
+    XCTAssertFalse(monitor.contains("messageListScale"))
     let rail = try section(source, from: "func railBody(", to: "private func scaledRailBody(")
-    XCTAssertTrue(compact(rail).contains("installed.textScale = scale return installed.scaledRailBody("))
+    XCTAssertTrue(
+      compact(rail).contains("installed.textScale = scale return installed.scaledRailBody("))
     XCTAssertFalse(rail.contains("messageListScale"))
+  }
+
+  func testCompactReceptionIndicatorsGiveMoonPrimaryContrastAndAntennaMutedContrast() throws {
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let indicators = try section(
+      source, from: "func compactReceptionIndicators(for channel: OverlayChannelDelivery)",
+      to: "func deliveryReceiptDisplay(")
+    let compactIndicators = compact(indicators)
+    XCTAssertTrue(
+      compactIndicators.contains(
+        "Image(systemName: \"moon.fill\") .foregroundStyle(palette.primaryText.color)"))
+    XCTAssertTrue(
+      compactIndicators.contains(
+        "Image(systemName: \"antenna.radiowaves.left.and.right.slash\") .foregroundStyle(palette.mutedText.color)"
+      ))
+  }
+
+  func testMessageBubbleWrapsFooterActionsAndKeepsLeadingFrameAlignmentOnNarrowWidth() throws {
+    let source = try overlaySource("OverlayConversationView.swift")
+    let row = try section(
+      source, from: "private func messageRow(", to: "func messageBubble(")
+    XCTAssertTrue(
+      compact(row).contains(
+        "if message.kind == .user { Spacer(minLength: 0) } messageBubble(message) .frame(maxWidth: maxBubbleWidth, alignment: .leading)"
+      ))
+    let bubble = try section(
+      source, from: "func messageBubble(", to: "private func messageActions(")
+    XCTAssertTrue(
+      compact(bubble).contains(
+        "ViewThatFits(in: .horizontal) { messageActions(message, stacked: false) messageActions(message, stacked: true) }"
+      ))
+    let footer = try section(
+      source, from: "private struct OverlayConversationMessageFooter",
+      to: "private var footerRow: some View")
+    XCTAssertTrue(
+      compact(footer).contains("if adaptsToWidth { ViewThatFits(in: .horizontal) { footerRow"))
+  }
+
+  func testPerformCopyChordTriesSelectedBubbleFragmentWhenFirstResponderIsAnEmptyTextView() throws {
+    let source = try overlaySource("DictationOverlayWindow.swift")
+    let chord = try section(
+      source, from: "func performCopyChord(_ event: NSEvent) -> Bool {",
+      to: "return NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)")
+    let compactChord = compact(chord)
+    XCTAssertTrue(compactChord.contains("let before = NSPasteboard.general.changeCount"))
+    XCTAssertTrue(
+      compactChord.contains(
+        "_ = textView.nextResponder?.tryToPerform(#selector(NSText.copy(_:)), with: nil)"))
+    XCTAssertTrue(
+      compactChord.contains(
+        "if NSPasteboard.general.changeCount == before { _ = NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self) }"
+      ))
+    XCTAssertTrue(
+      compactChord.contains("if NSPasteboard.general.changeCount != before { return true }"))
+  }
+
+  func testNarrowSplitColumnsDoNotClipRightEdgesAtRest() throws {
+    let overlay = try overlaySource("DictationOverlayView.swift")
+    let column = try section(
+      overlay, from: "private func agentDrawerColumn(",
+      to: "private func commitAgentDrawerWidth(")
+    // After the resize-without-reflow merge the column is never mid-drag, so
+    // the list's minimum is the column width itself.
+    XCTAssertTrue(compact(column).contains("let contentMinimum = width"))
+    XCTAssertTrue(compact(column).contains(".frame(width: max(width, contentMinimum))"))
+    let conversation = try overlaySource("OverlayConversationView.swift")
+    let body = try section(
+      conversation, from: "ScrollViewReader { proxy in", to: ".onChange(of: replyNavigationID)")
+    XCTAssertTrue(
+      compact(body).contains(
+        "maxBubbleWidth: Self.bubbleCap( contentWidth: max(0, geometry.size.width - OverlayResizeHit.scrollbarInset), textScale: textScale)"
+      ))
+  }
+
+  @MainActor
+  func testRosterPreviewSessionBrowsesLastFiveMessagesWithoutWrappingAndFreezesWhileOpen() {
+    let makeMessage = { (id: String, text: String) in
+      OverlayConversationMessage(
+        id: id, kind: .reply, text: text, order: 1,
+        emittedAt: "2026-11-04T02:00:00Z", owner: nil, recipients: [],
+        deliveryID: id, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+    }
+    let emptyConversation = OverlayConversation(
+      id: "2", channel: "2", name: "Tola", owner: nil, messages: [])
+    let emptySession = OverlayRosterPreviewSession(conversation: emptyConversation)
+    XCTAssertTrue(emptySession.ids.isEmpty)
+    XCTAssertFalse(emptySession.canStepOlder)
+    XCTAssertFalse(emptySession.canStepNewer)
+
+    let messages = (1...6).map { makeMessage("m\($0)", "Body \($0)") }
+    let conversation = OverlayConversation(
+      id: "2", channel: "2", name: "Tola", owner: nil, messages: messages)
+    let session = OverlayRosterPreviewSession(conversation: conversation)
+    session.openLatest(ownerID: "2")
+    XCTAssertEqual(session.ids, ["m2", "m3", "m4", "m5", "m6"])
+    XCTAssertEqual(session.index, 4)
+    XCTAssertTrue(session.canStepOlder)
+    XCTAssertFalse(session.canStepNewer)
+
+    session.stepNewer()
+    XCTAssertEqual(session.index, 4, "must not wrap past newest")
+
+    session.stepOlder()
+    session.stepOlder()
+    XCTAssertEqual(session.index, 2)
+    XCTAssertEqual(session.ids[session.index], "m4")
+
+    // A new message arriving while browsing must not shift the viewed slot.
+    let updatedMessages = messages + [makeMessage("m7", "Body 7")]
+    let updatedConversation = OverlayConversation(
+      id: "2", channel: "2", name: "Tola", owner: nil, messages: updatedMessages)
+    session.update(updatedConversation, withdrawnIDs: ["m3"])
+    XCTAssertEqual(session.ids, ["m2", "m3", "m4", "m5", "m6"])
+    XCTAssertEqual(session.index, 2)
+    XCTAssertEqual(session.message(for: "m4")?.text, "Body 4")
+    XCTAssertTrue(session.isWithdrawn("m3"))
+    XCTAssertNil(session.message(for: "m3"))
+
+    session.stepOlder()
+    session.stepOlder()
+    XCTAssertEqual(session.index, 0)
+    XCTAssertFalse(session.canStepOlder)
+    session.stepOlder()
+    XCTAssertEqual(session.index, 0, "must not wrap past oldest")
+
+    session.close()
+    XCTAssertEqual(session.ids, ["m3", "m4", "m5", "m6", "m7"])
+    XCTAssertEqual(session.index, 4)
   }
 
   private func overlaySource(_ name: String) throws -> String {

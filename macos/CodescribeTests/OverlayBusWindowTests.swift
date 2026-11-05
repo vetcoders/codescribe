@@ -318,11 +318,24 @@ final class OverlayBusWindowTests: XCTestCase {
     let delivered = try display { $0.receipt = receipt(.delivered) }
     let read = try display { $0.receipt = receipt(.read) }
     let acknowledged = try display { $0.recipients[0].acknowledged = true }
-    let skipped = try display { $0.receipt = receipt(.skipped) }
-    let skippedByFollower = try display { $0.recipients[0].broadcastSkipped = true }
     let noReceipt = try display { $0.receipt = receipt(.noReceipt) }
+    var skippedMessage = try outgoing(in: conversation)
+    skippedMessage.receipt = receipt(.skipped)
+    let skippedConversation = withMessages(conversation, [skippedMessage])
+    XCTAssertNil(
+      roster(skippedConversation).deliveryReceiptDisplay(
+        for: row, conversation: skippedConversation))
+    XCTAssertTrue(OverlayConversationView.visibleMessages(in: skippedConversation).isEmpty)
+    var skippedByFollowerMessage = try outgoing(in: conversation)
+    skippedByFollowerMessage.recipients[0].broadcastSkipped = true
+    let skippedByFollowerConversation = withMessages(conversation, [skippedByFollowerMessage])
+    XCTAssertNil(
+      roster(skippedByFollowerConversation).deliveryReceiptDisplay(
+        for: row, conversation: skippedByFollowerConversation))
+    XCTAssertTrue(
+      OverlayConversationView.visibleMessages(in: skippedByFollowerConversation).isEmpty)
 
-    XCTAssertEqual(held.symbol, "pause.circle")
+    XCTAssertEqual(held.symbol, "")
     XCTAssertEqual(held.text, String(localized: "Held"))
     XCTAssertEqual(addressed.symbol, "clock")
     XCTAssertEqual(addressed.text, String(localized: "Addressed"))
@@ -330,7 +343,8 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertEqual(queued.text, String(localized: "Queued"))
     XCTAssertEqual(accepted.symbol, "checkmark")
     XCTAssertEqual(accepted.text, String(localized: "Queue accepted"))
-    XCTAssertEqual(delivered.symbol, "checkmark")
+    XCTAssertFalse(accepted.isRead)
+    XCTAssertEqual(delivered.symbol, "double-check")
     XCTAssertEqual(delivered.text, String(localized: "Delivered"))
     XCTAssertFalse(delivered.isRead)
     XCTAssertEqual(read.symbol, "double-check")
@@ -338,18 +352,16 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertTrue(read.isRead)
     XCTAssertEqual(acknowledged.symbol, "double-check")
     XCTAssertTrue(acknowledged.isRead)
-    XCTAssertEqual(skipped.symbol, "forward.end")
-    XCTAssertEqual(skipped.text, OverlayConversationView.skippedBroadcastText)
-    XCTAssertEqual(skippedByFollower.symbol, "forward.end")
     XCTAssertEqual(noReceipt.symbol, "circle.dotted")
     XCTAssertEqual(noReceipt.text, OverlayConversationView.noReceiptText)
-    // The bug Maciej saw on 2981: delivered drew the double check. Six states,
-    // six glyphs; only Read is the double shape.
-    XCTAssertNotEqual(delivered.symbol, read.symbol, "one check reached, two checks read")
-    let vocabulary = [held, queued, delivered, read, skipped, noReceipt].map(\.symbol)
-    XCTAssertEqual(Set(vocabulary).count, 6, "one glyph per state: \(vocabulary)")
+    // Contract: held draws no symbol beside the name (`""`), accepted = 1 grey
+    // check (`checkmark`), delivered = 2 grey checks (`double-check`,
+    // `isRead == false`), read = 2 olive checks (`double-check`,
+    // `isRead == true`).
+    let vocabulary = [held, queued, accepted, delivered, noReceipt].map(\.symbol)
+    XCTAssertEqual(Set(vocabulary).count, 5, "five distinct shapes across states: \(vocabulary)")
     XCTAssertEqual(
-      [held, addressed, queued, accepted, delivered, skipped, skippedByFollower, noReceipt]
+      [held, addressed, queued, accepted, delivered, noReceipt]
         .filter(\.isRead).count, 0, "only Read is read")
     let label = try String(
       contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -357,6 +369,7 @@ final class OverlayBusWindowTests: XCTestCase {
         .appendingPathComponent("Codescribe/Screens/Overlay/OverlayAgentRosterLabel.swift"),
       encoding: .utf8
     ).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    XCTAssertTrue(label.contains("case \"\": EmptyView()"))
     XCTAssertTrue(label.contains("case \"double-check\": OverlayRosterCheckmarks(count: 2)"))
     XCTAssertTrue(label.contains("case \"checkmark\": OverlayRosterCheckmarks(count: 1)"))
     XCTAssertTrue(label.contains("default: Image(systemName: receipt.symbol)"))
@@ -388,7 +401,6 @@ final class OverlayBusWindowTests: XCTestCase {
     for (state, words, read) in [
       (OverlayReceiptState.State.delivered, String(localized: "Delivered"), false),
       (.read, String(localized: "Read"), true),
-      (.skipped, OverlayConversationView.skippedBroadcastText, false),
       (.noReceipt, OverlayConversationView.noReceiptText, false),
     ] {
       message.receipt = OverlayMessageReceipt(
@@ -404,6 +416,15 @@ final class OverlayBusWindowTests: XCTestCase {
       XCTAssertEqual(display.text, words)
       XCTAssertEqual(display.isRead, read)
     }
+    message.receipt = OverlayMessageReceipt(
+      messageID: message.id,
+      deliveries: [
+        .init(
+          deliveryID: "delivery", name: "Tola", channel: "2", state: .skipped,
+          wake: nil, deliveredAt: nil, at: nil)
+      ])
+    conversation = withMessages(conversation, [message])
+    XCTAssertNil(roster(conversation).deliveryReceiptDisplay(for: row, conversation: conversation))
     message.receipt = OverlayMessageReceipt(
       messageID: message.id,
       deliveries: [
@@ -697,9 +718,9 @@ final class OverlayBusWindowTests: XCTestCase {
         """)
     let host = NSHostingView(
       rootView: OverlayRosterMessagePreview(name: target.name, message: message, palette: .dark)
-        .frame(width: 380, height: 280)
+        .frame(width: 260, height: 180)
         .environment(\.colorScheme, .dark))
-    host.frame = NSRect(x: 0, y: 0, width: 380, height: 280)
+    host.frame = NSRect(x: 0, y: 0, width: 260, height: 180)
     host.layoutSubtreeIfNeeded()
     let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
     host.cacheDisplay(in: host.bounds, to: bitmap)
@@ -709,6 +730,90 @@ final class OverlayBusWindowTests: XCTestCase {
     attachment.name = "Bus-last-message-hover-preview"
     attachment.lifetime = .keepAlways
     add(attachment)
+  }
+
+  func testRosterHoverFitsCompactContentSuppressesOpenConversationAndRemeasuresOnStep()
+    async throws
+  {
+    var target = try conversation("2")
+    let shortMsg = OverlayConversationMessage(
+      id: "reply:short", kind: .reply, text: "Zrobione. Nowy build działa.", order: 1,
+      emittedAt: "2026-10-29T10:01:00Z", owner: target.owner, recipients: [],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+    let longText =
+      "## Detailed review\n\n"
+      + String(repeating: "This paragraph expands the preview to its bounded ceiling.\n\n", count: 12)
+    let longMsg = OverlayConversationMessage(
+      id: "reply:long", kind: .reply, text: longText, order: 2,
+      emittedAt: "2026-10-29T10:02:00Z", owner: target.owner, recipients: [],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+
+    // 1. Selected (open) conversation suppresses duplicate hover preview.
+    target = withMessages(target, [shortMsg])
+    do {
+      let (panel, host) = previewPanel(
+        AnyView(
+          Text("Tola").frame(maxWidth: .infinity, maxHeight: .infinity)
+            .modifier(
+              OverlayRosterMessageHint(
+                conversation: target, palette: .dark, textScale: 1, isOpen: true))))
+      defer {
+        setPreviewHover(false, in: host)
+        panel.contentView = nil
+        panel.orderOut(nil)
+      }
+      XCTAssertGreaterThan(setPreviewHover(true, in: host), 0)
+      try await Task.sleep(for: .milliseconds(450))
+      XCTAssertNil(
+        OverlayHintPanel.shared.presentedPanel,
+        "an already open conversation must not present a duplicate hover preview")
+    }
+
+    // 2. Empty conversation presents only a compact tooltip chip, never a tall card.
+    let emptyTarget = try conversation("3", lease: "c")
+    do {
+      let (panel, host) = previewPanel(
+        AnyView(
+          Text("Lena").frame(maxWidth: .infinity, maxHeight: .infinity)
+            .modifier(
+              OverlayRosterMessageHint(
+                conversation: emptyTarget, palette: .dark, textScale: 1, isOpen: false))))
+      defer {
+        setPreviewHover(false, in: host)
+        panel.contentView = nil
+        panel.orderOut(nil)
+      }
+      XCTAssertGreaterThan(setPreviewHover(true, in: host), 0)
+      try await Task.sleep(for: .milliseconds(100))
+      let hintFrame = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel).frame
+      XCTAssertLessThan(hintFrame.height, 48, "empty conversation shows only a compact tooltip chip")
+      setPreviewHover(false, in: host)
+      try await Task.sleep(for: .milliseconds(250))
+    }
+
+    // 3. Short message fits its natural compact height (< 130 pt), long message caps at 180 pt.
+    target = withMessages(target, [longMsg, shortMsg])
+    var openedCount = 0
+    let (panel, host) = previewPanel(
+      AnyView(
+        Text("Tola").frame(maxWidth: .infinity, maxHeight: .infinity)
+          .modifier(
+            OverlayRosterMessageHint(
+              conversation: target, palette: .dark, textScale: 1, isOpen: false,
+              onOpen: { openedCount += 1 }))))
+    defer {
+      setPreviewHover(false, in: host)
+      panel.contentView = nil
+      panel.orderOut(nil)
+    }
+    XCTAssertGreaterThan(setPreviewHover(true, in: host), 0)
+    try await Task.sleep(for: .milliseconds(450))
+    let shortFrame = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel).frame
+    XCTAssertEqual(shortFrame.width, 260, accuracy: 1)
+    XCTAssertLessThan(
+      shortFrame.height, 135,
+      "a short 1-line message must hug its content instead of reserving 180/280 pt")
+    XCTAssertEqual(openedCount, 0, "hovering never selects the conversation")
   }
 
   func testHorizontalWindowReviewInDarkSplitLayout() throws {
@@ -727,8 +832,15 @@ final class OverlayBusWindowTests: XCTestCase {
     try renderWindowForReview(dark: true, rail: false, scale: 1.5, width: 1060)
   }
 
+  func testHorizontalWindowReviewWithFullWindowAgentList() throws {
+    try renderWindowForReview(
+      dark: true, rail: false, fullAgents: true, scale: 1, width: 760)
+    try renderWindowForReview(
+      dark: false, rail: false, fullAgents: true, scale: 1, width: 760)
+  }
+
   private func renderWindowForReview(
-    dark: Bool, rail: Bool, scale: CGFloat, width: CGFloat
+    dark: Bool, rail: Bool, fullAgents: Bool = false, scale: CGFloat, width: CGFloat
   ) throws {
     var first = try conversation("2", canonicalLease: true)
     let second = try conversation("3", lease: "b", canonicalLease: true)
@@ -773,6 +885,7 @@ final class OverlayBusWindowTests: XCTestCase {
     state.setConversationDraft("A retained draft for Tola", for: first.id)
     state.setConversationDraft("Lena's independent draft", for: second.id)
     if rail { state.foldAgentList() }
+    if fullAgents { state.hideAgentsCanvas() }
     let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
     XCTAssertEqual(row.broadcastIdentity?.leaseID, first.owner?.leaseID)
     XCTAssertFalse(state.visibleChannelRows.contains { $0.channel == "10" })
@@ -804,10 +917,19 @@ final class OverlayBusWindowTests: XCTestCase {
     let image = NSImage(size: host.bounds.size)
     image.addRepresentation(bitmap)
     let attachment = XCTAttachment(image: image)
+    let layoutName = fullAgents ? "agents" : (rail ? "rail" : "split")
     attachment.name =
-      "Bus-window-\(dark ? "dark" : "light")-\(rail ? "rail" : "split")-scale-\(scale)"
+      "Bus-window-\(dark ? "dark" : "light")-\(layoutName)-scale-\(scale)"
     attachment.lifetime = .keepAlways
     add(attachment)
+    if fullAgents {
+      XCTAssertEqual(state.agentsLayout, .agents)
+      state.showAgentsCanvas()
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+      host.layoutSubtreeIfNeeded()
+      XCTAssertEqual(state.agentsLayout, .split)
+    }
     XCTAssertEqual(state.selectedConversationID, first.id)
     XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, first.id)
     XCTAssertEqual(state.conversationDraft(for: first.id), "A retained draft for Tola")
@@ -815,5 +937,34 @@ final class OverlayBusWindowTests: XCTestCase {
     XCTAssertFalse(state.conversationMicrophoneOpen(first))
     XCTAssertFalse(state.conversationMicrophoneOpen(second))
     XCTAssertFalse(panel.isVisible, "review fixtures do not claim the user's desktop")
+  }
+
+  func testDisplayNamePreservesAttachSpellingWhileMatchingAudience() throws {
+    let bindingWithDisplay: [String: Any] = [
+      "audience": "kaja",
+      "display_name": "Kaja",
+      "provider": "claude-code",
+      "provider_session_id": "session-kaja",
+    ]
+    let legacyBinding: [String: Any] = [
+      "audience": "borys",
+      "provider": "agy",
+      "provider_session_id": "session-borys",
+    ]
+    XCTAssertEqual(OverlayChannelDelivery.displayName(of: bindingWithDisplay), "Kaja")
+    XCTAssertEqual(OverlayChannelDelivery.displayName(of: legacyBinding), "borys")
+
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "claude-code",
+        "provider_session_id": "session-kaja",
+        "lease_id": String(repeating: "a", count: 32),
+        "audience": "kaja",
+        "name": "kaja",
+        "display_name": "Kaja",
+        "channel": "8",
+      ]))
+    XCTAssertEqual(owner.name, "Kaja")
+    XCTAssertEqual(owner.channel, "8")
   }
 }

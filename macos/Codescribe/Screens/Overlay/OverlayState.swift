@@ -797,13 +797,15 @@ final class OverlayState {
     }
   }
 
-  /// The header is an upward switch (header-click cut, 2026-10-17): mini opens
-  /// midi, and from there every click alternates midi <-> expanded. The header
-  /// never folds back to mini; the preview control keeps that exit.
+  /// A still click on the bar's free background switches its size (Founder,
+  /// 2026-11-04, bus brief §12.1): mini opens the bar and the bar folds back
+  /// to mini, round and round. The window is never opened from here: the
+  /// chevron, the Agents button and the menu open it. From the window a
+  /// header click still returns to the bar.
   func advancePresentationFromHeader() {
     switch presentationMode {
     case .mini: setPresentationMode(.midi)
-    case .midi: setPresentationMode(.expanded)
+    case .midi: setPresentationMode(.mini)
     case .expanded: setPresentationMode(.midi)
     }
   }
@@ -1137,7 +1139,12 @@ final class OverlayState {
   private var projectionOrder: [String: (sequence: UInt64, revision: UInt64, epoch: UInt64)] = [:]
   private var endedProjectionSessions: Set<String> = []
 
-  private(set) var recording = false
+  /// A change refits mini to its take (`miniTakeLive`, `noteChannelMapLayout`).
+  private(set) var recording = false {
+    didSet {
+      if recording != oldValue { noteChannelMapLayout() }
+    }
+  }
   /// Reason from `on_no_speech`, captured before the terminal stop.
   private var pendingNoSpeechMessage: String?
   /// The exact rendered text at the terminal projection.
@@ -1308,12 +1315,13 @@ final class OverlayState {
   var channelMapInHeader: Bool {
     channelMapEnabled && channelMapPreference.layout == .horizontal
   }
-  /// Mini is one widget in both layouts and keeps its channel counter; only
-  /// the counter's face and destination differ (Maciej, 2026-10-23: mini "nie
-  /// musi i nie powinna się rozgałęziać inaczej niż jednym przyciskiem").
+  /// With the map enabled mini drops the brand word, so the map setting
+  /// still shapes mini. The horizontal mini carries no channel counter
+  /// (Founder, 2026-11-04: the Agents list replaces it); the vertical mini
+  /// keeps its stacked counter (`channelMapCounterStacked`).
   var channelMapInMini: Bool { channelMapEnabled }
-  /// The vertical layout's counter wears stacked cards and leads to the
-  /// Intercom group instead of compact.
+  /// The vertical layout's counter in mini, the bar and the window wears
+  /// stacked cards and leads to the Intercom group (Maciej, 2026-10-23).
   var channelMapCounterStacked: Bool { channelMapEnabled && !channelMapInHeader }
 
   /// The view observes the same presentation preference as Creator. Refitting
@@ -1326,8 +1334,8 @@ final class OverlayState {
   /// reaches the overlay, so the map re-reads it when it appears and when the
   /// pointer enters it, before any hint is shown.
   private(set) var agentChannelModifier: OverlayChannelChordModifier = .control
-  /// The window owner refits mini and compact to the channel map (see
-  /// `noteChannelMapLayout`).
+  /// The window owner refits mini and compact to the channel map, and mini
+  /// to a live take (see `noteChannelMapLayout`).
   @ObservationIgnored var onChannelMapLayoutChanged: (() -> Void)?
   /// The window owner returns compact to its natural width, forgetting a
   /// width the user gave it (see `activateChannelMapCounter`).
@@ -2237,7 +2245,9 @@ final class OverlayState {
     let identities = Set(bound.values.map(\.identity))
       .union(conversations.compactMap { playbackIdentity(for: $0) })
     let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
-    let broadcastSnapshot = await RealAgentBridgeInstaller.broadcastPolicySnapshot(for: identities)
+    // Receipts only: the row projection below fails open to `.on`, and the
+    // ledger keeps which identities actually had a receipt.
+    let broadcastReceipts = await RealAgentBridgeInstaller.broadcastPolicyReceipts(for: identities)
     let globalSnapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot()
     let panelFocusAvailable = await detectAgentPanelFocusAvailability()
     guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else {
@@ -2251,10 +2261,9 @@ final class OverlayState {
     applyBoundAgents(bound)
     // A reception change during this poll makes its receipts older than the
     // change's read-back; the next poll paints them instead.
-    if broadcastLedger.admitsPoll(startedAt: broadcastRevision),
-      broadcastPolicies != broadcastSnapshot
-    {
-      broadcastPolicies = broadcastSnapshot
+    if broadcastLedger.admitsPoll(startedAt: broadcastRevision) {
+      if broadcastPolicies != broadcastReceipts { broadcastPolicies = broadcastReceipts }
+      broadcastLedger.noteReceipts(Set(broadcastReceipts.keys))
     }
     if !globalPlaybackPending, globalPlaybackMuted != globalSnapshot {
       globalPlaybackMuted = globalSnapshot
@@ -2795,10 +2804,10 @@ final class OverlayState {
     return composerTypingDeadline - nowProvider() > 0
   }
 
-  /// Restart uses AppKit's current keyboard recipient. Retained editor
-  /// ownership also holds automatic collapse after window blur, but cannot
-  /// prove that the Founder is still writing in that window. Recent typing
-  /// and every unsent draft remain protected (Maciej, 2026-10-23).
+  /// Restart uses AppKit's current keyboard recipient when it holds text.
+  /// A resting caret in an empty field after the typing horizon is idle
+  /// (Founder, 2026-11-05), while recent typing and every unsent draft remain
+  /// protected (Maciej, 2026-10-23).
   var founderComposing: Bool {
     OverlayConversationComposer.hasFocusedEditor()
       || (composerTypingDeadline.map { $0 - nowProvider() > 0 } ?? false)
@@ -2994,16 +3003,24 @@ final class OverlayState {
   @ObservationIgnored private var otherComposerOwnsCapture: (() -> Bool)?
   private(set) var pendingTextMessages: Set<String> = []
   private(set) var textMessageErrors: [String: String] = [:]
+  var publishedMessageSkips: [String: [AgentBusSkippedRecipient]] = [:]
   private(set) var conversationFocusRevision: UInt64 = 0
   @ObservationIgnored var publishConversationText:
     @MainActor (
       OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
-    ) async throws -> Void =
+    ) async throws -> AgentBusTextPublication =
       {
         owner, text, reply, alsoSentTo in
         try await RealAgentBridgeInstaller.sendBusText(
           owner: owner, text: text, userReplyTo: reply, alsoSentTo: alsoSentTo)
       }
+
+  static func formatSkippedRecipientsNotice(_ skipped: [AgentBusSkippedRecipient]) -> String? {
+    guard !skipped.isEmpty else { return nil }
+    return skipped.map { item in
+      "Skipped \(item.displayName) (channel \(item.channel)): \(item.reasonText)"
+    }.joined(separator: "; ")
+  }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
     // The open conversation is the destination. A linked draft goes to every
@@ -3044,7 +3061,7 @@ final class OverlayState {
       : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
     guard !outgoing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     do {
-      try await publishConversationText(destination.owner, outgoing, reply, [])
+      let publication = try await publishConversationText(destination.owner, outgoing, reply, [])
       // A newer draft or reply belongs to the Founder, even if publication finishes late.
       if conversationDraftRevisions[conversation.id] == draftRevision,
         conversationReplyRevisions[conversation.id] == replyRevision,
@@ -3054,6 +3071,14 @@ final class OverlayState {
         if conversationReplies[conversation.id] == reply {
           conversationReplies.removeValue(forKey: conversation.id)
         }
+      }
+      if !publication.skipped.isEmpty {
+        if !publication.messageID.isEmpty {
+          publishedMessageSkips[publication.messageID] = publication.skipped
+        }
+        textMessageErrors[conversation.id] = Self.formatSkippedRecipientsNotice(publication.skipped)
+      } else {
+        textMessageErrors.removeValue(forKey: conversation.id)
       }
     } catch {
       textMessageErrors[conversation.id] = error.userFacingMessage
@@ -3139,8 +3164,11 @@ final class OverlayState {
           }.compactMap { resolveComposerRecipient($0.recipient)?.owner }
         )
         .filter { $0.id != destination.owner?.id }.sorted { $0.id < $1.id }
-        try await publishConversationText(
+        let publication = try await publishConversationText(
           destination.owner, recipient.payload, recipient.reply, alsoSentTo)
+        if !publication.skipped.isEmpty, !publication.messageID.isEmpty {
+          publishedMessageSkips[publication.messageID] = publication.skipped
+        }
         // Membership can retire while the publication is in flight. Its
         // receipt still belongs to an unchanged, still-current exact owner.
         if draftPublicationIsCurrent(recipient) {
@@ -3477,6 +3505,13 @@ final class OverlayState {
     channelAudioCaptureActive
       || (recording && !finalized && !transcribing && !isFinalPass && mode == .listening)
   }
+
+  /// A take is live for mini (Founder, 2026-11-04, bus brief §6, §11D): a
+  /// dictation from its start to the controller's stop, or any channel,
+  /// channel 0 included, with its microphone open. Mini then shows the
+  /// waveform, the clock and the addressees between the brand and its tools,
+  /// and folds back to its resting width when the take ends.
+  var miniTakeLive: Bool { recording || channelAudioCaptureActive }
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
 
@@ -3566,39 +3601,36 @@ final class OverlayState {
       unreadDigits: [])
   }
 
-  /// Reports a change of the map's agents or names, or of its open digits.
-  /// Mini's counter turns from the agent count into the open digits, so
-  /// mini's width follows the chord; compact's natural width ignores open
-  /// microphones (channel 0's chip included), so the chord never resizes the
-  /// strip and its refit is a no-op.
+  /// Reports a change of the map's agents or names, of its open digits, or
+  /// of a live take. Mini grows by the waveform, the clock and the open
+  /// channels' circles while a take is live (`miniTakeLive`), so its width
+  /// follows the take and the chord; the bar's waveform and clock keep their
+  /// width at rest, so a take alone never resizes the bar; channel 0's
+  /// circle leads the map at rest too, so a broadcast does not resize it.
   private func noteChannelMapLayout() {
     let map = channelMapLayoutModel
     let key =
       map.agents.map { $0.digit + "\u{1F}" + $0.name }
       + ["\u{1E}" + map.openDigits.joined(separator: ",")]
+      + ["\u{1D}" + (miniTakeLive ? "take" : "")]
     guard key != channelMapLayoutKey else { return }
     channelMapLayoutKey = key
     onChannelMapLayoutChanged?()
   }
 
-  /// The channel counter's click (bus intercom spec §13.4). Mini switches to
-  /// compact, where the chips are clickable, as the form toggle's "Expand to
-  /// compact widget" does. Compact shows the counter when the user narrowed
-  /// it, so there the click returns the strip to its natural width and the
-  /// chips come back. In the vertical layout the chips live in the Intercom
-  /// group, so the same click brings that group forward (Maciej, 2026-10-23:
-  /// "musi zaprowadzić w inne miejsce po prostu"). None selects a
-  /// conversation or touches capture.
+  /// The channel counter's click (bus intercom spec §13.4). The horizontal
+  /// mini has no counter (Founder, 2026-11-04). Compact shows the counter when the user
+  /// narrowed it, so there the click returns the strip to its natural width
+  /// and the chips come back. In the vertical layout the chips live in the
+  /// Intercom group, so the same click brings that group forward (Maciej,
+  /// 2026-10-23: "musi zaprowadzić w inne miejsce po prostu"). None selects
+  /// a conversation or touches capture.
   func activateChannelMapCounter() {
     if channelMapCounterStacked {
       onRevealIntercom?()
       return
     }
-    switch presentationMode {
-    case .mini: setPresentationMode(.midi)
-    case .midi: onRestoreMidiNaturalWidth?()
-    case .expanded: break
-    }
+    if presentationMode == .midi { onRestoreMidiNaturalWidth?() }
   }
 
   func refreshAgentChannelModifier() {

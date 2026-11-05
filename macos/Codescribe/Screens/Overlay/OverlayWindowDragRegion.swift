@@ -88,8 +88,13 @@ final class OverlayMenuCursorRegionView: NSView {
   func updateHover(at point: NSPoint?) {
     let inside =
       point.map {
-        window != nil && !isHiddenOrHasHiddenAncestor
-          && bounds.intersection(visibleRect).contains(convert($0, from: nil))
+        guard let window, !isHiddenOrHasHiddenAncestor,
+          bounds.intersection(visibleRect).contains(convert($0, from: nil))
+        else { return false }
+        // A tracking-area entry can reach the owner directly; the open
+        // interactive card over this window still owns the pointer.
+        return !OverlayHintPanel.shared.coversPointer(
+          at: window.convertPoint(toScreen: $0), under: window)
       } ?? false
     setHovered(inside)
   }
