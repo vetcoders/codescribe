@@ -112,7 +112,7 @@ elif name == 'xcodebuild':
                    sourceSHA=os.environ['TEST_RUNNER_CODESCRIBE_INTERACTION_SOURCE_SHA'],
                    requestID='11111111-2222-4333-8444-555555555555',
                    testMethod='OverlayConversationAcceptanceTests.testVoicelessReplyAndAgentTextRenderEnabledPlay()',
-                   identifier='overlay-reply-play-' + 'd'*24, verb='AXPress',
+                   identifier='overlay-reply-play-reply:' + 'd'*24, verb='AXPress',
                    hostKind='synthetic-deriveddata-xctest', phase='started', outcome='UNVERIFIED',
                    axStatus=None, postcondition=False, cleanup=False)
         end = dict(row, phase='completed', outcome='PASS', axStatus=0, postcondition=True, cleanup=True)

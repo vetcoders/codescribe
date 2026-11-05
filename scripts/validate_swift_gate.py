@@ -295,7 +295,7 @@ try:
         if row["runID"] != run_id or row["sourceSHA"] != source_sha:
             refuse()
         if (row["hostKind"] != "synthetic-deriveddata-xctest" or row["verb"] != "AXPress"
-                or row["identifier"] != "overlay-reply-play-" + "d" * 24
+                or row["identifier"] != "overlay-reply-play-reply:" + "d" * 24
                 or row["testMethod"] != "OverlayConversationAcceptanceTests.testVoicelessReplyAndAgentTextRenderEnabledPlay()"
                 or not isinstance(row["requestID"], str)
                 or not re.fullmatch(r"[0-9A-Fa-f-]{36}", row["requestID"])):

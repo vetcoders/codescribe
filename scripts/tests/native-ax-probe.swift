@@ -37,7 +37,7 @@ struct Request: Codable {
 func query(_ request: Request) throws -> Reception {
   let admittedIdentifier =
     // Only this fixed fixture Play control enters verified action acceptance.
-    request.identifier == "overlay-reply-play-" + String(repeating: "d", count: 24)
+    request.identifier == "overlay-reply-play-reply:" + String(repeating: "d", count: 24)
     || request.identifier.hasPrefix("overlay-conversation-")
     || request.identifier.hasPrefix("overlay-view-conversation-")
     || request.identifier.hasPrefix("overlay-agent-rail-")
