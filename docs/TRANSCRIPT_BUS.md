@@ -2297,9 +2297,13 @@ delivery seat (`ChannelDemux::hand_over`). A channel alone on the stream turns
 it over instead: the previous capture ends with its full terminal settlement and
 the next message opens a fresh capture.
 
-A detached interval freezes when the decoder commits an occurrence starting at
-or after the detach sample, when the shared capture ends, or after
-`CHANNEL_DETACH_SETTLE_BUDGET` (10 s), whichever comes first. The message then
+A detached interval freezes when the decoder's covered-sample frontier reaches
+the detach sample or when the shared capture ends. The frontier includes measured
+silence and respects pending windows, unsealed owners and unowned speech; a newer
+occurrence alone cannot advance it. `CHANNEL_DETACH_SETTLE_BUDGET` (10 s) only
+logs an overrun: the participant stays settling and receives its tail. Unresolved
+speech can keep it settling until capture end, with no finite wall-clock bound.
+The message then
 publishes its closing projection and seal as before. A message closed while the
 capture keeps running receives no terminal ledger seal of its own, so its
 closing row carries `coverage: refused` unless an occurrence seal already

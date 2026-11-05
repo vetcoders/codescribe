@@ -2176,6 +2176,8 @@ struct AppleSealState {
     /// Latest completed window start or closed capture extent. Earlier jobs
     /// must drain before an occurrence behind this horizon can seal.
     admission_horizon: u64,
+    /// Last FIFO progress receipt emitted for shared channel settlement.
+    decoder_covered_samples: u64,
     /// Utterance-grain straddles still refuse whole-span replacement.
     whisper_span_refused: BTreeSet<OccurrenceIdentity>,
     refinement_clock: Instant,
@@ -2967,6 +2969,7 @@ impl AppleSealState {
             pending_whisper_stubs: Vec::new(),
             last_submission_sequence: 0,
             admission_horizon: 0,
+            decoder_covered_samples: 0,
             whisper_span_refused: BTreeSet::new(),
             refinement_clock: Instant::now(),
             terminal_window_tail_replayed: false,
@@ -6028,6 +6031,73 @@ impl AppleSealState {
         }
         if expired_words {
             self.publish_resolved_word_seals(ev_tx);
+        }
+    }
+
+    /// Publish a conservative covered prefix, never the largest occurrence
+    /// seen. Out-of-order returns and silence both need the work-plan clock.
+    /// Unsealed owners and unowned speech keep their seat until recovery/EOF.
+    fn publish_decoder_coverage(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        if self.capture_turn != CaptureTurnIntent::AgentChannel || self.capture_stopping {
+            return;
+        }
+        let Some(speech) = observed_silero(self) else {
+            return;
+        };
+        let Some(observed) = speech.availability().observed_samples() else {
+            return;
+        };
+        let mut covered = observed.min(self.audio.session_sample_end());
+        if self.tail_patch.is_some() || self.refinement_lane_lost {
+            covered = covered.min(self.window_plan.admission_horizon());
+        }
+        for job in self.refinement_submitted.values() {
+            covered = covered.min(job.request_identity.range.sample_start);
+        }
+        for job in &self.refinement_pending {
+            covered = covered.min(job.provider_request.identity.range.sample_start);
+        }
+        if self.seal_ledger_enabled {
+            let ledger = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for owner in ledger.unsealed_qualified_occurrences() {
+                covered = covered.min(owner.sample_start);
+            }
+            for gap in
+                uncovered_gap_ranges(&ledger, &self.session_id, self.capture_epoch, &speech, 0)
+            {
+                covered = covered.min(gap.sample_start);
+            }
+        } else {
+            // Direct Apple can still finalize its live head; measured silence
+            // may advance only after all preceding speech has been published.
+            for range in speech.ranges() {
+                if range.sample_end > self.direct_sample_end {
+                    covered = covered.min(range.sample_start);
+                }
+            }
+        }
+        for word in self
+            .unmatched_silero_words
+            .iter()
+            .chain(self.pending_silero_words.values().flatten())
+        {
+            covered = covered.min(word.sample_start);
+        }
+        if let Some(fusion) = &self.fusion {
+            for utterance in fusion.ledger().utterances().iter().filter(|u| !u.closed) {
+                covered = covered.min(utterance.range.sample_start);
+            }
+        }
+        if covered > self.decoder_covered_samples {
+            self.decoder_covered_samples = covered;
+            let _ = ev_tx.send(EngineEvent::DecoderCovered {
+                session_id: self.session_id.clone(),
+                capture_epoch: self.capture_epoch,
+                sample_end: covered,
+            });
         }
     }
 
@@ -11018,6 +11088,7 @@ fn apple_stream_worker(
             owner.tick(&state, &ev_tx);
         }
         state.emit_speech_integrity(&ev_tx);
+        state.publish_decoder_coverage(&ev_tx);
     }
 
     state.capture_stopping = true;

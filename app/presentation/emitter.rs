@@ -5783,6 +5783,7 @@ impl EventSink for PresentationEmitter {
             return;
         }
         match event {
+            EngineEvent::DecoderCovered { .. } => {}
             EngineEvent::DirectTranscript {
                 observation,
                 text,

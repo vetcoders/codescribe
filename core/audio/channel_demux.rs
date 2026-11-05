@@ -35,10 +35,8 @@ use tracing::{debug, info};
 use super::streaming_recorder::CaptureSubscriberId;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 
-/// How long a detached participant waits for the shared decoder to pass its
-/// detach sample before its own intervals are frozen for Send. The shared
-/// capture ending releases it at once; so does the first committed
-/// occurrence that starts at or after the detach sample.
+/// Diagnostic budget, never a permission to discard a participant's tail.
+/// A seat remains settling until covered decoder progress or capture EOF.
 pub const CHANNEL_DETACH_SETTLE_BUDGET: Duration = Duration::from_secs(10);
 
 /// Exact logical owner of one participation. Two seats of the same logical
@@ -91,12 +89,10 @@ pub struct ParticipationInterval {
 /// Why a detached participant's settlement wait ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetachSettlement {
-    /// The decoder committed an occurrence starting at or after the detach.
+    /// The decoder covered the detach sample with no earlier work outstanding.
     DecoderPassed,
     /// The shared capture ended; every event it will ever emit was delivered.
     CaptureEnded,
-    /// The budget elapsed first; the participant freezes what it holds.
-    BudgetElapsed,
     /// The participant was unknown or already settled.
     Unknown,
 }
@@ -133,7 +129,7 @@ struct DemuxState {
     opened: Option<(String, u64)>,
     participants: Vec<Participant>,
     history: Vec<ParticipationInterval>,
-    /// Largest `sample_start` of a committed occurrence the decoder emitted.
+    /// Contiguous covered prefix, explicitly published by the decoder in FIFO.
     decoder_frontier: Option<u64>,
     capture_ended: bool,
 }
@@ -370,6 +366,7 @@ impl ChannelDemux {
     /// routing to it. Its reducer then holds exactly its own occurrences.
     pub async fn settle(&self, id: CaptureSubscriberId, budget: Duration) -> DetachSettlement {
         let deadline = tokio::time::Instant::now() + budget;
+        let mut overrun = false;
         let outcome = loop {
             let notified = self.settled.notified();
             tokio::pin!(notified);
@@ -387,8 +384,19 @@ impl ChannelDemux {
                     };
                 }
             }
-            if tokio::time::timeout_at(deadline, notified).await.is_err() {
-                break DetachSettlement::BudgetElapsed;
+            if overrun {
+                notified.await;
+            } else if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                overrun = true;
+                let state = self.lock();
+                let end_sample = state
+                    .participants
+                    .iter()
+                    .find(|p| p.id == id)
+                    .and_then(|p| p.end_sample);
+                tracing::warn!(?id, ?end_sample, frontier = ?state.decoder_frontier,
+                    capture = %self.capture_session_id, ?budget,
+                    "channel detach settlement overrun; retaining participant for tail delivery");
             }
         };
         self.lock()
@@ -415,13 +423,6 @@ impl ChannelDemux {
     fn deliver(state: &mut DemuxState, event: &EngineEvent) {
         match route_of(event) {
             Route::Range(start, end) => {
-                if matches!(
-                    event,
-                    EngineEvent::LedgerMutation { .. } | EngineEvent::DirectTranscript { .. }
-                ) {
-                    state.decoder_frontier =
-                        Some(state.decoder_frontier.map_or(start, |f| f.max(start)));
-                }
                 for participant in state.participants.iter().filter(|p| p.owns(start, end)) {
                     participant.sink.on_event(event);
                 }
@@ -493,7 +494,23 @@ impl EventSink for ChannelDemux {
             return;
         }
         let before = state.decoder_frontier;
-        Self::deliver(&mut state, event);
+        if let EngineEvent::DecoderCovered {
+            session_id,
+            capture_epoch,
+            sample_end,
+        } = event
+        {
+            if state
+                .opened
+                .as_ref()
+                .is_none_or(|(session, epoch)| session != session_id || epoch != capture_epoch)
+            {
+                return;
+            }
+            state.decoder_frontier = Some(before.map_or(*sample_end, |f| f.max(*sample_end)));
+        } else {
+            Self::deliver(&mut state, event);
+        }
         let frontier = state.decoder_frontier;
         if frontier == before {
             return;
