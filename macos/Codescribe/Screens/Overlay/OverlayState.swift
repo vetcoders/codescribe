@@ -2804,10 +2804,10 @@ final class OverlayState {
     return composerTypingDeadline - nowProvider() > 0
   }
 
-  /// Restart uses AppKit's current keyboard recipient. Retained editor
-  /// ownership also holds automatic collapse after window blur, but cannot
-  /// prove that the Founder is still writing in that window. Recent typing
-  /// and every unsent draft remain protected (Maciej, 2026-10-23).
+  /// Restart uses AppKit's current keyboard recipient when it holds text.
+  /// A resting caret in an empty field after the typing horizon is idle
+  /// (Founder, 2026-11-05), while recent typing and every unsent draft remain
+  /// protected (Maciej, 2026-10-23).
   var founderComposing: Bool {
     OverlayConversationComposer.hasFocusedEditor()
       || (composerTypingDeadline.map { $0 - nowProvider() > 0 } ?? false)

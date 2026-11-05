@@ -4,8 +4,8 @@ import SwiftUI
 
 /// One input surface; the conversation owner retains the draft and publishes it.
 struct OverlayConversationComposer: View {
-  /// Restart admission needs the current keyboard recipient, not the editor
-  /// ownership retained across window blur for automatic-collapse protection.
+  /// Restart admission needs a non-empty current keyboard recipient, not an
+  /// idle caret in a blank field or editor ownership retained across blur.
   @MainActor
   static func hasFocusedEditor(in window: NSWindow? = NSApp?.keyWindow) -> Bool {
     ConversationMessageField.hasFocusedEditor(in: window)
@@ -896,7 +896,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     guard let window, window.isKeyWindow, window.isVisible,
       let editor = window.firstResponder as? MessageTextView
     else { return false }
-    return editor.window === window && !editor.isHiddenOrHasHiddenAncestor
+    return editor.window === window
+      && !editor.isHiddenOrHasHiddenAncestor
+      && !editor.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   @Binding var text: String

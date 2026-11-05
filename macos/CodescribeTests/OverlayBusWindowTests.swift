@@ -832,8 +832,15 @@ final class OverlayBusWindowTests: XCTestCase {
     try renderWindowForReview(dark: true, rail: false, scale: 1.5, width: 1060)
   }
 
+  func testHorizontalWindowReviewWithFullWindowAgentList() throws {
+    try renderWindowForReview(
+      dark: true, rail: false, fullAgents: true, scale: 1, width: 760)
+    try renderWindowForReview(
+      dark: false, rail: false, fullAgents: true, scale: 1, width: 760)
+  }
+
   private func renderWindowForReview(
-    dark: Bool, rail: Bool, scale: CGFloat, width: CGFloat
+    dark: Bool, rail: Bool, fullAgents: Bool = false, scale: CGFloat, width: CGFloat
   ) throws {
     var first = try conversation("2", canonicalLease: true)
     let second = try conversation("3", lease: "b", canonicalLease: true)
@@ -878,6 +885,7 @@ final class OverlayBusWindowTests: XCTestCase {
     state.setConversationDraft("A retained draft for Tola", for: first.id)
     state.setConversationDraft("Lena's independent draft", for: second.id)
     if rail { state.foldAgentList() }
+    if fullAgents { state.hideAgentsCanvas() }
     let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
     XCTAssertEqual(row.broadcastIdentity?.leaseID, first.owner?.leaseID)
     XCTAssertFalse(state.visibleChannelRows.contains { $0.channel == "10" })
@@ -909,10 +917,19 @@ final class OverlayBusWindowTests: XCTestCase {
     let image = NSImage(size: host.bounds.size)
     image.addRepresentation(bitmap)
     let attachment = XCTAttachment(image: image)
+    let layoutName = fullAgents ? "agents" : (rail ? "rail" : "split")
     attachment.name =
-      "Bus-window-\(dark ? "dark" : "light")-\(rail ? "rail" : "split")-scale-\(scale)"
+      "Bus-window-\(dark ? "dark" : "light")-\(layoutName)-scale-\(scale)"
     attachment.lifetime = .keepAlways
     add(attachment)
+    if fullAgents {
+      XCTAssertEqual(state.agentsLayout, .agents)
+      state.showAgentsCanvas()
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+      host.layoutSubtreeIfNeeded()
+      XCTAssertEqual(state.agentsLayout, .split)
+    }
     XCTAssertEqual(state.selectedConversationID, first.id)
     XCTAssertEqual(state.resolvedComposerTarget(viewing: first)?.id, first.id)
     XCTAssertEqual(state.conversationDraft(for: first.id), "A retained draft for Tola")

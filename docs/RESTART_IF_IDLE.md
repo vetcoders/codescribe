@@ -21,9 +21,9 @@ zainstalowana nowa wersja… Zautomatyzujmy to").
 The waiter retries every 30 seconds for up to six hours
 (`RESTART_IDLE_WAIT`, `RESTART_IDLE_INTERVAL`), only while the refusal can
 end on its own: a take is active or settling, the Founder is writing to an
-agent (a focused composer, keys within the last 15 seconds or an unsent draft
-refuse with `founder_composing`; Maciej, 2026-10-23: talking to an agent
-includes typing to one), an agent turn holds the runtime
+agent (a focused non-empty composer, keys within the last 15 seconds or an
+unsent draft refuse with `founder_composing`; a resting caret in an empty
+field after the typing horizon does not block restart), an agent turn holds the runtime
 lease, a request expired or the application never answered it. Any other
 refusal ends it at once. A refusal after the application accepted shutdown is
 never retried. Only one waiter runs at a time; a second one, for example

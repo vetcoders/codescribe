@@ -196,8 +196,22 @@ final class OverlayDividerFoldTests: XCTestCase {
       to: ".overlay(alignment: .bottom) {")
     XCTAssertTrue(
       compact(inset).contains(
-        "if showsComposer && presentation == .standard { composer .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 } }"
+        "if showsComposer && presentation == .standard { if isCovered { Color.clear.frame(height: composerHeight) .allowsHitTesting(false) .accessibilityHidden(true) } else { composer .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 } } }"
       ))
+    let topOverlay = try section(
+      source, from: ".overlay(alignment: .top) {",
+      to: ".onChange(of: conversation.id)")
+    XCTAssertTrue(
+      compact(topOverlay).contains(
+        "} else if isCovered { Color.clear.frame(height: navigationHeight) .allowsHitTesting(false) .accessibilityHidden(true) } else { navigation"
+      ))
+    let roster = try overlaySource("OverlayChannelStatusView.swift")
+    let allRow = try section(
+      roster, from: "if let broadcast = currentConversations.first(where: { $0.channel == \"0\" })",
+      to: "if let inbox = currentConversations.first(where: { $0.isHumanInbox })")
+    XCTAssertTrue(
+      compact(allRow).contains(
+        "chrome: true, diameter: OverlayAgentAudioControls.rosterDiameter"))
   }
 
   func testRosterMessageScaleMatchesTheConversationBodyFont() {
