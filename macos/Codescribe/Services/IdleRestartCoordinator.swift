@@ -29,9 +29,9 @@ final class IdleRestartCoordinator {
   private let reserveCapture: @MainActor () throws -> Bool
   private let scheduleFinalization: FinalizationScheduler
   /// The Founder talking to an agent includes typing to one: a focused
-  /// composer, keys within the typing horizon or an unsent draft refuse the
-  /// restart the same way a live take does (Maciej, 2026-10-23, after a
-  /// restart-if-idle quit the app under a long message he was writing).
+  /// non-empty composer, keys within the typing horizon or an unsent draft
+  /// refuse the restart the same way a live take does (Maciej, 2026-10-23;
+  /// empty resting caret exempted by Founder, 2026-11-05).
   private let founderComposing: @MainActor () -> Bool
   private let terminate: @MainActor () -> Void
   private var lease: FileHandle?

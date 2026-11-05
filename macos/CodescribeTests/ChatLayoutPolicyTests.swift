@@ -93,7 +93,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
   }
 
   /// The Agent rail is a navigation column with the Settings bounds since
-  /// the shared sidebar (Monika, 2026-10-18: the Settings sidebar wins).
+  /// the shared sidebar (Founder, 2026-10-18: the Settings sidebar wins).
   func testSidebarHasReadableFloorAndBoundedExpansion() {
     XCTAssertEqual(CSSidebarWidth.navigation.minimum, 196)
     XCTAssertEqual(CSSidebarWidth.navigation.ideal, 216)

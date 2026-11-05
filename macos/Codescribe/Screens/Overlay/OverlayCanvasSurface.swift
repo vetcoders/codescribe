@@ -150,10 +150,20 @@ struct OverlayControlGlass: ViewModifier {
   @ViewBuilder
   func body(content: Content) -> some View {
     let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    let veilColor =
+      colorScheme == .dark
+      ? Color(red: 0.08, green: 0.08, blue: 0.09).opacity(0.76)
+      : Color(red: 0.97, green: 0.96, blue: 0.94).opacity(0.82)
     Group {
       if #available(macOS 26.0, *) {
         // Control glass does not dim with the window (Maciej, 2026-11-01).
-        content.glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
+        // A soft backing veil keeps scrolling rows legible as a hint rather
+        // than colliding line-for-line with the foreground labels.
+        content
+          .background {
+            if isEnabled { shape.fill(veilColor) }
+          }
+          .glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
           .environment(\.controlActiveState, .key)
       } else {
         content.background {

@@ -25,8 +25,8 @@ final class AttachmentPreviewPanel: NSPanel {
 /// attachment brings its window forward instead of opening another one.
 @MainActor
 final class AttachmentPreviewWindowController: NSObject, NSWindowDelegate {
-  static let defaultContentSize = NSSize(width: 760, height: 720)
-  static let minimumContentSize = NSSize(width: 520, height: 420)
+  static let defaultContentSize = NSSize(width: 560, height: 520)
+  static let minimumContentSize = NSSize(width: 460, height: 400)
 
   private static var openWindows: [String: AttachmentPreviewWindowController] = [:]
 
@@ -131,14 +131,20 @@ final class AttachmentPreviewWindowController: NSObject, NSWindowDelegate {
     let parentLevel = parent?.level ?? .floating
     panel.level = parentLevel.rawValue > NSWindow.Level.floating.rawValue ? parentLevel : .floating
     if let parent, let screen = parent.screen ?? NSScreen.main {
-      let size = panel.frame.size
-      let visible = screen.visibleFrame
+      let visible = screen.visibleFrame.insetBy(dx: 12, dy: 12)
+      let size = NSSize(
+        width: min(panel.frame.width, max(1, visible.width)),
+        height: min(panel.frame.height, max(1, visible.height)))
+      let contentSize = panel.contentRect(forFrameRect: NSRect(origin: .zero, size: size)).size
+      panel.contentMinSize = NSSize(
+        width: min(Self.minimumContentSize.width, max(1, contentSize.width)),
+        height: min(Self.minimumContentSize.height, max(1, contentSize.height)))
       var origin = NSPoint(
         x: parent.frame.midX - size.width / 2,
         y: parent.frame.midY - size.height / 2)
       origin.x = min(max(origin.x, visible.minX), visible.maxX - size.width)
       origin.y = min(max(origin.y, visible.minY), visible.maxY - size.height)
-      panel.setFrameOrigin(origin)
+      panel.setFrame(NSRect(origin: origin, size: size), display: false)
     } else {
       panel.center()
     }

@@ -61,12 +61,21 @@ final class IdleRestartNativeFocusTests: XCTestCase {
     }
   }
 
-  func testBlankNativeEditorRequiresVisibleKeyWindowAndMountedResponder() throws {
+  func testBlankNativeEditorIsIdleWhileNonEmptyEditorRequiresVisibleKeyWindow() throws {
     let fixture = try Fixture()
     defer { fixture.cleanup() }
     XCTAssertFalse(OverlayConversationComposer.hasFocusedEditor(in: nil))
     try fixture.focus()
     XCTAssertTrue(fixture.editor.string.isEmpty)
+    XCTAssertFalse(
+      OverlayConversationComposer.hasFocusedEditor(in: fixture.window),
+      "Resting caret in an empty editor must not block idle restart")
+    XCTAssertFalse(fixture.state.founderComposing)
+    fixture.editor.string = " \n\t "
+    XCTAssertFalse(
+      OverlayConversationComposer.hasFocusedEditor(in: fixture.window),
+      "Whitespace-only editor content must not block idle restart")
+    fixture.editor.string = "Writing"
     XCTAssertTrue(OverlayConversationComposer.hasFocusedEditor(in: fixture.window))
     fixture.window.key = false
     NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: fixture.window)
@@ -74,6 +83,8 @@ final class IdleRestartNativeFocusTests: XCTestCase {
     XCTAssertFalse(OverlayConversationComposer.hasFocusedEditor(in: fixture.window))
     fixture.window.key = true
     XCTAssertTrue(OverlayConversationComposer.hasFocusedEditor(in: fixture.window))
+    fixture.editor.string = ""
+    XCTAssertFalse(OverlayConversationComposer.hasFocusedEditor(in: fixture.window))
   }
 
   func testHiddenClosedAndDismountedEditorsDoNotLeaveRestartFocus() throws {
@@ -81,6 +92,7 @@ final class IdleRestartNativeFocusTests: XCTestCase {
       let fixture = try Fixture()
       defer { fixture.cleanup() }
       try fixture.focus()
+      fixture.editor.string = "Writing"
       XCTAssertTrue(OverlayConversationComposer.hasFocusedEditor(in: fixture.window))
       switch transition {
       case "hidden-editor": fixture.editor.isHidden = true
@@ -103,6 +115,8 @@ final class IdleRestartNativeFocusTests: XCTestCase {
     }
     try first.focus()
     try second.focus()
+    first.editor.string = "First"
+    second.editor.string = "Second"
     first.window.key = false
     XCTAssertFalse(OverlayConversationComposer.hasFocusedEditor(in: first.window))
     XCTAssertTrue(OverlayConversationComposer.hasFocusedEditor(in: second.window))
@@ -111,6 +125,7 @@ final class IdleRestartNativeFocusTests: XCTestCase {
       OverlayConversationComposer.hasFocusedEditor(in: second.window),
       "Removing another panel must not revoke the current editor")
     let foreign = NSTextView(frame: second.host.bounds)
+    foreign.string = "Foreign"
     second.window.contentView = foreign
     XCTAssertTrue(second.window.makeFirstResponder(foreign))
     XCTAssertFalse(OverlayConversationComposer.hasFocusedEditor(in: second.window))

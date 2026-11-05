@@ -158,6 +158,12 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     scrollView.contentView.contentInsets = contentInsets
     scrollView.borderType = .noBorder
     scrollView.drawsBackground = false
+    // The canvas fills the panel, so the system focus ring of a first-responder
+    // text view drew the user's accent around the whole window (Founder,
+    // 2026-11-05: a pink outline on the failed-transcription panel). The
+    // panel's own chrome says where focus is; the ring is off here and on the
+    // text view below.
+    scrollView.focusRingType = .none
     scrollView.hasVerticalScroller = true
     scrollView.scrollerInsets.right = OverlayResizeHit.scrollbarInset
     // The scroller policy — overlay style, autohide, no horizontal scroller —
@@ -199,6 +205,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     }
     textView.isEditable = false
     textView.isSelectable = true
+    textView.focusRingType = .none
     textView.isRichText = true
     textView.importsGraphics = false
     textView.allowsUndo = false
