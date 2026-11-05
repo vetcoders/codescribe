@@ -690,9 +690,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   }
 
   func testDividersOwnPaneFoldingAndRailHoverCannotUndoFold() throws {
-    _ = try XCTUnwrap(
-      QualityCaptureHost.interactiveWindows() ? true : nil,
-      "This input-route test requires an isolated GUI session")
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (broadcast, lena, astra) = try rosterFixture()
     let state = OverlayState.previewFormatted()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena, astra]))
@@ -717,7 +715,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     host.sizingOptions = []
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 100, y: 100, width: 1200, height: 500),
-      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = OverlayContentContainer(hosting: host)
     BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
