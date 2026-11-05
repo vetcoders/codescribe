@@ -102,10 +102,11 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     XCTAssertFalse(state.channelMapInHeader)
     var reveals = 0
     state.onRevealIntercom = { reveals += 1 }
+    let view = DictationOverlayView(state: state)
     for mode: OverlayPresentationMode in [.mini, .midi, .expanded] {
       state.setPresentationMode(mode)
       let counter = try XCTUnwrap(
-        DictationOverlayView(state: state).channelMap,
+        view.channelMap(roster: view.channelStatusView),
         "Floating panels keep their reveal entrance at every overlay width")
       XCTAssertTrue(counter.stacked)
       counter.onCounter()
@@ -119,9 +120,9 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
     state.channelMapPreference.selectLayout(.horizontal)
     XCTAssertTrue(state.channelMapInHeader)
-    XCTAssertEqual(DictationOverlayView(state: state).channelMap?.stacked, false)
+    XCTAssertEqual(view.channelMap(roster: view.channelStatusView)?.stacked, false)
     state.setPresentationMode(.midi)
-    XCTAssertNotNil(DictationOverlayView(state: state).channelMap)
+    XCTAssertNotNil(view.channelMap(roster: view.channelStatusView))
   }
 
   func testOptOutHidesOnlyMapAndKeepsConversationAndCapture() throws {
@@ -134,12 +135,12 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
         unreadSinceUnixMs: nil)
     ])
     let view = DictationOverlayView(state: state)
-    XCTAssertNotNil(view.channelMap)
+    XCTAssertNotNil(view.channelMap(roster: view.channelStatusView))
     let generation = state.captureGeneration
     let selected = state.selectedConversationID
     let hud = state.channelHudStates
     state.channelMapPreference.select(false)
-    XCTAssertNil(view.channelMap)
+    XCTAssertNil(view.channelMap(roster: view.channelStatusView))
     XCTAssertEqual(state.captureGeneration, generation)
     XCTAssertEqual(state.selectedConversationID, selected)
     XCTAssertEqual(state.channelHudStates, hud)

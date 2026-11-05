@@ -782,6 +782,13 @@ consumer are internal seams for integrator tests, not another recording path.
 Unresolved credential status uses semantic secondary ink in Settings, preserving
 the native light/dark appearance contract until availability is established.
 
+The overlay header creates one fresh channel roster for each header evaluation.
+Its channel map, Agents control and mini addressees consume that same projection,
+so counting unread replies and resolving archive candidates is not repeated for
+each control. The value is local to the evaluation: later conversation, receipt,
+lease and policy changes are read again on the next pass. This is neither a
+persistent cache nor another owner of conversation or delivery state.
+
 ## Related Documentation
 
 - [`guide/README.md`](guide/README.md) — User documentation

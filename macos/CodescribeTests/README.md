@@ -386,6 +386,22 @@ test, five assertions), even though that version previously passed it in a
 full run. That aggregate pass is not independent native acceptance. The exact
 ordering or fixture dependency remains undiagnosed.
 
+### Header projection work
+
+`OverlayHeaderRosterWorkTests` evaluates the production overlay body without
+presenting a window or starting capture. Its fixed eight-agent, 2,000-reply input
+and 40 measured iterations support a matched baseline/candidate comparison.
+Run `testLargeHistoryHeaderWork` with Xcode code coverage enabled and retain the
+result bundle and `HEADER_ROSTER_WORK` timing line. Verify that the header was
+actually evaluated before interpreting roster entry counts. The same fixture
+must be used on both source generations; the timing line alone is not a gate.
+
+The companion unread case checks fresh roster projections after reads and new
+deliveries. Existing channel-map and preference tests exercise navigation and
+microphone separation; native header/morph cases retain geometry acceptance.
+These test-host checks do not establish installed-app latency, GPU cost or the
+cause of a thermal incident.
+
 ### Shared-desktop boundary
 
 `CODESCRIBE_TEST_ISOLATED_GUI=0` disables the AX sidecar and skips cases that

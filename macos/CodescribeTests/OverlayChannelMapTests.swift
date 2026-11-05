@@ -922,7 +922,8 @@ final class OverlayChannelMapTests: XCTestCase {
     let generation = state.captureGeneration
     var restored = 0
     state.onRestoreMidiNaturalWidth = { restored += 1 }
-    XCTAssertNil(DictationOverlayView(state: state).channelMap, "mini shows no counter")
+    let view = DictationOverlayView(state: state)
+    XCTAssertNil(view.channelMap(roster: view.channelStatusView), "mini shows no counter")
     state.activateChannelMapCounter()
     XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
     XCTAssertEqual(restored, 0)
@@ -945,15 +946,16 @@ final class OverlayChannelMapTests: XCTestCase {
     var restored = 0
     state.onRevealIntercom = { revealed += 1 }
     state.onRestoreMidiNaturalWidth = { restored += 1 }
+    let view = DictationOverlayView(state: state)
     let miniCounter = try XCTUnwrap(
-      DictationOverlayView(state: state).channelMap, "the vertical mini keeps its counter")
+      view.channelMap(roster: view.channelStatusView), "the vertical mini keeps its counter")
     XCTAssertEqual(miniCounter.placement, .counter)
     XCTAssertTrue(miniCounter.stacked)
     miniCounter.onCounter()
     XCTAssertEqual(revealed, 1, "mini's counter leads to the Intercom group")
     XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
     state.setPresentationMode(.midi)
-    let map = try XCTUnwrap(DictationOverlayView(state: state).channelMap)
+    let map = try XCTUnwrap(view.channelMap(roster: view.channelStatusView))
     XCTAssertEqual(map.placement, .counter)
     XCTAssertTrue(map.stacked)
     XCTAssertEqual(map.model.counterFigure, "2", "the badge carries the same agent count")
@@ -1011,7 +1013,8 @@ final class OverlayChannelMapTests: XCTestCase {
     let generation = state.captureGeneration
     var restored = 0
     state.onRestoreMidiNaturalWidth = { restored += 1 }
-    let map = try XCTUnwrap(DictationOverlayView(state: state).channelMap)
+    let view = DictationOverlayView(state: state)
+    let map = try XCTUnwrap(view.channelMap(roster: view.channelStatusView))
     XCTAssertEqual(map.placement, .strip)
     map.onCounter()
     XCTAssertEqual(restored, 1, "the window owner forgets the user's width")
@@ -1029,7 +1032,8 @@ final class OverlayChannelMapTests: XCTestCase {
   func testNoMapBeforeTheRosterNamesAChannel() {
     let state = OverlayState.previewFormatted()
     optIntoChannelMap(state)
-    XCTAssertNil(DictationOverlayView(state: state).channelMap)
+    let view = DictationOverlayView(state: state)
+    XCTAssertNil(view.channelMap(roster: view.channelStatusView))
   }
 
   // MARK: - The chord keeps the collapsed form (§1, §14 W3)
@@ -1319,56 +1323,25 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertFalse(label.contains("OverlayState"))
   }
 
-  func testMapSelectionStaysSeparateFromExplicitMicrophoneControls() throws {
-    let overlay = try overlaySource("DictationOverlayView.swift")
-    let header = try section(
-      of: overlay, from: "private func justifiedHeader(density: OverlayHeaderDensity)",
-      to: "private var transcriptionPreviewButton")
-    XCTAssertTrue(
-      header.contains(
-        "let horizontalMap = density == .midi && state.channelMapInHeader && map != nil"),
-      "only the horizontal map carries the pills between the clock and the tools")
-    XCTAssertTrue(header.contains("if horizontalMap, let map {"))
-    XCTAssertTrue(
-      header.contains("OverlayBarLayout(agentCount: map?.model.count ?? 0, textScale: textScale)"),
-      "the expanded bar with its map is laid out by its content, not stretched")
-    XCTAssertFalse(header.contains("Spacer("), "no stretching centre in the header")
-    XCTAssertTrue(
-      header.contains("let leadingCounter = state.channelMapCounterStacked"),
-      "the vertical counter keeps the brand's side in every form")
-    XCTAssertTrue(
-      header.contains("if leadingCounter, let map {"),
-      "the leading counter is the way to the Intercom group, not a microphone")
-    XCTAssertTrue(header.contains("showsWord: !mini"), "mini drops cs")
-    XCTAssertTrue(
-      header.contains(".frame(height: horizontalMap ? nil : OverlayHeaderDensity.rowHeight)"),
-      "the bar answers its own one- or two-row height")
-    let map = try section(
-      of: overlay, from: "var channelMap: OverlayChannelMapView?",
-      to: "var channelStatusView: OverlayChannelStatusView")
-    XCTAssertTrue(
-      map.contains("guard state.presentationMode != .mini || state.channelMapCounterStacked"),
-      "only the vertical mini carries the map, as its stacked counter")
-    XCTAssertTrue(map.contains("placement: counterOnly ? .counter : .strip"))
-    XCTAssertTrue(map.contains("roster.selectChannelConversation($0)"))
-    XCTAssertTrue(map.contains("state.activateChannelMapCounter()"))
-    XCTAssertFalse(map.contains("showAgentMonitor"), "the W1 seam is gone")
-    XCTAssertFalse(map.contains("toggleAgentChannel"))
-    XCTAssertFalse(map.contains("toggle"), "pills and counter never change capture")
-    // The content-sized bar has no per-agent audio or panel buttons: the
-    // roster, the pill menu and the Agents window keep those actions.
-    let mapView = try overlaySource("OverlayChannelMapView.swift")
-    let pill = try overlaySource("OverlayChannelPill.swift")
-    for removed in [
-      "onToggleMicrophone", "onTogglePlayback", "onFocusChannel", "OverlayChannelMapControls",
-      "OverlayChannelMapActionButton", "actionWidth", "actionGap",
-    ] {
-      XCTAssertFalse(map.contains(removed), "header map: \(removed)")
-      XCTAssertFalse(mapView.contains(removed), "map view: \(removed)")
-      XCTAssertFalse(pill.contains(removed), "pill: \(removed)")
+  func testMapSelectionStaysSeparateFromExplicitMicrophoneControls() async throws {
+    for stacked in [false, true] {
+      let (state, broadcast, lena, astra) = try armedState()
+      state.channelMapPreference.selectLayout(stacked ? .vertical : .horizontal)
+      state.setPresentationMode(.midi)
+      let generation = state.captureGeneration
+      let hudBefore = state.channelHudStates
+      let view = DictationOverlayView(state: state)
+      let map = try XCTUnwrap(view.channelMap(roster: view.channelStatusView))
+      XCTAssertEqual(map.stacked, stacked)
+
+      for conversation in [lena, astra, broadcast] {
+        map.onSelectChannel(conversation.channel)
+        await Task.yield()
+        XCTAssertEqual(state.selectedConversationID, conversation.id)
+        XCTAssertEqual(state.captureGeneration, generation)
+        XCTAssertEqual(state.channelHudStates, hudBefore)
+        XCTAssertTrue(state.pendingChannelToggles.isEmpty)
+      }
     }
-    XCTAssertTrue(map.contains("agentPillMenu:"), "the pill menu keeps the agent's actions")
-    // The intent rail stays as it is.
-    XCTAssertFalse(header.contains("OverlayIntentRail("))
   }
 }
