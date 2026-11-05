@@ -73,6 +73,10 @@ struct OnboardingView: View {
           .id(model.stepIndex)
           .csAutohidingScrollers()
       }
+      // Only the step body crossfades; the heading above stays in place so the
+      // old and new step titles never overlap mid-transition.
+      .animation(
+        reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: model.stepIndex)
       footer
     }
   }
