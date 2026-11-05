@@ -2299,11 +2299,18 @@ the next message opens a fresh capture.
 
 A detached interval freezes when the decoder's covered-sample frontier reaches
 the detach sample or when the shared capture ends. The frontier includes measured
-silence and respects pending windows, unsealed owners and unowned speech; a newer
-occurrence alone cannot advance it. `CHANNEL_DETACH_SETTLE_BUDGET` (10 s) only
-logs an overrun: the participant stays settling and receives its tail. Unresolved
-speech can keep it settling until capture end, with no finite wall-clock bound.
-The message then
+silence and respects the window-plan horizon, queued/submitted decoder jobs and
+the session sample end; missing Silero falls back to the work-plan horizon.
+An in-flight DT witness holds its starting sample until return or its existing
+30-second request budget expires. Unsealed owners, speech gaps, open utterances
+and held Apple words do not block decoder coverage. A newer occurrence alone
+cannot advance it. `CHANNEL_DETACH_SETTLE_BUDGET` (10 s) only logs an overrun:
+the participant stays settling until coverage or capture end. The normal 9-second
+window / 3-second step requires under 12 seconds of further capture audio plus
+queue/inference; stalled decoder work still has no finite wall-clock bound.
+A late occurrence update inside a settled interval is counted and warned once
+for that seat, with its range and settlement outcome; the seat is never reopened
+or backfilled. The message then
 publishes its closing projection and seal as before. A message closed while the
 capture keeps running receives no terminal ledger seal of its own, so its
 closing row carries `coverage: refused` unless an occurrence seal already
@@ -2325,14 +2332,16 @@ a channel session, so no follower maps another channel's audio to its own take.
 When more than one interval shared it, the take store records no single
 transcript for it.
 
-Shared-capture Raw mutations (including corrections) are persisted by the normal
-`TranscriptBus::publish_revision` path immediately, before terminal formatting.
-The direct recognizer lane does the same in `publish_direct_revision`. These Raw
-rows deliberately bypass quiet suppression for shared captures; presentation-only
-updates stay quiet. An absent, failed or pending formatter cannot hold this fan-out.
-The controller's final delivery and send hold still follow message settlement and
-the selected segment-finish policy. Finishing one detached reducer marks only its
-lifecycle terminal and never seals the shared ledger.
+Channel buses keep the quiet contract in both `publish_revision` and
+`publish_direct_revision`: one start row per document, terminal publication,
+manual edits and coverage verdicts. Intermediate Raw revisions and corrections
+still reach the HUD and in-process consumers; shared capture authentication does
+not authorize extra persisted rows. The controller finishes each settled message
+independently under the selected segment-finish policy. An absent or failed
+formatter falls back to Light+; pending formatting is bounded by `format_wait_sec`
+and then uses the same fallback. Final delivery and send hold follow that bounded
+finish. Finishing one detached reducer marks only its lifecycle terminal and
+never seals the shared ledger or another seat.
 
 `co_audience` (above) stays an informational roster snapshot. Participation is
 the sample interval in the sealed row.

@@ -87,8 +87,14 @@ synthetic geometry checks do not constitute native recognition-quality acceptanc
   before EOF. Recognizer-final waiting and useful-refinement drain have separate
   budgets. This is not a fixed 1.5-second bound on complete delivery, nor proof
   that the last word will be admitted.
-- `AgentChannel` has no LLM formatter. `HandsFree` may format sealed fragments
-  live; `SingleTurn` composer capture formats once at terminal processing.
+- `AgentChannel` disarms per-occurrence LLM formatting. Its optional message
+  formatter is bounded by `agent_channel.format_wait_sec`; missing authority,
+  timeout or refusal delivers Light+ from the committed message. Each seat
+  finishes independently. Intermediate Raw still projects to the HUD and
+  in-process consumers, while channel buses retain their quiet start/terminal,
+  manual-edit and coverage publication contract, including shared captures.
+  `HandsFree` may format sealed fragments live; `SingleTurn` composer capture
+  formats once at terminal processing.
   Smart/Correction use the text formatter; Max uses grouped Agent consultation.
 - Formatter lexical and structural choices are governed by the selected sealed
   prompt. There is no word-count/order veto or pre-provider repetition cleanup.

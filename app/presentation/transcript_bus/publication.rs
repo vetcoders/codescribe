@@ -187,9 +187,6 @@ impl TranscriptBus {
         // lane — one start row per document, the terminal row, intermediate
         // revisions in-process only.
         let channel_quiet = self.session.audience.is_some();
-        // Direct Raw uses the same immediate shared-capture publication rule.
-        // A formatter/document operation cannot gate recognition publication.
-        let shared_raw = self.capture_session_id.is_some() && operation.is_none();
         let mut emitted = Vec::new();
         let mut persisted = Vec::new();
         for (document_index, entry) in revision.entries.iter().enumerate() {
@@ -242,7 +239,7 @@ impl TranscriptBus {
                     .announced_documents
                     .contains(&(document_index as u64))
                 && !revision.rendered_text.trim().is_empty();
-            let persist = !channel_quiet || shared_raw || capability.terminal || starts_document;
+            let persist = !channel_quiet || capability.terminal || starts_document;
             if persist {
                 if starts_document {
                     writer.announced_documents.insert(document_index as u64);
