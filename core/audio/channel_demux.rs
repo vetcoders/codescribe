@@ -37,6 +37,10 @@ use super::streaming_recorder::CaptureSubscriberId;
 use crate::pipeline::acoustic_ledger::OccurrenceIdentity;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 
+#[cfg(test)]
+#[path = "channel_demux_tests.rs"]
+mod channel_demux_tests;
+
 /// Diagnostic budget, never a permission to discard a participant's tail.
 /// A seat remains settling until covered decoder progress or capture EOF.
 pub const CHANNEL_DETACH_SETTLE_BUDGET: Duration = Duration::from_secs(10);
