@@ -2111,16 +2111,19 @@ impl RecordingController {
                 let settings = &source.runtime_settings;
                 let policy = settings.formatting_policy();
                 let language = settings.values().whisper_language;
-                let formatted = tokio::time::timeout(
-                    open.timing.format_wait,
+                let formatting =
                     codescribe_core::llm::ai_formatting::format_text_with_status_for_policy(
                         &request.source_text,
                         language.whisper_hint(),
                         settings,
                         None,
-                    ),
-                )
-                .await;
+                    );
+                #[cfg(test)]
+                let formatting = channel_falsifier_tests::format_for_test(
+                    open.session_id.as_deref().unwrap_or_default(),
+                    formatting,
+                );
+                let formatted = tokio::time::timeout(open.timing.format_wait, formatting).await;
                 let Ok(result) = formatted else {
                     tracing::info!(
                         wait = ?open.timing.format_wait,
@@ -2822,6 +2825,10 @@ impl RecordingController {
 #[cfg(test)]
 #[path = "agent_channel_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "agent_channel_falsifier_tests.rs"]
+mod channel_falsifier_tests;
 
 #[cfg(test)]
 #[path = "agent_channel_capture_observer_tests.rs"]

@@ -5275,6 +5275,16 @@ impl PresentationEmitter {
             .terminal_formatter_request()
     }
 
+    /// Inspect admitted Raw labels before presentation shaping in falsifiers.
+    #[cfg(test)]
+    pub(crate) fn raw_entries_for_test(&self) -> Vec<TranscriptDocumentEntry> {
+        let state = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.document_by_occurrence.values().cloned().collect()
+    }
+
     /// Admit only a successful formatter result as a source-bound derived
     /// version. Failure, skipped policy, and healthy no-op are visible
     /// refusals and therefore mint no ledger/history/Copy-last evidence.
