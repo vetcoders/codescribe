@@ -4319,7 +4319,7 @@ final class OverlayState {
     }
   }
 
-  private func relayInsertPasteIntent() {
+  func relayInsertPasteIntent() {
     if engine == nil {
       presentActionFailure(
         String(localized: "Insert needs the recording engine"),
