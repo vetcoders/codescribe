@@ -104,7 +104,7 @@ impl TranscriptBus {
         let Some(coverage) = ledger.latest_seal_coverage() else {
             return;
         };
-        if coverage.session_id != self.session.session_id
+        if coverage.session_id != self.capture_session_id()
             || Some(coverage.capture_epoch) != writer.capture_epoch
             || coverage.status.unavailable_reason().is_some()
             || coverage.availability != "observed"
@@ -117,7 +117,7 @@ impl TranscriptBus {
         let mut has_slots = false;
         let mut entirely_unwitnessed = true;
         for occurrence in ledger.occurrences() {
-            if occurrence.session != self.session.session_id
+            if occurrence.session != self.capture_session_id()
                 || Some(occurrence.capture_epoch) != writer.capture_epoch
             {
                 return;
@@ -147,7 +147,7 @@ impl TranscriptBus {
         // Visibility-only receipts are explicitly unwitnessed text too. They
         // must not bypass publication merely because they own no word slot.
         let has_unanchored_label = ledger.layer_trail().iter().any(|entry| {
-            entry.observation.occurrence.session == self.session.session_id
+            entry.observation.occurrence.session == self.capture_session_id()
                 && Some(entry.observation.occurrence.capture_epoch) == writer.capture_epoch
                 && matches!(&entry.decision,
                     codescribe_core::pipeline::acoustic_ledger::MutationReceipt::KeepVisibleUnanchored { label, .. }

@@ -4607,7 +4607,7 @@ impl PresentationEmitter {
         let session = self
             .transcript_bus
             .as_ref()
-            .map(|bus| bus.session_id())
+            .map(|bus| bus.capture_session_id())
             .or_else(|| {
                 self.cursor_capture
                     .get()
@@ -5236,6 +5236,15 @@ impl PresentationEmitter {
         self.run_light_plus_tick_for(ledger, budget, false, occurrences);
     }
 
+    /// Finish only this settled participant's lifecycle. Other participants
+    /// still own the live ledger; detaching must never seal their speech.
+    pub(crate) fn note_channel_detached(&self) {
+        self.session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .mark_terminal_lifecycle();
+    }
+
     /// Authenticate formatter input without mutating reducer, ledger, Bus, or
     /// delivery state. The controller feeds these exact bytes into the one
     /// production formatter pipeline and retains the source revision as CAS.
@@ -5710,7 +5719,7 @@ impl EventSink for PresentationEmitter {
             || self
                 .transcript_bus
                 .as_ref()
-                .is_some_and(|bus| bus.session_id() != session_id)
+                .is_some_and(|bus| bus.capture_session_id() != session_id)
         {
             return;
         }

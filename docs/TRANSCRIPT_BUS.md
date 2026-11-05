@@ -1663,8 +1663,9 @@ pause frozen at open (`agent_channel.send_pause_sec`, or the env override
 `CODESCRIBE_CHANNEL_AUTOSEAL_SECS`, rounded up; `0` = off).
 
 Under `agent_channel.session_policy = continuous` (default) each message has
-its own document, `<session_id>-s<n>` (`n` from 1), with its own ledger,
-archive and transcript rows. When the send pause elapses after the
+its own document, `<session_id>-s<n>` (`n` from 1), with its own reducer and
+transcript rows on the shared channel capture (see "Shared channel recognition
+and participation intervals"). When the send pause elapses after the
 message's measured Silero speech-end edge, the message closes on a
 `state: segment_sealed` row (`loud: false`, `session_id` = the message
 document, `opened_at` = the message's start, `channel_session_id`,
@@ -1672,7 +1673,10 @@ document, `opened_at` = the message's start, `channel_session_id`,
 this row; the overlay ignores it because its `opened_at` is not the open
 session's. The capture subscription stays the same, the next message starts
 on it, and messages are delivered in order even when an earlier one is still
-being finished. The final held snapshot of each message carries
+being finished. A channel alone on the shared capture turns the capture over at
+that boundary (a fresh capture, ledger and archive, as one recognizer per
+message always had); with other channels listening the capture keeps running and
+the next message's interval starts at the boundary sample. The final held snapshot of each message carries
 `delivered_revision` (`committed` for `segment_finish = off`, `light_plus`,
 or `formatter`) and, when a formatter pass missed `format_wait_sec`, failed
 or was stale, `delivered_revision_fallback` (`formatter_timeout`,
@@ -2262,6 +2266,63 @@ evidence normalization, owned mailbox presentation and complete watch messages.
 It does not alter `recipients`, address selection, message identity, ACK/CAS,
 transcript text, ledger decisions, microphone ownership or recognition. Remote
 hosts do not implicitly join a local controller's roster.
+
+## Shared channel recognition and participation intervals
+
+Every Live agent channel open at the same time listens to ONE capture
+subscriber, ONE `transcription_session`, ONE `AcousticLedger` and ONE archive
+(`StreamingRecorder::begin_channel_session` / `join_channel_session` in
+`core/audio/streaming_recorder.rs`). `RecordingController` stays the only
+microphone owner. The first channel opens the shared capture under its own
+ledger namespace, `agent-channels-<uuid>`; it is the logical routing owner, not
+a second recorder owner. The stream, ledger and archive run until the last
+participant leaves. Each channel keeps its own reducer, bus session
+(`agent-channel-<digit>-<uuid>`, `-s<n>` per message), receipts and send hold;
+the bus and reducer authenticate revisions against the capture session.
+
+What differs per channel is the interval it listened. The capture clock is the
+count of PCM samples the shared session actually received, the same clock its
+ledger stamps on every occurrence. A join at sample `t` opens `[t, …)`; a
+detach at `t` closes it. `core/audio/channel_demux.rs` attributes each
+occurrence by its sample midpoint, so a word split by a join or leave belongs to
+exactly one side while the decoder keeps its acoustic context. Speech that ended
+before a join is never backfilled; speech after a detach never reaches that
+channel, even when the same owner joins again with a new interval. Text is never
+used to attribute, merge or deduplicate.
+
+A continuous channel's message boundary is a participation boundary. With other
+channels listening, the previous message's interval closes at the boundary
+sample and the next message's reducer attaches at that same sample with the same
+delivery seat (`ChannelDemux::hand_over`). A channel alone on the stream turns
+it over instead: the previous capture ends with its full terminal settlement and
+the next message opens a fresh capture.
+
+A detached interval freezes when the decoder commits an occurrence starting at
+or after the detach sample, when the shared capture ends, or after
+`CHANNEL_DETACH_SETTLE_BUDGET` (10 s), whichever comes first. The message then
+publishes its closing projection and seal as before. A message closed while the
+capture keeps running receives no terminal ledger seal of its own, so its
+closing row carries `coverage: refused` unless an occurrence seal already
+certified it; another participant's terminal receipt never seals it.
+
+Bus rows carry the identities:
+
+- `codescribe.channel-recipients.v1` adds `capture_session_id` and
+  `delivery_seat` (`primary` | `projection`). The first open seat of a logical
+  agent session (`provider`, `provider_session_id`) executes delivery; another
+  seat of the same session in this capture only projects history.
+- The `segment_sealed` message row and the `sealed` channel-session row add
+  `participation`: `{capture_session_id, start_sample, end_sample, delivery_seat}`.
+- Evidence rows keep the channel's own `session_id`; occurrence coordinates name
+  the shared capture.
+
+The shared WAV and its retention lease belong to `capture_session_id`, never to
+a channel session, so no follower maps another channel's audio to its own take.
+When more than one interval shared it, the take store records no single
+transcript for it.
+
+`co_audience` (above) stays an informational roster snapshot. Participation is
+the sample interval in the sealed row.
 
 ## Native provider queue receipt
 

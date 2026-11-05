@@ -61,6 +61,10 @@ pub(crate) use routing::{ChannelCohort, ChannelCohortMember, ChannelDelivery};
 /// projection attempts a flush; persistence loss cannot suppress live text.
 pub struct TranscriptBus {
     session: TranscriptSession,
+    /// Ledger namespace this publication reads, when it is not the session's
+    /// own: every agent channel on the shared capture publishes its own
+    /// session from the one shared capture ledger.
+    capture_session_id: Option<String>,
     path: PathBuf,
     writer: Mutex<TranscriptBusWriter>,
     persistence_diagnostic_sink: PersistenceDiagnosticSink,
@@ -373,13 +377,13 @@ impl TranscriptBus {
     ) -> Vec<TranscriptBusEvidenceEvent> {
         // A refused empty capture has no lexical document to publish. Retain
         // only its authenticated source CAS and diagnostics for lifecycle end.
-        if revision.authenticates_capture_revision(ledger, &self.session.session_id) {
+        if revision.authenticates_capture_revision(ledger, self.capture_session_id()) {
             self.retain_capture_revision(revision);
             return Vec::new();
         }
         // Atomic refusal: no partial rows, sequence changes or last-render update.
         // The validator is owned by the reducer, not a second Bus text reducer.
-        if !revision.authenticates_publication(ledger, &self.session.session_id) {
+        if !revision.authenticates_publication(ledger, self.capture_session_id()) {
             return Vec::new();
         }
         let reducer_action = match &revision.action {

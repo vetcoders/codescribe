@@ -29,7 +29,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::audio::streaming_recorder::CaptureSubscriberId;
+use crate::audio::channel_demux::{ChannelParticipantOwner, DeliverySeat};
+use crate::audio::streaming_recorder::{
+    CaptureSubscriberId, ChannelParticipantOpen, ChannelParticipation,
+};
 use crate::os::hold_badge::{self, BadgeMode};
 use crate::presentation::transcript_bus::ChannelCohortMember;
 use crate::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, TranscriptSession};
@@ -70,43 +73,67 @@ pub(crate) fn segment_document_id(label: &str, index: u32) -> String {
     format!("{label}-s{index}")
 }
 
-/// One message's transcript document: its bus session, ledger and reducer.
+/// One message's transcript document: its bus session, reducer and the
+/// shared capture ledger it authenticates against.
 pub(crate) struct ChannelSegmentParts {
     pub transcript_bus: Arc<TranscriptBus>,
-    pub ledger: Arc<StdMutex<AcousticLedger>>,
     pub emitter: Arc<PresentationEmitter>,
     pub last_text: Arc<StdMutex<String>>,
     pub refinement_warnings: Arc<StdMutex<Vec<String>>>,
 }
 
-/// Open the bus document, ledger and reducer of one channel message. Its
-/// recipients receipt names the document, so the closing seal can publish.
+/// Where a channel message listens: the shared capture's ledger namespace,
+/// its one ledger, and the delivery seat the message will hold there.
+pub(crate) struct ChannelSegmentCapture {
+    pub capture_session_id: String,
+    pub ledger: Arc<StdMutex<AcousticLedger>>,
+    pub seat: DeliverySeat,
+}
+
+/// Open the bus document and reducer of one channel message on the shared
+/// capture. The bus keeps the message's own session identity and
+/// authenticates against the shared capture's ledger. Its recipients receipt
+/// names the document, the capture and the seat, so the closing seal can
+/// publish and followers deduplicate delivery by seat, never by text.
 /// Speech edges reach the session clock only while this message is current.
 pub(crate) fn open_channel_segment(
     source: &ChannelSegmentSource,
     document_id: String,
+    capture: ChannelSegmentCapture,
     speech_clock: &Arc<StdMutex<ChannelSpeechClock>>,
     digit: u8,
 ) -> ChannelSegmentParts {
-    let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+    let ChannelSegmentCapture {
+        capture_session_id,
+        ledger,
+        seat,
+    } = capture;
     let last_text = Arc::new(StdMutex::new(String::new()));
     let refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
-    let bus = Arc::new(TranscriptBus::open_with_paths(
-        TranscriptSession {
-            session_id: document_id.clone(),
-            mode: TranscriptMode::Agent,
-            has_latched_target: false,
-            latched_target_is_self: false,
-            audience: Some(source.audience.clone()),
-            badge_only: true,
-        },
-        source.bus.clone(),
-        source.broadcast_buses.clone(),
-    ));
+    let bus = Arc::new(
+        TranscriptBus::open_with_paths(
+            TranscriptSession {
+                session_id: document_id.clone(),
+                mode: TranscriptMode::Agent,
+                has_latched_target: false,
+                latched_target_is_self: false,
+                audience: Some(source.audience.clone()),
+                badge_only: true,
+            },
+            source.bus.clone(),
+            source.broadcast_buses.clone(),
+        )
+        .with_capture_session(capture_session_id.clone()),
+    );
+    // `delivery_seat` is the dual-host/SSH deduplication fact: one logical
+    // session executes one delivery per source event, its other seats only
+    // project history. Never deduplicated by text.
     bus.record_channel_receipt(&serde_json::json!({
         "schema": "codescribe.channel-recipients.v1", "kind": "channel_recipients",
         "session_id": document_id, "channel": digit.to_string(),
         "audience": source.audience, "recipients": source.recipients,
+        "capture_session_id": capture_session_id,
+        "delivery_seat": seat.as_str(),
         "emitted_at": chrono::Utc::now().to_rfc3339(),
     }));
     let cursor_token = source.cursor_token;
@@ -153,7 +180,6 @@ pub(crate) fn open_channel_segment(
     );
     ChannelSegmentParts {
         transcript_bus: bus,
-        ledger,
         emitter,
         last_text,
         refinement_warnings,
@@ -624,11 +650,62 @@ pub(crate) struct OpenAgentChannel {
     /// The same bus session used by the reducer, including its fanout and
     /// per-destination persistence state, retained through the closing receipt.
     pub transcript_bus: Option<Arc<TranscriptBus>>,
-    /// Live channel's own acoustic ledger. The same `Arc` is passed into
-    /// `begin_channel_session` and held here until close, so the observer
-    /// freezes this ledger after that task has joined. `AttachedOnly` stores
-    /// nothing: that mode claims no live capture.
+    /// The shared capture's one acoustic ledger, the same `Arc` every open
+    /// channel's reducer reads. Held here until close, so the observer freezes
+    /// it after the shared task has joined. `AttachedOnly` stores nothing:
+    /// that mode claims no live capture.
     pub capture_ledger: Option<Arc<StdMutex<AcousticLedger>>>,
+    /// Ledger namespace of the shared capture this message listens to. It
+    /// owns the capture's retention lease and WAV, never one channel.
+    pub capture_session_id: Option<String>,
+    /// This message's sample-clock interval on the shared capture. Its `id`
+    /// is the participant identity `subscriber` carries.
+    pub participation: Option<ChannelParticipation>,
+}
+
+/// Exact logical owner of a bound channel: provider, provider session, the
+/// bridge lease derived from both (as `channel_recipients` derives it), and
+/// the digit.
+fn participant_owner(
+    digit: u8,
+    provider: Option<&str>,
+    provider_session_id: Option<&str>,
+) -> Option<ChannelParticipantOwner> {
+    let provider = provider?.trim().to_lowercase();
+    let session = provider_session_id?.trim().to_owned();
+    if provider.is_empty() || session.is_empty() {
+        return None;
+    }
+    let identity = format!("{provider}\0{session}");
+    let lease_id = hex::encode(Sha256::digest(identity.as_bytes()))[..32].to_string();
+    Some(ChannelParticipantOwner {
+        provider,
+        provider_session_id: session,
+        lease_id,
+        channel: digit.to_string(),
+    })
+}
+
+/// Ledger namespace of a new shared channel capture. It is not a channel
+/// document: followers never map it to one channel's take.
+fn shared_capture_id() -> String {
+    format!("agent-channels-{}", uuid::Uuid::new_v4())
+}
+
+/// This message's own interval on the shared capture clock, as the demux
+/// recorded it. The sealed row names exactly which samples it owned.
+fn participation_receipt(participation: &ChannelParticipation) -> serde_json::Value {
+    let interval = participation
+        .demux
+        .intervals()
+        .into_iter()
+        .find(|interval| interval.participant == participation.id);
+    serde_json::json!({
+        "capture_session_id": participation.capture_session_id,
+        "start_sample": participation.start_sample,
+        "end_sample": interval.and_then(|interval| interval.end_sample),
+        "delivery_seat": participation.seat.as_str(),
+    })
 }
 
 /// The Founder speaks to several channels at once and every agent must know
@@ -1424,113 +1501,166 @@ impl RecordingController {
             anyhow!("agent channel refused: recording controller has no recorder")
         })?;
 
-        let (subscriber, session_id, document_id, transcript_bus, capture_ledger, emitter, source) =
-            match mode {
-                #[cfg(test)]
-                ChannelOpenMode::AttachedOnly => {
-                    last_text = Arc::new(StdMutex::new(String::new()));
-                    refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
-                    (
-                        recorder.register_channel_feed().id,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                }
-                ChannelOpenMode::Live => {
-                    let session_label = format!("agent-channel-{digit}-{}", uuid::Uuid::new_v4());
-                    // A continuous session names each message's document;
-                    // a one-message session's only document is the session.
-                    let document_id = if timing.continuous() {
-                        segment_document_id(&session_label, 1)
-                    } else {
-                        session_label.clone()
-                    };
+        let (
+            subscriber,
+            session_id,
+            document_id,
+            transcript_bus,
+            capture_ledger,
+            emitter,
+            source,
+            participation,
+        ) = match mode {
+            #[cfg(test)]
+            ChannelOpenMode::AttachedOnly => {
+                last_text = Arc::new(StdMutex::new(String::new()));
+                refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
+                (
+                    recorder.register_channel_feed().id,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            }
+            ChannelOpenMode::Live => {
+                let session_label = format!("agent-channel-{digit}-{}", uuid::Uuid::new_v4());
+                // A continuous session names each message's document;
+                // a one-message session's only document is the session.
+                let document_id = if timing.continuous() {
+                    segment_document_id(&session_label, 1)
+                } else {
+                    session_label.clone()
+                };
+                // One recognizer, ledger and archive for every open
+                // channel. The first channel opens the shared capture and
+                // its retention lease; later ones join it at the current
+                // sample and hear nothing said before (no backfill).
+                let shared = recorder.shared_channel_view();
+                let owner = participant_owner(
+                    digit,
+                    bound.provider.as_deref(),
+                    bound.provider_session_id.as_deref(),
+                );
+                let capture = match &shared {
+                    Some(view) => ChannelSegmentCapture {
+                        capture_session_id: view.capture_session_id.clone(),
+                        ledger: Arc::clone(&view.acoustic_ledger),
+                        seat: view.demux.seat_for(owner.as_ref()),
+                    },
+                    None => ChannelSegmentCapture {
+                        capture_session_id: shared_capture_id(),
+                        ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
+                        seat: DeliverySeat::Primary,
+                    },
+                };
+                let initiates = shared.is_none();
+                let capture_session_id = capture.capture_session_id.clone();
+                let ledger = Arc::clone(&capture.ledger);
+                if initiates {
                     super::begin_audio_capture(
-                        &document_id,
+                        &capture_session_id,
                         runtime_settings.values().audio_retention,
                     )
                     .await?;
-                    // The Pointer Indicator knob rules every badge path: Settings
-                    // promises "Base size; Agent mode stays proportionally larger",
-                    // so the channel dot is the persisted base times the Assistive
-                    // multiplier, and Off means no dot while the channel listens.
-                    let badge_settings = Config::load_without_keychain();
-                    if badge_settings.hold_indicator {
-                        hold_badge::show_hold_badge_with_config(
-                            hold_badge::HoldBadgeConfig::from_mode_with_base_diameter(
-                                BadgeMode::Assistive,
-                                f64::from(badge_settings.hold_badge_size),
-                            ),
-                        );
-                    }
-                    let cursor_token = hold_badge::take_token();
-                    hold_badge::update_transcript(cursor_token, &channel_open_label(digit));
-                    let source = Arc::new(ChannelSegmentSource {
-                        label: session_label.clone(),
-                        audience: bound.audience.clone(),
-                        bus: bound
-                            .bus
-                            .clone()
-                            .unwrap_or_else(|| shared_bus.to_path_buf()),
-                        broadcast_buses,
-                        recipients,
-                        runtime_settings: Arc::clone(&runtime_settings),
-                        language: runtime_settings
-                            .values()
-                            .whisper_language
-                            .whisper_hint()
-                            .map(str::to_string),
-                        cursor_token,
-                        generation: Arc::new(AtomicU64::new(1)),
-                    });
-                    let parts =
-                        open_channel_segment(&source, document_id.clone(), &speech_clock, digit);
-                    last_text = Arc::clone(&parts.last_text);
-                    refinement_warnings = Arc::clone(&parts.refinement_warnings);
-                    let sink: Arc<dyn EventSink> = parts.emitter.clone();
-                    // The first channel may own the physical microphone without a
-                    // dictation take. Install its measured level tap before the
-                    // recorder freezes the callback; a later subscriber keeps the
-                    // tap already feeding the shared capture.
+                }
+                // The Pointer Indicator knob rules every badge path: Settings
+                // promises "Base size; Agent mode stays proportionally larger",
+                // so the channel dot is the persisted base times the Assistive
+                // multiplier, and Off means no dot while the channel listens.
+                let badge_settings = Config::load_without_keychain();
+                if badge_settings.hold_indicator {
+                    hold_badge::show_hold_badge_with_config(
+                        hold_badge::HoldBadgeConfig::from_mode_with_base_diameter(
+                            BadgeMode::Assistive,
+                            f64::from(badge_settings.hold_badge_size),
+                        ),
+                    );
+                }
+                let cursor_token = hold_badge::take_token();
+                hold_badge::update_transcript(cursor_token, &channel_open_label(digit));
+                let source = Arc::new(ChannelSegmentSource {
+                    label: session_label.clone(),
+                    audience: bound.audience.clone(),
+                    bus: bound
+                        .bus
+                        .clone()
+                        .unwrap_or_else(|| shared_bus.to_path_buf()),
+                    broadcast_buses,
+                    recipients,
+                    runtime_settings: Arc::clone(&runtime_settings),
+                    language: runtime_settings
+                        .values()
+                        .whisper_language
+                        .whisper_hint()
+                        .map(str::to_string),
+                    cursor_token,
+                    generation: Arc::new(AtomicU64::new(1)),
+                });
+                let parts = open_channel_segment(
+                    &source,
+                    document_id.clone(),
+                    capture,
+                    &speech_clock,
+                    digit,
+                );
+                last_text = Arc::clone(&parts.last_text);
+                refinement_warnings = Arc::clone(&parts.refinement_warnings);
+                let sink: Arc<dyn EventSink> = parts.emitter.clone();
+                let participant = ChannelParticipantOpen { owner, sink };
+                let opened = if initiates {
+                    // The first channel may own the physical microphone
+                    // without a dictation take. Install its measured level
+                    // tap before the recorder freezes the callback; a
+                    // joining channel keeps the tap already feeding the
+                    // shared capture.
                     let opens_physical_capture = !recorder.recorder.is_active();
                     Self::configure_level_broadcast(recorder, self.event_broadcast.clone());
-                    match recorder
+                    let opened = recorder
                         .begin_channel_session(
-                            document_id.clone(),
-                            Arc::clone(&runtime_settings),
-                            sink,
-                            source.language.clone(),
+                            crate::audio::streaming_recorder::ChannelSessionSpec {
+                                session_id: capture_session_id.clone(),
+                                runtime_settings: Arc::clone(&runtime_settings),
+                                language: source.language.clone(),
+                                acoustic_ledger: Arc::clone(&ledger),
+                                participant,
+                            },
                             silence_sec,
-                            Arc::clone(&parts.ledger),
                         )
-                        .await
-                    {
-                        Ok(id) => (
-                            id,
-                            Some(session_label),
-                            Some(document_id),
-                            Some(parts.transcript_bus),
-                            Some(parts.ledger),
-                            Some(parts.emitter),
-                            Some(source),
-                        ),
-                        Err(error) => {
-                            if opens_physical_capture {
-                                recorder.set_level_callback(None);
-                            }
-                            super::finish_audio_capture(Some(document_id.as_str()));
-                            if channels.is_empty() {
-                                hold_badge::hide_hold_badge();
-                            }
-                            return Err(error);
+                        .await;
+                    if opened.is_err() {
+                        if opens_physical_capture {
+                            recorder.set_level_callback(None);
                         }
+                        super::finish_audio_capture(Some(capture_session_id.as_str()));
+                    }
+                    opened
+                } else {
+                    recorder.join_channel_session(participant)
+                };
+                match opened {
+                    Ok(participation) => (
+                        participation.id,
+                        Some(session_label),
+                        Some(document_id),
+                        Some(parts.transcript_bus),
+                        Some(ledger),
+                        Some(parts.emitter),
+                        Some(source),
+                        Some(participation),
+                    ),
+                    Err(error) => {
+                        if channels.is_empty() {
+                            hold_badge::hide_hold_badge();
+                        }
+                        return Err(error);
                     }
                 }
-            };
+            }
+        };
 
         self.follow_cohort(digit, transcript_bus.as_ref());
         let audience = bound.audience.clone();
@@ -1563,6 +1693,10 @@ impl RecordingController {
                 refinement_warnings,
                 transcript_bus,
                 capture_ledger,
+                capture_session_id: participation
+                    .as_ref()
+                    .map(|participation| participation.capture_session_id.clone()),
+                participation,
             },
         );
         self.publish_cohort(&channels);
@@ -1635,8 +1769,10 @@ impl RecordingController {
                 Some(Self::CHANNEL_CAPTURE_EPOCH),
             );
         };
+        // The ledger's occurrences name the shared capture, not the message.
+        let capture_session = open.capture_session_id.as_deref().unwrap_or(&session_id);
         let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
-        TakeTruth::observe_ledger(&ledger, &session_id, Self::CHANNEL_CAPTURE_EPOCH)
+        TakeTruth::observe_ledger(&ledger, capture_session, Self::CHANNEL_CAPTURE_EPOCH)
     }
 
     /// Release the channel's capture interest before recognition/archive drain.
@@ -1654,10 +1790,15 @@ impl RecordingController {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .withdraw_now();
-        let retained_capture =
-            super::retainable_session_id(open.session_id.as_deref()).and_then(|id| {
-                codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
-            });
+        // The shared capture owns the retention lease, never one channel.
+        let retained_capture = super::retainable_session_id(
+            open.capture_session_id
+                .as_deref()
+                .or(open.session_id.as_deref()),
+        )
+        .and_then(|id| {
+            codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
+        });
         let shared_bus = shared_bus.to_path_buf();
         let live = matches!(open.mode, ChannelOpenMode::Live);
         let recorder = Arc::clone(&self.recorder);
@@ -1677,7 +1818,11 @@ impl RecordingController {
                                 .await_stop_pause(Some(open.subscriber), stopped_at)
                                 .await;
                         }
-                        if recorder.capture_subscriber_count() == 1
+                        // The shared stream is one subscriber however many
+                        // channels listen: only its last participant drops
+                        // the level tap.
+                        if recorder.channel_participant_count() <= 1
+                            && recorder.capture_subscriber_count() == 1
                             && !recorder.has_take_subscriber()
                         {
                             recorder.set_level_callback(None);
@@ -1743,11 +1888,14 @@ impl RecordingController {
     }
 
     /// A continuous session's pause after heard voice: seal and deliver the
-    /// message, and start the next one on the same capture subscription. The
-    /// physical capture, the subscriber count and the session's open row stay
-    /// as they are; only the message's document, ledger and archive turn over.
-    /// The previous message settles in its own tail and never holds the
-    /// microphone or the next message.
+    /// message, and start the next one on the shared capture. The physical
+    /// capture, the subscriber count and the session's open row stay as they
+    /// are; only the message's document turns over. Alone on the shared
+    /// stream, the next message turns the stream over too (fresh capture,
+    /// ledger and archive). With companions the stream keeps running and the
+    /// next message starts at the current sample. The previous message
+    /// settles in its own tail and never holds the microphone or the next
+    /// message.
     async fn continue_channel_after_message(&self, digit: u8, shared_bus: &Path) -> Result<()> {
         let mut channels = self.agent_channels.lock().await;
         let Some(open) = channels.get_mut(&digit) else {
@@ -1760,42 +1908,76 @@ impl RecordingController {
         let closed = match open.segment_source.clone() {
             Some(source) => {
                 let document_id = segment_document_id(&source.label, next_index);
-                super::begin_audio_capture(
-                    &document_id,
-                    source.runtime_settings.values().audio_retention,
-                )
-                .await?;
-                source.generation.fetch_add(1, Ordering::SeqCst);
-                let parts =
-                    open_channel_segment(&source, document_id.clone(), &open.speech_clock, digit);
-                let sink: Arc<dyn EventSink> = parts.emitter.clone();
-                let rotated = {
-                    let mut recorder_guard = self.recorder.lock().await;
-                    match recorder_guard.as_mut() {
-                        Some(recorder) => {
-                            recorder
-                                .rotate_channel_segment(
-                                    open.subscriber,
-                                    crate::audio::streaming_recorder::ChannelSessionSpec {
-                                        session_id: document_id.clone(),
-                                        runtime_settings: Arc::clone(&source.runtime_settings),
-                                        event_sink: sink,
-                                        language: source.language.clone(),
-                                        acoustic_ledger: Arc::clone(&parts.ledger),
-                                    },
-                                    open.silence_sec,
-                                )
-                                .await
-                        }
-                        None => Err(anyhow!("recording controller has no recorder")),
+                let mut recorder_guard = self.recorder.lock().await;
+                let Some(recorder) = recorder_guard.as_mut() else {
+                    return Err(anyhow!("recording controller has no recorder"));
+                };
+                let turns_over = recorder.channel_rotation_turns_over(open.subscriber);
+                let capture = if turns_over {
+                    ChannelSegmentCapture {
+                        capture_session_id: shared_capture_id(),
+                        ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
+                        seat: DeliverySeat::Primary,
+                    }
+                } else {
+                    let view = recorder.shared_channel_view().ok_or_else(|| {
+                        anyhow!("channel message continuation found no shared capture")
+                    })?;
+                    ChannelSegmentCapture {
+                        capture_session_id: view.capture_session_id,
+                        ledger: view.acoustic_ledger,
+                        // A message boundary keeps the session's seat.
+                        seat: open
+                            .participation
+                            .as_ref()
+                            .map_or(DeliverySeat::Primary, |participation| participation.seat),
                     }
                 };
-                let closed = match rotated {
-                    Ok(closed) => closed,
+                let capture_session_id = capture.capture_session_id.clone();
+                let ledger = Arc::clone(&capture.ledger);
+                if turns_over {
+                    super::begin_audio_capture(
+                        &capture_session_id,
+                        source.runtime_settings.values().audio_retention,
+                    )
+                    .await?;
+                }
+                source.generation.fetch_add(1, Ordering::SeqCst);
+                let parts = open_channel_segment(
+                    &source,
+                    document_id.clone(),
+                    capture,
+                    &open.speech_clock,
+                    digit,
+                );
+                let sink: Arc<dyn EventSink> = parts.emitter.clone();
+                let owner = participant_owner(
+                    digit,
+                    open.provider.as_deref(),
+                    open.provider_session_id.as_deref(),
+                );
+                let rotated = recorder
+                    .rotate_channel_segment(
+                        open.subscriber,
+                        crate::audio::streaming_recorder::ChannelSessionSpec {
+                            session_id: capture_session_id.clone(),
+                            runtime_settings: Arc::clone(&source.runtime_settings),
+                            language: source.language.clone(),
+                            acoustic_ledger: Arc::clone(&ledger),
+                            participant: ChannelParticipantOpen { owner, sink },
+                        },
+                        open.silence_sec,
+                    )
+                    .await;
+                drop(recorder_guard);
+                let (participation, closed) = match rotated {
+                    Ok(rotated) => rotated,
                     Err(error) => {
                         // The previous message is still current; the
                         // session's close delivers it.
-                        super::finish_audio_capture(Some(document_id.as_str()));
+                        if turns_over {
+                            super::finish_audio_capture(Some(capture_session_id.as_str()));
+                        }
                         return Err(error);
                     }
                 };
@@ -1808,10 +1990,13 @@ impl RecordingController {
                     );
                     bus.freeze_co_audience(cohort);
                 }
+                open.subscriber = participation.id;
+                open.capture_session_id = Some(participation.capture_session_id.clone());
+                open.participation = Some(participation);
                 open.session_id = Some(document_id);
                 open.last_text = parts.last_text;
                 open.refinement_warnings = parts.refinement_warnings;
-                open.capture_ledger = Some(parts.ledger);
+                open.capture_ledger = Some(ledger);
                 open.emitter = Some(parts.emitter);
                 open.transcript_bus = Some(parts.transcript_bus);
                 Some(closed)
@@ -1850,10 +2035,17 @@ impl RecordingController {
         drop(channels);
         self.follow_cohort(digit, follow.as_ref());
 
-        let retained_capture = super::retainable_session_id(previous.session_id.as_deref())
-            .and_then(|id| {
-                codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
-            });
+        // The shared capture owns the retention lease; the previous message's
+        // close uses it only when that close released the stream.
+        let retained_capture = super::retainable_session_id(
+            previous
+                .capture_session_id
+                .as_deref()
+                .or(previous.session_id.as_deref()),
+        )
+        .and_then(|id| {
+            codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
+        });
         let live = matches!(previous.mode, ChannelOpenMode::Live);
         let settlement = Self::settle_closed_channel(
             digit,
@@ -1983,6 +2175,13 @@ impl RecordingController {
             retained_capture,
             order,
         } = tail;
+        // Only the close that released a shared stream (its last participant,
+        // or a lone message's turnover) owns that stream's archive, retention
+        // and capture lease; a message that leaves companions on the stream
+        // settles its own interval and leaves the capture running.
+        let released_stream = closed
+            .as_ref()
+            .is_none_or(crate::audio::streaming_recorder::ClosedChannel::released_stream);
         let stopped = match closed {
             Some(closed) => closed.finish().await.map(|(_, path)| path),
             None => Ok(None),
@@ -2031,6 +2230,9 @@ impl RecordingController {
                 )
             }
         };
+        if !released_stream && let Some(emitter) = open.emitter.as_ref() {
+            emitter.note_channel_detached();
+        }
         // The producer joined above. Finish the message (formatter work may
         // run while an earlier message of this session is still settling),
         // then wait for that earlier delivery so messages never reorder.
@@ -2060,22 +2262,39 @@ impl RecordingController {
         // that handle. This is not the dictation recorder's ledger.
         let observer = Self::channel_take_observer(&open);
         if let Some(path) = retained_audio.as_deref() {
-            // W5 retention parity: a capture the channel owned joins the same
+            // W5 retention parity: a capture the channels owned joins the same
             // take store and retention rules as dictation. The path is the
-            // message's own subscriber-scoped archive; the device spill spans
-            // other sessions and never enters this retention. The slug carries
-            // the heard words; a voiceless close archives as no-speech.
+            // shared stream's own subscriber-scoped archive, retained under
+            // the capture session, never a channel session, so no follower
+            // maps another channel's audio to its own take. The device spill
+            // spans other sessions and never enters this retention. The slug
+            // carries the heard words; a voiceless close archives as
+            // no-speech.
             let heard = open
                 .last_text
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .clone();
+            // A capture several intervals shared has no single document: each
+            // message's words live on its own bus. One message's text is never
+            // archived as the shared take's transcript.
+            let shared_by = open
+                .participation
+                .as_ref()
+                .map_or(1, |participation| participation.demux.intervals().len());
+            let shared_detail =
+                "shared multi-channel capture: each recipient's document lives on its own bus";
             super::retain_session_audio_with_lease(
-                open.session_id.as_deref(),
+                open.capture_session_id
+                    .as_deref()
+                    .or(open.session_id.as_deref()),
                 path,
                 match failure_detail.as_deref() {
                     Some(detail) => {
                         codescribe_core::state::SessionTranscriptArchive::Unavailable(detail)
+                    }
+                    None if shared_by > 1 => {
+                        codescribe_core::state::SessionTranscriptArchive::Unavailable(shared_detail)
                     }
                     None => codescribe_core::state::SessionTranscriptArchive::Committed(&heard),
                 },
@@ -2127,10 +2346,13 @@ impl RecordingController {
             if let Some(delivery) = &delivery {
                 row["delivered_revision"] = serde_json::json!(delivery.revision);
             }
+            if let Some(participation) = open.participation.as_ref() {
+                row["participation"] = participation_receipt(participation);
+            }
             rows.push(row);
         }
         if close == ChannelClose::Session {
-            rows.push(seal_receipt_line(
+            let mut row = seal_receipt_line(
                 reason,
                 &session,
                 if message_document {
@@ -2138,7 +2360,11 @@ impl RecordingController {
                 } else {
                     &refinement_warnings
                 },
-            ));
+            );
+            if let Some(participation) = open.participation.as_ref() {
+                row["participation"] = participation_receipt(participation);
+            }
+            rows.push(row);
         }
         let mut receipt = Ok(());
         for row in &rows {
@@ -2151,7 +2377,13 @@ impl RecordingController {
                 receipt = Err(error);
             }
         }
-        super::finish_audio_capture(open.session_id.as_deref());
+        if released_stream {
+            super::finish_audio_capture(
+                open.capture_session_id
+                    .as_deref()
+                    .or(open.session_id.as_deref()),
+            );
+        }
         drop(retained_capture);
         if let Some(done) = done {
             let _ = done.send(());
