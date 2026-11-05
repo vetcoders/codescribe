@@ -310,7 +310,7 @@ final class OverlayComposerAttachmentPreviewTests: XCTestCase {
       overlayComposer.contains(".onDisappear { attachmentPicker.cancel() }"),
       "overlay composer cancels its active picker on disappear")
     let overlayPick = try section(
-      of: overlayComposer, from: "private func pickAttachments()", to: "struct ComposerMicrophoneHintState")
+      of: overlayComposer, from: "private func pickAttachments()", to: "private var composerContent: some View")
     XCTAssertTrue(
       overlayPick.contains("attachmentPicker.present"),
       "overlay pickAttachments routes through attachmentPicker.present")
