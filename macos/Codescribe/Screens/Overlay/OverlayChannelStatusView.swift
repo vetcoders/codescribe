@@ -258,6 +258,35 @@ struct OverlayDisconnectedRowDim: ViewModifier {
   }
 }
 
+/// The list's one fold button (Monika, 2026-11-05: "jeden po prawej stronie
+/// to był dokładnie taki układ, jaki chciałam"): a muted glyph blended into
+/// the background with the rows' hover wash (Maciej, 2026-10-19: "wtopione w
+/// tło"). The same button heads the list and the folded rail.
+struct OverlaySidebarToggleButton: View {
+  let symbol: String
+  let title: String
+  let identifier: String
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 13 * textScale))
+        .frame(width: 22 * textScale, height: 22 * textScale)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .focusable(false)
+    .foregroundStyle(palette.mutedText.color)
+    .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 6))
+    .accessibilityLabel(Text(verbatim: title))
+    .accessibilityHint(Text(verbatim: title))
+    .accessibilityIdentifier(identifier)
+  }
+}
+
 /// The drawer's clickable rows answer the pointer the way the tray's plain
 /// rows do: the whole row is the hover target, a raised wash appears on
 /// enter, and leave clears it. The wash does not hit-test, so the row's own
@@ -1185,6 +1214,10 @@ struct OverlayChannelStatusView: View {
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?
   var onGestureHover: ((String) -> Void)?
+  /// The list's fold and the rail's unfold: one `sidebar.right` at the top
+  /// right of either column. Nil leaves the column without the button.
+  var onFoldList: (() -> Void)?
+  var onUnfoldList: (() -> Void)?
   var searchModel: OverlayConversationSearchModel?
   @State private var internalSearchModel = OverlayConversationSearchModel()
 
@@ -1504,8 +1537,8 @@ struct OverlayChannelStatusView: View {
   }
 
   /// The folded list (Maciej, 2026-10-19: "zostawia pigułki"): one pill per
-  /// row of the list, channel 0 first. The list's minimal view: its divider
-  /// unfolds it, no button does. A pill switches the conversation and the
+  /// row of the list, channel 0 first, under the `sidebar.right` that unfolds
+  /// it; the divider unfolds it too. A pill switches the conversation and the
   /// list stays folded.
   func railBody(maximumHeight: CGFloat) -> some View {
     OverlayTextScaleReader { scale in
@@ -1516,7 +1549,8 @@ struct OverlayChannelStatusView: View {
   }
 
   private func scaledRailBody(maximumHeight: CGFloat) -> some View {
-    let viewportHeight = max(0, maximumHeight - 8)
+    let unfold = onUnfoldList == nil ? 0 : 22 * textScale + 8
+    let viewportHeight = max(0, maximumHeight - 8 - unfold)
     let rowCount =
       channels.count
       + (currentConversations.contains(where: { $0.channel == "0" }) ? 1 : 0)
@@ -1527,7 +1561,15 @@ struct OverlayChannelStatusView: View {
       ? 0
       : min(
         6, max(0, (viewportHeight - CGFloat(rowCount) * 24 * textScale - 4) / CGFloat(gapCount)))
-    return VStack(spacing: 0) {
+    return VStack(spacing: 8) {
+      // The button lands where `sidebar.right` folded the list: the same
+      // inset, above the first row.
+      if let onUnfoldList {
+        OverlaySidebarToggleButton(
+          symbol: "sidebar.right", title: String(localized: "Show agents list"),
+          identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
+          action: onUnfoldList)
+      }
       ScrollView(.vertical, showsIndicators: false) {
         VStack(spacing: rowSpacing) {
           if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
@@ -1849,10 +1891,19 @@ struct OverlayChannelStatusView: View {
       maximumHeight: maximumHeight, palette: palette,
       focusRevision: focusRevision, focusedRowID: selectedConversationID,
       scrollTargetID: gestureFocusID,
-      // No "Agents" row: the list says what it is, and its divider is its fold.
-      showsHeader: false
+      // No "Agents" title (Maciej, 2026-11-01): the list says what it is. The
+      // row keeps only the fold at its right (Monika, 2026-11-05).
+      showsHeader: onFoldList != nil
     ) {
-      EmptyView()
+      HStack(spacing: 0) {
+        Spacer(minLength: 0)
+        if let onFoldList {
+          OverlaySidebarToggleButton(
+            symbol: "sidebar.right", title: String(localized: "Hide agents list"),
+            identifier: "overlay-agent-sidebar-fold", palette: palette, textScale: textScale,
+            action: onFoldList)
+        }
+      }
     } pinned: {
       // Nothing floats over the list: the mailboxes are its first rows
       // (Monika, 2026-11-04: one sidebar, no separate card on top).
