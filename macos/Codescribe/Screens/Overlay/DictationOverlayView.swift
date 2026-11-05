@@ -1401,7 +1401,8 @@ struct DictationOverlayView: View {
     // across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
     // Every use below is mini's: one mini in both layouts.
     let mapEnabled = state.channelMapInMini
-    let map = channelMap
+    let roster = channelStatusView
+    let map = channelMap(roster: roster)
     let horizontalMap = density == .midi && state.channelMapInHeader && map != nil
     // The vertical layout's stacked counter is the visible way to the Intercom
     // group, so it keeps the brand's side in every form, mini included
@@ -1504,7 +1505,7 @@ struct DictationOverlayView: View {
       // The vertical layout's stacked counter already circles the open
       // digits beside the brand, so only the horizontal mini adds the row.
       if miniTake, !state.channelMapCounterStacked {
-        miniAddressees
+        miniAddressees(roster: roster)
       }
       // The expanded bar's channel map (bus intercom spec §5.1): stacked pills
       // after the clock, or the bar's second row (`OverlayBarLayout`).
@@ -1522,7 +1523,7 @@ struct DictationOverlayView: View {
           // any channel records, a press is that capture's stop, never
           // channel 0 or the monitor.
           recordingControls(compact: false, showsPreview: false)
-          channelStatusView
+          roster
           recordingControls(compact: false, showsMicrophone: false)
         } else {
           if let error = state.expansionPreferenceError {
@@ -1533,7 +1534,7 @@ struct DictationOverlayView: View {
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")
           }
-          channelStatusView
+          roster
           OverlayPinButton(state: state, palette: palette)
           recordingControls(compact: false)
         }
@@ -1580,11 +1581,10 @@ struct DictationOverlayView: View {
   /// the Intercom group, stays in every form, mini included (Maciej,
   /// 2026-10-23), so narrowing the overlay never removes the way to the group.
   /// Internal so tests can drive the header's same values.
-  var channelMap: OverlayChannelMapView? {
+  func channelMap(roster: OverlayChannelStatusView) -> OverlayChannelMapView? {
     guard state.presentationMode != .mini || state.channelMapCounterStacked else { return nil }
     let counterOnly = state.channelMapCounterStacked
     guard counterOnly || state.channelMapInHeader else { return nil }
-    let roster = channelStatusView
     let model = roster.channelMapModel
     guard !model.chips.isEmpty else { return nil }
     return OverlayChannelMapView(
@@ -1607,8 +1607,7 @@ struct DictationOverlayView: View {
   /// as a bar chip does; the megaphone is a sign, not a control. The window
   /// sizes mini from the same values (`DictationOverlayWindow.miniAddresseesWidth`).
   @ViewBuilder
-  private var miniAddressees: some View {
-    let roster = channelStatusView
+  private func miniAddressees(roster: OverlayChannelStatusView) -> some View {
     let open = roster.channelMapModel.chips.filter(\.microphoneOpen)
     let modifier = state.agentChannelModifier
     // A broadcast on channel 0 draws no addressee: the Agents button already
