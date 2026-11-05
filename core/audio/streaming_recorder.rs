@@ -744,6 +744,7 @@ pub struct StreamingRecorder {
     /// The one recognition stream every open agent channel shares. Separate
     /// from the take's `transcription_handle`.
     shared_channel: Option<SharedChannelCapture>,
+    channel_recognizer_factory: Option<Arc<ChannelRecognizerSessionFactory>>,
     captured_samples: Arc<AtomicU64>,
     /// Exact take archive, independent of the physical capture's lifetime.
     take_archive: Option<TakeArchive>,
@@ -904,6 +905,16 @@ pub struct ChannelSessionSpec {
     pub participant: ChannelParticipantOpen,
 }
 
+/// Injectable channel-session ingress. The factory receives the production
+/// feed, sink and configuration; archive ownership stays in the recorder.
+pub type ChannelRecognizerSessionFactory = dyn Fn(
+        mpsc::Receiver<Vec<f32>>,
+        Arc<dyn EventSink>,
+        SessionConfig,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+    + Send
+    + Sync;
+
 /// The single recognition stream for every open agent channel: one capture
 /// subscriber, one `transcription_session`, one ledger and one archive,
 /// however many of the 1..=9 channels listen. The channel that opened it is
@@ -965,6 +976,17 @@ pub fn channel_session_silence(configured_sec: f32) -> Option<f32> {
 }
 
 impl StreamingRecorder {
+    /// Count/replace recognition without replacing capture, PCM fan-out or WAV
+    /// creation. Unit tests can enter `spawn_shared_channel_stream` directly;
+    /// cross-crate harnesses opt into the existing test-isolation feature.
+    #[cfg(any(test, feature = "test-isolation"))]
+    pub fn set_channel_recognizer_factory(
+        &mut self,
+        factory: Arc<ChannelRecognizerSessionFactory>,
+    ) {
+        self.channel_recognizer_factory = Some(factory);
+    }
+
     /// Seal order from the immutable generation bound to this capture.
     pub fn seal_lane_armed(&self) -> bool {
         self.runtime_settings
@@ -1009,6 +1031,7 @@ impl StreamingRecorder {
             take_subscriber: None,
             pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
             shared_channel: None,
+            channel_recognizer_factory: None,
             captured_samples: Arc::new(AtomicU64::new(0)),
             take_archive: None,
             prepared_capture_archive: None,
@@ -1049,6 +1072,7 @@ impl StreamingRecorder {
             take_subscriber: None,
             pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
             shared_channel: None,
+            channel_recognizer_factory: None,
             captured_samples: Arc::new(AtomicU64::new(0)),
             take_archive: None,
             prepared_capture_archive: None,
@@ -1794,29 +1818,29 @@ impl StreamingRecorder {
         sink.on_capture_opened(&session_id, 1);
         let task_session_id = session_id.clone();
         let task_ledger = Arc::clone(&acoustic_ledger);
+        let factory = self.channel_recognizer_factory.clone();
         let task = tokio::spawn(async move {
-            transcription_session(
-                feed,
-                sink,
-                SessionConfig {
-                    session_id: task_session_id,
-                    capture_epoch: 1,
-                    runtime_settings,
-                    live_formatting_agent: None,
-                    acoustic_ledger: task_ledger,
-                    sample_rate: actual_sample_rate,
-                    capture_device_name,
-                    language,
-                    stream_log_path: None,
-                    utterance_silence_sec,
-                    capture_turn: CaptureTurnIntent::AgentChannel,
-                    layer1,
-                    lifecycle_events: Some(lifecycle_events),
-                    terminal_audio,
-                    last_window_closed: Some(last_window_tx),
-                },
-            )
-            .await;
+            let config = SessionConfig {
+                session_id: task_session_id,
+                capture_epoch: 1,
+                runtime_settings,
+                live_formatting_agent: None,
+                acoustic_ledger: task_ledger,
+                sample_rate: actual_sample_rate,
+                capture_device_name,
+                language,
+                stream_log_path: None,
+                utterance_silence_sec,
+                capture_turn: CaptureTurnIntent::AgentChannel,
+                layer1,
+                lifecycle_events: Some(lifecycle_events),
+                terminal_audio,
+                last_window_closed: Some(last_window_tx),
+            };
+            match factory {
+                Some(factory) => factory(feed, sink, config).await,
+                None => transcription_session(feed, sink, config).await,
+            }
         });
         self.shared_channel = Some(SharedChannelCapture {
             task: ChannelTask {
