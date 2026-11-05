@@ -292,10 +292,49 @@ final class LicenseServiceTests: XCTestCase {
 
     XCTAssertEqual(service.readState, .unavailable)
     XCTAssertEqual(service.lastError, "Couldn't verify the saved license. Try again.")
-    XCTAssertEqual(service.lastErrorDetails, "license signature verification failed")
+    XCTAssertEqual(
+      service.lastErrorDetails,
+      LicenseReasonCopy.sentence("license signature verification failed")
+    )
     XCTAssertFalse(service.lastErrorDetails?.contains("CsError") ?? true)
     XCTAssertEqual(storage.data, durable, "presentation must not delete or replace the stored license")
     XCTAssertFalse(service.canUseAgentic)
+  }
+
+  func testLicenseReasonCopyTranslatesKnownReasonsAndPreservesUnknownReason() {
+    let known = [
+      (
+        "license key must have three dot-separated parts",
+        String(localized: "The license key must have three dot-separated parts.")
+      ),
+      (
+        "unsupported license key prefix",
+        String(localized: "The license key has an unsupported prefix.")
+      ),
+      (
+        "license payload is not valid base64url",
+        String(localized: "The license payload is not valid base64url.")
+      ),
+      (
+        "license signature is not a valid Ed25519 signature",
+        String(localized: "The license signature is not a valid Ed25519 signature.")
+      ),
+      (
+        "license signature verification failed",
+        String(localized: "The license signature could not be verified.")
+      ),
+      (
+        "invalid license payload: missing sku",
+        String(localized: "Invalid license payload: \("missing sku")")
+      ),
+    ]
+    for (reason, expected) in known {
+      XCTAssertEqual(LicenseReasonCopy.sentence(reason), expected)
+    }
+    XCTAssertEqual(
+      LicenseReasonCopy.sentence("custom diagnostic from future core"),
+      "custom diagnostic from future core"
+    )
   }
 
   func testUnexpectedVerificationErrorDoesNotReflectItsInput() async throws {

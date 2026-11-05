@@ -1495,14 +1495,14 @@ final class SettingsTruthTests: XCTestCase {
   func testCreatorLanguagePresentationKeepsTruthfulIdentity() {
     let choices = LanguageIdentityPresentation.choices
 
-    XCTAssertEqual(choices.map(\.title), ["Multilingual", "Polish", "English"])
+    XCTAssertEqual(choices.map(\.title), ["Auto", "Polish", "English"])
     XCTAssertEqual(choices.map(\.isFineTuned), [false, true, true])
     // The row sentence explains only the one non-obvious choice; the
     // fine-tuned-models detail left the base view (Founder brief, round 4,
     // 2026-10-10), and the Dictionary footnote moved off this row earlier.
     XCTAssertEqual(
       LanguageIdentityPresentation.supportingCopy,
-      "Multilingual detects the language automatically."
+      "Automatically detects the transcription language."
     )
     XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
     XCTAssertFalse(

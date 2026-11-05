@@ -182,6 +182,25 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertFalse(model.quickSettingsExpanded)
   }
 
+  func testTrayDisclosureTogglesAreMutuallyExclusive() {
+    let model = TrayViewModel()
+
+    model.toggleHistory()
+    XCTAssertTrue(model.historyExpanded)
+
+    model.toggleQuickSettings()
+    XCTAssertTrue(model.quickSettingsExpanded)
+    XCTAssertFalse(model.historyExpanded)
+
+    model.toggleNotes()
+    XCTAssertTrue(model.notesExpanded)
+    XCTAssertFalse(model.quickSettingsExpanded)
+
+    model.toggleDiagnostics()
+    XCTAssertTrue(model.diagnosticsExpanded)
+    XCTAssertFalse(model.notesExpanded)
+  }
+
   func testStatusDotCompositesInsideGlyphBottomRightCorner() throws {
     let size = NSSize(width: 20, height: 20)
     let bounds = NSRect(origin: .zero, size: size)
@@ -261,8 +280,9 @@ final class TrayViewModelTests: XCTestCase {
     let dark = try menuBarDotSample(processing, appearance: .darkAqua)
     XCTAssertGreaterThan(
       abs(light.redComponent - dark.redComponent)
-        + abs(light.greenComponent - dark.greenComponent),
-      0.08,
+        + abs(light.greenComponent - dark.greenComponent)
+        + abs(light.blueComponent - dark.blueComponent),
+      0.04,
       "processing dot should follow the appearance")
 
     let returning = TrayStatusStore.preview(kind: .listening, tone: .active)

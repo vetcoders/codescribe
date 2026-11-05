@@ -51,8 +51,10 @@ enum DockPresence {
     if window.isMiniaturized {
       window.deminiaturize(nil)
     }
-    window.styleMask = styleMask(window.styleMask)
-    guard !(window is HidingWindow) else { return }
+    guard !(window is HidingWindow) else {
+      window.styleMask = styleMask(window.styleMask)
+      return
+    }
     let key = ObjectIdentifier(window)
     if let hider = hiders[key], hider.isAttached(to: window) {
       hider.retargetMinimiseButton()
@@ -130,10 +132,17 @@ private final class MinimiseHider: NSObject {
         MainActor.assumeIsolated { self?.invalidate() }
       },
       // AppKit and SwiftUI's titlebar bridging revalidate (and can replace)
-      // the standard buttons after adoption; every key moment re-points the
-      // yellow button at hide and re-enables it.
+      // the standard buttons after adoption, including while this window
+      // remains key. Restore the hide control after either lifecycle event.
       center.addObserver(
         forName: NSWindow.didBecomeKeyNotification,
+        object: window,
+        queue: .main
+      ) { [weak self] _ in
+        MainActor.assumeIsolated { self?.retargetMinimiseButton() }
+      },
+      center.addObserver(
+        forName: NSWindow.didUpdateNotification,
         object: window,
         queue: .main
       ) { [weak self] _ in
@@ -148,10 +157,35 @@ private final class MinimiseHider: NSObject {
 
   /// Point the yellow button at `hide(_:)` instead of `performMiniaturize:`.
   func retargetMinimiseButton() {
-    guard let button = window?.standardWindowButton(.miniaturizeButton) else { return }
-    button.target = self
-    button.action = #selector(hide(_:))
-    button.isEnabled = true
+    guard let window else { return }
+    func pointAtHide(_ button: NSButton?) {
+      guard let button else { return }
+      if button.target !== self { button.target = self }
+      if button.action != #selector(hide(_:)) { button.action = #selector(hide(_:)) }
+    }
+    // Retarget any existing button BEFORE inserting `.miniaturizable`: on a
+    // visible accessory window, AppKit validates the button inside the
+    // `styleMask` setter and locks `_NSThemeWidget` disabled if its action is
+    // still `performMiniaturize:` / `miniaturize:`.
+    pointAtHide(window.standardWindowButton(.miniaturizeButton))
+    let mask = DockPresence.styleMask(window.styleMask)
+    if window.styleMask != mask { window.styleMask = mask }
+    guard let button = window.standardWindowButton(.miniaturizeButton) else { return }
+    // didUpdate may follow a titlebar repair. Leave a correct button alone
+    // so observing updates cannot keep invalidating the titlebar itself.
+    pointAtHide(button)
+    if !button.isEnabled { button.isEnabled = true }
+    if !button.isEnabled {
+      var stripped = window.styleMask
+      stripped.remove(.miniaturizable)
+      window.styleMask = stripped
+      pointAtHide(window.standardWindowButton(.miniaturizeButton))
+      window.styleMask = mask
+      if let refreshed = window.standardWindowButton(.miniaturizeButton) {
+        pointAtHide(refreshed)
+        if !refreshed.isEnabled { refreshed.isEnabled = true }
+      }
+    }
   }
 
   @objc func hide(_ sender: Any?) {

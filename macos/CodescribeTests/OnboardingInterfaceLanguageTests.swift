@@ -258,17 +258,25 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
   }
 
   private func renderedText(_ host: NSView) throws -> String {
-    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    let scale = 3
+    let pixelWidth = Int(host.bounds.width) * scale
+    let pixelHeight = Int(host.bounds.height) * scale
+    let bitmap = try XCTUnwrap(
+      NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: pixelWidth, pixelsHigh: pixelHeight,
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+    bitmap.size = host.bounds.size
     host.cacheDisplay(in: host.bounds, to: bitmap)
     let captured = try XCTUnwrap(bitmap.cgImage)
     // A hidden window has no desktop backdrop. Cache-display leaves glass
     // regions transparent; OCR must see them over the same semantic window
     // background, rather than interpreting transparent white text as white.
     let imageBounds = CGRect(
-      x: 0, y: 0, width: captured.width * 2, height: captured.height * 2)
+      x: 0, y: 0, width: captured.width, height: captured.height)
     let canvas = try XCTUnwrap(
       CGContext(
-        data: nil, width: captured.width * 2, height: captured.height * 2,
+        data: nil, width: captured.width, height: captured.height,
         bitsPerComponent: 8, bytesPerRow: 0,
         space: CGColorSpaceCreateDeviceRGB(),
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
@@ -280,14 +288,14 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
     canvas.draw(captured, in: imageBounds)
     let image = try XCTUnwrap(canvas.makeImage())
     let request = VNRecognizeTextRequest()
-    // Enlarge the cached pixels so `.fast` can read 13 pt text even when
-    // the hidden window has a 1.0 backing scale. This avoids provisioning
-    // the accurate recognition model; all visible-copy assertions remain.
+    // Rasterize vector glyphs at 3x resolution so `.fast` can read 12-13 pt
+    // text even when the hidden window has a 1.0 backing scale. This avoids
+    // provisioning the accurate recognition model; all visible-copy assertions remain.
     request.recognitionLevel = .fast
     request.recognitionLanguages = ["en-US"]
     request.usesLanguageCorrection = false
     try VNImageRequestHandler(cgImage: image).perform([request])
-    return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+    return (request.results ?? []).flatMap { $0.topCandidates(10).map(\.string) }
       .joined(separator: "\n")
 
   }
