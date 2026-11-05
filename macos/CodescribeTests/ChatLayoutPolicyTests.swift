@@ -208,12 +208,9 @@ final class ChatLayoutPolicyTests: XCTestCase {
   /// 1 pt live-edge anchor. The old reservation forgot the gap and the anchor
   /// and overshot by 17 pt — a scrollbar on a thread with no messages.
   func testEmptyStateFillsViewportWithoutOvershoot() {
-    let viewport: CGFloat = 520
-    let empty = ChatLayoutPolicy.emptyStateHeight(viewportHeight: viewport)
-    let document =
-      empty + ChatLayoutPolicy.turnSpacing + ChatLayoutPolicy.liveEdgeAnchorHeight
-      + 2 * ChatLayoutPolicy.listPadding
-    XCTAssertEqual(document, viewport)
+    XCTAssertEqual(ChatLayoutPolicy.emptyStateHeight(viewportHeight: 520), 463)
+    XCTAssertEqual(ChatLayoutPolicy.emptyStateHeight(viewportHeight: 57), 0)
+    XCTAssertEqual(ChatLayoutPolicy.emptyStateHeight(viewportHeight: 58), 1)
     XCTAssertEqual(ChatLayoutPolicy.emptyStateHeight(viewportHeight: 10), 0, "never negative")
   }
 
