@@ -311,6 +311,7 @@ try:
         refuse()
     tree = json.loads(Path(tests_path).read_text())
     matches = []
+    case_ids = set()
     def visit(nodes, in_bundle=False):
         if not isinstance(nodes, list):
             refuse()
@@ -319,13 +320,19 @@ try:
                 refuse()
             bundle = in_bundle or (node.get("nodeType") == "Unit test bundle"
                                    and node.get("name") == "CodescribeTests")
-            if bundle and node.get("nodeType") == "Test Case" and node.get("nodeIdentifier") == (
-                "OverlayConversationAcceptanceTests/testVoicelessReplyAndAgentTextRenderEnabledPlay()"
-            ):
-                matches.append(node.get("result"))
+            if node.get("nodeType") == "Test Case":
+                identifier = node.get("nodeIdentifier")
+                if (not isinstance(identifier, str) or not identifier or identifier in case_ids
+                        or node.get("result") != "Passed" or node.get("children", [])):
+                    refuse()
+                case_ids.add(identifier)
+                if bundle and identifier == (
+                    "OverlayConversationAcceptanceTests/testVoicelessReplyAndAgentTextRenderEnabledPlay()"
+                ):
+                    matches.append(node.get("result"))
             visit(node.get("children", []), bundle)
     visit(tree["testNodes"])
-    if matches != ["Passed"]:
+    if matches != ["Passed"] or len(case_ids) != total:
         refuse()
 except (OSError, ValueError, TypeError, KeyError):
     refuse()

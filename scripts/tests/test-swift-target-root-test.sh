@@ -53,13 +53,13 @@ elif name == 'xcrun':
         if s['mode'] == 'gui-result-error' or not Path(args[5]).is_dir(): sys.exit(46)
         if args[3] == 'summary':
             if s['mode'] == 'gui-summary-malformed': print('{bad'); sys.exit(0)
-            summary = dict(result='Passed', totalTestCount=7, passedTests=7,
+            summary = dict(result='Passed', totalTestCount=2, passedTests=2,
                            failedTests=0, skippedTests=0, expectedFailures=0)
             changes = {'gui-zero': {'totalTestCount': 0, 'passedTests': 0},
-                       'gui-skip': {'skippedTests': 1, 'passedTests': 6},
-                       'gui-bool': {'skippedTests': False}, 'gui-string': {'totalTestCount': '7'},
-                       'gui-negative': {'failedTests': -1}, 'gui-inconsistent': {'passedTests': 6},
-                       'gui-failed-count': {'failedTests': 1, 'passedTests': 6},
+                       'gui-skip': {'skippedTests': 1, 'passedTests': 1},
+                       'gui-bool': {'skippedTests': False}, 'gui-string': {'totalTestCount': '2'},
+                       'gui-negative': {'failedTests': -1}, 'gui-inconsistent': {'passedTests': 1},
+                       'gui-failed-count': {'failedTests': 1, 'passedTests': 1},
                        'gui-expected-failure': {'expectedFailures': 1},
                        'gui-result-failed': {'result': 'Failed'}}
             summary.update(changes.get(s['mode'], {}))
@@ -73,8 +73,19 @@ elif name == 'xcrun':
             if s['mode'] == 'gui-failed-sentinel': case['result'] = 'Failed'
             cases = [] if s['mode'] == 'gui-no-selected-pass' else [case]
             if s['mode'] == 'gui-duplicate-sentinel': cases.append(dict(case))
+            drawer = dict(nodeType='Test Case', result='Passed',
+                          nodeIdentifier='OverlayAgentDrawerDockingTests/testDividersOwnPaneFoldingAndRailHoverCannotUndoFold()')
+            if s['mode'] == 'gui-tree-skipped': drawer['result'] = 'Skipped'
+            if s['mode'] == 'gui-tree-failed': drawer['result'] = 'Failed'
+            if s['mode'] == 'gui-tree-unknown': drawer['result'] = 'Unknown'
+            if s['mode'] == 'gui-tree-missing-result': del drawer['result']
+            if s['mode'] != 'gui-tree-missing-case': cases.append(drawer)
+            if s['mode'] == 'gui-tree-extra-case':
+                cases.append(dict(nodeType='Test Case', result='Passed', nodeIdentifier='Other/test()'))
             bundle_name = 'OtherTests' if s['mode'] == 'gui-wrong-bundle' else 'CodescribeTests'
-            print(json.dumps({'testNodes': [{'nodeType': 'Unit test bundle', 'name': bundle_name, 'children': cases}]}))
+            print(json.dumps({'testNodes': [{'nodeType': 'Test Plan', 'children': [
+                {'nodeType': 'Unit test bundle', 'name': bundle_name, 'children': [
+                    {'nodeType': 'Test Suite', 'children': cases}]}]}]}))
     else:
         assert args[:5] == ['swift', '-swift-version', '6', '-warnings-as-errors', 'scripts/tests/native-ax-probe.swift'], args
         data = Path(os.environ['CODESCRIBE_DATA_DIR'])
@@ -120,7 +131,7 @@ elif name == 'xcodebuild':
     if s['mode'] in ('xcode-error', 'gui-xcode-error'):
         print('unfiltered tool failure')
         sys.exit(65)
-    count = 0 if s['mode'] in ('zero', 'gui-zero') else 30 if s['mode'] == 'suite-over' else 7
+    count = 0 if s['mode'] in ('zero', 'gui-zero') else 30 if s['mode'] == 'suite-over' else 2 if gui else 7
     # Over the 300 s default budget; 'budget' raises it to 360 s explicitly.
     seconds = (315 if s['mode'] in ('slow', 'budget') else
                315 if s['mode'] == 'suite-over' else
@@ -342,7 +353,8 @@ with tempfile.TemporaryDirectory(prefix='test-swift-target-root-') as tmp:
                  'gui-inconsistent', 'gui-failed-count', 'gui-expected-failure', 'gui-result-failed',
                  'gui-missing-field', 'gui-summary-malformed', 'gui-result-error', 'gui-missing-bundle',
                  'gui-wrong-sentinel', 'gui-failed-sentinel', 'gui-duplicate-sentinel', 'gui-wrong-bundle',
-                 'gui-tests-malformed', 'gui-result-override'):
+                 'gui-tests-malformed', 'gui-result-override', 'gui-tree-skipped', 'gui-tree-failed',
+                 'gui-tree-unknown', 'gui-tree-missing-result', 'gui-tree-missing-case', 'gui-tree-extra-case'):
         run_case(base, 'debug', 'spaces', mode)
     run_case(base, 'unsupported', 'spaces')
 print(f'test-swift-target-root: scenarios={passed + failed} passed={passed} failed={failed}')

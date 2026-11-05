@@ -338,7 +338,8 @@ The ordinary runner never starts the independent AX client or checks AX trust.
 The explicit isolated GUI runner checks existing trust without prompting. It
 retains a private per-run `.xcresult` beside the test log and reads its
 structured summary and test tree: zero tests, any skipped or failed test,
-expected failures, inconsistent counts, missing results, or a missing, duplicate
+expected failures, inconsistent summary and test-case counts or results,
+missing results, or a missing, duplicate
 or nonpassing sentinel fail the gate. A build warning containing the word
 "skipped" is not a test skip. The caller cannot override the result bundle path.
 The separate verified AX action receipt remains required.

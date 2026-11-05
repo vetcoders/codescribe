@@ -222,7 +222,9 @@ with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
     check('swallowed-XCTest', helper=replace(helper_source, 'rc=${PIPESTATUS[0]}', 'rc=0'), diagnostic='[XCTest]')
     check('missing-result-bundle', helper=replace(helper_source, 'RESULT_ARGS=(-resultBundlePath "$RESULT_BUNDLE")', 'RESULT_ARGS=()'), diagnostic='[XCTest]')
     check('ignored-skips', helper=replace(helper_source, 'skipped != 0', 'skipped < 0'), diagnostic='[XCTest]')
-    check('ignored-sentinel', helper=replace(helper_source, 'if matches != ["Passed"]:', 'if False:'), diagnostic='[XCTest]')
+    check('ignored-sentinel', helper=replace(helper_source, 'if matches != ["Passed"] or len(case_ids) != total:', 'if False:'), diagnostic='[XCTest]')
+    check('ignored-tree-result', helper=replace(helper_source, 'node.get("result") != "Passed"', 'False'), diagnostic='[XCTest]')
+    check('ignored-tree-count', helper=replace(helper_source, 'len(case_ids) != total', 'False'), diagnostic='[XCTest]')
     check('extra-helper-code', helper=helper_source + 'true\n', diagnostic='[helper-shape]')
     check('setup-shadow', make=make_source + '\nTEST_DATA_DIR_SETUP := true\n', diagnostic='[isolation]')
     check('comment-mktemp', make=replace(make_source, 'CODESCRIBE_TEST_DATA_DIR="$$(mktemp', '# CODESCRIBE_TEST_DATA_DIR="$$(mktemp'), diagnostic='[isolation]')
@@ -298,8 +300,8 @@ sys.exit(0)
         passed += 1
         print(f'PASS verify-wiring-{harness_exit}: make exit={result.returncode}', flush=True)
 
-    # 15 profile/layout cases + 56 boundary modes + 1 unsupported profile.
-    swift_scenarios = 72
+    # 15 profile/layout cases + 62 boundary modes + 1 unsupported profile.
+    swift_scenarios = 78
     # Reuse all scenarios, then independently inspect their recorded order.
     swift_evidence = evidence / 'swift-path'
     result = subprocess.run(['/bin/bash', str(source / 'scripts/tests/test-swift-target-root-test.sh'),
