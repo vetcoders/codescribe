@@ -47,9 +47,20 @@ const NON_ASSISTIVE_AI_SKIP_CHARS: usize = 10;
 /// Whether a transcript is too short to be worth an LLM round-trip.
 ///
 /// Assistive requests are never skipped — a two-word command is still a real
-/// instruction. Non-assistive formatting is skipped below the char floor.
+/// instruction. Non-assistive formatting is skipped below the char floor ONLY
+/// when no active take chain already holds prior turns; inside a live multi-turn
+/// take, short utterances (e.g. a name or number after a pause) must still join
+/// the chain so context is never punctured.
 fn should_skip_ai_formatting(text: &str, assistive: bool) -> bool {
-    !assistive && text.chars().count() < NON_ASSISTIVE_AI_SKIP_CHARS
+    if assistive {
+        return false;
+    }
+    if take_chain(crate::state::conversation::AiMode::Formatting)
+        .is_some_and(|take| take.has_prior_turns())
+    {
+        return false;
+    }
+    text.chars().count() < NON_ASSISTIVE_AI_SKIP_CHARS
 }
 
 /// How one formatting request ended, from the caller's point of view.
@@ -698,10 +709,70 @@ fn chained_instructions(system_prompt: &str, previous_response_id: Option<&str>)
     }
 }
 
-/// Earlier turns a take replays when no stored predecessor carries them. A
-/// bound, not a measured optimum: enough for a sentence spread over several
-/// silence-delimited fragments, without resending a long take on every one.
-const TAKE_CHAIN_REPLAY_TURNS: usize = 8;
+/// Byte budget for earlier turns a take replays when no stored predecessor
+/// carries them (account backend, Gemini, Anthropic, or after a chain reseed).
+/// 32 KiB holds ~45 minutes of continuous dictation without evicting earlier
+/// occurrences or busting the provider's prefix KV-cache after 8 short pauses.
+const TAKE_CHAIN_MAX_REPLAY_BYTES: usize = 32 * 1024;
+/// Minimum turn floor retained even when individual turns are very large.
+const TAKE_CHAIN_MIN_REPLAY_TURNS: usize = 8;
+
+/// Response IDs whose server-side chain already holds a stored `developer`
+/// input item for the given system prompt, plus prompts staged on an in-flight
+/// predecessor ID awaiting clean completion promotion.
+#[derive(Default)]
+struct FormatterChainPromptTracker {
+    seeded_by_response_id: std::collections::HashMap<String, String>,
+    staged_by_predecessor_id: std::collections::HashMap<String, String>,
+}
+
+static SEEDED_FORMATTER_CHAIN_PROMPTS: OnceLock<std::sync::Mutex<FormatterChainPromptTracker>> =
+    OnceLock::new();
+
+fn formatter_chain_has_developer_prompt(previous_response_id: &str, prompt: &str) -> bool {
+    SEEDED_FORMATTER_CHAIN_PROMPTS
+        .get_or_init(Default::default)
+        .lock()
+        .is_ok_and(|tracker| {
+            tracker
+                .seeded_by_response_id
+                .get(previous_response_id)
+                .map(String::as_str)
+                == Some(prompt)
+        })
+}
+
+fn stage_formatter_chain_developer_prompt(previous_response_id: &str, prompt: &str) {
+    if previous_response_id.is_empty() || prompt.trim().is_empty() {
+        return;
+    }
+    if let Ok(mut tracker) = SEEDED_FORMATTER_CHAIN_PROMPTS
+        .get_or_init(Default::default)
+        .lock()
+    {
+        tracker
+            .staged_by_predecessor_id
+            .insert(previous_response_id.to_string(), prompt.to_string());
+    }
+}
+
+fn promote_staged_formatter_chain_developer_prompt(previous_response_id: &str, response_id: &str) {
+    if previous_response_id.is_empty() || response_id.is_empty() {
+        return;
+    }
+    if let Ok(mut tracker) = SEEDED_FORMATTER_CHAIN_PROMPTS
+        .get_or_init(Default::default)
+        .lock()
+        && let Some(prompt) = tracker
+            .staged_by_predecessor_id
+            .get(previous_response_id)
+            .cloned()
+    {
+        tracker
+            .seeded_by_response_id
+            .insert(response_id.to_string(), prompt);
+    }
+}
 
 /// One take's formatter conversation (repair points 3–4 of Olga's 2026-10-22
 /// report, `2026_1022/olga-responses-chain`): fragments go one after another,
@@ -751,6 +822,11 @@ impl TakeFormatterChain {
         self.state().previous_response_id.clone()
     }
 
+    fn has_prior_turns(&self) -> bool {
+        let state = self.state();
+        state.previous_response_id.is_some() || !state.turns.is_empty()
+    }
+
     fn replay_turns(&self) -> Vec<(String, String)> {
         self.state().turns.iter().cloned().collect()
     }
@@ -760,13 +836,29 @@ impl TakeFormatterChain {
     /// next turn replay instead of chaining past it.
     fn record(&self, user_message: &str, assistant_text: &str, response_id: Option<String>) {
         let mut state = self.state();
+        let next_response_id = response_id.filter(|id| !id.is_empty());
+        if let (Some(prev_id), Some(new_id)) = (
+            state.previous_response_id.as_deref(),
+            next_response_id.as_deref(),
+        ) {
+            promote_staged_formatter_chain_developer_prompt(prev_id, new_id);
+        }
         state
             .turns
             .push_back((user_message.to_string(), assistant_text.to_string()));
-        while state.turns.len() > TAKE_CHAIN_REPLAY_TURNS {
-            state.turns.pop_front();
+        let total_bytes: usize = state.turns.iter().map(|(u, a)| u.len() + a.len()).sum();
+        if total_bytes > TAKE_CHAIN_MAX_REPLAY_BYTES
+            && state.turns.len() > TAKE_CHAIN_MIN_REPLAY_TURNS
+        {
+            let target_bytes = TAKE_CHAIN_MAX_REPLAY_BYTES / 2;
+            let mut remaining = total_bytes;
+            while remaining > target_bytes && state.turns.len() > TAKE_CHAIN_MIN_REPLAY_TURNS {
+                if let Some((u, a)) = state.turns.pop_front() {
+                    remaining = remaining.saturating_sub(u.len() + a.len());
+                }
+            }
         }
-        state.previous_response_id = response_id.filter(|id| !id.is_empty());
+        state.previous_response_id = next_response_id;
     }
 
     fn forget_predecessor(&self) {
@@ -793,6 +885,11 @@ fn remember_completed_turn(
     if let Some(take) = take_chain(ai_mode) {
         take.record(user_message, assistant_text, response_id);
     } else if let Some(response_id) = response_id {
+        if let Some(prev_id) =
+            crate::state::conversation::get_previous_response_id_for_mode(ai_mode)
+        {
+            promote_staged_formatter_chain_developer_prompt(&prev_id, &response_id);
+        }
         crate::state::conversation::set_response_id_for_mode(ai_mode, response_id);
     }
 }
@@ -807,12 +904,16 @@ fn forget_rejected_predecessor(ai_mode: crate::state::conversation::AiMode) {
     }
 }
 
-/// Build the `input` items for a Responses request. On chained turns the
-/// system prompt rides as a leading `developer` item, because the
-/// `instructions` param is absent there (see [`chained_instructions`]) and the
-/// chain does not carry it server-side. First turns carry the prompt via
-/// `instructions` only — no duplicate developer item. Replayed turns of the
-/// same take go before the new fragment as the user/assistant pairs they were.
+/// Build the `input` items for a Responses request.
+///
+/// First turns (`previous_response_id == None`) carry the prompt via the
+/// top-level `instructions` param only. The first chained turn
+/// (`previous_response_id == Some(resp_1)`) seeds the prompt once as a leading
+/// `developer` input item; once `resp_2` completes, its server-side chain
+/// permanently stores that `developer` item, so subsequent chained turns
+/// (`resp_2..resp_N`) send only the new user fragment without re-injecting it.
+/// Replayed turns of the same take go before the new fragment as the
+/// user/assistant pairs they were.
 fn build_responses_input(
     system_prompt: &str,
     previous_response_id: Option<&str>,
@@ -820,13 +921,16 @@ fn build_responses_input(
     user_content: Vec<InputContent>,
 ) -> Vec<InputItem> {
     let mut input = Vec::with_capacity(2 + replay.len() * 2);
-    if previous_response_id.is_some() {
-        input.push(InputItem {
-            role: "developer",
-            content: vec![InputContent::Text {
-                text: system_prompt.to_string(),
-            }],
-        });
+    if let Some(prev_id) = previous_response_id {
+        stage_formatter_chain_developer_prompt(prev_id, system_prompt);
+        if !formatter_chain_has_developer_prompt(prev_id, system_prompt) {
+            input.push(InputItem {
+                role: "developer",
+                content: vec![InputContent::Text {
+                    text: system_prompt.to_string(),
+                }],
+            });
+        }
     }
     for (user, assistant) in replay {
         input.push(InputItem {
@@ -2003,8 +2107,22 @@ async fn call_google_generate_content(
     max_tokens: Option<u32>,
     temperature: Option<f32>,
 ) -> Result<ProviderOutput> {
+    let take = if max_tokens.is_none() {
+        take_chain(crate::state::conversation::AiMode::Formatting)
+    } else {
+        None
+    };
+    let mut contents = Vec::new();
+    if let Some(take) = &take {
+        for (prior_user, prior_assistant) in take.replay_turns() {
+            contents.push(serde_json::json!({"role": "user", "parts": [{"text": prior_user}]}));
+            contents
+                .push(serde_json::json!({"role": "model", "parts": [{"text": prior_assistant}]}));
+        }
+    }
+    contents.push(serde_json::json!({"role": "user", "parts": [{"text": user_message}]}));
     let mut body = serde_json::json!({
-        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+        "contents": contents,
     });
     if !system_prompt.trim().is_empty() {
         body["systemInstruction"] = serde_json::json!({"parts": [{"text": system_prompt}]});
@@ -2050,7 +2168,11 @@ async fn call_google_generate_content(
         anyhow::bail!("Google HTTP {status}");
     }
     let body: Value = serde_json::from_slice(&bytes).context("Failed to parse Google response")?;
-    extract_google_output(body.get("response").unwrap_or(&body))
+    let output = extract_google_output(body.get("response").unwrap_or(&body))?;
+    if let Some(take) = take {
+        take.record(user_message, &output.assistant_text, None);
+    }
+    Ok(output)
 }
 
 /// A successful HTTP status alone cannot turn a truncated or refused
@@ -2187,15 +2309,38 @@ async fn call_anthropic_messages_resolved(
         max_tokens
     );
 
+    let ai_mode = if assistive {
+        crate::state::conversation::AiMode::Assistive
+    } else {
+        crate::state::conversation::AiMode::Formatting
+    };
+    let take = take_chain(ai_mode);
+    let mut messages = Vec::new();
+    if let Some(take) = &take {
+        for (prior_user, prior_assistant) in take.replay_turns() {
+            messages.push(AnthropicMessage {
+                role: "user",
+                content: vec![AnthropicContentBlock::Text { text: prior_user }],
+            });
+            messages.push(AnthropicMessage {
+                role: "assistant",
+                content: vec![AnthropicContentBlock::Text {
+                    text: prior_assistant,
+                }],
+            });
+        }
+    }
+    messages.push(AnthropicMessage {
+        role: "user",
+        content: vec![AnthropicContentBlock::Text {
+            text: user_message.to_string(),
+        }],
+    });
+
     let request = AnthropicMessagesRequest {
         model: model.to_string(),
         system: Some(system_prompt.to_string()).filter(|value| !value.trim().is_empty()),
-        messages: vec![AnthropicMessage {
-            role: "user",
-            content: vec![AnthropicContentBlock::Text {
-                text: user_message.to_string(),
-            }],
-        }],
+        messages,
         max_tokens,
         temperature,
     };
@@ -2251,6 +2396,10 @@ async fn call_anthropic_messages_resolved(
             "Anthropic response truncated by max_tokens (id: {})",
             anthropic_response_id(&anthropic_response)
         );
+    }
+
+    if let Some(take) = take {
+        take.record(user_message, &assistant_text, None);
     }
 
     Ok(ProviderOutput {
@@ -2772,6 +2921,25 @@ mod tests {
             "first turn carries the prompt via the instructions param only"
         );
         assert_eq!(first[0].role, "user");
+
+        // Once `resp_123` advances to `resp_seeded`, `SYS` is stored in the
+        // server-side chain permanently; subsequent turns (`resp_seeded` -> ...)
+        // must send ONLY the new user fragment without duplicating `developer`.
+        promote_staged_formatter_chain_developer_prompt("resp_123", "resp_seeded");
+        let third = build_responses_input(
+            "SYS",
+            Some("resp_seeded"),
+            &[],
+            vec![InputContent::Text {
+                text: "NEXT".into(),
+            }],
+        );
+        assert_eq!(
+            third.len(),
+            1,
+            "subsequent chained turns must not re-inject developer prompt"
+        );
+        assert_eq!(third[0].role, "user");
     }
 
     use crate::test_isolation::EnvGuard;
