@@ -776,6 +776,14 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertGreaterThan(drawer.frame.width, 0)
     XCTAssertEqual(rail.frame, .zero)
     assertRoute()
+    try drag("overlay-agent-sidebar-resize", by: -600)
+    XCTAssertEqual(state.agentsLayout, .agents)
+    XCTAssertGreaterThan(drawer.frame.width, 1000)
+    assertRoute()
+    try drag("overlay-agent-sidebar-resize", by: 400)
+    XCTAssertEqual(state.agentsLayout, .split)
+    XCTAssertLessThan(drawer.frame.width, 1000)
+    assertRoute()
   }
 
   /// The overlay over a suite of its own defaults, reporting the column's and
