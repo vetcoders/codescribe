@@ -2280,6 +2280,8 @@ struct AppleSealState {
     /// One witness request in flight per session; the next seal re-checks
     /// whatever debt is still open then.
     dictation_witness_inflight: bool,
+    /// Earliest sample a live witness may still insert, with its existing budget.
+    dictation_witness_coverage_hold: Option<(u64, Instant)>,
     /// Exact owners held by the concrete in-flight witness job.
     dictation_witness_owners: Vec<OccurrenceIdentity>,
     /// Whisper closures awaiting the next bounded independent question.
@@ -3020,6 +3022,7 @@ impl AppleSealState {
             dictation_witness_armed: crate::stt::apple_stt::dictation_transcriber_enabled(),
             dictation_witness_return: None,
             dictation_witness_inflight: false,
+            dictation_witness_coverage_hold: None,
             dictation_witness_owners: Vec::new(),
             dictation_witness_waiting: Vec::new(),
             dictation_witness_payload: None,
@@ -6036,66 +6039,36 @@ impl AppleSealState {
 
     /// Publish a conservative covered prefix, never the largest occurrence
     /// seen. Out-of-order returns and silence both need the work-plan clock.
-    /// Unsealed owners and unowned speech keep their seat until recovery/EOF.
+    /// Transcript sealing and unresolved acoustic debt do not describe decoder
+    /// progress. Only planned or in-flight decoder work can hold this prefix.
     fn publish_decoder_coverage(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
         if self.capture_turn != CaptureTurnIntent::AgentChannel || self.capture_stopping {
             return;
         }
-        let Some(speech) = observed_silero(self) else {
-            return;
+        let session_end = self.audio.session_sample_end();
+        let horizon = if self.tail_patch.is_some() || self.refinement_lane_lost {
+            self.window_plan.admission_horizon()
+        } else {
+            // The direct lane has no capture-window work plan to drain.
+            session_end
         };
-        let Some(observed) = speech.availability().observed_samples() else {
-            return;
-        };
-        let mut covered = observed.min(self.audio.session_sample_end());
-        if self.tail_patch.is_some() || self.refinement_lane_lost {
-            covered = covered.min(self.window_plan.admission_horizon());
-        }
+        let observed = observed_silero(self)
+            .and_then(|speech| speech.availability().observed_samples())
+            .unwrap_or(horizon);
+        let mut covered = observed.min(session_end).min(horizon);
         for job in self.refinement_submitted.values() {
             covered = covered.min(job.request_identity.range.sample_start);
         }
         for job in &self.refinement_pending {
             covered = covered.min(job.provider_request.identity.range.sample_start);
         }
-        if covered <= self.decoder_covered_samples {
-            return;
-        }
-        if self.seal_ledger_enabled {
-            let ledger = self
-                .acoustic_ledger
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for owner in ledger.unsealed_qualified_occurrences() {
-                covered = covered.min(owner.sample_start);
-            }
-            if covered <= self.decoder_covered_samples {
-                return;
-            }
-            for gap in
-                uncovered_gap_ranges(&ledger, &self.session_id, self.capture_epoch, &speech, 0)
-            {
-                covered = covered.min(gap.sample_start);
-            }
-        } else {
-            // Direct Apple can still finalize its live head; measured silence
-            // may advance only after all preceding speech has been published.
-            for range in speech.ranges() {
-                if range.sample_end > self.direct_sample_end {
-                    covered = covered.min(range.sample_start);
-                }
-            }
-        }
-        for word in self
-            .unmatched_silero_words
-            .iter()
-            .chain(self.pending_silero_words.values().flatten())
+        // Held Apple words wait on acoustic ownership/closure, which has no
+        // decoder-progress bound. Late admissions are accounted by the demux.
+        if self.dictation_witness_inflight
+            && let Some((start, requested_at)) = self.dictation_witness_coverage_hold
+            && requested_at.elapsed() < DICTATION_WITNESS_REQUEST_TIMEOUT
         {
-            covered = covered.min(word.sample_start);
-        }
-        if let Some(fusion) = &self.fusion {
-            for utterance in fusion.ledger().utterances().iter().filter(|u| !u.closed) {
-                covered = covered.min(utterance.range.sample_start);
-            }
+            covered = covered.min(start);
         }
         if covered > self.decoder_covered_samples {
             self.decoder_covered_samples = covered;
@@ -9263,6 +9236,7 @@ fn maybe_spawn_utterance_witness(
     };
     state.dictation_witness_requests = state.dictation_witness_requests.saturating_add(1);
     state.dictation_witness_inflight = true;
+    state.dictation_witness_coverage_hold = Some((identity.range.sample_start, Instant::now()));
     state.dictation_witness_owners = {
         let mut ledger = state
             .acoustic_ledger
@@ -9419,6 +9393,7 @@ fn finish_dictation_witness_frontier(
     state: &mut AppleSealState,
     _ev_tx: &mpsc::UnboundedSender<EngineEvent>,
 ) {
+    state.dictation_witness_coverage_hold = None;
     let owners = std::mem::take(&mut state.dictation_witness_owners);
     let mut ledger = state
         .acoustic_ledger

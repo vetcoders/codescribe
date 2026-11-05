@@ -25,6 +25,7 @@
 //! receipt: the ledger stays the one authority every participant reducer
 //! authenticates against.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
@@ -33,6 +34,7 @@ use tokio::sync::Notify;
 use tracing::{debug, info};
 
 use super::streaming_recorder::CaptureSubscriberId;
+use crate::pipeline::acoustic_ledger::OccurrenceIdentity;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 
 /// Diagnostic budget, never a permission to discard a participant's tail.
@@ -124,11 +126,20 @@ impl Participant {
     }
 }
 
+/// Accounting survives settlement; sinks and delivery authority do not.
+struct SettledParticipant {
+    interval: ParticipationInterval,
+    outcome: DetachSettlement,
+    warned_occurrences: HashSet<OccurrenceIdentity>,
+    late_occurrences: u64,
+}
+
 #[derive(Default)]
 struct DemuxState {
     opened: Option<(String, u64)>,
     participants: Vec<Participant>,
     history: Vec<ParticipationInterval>,
+    settled_participants: Vec<SettledParticipant>,
     /// Contiguous covered prefix, explicitly published by the decoder in FIFO.
     decoder_frontier: Option<u64>,
     capture_ended: bool,
@@ -399,9 +410,20 @@ impl ChannelDemux {
                     "channel detach settlement overrun; retaining participant for tail delivery");
             }
         };
-        self.lock()
-            .participants
-            .retain(|participant| participant.id != id);
+        let mut state = self.lock();
+        if let Some(index) = state.participants.iter().position(|p| p.id == id) {
+            state.participants.remove(index);
+            if let Some(interval) = state.history.iter().find(|p| p.participant == id).cloned() {
+                state.settled_participants.push(SettledParticipant {
+                    interval,
+                    outcome,
+                    // A late refinement can reuse an occurrence already sent
+                    // before settlement. Deduplicate only post-settlement work.
+                    warned_occurrences: HashSet::new(),
+                    late_occurrences: 0,
+                });
+            }
+        }
         debug!(?id, ?outcome, "channel participant settled");
         outcome
     }
@@ -421,6 +443,38 @@ impl ChannelDemux {
     }
 
     fn deliver(state: &mut DemuxState, event: &EngineEvent) {
+        let occurrence = match event {
+            EngineEvent::LedgerMutation { observation, .. }
+            | EngineEvent::DirectTranscript { observation, .. } => Some(&observation.occurrence),
+            _ => None,
+        };
+        if let Some(occurrence) = occurrence {
+            for settled in &mut state.settled_participants {
+                let interval = &settled.interval;
+                if occurrence_in_interval(
+                    occurrence.sample_start,
+                    occurrence.sample_end,
+                    interval.start_sample,
+                    interval.end_sample,
+                ) && settled.warned_occurrences.insert(occurrence.clone())
+                {
+                    settled.late_occurrences = settled.late_occurrences.saturating_add(1);
+                    tracing::warn!(
+                        seat = ?interval.participant,
+                        owner = ?interval.owner,
+                        delivery_seat = interval.seat.as_str(),
+                        capture = %occurrence.session,
+                        capture_epoch = occurrence.capture_epoch,
+                        sample_start = occurrence.sample_start,
+                        sample_end = occurrence.sample_end,
+                        detach_sample = ?interval.end_sample,
+                        settlement_outcome = ?settled.outcome,
+                        late_occurrences = settled.late_occurrences,
+                        "late occurrence after channel settlement; counted without backfill"
+                    );
+                }
+            }
+        }
         match route_of(event) {
             Route::Range(start, end) => {
                 for participant in state.participants.iter().filter(|p| p.owns(start, end)) {
