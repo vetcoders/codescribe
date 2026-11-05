@@ -593,6 +593,16 @@ does not need changes to these owners.
   If a design needs a different native window size, update the existing window
   owner and its geometry checks together; SwiftUI layout alone cannot prove it.
 
+### Covered conversation
+
+With the list covering the window (`agentsLayout == .agents`) the
+conversation cell keeps its split width under opacity 0 and a clip, so the
+slide back is a reveal, not a reflow. The glass navigation header does not
+honour that opacity or clip: it stayed on screen over the list's first rows
+at the split width (Monika, 2026-11-05). `OverlayConversationView` therefore
+takes the header off the tree while `isCovered`, keeping its measured height
+as the content margin, and mounts it again when the conversation returns.
+
 ## Independent canvas sizes
 
 The Founder's 2026-10-30 recording makes the full Agents canvas and floating
@@ -798,7 +808,9 @@ surface (Maciej, 2026-10-30); the card and its surface are gone, and the
 monitor's pinned slot stays empty. Each mailbox row wears the agents' glass,
 padding, selection bar, hover and gesture focus ring. All keeps its
 three-line preview, recipient counts, microphone/megaphone and playback
-controls; there is one All row and one projection of its state. The inbox
+controls, drawn as the agents' glass circles (`rosterDiameter`), not the
+flat glyphs the card had; there is one All row and one projection of its
+state. The inbox
 row shows the envelope where an agent's digit and presence dot stand (it
 has neither), its name, the last message's preview, the unread badge and the
 clock (`inboxRow`, identifier `overlay-inbox-row`). Keyboard focus and

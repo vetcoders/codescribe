@@ -1963,9 +1963,10 @@ struct OverlayChannelStatusView: View {
                     palette: palette, onMicrophone: { onToggleChannel?(0) },
                     onPlayback: { onTogglePlayback?("0") }, broadcast: true,
                     speaking: broadcast.replySpeaking,
-                    // The pinned card is a glass surface like the composer:
-                    // flat glyphs on it, not glass circles on glass.
-                    chrome: false
+                    // A row like the agents' (Monika, 2026-11-05: "dlaczego te
+                    // 2 ikonki mają inny wygląd od pozostałych?"): the same
+                    // glass circles, not the flat glyphs of the former card.
+                    chrome: true, diameter: OverlayAgentAudioControls.rosterDiameter
                   )
                   .fixedSize()
                   .accessibilityIdentifier("overlay-channel-toggle-0")

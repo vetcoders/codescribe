@@ -365,6 +365,14 @@ struct OverlayConversationView: View {
               // The content margin follows: no phantom gap under the header.
               Color.clear.frame(height: 0)
                 .onAppear { navigationHeight = 0 }
+            } else if isCovered {
+              // The glass header ignores the covering cell's opacity and clip
+              // (Monika, 2026-11-05: the sticky bar with the agent's name over
+              // the full-width list, at the split width). Off the tree while
+              // covered; the measured height keeps the content margin.
+              Color.clear.frame(height: navigationHeight)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
             } else {
               navigation
                 .padding(.horizontal, 20)
