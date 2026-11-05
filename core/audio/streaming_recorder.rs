@@ -1998,7 +1998,11 @@ impl StreamingRecorder {
                 (id, None)
             }
         };
-        let last = self.release_capture_subscriber(subscriber);
+        let held = self
+            .capture_subscribers
+            .iter()
+            .any(|(held, _)| *held == subscriber);
+        let last = held && self.release_capture_subscriber(subscriber);
         let physical_archive = if last && self.recorder.is_active() {
             self.recorder.close_capture().await;
             self.recorder.detach_closed_spill()
@@ -2823,11 +2827,11 @@ fn block_rms(samples: &[f32]) -> f32 {
     (sum_sq / samples.len() as f64).sqrt() as f32
 }
 
-/// Unit and opt-in e2e probes for RMS meters, VAD index sync, and corpus WER.
 #[cfg(test)]
 #[path = "streaming_recorder_shared_tests.rs"]
 mod streaming_recorder_shared_tests;
 
+/// Unit and opt-in e2e probes for RMS meters, VAD index sync, and corpus WER.
 #[cfg(test)]
 mod tests {
     use super::*;
