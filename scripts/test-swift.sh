@@ -105,6 +105,27 @@ echo "=== Swift front-end tests (CodescribeTests) ==="
 if [[ "${CODESCRIBE_TEST_ISOLATED_GUI:-0}" != 1 ]]; then
   echo "test-swift: AX sidecar disabled; guarded GUI cases skip. Shared-desktop runs require a non-presenting test selection; owner tests can still open native windows."
 fi
+RESULT_ARGS=()
+if [[ "${CODESCRIBE_TEST_ISOLATED_GUI:-0}" == 1 ]]; then
+  for arg in "$@"; do
+    case "$arg" in
+      -resultBundlePath|-resultBundlePath=*) echo "test-swift: caller result bundle override refused" >&2; exit 2 ;;
+    esac
+  done
+  RESULT_PARENT="$(mktemp -d "${SWIFT_TEST_LOG}.result.XXXXXXXX")" || exit 2
+  chmod 700 "$RESULT_PARENT" || exit 2
+  if ! python3 - "$RESULT_PARENT" "$CODESCRIBE_DATA_DIR" <<'PY'
+from pathlib import Path
+import sys
+parent, disposable = (Path(value).resolve() for value in sys.argv[1:])
+if parent == disposable or disposable in parent.parents:
+    raise SystemExit("test-swift: result bundle must survive disposal of the test data root")
+PY
+  then exit 2; fi
+  RESULT_BUNDLE="$RESULT_PARENT/tests.xcresult"
+  RESULT_ARGS=(-resultBundlePath "$RESULT_BUNDLE")
+  echo "test-swift: retained result bundle $RESULT_BUNDLE"
+fi
 cd macos || exit $?
 # Prefer the selected dylib at runtime while retaining bundled framework lookup.
 xcodebuild test \
@@ -116,21 +137,27 @@ xcodebuild test \
   LD_RUNPATH_SEARCH_PATHS="\"$TARGET_DIR\" @executable_path/../Frameworks" \
   -destination 'platform=macOS,arch=arm64' \
   CODE_SIGN_IDENTITY="${SWIFT_TEST_CODESIGN_IDENTITY}" \
+  "${RESULT_ARGS[@]}" \
   "$@" 2>&1 | tee "${SWIFT_TEST_LOG}" | \
   grep -aE "^Test Case .* (failed|error)|Executed [0-9]+ tests|^\*\* TEST|error:"
 rc=${PIPESTATUS[0]}
 executed=$(grep -aoE 'Executed [0-9]+ test' "${SWIFT_TEST_LOG}" | tail -1 | grep -oE '[0-9]+')
-if [ "$rc" -eq 0 ] && [ "${executed:-0}" -eq 0 ]; then
+if [[ "${CODESCRIBE_TEST_ISOLATED_GUI:-0}" != 1 ]] && [ "$rc" -eq 0 ] && [ "${executed:-0}" -eq 0 ]; then
   echo "test-swift: xcodebuild said TEST SUCCEEDED but executed 0 tests." >&2
   echo "test-swift: a -only-testing filter that matches nothing exits 0 — that is a" >&2
   echo "test-swift: silent pass, not a green gate. Check SWIFT_TEST_ARGS." >&2
   rc=3
 fi
 if [[ "${CODESCRIBE_TEST_ISOLATED_GUI:-0}" == 1 ]]; then
+  if ! xcrun xcresulttool get test-results summary --path "$RESULT_BUNDLE" --compact > "$RESULT_PARENT/summary.json" || \
+     ! xcrun xcresulttool get test-results tests --path "$RESULT_BUNDLE" --compact > "$RESULT_PARENT/tests.json"; then
+    echo "test-swift: cannot read structured test results" >&2
+    if [ "$rc" -eq 0 ]; then rc=6; fi
+  fi
   # Assertions return Void: only explicit Bool postcondition AND cleanup receipts
   # can certify an action. Ordinary AX queries/AXPress success cannot pass this gate.
   if ! python3 - "$INTERACTION_RECEIPTS" "$INTERACTION_RUN_ID" \
-    "$INTERACTION_SOURCE_SHA" "$SWIFT_TEST_LOG" <<'PY'
+    "$INTERACTION_SOURCE_SHA" "$RESULT_PARENT/summary.json" "$RESULT_PARENT/tests.json" <<'PY'
 import json
 from pathlib import Path
 import re
@@ -139,18 +166,36 @@ import sys
 def refuse():
     raise SystemExit("test-swift: isolated GUI requires executed, unskipped tests and complete verified action receipts")
 
-path, run_id, source_sha, log_path = sys.argv[1:]
-log = Path(log_path).read_bytes().replace(b"\0", b"").decode("utf-8", errors="replace")
-# Unknown skip output also fails closed; only an explicit zero-skips summary
-# can contain that word. Never let a zero summary hide an individual skip.
-for line in log.splitlines():
-    if not re.search(r"\bskipped\b", line, re.IGNORECASE):
-        continue
-    if re.search(r"Test Case .*\bskipped\b", line, re.IGNORECASE):
+path, run_id, source_sha, summary_path, tests_path = sys.argv[1:]
+try:
+    summary = json.loads(Path(summary_path).read_text())
+    names = ("totalTestCount", "passedTests", "failedTests", "skippedTests", "expectedFailures")
+    if not isinstance(summary, dict) or any(type(summary.get(key)) is not int for key in names):
         refuse()
-    counts = re.findall(r"\b([0-9]+) (?:tests? )?(?:were )?skipped\b", line, re.IGNORECASE)
-    if not counts or any(int(count) != 0 for count in counts):
+    total, passed, failed, skipped, expected = (summary[key] for key in names)
+    if (total <= 0 or passed != total or failed != 0 or skipped != 0 or expected != 0
+            or summary.get("result") != "Passed"):
         refuse()
+    tree = json.loads(Path(tests_path).read_text())
+    matches = []
+    def visit(nodes, in_bundle=False):
+        if not isinstance(nodes, list):
+            refuse()
+        for node in nodes:
+            if not isinstance(node, dict):
+                refuse()
+            bundle = in_bundle or (node.get("nodeType") == "Unit test bundle"
+                                   and node.get("name") == "CodescribeTests")
+            if bundle and node.get("nodeType") == "Test Case" and node.get("nodeIdentifier") == (
+                "OverlayConversationAcceptanceTests/testVoicelessReplyAndAgentTextRenderEnabledPlay()"
+            ):
+                matches.append(node.get("result"))
+            visit(node.get("children", []), bundle)
+    visit(tree["testNodes"])
+    if matches != ["Passed"]:
+        refuse()
+except (OSError, ValueError, TypeError, KeyError):
+    refuse()
 keys = {"schema", "runID", "sourceSHA", "requestID", "testMethod", "identifier",
         "verb", "hostKind", "phase", "outcome", "axStatus", "postcondition", "cleanup"}
 actions = {}
@@ -181,10 +226,6 @@ try:
                 or end["phase"] != "completed" or end["outcome"] != "PASS"
                 or type(end["axStatus"]) is not int or end["axStatus"] != 0
                 or end["postcondition"] is not True or end["cleanup"] is not True):
-            refuse()
-        case, method = end["testMethod"].removesuffix("()").split(".")
-        if not re.search(r"Test Case '-\[CodescribeTests\." + re.escape(case) + r" "
-                         + re.escape(method) + r"\]' passed", log):
             refuse()
 except (OSError, ValueError, TypeError, KeyError):
     refuse()

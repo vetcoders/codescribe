@@ -48,12 +48,40 @@ elif name == 'xcodegen':
     assert args == ['generate'] and Path.cwd() == repo / 'macos'
     sys.exit(42 if s['mode'] == 'generation-error' else 0)
 elif name == 'xcrun':
-    assert args[:5] == ['swift', '-swift-version', '6', '-warnings-as-errors', 'scripts/tests/native-ax-probe.swift'], args
-    data = Path(os.environ['CODESCRIBE_DATA_DIR'])
-    assert Path(args[5]) == data / 'ax-probe' and data.is_dir()
-    if s['mode'] == 'ax-error':
-        sys.exit(45)
-    (data / 'ax-probe/ready').write_text('untrusted' if s['mode'] == 'ax-untrusted' else 'trusted')
+    if args[:4] == ['xcresulttool', 'get', 'test-results', 'summary'] or args[:4] == ['xcresulttool', 'get', 'test-results', 'tests']:
+        assert args[4] == '--path' and args[6:] == ['--compact'], args
+        if s['mode'] == 'gui-result-error' or not Path(args[5]).is_dir(): sys.exit(46)
+        if args[3] == 'summary':
+            if s['mode'] == 'gui-summary-malformed': print('{bad'); sys.exit(0)
+            summary = dict(result='Passed', totalTestCount=7, passedTests=7,
+                           failedTests=0, skippedTests=0, expectedFailures=0)
+            changes = {'gui-zero': {'totalTestCount': 0, 'passedTests': 0},
+                       'gui-skip': {'skippedTests': 1, 'passedTests': 6},
+                       'gui-bool': {'skippedTests': False}, 'gui-string': {'totalTestCount': '7'},
+                       'gui-negative': {'failedTests': -1}, 'gui-inconsistent': {'passedTests': 6},
+                       'gui-failed-count': {'failedTests': 1, 'passedTests': 6},
+                       'gui-expected-failure': {'expectedFailures': 1},
+                       'gui-result-failed': {'result': 'Failed'}}
+            summary.update(changes.get(s['mode'], {}))
+            if s['mode'] == 'gui-missing-field': del summary['skippedTests']
+            print(json.dumps(summary))
+        else:
+            if s['mode'] == 'gui-tests-malformed': print('{bad'); sys.exit(0)
+            case = dict(nodeType='Test Case', result='Passed',
+                        nodeIdentifier='OverlayConversationAcceptanceTests/testVoicelessReplyAndAgentTextRenderEnabledPlay()')
+            if s['mode'] == 'gui-wrong-sentinel': case['nodeIdentifier'] = 'Other/test()'
+            if s['mode'] == 'gui-failed-sentinel': case['result'] = 'Failed'
+            cases = [] if s['mode'] == 'gui-no-selected-pass' else [case]
+            if s['mode'] == 'gui-duplicate-sentinel': cases.append(dict(case))
+            bundle_name = 'OtherTests' if s['mode'] == 'gui-wrong-bundle' else 'CodescribeTests'
+            print(json.dumps({'testNodes': [{'nodeType': 'Unit test bundle', 'name': bundle_name, 'children': cases}]}))
+    else:
+        assert args[:5] == ['swift', '-swift-version', '6', '-warnings-as-errors', 'scripts/tests/native-ax-probe.swift'], args
+        data = Path(os.environ['CODESCRIBE_DATA_DIR'])
+        assert Path(args[5]) == data / 'ax-probe' and data.is_dir()
+        if s['mode'] == 'ax-error':
+            sys.exit(45)
+        (data / 'ax-probe/ready').write_text('untrusted' if s['mode'] == 'ax-untrusted' else 'trusted')
 elif name == 'xcodebuild':
     assert Path.cwd() == repo / 'macos'
     assert args[:3] == ['test', '-scheme', 'Codescribe'], args
@@ -73,6 +101,10 @@ elif name == 'xcodebuild':
     if gui:
         assert os.environ['TEST_RUNNER_CODESCRIBE_AX_PROBE'] == str(data / 'ax-probe')
         assert (data / 'ax-probe/ready').read_text() == 'trusted'
+        assert args.count('-resultBundlePath') == 1
+        result_bundle = Path(args[args.index('-resultBundlePath') + 1])
+        assert not result_bundle.exists() and result_bundle.parent.stat().st_mode & 0o777 == 0o700
+        if s['mode'] != 'gui-missing-bundle': result_bundle.mkdir()
     else:
         for key in ('AX_PROBE', 'INTERACTION_RUN_ID', 'INTERACTION_SOURCE_SHA', 'INTERACTION_RECEIPTS'):
             assert 'TEST_RUNNER_CODESCRIBE_' + key not in os.environ, key
@@ -126,10 +158,9 @@ elif name == 'xcodebuild':
         if s['mode'] == 'gui-unfinished': rows = [row]
         if s['mode'] == 'gui-duplicate': rows.append(end)
         path.write_text('{bad\n' if s['mode'] == 'gui-malformed' else ''.join(json.dumps(r)+'\n' for r in rows))
-        if s['mode'] != 'gui-no-selected-pass':
-            print("Test Case '-[CodescribeTests.OverlayConversationAcceptanceTests testVoicelessReplyAndAgentTextRenderEnabledPlay]' passed (0.05 seconds).")
-        if s['mode'] == 'gui-skip':
-            print("Test Case '-[CodescribeTests.FixtureTests testSkipped]' skipped (0.0 seconds).")
+        print("Test Case '-[CodescribeTests.OverlayConversationAcceptanceTests testVoicelessReplyAndAgentTextRenderEnabledPlay]' passed (0.05 seconds).")
+        if s['mode'] == 'gui-metadata-warning':
+            print('warning: Metadata extraction skipped, no AppIntents.framework dependency found')
     print(f'Executed {count} tests, with 0 failures (0 unexpected) in {seconds} (1.0) seconds')
     print('** TEST SUCCEEDED **')
 elif name == 'codescribe-stt-bridge' or name == 'custom-helper':
@@ -223,6 +254,8 @@ def run_case(base, profile, layout, mode='success'):
     args = [make, '-C', str(repo), 'test-swift',
             'SWIFT_TEST_LOG=' + str(case / 'swift.log'), 'SWIFT_TEST_CODESIGN_IDENTITY=fixture-signing',
             'SWIFT_TEST_ARGS=-only-testing:CodescribeTests/Fixture', 'DATA_ASSETS_DIR=' + str(case / 'absent-assets')]
+    if mode == 'gui-result-override':
+        args[args.index('SWIFT_TEST_ARGS=-only-testing:CodescribeTests/Fixture')] += ' -resultBundlePath /fixture/foreign.xcresult'
     if layout != 'default':
         args.append('CARGO_TARGET_DIR=' + selected_target)
     if profile != 'debug':
@@ -246,11 +279,13 @@ def run_case(base, profile, layout, mode='success'):
             assert names.count('swiftc') == 1 and 'Error 44' in result.stdout, result.stdout
         if not gui:
             assert 'xcrun' not in names, names
-        refusal = mode not in ('success', 'override-helper', 'budget', 'under', 'gui-opt-in') or profile == 'unsupported'
+        refusal = mode not in ('success', 'override-helper', 'budget', 'under', 'gui-opt-in', 'gui-metadata-warning') or profile == 'unsupported'
         if refusal:
             assert result.returncode != 0, 'refusal accepted'
-            if mode.startswith('gui-') or mode in ('xcode-error', 'zero', 'slow', 'one-over', 'two-over', 'suite-over'):
-                expected = 65 if mode == 'gui-xcode-error' else 3 if mode == 'gui-zero' else 6 if mode.startswith('gui-') else {'xcode-error': 65, 'zero': 3, 'slow': 4,
+            if mode == 'gui-result-override':
+                assert 'caller result bundle override refused' in result.stdout and 'xcodebuild' not in names
+            elif mode.startswith('gui-') or mode in ('xcode-error', 'zero', 'slow', 'one-over', 'two-over', 'suite-over'):
+                expected = 65 if mode == 'gui-xcode-error' else 6 if mode.startswith('gui-') else {'xcode-error': 65, 'zero': 3, 'slow': 4,
                             'one-over': 5, 'two-over': 5, 'suite-over': 4}[mode]
                 assert f'Error {expected}' in result.stdout, result.stdout
                 assert 'xcodebuild' in names
@@ -302,7 +337,12 @@ with tempfile.TemporaryDirectory(prefix='test-swift-target-root-') as tmp:
                  'gui-empty', 'gui-unverified', 'gui-unfinished', 'gui-duplicate',
                  'gui-false-postcondition', 'gui-false-cleanup', 'gui-ax-failure',
                  'gui-wrong-run', 'gui-wrong-source', 'gui-extra-key', 'gui-malformed',
-                 'gui-no-selected-pass', 'gui-skip', 'gui-zero', 'gui-xcode-error'):
+                 'gui-no-selected-pass', 'gui-skip', 'gui-zero', 'gui-xcode-error',
+                 'gui-metadata-warning', 'gui-bool', 'gui-string', 'gui-negative',
+                 'gui-inconsistent', 'gui-failed-count', 'gui-expected-failure', 'gui-result-failed',
+                 'gui-missing-field', 'gui-summary-malformed', 'gui-result-error', 'gui-missing-bundle',
+                 'gui-wrong-sentinel', 'gui-failed-sentinel', 'gui-duplicate-sentinel', 'gui-wrong-bundle',
+                 'gui-tests-malformed', 'gui-result-override'):
         run_case(base, 'debug', 'spaces', mode)
     run_case(base, 'unsupported', 'spaces')
 print(f'test-swift-target-root: scenarios={passed + failed} passed={passed} failed={failed}')

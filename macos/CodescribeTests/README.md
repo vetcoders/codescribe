@@ -335,8 +335,13 @@ windows visible and permits activation in that isolated session. It must never
 be used to run over the Founder's working desktop.
 
 The ordinary runner never starts the independent AX client or checks AX trust.
-The explicit isolated GUI runner checks existing trust without prompting, and
-fails on zero executed tests, any skipped test, or zero verified AX actions.
+The explicit isolated GUI runner checks existing trust without prompting. It
+retains a private per-run `.xcresult` beside the test log and reads its
+structured summary and test tree: zero tests, any skipped or failed test,
+expected failures, inconsistent counts, missing results, or a missing, duplicate
+or nonpassing sentinel fail the gate. A build warning containing the word
+"skipped" is not a test skip. The caller cannot override the result bundle path.
+The separate verified AX action receipt remains required.
 Choose a supported interaction selection, for example
 `CODESCRIBE_TEST_ISOLATED_GUI=1 make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayConversationAcceptanceTests/testVoicelessReplyAndAgentTextRenderEnabledPlay'`.
 Selecting only state/layout tests in GUI mode cannot satisfy the interaction gate.

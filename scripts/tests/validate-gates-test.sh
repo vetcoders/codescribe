@@ -220,6 +220,9 @@ with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
         check(label, helper=replace(helper_source, generation, new), diagnostic='[generation]')
     check('missing-XCTest', helper=replace(helper_source, 'xcodebuild test \\', '# xcodebuild test \\'), diagnostic='[XCTest]')
     check('swallowed-XCTest', helper=replace(helper_source, 'rc=${PIPESTATUS[0]}', 'rc=0'), diagnostic='[XCTest]')
+    check('missing-result-bundle', helper=replace(helper_source, 'RESULT_ARGS=(-resultBundlePath "$RESULT_BUNDLE")', 'RESULT_ARGS=()'), diagnostic='[XCTest]')
+    check('ignored-skips', helper=replace(helper_source, 'skipped != 0', 'skipped < 0'), diagnostic='[XCTest]')
+    check('ignored-sentinel', helper=replace(helper_source, 'if matches != ["Passed"]:', 'if False:'), diagnostic='[XCTest]')
     check('extra-helper-code', helper=helper_source + 'true\n', diagnostic='[helper-shape]')
     check('setup-shadow', make=make_source + '\nTEST_DATA_DIR_SETUP := true\n', diagnostic='[isolation]')
     check('comment-mktemp', make=replace(make_source, 'CODESCRIBE_TEST_DATA_DIR="$$(mktemp', '# CODESCRIBE_TEST_DATA_DIR="$$(mktemp'), diagnostic='[isolation]')
@@ -295,8 +298,8 @@ sys.exit(0)
         passed += 1
         print(f'PASS verify-wiring-{harness_exit}: make exit={result.returncode}', flush=True)
 
-    # 15 profile/layout cases + 38 boundary modes + 1 unsupported profile.
-    swift_scenarios = 54
+    # 15 profile/layout cases + 56 boundary modes + 1 unsupported profile.
+    swift_scenarios = 72
     # Reuse all scenarios, then independently inspect their recorded order.
     swift_evidence = evidence / 'swift-path'
     result = subprocess.run(['/bin/bash', str(source / 'scripts/tests/test-swift-target-root-test.sh'),
@@ -315,22 +318,27 @@ sys.exit(0)
             ordered = [n for n in names if n not in ('security', 'git')]
             helper = 'custom-helper' if path.stem.endswith('-override-helper') else 'codescribe-stt-bridge'
             expected_order = [helper, 'cargo', 'xcodegen']
-            if path.stem.endswith('-gui-opt-in'):
+            if path.stem.endswith(('-gui-opt-in', '-gui-metadata-warning')):
                 # These are fixture tool/receipt witnesses, not real GUI acceptance.
                 selected = [c for c in receipt['calls'] if 'selected' in c]
                 assert len(selected) == 1, (path, selected)
                 ax_calls = [c for c in receipt['calls'] if c['tool'] == 'xcrun']
-                assert len(ax_calls) == 1, (path, ax_calls)
+                assert len(ax_calls) == 3, (path, ax_calls)
                 assert ax_calls[0]['argv'] == [
                     'swift', '-swift-version', '6', '-warnings-as-errors',
                     'scripts/tests/native-ax-probe.swift',
                     str(Path(selected[0]['data']) / 'ax-probe')], (path, ax_calls)
                 log = path.with_suffix('.log').read_text().splitlines()
                 assert log.count('test-swift: verified synthetic test-host AX actions=1') == 1, (path, log)
+                assert [c['argv'][:4] for c in ax_calls[1:]] == [
+                    ['xcresulttool', 'get', 'test-results', 'summary'],
+                    ['xcresulttool', 'get', 'test-results', 'tests']], (path, ax_calls)
                 expected_order.append('xcrun')
             else:
                 assert 'xcrun' not in names, (path, names)
             expected_order.append('xcodebuild')
+            if path.stem.endswith(('-gui-opt-in', '-gui-metadata-warning')):
+                expected_order.extend(['xcrun', 'xcrun'])
             assert ordered == expected_order, (path, ordered, expected_order)
         if path.stem.endswith('-helper-error'):
             assert not set(names) & {'cargo', 'xcodegen', 'xcrun', 'xcodebuild'}, names
