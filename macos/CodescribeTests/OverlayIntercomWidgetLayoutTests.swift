@@ -203,13 +203,33 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     }
   }
 
-  func testUnreadablyNarrowOrHeaderOnlyCardsDoNotMountClippedPreview() {
+  func testUnreadablyNarrowOrHeaderOnlyCardsDoNotMountClippedPreview() throws {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
       XCTAssertNil(metrics.compactPreviewLayout(width: metrics.iconSide, cardHeight: 2000))
       XCTAssertNil(metrics.compactPreviewLayout(width: 500, cardHeight: metrics.iconSide))
       XCTAssertEqual(metrics.cardContent(width: 500, cardHeight: metrics.iconSide), .header)
+      let row = Layout.controlHeight(scale: scale)
+      let narrowPreview = try XCTUnwrap(
+        metrics.compactPreviewLayout(width: metrics.minimumNameWidth, cardHeight: 5 * row))
+      XCTAssertGreaterThan(narrowPreview.height, 0)
+      XCTAssertFalse(narrowPreview.showsComposer)
     }
+  }
+
+  @MainActor
+  func testLeadingHintAnchorsOutsideParentWindowAndAlignsTopEdge() {
+    let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+    let parentFrame = NSRect(x: 1180, y: 740, width: 240, height: 30)
+    let innerButtonAnchor = NSRect(x: 1225, y: 740, width: 120, height: 30)
+    let frame = OverlayHintPanel.frame(
+      size: CGSize(width: 280, height: 180),
+      leading: innerButtonAnchor,
+      parentFrame: parentFrame,
+      within: screen)
+    XCTAssertEqual(frame.maxX, parentFrame.minX - OverlayHintPanel.gap, accuracy: 0.001)
+    XCTAssertEqual(frame.maxY, innerButtonAnchor.maxY, accuracy: 0.001)
+    XCTAssertFalse(frame.intersects(parentFrame))
   }
 
   @MainActor
@@ -1146,7 +1166,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
 
     let inboxStart = try XCTUnwrap(source.range(of: "private func inboxRow("))
     let inboxEnd = try XCTUnwrap(
-      source.range(of: "private func conversationRow(", range: inboxStart.upperBound..<source.endIndex))
+      source.range(
+        of: "private func conversationRow(", range: inboxStart.upperBound..<source.endIndex))
     let inboxBody = String(source[inboxStart.lowerBound..<inboxEnd.lowerBound])
     XCTAssertTrue(inboxBody.contains("dot: nil"))
     XCTAssertTrue(inboxBody.contains("symbol: \"envelope\""))

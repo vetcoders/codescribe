@@ -171,7 +171,8 @@ final class OverlayHintAnchor {
         self.pendingHint = nil
         self.show(
           title, palette: palette, leading: leading, withinWindow: withinWindow,
-          content: content, size: size, fitsContentHeight: fitsContentHeight, interactive: interactive,
+          content: content, size: size, fitsContentHeight: fitsContentHeight,
+          interactive: interactive,
           onOpen: onOpen, onClose: onClose)
       }
     } else if let view {
@@ -328,7 +329,9 @@ final class OverlayHintPanel {
     panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
     let frame =
       leading
-      ? Self.frame(size: size, leading: anchorRect, within: bounds)
+      ? Self.frame(
+        size: size, leading: anchorRect,
+        parentFrame: withinWindow ? nil : parent.frame, within: bounds)
       : Self.frame(size: size, below: anchorRect, within: bounds)
     if panel.frame != frame { panel.setFrame(frame, display: true) }
     if panel.parent !== parent {
@@ -394,9 +397,13 @@ final class OverlayHintPanel {
   }
 
   /// Sidebar hints sit over the document, outside the rail's scroll clip.
-  static func frame(size: CGSize, leading anchor: NSRect, within visible: NSRect) -> NSRect {
-    let left = anchor.minX - gap - size.width
-    let right = anchor.maxX + gap
+  static func frame(
+    size: CGSize, leading anchor: NSRect, parentFrame: NSRect? = nil, within visible: NSRect
+  ) -> NSRect {
+    let leadingEdge = min(anchor.minX, parentFrame?.minX ?? anchor.minX)
+    let trailingEdge = max(anchor.maxX, parentFrame?.maxX ?? anchor.maxX)
+    let left = leadingEdge - gap - size.width
+    let right = trailingEdge + gap
     // A column against the left screen edge previews on its right. Clamping
     // the left candidate onto the row used to cover the very control hovered.
     let x =
@@ -408,7 +415,7 @@ final class OverlayHintPanel {
         max(x, visible.minX + screenInset),
         visible.maxX - screenInset - size.width),
       y: min(
-        max(anchor.midY - size.height / 2, visible.minY + screenInset),
+        max(anchor.maxY - size.height, visible.minY + screenInset),
         visible.maxY - screenInset - size.height))
     return NSRect(origin: origin, size: size)
   }

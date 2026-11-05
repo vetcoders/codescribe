@@ -189,8 +189,8 @@ struct IntercomContentMetrics: Equatable {
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return nil }
     let scale = nameFontSize / 11
     let font = NSFont.systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)
-    let readableWidth = ("Message preview" as NSString).size(withAttributes: [.font: font]).width
-    guard width - 24 >= readableWidth else { return nil }
+    let previewReadableWidth = ("Abc…" as NSString).size(withAttributes: [.font: font]).width
+    guard width - 24 >= previewReadableWidth else { return nil }
     let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
     let contextFont = NSFont.systemFont(ofSize: 10 * scale)
     let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
@@ -202,6 +202,7 @@ struct IntercomContentMetrics: Equatable {
       + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
       + OverlayIntercomWidgetLayout.compactPreviewSpacing
     guard available >= minimum else { return nil }
+    let readableWidth = ("Message preview" as NSString).size(withAttributes: [.font: font]).width
     let editorHeightLimit = 28 * scale
     // The shared composer owns the stacked editor/action-row measurements.
     // Only ConversationView's external insets belong to this admission gate.
