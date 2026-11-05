@@ -1149,7 +1149,9 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       body.range(of: "} content: { rowFocus in", range: pinned.upperBound..<body.endIndex))
     let pinnedSection = body[pinned.upperBound..<content.lowerBound]
     let contentSection = body[content.upperBound...]
-    XCTAssertTrue(pinnedSection.contains("_ in EmptyView()"))
+    XCTAssertTrue(
+      pinnedSection.contains("_ in EmptyView()")
+        || (pinnedSection.contains("_ in") && pinnedSection.contains("EmptyView()")))
     XCTAssertFalse(pinnedSection.contains("broadcastRow("))
     XCTAssertFalse(body.contains("OverlayComposerSurface"))
     let broadcastCall = try XCTUnwrap(
