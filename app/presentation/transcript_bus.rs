@@ -439,6 +439,12 @@ impl TranscriptBus {
         // verdicts. Intermediate revisions stay in-process; they still project
         // to the HUD and in-process consumers below.
         let channel_quiet = self.session.audience.is_some();
+        // Shared-capture Raw is a live fan-out, including corrections to an
+        // already announced occurrence. Persist it in this publication path
+        // before any per-seat terminal formatter can run. Quiet presentation
+        // updates and the controller's final send/hold contract stay separate.
+        let shared_raw = self.capture_session_id.is_some()
+            && matches!(&revision.action, ReducerAction::ApplyLedgerDecision { .. });
         let is_terminal_seal = matches!(
             &revision.action,
             ReducerAction::RecordLedgerSeal { terminal: true, .. }
@@ -538,6 +544,7 @@ impl TranscriptBus {
                     .contains(&(document_index as u64))
                 && !revision.rendered_text.trim().is_empty();
             let persist = !channel_quiet
+                || shared_raw
                 || is_terminal_seal
                 || is_manual_edit
                 || is_coverage_verdict

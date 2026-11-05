@@ -2275,7 +2275,7 @@ impl ClosedChannel {
             None => Ok(()),
         };
         // This participant's own intervals freeze here: the decoder passed its
-        // detach sample, the stream ended, or the bounded wait elapsed.
+        // detach sample or the stream ended. The wait budget only logs overruns.
         if let Some((demux, id)) = self.participant.take() {
             let settled = demux.settle(id, CHANNEL_DETACH_SETTLE_BUDGET).await;
             info!(?id, ?settled, "channel participation settled");

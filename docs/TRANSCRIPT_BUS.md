@@ -2325,6 +2325,15 @@ a channel session, so no follower maps another channel's audio to its own take.
 When more than one interval shared it, the take store records no single
 transcript for it.
 
+Shared-capture Raw mutations (including corrections) are persisted by the normal
+`TranscriptBus::publish_revision` path immediately, before terminal formatting.
+The direct recognizer lane does the same in `publish_direct_revision`. These Raw
+rows deliberately bypass quiet suppression for shared captures; presentation-only
+updates stay quiet. An absent, failed or pending formatter cannot hold this fan-out.
+The controller's final delivery and send hold still follow message settlement and
+the selected segment-finish policy. Finishing one detached reducer marks only its
+lifecycle terminal and never seals the shared ledger.
+
 `co_audience` (above) stays an informational roster snapshot. Participation is
 the sample interval in the sealed row.
 
