@@ -724,13 +724,6 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       RunLoop.main.run(until: Date().addingTimeInterval(0.4))
       host.layoutSubtreeIfNeeded()
     }
-    func rect(_ identifier: String) throws -> NSRect {
-      let element = try XCTUnwrap(NativeAccessibilityProbe.waitForElements(identifier).elements.first)
-      let top = try XCTUnwrap(NSScreen.screens.first).frame.maxY
-      return panel.convertFromScreen(
-        NSRect(x: element.x, y: top - element.y - element.height,
-               width: element.width, height: element.height))
-    }
     func send(_ type: NSEvent.EventType, _ point: NSPoint) throws {
       let event = try XCTUnwrap(NSEvent.mouseEvent(
         with: type, location: point, modifierFlags: [],
@@ -739,9 +732,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       panel.sendEvent(event)
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
-    func drag(_ identifier: String, by distance: CGFloat) throws {
-      let handle = try rect(identifier)
-      let start = NSPoint(x: handle.midX, y: handle.midY)
+    func drag(_ frame: CGRect, by distance: CGFloat) throws {
+      let start = NSPoint(x: frame.minX + 5, y: frame.midY)
       let end = NSPoint(x: start.x + distance, y: start.y)
       try send(.leftMouseDown, start)
       try send(.leftMouseDragged, end)
@@ -757,28 +749,27 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     settle()
     XCTAssertEqual(state.agentsLayout, .split)
     XCTAssertEqual(drawer.frame.width, 300, accuracy: 1)
-    try drag("overlay-agent-sidebar-resize", by: 270)
+    try drag(drawer.frame, by: 270)
     XCTAssertEqual(state.agentsLayout, .rail)
     XCTAssertEqual(drawer.frame, .zero)
     XCTAssertGreaterThan(rail.frame.width, 0)
     assertRoute()
-    let handle = try rect("overlay-agent-rail-resize")
-    try send(.mouseMoved, NSPoint(x: handle.midX, y: handle.midY))
-    try send(.mouseMoved, NSPoint(x: rail.frame.midX, y: handle.midY))
+    try send(.mouseMoved, NSPoint(x: rail.frame.minX + 5, y: rail.frame.midY))
+    try send(.mouseMoved, NSPoint(x: rail.frame.midX, y: rail.frame.midY))
     settle()
     XCTAssertEqual(state.agentsLayout, .rail, "hover cannot undo an explicit fold")
     XCTAssertEqual(drawer.frame, .zero)
     assertRoute()
-    try drag("overlay-agent-rail-resize", by: -100)
+    try drag(rail.frame, by: -100)
     XCTAssertEqual(state.agentsLayout, .split)
     XCTAssertGreaterThan(drawer.frame.width, 0)
     XCTAssertEqual(rail.frame, .zero)
     assertRoute()
-    try drag("overlay-agent-sidebar-resize", by: -600)
+    try drag(drawer.frame, by: -600)
     XCTAssertEqual(state.agentsLayout, .agents)
     XCTAssertGreaterThan(drawer.frame.width, 1000)
     assertRoute()
-    try drag("overlay-agent-sidebar-resize", by: 400)
+    try drag(drawer.frame, by: 400)
     XCTAssertEqual(state.agentsLayout, .split)
     XCTAssertLessThan(drawer.frame.width, 1000)
     assertRoute()
