@@ -1022,15 +1022,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// The main overlay's mini counter in the vertical layout: the group
   /// unfolds and stands in front, its detached windows still above it.
   func revealGroup() {
-    if !visible {
-      setVisible(true, relativeTo: nil)
-    }
+    guard visible else { return }
     if presentation.folded { toggleGroup() }
     raisePresentedGroup()
   }
 
   func openMainWindow(surface: OverlayContentSurface) {
-    setVisible(false, relativeTo: nil)
     if surface == .agents {
       state.showAgentMonitor()
     } else {

@@ -365,10 +365,10 @@ final class OverlayController: ObservableObject {
     let preference = state.channelMapPreference
     // One presentation owner: the full Agents canvas and its floating views
     // are alternatives, not two concurrent projections on the desktop.
-    let showsAgentsCanvas =
-      panelPresented && state.presentationMode == .expanded && state.windowContentSurface == .agents
+    let showsExpandedMainCanvas =
+      panelPresented && state.presentationMode == .expanded
     let wantsWidget =
-      preference.enabled && preference.layout == .vertical && overlayEnabled && !showsAgentsCanvas
+      preference.enabled && preference.layout == .vertical && overlayEnabled && !showsExpandedMainCanvas
     if wantsWidget, panelPresented, state.windowContentSurface == .agents {
       // A compact Agents widget is replaced by the floating presentation.
       // orderOut clears panelPresented before re-entering this same owner.
@@ -399,6 +399,7 @@ final class OverlayController: ObservableObject {
   private func showIntercom() {
     guard intercomPresentationStarted else { return }
     readOverlayPreference()
+    state.selectConversation(nil, expand: false)
     dismiss()
     intercomWidget?.revealGroup()
   }

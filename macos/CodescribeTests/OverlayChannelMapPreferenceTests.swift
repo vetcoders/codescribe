@@ -104,11 +104,10 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     state.onRevealIntercom = { reveals += 1 }
     for mode: OverlayPresentationMode in [.mini, .midi, .expanded] {
       state.setPresentationMode(mode)
-      let counter = try XCTUnwrap(
+      XCTAssertNil(
         DictationOverlayView(state: state).channelMap,
-        "Floating panels keep their reveal entrance at every overlay width")
-      XCTAssertTrue(counter.stacked)
-      counter.onCounter()
+        "Fiszki mode removes the duplicate channelMap counter from the main overlay")
+      state.toggleAgentSidebar()
       XCTAssertEqual(state.presentationMode, mode, "Reveal must not switch overlay density")
     }
     XCTAssertEqual(reveals, 3)

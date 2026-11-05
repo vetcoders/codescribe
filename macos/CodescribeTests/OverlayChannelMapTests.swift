@@ -945,20 +945,18 @@ final class OverlayChannelMapTests: XCTestCase {
     var restored = 0
     state.onRevealIntercom = { revealed += 1 }
     state.onRestoreMidiNaturalWidth = { restored += 1 }
-    let miniCounter = try XCTUnwrap(
-      DictationOverlayView(state: state).channelMap, "the vertical mini keeps its counter")
-    XCTAssertEqual(miniCounter.placement, .counter)
-    XCTAssertTrue(miniCounter.stacked)
-    miniCounter.onCounter()
-    XCTAssertEqual(revealed, 1, "mini's counter leads to the Intercom group")
+    XCTAssertNil(
+      DictationOverlayView(state: state).channelMap,
+      "the vertical mini removes the duplicate channelMap counter")
+    state.toggleAgentSidebar()
+    XCTAssertEqual(revealed, 1, "toggleAgentSidebar in Fiszki leads to the Intercom group")
     XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
     state.setPresentationMode(.midi)
-    let map = try XCTUnwrap(DictationOverlayView(state: state).channelMap)
-    XCTAssertEqual(map.placement, .counter)
-    XCTAssertTrue(map.stacked)
-    XCTAssertEqual(map.model.counterFigure, "2", "the badge carries the same agent count")
-    map.onCounter()
-    XCTAssertEqual(revealed, 2, "the counter leads to the Intercom group")
+    XCTAssertNil(
+      DictationOverlayView(state: state).channelMap,
+      "the vertical bar removes the duplicate channelMap counter")
+    state.toggleAgentSidebar()
+    XCTAssertEqual(revealed, 2, "toggleAgentSidebar leads to the Intercom group")
     XCTAssertEqual(state.presentationMode, .midi, "the bar stays the bar")
     XCTAssertEqual(restored, 0)
     XCTAssertNil(state.selectedConversationID)
@@ -988,17 +986,14 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(panel.miniSize, NSSize(width: 127, height: 36))
 
     state.channelMapPreference.selectLayout(.vertical)
-    let map = state.channelMapLayoutModel
-    let expected = ceil(
-      DictationOverlayWindow.miniBrandGap
-        + OverlayChannelPill.counterWidth(
-          figure: String(map.count), openDigitCount: map.openDigits.count,
-          scale: OverlayChannelPill.headerScale(1), stacked: true))
-    XCTAssertEqual(fit(), expected)
-    XCTAssertGreaterThan(expected, 0)
-    XCTAssertEqual(panel.miniSize, NSSize(width: 127 + expected, height: 36))
+    XCTAssertFalse(state.channelMapInMini)
+    XCTAssertEqual(fit(), 0, "the vertical mini has no stacked counter")
+    XCTAssertEqual(
+      panel.miniSize,
+      NSSize(width: DictationOverlayWindow.miniBrandWidth, height: 36),
+      "in vertical mode mini keeps the full brand word")
 
-    panel.setChannelMapPresentation(enabled: false, stackedCounterWidth: expected)
+    panel.setChannelMapPresentation(enabled: false, stackedCounterWidth: 0)
     XCTAssertEqual(
       panel.miniSize,
       NSSize(width: DictationOverlayWindow.miniBrandWidth, height: 36),
@@ -1333,19 +1328,13 @@ final class OverlayChannelMapTests: XCTestCase {
       header.contains("OverlayBarLayout(agentCount: map?.model.count ?? 0, textScale: textScale)"),
       "the expanded bar with its map is laid out by its content, not stretched")
     XCTAssertFalse(header.contains("Spacer("), "no stretching centre in the header")
-    XCTAssertTrue(
-      header.contains("let leadingCounter = state.channelMapCounterStacked"),
-      "the vertical counter keeps the brand's side in every form")
-    XCTAssertTrue(
-      header.contains("if leadingCounter, let map {"),
-      "the leading counter is the way to the Intercom group, not a microphone")
     XCTAssertTrue(header.contains("showsWord: !mini"), "mini drops cs")
     XCTAssertTrue(
       header.contains(".frame(height: horizontalMap ? nil : OverlayHeaderDensity.rowHeight)"),
       "the bar answers its own one- or two-row height")
     let map = try section(
       of: overlay, from: "var channelMap: OverlayChannelMapView?",
-      to: "var channelStatusView: OverlayChannelStatusView")
+      to: "private var agentRouterButton")
     XCTAssertTrue(
       map.contains("guard state.presentationMode != .mini || state.channelMapCounterStacked"),
       "only the vertical mini carries the map, as its stacked counter")

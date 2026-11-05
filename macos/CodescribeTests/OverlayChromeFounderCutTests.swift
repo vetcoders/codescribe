@@ -1672,8 +1672,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     // counter, so only the vertical layout's stacked counter follows the
     // brand, in every form (`channelMap` is nil in the horizontal mini).
     XCTAssertTrue(header.contains("showsWord: !mini || !mapEnabled"))
-    XCTAssertTrue(header.contains("let leadingCounter = state.channelMapCounterStacked"))
-    XCTAssertTrue(header.contains("if leadingCounter, let map {"))
     XCTAssertFalse(header.contains("short: mini"))
     XCTAssertFalse(header.contains("miniAgentMicrophone"))
   }

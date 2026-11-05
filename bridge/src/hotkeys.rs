@@ -874,6 +874,16 @@ static PREPARING_PENDING: AtomicBool = AtomicBool::new(false);
 /// Arms [`PREPARING_PENDING`] first so the terminal half of the contract holds
 /// even when the dispatch that follows never transitions state.
 async fn optimistically_show_overlay(event: &HotkeyEvent) {
+    if matches!(
+        event,
+        HotkeyEvent::Hold {
+            action: HoldAction::Down,
+            mode: HoldMode::Raw,
+        }
+    ) && codescribe::os::hotkeys::composer_caret_owned()
+    {
+        return;
+    }
     let starts_redesign_overlay = matches!(
         event,
         HotkeyEvent::ToggleNormal
