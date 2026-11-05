@@ -207,8 +207,8 @@ final class OverlayDividerFoldTests: XCTestCase {
       ))
     let roster = try overlaySource("OverlayChannelStatusView.swift")
     let allRow = try section(
-      roster, from: "if let broadcast = currentConversations.first(where: { $0.channel == \"0\" })",
-      to: "if let inbox = currentConversations.first(where: { $0.isHumanInbox })")
+      roster, from: "broadcastRow(broadcast, rowFocus: rowFocus)",
+      to: ".accessibilityIdentifier(\"overlay-channel-toggle-0\")")
     XCTAssertTrue(
       compact(allRow).contains(
         "chrome: true, diameter: OverlayAgentAudioControls.rosterDiameter"))
