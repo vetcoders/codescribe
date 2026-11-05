@@ -102,6 +102,7 @@ async fn feed(recorder: &StreamingRecorder, fake: &mut Fake, count: usize, expec
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn f5_streaming_recorder_n_joins_create_one_session_ledger_archive_and_wav() {
     let root = tempfile::tempdir().unwrap();
     let mut recorder = StreamingRecorder::new().unwrap();
@@ -176,6 +177,7 @@ async fn f5_streaming_recorder_n_joins_create_one_session_ledger_archive_and_wav
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn f4_streaming_recorder_lone_turnover_ends_old_capture_and_starts_one_fresh_stream() {
     let root = tempfile::tempdir().unwrap();
     let mut recorder = StreamingRecorder::new().unwrap();
@@ -335,11 +337,13 @@ async fn last_failure(cancel: bool) {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn f7_streaming_recorder_error_releases_last_seat_exactly_once() {
     last_failure(false).await;
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn f7_streaming_recorder_cancellation_releases_last_seat_exactly_once() {
     last_failure(true).await;
 }

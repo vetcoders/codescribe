@@ -439,6 +439,7 @@ impl Drop for SessionDrop {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn f13_agent_channel_user_path_2_02_0_off_keeps_one_recognizer_and_exact_raw() {
     // The real RecordingController retains the same recorder throughout.
     let controller = RecordingController::new_without_keychain();
