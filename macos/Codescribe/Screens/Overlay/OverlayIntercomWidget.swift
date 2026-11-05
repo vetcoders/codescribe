@@ -383,12 +383,16 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       let panel = OverlayIntercomPanel()
       panel.delegate = self
       panel.onScroll = { [weak self] delta in self?.scrollGroup(delta > 0 ? -1 : 1) }
-      panel.contentView = NSHostingView(
+      let hosting = NSHostingView(
         rootView: TextScaleRoot(controller: textScale) {
           OverlayIntercomCard(
             state: state, identity: identity, index: index, controller: self,
             onRevealConversation: revealConversation)
         }.csFocusPolicy())
+      // The widget controller owns every card panel's frame; NSHostingView must
+      // never call updateAnimatedWindowSize inside windowDidLayout().
+      hosting.sizingOptions = []
+      panel.contentView = hosting
       cards[identity] = panel
     }
     positionCards()
@@ -492,12 +496,17 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   private func installInstanceContent(on panel: OverlayIntercomPanel, id: UUID) {
-    panel.contentView = NSHostingView(
+    let hosting = NSHostingView(
       rootView: TextScaleRoot(controller: textScale) {
         OverlayIntercomInstanceCard(
           state: state, instanceID: id, controller: self,
           onRevealConversation: revealConversation)
       }.csFocusPolicy())
+    // Detached instance panels are sized explicitly by instanceFrame(_:for:);
+    // disabling hosting sizingOptions prevents re-entrant constraint invalidation
+    // during NSDisplayCycleFlush.
+    hosting.sizingOptions = []
+    panel.contentView = hosting
   }
 
   func beginInstanceDrag(_ id: UUID) -> Bool {

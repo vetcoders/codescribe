@@ -1173,4 +1173,19 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertTrue(inboxBody.contains("symbol: \"envelope\""))
     XCTAssertTrue(inboxBody.contains("overlay-inbox-row"))
   }
+
+  /// Every Intercom panel (header, group cards, and detached instances) owns
+  /// its own NSWindow frame; NSHostingView must disable sizingOptions so
+  /// windowDidLayout() never calls updateAnimatedWindowSize during
+  /// NSDisplayCycleFlush.
+  func testEveryIntercomPanelDisablesHostingSizingOptionsToAvoidDisplayCycleLayoutCrash() throws {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Overlay/OverlayIntercomWidget.swift")
+    let source = try String(contentsOf: url, encoding: .utf8)
+    let hostingCount = source.components(separatedBy: "NSHostingView(").count - 1
+    let sizingResetCount = source.components(separatedBy: "hosting.sizingOptions = []").count - 1
+    XCTAssertEqual(hostingCount, 3)
+    XCTAssertEqual(sizingResetCount, 3)
+  }
 }

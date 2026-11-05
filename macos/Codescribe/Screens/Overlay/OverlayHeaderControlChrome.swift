@@ -444,6 +444,7 @@ final class OverlayHintPanel {
     effect.maskImage = Self.roundedMask(radius: CSRadius.chip)
     let controller = NSHostingController(
       rootView: AnyView(OverlayTooltipChip(title: "", palette: .light, filled: false)))
+    controller.sizingOptions = []
     controller.view.frame = effect.bounds
     controller.view.autoresizingMask = [.width, .height]
     effect.addSubview(controller.view)

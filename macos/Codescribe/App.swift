@@ -1273,7 +1273,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let root = TextScaleRoot(controller: model.chatTextScale) {
       AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
     }
-    let window = AgentWindowChrome.makeWindow(content: NSHostingController(rootView: root))
+    let hosting = NSHostingController(rootView: root)
+    hosting.sizingOptions = []
+    let window = AgentWindowChrome.makeWindow(content: hosting)
     window.center()
     agentWindow = window
     return window
