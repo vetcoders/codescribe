@@ -359,7 +359,7 @@ actor OverlayChannelDeliveryReader {
       guard owners.count == 1, let lease = owners.first,
         let path = lease["bus"] as? String,
         let owner = OverlayConversationOwner(
-          lease: lease, channel: channel, name: binding["audience"] as? String ?? "")
+          lease: lease, channel: channel, name: OverlayChannelDelivery.displayName(of: binding))
       else { continue }
       rosterOwners.append(owner)
       let bus = URL(fileURLWithPath: path).standardizedFileURL

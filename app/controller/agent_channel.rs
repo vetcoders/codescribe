@@ -276,9 +276,22 @@ struct BindingEntry {
     /// Dedicated channel bus path written by the attach engine (W5).
     #[serde(default)]
     bus: Option<String>,
+    /// The name as the agent spelt it at attach; `audience` stays the
+    /// casefolded identity the helper routes by (Founder, 2026-11-04).
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 impl BindingEntry {
+    /// What a person reads: the attach spelling, else the audience.
+    fn display_name(&self) -> &str {
+        self.display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| self.audience.trim())
+    }
+
     fn bus(&self) -> Option<PathBuf> {
         self.bus
             .as_deref()
@@ -348,8 +361,9 @@ fn frozen_channel_recipients(
         if provider.is_empty() || session.is_empty() {
             continue;
         }
-        let identity = format!("{provider}\0{session}");
-        let lease_id = hex::encode(Sha256::digest(identity.as_bytes()))[..32].to_string();
+        let Some(lease_id) = active_names::follower_lease_id(&provider, session) else {
+            continue;
+        };
         let lease_path = root.join("leases").join(format!("{lease_id}.json"));
         let lease: serde_json::Value = (|| {
             use std::io::{BufReader, Read};
@@ -386,7 +400,8 @@ fn frozen_channel_recipients(
             continue;
         }
         recipients.push(serde_json::json!({
-            "channel": channel, "name": entry.audience.trim(), "audience": entry.audience.trim(),
+            "channel": channel, "name": entry.display_name(), "audience": entry.audience.trim(),
+            "display_name": entry.display_name(),
             "provider": provider, "provider_session_id": session, "lease_id": lease_id, "bus": bus,
         }));
     }
@@ -1122,8 +1137,8 @@ pub fn resolve_digit(digit: u8, path: &Path) -> Result<BoundAgentSession, Channe
     };
     let audience = entry.audience.trim();
     let provider = entry.provider.trim();
-    let provider_session_id = entry.provider_session_id.trim();
-    if audience.is_empty() || provider.is_empty() || provider_session_id.is_empty() {
+    let provider_session_id = entry.provider_session_id.as_str();
+    if audience.is_empty() || provider.is_empty() || provider_session_id.trim().is_empty() {
         return Err(ChannelOpenRefusal::BindingMalformed {
             path: path.display().to_string(),
             detail: format!("digit {digit} must name audience, provider, and provider_session_id"),
@@ -2424,77 +2439,8 @@ impl RecordingController {
         binding: &Path,
         bridge_home: &Path,
     ) -> Vec<ChannelHudState> {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|duration| duration.as_secs_f64())
-            .unwrap_or(0.0);
-        let live = codescribe_core::stt::active_names::live_follower_hosts_at(
-            bridge_home,
-            now,
-            codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
-        );
-        let unread = codescribe_core::stt::active_names::unread_backlog_since_at(
-            bridge_home,
-            now,
-            codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
-        );
-        let codex_threads = codescribe_core::stt::active_names::codex_threads_at(bridge_home);
-        let alive = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
-            match (provider.as_deref(), session.as_deref()) {
-                (Some(provider), Some(session)) => {
-                    Some(live.contains_key(&(provider.to_lowercase(), session.to_string())))
-                }
-                _ => None,
-            }
-        };
-        let framed = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
-            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
-                return None;
-            };
-            live.get(&(provider.to_lowercase(), session.to_string()))
-                .map(|hosts| hosts.frame_pane)
-        };
-        let terminal = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
-            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
-                return None;
-            };
-            live.get(&(provider.to_lowercase(), session.to_string()))
-                .map(|hosts| hosts.terminal_tab)
-        };
-        let codex_thread = |provider: &Option<String>,
-                            session: &Option<String>|
-         -> (Option<String>, Option<bool>) {
-            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
-                return (None, None);
-            };
-            codex_threads
-                .get(&(provider.to_lowercase(), session.to_string()))
-                .map_or((None, None), |thread| {
-                    (
-                        Some(format!("codex://threads/{}", thread.thread_id)),
-                        Some(thread.rollout),
-                    )
-                })
-        };
-        let unread_since = |provider: &Option<String>,
-                            session: &Option<String>|
-         -> Option<SystemTime> {
-            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
-                return None;
-            };
-            unread
-                .get(&(provider.to_lowercase(), session.to_string()))
-                .map(|since| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(since.max(0.0)))
-        };
+        let codex_threads = active_names::codex_threads_at(bridge_home);
         let mut states = self.channel_hud_states().await;
-        for state in &mut states {
-            state.follower_alive = alive(&state.provider, &state.provider_session_id);
-            state.frame_detected = framed(&state.provider, &state.provider_session_id);
-            state.terminal_detected = terminal(&state.provider, &state.provider_session_id);
-            (state.codex_thread_url, state.codex_thread_local) =
-                codex_thread(&state.provider, &state.provider_session_id);
-            state.unread_since = unread_since(&state.provider, &state.provider_session_id);
-        }
         if !states.iter().any(|state| state.channel == "0") {
             states.push(ChannelHudState {
                 open: false,
@@ -2517,41 +2463,83 @@ impl RecordingController {
                 unread_since: None,
             });
         }
-        let Ok(file) = load_binding(binding) else {
-            states.sort_by(|a, b| a.channel.cmp(&b.channel));
-            return states;
-        };
-        for (digit, entry) in &file.bindings {
-            if digit.len() != 1 || !digit.chars().all(|c| ('1'..='9').contains(&c)) {
+        let mut ambiguous_open_channels = BTreeSet::new();
+        if let Ok(file) = load_binding(binding) {
+            for (digit, entry) in &file.bindings {
+                if digit.len() != 1 || !digit.chars().all(|c| ('1'..='9').contains(&c)) {
+                    continue;
+                }
+                if let Some(state) = states.iter_mut().find(|state| &state.channel == digit) {
+                    // A channel opened before this change may have lost the
+                    // original whitespace. Never promote that into a match.
+                    if entry.provider_session_id != entry.provider_session_id.trim()
+                        && state.provider_session_id.as_deref()
+                            == Some(entry.provider_session_id.trim())
+                    {
+                        ambiguous_open_channels.insert(digit.clone());
+                    } else if state.provider.as_deref() == Some(entry.provider.trim())
+                        && state.provider_session_id.as_deref()
+                            == Some(entry.provider_session_id.as_str())
+                    {
+                        state.audience = entry.display_name().to_string();
+                    }
+                    continue;
+                }
+                let provider = Some(entry.provider.trim().to_string()).filter(|s| !s.is_empty());
+                let session = Some(entry.provider_session_id.clone())
+                    .filter(|s| !s.trim().is_empty());
+                states.push(ChannelHudState {
+                    open: false,
+                    loud: false,
+                    channel: digit.clone(),
+                    audience: entry.display_name().to_string(),
+                    label: String::new(),
+                    autoseal_secs: 0,
+                    autoseal_deadline: None,
+                    tts_ducking: false,
+                    opened_at: SystemTime::UNIX_EPOCH,
+                    utterance_silence_ms: 0,
+                    follower_alive: None,
+                    frame_detected: None,
+                    terminal_detected: None,
+                    codex_thread_url: None,
+                    codex_thread_local: None,
+                    unread_since: None,
+                    provider,
+                    provider_session_id: session,
+                });
+            }
+        }
+        // Open channels and bound rows can name the same owner. Read its lease
+        // once, then project presence, hosts and backlog from that observation.
+        let mut observations = BTreeMap::new();
+        for state in &mut states {
+            let (Some(provider), Some(session)) =
+                (state.provider.as_deref(), state.provider_session_id.as_deref())
+            else {
+                continue;
+            };
+            if ambiguous_open_channels.contains(&state.channel) {
                 continue;
             }
-            if states.iter().any(|state| &state.channel == digit) {
+            let key = (provider.trim().to_lowercase(), session.to_string());
+            if key.0.is_empty() || key.1.trim().is_empty() {
                 continue;
             }
-            let provider = Some(entry.provider.trim().to_string()).filter(|s| !s.is_empty());
-            let session =
-                Some(entry.provider_session_id.trim().to_string()).filter(|s| !s.is_empty());
-            let (codex_thread_url, codex_thread_local) = codex_thread(&provider, &session);
-            states.push(ChannelHudState {
-                open: false,
-                loud: false,
-                channel: digit.clone(),
-                audience: entry.audience.trim().to_string(),
-                label: String::new(),
-                autoseal_secs: 0,
-                autoseal_deadline: None,
-                tts_ducking: false,
-                opened_at: SystemTime::UNIX_EPOCH,
-                utterance_silence_ms: 0,
-                follower_alive: alive(&provider, &session),
-                frame_detected: framed(&provider, &session),
-                terminal_detected: terminal(&provider, &session),
-                codex_thread_url,
-                codex_thread_local,
-                unread_since: unread_since(&provider, &session),
-                provider,
-                provider_session_id: session,
+            let observation = observations.entry(key.clone()).or_insert_with(|| {
+                active_names::follower_observation_at(bridge_home, &key.0, &key.1)
             });
+            state.follower_alive = observation.alive;
+            state.frame_detected = observation.hosts.map(|hosts| hosts.frame_pane);
+            state.terminal_detected = observation.hosts.map(|hosts| hosts.terminal_tab);
+            state.unread_since = observation.unread_since.map(|since| {
+                SystemTime::UNIX_EPOCH + Duration::from_secs_f64(since.max(0.0))
+            });
+            let thread_key = (key.0.clone(), key.1.trim().to_string());
+            if let Some(thread) = codex_threads.get(&thread_key) {
+                state.codex_thread_url = Some(format!("codex://threads/{}", thread.thread_id));
+                state.codex_thread_local = Some(thread.rollout);
+            }
         }
         states.sort_by(|a, b| a.channel.cmp(&b.channel));
         states
@@ -3819,13 +3807,23 @@ mod tests {
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("clock")
             .as_secs_f64();
+        let ada_lease =
+            active_names::follower_lease_id("claude-code", "ada-session").expect("ada lease id");
         std::fs::write(
-            bridge.join("leases/ada.json"),
+            bridge.join("leases").join(format!("{ada_lease}.json")),
             format!(
-                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"ada","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session","pending":[{{"kind":"seal","delivery_id":"aaaaaaaaaaaaaaaaaaaaaaaa","emitted_at":"2026-10-14T12:00:00Z"}},{{"kind":"seal","delivery_id":"bbbbbbbbbbbbbbbbbbbbbbbb","emitted_at":"2026-10-14T11:00:00Z"}}]}}"#,
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"{ada_lease}","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session","pending":[{{"kind":"seal","delivery_id":"aaaaaaaaaaaaaaaaaaaaaaaa","emitted_at":"2026-10-14T12:00:00Z"}},{{"kind":"seal","delivery_id":"bbbbbbbbbbbbbbbbbbbbbbbb","emitted_at":"2026-10-14T11:00:00Z"}}]}}"#,
             ),
         )
         .expect("lease");
+        // An arbitrary non-canonical `leases/leon.json` does not satisfy Leon's canonical lookup.
+        std::fs::write(
+            bridge.join("leases/leon.json"),
+            format!(
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"leon","name":"leon","active":true,"heartbeat_unix":{now},"provider":"codex","provider_session_id":"leon-session"}}"#,
+            ),
+        )
+        .expect("non-canonical lease");
 
         let controller = RecordingController::new_without_keychain();
         let roster = controller.channel_roster_states_at(&binding, &bridge).await;
@@ -3857,7 +3855,7 @@ mod tests {
         assert_eq!(
             roster[2].follower_alive,
             Some(false),
-            "no lease means nobody is listening"
+            "no canonical lease means nobody is listening"
         );
         assert_eq!(
             roster[2].unread_since, None,
@@ -3881,10 +3879,12 @@ mod tests {
         .expect("binding");
         let bridge = dir.path().join("bridge");
         std::fs::create_dir_all(bridge.join("leases")).expect("leases dir");
+        let leon_lease =
+            active_names::follower_lease_id("codex", THREAD).expect("leon lease id");
         std::fs::write(
-            bridge.join("leases/leon.json"),
+            bridge.join("leases").join(format!("{leon_lease}.json")),
             format!(
-                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"leon","name":"leon","active":false,"heartbeat_unix":1000.0,"provider":"codex","provider_session_id":"{THREAD}","codex":{{"thread_id":"{THREAD}","app_bundle_id":"com.openai.codex","rollout":true,"remote":false}}}}"#,
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"{leon_lease}","name":"leon","active":false,"heartbeat_unix":1000.0,"provider":"codex","provider_session_id":"{THREAD}","codex":{{"thread_id":"{THREAD}","app_bundle_id":"com.openai.codex","rollout":true,"remote":false}}}}"#,
             ),
         )
         .expect("lease");
@@ -4152,9 +4152,9 @@ mod tests {
         let canonical_bus = bus.canonicalize().expect("canonical bus");
         std::fs::create_dir(dir.path().join("leases")).expect("leases");
         let bindings = serde_json::json!({"schema": "vc.agent-audience-binding.v1", "bindings": {
-            "1": {"audience": "Lena", "provider": "codex", "provider_session_id": "agent-a"},
-            "2": {"audience": "Adam", "provider": "codex", "provider_session_id": "agent-b"},
-            "3": {"audience": "Astra", "provider": "codex", "provider_session_id": "agent-c"}
+            "1": {"audience": "lena", "display_name": "Lena", "provider": "codex", "provider_session_id": "agent-a"},
+            "2": {"audience": "adam", "display_name": "Adam", "provider": "codex", "provider_session_id": "agent-b"},
+            "3": {"audience": "astra", "provider": "codex", "provider_session_id": "agent-c"}
         }});
         std::fs::write(&binding, serde_json::to_vec(&bindings).expect("json")).expect("binding");
         let admit = |session: &str, destination: &Path| {
@@ -4175,6 +4175,9 @@ mod tests {
         admit("agent-a", &canonical_bus);
         let frozen = frozen_channel_recipients(0, &binding, &bus);
         assert_eq!(frozen.len(), 1);
+        assert_eq!(frozen[0]["audience"], "lena");
+        assert_eq!(frozen[0]["name"], "Lena");
+        assert_eq!(frozen[0]["display_name"], "Lena");
         admit("agent-b", &canonical_bus);
         admit("agent-c", &dir.path().join("wrong.jsonl"));
         assert_eq!(

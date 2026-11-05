@@ -412,8 +412,11 @@ class ReceiptStateTests(ReceiptFixture):
     def test_the_fixture_directories_pin_the_exact_state(self):
         fixtures = Path(__file__).resolve().parent / "fixtures" / "receipts"
         cases = sorted(p for p in fixtures.iterdir() if p.is_dir())
-        self.assertGreaterEqual(len(cases), 7)
-        self.assertLessEqual({"skipped-on-sent-to", "delivered-unread-unknown-wake"}, {case.name for case in cases})
+        self.assertGreaterEqual(len(cases), 9)
+        self.assertLessEqual(
+            {"display-name-casefold", "skipped-on-sent-to", "delivered-unread-unknown-wake"},
+            {case.name for case in cases},
+        )
         for case in cases:
             with self.subTest(case=case.name):
                 expected = json.loads((case / "expected.json").read_text())
@@ -492,7 +495,7 @@ class ReceiptsCommandTests(ReceiptFixture):
         DEMUX.write_receipt_once(self.receipts() / f"{'1' * 24}.delivered.json", {
             "schema": DEMUX.MESSAGE_RECEIPT_SCHEMA, "kind": "delivered", "message_id": MESSAGE_ID,
             "delivery_id": "1" * 24, "name": "lena", "channel": "3", "lease_id": "l1", "wake": "on", "at": "t",
-            "sent_to": REACH})
+            "sent_to": [{"name": "Lena", "channel": "3"}, {"name": "Igor", "channel": "7"}]})
         code, output, _ = self.cli("--receipts", MESSAGE_ID, "--provider", self.provider, "--session", self.session)
         self.assertEqual((code, json.loads(output)["kind"]), (0, "receipts"))
         # A pending copy in this mailbox, before any receipt file exists for it.

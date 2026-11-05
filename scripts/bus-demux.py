@@ -3663,11 +3663,14 @@ class SessionLease:
         coalesce: bool = False,
         provider_metadata_home: Path | None = None,
         workspace: Path | None = None,
+        display_name: str | None = None,
     ) -> None:
         self.root = root
         self.provider = provider.casefold()
         self.provider_session_id = provider_session_id
         self.name = name.casefold() if name else None
+        # The spelling for people; `name` stays the casefolded identity.
+        self.display_name = (display_name or "").strip() or None
         self.bus = str(bus.expanduser().resolve(strict=False))
         self.ttl_seconds = ttl_seconds
         self.coalesce = coalesce
@@ -3912,6 +3915,7 @@ class SessionLease:
                 "provider": self.provider,
                 "provider_session_id": self.provider_session_id,
                 "name": self.name,
+                "display_name": self.display_name,
                 "bus": self.bus,
                 "cursor": self.cursor,
                 "last_sequence": self.last_sequence,
@@ -4348,6 +4352,7 @@ class SessionLease:
             "provider": self.provider,
             "provider_session_id": self.provider_session_id,
             "name": self.name,
+            "display_name": self.display_name,
             "bus": self.bus,
             "playback": playback_mute_snapshot(
                 self.root, self.provider, self.provider_session_id, Path(self.bus)),
@@ -5420,6 +5425,7 @@ def run(args: argparse.Namespace) -> int:
                 follow_from_end=bool(args.follow and not args.from_start),
                 coalesce=bool(args.coalesce),
                 workspace=getattr(args, "follower_workspace", None),
+                display_name=getattr(args, "display_name", None),
             )
         except (OSError, RuntimeError, ValueError) as error:
             sys.stderr.write(f"bus-demux: session lease refused: {error}\n")
@@ -6865,7 +6871,7 @@ SPOKEN_FILE_SUFFIXES = ("py", "rs", "swift", "md", "json", "jsonl", "toml", "sh"
                         "command")
 _SPOKEN_PATH_CHARS = r"[^\s/,;()\[\]„”“\"'<>]"
 _SPOKEN_LIST_MARK = re.compile(r"^\s*(?:[-*•]+|#{1,6})\s+")
-# "hania → as:" or "as (kanał 1) → Monika, Basia:" opening a message.
+# "hania → as:" or "as (kanał 1) → Founder, Basia:" opening a message.
 _SPOKEN_HEADER = re.compile(
     r"^(?P<name>[^\W\d_][\w-]*)(?:\s*\([^)\n]*\))?\s*(?:→|->|=>)\s*[^:\n]{1,80}:\s*")
 _SPOKEN_URL = re.compile(r"\bhttps?://\S+")
@@ -7354,8 +7360,8 @@ def channel_quiet_for_playback(
     it opened (e.g. one opened to answer a reply); ``unmeasured`` is a broken
     edge chain and never counts as quiet. ``quiet`` follows speech inside the
     take and admits only the agent that channel addresses: a pause in a
-    message to one agent is not room for another (Monika, 2026-10-23 06:58,
-    UI-86: "Roman na 3 kanale zaczął odtwarzać swoją wiadomość głosową").
+    message to one agent is not room for another (Founder, 2026-10-23,
+    UI-86: an agent on another channel started playing its own voice reply).
     """
     def released(channel: str, session_id: str) -> bool:
         row = channel_speech_now(runtime, channel, session_id)
@@ -8235,29 +8241,53 @@ def bound_channel_of_lease(root: Path, lease_id: str) -> str | None:
     return None
 
 
+def bound_display_name_of_lease(root: Path, lease_id: str) -> str | None:
+    """The spelling the lease's current binding carries, read without the lock."""
+    state = read_json(root / AUDIENCE_BINDING_FILENAME) or {}
+    bindings = state.get("bindings") if state.get("schema") == AUDIENCE_BINDING_SCHEMA else None
+    if not isinstance(bindings, dict):
+        return None
+    for channel, binding in bindings.items():
+        owner, refusal = binding_identity(str(channel), binding)
+        if refusal is None and owner["lease_id"] == lease_id:
+            display = binding_display_name(binding)
+            return display or None
+    return None
+
+
 def receipt_recipient(root: Path, payload: dict[str, Any], name: str | None) -> dict[str, Any]:
     """Who this copy's mailbox belongs to: the lease's name and its channel.
 
     The channel comes from the copy's frozen recipient entry for this lease
     when the publisher wrote one, otherwise from the lease's current binding.
-    Names are the agents' own, bounded only when rendered as prose.
+    `name` is the lease's casefolded identity; `display_name` the spelling
+    the frozen entry or the binding carries, when it has one. Names are the
+    agents' own, bounded only when rendered as prose.
     """
     lease_id = payload.get("lease_id")
     channel = None
+    display: str | None = None
     for row in payload.get("recipients") or []:
         if (isinstance(row, dict) and row.get("lease_id") == lease_id
                 and isinstance(row.get("channel"), str) and row["channel"]):
             channel = row["channel"]
-            name = name or row.get("name") or row.get("audience")
+            name = name or row.get("audience") or row.get("name")
+            spelled = row.get("display_name") or row.get("name")
+            display = spelled if isinstance(spelled, str) and spelled.strip() else None
             break
     if channel is None and isinstance(lease_id, str):
         channel = bound_channel_of_lease(root, lease_id)
+    if display is None and isinstance(lease_id, str):
+        display = bound_display_name_of_lease(root, lease_id)
     if not name:
         audience = payload.get("audience")
         name = audience if isinstance(audience, str) and audience not in ("", "*") else None
-    return {"name": name, "channel": channel, "lease_id": lease_id,
-            "provider": payload.get("provider"), "provider_session_id": payload.get("provider_session_id"),
-            "bus": payload.get("bus")}
+    recipient = {"name": name, "channel": channel, "lease_id": lease_id,
+                 "provider": payload.get("provider"), "provider_session_id": payload.get("provider_session_id"),
+                 "bus": payload.get("bus")}
+    if isinstance(display, str) and isinstance(name, str) and display.casefold() == name.casefold():
+        recipient["display_name"] = display
+    return recipient
 
 
 def record_message_receipt(root: Path, payload: dict[str, Any], state: str, *,
@@ -8442,6 +8472,18 @@ def receipt_state(root: Path, message_id: str) -> dict[str, Any]:
             playbacks.append({"state": row.get("state"), "reason": row.get("reason"),
                               "spoken": row.get("spoken") is True, "at": row.get("at"),
                               "playback_ticket": row["playback_ticket"]})
+    if published is not None:
+        sent_to = published
+
+    # One agent is one identity by casefolded name and channel, as `--to`
+    # and `audience` are; the spelling is a label. `sent_to` carries the
+    # spelling the sender's binding had (`display_name`), the readers' files
+    # the lease's casefolded name, and both name the same agent
+    # (Founder, 2026-11-05: a read count of 0/6 over four recipients).
+    def key(name: Any, channel: Any) -> tuple[Any, Any]:
+        return (name.casefold() if isinstance(name, str) else name, channel)
+
+    spelled = {key(item["name"], item["channel"]): item["name"] for item in sent_to or []}
     recipients = []
     for delivery_id, rows in deliveries.items():
         if "read" in rows:
@@ -8455,36 +8497,40 @@ def receipt_state(root: Path, message_id: str) -> dict[str, Any]:
         # a reader that acknowledged under a lease bound later may not have
         # known its digit when it wrote `read`.
         others = [rows[kind] for kind in MESSAGE_RECEIPT_STATES if kind in rows]
+        name = row.get("name") or next((r["name"] for r in others if r.get("name")), None)
+        channel = row.get("channel") or next((r["channel"] for r in others if r.get("channel")), None)
+        display = row.get("display_name") or next((r["display_name"] for r in others
+                                                    if isinstance(r.get("display_name"), str)
+                                                    and r["display_name"]), None)
         recipients.append({
             "delivery_id": delivery_id,
-            "name": row.get("name") or next((r["name"] for r in others if r.get("name")), None),
-            "channel": row.get("channel") or next((r["channel"] for r in others if r.get("channel")), None),
+            "name": (display if isinstance(display, str) and display.casefold() == key(name, None)[0]
+                     else spelled.get(key(name, channel), name)),
+            "channel": channel,
             "state": state,
             "wake": delivered.get("wake") if delivered else None,
             "delivered_at": delivered.get("at") if delivered else None,
             "at": row.get("read_at") if state == "read" else row.get("at"),
         })
     recipients.sort(key=lambda item: (str(item["at"] or ""), item["delivery_id"]))
-    if published is not None:
-        sent_to = published
     # The denominator: everyone on the admitted list, plus anyone delivered to
     # or read outside it (a list frozen by the app, an older helper), minus
-    # everyone whose copy was skipped. A recipient is one agent by name and
-    # channel, however many deliveries reached it. The list is frozen at
-    # publication and a skip happens at delivery, so a member can be both on
+    # everyone whose copy was skipped. A recipient is one agent by casefolded
+    # name and channel, however many deliveries reached it. The list is frozen
+    # at publication and a skip happens at delivery, so a member can be both on
     # the list and skipped: the skip wins (QC, 2026-10-26), the entry stays
     # as skipped, and the count does not wait for a read that cannot come.
     # A member without any file is counted and listed as no_receipt.
     def agent(item: dict[str, Any]) -> tuple[Any, Any]:
-        return (item["name"], item["channel"]) if item["name"] else (item["delivery_id"], None)
+        return key(item["name"], item["channel"]) if item["name"] else (item["delivery_id"], None)
 
-    listed = [(item["name"], item["channel"]) for item in sent_to or []]
+    listed = [key(item["name"], item["channel"]) for item in sent_to or []]
     reached = {agent(item) for item in recipients if item["state"] in ("delivered", "read")}
     skipped = {agent(item) for item in recipients if item["state"] == "skipped"}
-    for name, channel in listed:
-        if (name, channel) not in reached and not any(
-                item["name"] == name and item["channel"] == channel for item in recipients):
-            recipients.append({"delivery_id": None, "name": name, "channel": channel,
+    for item in sent_to or []:
+        member = key(item["name"], item["channel"])
+        if member not in reached and not any(agent(row) == member for row in recipients):
+            recipients.append({"delivery_id": None, "name": item["name"], "channel": item["channel"],
                                "state": "no_receipt", "wake": None, "delivered_at": None, "at": None})
     denominator = len((set(listed) | reached) - skipped)
     withdrawn.sort(key=lambda item: (str(item["at"] or ""), item["delivery_id"]))
@@ -8533,7 +8579,10 @@ def receipts_authorized(root: Path, args: argparse.Namespace, message_id: str) -
         if row.get("lease_id") == lease_id or (
                 row.get("provider") == provider and row.get("provider_session_id") == session):
             return True
-        if name and channel and any(isinstance(item, dict) and item.get("name") == name
+        # The list spells the name as the sender's binding did; the lease
+        # holds the casefolded identity. One agent, compared as an audience is.
+        if name and channel and any(isinstance(item, dict) and isinstance(item.get("name"), str)
+                                    and item["name"].casefold() == name.casefold()
                                     and item.get("channel") == channel
                                     for item in row.get("sent_to") or []):
             return True
@@ -9374,7 +9423,19 @@ def binding_identity(channel: str, binding: Any) -> tuple[dict[str, Any] | None,
     bus = Path(bus_name).expanduser().resolve(strict=False)
     return {"provider": provider, "provider_session_id": session,
             "lease_id": lease_identifier(provider, session), "channel": channel,
-            "audience": audience, "name": audience, "bus": str(bus)}, None
+            "audience": audience, "name": binding_display_name(binding), "bus": str(bus)}, None
+
+
+def binding_display_name(binding: Any) -> str:
+    """The name as the agent spelt it, falling back to the casefolded audience."""
+    if isinstance(binding, dict):
+        display = binding.get("display_name")
+        if isinstance(display, str) and display.strip():
+            return display.strip()
+        audience = binding.get("audience")
+        if isinstance(audience, str):
+            return audience
+    return ""
 
 
 def owner_refusal(root: Path, owner: dict[str, Any]) -> str | None:
@@ -9651,7 +9712,7 @@ def send_text_command(args: argparse.Namespace) -> int:
         # as and hania" from "sent to everyone" without consulting bindings.
         # Owners with channel zero off still get their copy (their reader
         # records the skip) but are not on the list.
-        sent_to = ([{"name": owner["audience"], "channel": owner["channel"]}
+        sent_to = ([{"name": owner.get("name") or owner["audience"], "channel": owner["channel"]}
                     for owner in owners if policies[owner["lease_id"]] != "off"]
                    if broadcast else None)
         for owner in owners:
@@ -9845,7 +9906,8 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             if not matched:
                 if broadcast:
                     skipped.append(note_skipped_broadcast_channel(
-                        owner["channel"], {**owner, "name": owner["audience"]}, "not_held"))
+                        owner["channel"], {**owner, "name": owner.get("name") or owner["audience"]},
+                        "not_held"))
                     continue
                 raise ValueError("message is no longer held by this conversation")
             # A release already handed the message over; nothing is held any more.
@@ -9956,6 +10018,8 @@ def send_peer_command(args: argparse.Namespace) -> int:
             raise ValueError("no channel bindings exist")
         rows: list[tuple[str, dict[str, Any], str]] = []
         sender_channel = None
+        lease_display = lease.get("display_name") if isinstance(lease.get("display_name"), str) else None
+        sender_display = None
         for channel, binding in sorted((bindings or {}).items()):
             if not isinstance(binding, dict):
                 continue
@@ -9963,11 +10027,13 @@ def send_peer_command(args: argparse.Namespace) -> int:
                                            str(binding.get("provider_session_id") or ""))
             if owner_lease == lease_id:
                 sender_channel = str(channel)
+                sender_display = sender_display or binding_display_name(binding) or None
             rows.append((str(channel), binding, owner_lease))
         identity = os.urandom(12).hex()
         sender = {"name": sender_name, "provider": args.provider.casefold(),
                   "provider_session_id": args.session, "lease_id": lease_id,
-                  "channel": sender_channel}
+                  "channel": sender_channel,
+                  "display_name": sender_display or lease_display or sender_name}
         if is_founder_target:
             bus = (root / "buses" / "channel-10.jsonl").resolve(strict=False)
             addressed = {"mode": "direct", "to": "10", "channel": "10",
@@ -10021,7 +10087,8 @@ def send_peer_command(args: argparse.Namespace) -> int:
                     str(binding.get("provider_session_id") or ""),
                     Path(str(binding.get("bus") or "")).expanduser()) == "off":
                 continue  # Channel 0 unticked: this agent never receives broadcasts.
-            audience_at_send.append({"name": binding.get("audience"), "channel": channel})
+            audience_at_send.append({"name": binding_display_name(binding) or binding.get("audience"),
+                                     "audience": binding.get("audience"), "channel": channel})
         addressed = ({"mode": "broadcast", "channel": "0", "recipients": audience_at_send}
                      if target == "0" else
                      {"mode": "direct", "to": target.casefold(), "recipients": audience_at_send})
@@ -10148,7 +10215,7 @@ def lifecycle_message_received(root: Path, lease_id: str) -> None:
 
 def follower_command(root: Path, *, provider: str, session: str, name: str, channel: str,
                      bus: str, wakeup: str, on_seal: str | None,
-                     workspace: str | None = None) -> list[str]:
+                     workspace: str | None = None, display_name: str | None = None) -> list[str]:
     _, events_path = follower_paths(root, lease_identifier(provider, session))
     command = [sys.executable, os.path.abspath(__file__),
                "--bus", bus, "--bridge-home", str(root.resolve()),
@@ -10161,6 +10228,8 @@ def follower_command(root: Path, *, provider: str, session: str, name: str, chan
         command += ["--on-seal", on_seal]
     if workspace is not None:
         command += ["--follower-workspace", workspace]
+    if display_name:
+        command += ["--display-name", display_name]
     return command
 
 
@@ -10582,11 +10651,20 @@ def archive_agent(args: argparse.Namespace) -> dict[str, Any]:
                 or not isinstance(lease.get("bus"), str)
                 or str(Path(lease["bus"]).resolve(strict=False)) != bus):
             raise ValueError("agent mailbox is unreadable or changed; channel retained")
+        display_name = (
+            binding_display_name(current)
+            or (
+                lease.get("display_name").strip()
+                if isinstance(lease.get("display_name"), str) and lease.get("display_name").strip()
+                else None
+            )
+        )
         receipt = {
             "schema": AGENT_ARCHIVE_SCHEMA, "kind": "agent_archive",
             "provider": provider, "provider_session_id": args.session,
             "lease_id": lease_id, "channel": channel,
             "name": current.get("audience") or lease.get("name") or provider,
+            **({"display_name": display_name} if display_name else {}),
             "bus": lease["bus"], "archived_at": utc_now(), "released": True,
         }
         # Metadata precedes release. A failed binding write keeps the agent
@@ -11038,7 +11116,11 @@ def attach_command(args: argparse.Namespace) -> int:
     import subprocess
 
     root: Path = args.bridge_home
-    name = args.name.casefold()
+    # Identity stays casefolded (bindings, leases, routing, takeover); the
+    # spelling the agent gave is kept beside it for every surface that shows
+    # a name (Founder, 2026-11-04).
+    display_name = args.name.strip()
+    name = display_name.casefold()
     if name == "founder":
         raise ValueError("founder is reserved for channel 10")
     persist_voice = bool(args.voice or args.speed is not None or args.tts_vendor)
@@ -11057,7 +11139,7 @@ def attach_command(args: argparse.Namespace) -> int:
     binding_path = root / AUDIENCE_BINDING_FILENAME
     requested = {"audience": name, "provider": args.provider.casefold(),
                  "provider_session_id": args.session}
-    claimed = {**requested, "bus": resolved_bus}
+    claimed = {**requested, "bus": resolved_bus, "display_name": display_name}
     previous: dict[str, Any] | None = None
     original_entry: Any = None
     child: Any = None
@@ -11100,9 +11182,11 @@ def attach_command(args: argparse.Namespace) -> int:
                 installed = pid_record.get("configuration") or (lease_state or {}).get("wakeup_configuration")
                 migrating = (isinstance(lease_state, dict)
                              and lease_state.get("bus") not in (None, resolved_bus))
+                spelling_changed = (isinstance(lease_state, dict)
+                                    and lease_state.get("display_name") != display_name)
                 if pid is not None and not verified_follower(root, lease_id, args.session, pid):
                     raise OSError("existing follower identity could not be verified; retained")
-                if migrating or pid is not None and installed != configuration:
+                if migrating or pid is not None and (installed != configuration or spelling_changed):
                     with retirement_guard(root, lease_id, args.session) as (_, disposition):
                         if disposition not in HANDOVER_CLEAR_STATES:
                             raise OSError(f"existing follower {disposition}; retained")
@@ -11119,7 +11203,7 @@ def attach_command(args: argparse.Namespace) -> int:
                         root, provider=args.provider, session=args.session, name=name,
                         channel=str(args.channel), bus=resolved_bus,
                         wakeup=configuration["wakeup"], on_seal=args.on_seal,
-                        workspace=configuration["workspace"]))
+                        workspace=configuration["workspace"], display_name=display_name))
                     pid = child.pid
                     child_state = "starting"
                     stage = "follower_readiness"
@@ -11153,7 +11237,8 @@ def attach_command(args: argparse.Namespace) -> int:
                      and actual_entry == original_entry)
         if previous is not None:
             emit({"schema": TAKEOVER_RECEIPT_SCHEMA, "kind": "takeover_receipt",
-                  "channel": str(args.channel), "audience": name, "provider": args.provider.casefold(),
+                  "channel": str(args.channel), "audience": name, "display_name": display_name,
+                  "provider": args.provider.casefold(),
                   "provider_session_id": args.session,
                   "binding_changed": False if unchanged else None,
                   "binding_state": "unchanged" if unchanged else "uncertain",
@@ -11167,7 +11252,8 @@ def attach_command(args: argparse.Namespace) -> int:
     state = read_json(lease_path) or {}
     emit({
         "schema": ATTACH_RECEIPT_SCHEMA, "kind": "attach_receipt",
-        "channel": str(args.channel), "audience": name, "provider": args.provider.casefold(),
+        "channel": str(args.channel), "audience": name, "display_name": display_name,
+        "provider": args.provider.casefold(),
         "provider_session_id": args.session, "lease_id": lease_id,
         "cursor": state.get("cursor"), "resumed": resumed, "follower_pid": pid,
         "follower_spawned": child is not None, "follower_log": str(log_path),
@@ -11217,6 +11303,7 @@ def status_command(args: argparse.Namespace) -> int:
                              and verified_follower(root, lease_id, args.session, lease_pid))
     follower_alive = follower_verified
     channel = None
+    display_name = None
     binding = read_json(root / AUDIENCE_BINDING_FILENAME) or {}
     bindings = binding.get("bindings") if binding.get("schema") == AUDIENCE_BINDING_SCHEMA else None
     if isinstance(bindings, dict):
@@ -11230,8 +11317,11 @@ def status_command(args: argparse.Namespace) -> int:
                 and isinstance(state, dict) and entry.get("bus") == state.get("bus")
             ):
                 channel = str(slot)
+                display_name = binding_display_name(entry) or None
                 break
     name = state.get("name") if isinstance(state, dict) else None
+    if not display_name and isinstance(state, dict):
+        display_name = state.get("display_name")
     lifecycle = read_json(lifecycle_paths(root, lease_id)[0]) or {}
     watch = read_json(watch_record_path(root, lease_id)) or {}
     watch_pid = watch.get("pid")
@@ -11273,6 +11363,7 @@ def status_command(args: argparse.Namespace) -> int:
             "attached": channel is not None and follower_verified,
             "channel": channel,
             "name": name,
+            "display_name": display_name,
             "follower_alive": follower_alive,
             "follower_pid": lease_pid if follower_alive else None,
             "pending_native_withdrawals": [
@@ -11701,6 +11792,10 @@ def main() -> int:
         default=None,
         help="bound name; exact or unique bounded opening-name match",
     )
+    # The name as the agent spelt it at attach. Routing, bindings and events
+    # keep the casefolded name; this one is for people (Founder, 2026-11-04:
+    # the Bus window showed every agent in lowercase).
+    parser.add_argument("--display-name", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--all", action="store_true", help="promiscuous: every seal")
     parser.add_argument(
         "--become",
