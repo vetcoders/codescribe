@@ -813,7 +813,7 @@ struct GestureTestRow: View {
         .foregroundStyle(Color.primary)
         Text(statusText)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.secondaryInk)
+          .foregroundStyle(outcome == .recognized ? CSColor.success : CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("shortcuts-gesture-test-outcome")
       }

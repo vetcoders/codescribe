@@ -15,8 +15,8 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   let mutedText: OverlayColorToken
   let listeningStatus: OverlayColorToken
   let processingStatus: OverlayColorToken
-  /// The system green, drawn only by the presence dot of a connected agent
-  /// (Founder, 2026-11-05); every other correct state is ink and a glyph.
+  /// `CSPalette.success`: the presence dot of a connected agent and a
+  /// succeeded focus action; every other correct state is ink and a glyph.
   let successStatus: OverlayColorToken
   let errorStatus: OverlayColorToken
   /// Voice routed to an agent: the system indigo; the Agents control's hover hue.
@@ -42,8 +42,7 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     mutedText = OverlayColorToken(CSPalette.textMuted, in: appearance)
     listeningStatus = OverlayColorToken(CSPalette.terracottaLight, in: appearance)
     processingStatus = OverlayColorToken(CSPalette.amberLight, in: appearance)
-    // The one green of the app: the connected agent's presence dot.
-    successStatus = OverlayColorToken(NSColor.systemGreen, in: appearance)
+    successStatus = OverlayColorToken(CSPalette.success, in: appearance)
     errorStatus = OverlayColorToken(CSPalette.dangerLight, in: appearance)
     agentAccent = OverlayColorToken(CSPalette.assistiveLight, in: appearance)
     uncertainWord = OverlayColorToken(CSPalette.modeProcessingLight, in: appearance)

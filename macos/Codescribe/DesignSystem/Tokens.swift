@@ -8,10 +8,10 @@ import SwiftUI
 // the user's macOS accent through one role, `chromeAccent`. A meaning that
 // needs a colour takes one system colour: red = error, orange = attention
 // (warning, work in progress, uncertain word), indigo = voice routed to the
-// agent, yellow = silence, green = the one "connected" presence dot. A
-// correct state wears no colour. The brand terracotta is the dictation /
-// listening state only. Never hardcode a replacement for the system accent:
-// the user owns it.
+// agent, yellow = silence, green = success (a connected agent's presence
+// dot, a recognized gesture test). Any other correct state wears no colour.
+// The brand terracotta is the dictation / listening state only. Never
+// hardcode a replacement for the system accent: the user owns it.
 
 extension Color {
   init(hex: UInt32, alpha: Double = 1.0) {
@@ -66,6 +66,9 @@ enum CSPalette {
   /// Agent mode between phrases: the pointer dot's white, from the core palette.
   static let indicatorAgentQuiet = IndicatorPalette.opaqueColor(.agentQuiet)
   static let danger = NSColor.systemRed
+  /// Success: the system green. A connected agent's presence dot and a
+  /// recognized gesture test; every other correct state is ink and a glyph.
+  static let success = NSColor.systemGreen
 
   // Surfaces — the system window and control backgrounds.
   /// The app sheet: the overlay canvas colour, shared by every window's content
@@ -204,6 +207,9 @@ enum CSColor {
   // Destructive actions — the system red
   static let danger = Color(nsColor: CSPalette.danger)
   static let dangerLight = Color(nsColor: CSPalette.dangerLight)
+
+  // Success — the system green (see `CSPalette.success`)
+  static let success = Color(nsColor: CSPalette.success)
 
   // Text — the system label rungs
   static let textHigh = Color(nsColor: CSPalette.textHigh)  // headlines
