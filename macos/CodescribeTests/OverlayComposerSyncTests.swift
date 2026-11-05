@@ -285,6 +285,7 @@ final class OverlayComposerSyncTests: XCTestCase {
       XCTAssertEqual(text, expectedText, "Co-addressing must never become user text")
       calls.append((owner.id, text, reference))
       if owner.id == agents[1].id && refuseSecond { throw CocoaError(.fileWriteNoPermission) }
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(calls.map { $0.0 }, agents.map(\.id))
@@ -318,6 +319,7 @@ final class OverlayComposerSyncTests: XCTestCase {
         state.setConversationDraft("New private draft", for: agents[1].id)
         await state.sendConversationText(agents[1])
       }
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(
@@ -343,6 +345,7 @@ final class OverlayComposerSyncTests: XCTestCase {
       XCTAssertEqual(peers.map(\.id), [agents[1].id])
       XCTAssertFalse(peers.contains { $0.id == successor.id })
       self.apply([agents[0], successor], to: state)
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(
@@ -541,6 +544,7 @@ final class OverlayComposerSyncTests: XCTestCase {
       delivered.append(owner.id)
       XCTAssertEqual(text, "New shared words")
       XCTAssertEqual(Set(peers.map(\.id)), expected.subtracting([owner.id]))
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(Set(delivered), expected)
@@ -559,7 +563,8 @@ final class OverlayComposerSyncTests: XCTestCase {
     try staleChannelSeat(for: agents[1], in: state)
     let expected = Set([agents[0].id, agents[2].id])
     XCTAssertEqual(state.draftSyncRosterIDs(), expected)
-    let stale = try XCTUnwrap(state.draftSyncChoices(for: agents[0]).first { $0.id == agents[1].id })
+    let stale = try XCTUnwrap(
+      state.draftSyncChoices(for: agents[0]).first { $0.id == agents[1].id })
     XCTAssertFalse(stale.selected)
     XCTAssertFalse(stale.enabled)
     XCTAssertNotNil(stale.note)
@@ -568,6 +573,7 @@ final class OverlayComposerSyncTests: XCTestCase {
       let owner = try XCTUnwrap(owner)
       delivered.append(owner.id)
       XCTAssertEqual(Set(peers.map(\.id)), expected.subtracting([owner.id]))
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(Set(delivered), expected)
@@ -590,15 +596,19 @@ final class OverlayComposerSyncTests: XCTestCase {
     apply(agents, to: state)
     state.selectConversation(agents[0].id)
     XCTAssertEqual(state.draftSyncRosterIDs(), Set(agents.map(\.id)))
-    XCTAssertEqual(state.draftSyncChoices(for: agents[0]).filter(\.selected).map(\.id), [agents[1].id])
+    XCTAssertEqual(
+      state.draftSyncChoices(for: agents[0]).filter(\.selected).map(\.id), [agents[1].id])
   }
 
-  private func staleChannelSeat(for conversation: OverlayConversation, in state: OverlayState) throws {
+  private func staleChannelSeat(for conversation: OverlayConversation, in state: OverlayState)
+    throws
+  {
     let owner = try XCTUnwrap(conversation.owner)
-    let stale = try XCTUnwrap(OverlayConversationOwner(row: [
-      "provider": owner.provider, "provider_session_id": owner.providerSessionID,
-      "lease_id": owner.leaseID, "channel": "7", "name": owner.name,
-    ]))
+    let stale = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": owner.provider, "provider_session_id": owner.providerSessionID,
+        "lease_id": owner.leaseID, "channel": "7", "name": owner.name,
+      ]))
     XCTAssertEqual(stale.id, owner.id, "The boundary is the channel coordinate, not a new session")
     let index = try XCTUnwrap(state.draftGroupIndex(for: conversation.id))
     let seat = try XCTUnwrap(state.conversationDraftGroups[index].participants[conversation.id])

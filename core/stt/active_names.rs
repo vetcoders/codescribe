@@ -5,12 +5,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{ErrorKind, Read};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use directories::BaseDirs;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 const LEASE_SCHEMA: &str = "codescribe.agent-bridge.lease.v1";
 const BRIDGE_HOME_ENV: &str = "CODESCRIBE_AGENT_BRIDGE_HOME";
@@ -226,6 +229,236 @@ fn canonical_name(value: &str) -> Option<String> {
     )
 }
 
+/// Canonical lease identity shared with channel admission.
+pub fn follower_lease_id(provider: &str, session: &str) -> Option<String> {
+    let provider = provider.trim().to_lowercase();
+    if provider.is_empty() || session.trim().is_empty() {
+        return None;
+    }
+    let identity = format!("{provider}\0{session}");
+    Some(hex::encode(&Sha256::digest(identity.as_bytes())[..16]))
+}
+
+/// One verified lease observation for a specific roster owner.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FollowerObservation {
+    pub alive: Option<bool>,
+    pub hosts: Option<FollowerHosts>,
+    pub unread_since: Option<f64>,
+}
+
+// Cached facts exclude message bodies and other payloads. Retaining only the
+// delivery IDs and timestamps needed to recheck ACK markers bounds memory.
+const MAX_FOLLOWER_CACHE_ENTRIES: usize = 16;
+const MAX_FOLLOWER_FACT_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FollowerLeaseStamp {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl FollowerLeaseStamp {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+}
+
+struct FollowerLeaseFacts {
+    provider: String,
+    session: String,
+    lease_id: String,
+    active: bool,
+    heartbeat_unix: f64,
+    hosts: FollowerHosts,
+    pending: Vec<(String, f64)>,
+    pending_complete: bool,
+}
+
+struct CachedFollowerLease {
+    stamp: FollowerLeaseStamp,
+    facts: FollowerLeaseFacts,
+}
+
+static FOLLOWER_LEASES: OnceLock<Mutex<HashMap<PathBuf, CachedFollowerLease>>> = OnceLock::new();
+
+/// Inspect only the lease named by the owner; absence from a directory listing
+/// is never used as a liveness claim. Unknown covers unreadable or invalid data.
+pub fn follower_observation_at(root: &Path, provider: &str, session: &str) -> FollowerObservation {
+    let unknown = FollowerObservation::default();
+    let Some(lease_id) = follower_lease_id(provider, session) else {
+        return unknown;
+    };
+    let directory = root.join("leases");
+    let path = directory.join(format!("{lease_id}.json"));
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            if fs::read_dir(&directory).is_err() {
+                return unknown;
+            }
+            return FollowerObservation {
+                alive: Some(false),
+                ..unknown
+            };
+        }
+        Err(_) => return unknown,
+    };
+    if !metadata.is_file() || metadata.len() > MAX_LEASE_BYTES {
+        return unknown;
+    }
+    let stamp = FollowerLeaseStamp::from_metadata(&metadata);
+    let cache = FOLLOWER_LEASES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(cached) = cache.get(&path).filter(|cached| cached.stamp == stamp) {
+        let observation = observe_follower_facts(root, provider, session, &lease_id, &cached.facts);
+        if cached.facts.pending_complete || observation.alive != Some(true) {
+            return observation;
+        }
+    }
+    // Never retain an older generation after a failed or changed read.
+    cache.remove(&path);
+    let Ok(mut file) = fs::File::open(&path) else {
+        return unknown;
+    };
+    let Ok(opened) = file.metadata() else {
+        return unknown;
+    };
+    if !opened.is_file() || FollowerLeaseStamp::from_metadata(&opened) != stamp {
+        return unknown;
+    }
+    let mut bytes = Vec::new();
+    if (&mut file)
+        .take(MAX_LEASE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_LEASE_BYTES
+    {
+        return unknown;
+    }
+    let (Ok(after), Ok(current)) = (file.metadata(), fs::symlink_metadata(&path)) else {
+        return unknown;
+    };
+    if !current.is_file()
+        || FollowerLeaseStamp::from_metadata(&after) != stamp
+        || FollowerLeaseStamp::from_metadata(&current) != stamp
+    {
+        return unknown;
+    }
+    let Ok(lease) = serde_json::from_slice::<SessionLease>(&bytes) else {
+        return unknown;
+    };
+    if lease.schema != LEASE_SCHEMA
+        || lease.provider.as_deref().map(|value| value.trim().to_lowercase())
+            != Some(provider.trim().to_lowercase())
+        || lease.provider_session_id.as_deref() != Some(session)
+        || lease.lease_id.as_deref() != Some(lease_id.as_str())
+    {
+        return unknown;
+    }
+    let mut pending = Vec::new();
+    let mut facts_bytes = provider.len() + session.len() + lease_id.len();
+    let mut pending_complete = true;
+    for entry in &lease.pending {
+        if !entry
+            .kind
+            .as_deref()
+            .is_some_and(|kind| TERMINAL_KINDS.contains(&kind))
+        {
+            continue;
+        }
+        let (Some(id), Some(stamp)) = (entry.delivery_id.as_deref(), entry.emitted_at.as_deref())
+        else {
+            continue;
+        };
+        if let Ok(time) = chrono::DateTime::parse_from_rfc3339(stamp) {
+            facts_bytes =
+                facts_bytes.saturating_add(id.len() + std::mem::size_of::<(String, f64)>());
+            if facts_bytes > MAX_FOLLOWER_FACT_BYTES {
+                pending.clear();
+                pending_complete = false;
+                break;
+            }
+            pending.push((id.to_string(), time.timestamp_millis() as f64 / 1000.0));
+        }
+    }
+    let facts = FollowerLeaseFacts {
+        provider: provider.trim().to_lowercase(),
+        session: session.to_string(),
+        lease_id: lease_id.clone(),
+        active: lease.active,
+        heartbeat_unix: lease.heartbeat_unix,
+        hosts: FollowerHosts {
+            frame_pane: lease.has_frame_pane(),
+            terminal_tab: lease.has_terminal_host(),
+        },
+        pending,
+        pending_complete,
+    };
+    let mut observation = observe_follower_facts(root, provider, session, &lease_id, &facts);
+    if observation.alive == Some(true) && !pending_complete {
+        observation.unread_since = oldest_unread(root, &lease_id, &lease);
+    }
+    if provider.len() + session.len() + lease_id.len() <= MAX_FOLLOWER_FACT_BYTES {
+        if cache.len() >= MAX_FOLLOWER_CACHE_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(path, CachedFollowerLease { stamp, facts });
+    }
+    observation
+}
+
+fn observe_follower_facts(
+    root: &Path,
+    provider: &str,
+    session: &str,
+    lease_id: &str,
+    facts: &FollowerLeaseFacts,
+) -> FollowerObservation {
+    let unknown = FollowerObservation::default();
+    if facts.provider != provider.trim().to_lowercase()
+        || facts.session != session
+        || facts.lease_id != lease_id
+    {
+        return unknown;
+    }
+    // The clock and ACK markers are sampled again on every cache hit.
+    let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return unknown;
+    };
+    let age = now.as_secs_f64() - facts.heartbeat_unix;
+    if !age.is_finite() || age < 0.0 {
+        return unknown;
+    }
+    if !facts.active || age > LEASE_TTL_SECONDS {
+        return FollowerObservation {
+            alive: Some(false),
+            ..unknown
+        };
+    }
+    let markers = root.join("acknowledgments").join(lease_id);
+    let unread_since = facts
+        .pending
+        .iter()
+        .filter(|(id, _)| !markers.join(format!("{id}.json")).is_file())
+        .map(|(_, time)| *time)
+        .reduce(f64::min);
+    FollowerObservation {
+        alive: Some(true),
+        hosts: Some(facts.hosts),
+        unread_since,
+    }
+}
+
 /// Provider sessions whose follower is live right now: lease schema, `active`,
 /// and a heartbeat no older than the shared TTL — the same convention the
 /// helper's `--status` reports. Pairs are `(provider, provider_session_id)`
@@ -315,36 +548,40 @@ pub fn unread_backlog_since_at(
         if provider.is_empty() || session.is_empty() || lease_id.is_empty() {
             return;
         }
-        let markers = root.join("acknowledgments").join(lease_id);
-        let since = lease
-            .pending
-            .iter()
-            .filter(|entry| {
-                entry
-                    .kind
-                    .as_deref()
-                    .is_some_and(|kind| TERMINAL_KINDS.contains(&kind))
-            })
-            .filter(|entry| {
-                entry
-                    .delivery_id
-                    .as_deref()
-                    .is_some_and(|id| !markers.join(format!("{id}.json")).is_file())
-            })
-            .filter_map(|entry| entry.emitted_at.as_deref())
-            .filter_map(|stamp| {
-                chrono::DateTime::parse_from_rfc3339(stamp)
-                    .ok()
-                    .map(|time| time.timestamp_millis() as f64 / 1000.0)
-            })
-            .fold(None, |oldest: Option<f64>, stamp| {
-                Some(oldest.map_or(stamp, |current| current.min(stamp)))
-            });
+        let since = oldest_unread(root, lease_id, lease);
         if let Some(since) = since {
             oldest.insert((provider.to_lowercase(), session.to_string()), since);
         }
     });
     oldest
+}
+
+fn oldest_unread(root: &Path, lease_id: &str, lease: &SessionLease) -> Option<f64> {
+    let markers = root.join("acknowledgments").join(lease_id);
+    lease
+        .pending
+        .iter()
+        .filter(|entry| {
+            entry
+                .kind
+                .as_deref()
+                .is_some_and(|kind| TERMINAL_KINDS.contains(&kind))
+        })
+        .filter(|entry| {
+            entry
+                .delivery_id
+                .as_deref()
+                .is_some_and(|id| !markers.join(format!("{id}.json")).is_file())
+        })
+        .filter_map(|entry| entry.emitted_at.as_deref())
+        .filter_map(|stamp| {
+            chrono::DateTime::parse_from_rfc3339(stamp)
+                .ok()
+                .map(|time| time.timestamp_millis() as f64 / 1000.0)
+        })
+        .fold(None, |oldest: Option<f64>, stamp| {
+            Some(oldest.map_or(stamp, |current| current.min(stamp)))
+        })
 }
 
 /// The bounded set of lease files: the `MAX_LEASE_FILES` freshest regular
@@ -1186,5 +1423,177 @@ mod tests {
             names_a, names_b,
             "equal-mtime tie-breaker must be deterministic and unaffected by oversized or non-regular newest entries"
         );
+    }
+
+    #[test]
+    fn follower_observation_validates_canonical_lease_and_preserves_unknown_on_errors_or_mismatch() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        let provider = "claude-code";
+        let session = "ada-session";
+        let lease_id = follower_lease_id(provider, session).unwrap();
+
+        // Arbitrary filename `leases/ada.json` does not satisfy canonical lookup;
+        // readable directory + ENOENT on `<lease_id>.json` means `alive: Some(false)`.
+        write_session_lease(temp.path(), "ada.json", provider, session, true, now - 1.0);
+        let missing = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(missing.alive, Some(false));
+        assert!(missing.hosts.is_none());
+        assert!(missing.unread_since.is_none());
+
+        // Write > 64 newer leases for other sessions so `ada-session` would be
+        // evicted from a 64-file directory scan, then write Ada's canonical lease
+        // with an older mtime but still-fresh heartbeat.
+        let now_sys = SystemTime::now();
+        for idx in 0..80 {
+            let other_session = format!("other-{idx:03}");
+            let other_id = follower_lease_id("codex", &other_session).unwrap();
+            let other_path = dir.join(format!("{other_id}.json"));
+            fs::write(
+                &other_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "schema": LEASE_SCHEMA,
+                    "lease_id": other_id,
+                    "name": format!("agent-{idx}"),
+                    "active": true,
+                    "heartbeat_unix": now - 1.0,
+                    "provider": "codex",
+                    "provider_session_id": other_session,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            set_file_mtime(&other_path, now_sys);
+        }
+
+        let canonical_path = dir.join(format!("{lease_id}.json"));
+        fs::write(
+            &canonical_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": lease_id,
+                "name": "ada",
+                "active": true,
+                "heartbeat_unix": now - 5.0,
+                "provider": provider,
+                "provider_session_id": session,
+                "frame": {"pane_id": 1, "session": "vc-frame"},
+                "terminal": {"host": "iterm2", "host_bundle_id": "com.googlecode.iterm2"},
+                "pending": [
+                    {"kind": "seal", "delivery_id": "111111111111111111111111", "emitted_at": "2026-10-14T12:00:00Z"},
+                    {"kind": "seal", "delivery_id": "222222222222222222222222", "emitted_at": "2026-10-14T11:00:00Z"}
+                ],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        set_file_mtime(&canonical_path, now_sys - Duration::from_secs(30));
+
+        let live = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(live.alive, Some(true), "canonical lease must stay live despite >64 newer leases");
+        assert_eq!(
+            live.hosts,
+            Some(FollowerHosts {
+                frame_pane: true,
+                terminal_tab: true,
+            })
+        );
+        let expected_oldest = chrono::DateTime::parse_from_rfc3339("2026-10-14T11:00:00Z")
+            .unwrap()
+            .timestamp_millis() as f64
+            / 1000.0;
+        let expected_newer = chrono::DateTime::parse_from_rfc3339("2026-10-14T12:00:00Z")
+            .unwrap()
+            .timestamp_millis() as f64
+            / 1000.0;
+        assert_eq!(live.unread_since, Some(expected_oldest));
+
+        // Acknowledging the oldest delivery updates `unread_since` even on a cache hit.
+        let ack_dir = temp.path().join("acknowledgments").join(&lease_id);
+        fs::create_dir_all(&ack_dir).unwrap();
+        fs::write(ack_dir.join("222222222222222222222222.json"), b"{}").unwrap();
+        let after_partial_ack = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(after_partial_ack.alive, Some(true));
+        assert_eq!(after_partial_ack.unread_since, Some(expected_newer));
+
+        // Future heartbeat -> unknown (`alive: None`).
+        fs::write(
+            &canonical_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": lease_id,
+                "name": "ada",
+                "active": true,
+                "heartbeat_unix": now + 3_600.0,
+                "provider": provider,
+                "provider_session_id": session,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let future = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(future.alive, None, "future heartbeat must be treated as unknown");
+
+        // Expired heartbeat -> `alive: Some(false)`.
+        fs::write(
+            &canonical_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": lease_id,
+                "name": "ada",
+                "active": true,
+                "heartbeat_unix": now - (LEASE_TTL_SECONDS + 10.0),
+                "provider": provider,
+                "provider_session_id": session,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let expired = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(expired.alive, Some(false));
+
+        // Mismatched `provider_session_id`, `provider`, or `lease_id` -> unknown (`alive: None`).
+        for bad in [
+            serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": lease_id,
+                "active": true,
+                "heartbeat_unix": now - 1.0,
+                "provider": provider,
+                "provider_session_id": "foreign-session",
+            }),
+            serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": "00000000000000000000000000000000",
+                "active": true,
+                "heartbeat_unix": now - 1.0,
+                "provider": provider,
+                "provider_session_id": session,
+            }),
+        ] {
+            fs::write(&canonical_path, serde_json::to_vec(&bad).unwrap()).unwrap();
+            let obs = follower_observation_at(temp.path(), provider, session);
+            assert_eq!(obs.alive, None, "mismatched lease identity must report unknown");
+        }
+
+        // Non-regular directory at canonical path -> unknown (`alive: None`).
+        fs::remove_file(&canonical_path).unwrap();
+        fs::create_dir(&canonical_path).unwrap();
+        assert_eq!(follower_observation_at(temp.path(), provider, session).alive, None);
+        fs::remove_dir(&canonical_path).unwrap();
+
+        // Unreadable `leases` directory (I/O error on `read_dir` after ENOENT) -> unknown (`alive: None`).
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable_dir = follower_observation_at(temp.path(), provider, session);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(unreadable_dir.alive, None, "unreadable leases directory must report unknown, not dead");
     }
 }

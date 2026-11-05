@@ -148,6 +148,7 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
         peers.isEmpty, "Different complete messages cannot claim identical co-address context")
       calls.append((owner.id, text))
       if owner.id == agents[1].id && fail { throw CocoaError(.fileWriteNoPermission) }
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(calls.map { $0.1 }, ["private A shared", "private B shared"])
@@ -168,6 +169,7 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
         state.setConversationDraft("temporary", for: agents[0].id)
         state.setConversationDraft("stable", for: agents[0].id)
       }
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(targets, agents.map(\.id))
@@ -186,6 +188,7 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
       XCTAssertEqual(
         peers.count, 1, "CC describes the frozen identical selection, not current draft text")
       if texts.count == 1 { self.append(" new", to: agents[0], state: state) }
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(texts, ["old", "old"])
@@ -207,6 +210,7 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
         ])
         state.applyConversationSnapshot(.init(deliveries: [], conversations: [agents[1]]))
       }
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(targets, agents.map(\.id))
@@ -224,6 +228,7 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
       state.activateDraftSync(for: agents[0].id)
       XCTAssertTrue(
         state.hasSynchronizedDraft(agents[0].id), "A busy group cannot change membership")
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(publications, 2)
@@ -242,6 +247,7 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
       state.activateDraftSync(for: agents[0].id)
       XCTAssertNil(state.armedDraftSyncConversationID)
       XCTAssertFalse(state.canActivateDraftSync(for: agents[0].id))
+      return .empty
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(publications, 1)

@@ -166,6 +166,105 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertNil(OverlayHintPanel.shared.presentedTitle)
   }
 
+  /// The list under ✦ hangs below the pinned bar, outside the bar's frame.
+  /// At the default normal level a foreground application lay over it, so
+  /// the pointer never entered the list (it closed after the grace) and the
+  /// clicks reached that application. The list takes the bar's level, stays
+  /// ordered above it and follows its presence policy.
+  func testAgentsListCrossesTheGapAboveAPinnedBarAndFollowsItsLevel() async throws {
+    let parent = NSPanel(
+      contentRect: NSRect(x: 300, y: 500, width: 400, height: 46),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    parent.level = OverlayPresencePolicy.rest.windowLevel
+    let star = NSView(frame: NSRect(x: 300, y: 12, width: 22, height: 22))
+    parent.contentView?.addSubview(star)
+    BackgroundTestWindow.present(parent)
+    let owner = OverlayHintAnchor()
+    owner.view = star
+    defer {
+      owner.hide()
+      parent.orderOut(nil)
+    }
+    owner.show(
+      "Agents", palette: .dark,
+      content: AnyView(Button("1 · Kaja") {}.frame(maxWidth: .infinity, maxHeight: .infinity)),
+      size: CGSize(width: 180, height: 60), interactive: true)
+    let list = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
+    XCTAssertTrue(list.parent === parent)
+    XCTAssertFalse(list.ignoresMouseEvents, "the list takes its own clicks")
+    XCTAssertEqual(list.level, parent.level, "the list cannot sit under a foreground app")
+
+    func listRegion(in view: NSView) -> OverlayMenuCursorRegionView? {
+      if let region = view as? OverlayMenuCursorRegionView, region.bounds.width > 150 {
+        return region
+      }
+      return view.subviews.lazy.compactMap { listRegion(in: $0) }.first
+    }
+    let root = try XCTUnwrap(list.contentView)
+    root.layoutSubtreeIfNeeded()
+    let region = try XCTUnwrap(listRegion(in: root))
+    region.updateTrackingAreas()
+    XCTAssertTrue(region.trackingAreas.contains { $0.options.contains(.activeAlways) })
+
+    // Exit ✦, then enter the list inside the grace window.
+    owner.hide(allowPointerRetention: true)
+    try await Task.sleep(for: .milliseconds(60))
+    region.updateHover(
+      at: region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil))
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertTrue(owner.isPresented, "the pointer crosses from ✦ into the list")
+    XCTAssertTrue(list.isVisible)
+    XCTAssertTrue(parent.childWindows?.contains(list) == true, "ordered above its bar")
+    XCTAssertGreaterThanOrEqual(list.level.rawValue, parent.level.rawValue)
+
+    // The bar's presence policy moves; the open list moves with it.
+    parent.level = .statusBar
+    OverlayHintPanel.shared.synchronizeLevel(with: parent)
+    XCTAssertEqual(list.level, .statusBar)
+    parent.level = .normal
+    OverlayHintPanel.shared.synchronizeLevel(with: parent)
+    XCTAssertEqual(list.level, .normal)
+
+    // Leaving the list closes it after the grace.
+    region.updateHover(at: NSPoint(x: -10_000, y: -10_000))
+    try await Task.sleep(for: .milliseconds(400))
+    XCTAssertFalse(owner.isPresented)
+  }
+
+  /// Window-server routing: a point over a list row belongs to the list's
+  /// window, never to the bar or whatever lies under the list. Needs real
+  /// window ordering, so it runs only in the isolated GUI session.
+  func testAgentsListRowPointRoutesToTheListWindow() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let parent = NSPanel(
+      contentRect: NSRect(x: 300, y: 500, width: 400, height: 46),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    parent.level = OverlayPresencePolicy.rest.windowLevel
+    let star = NSView(frame: NSRect(x: 300, y: 12, width: 22, height: 22))
+    parent.contentView?.addSubview(star)
+    BackgroundTestWindow.present(parent)
+    let owner = OverlayHintAnchor()
+    owner.view = star
+    defer {
+      owner.hide()
+      parent.orderOut(nil)
+    }
+    owner.show(
+      "Agents", palette: .dark,
+      content: AnyView(Button("1 · Kaja") {}.frame(maxWidth: .infinity, maxHeight: .infinity)),
+      size: CGSize(width: 180, height: 60), interactive: true)
+    let list = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
+    let row = NSPoint(x: list.frame.midX, y: list.frame.midY)
+    XCTAssertEqual(
+      NSWindow.windowNumber(at: row, belowWindowWithWindowNumber: 0), list.windowNumber,
+      "a click over a row reaches the list, not the bar or the app beneath")
+    let root = try XCTUnwrap(list.contentView)
+    root.layoutSubtreeIfNeeded()
+    XCTAssertNotNil(
+      root.hitTest(root.convert(list.convertPoint(fromScreen: row), from: nil)),
+      "the row's content answers the click")
+  }
+
   func testAccentsShareOneHoverHue() {
     for palette in [OverlayAppearancePalette.light, .dark] {
       let hover = OverlayHeaderAccent.transcription.color(in: palette)
@@ -282,7 +381,11 @@ final class OverlayHeaderChromeTests: XCTestCase {
     }
 
     let roster = try source("Overlay/OverlayChannelStatusView.swift")
-    XCTAssertTrue(roster.contains("title: headerTitle, accent: .agents, palette: palette"))
+    // The Agents button wraps the one hover chrome in its list chrome
+    // (bar redesign, 2026-11-04): the title and the agents hue stay.
+    XCTAssertTrue(roster.contains("OverlayAgentsHoverListChrome(\n        title: headerTitle, palette: palette"))
+    let listChrome = try source("Overlay/OverlayChannelMapHoverView.swift")
+    XCTAssertTrue(listChrome.contains("title: title, accent: .agents, palette: palette"))
     XCTAssertTrue(
       roster.contains("guard agentCaptureOpen else { return String(localized: \"Agents\") }"),
       "without an agent recording the hover chrome still says Agents")

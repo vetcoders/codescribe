@@ -52,10 +52,11 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let richRow = try XCTUnwrap(card.range(of: "HStack(spacing: 6) {"))
     try assertOrder(
       [
-        "Text(verbatim: identity.displayDigit)", "OverlayReceptionMarks(",
+        "Text(verbatim: identity.displayDigit)",
         "OverlayIntercomStatusMark(",
         // The name and its inline descriptor share OverlayIntercomNameLine.
-        "OverlayIntercomNameLine( name: name,", "OverlayIntercomFocusButton(", "audioSlot(",
+        "OverlayIntercomNameLine( name: name,", "OverlayReceptionMarks(",
+        "OverlayIntercomFocusButton(", "audioSlot(",
       ], in: String(card[richRow.lowerBound...]))
 
     let instance = try sourceSection(
@@ -64,9 +65,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let drawn = try XCTUnwrap(instance.range(of: "return HStack(spacing: 3) {"))
     try assertOrder(
       [
-        "Text(verbatim: instance.displayDigit)", "OverlayReceptionMarks(",
+        "Text(verbatim: instance.displayDigit)",
         "OverlayIntercomStatusMark(",
-        "if mini {", "OverlayIntercomFocusButton(", "OverlayIntercomAudioControls(",
+        "if mini {", "OverlayReceptionMarks(",
+        "OverlayIntercomFocusButton(", "OverlayIntercomAudioControls(",
       ], in: String(instance[drawn.lowerBound...]))
   }
 
@@ -125,9 +127,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
               open: open, loud: false, autosealDeadline: nil, followerAlive: alive)
           ])
         XCTAssertEqual(roster.hasDeadFollower(channel), alive == false)
+        // Presence alone: the fixture's received stage never reaches the dot.
         let expected: OverlayAgentDotKind =
-          alive == false ? .sleeping : open ? .listening : .received
-        XCTAssertEqual(roster.statusDotKind(for: channel), expected)
+          alive == false ? .sleeping : open ? .listening : alive == true ? .present : .idle
+        XCTAssertEqual(roster.presenceDotKind(for: channel), expected)
       }
     }
   }
@@ -225,11 +228,14 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertFalse(roster(alive: nil).isInactive(channel), "no claim is not a claim of death")
 
     let widget = try overlaySource("OverlayIntercomWidget.swift")
-    XCTAssertFalse(widget.contains("roster.hasDeadFollower("), "every Intercom dim reads both")
     XCTAssertEqual(
-      widget.components(separatedBy: "OverlayDisconnectedRowDim(disconnected: current && inactive)")
-        .count
-        - 1, 2, "current cards and instances share the follower inactivity dim")
+      widget.components(separatedBy: "roster.hasDeadFollower(").count - 1, 3,
+      "only a gone follower dims the row or replaces the presence dot")
+    XCTAssertEqual(
+      widget.components(
+        separatedBy: "OverlayDisconnectedRowDim(disconnected: current && disconnected)"
+      ).count
+        - 1, 2, "current cards and instances dim only when the follower is gone")
     XCTAssertEqual(
       widget.components(separatedBy: "OverlayDisconnectedRowDim(disconnected: !current)").count
         - 1, 3, "stale owner chrome has its own dim, independently of the current follower")

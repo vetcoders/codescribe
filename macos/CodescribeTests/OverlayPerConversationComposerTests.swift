@@ -31,7 +31,10 @@ final class OverlayPerConversationComposerTests: XCTestCase {
         .appendingPathComponent("attachments/\(suite)")
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
       apply([a, b, all])
-      state.publishConversationText = { _, _, _, _ in XCTFail("Unexpected publication") }
+      state.publishConversationText = { _, _, _, _ in
+        XCTFail("Unexpected publication")
+        return .empty
+      }
       state.publishCaptureAttachments = { _, _ in XCTFail("Unexpected capture publication") }
     }
 
@@ -247,6 +250,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
       XCTAssertEqual(owner?.id, f.a.id)
       XCTAssertEqual(text, shared)
       published.fulfill()
+      return .empty
     }
     let text = try editor(in: card)
     let enter = try XCTUnwrap(
@@ -419,6 +423,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
       XCTAssertEqual(reply, reference)
       XCTAssertTrue(peers.isEmpty)
       await gate.wait(entered: entered)
+      return .empty
     }
     let send = Task { await f.state.sendConversationText(f.a) }
     await fulfillment(of: [entered], timeout: 2)
@@ -454,6 +459,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
       XCTAssertEqual(text, "Frozen A")
       XCTAssertEqual(reply, reference)
       await gate.wait(entered: entered)
+      return .empty
     }
     let send = Task { await f.state.sendConversationText(f.a) }
     await fulfillment(of: [entered], timeout: 2)
@@ -494,6 +500,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
         XCTAssertEqual(text, "Original A")
         await gate.wait(entered: entered)
         if refusal { throw CocoaError(.fileWriteNoPermission) }
+        return .empty
       }
       let send = Task { await f.state.sendConversationText(f.a) }
       await fulfillment(of: [entered], timeout: 2)
@@ -555,6 +562,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
       XCTAssertTrue(peers.isEmpty, file: file, line: line)
       await gate.wait(entered: entered)
       if refusal { throw CocoaError(.fileWriteNoPermission) }
+      return .empty
     }
     // The main window's real send seam: the open conversation, no recipient argument.
     let send = Task { await f.state.sendConversationText(f.a) }
@@ -663,6 +671,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
       if let owner { peersByOwner[owner.id] = peers.map(\.id) }
       XCTAssertEqual(text, payload)
       XCTAssertEqual(reply, reference)
+      return .empty
     }
     await f.state.sendConversationText(f.a)
     XCTAssertEqual(owners, [f.a.id, f.b.id], "Each linked agent gets its own publication")
@@ -714,6 +723,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
         XCTAssertEqual(parent, bReply)
       }
       XCTAssertTrue(peers.isEmpty, "Different private payloads are not co-addressed")
+      return .empty
     }
     await f.state.sendConversationText(f.a)
     XCTAssertEqual(owners, [f.a.id, f.b.id])

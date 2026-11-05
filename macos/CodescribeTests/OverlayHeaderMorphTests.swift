@@ -330,4 +330,55 @@ final class OverlayHeaderMorphTests: XCTestCase {
         "\(mode) header does not fit a width the user can reach: \(bad)")
     }
   }
+
+  // MARK: Mini at rest (bus brief 2026-11-04 §3)
+
+  /// Mini settles 36 pt tall with the microphone and the chevron in two
+  /// separate control groups: the Agents button stands between them, 4 pt
+  /// from each, and the chevron closes the row.
+  func testMiniSettlesAt36WithTheAgentsButtonBetweenMicrophoneAndChevron() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let (rig, _) = makeRig(start: .mini)
+    defer {
+      rig.panel.orderOut(nil)
+      rig.panel.invalidatePresence()
+    }
+    XCTAssertEqual(rig.panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
+    XCTAssertEqual(rig.panel.frame.width, rig.panel.miniSize.width, accuracy: 0.5)
+    rig.host.layoutSubtreeIfNeeded()
+    let microphone = try XCTUnwrap(rig.recorder.frames.stop, "mini: no microphone")
+    let chevron = try XCTUnwrap(rig.recorder.frames.preview, "mini: no chevron")
+    XCTAssertEqual(microphone.width, DictationOverlayWindow.miniControl, accuracy: 0.5)
+    XCTAssertEqual(chevron.width, DictationOverlayWindow.miniControl, accuracy: 0.5)
+    XCTAssertEqual(
+      chevron.minX - microphone.maxX,
+      2 * DictationOverlayWindow.miniControlSpacing + DictationOverlayWindow.miniControl,
+      accuracy: 1, "the Agents button sits between the microphone and the chevron")
+    let sample = observe(rig, label: "mini at rest")
+    XCTAssertTrue(settledViolations(sample).isEmpty, "\(settledViolations(sample))")
+    let last = try XCTUnwrap(sample.regions.max { $0.maxX < $1.maxX })
+    XCTAssertGreaterThanOrEqual(last.minX + 0.5, chevron.minX, "the chevron closes the row")
+  }
+
+  /// Folding the bar to mini is a bar-to-bar morph: it pins no departing
+  /// layout, so mini's leading-aligned row is never clipped from the left
+  /// (A1 `barMorph` guard). The window's unroll still pins its landing size.
+  func testBarToMiniMorphPinsNoLayoutAndTheUnrollStillDoes() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let (rig, _) = makeRig(start: .midi)
+    defer {
+      rig.panel.orderOut(nil)
+      rig.panel.invalidatePresence()
+    }
+    let container = try XCTUnwrap(rig.panel.contentView as? OverlayContentContainer)
+    rig.state.setPresentationMode(.mini)
+    XCTAssertNil(container.pinnedContentSize, "bar -> mini pins nothing")
+    settle(rig.host)
+    rig.state.setPresentationMode(.midi)
+    XCTAssertNil(container.pinnedContentSize, "mini -> bar pins nothing")
+    settle(rig.host)
+    rig.state.setPresentationMode(.expanded)
+    XCTAssertNotNil(container.pinnedContentSize, "the unroll holds its landing layout")
+    settle(rig.host)
+  }
 }

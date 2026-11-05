@@ -1978,7 +1978,7 @@ private struct OverlayIntercomCard: View {
   }
 
   private var name: String {
-    conversation.map { OverlayChannelMapChip.displayName($0.name) } ?? identity.name
+    conversation?.name ?? identity.name
   }
 
   var body: some View {
@@ -1994,6 +1994,9 @@ private struct OverlayIntercomCard: View {
       })
     let channelRow = current ? intercomChannelRow(state: state, digit: identity.digit) : nil
     let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
+    // The row greys only for a gone follower, the same state as the ring
+    // before the name; a stalled reader keeps its colour (Monika, 2026-11-04).
+    let disconnected = channelRow.map { roster.hasDeadFollower($0) } ?? false
     let audioBelowName =
       !expanded
       && controller.contentMetrics.audioFooterHeight(
@@ -2108,7 +2111,7 @@ private struct OverlayIntercomCard: View {
       }
     )
     .foregroundStyle(palette.primaryText.color)
-    .modifier(OverlayDisconnectedRowDim(disconnected: current && inactive))
+    .modifier(OverlayDisconnectedRowDim(disconnected: current && disconnected))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     // Header-only icons retain their compact row; text uses its measured space.
     .frame(
@@ -2272,7 +2275,7 @@ private struct OverlayIntercomCard: View {
                 .background(OverlayResizeAnchor())
               OverlayIntercomStatusMark(
                 roster: roster, channel: channelRow,
-                kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle,
+                kind: channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle,
                 palette: palette, hints: false)
             }
           }
@@ -2325,15 +2328,12 @@ private struct OverlayIntercomCard: View {
               .foregroundStyle(palette.mutedText.color)
               .accessibilityIdentifier("overlay-intercom-digit-\(identity.digit)")
           }
-          if let channelRow, row.marks {
-            OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
-          }
           if identity.isHumanInbox {
             Image(systemName: "envelope").csFont(11)
           } else {
             OverlayIntercomStatusMark(
               roster: roster, channel: channelRow,
-              kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle,
+              kind: channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle,
               palette: palette)
           }
           Button {
@@ -2349,6 +2349,9 @@ private struct OverlayIntercomCard: View {
                 descriptorIdentifier: "overlay-intercom-context-\(identity.digit)"
               )
               .layoutPriority(1)
+              if let channelRow, row.marks {
+                OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
+              }
               // The client focus button lives beside the name, not out with
               // the audio pair (Maciej, 2026-10-28).
               if row.slots >= 3 {
@@ -2530,7 +2533,7 @@ private func intercomStatusDot(
   _ roster: OverlayChannelStatusView, state: OverlayState, digit: String
 ) -> OverlayAgentDotKind {
   guard let channel = intercomChannelRow(state: state, digit: digit) else { return .idle }
-  return roster.statusDotKind(for: channel)
+  return roster.presenceDotKind(for: channel)
 }
 
 /// The roster row behind a fiszka: the bus evidence the list reads.
@@ -2556,7 +2559,7 @@ private struct OverlayIntercomStatusMark: View {
   var hints = true
 
   var body: some View {
-    if let channel, roster.isInactive(channel) {
+    if let channel, roster.hasDeadFollower(channel) {
       let glyph = Image(systemName: roster.statusSymbol(for: channel))
         .font(.system(size: 9 * textScale, weight: .semibold))
         .foregroundStyle(palette.mutedText.color)
@@ -3017,7 +3020,9 @@ private struct OverlayIntercomInstanceCard: View {
         if id == instance.conversationID { controller.focusInstance(instanceID) }
       })
     let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
-    let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
+    // The row greys only for a gone follower, the same state as the ring
+    // before the name; a stalled reader keeps its colour (Monika, 2026-11-04).
+    let disconnected = channelRow.map { roster.hasDeadFollower($0) } ?? false
     let audioBelowName = !mini && instanceAudioFooterHeight(instance) > 0
     let corner =
       mini
@@ -3076,7 +3081,7 @@ private struct OverlayIntercomInstanceCard: View {
     )
     .foregroundStyle(palette.primaryText.color)
     // Saved history keeps readable words; only its header marks the old owner.
-    .modifier(OverlayDisconnectedRowDim(disconnected: current && inactive))
+    .modifier(OverlayDisconnectedRowDim(disconnected: current && disconnected))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(
       OverlayCanvasBackdrop(
@@ -3145,9 +3150,6 @@ private struct OverlayIntercomInstanceCard: View {
       if !mini && !instance.isHumanInbox {
         Text(verbatim: instance.displayDigit).csMono(10).foregroundStyle(palette.mutedText.color)
       }
-      if layout.tier != .icon, layout.controls.marks, let channelRow {
-        OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
-      }
       if instance.isHumanInbox {
         Image(systemName: "envelope").csFont(11)
       } else if !current {
@@ -3158,7 +3160,7 @@ private struct OverlayIntercomInstanceCard: View {
       } else if !mini {
         OverlayIntercomStatusMark(
           roster: roster, channel: channelRow,
-          kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle, palette: palette)
+          kind: channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle, palette: palette)
       } else if layout.tier == .icon {
         Image(systemName: "bubble.left").csFont(11)
           .overlayFastHint(instance.name, palette: palette)
@@ -3194,6 +3196,9 @@ private struct OverlayIntercomInstanceCard: View {
           .accessibilityLabel(String(localized: "Collapse") + ": " + instance.name)
           .allowsHitTesting(false)
         }
+      }
+      if layout.tier != .icon, layout.controls.marks, let channelRow {
+        OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
       }
       // The client focus button follows the name cluster, before sync and
       // the audio pair (Maciej, 2026-10-28).

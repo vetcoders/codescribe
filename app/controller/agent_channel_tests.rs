@@ -1212,13 +1212,23 @@ async fn a_roster_row_carries_follower_liveness_for_bound_closed_channels() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .expect("clock")
         .as_secs_f64();
+    let ada_lease =
+        active_names::follower_lease_id("claude-code", "ada-session").expect("ada lease id");
     std::fs::write(
-            bridge.join("leases/ada.json"),
+            bridge.join("leases").join(format!("{ada_lease}.json")),
             format!(
-                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"ada","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session","pending":[{{"kind":"seal","delivery_id":"aaaaaaaaaaaaaaaaaaaaaaaa","emitted_at":"2026-10-14T12:00:00Z"}},{{"kind":"seal","delivery_id":"bbbbbbbbbbbbbbbbbbbbbbbb","emitted_at":"2026-10-14T11:00:00Z"}}]}}"#,
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"{ada_lease}","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session","pending":[{{"kind":"seal","delivery_id":"aaaaaaaaaaaaaaaaaaaaaaaa","emitted_at":"2026-10-14T12:00:00Z"}},{{"kind":"seal","delivery_id":"bbbbbbbbbbbbbbbbbbbbbbbb","emitted_at":"2026-10-14T11:00:00Z"}}]}}"#,
             ),
         )
         .expect("lease");
+    // An arbitrary non-canonical `leases/leon.json` does not satisfy Leon's canonical lookup.
+    std::fs::write(
+            bridge.join("leases/leon.json"),
+            format!(
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"leon","name":"leon","active":true,"heartbeat_unix":{now},"provider":"codex","provider_session_id":"leon-session"}}"#,
+            ),
+        )
+        .expect("non-canonical lease");
 
     let controller = RecordingController::new_without_keychain();
     let roster = controller.channel_roster_states_at(&binding, &bridge).await;
@@ -1250,7 +1260,7 @@ async fn a_roster_row_carries_follower_liveness_for_bound_closed_channels() {
     assert_eq!(
         roster[2].follower_alive,
         Some(false),
-        "no lease means nobody is listening"
+        "no canonical lease means nobody is listening"
     );
     assert_eq!(
         roster[2].unread_since, None,
@@ -1274,10 +1284,12 @@ async fn a_roster_row_carries_the_codex_thread_of_a_dead_follower() {
         .expect("binding");
     let bridge = dir.path().join("bridge");
     std::fs::create_dir_all(bridge.join("leases")).expect("leases dir");
+    let leon_lease =
+        active_names::follower_lease_id("codex", THREAD).expect("leon lease id");
     std::fs::write(
-            bridge.join("leases/leon.json"),
+            bridge.join("leases").join(format!("{leon_lease}.json")),
             format!(
-                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"leon","name":"leon","active":false,"heartbeat_unix":1000.0,"provider":"codex","provider_session_id":"{THREAD}","codex":{{"thread_id":"{THREAD}","app_bundle_id":"com.openai.codex","rollout":true,"remote":false}}}}"#,
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"{leon_lease}","name":"leon","active":false,"heartbeat_unix":1000.0,"provider":"codex","provider_session_id":"{THREAD}","codex":{{"thread_id":"{THREAD}","app_bundle_id":"com.openai.codex","rollout":true,"remote":false}}}}"#,
             ),
         )
         .expect("lease");
@@ -1545,9 +1557,9 @@ fn frozen_broadcast_keeps_original_owners_and_refuses_wrong_destinations() {
     let canonical_bus = bus.canonicalize().expect("canonical bus");
     std::fs::create_dir(dir.path().join("leases")).expect("leases");
     let bindings = serde_json::json!({"schema": "vc.agent-audience-binding.v1", "bindings": {
-        "1": {"audience": "Lena", "provider": "codex", "provider_session_id": "agent-a"},
-        "2": {"audience": "Adam", "provider": "codex", "provider_session_id": "agent-b"},
-        "3": {"audience": "Astra", "provider": "codex", "provider_session_id": "agent-c"}
+        "1": {"audience": "lena", "display_name": "Lena", "provider": "codex", "provider_session_id": "agent-a"},
+        "2": {"audience": "adam", "display_name": "Adam", "provider": "codex", "provider_session_id": "agent-b"},
+        "3": {"audience": "astra", "provider": "codex", "provider_session_id": "agent-c"}
     }});
     std::fs::write(&binding, serde_json::to_vec(&bindings).expect("json")).expect("binding");
     let admit = |session: &str, destination: &Path| {
@@ -1568,6 +1580,9 @@ fn frozen_broadcast_keeps_original_owners_and_refuses_wrong_destinations() {
     admit("agent-a", &canonical_bus);
     let frozen = frozen_channel_recipients(0, &binding, &bus);
     assert_eq!(frozen.len(), 1);
+    assert_eq!(frozen[0]["audience"], "lena");
+    assert_eq!(frozen[0]["name"], "Lena");
+    assert_eq!(frozen[0]["display_name"], "Lena");
     admit("agent-b", &canonical_bus);
     admit("agent-c", &dir.path().join("wrong.jsonl"));
     assert_eq!(

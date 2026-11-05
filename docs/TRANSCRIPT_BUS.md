@@ -1499,6 +1499,21 @@ Each digit `1`–`9` names one agent session (`audience`, `provider`,
 in that file. A missing or malformed file refuses the channel instead of
 opening the microphone.
 
+`audience` is the casefolded identity: `cs-bus --attach --name Kaja` binds
+`kaja`, and every comparison (occupancy, `--takeover` of the same name, `--to`
+addressing, the follower's audience gate, voice profiles) casefolds both
+sides. The spelling the agent gave is kept beside it as `display_name` on the
+binding entry, the lease (`codescribe.agent-bridge.lease.v1`), the attach
+receipt and `--status`, and it travels with messages for people to read: the
+peer sender block and its frozen `recipients` entries, the typed message's
+owner block and `sent_to`, and the controller's frozen channel recipients all
+carry `display_name` (and `name` as that spelling) next to the unchanged
+`audience`. Readers that match (seals, acks, receipts, routing) keep using
+`audience`; surfaces that show a name prefer `display_name` and fall back to
+`audience` for bindings written before it existed (Monika, 2026-11-04: the
+Bus window showed every agent in lowercase). A re-attach of the same session
+with `--takeover` refreshes the spelling without changing the identity.
+
 ### Broadcast policy
 
 Each provider/session/leased bus has one runtime policy receipt under

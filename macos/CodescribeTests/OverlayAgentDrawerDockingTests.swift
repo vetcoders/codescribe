@@ -693,11 +693,18 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let roster = try overlaySource("OverlayChannelStatusView.swift")
     let header = try section(
       of: roster, from: "private func scaledMonitorBody(", to: "} content: { rowFocus in")
-    XCTAssertTrue(header.contains("showsHeader: false"))
-    XCTAssertTrue(header.contains("EmptyView()"))
+    XCTAssertTrue(header.contains("showsHeader: onFoldList != nil"))
+    XCTAssertTrue(header.contains("symbol: \"sidebar.right\""))
+    XCTAssertTrue(header.contains("identifier: \"overlay-agent-sidebar-fold\""))
     XCTAssertFalse(header.contains("symbol: \"sidebar.left\""))
-    XCTAssertFalse(header.contains("symbol: \"sidebar.right\""))
+    let railBody = try section(
+      of: roster, from: "private func scaledRailBody(", to: "private func scaledMonitorBody(")
+    XCTAssertTrue(railBody.contains("symbol: \"sidebar.right\""))
+    XCTAssertTrue(railBody.contains("identifier: \"overlay-agent-rail-unfold\""))
     let overlay = try overlaySource("DictationOverlayView.swift")
+    let column = try section(
+      of: overlay, from: "private func agentDrawerColumn", to: "private func commitAgentDrawerWidth")
+    XCTAssertTrue(column.contains("roster.onFoldList = { state.foldAgentList() }"))
     let commit = try section(
       of: overlay, from: "private func commitAgentDrawerWidth", to: "private func agentRail(")
     XCTAssertTrue(commit.contains("state.foldAgentList()"))
@@ -705,6 +712,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(commit.contains("state.setAgentsLayout(.split)"))
     let rail = try section(
       of: overlay, from: "private func agentRail(", to: "private func agentRailUnfoldHandle")
+    XCTAssertTrue(rail.contains("roster.onUnfoldList = { state.unfoldAgentList() }"))
     XCTAssertTrue(rail.contains("agentRailUnfoldHandle(width: width, windowWidth: windowWidth)"))
     XCTAssertFalse(rail.contains("onContinuousHover"))
     let handle = try section(

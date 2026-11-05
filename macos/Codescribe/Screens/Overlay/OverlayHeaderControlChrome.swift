@@ -53,8 +53,14 @@ struct OverlayHeaderControlChrome: ViewModifier {
   var showsHint = true
   var hintContent: AnyView? = nil
   var hintSize: CGSize? = nil
+  /// For compact message cards, `hintSize.height` is a ceiling, not empty space.
+  var hintFitsContentHeight = false
+  /// The content owner invalidates measurement after a carousel step or live edit.
+  var hintContentRevision: UInt64 = 0
   var hintDelay: TimeInterval = 0
   var hintInteractive = false
+  var onHintOpen: (() -> Void)? = nil
+  var onHintClose: (() -> Void)? = nil
   /// A control with its own hover paint observes this same native region.
   var onHoverChanged: ((Bool) -> Void)? = nil
   @State private var hovered = false
@@ -109,6 +115,8 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .onChange(of: hintLeading) { _, _ in syncHint(inside: hovered) }
       .onChange(of: hintWithinWindow) { _, _ in syncHint(inside: hovered) }
       .onChange(of: hintSize) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: hintFitsContentHeight) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: hintContentRevision) { _, _ in syncHint(inside: hovered) }
       .onChange(of: hintInteractive) { _, _ in syncHint(inside: hovered) }
       .onChange(of: palette) { _, _ in syncHint(inside: hovered) }
       .onDisappear {
@@ -128,7 +136,9 @@ struct OverlayHeaderControlChrome: ViewModifier {
     }
     anchor.show(
       title, palette: palette, leading: hintLeading, withinWindow: hintWithinWindow,
-      content: hintContent, size: hintSize, interactive: hintInteractive, delay: hintDelay)
+      content: hintContent, size: hintSize, fitsContentHeight: hintFitsContentHeight,
+      interactive: hintInteractive, delay: hintDelay,
+      onOpen: onHintOpen, onClose: onHintClose)
   }
 }
 
@@ -144,7 +154,9 @@ final class OverlayHintAnchor {
   func show(
     _ title: String, palette: OverlayAppearancePalette, leading: Bool = false,
     withinWindow: Bool = false, content: AnyView? = nil, size: CGSize? = nil,
-    interactive: Bool = false, delay: TimeInterval = 0
+    fitsContentHeight: Bool = false,
+    interactive: Bool = false, delay: TimeInterval = 0,
+    onOpen: (() -> Void)? = nil, onClose: (() -> Void)? = nil
   ) {
     pendingHint?.cancel()
     pendingHint = nil
@@ -159,12 +171,15 @@ final class OverlayHintAnchor {
         self.pendingHint = nil
         self.show(
           title, palette: palette, leading: leading, withinWindow: withinWindow,
-          content: content, size: size, interactive: interactive)
+          content: content, size: size, fitsContentHeight: fitsContentHeight, interactive: interactive,
+          onOpen: onOpen, onClose: onClose)
       }
     } else if let view {
       OverlayHintPanel.shared.show(
         title, palette: palette, below: view, owner: self, leading: leading,
-        withinWindow: withinWindow, content: content, size: size, interactive: interactive)
+        withinWindow: withinWindow, content: content, size: size,
+        fitsContentHeight: fitsContentHeight, interactive: interactive,
+        onOpen: onOpen, onClose: onClose)
     }
   }
 
@@ -214,6 +229,7 @@ final class OverlayHintPanel {
   private var interactive = false
   private var pointerInside = false
   private var pendingDismissal: Task<Void, Never>?
+  private var closeCallback: (() -> Void)?
 
   /// The window currently presenting a hint, for tests and diagnostics.
   var presentedPanel: NSPanel? { panel?.isVisible == true ? panel : nil }
@@ -229,10 +245,21 @@ final class OverlayHintPanel {
     self.owner === owner && presentedPanel != nil
   }
 
+  /// The child takes its parent's level and follows the parent's presence
+  /// policy. A hint left at the default normal level sits under a foreground
+  /// application while the pinned bar floats above it, so the pointer and the
+  /// clicks over a list hanging below the bar reach that application instead.
+  func synchronizeLevel(with parent: NSWindow) {
+    guard let panel, panel.parent === parent, panel.level != parent.level else { return }
+    panel.level = parent.level
+  }
+
   func show(
     _ title: String, palette: OverlayAppearancePalette, below anchor: NSView,
     owner: OverlayHintAnchor, leading: Bool = false, withinWindow: Bool = false,
-    content: AnyView? = nil, size desiredSize: CGSize? = nil, interactive: Bool = false
+    content: AnyView? = nil, size desiredSize: CGSize? = nil,
+    fitsContentHeight: Bool = false, interactive: Bool = false,
+    onOpen: (() -> Void)? = nil, onClose: (() -> Void)? = nil
   ) {
     guard let parent = anchor.window, parent.isVisible else { return }
     let anchorRect = parent.convertToScreen(anchor.convert(anchor.bounds, to: nil))
@@ -245,6 +272,18 @@ final class OverlayHintPanel {
       return
     }
     let (panel, controller) = presentation()
+    // A hint anchored inside the interactive panel must not replace its own
+    // parent or attempt to attach the panel as a child of itself.
+    guard parent !== panel else { return }
+    let opening = self.owner !== owner || !panel.isVisible
+    // Ordering follows a real presentation change only: a data refresh of an
+    // open list must not raise it again.
+    let presenting = opening || panel.parent !== parent
+    if opening {
+      closeCallback?()
+      closeCallback = onClose
+      onOpen?()
+    }
     pendingDismissal?.cancel()
     pendingDismissal = nil
     if self.owner !== owner { pointerInside = false }
@@ -252,9 +291,18 @@ final class OverlayHintPanel {
     self.interactive = interactive
     let size: NSSize
     if let content, let desiredSize {
-      size = NSSize(
+      let maximum = NSSize(
         width: min(desiredSize.width, bounds.width - 2 * Self.screenInset),
         height: min(desiredSize.height, bounds.height - 2 * Self.screenInset))
+      if fitsContentHeight {
+        // Measure the existing rich view at its real width. No character-count
+        // estimate or second text renderer decides the card's height.
+        controller.rootView = AnyView(content.frame(width: maximum.width))
+        let fitted = controller.sizeThatFits(in: maximum)
+        size = NSSize(width: maximum.width, height: min(maximum.height, max(1, fitted.height)))
+      } else {
+        size = maximum
+      }
       controller.rootView = AnyView(
         content.frame(width: size.width, height: size.height)
           .background {
@@ -287,8 +335,11 @@ final class OverlayHintPanel {
       panel.parent?.removeChildWindow(panel)
       parent.addChildWindow(panel, ordered: .above)
     }
+    synchronizeLevel(with: parent)
     self.title = title
-    panel.orderFront(nil)
+    // The overlay is used while another app is active. Present the child at
+    // the front of its level without making it key.
+    if presenting { panel.orderFrontRegardless() }
   }
 
   func hide(owner: OverlayHintAnchor, allowPointerRetention: Bool = false) {
@@ -309,6 +360,9 @@ final class OverlayHintPanel {
       return
     }
     self.owner = nil
+    let closed = closeCallback
+    closeCallback = nil
+    closed?()
     interactive = false
     pointerInside = false
     title = nil
