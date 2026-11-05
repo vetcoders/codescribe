@@ -42,6 +42,77 @@ final class AttachmentMarkupGeometryTests: XCTestCase {
     try await assertTopLeftRectangle(scale: 2)
   }
 
+  func testFittedZoomRangeAllowsZoomingOutRetinaCanvasesToFitHumanViewport() throws {
+    let canvas = CGSize(width: 2800, height: 1800)
+    let viewport = CGSize(width: 560, height: 420)
+    let range = AttachmentMarkupGeometry.fittedZoomRange(canvas: canvas, viewport: viewport)
+    let fitScale = min(viewport.width / canvas.width, viewport.height / canvas.height)
+    XCTAssertLessThanOrEqual(range.lowerBound, 0.05)
+    XCTAssertGreaterThanOrEqual(range.upperBound, 4.0)
+    XCTAssertTrue(
+      range.contains(fitScale),
+      "PaperMarkupViewController zoomRange must include the Retina fit scale (\(fitScale))")
+
+    let fixture = try sourceImage(scale: 2)
+    let session = try XCTUnwrap(AttachmentMarkupSession(url: fixture.url))
+    XCTAssertLessThanOrEqual(session.paper.zoomRange.lowerBound, 0.05)
+    session.fitCanvasToViewport(viewport)
+    XCTAssertEqual(
+      session.paper.zoomRange,
+      AttachmentMarkupGeometry.fittedZoomRange(canvas: session.canvas.size, viewport: viewport))
+  }
+
+  func testDefaultShapeConfigurationIsUnfilledWithVisibleStroke() {
+    let retinaCanvas = CGSize(width: 2800, height: 1800)
+    let rectConfig = AttachmentMarkupGeometry.defaultShapeConfiguration(
+      for: .rectangle, canvas: retinaCanvas)
+    XCTAssertNil(rectConfig.fillColor, "inserted shapes must not fill and obscure the screenshot")
+    XCTAssertNotNil(rectConfig.strokeColor, "inserted shapes must carry a visible stroke")
+    XCTAssertGreaterThanOrEqual(rectConfig.lineWidth, 4)
+    XCTAssertEqual(rectConfig.lineWidth, 11)
+
+    let smallCanvas = CGSize(width: 200, height: 150)
+    let ellipseConfig = AttachmentMarkupGeometry.defaultShapeConfiguration(
+      for: .ellipse, canvas: smallCanvas)
+    XCTAssertNil(ellipseConfig.fillColor)
+    XCTAssertNotNil(ellipseConfig.strokeColor)
+    XCTAssertEqual(ellipseConfig.lineWidth, 4)
+  }
+
+  func testDefaultShapeFrameCentersInVisibleViewportOrFallsBackToCanvas() {
+    let canvas = CGRect(x: 0, y: 0, width: 2000, height: 1200)
+    let visible = CGRect(x: 100, y: 200, width: 400, height: 300)
+    let visibleFrame = AttachmentMarkupGeometry.defaultShapeFrame(in: visible, canvas: canvas)
+    XCTAssertEqual(visibleFrame.midX, visible.midX, accuracy: 0.001)
+    XCTAssertEqual(visibleFrame.midY, visible.midY, accuracy: 0.001)
+    XCTAssertEqual(visibleFrame.width, round(300 * 0.28), accuracy: 0.001)
+    XCTAssertEqual(visibleFrame.height, visibleFrame.width, accuracy: 0.001)
+
+    let fallbackFrame = AttachmentMarkupGeometry.defaultShapeFrame(in: .zero, canvas: canvas)
+    XCTAssertEqual(fallbackFrame.midX, canvas.midX, accuracy: 0.001)
+    XCTAssertEqual(fallbackFrame.midY, canvas.midY, accuracy: 0.001)
+    XCTAssertGreaterThanOrEqual(fallbackFrame.width, 48)
+  }
+
+  func testToolbarInsertedShapeRemainsHollowInFlattenedPNG() async throws {
+    let fixture = try sourceImage(scale: 2)
+    let session = try XCTUnwrap(AttachmentMarkupSession(url: fixture.url))
+    XCTAssertTrue(session.toolbar.delegate === session)
+    session.markupToolbarViewController(session.toolbar, insertNewShape: .rectangle)
+    XCTAssertTrue(session.hasChanges)
+
+    let png = await session.flattenedPNG()
+    let data = try XCTUnwrap(png)
+    let output = try bitmap(data)
+    let center = try color(output, x: output.pixelsWide / 2, y: output.pixelsHigh / 2)
+    XCTAssertGreaterThan(
+      center.redComponent, 0.9, "hollow shape must leave the screenshot interior visible")
+    XCTAssertGreaterThan(
+      center.greenComponent, 0.9, "hollow shape must not fill the center with black")
+    XCTAssertGreaterThan(
+      center.blueComponent, 0.9, "hollow shape must not fill the center with black")
+  }
+
   private func assertTopLeftRectangle(scale: Int) async throws {
     let fixture = try sourceImage(scale: scale)
     let session = try XCTUnwrap(AttachmentMarkupSession(url: fixture.url))

@@ -258,6 +258,22 @@ final class OverlayComposerAttachmentPreviewTests: XCTestCase {
     XCTAssertTrue(sheet.contains("attachment-preview-fit"))
     XCTAssertTrue(sheet.contains("DisclosureGroup(\"Path\", isExpanded: $showsPath)"))
     XCTAssertTrue(sheet.contains("ViewThatFits(in: .horizontal)"))
+    XCTAssertTrue(
+      sheet.contains("if !isWindow"),
+      "window mode relies on the native window titlebar and omits the duplicate in-body Close header"
+    )
+    XCTAssertTrue(
+      sheet.contains(".onExitCommand"),
+      "window mode still closes on Escape when Markup is inactive")
+    XCTAssertTrue(
+      sheet.contains("MagnifyGesture()"),
+      "preview ScrollView supports two-finger trackpad pinch-to-zoom")
+
+    let headerSection = try section(
+      of: sheet, from: "if !isWindow {", to: "Group {")
+    XCTAssertTrue(
+      headerSection.contains("attachment-preview-close"),
+      "the in-body Close button is scoped exclusively to sheet mode (!isWindow)")
 
     let path = try pastedImage()
     let attachment = MessageAttachment(
@@ -285,6 +301,52 @@ final class OverlayComposerAttachmentPreviewTests: XCTestCase {
     }
   }
 
+  func testTextAttachmentLoadsInlinePreviewInsteadOfMissingPreviewBanner() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("text-preview-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+
+    let textURL = directory.appendingPathComponent("Pasted_text.txt")
+    let sample = "fn main() {\n  println!(\"Codescribe text preview\");\n}\n"
+    try Data(sample.utf8).write(to: textURL)
+
+    let loaded = AttachmentPreviewSheet.loadTextPreview(from: textURL, mediaType: "text/plain")
+    XCTAssertEqual(loaded, sample)
+
+    let binaryURL = directory.appendingPathComponent("blob.bin")
+    try Data([0x89, 0x50, 0x00, 0x47, 0xFF]).write(to: binaryURL)
+    XCTAssertNil(
+      AttachmentPreviewSheet.loadTextPreview(
+        from: binaryURL, mediaType: "application/octet-stream"),
+      "NUL-containing binary payloads must not masquerade as UTF-8 text")
+
+    let source = try source(at: "Codescribe/Screens/AgentChat/MessageList.swift")
+    let sheet = try section(
+      of: source, from: "struct AttachmentPreviewSheet: View", to: "private func missingBanner")
+    XCTAssertTrue(sheet.contains("attachment-preview-text-content"))
+    XCTAssertTrue(sheet.contains("attachment-preview-copy-text"))
+
+    let attachment = MessageAttachment(name: "Pasted_text.txt", url: textURL)
+    let host = NSHostingView(
+      rootView: AttachmentPreviewSheet(attachment: attachment, onClose: {})
+        .environment(\.colorScheme, .dark).background(Color.black))
+    host.sizingOptions = []
+    host.frame = NSRect(origin: .zero, size: AttachmentPreviewWindowController.defaultContentSize)
+    let window = NSWindow(
+      contentRect: NSRect(
+        origin: NSPoint(x: -10000, y: -10000),
+        size: AttachmentPreviewWindowController.defaultContentSize),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    host.layoutSubtreeIfNeeded()
+    XCTAssertEqual(host.bounds.size, AttachmentPreviewWindowController.defaultContentSize)
+  }
+
   // MARK: - P0 attachment picker hierarchy & single-instance ownership
 
   func testConversationAttachmentPickerPresentationLevelSitsAboveOverlayAndIntercom() {
@@ -304,13 +366,15 @@ final class OverlayComposerAttachmentPreviewTests: XCTestCase {
     let overlayComposer = try source(
       at: "Codescribe/Screens/Overlay/OverlayConversationComposer.swift")
     XCTAssertTrue(
-      overlayComposer.contains("@State private var attachmentPicker = ConversationAttachmentPicker()"),
+      overlayComposer.contains(
+        "@State private var attachmentPicker = ConversationAttachmentPicker()"),
       "overlay composer retains one ConversationAttachmentPicker")
     XCTAssertTrue(
       overlayComposer.contains(".onDisappear { attachmentPicker.cancel() }"),
       "overlay composer cancels its active picker on disappear")
     let overlayPick = try section(
-      of: overlayComposer, from: "private func pickAttachments()", to: "private var composerContent: some View")
+      of: overlayComposer, from: "private func pickAttachments()",
+      to: "private var composerContent: some View")
     XCTAssertTrue(
       overlayPick.contains("attachmentPicker.present"),
       "overlay pickAttachments routes through attachmentPicker.present")
