@@ -609,7 +609,7 @@ struct CSStatusBadge: View {
   }
 }
 
-/// Wordmark lockup: brand dot + lowercase "codescribe", the product name and
+/// Wordmark lockup: lowercase "codescribe", the product name and
 /// never translated copy. The lockup is a label, so the word itself never
 /// answers the pointer; a surface that needs a control there hands in its own
 /// dot, the way the overlay hands in its close button.

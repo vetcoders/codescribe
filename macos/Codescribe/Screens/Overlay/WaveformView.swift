@@ -301,8 +301,7 @@ struct WaveformView: View {
   }
 
   private func color(for i: Int) -> Color {
-    // Muted terracotta so the phase reads as our brand "at work", clearly
-    // dimmer than the live-capture bars.
+    // Muted orange marks processing, clearly dimmer than the live-capture bars.
     if transcribing { return CSColor.modeProcessing.opacity(0.55) }
     guard active, meter?.gain != nil else { return inactiveColor }
     return liveColor(for: i)

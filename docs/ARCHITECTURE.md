@@ -377,9 +377,11 @@ A panel reads the role, never a bare number.
   only the strip's own 8 pt band above the page.
 - **Header pattern.** Titles of peer sections sit _above_ the cards, setting
   names sit _inside_ them, and a header is never smaller or lighter than what
-  it introduces: `pageTitle` (16 semibold) > `sectionTitle` (13.5 semibold) ≥
-  `settingName` (12.5 semibold) > `helper` (11.5), all at primary strength
-  except the helper rung. `SettingsSectionLabel` and `SettingsSectionHeaderRow`
+  it introduces: `pageTitle` (16 semibold) > `sectionTitle` (14 semibold) ≥
+  `settingName` and `settingValue` (13 semibold). `pageBlurb` and `helper`
+  are 12 regular, `controlLabel` is 12 semibold, `metaKey` is mono 11 medium,
+  and `statusBadge` is 10 semibold; `monoValue` is 12 semibold. The helper
+  uses secondary strength. `SettingsSectionLabel` and `SettingsSectionHeaderRow`
   in `SettingsView.swift` are the only header owners, and they have no rung
   above `sectionTitle`: the sections of a page are peers, so none outranks
   another. Sections are 20 pt apart and a title sits
@@ -479,7 +481,8 @@ the app's Minimize command, and any other miniaturise is undone into a hide.
   The toggle belongs to the shared sidebar column (see "The sidebar" above),
   so it stays reachable while the column is collapsed and behaves exactly as
   it does in Settings.
-- **Right:** exactly two controls. The pin (always on top) shows its state
+- **Right:** the Voice Lab mark, conversation width, Context, pin and menu.
+  The pin (always on top) shows its state
   rather than hinting at it — pinned is the filled glyph on an accent plate
   with the `selected` trait and an "On" Accessibility value, unpinned is the
   outline glyph with no plate. It writes only `AgentChat.alwaysOnTop.v1`;
@@ -490,8 +493,8 @@ the app's Minimize command, and any other miniaturise is undone into a hide.
   width with the system check mark on the active mode; the conversation
   column's density, not the window size), "Open
   settings", and the destructive "Delete Conversation" last, behind the shared
-  confirmation. There is no separate width selector or Settings gear in the
-  chrome.
+  confirmation. The width selector also has its own control in the chrome;
+  there is no separate Settings gear.
 
 An empty conversation does not scroll: `ChatLayoutPolicy.emptyStateHeight` sizes the
 no-turns block to the viewport minus everything else the scroll document
