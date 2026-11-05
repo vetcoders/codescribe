@@ -153,8 +153,8 @@ struct DemuxState {
 enum Route {
     /// Owned by the participants whose interval holds this range.
     Range(u64, u64),
-    /// Ledger finality and capture-end receipts: every unsettled participant.
-    /// Each reducer refuses a seal naming occurrences outside its document.
+    /// Ledger finality and capture-end receipts: unsettled participants, with
+    /// shared terminal seals restricted to seats owning every sealed occurrence.
     Settlement,
     /// Live state of the shared capture: attached participants only.
     Attached,
@@ -487,6 +487,29 @@ impl ChannelDemux {
             }
             Route::Settlement => {
                 for participant in &state.participants {
+                    if state.history.len() > 1
+                        && let EngineEvent::LedgerSeal { receipt } = event
+                        && !receipt.is_occurrence_seal()
+                    {
+                        let owned = receipt
+                            .sealed_occurrences
+                            .iter()
+                            .filter(|occurrence| {
+                                participant.owns(occurrence.sample_start, occurrence.sample_end)
+                            })
+                            .count();
+                        if owned != receipt.sealed_occurrences.len() {
+                            info!(
+                                seat = ?participant.id,
+                                capture = %receipt.coverage.session,
+                                participations = state.history.len(),
+                                sealed_occurrences = receipt.sealed_occurrences.len(),
+                                owned_occurrences = owned,
+                                "shared terminal seal withheld from seat with foreign occurrences"
+                            );
+                            continue;
+                        }
+                    }
                     participant.sink.on_event(event);
                 }
             }

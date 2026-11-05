@@ -2233,7 +2233,15 @@ impl RecordingController {
                 )
             }
         };
-        if !released_stream && let Some(emitter) = open.emitter.as_ref() {
+        let shared_by = open
+            .participation
+            .as_ref()
+            .map_or(1, |participation| participation.demux.intervals().len());
+        // A shared capture's terminal seal may contain another seat's words.
+        // Its last seat ends its own lifecycle just like an earlier detach.
+        if (!released_stream || shared_by > 1)
+            && let Some(emitter) = open.emitter.as_ref()
+        {
             emitter.note_channel_detached();
         }
         // The producer joined above. Finish the message (formatter work may
@@ -2281,10 +2289,6 @@ impl RecordingController {
             // A capture several intervals shared has no single document: each
             // message's words live on its own bus. One message's text is never
             // archived as the shared take's transcript.
-            let shared_by = open
-                .participation
-                .as_ref()
-                .map_or(1, |participation| participation.demux.intervals().len());
             let shared_detail =
                 "shared multi-channel capture: each recipient's document lives on its own bus";
             super::retain_session_audio_with_lease(

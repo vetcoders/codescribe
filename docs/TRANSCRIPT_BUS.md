@@ -2316,6 +2316,13 @@ capture keeps running receives no terminal ledger seal of its own, so its
 closing row carries `coverage: refused` unless an occurrence seal already
 certified it; another participant's terminal receipt never seals it.
 
+For a capture with more than one participation, the demux forwards a terminal
+`LedgerSeal` only to unsettled seats that own every sealed occurrence by the
+same midpoint rule. Each withheld delivery logs the seat, capture and occurrence
+counts. Occurrence seals and other settlement events retain their routes. A
+capture with one participation keeps its terminal seal route unchanged, including
+tail occurrences beyond its detach sample.
+
 Bus rows carry the identities:
 
 - `codescribe.channel-recipients.v1` adds `capture_session_id` and
@@ -2341,7 +2348,10 @@ independently under the selected segment-finish policy. An absent or failed
 formatter falls back to Light+; pending formatting is bounded by `format_wait_sec`
 and then uses the same fallback. Final delivery and send hold follow that bounded
 finish. Finishing one detached reducer marks only its lifecycle terminal and
-never seals the shared ledger or another seat.
+never seals the shared ledger or another seat. The last seat of a capture with
+more than one participation takes this same finish path even when its terminal
+seal was withheld, so its formatter can run. A lone seat keeps the existing
+terminal lifecycle condition.
 
 `co_audience` (above) stays an informational roster snapshot. Participation is
 the sample interval in the sealed row.
