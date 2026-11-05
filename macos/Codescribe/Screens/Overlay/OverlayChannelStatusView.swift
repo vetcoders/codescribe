@@ -904,6 +904,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   var carriesRowMarks = false
   var focusState: OverlayAgentPanelFocusState? = nil
   @State private var commandError: String?
+  @State private var exportOutcome: ThreadExportOutcome?
 
   @MainActor
   static func setPolicy(
@@ -912,6 +913,15 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   ) async throws {
     try await RealAgentBridgeInstaller.setBroadcastPolicy(
       policy, for: identity, installer: installer)
+  }
+
+  @MainActor
+  static func exportHistory(
+    channel: String, agentOnly: Bool,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws -> String {
+    try await RealAgentBridgeInstaller.exportChannelHistory(
+      channel: channel, agentOnly: agentOnly, installer: installer)
   }
 
   func body(content: Content) -> some View {
@@ -962,6 +972,27 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
             .accessibilityIdentifier("overlay-broadcast-policy-error")
         }
       }
+      .alert(
+        exportOutcome?.title ?? Text(verbatim: ""),
+        isPresented: Binding(
+          get: { exportOutcome != nil },
+          set: { if !$0 { exportOutcome = nil } }
+        ),
+        presenting: exportOutcome
+      ) { outcome in
+        if case .saved(let path, _) = outcome {
+          let url = URL(fileURLWithPath: path)
+          Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+          }
+          Button("Open") {
+            NSWorkspace.shared.open(url)
+          }
+        }
+        Button("OK", role: .cancel) {}
+      } message: { outcome in
+        outcome.message
+      }
     }
   }
 
@@ -983,6 +1014,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
         Divider()
       }
       policyActions(for: member)
+      exportSection(channel: member.channel, title: "\(member.channel) · \(member.agent)")
       // The jump to the agent's panel is a button beside the pair (header);
       // roster rows carry it here and show it inline only when it fits.
       if let archive = agentActions?.archive {
@@ -993,6 +1025,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
       ForEach(members) { member in
         Menu {
           policyActions(for: member)
+          exportSection(channel: member.channel, title: "\(member.channel) · \(member.agent)")
         } label: {
           Label {
             Text(verbatim: "\(member.channel) · \(member.agent)")
@@ -1000,6 +1033,39 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
             Image(systemName: member.broadcastPolicy.statusSymbol)
           }
         }
+      }
+      exportSection(channel: "0", title: "0 · All")
+    }
+  }
+
+  @ViewBuilder
+  private func exportSection(channel: String, title: String) -> some View {
+    Section {
+      Button("Export to Markdown") {
+        export(channel: channel, title: title, agentOnly: false)
+      }
+      .disabled(!enabled)
+      .accessibilityIdentifier("overlay-agent-menu-export-\(channel)")
+      Button("Export Agent replies only") {
+        export(channel: channel, title: title, agentOnly: true)
+      }
+      .disabled(!enabled)
+      .accessibilityIdentifier("overlay-agent-menu-export-agent-\(channel)")
+    } header: {
+      Text(
+        "Exports save to the Transcripts folder",
+        comment: "Menu section header above the Markdown export actions")
+    }
+  }
+
+  private func export(channel: String, title: String, agentOnly: Bool) {
+    commandError = nil
+    Task { @MainActor in
+      do {
+        let path = try await Self.exportHistory(channel: channel, agentOnly: agentOnly)
+        exportOutcome = .saved(path: path, assistantOnly: agentOnly)
+      } catch {
+        exportOutcome = .failed(threadTitle: title, assistantOnly: agentOnly)
       }
     }
   }
@@ -1907,7 +1973,8 @@ struct OverlayChannelStatusView: View {
     } pinned: {
       // Nothing floats over the list: the mailboxes are its first rows
       // (Monika, 2026-11-04: one sidebar, no separate card on top).
-      _ in EmptyView()
+      _ in
+      EmptyView()
     } content: { rowFocus in
       VStack(alignment: .leading, spacing: 6) {
         // 0 · All and your inbox lead the list as rows like the agents'

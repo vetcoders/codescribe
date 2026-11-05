@@ -103,6 +103,28 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
     try await OverlayBroadcastPolicyMenu.setPolicy(
       .on, for: identity, installer: fixture.installer)
     XCTAssertEqual(try fixture.receipt()["policy"] as? String, "on")
+    XCTAssertEqual(
+      RealAgentBridgeInstaller.channelHistoryExportArguments(
+        channel: "1", agentOnly: false, root: fixture.installer.bridgeRoot),
+      [
+        "--history", "--channel", "1", "--export", "--bridge-home",
+        fixture.installer.bridgeRoot.path,
+      ])
+    XCTAssertEqual(
+      RealAgentBridgeInstaller.channelHistoryExportArguments(
+        channel: "1", agentOnly: true, root: fixture.installer.bridgeRoot),
+      [
+        "--history", "--channel", "1", "--export", "--agent-only",
+        "--bridge-home", fixture.installer.bridgeRoot.path,
+      ])
+    let exportedAll = try await OverlayBroadcastPolicyMenu.exportHistory(
+      channel: "1", agentOnly: false, installer: fixture.installer)
+    let exportedAgent = try await OverlayBroadcastPolicyMenu.exportHistory(
+      channel: "1", agentOnly: true, installer: fixture.installer)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: exportedAll))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: exportedAgent))
+    XCTAssertTrue(exportedAll.hasSuffix("_channel-1.md"))
+    XCTAssertTrue(exportedAgent.hasSuffix("_channel-1-assistant.md"))
   }
 
   func testPolicySnapshotDefaultsOnAndRereadsReceiptWithoutASecondStore() async throws {

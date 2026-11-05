@@ -96,7 +96,8 @@ class BusHistoryTests(unittest.TestCase):
         path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
 
     def history(self, **overrides):
-        values = dict(bridge_home=self.root, since=None, until=None, channel=None)
+        values = dict(bridge_home=self.root, bridge_home_overridden=True, since=None, until=None,
+                      channel=None, agent_only=False, export=False)
         values.update(overrides)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -138,6 +139,24 @@ class BusHistoryTests(unittest.TestCase):
                          ["Founder (voice) → all", "Founder (typed) → all", "explorek → all"])
         self.assertEqual(self.headings(self.history(channel="1")), [
             "Founder (voice) → all", "Founder (typed) → all", "explorek → all", "stasiu → ada, explorek"])
+        self.assertEqual(self.headings(self.history(channel="1", agent_only=True)), [
+            "explorek → all", "stasiu → ada, explorek"])
+
+    def test_export_writes_markdown_to_transcriptions_folder_and_avoids_collisions(self):
+        first = Path(self.history(channel="1", export=True).strip())
+        second = Path(self.history(channel="1", export=True).strip())
+        agent_only = Path(self.history(channel="1", agent_only=True, export=True).strip())
+        self.assertTrue(first.is_file())
+        self.assertTrue(second.is_file())
+        self.assertTrue(agent_only.is_file())
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.parent.parent, self.root.parent / "transcriptions")
+        self.assertTrue(first.name.endswith("_channel-1.md"))
+        self.assertTrue(agent_only.name.endswith("_channel-1-assistant.md"))
+        self.assertEqual(self.headings(first.read_text(encoding="utf-8")), [
+            "Founder (voice) → all", "Founder (typed) → all", "explorek → all", "stasiu → ada, explorek"])
+        self.assertEqual(self.headings(agent_only.read_text(encoding="utf-8")), [
+            "explorek → all", "stasiu → ada, explorek"])
 
     def test_relative_and_local_moments(self):
         now = datetime.datetime(2026, 10, 19, 6, 0, tzinfo=datetime.timezone.utc)

@@ -5224,7 +5224,7 @@ def history_markdown(
 
 
 def history_command(args: argparse.Namespace) -> int:
-    """Print the retained channel conversation as Markdown. Reads only; never ACKs."""
+    """Print or export the retained channel conversation as Markdown. Reads only; never ACKs."""
     now = datetime.datetime.now(datetime.timezone.utc)
     since = history_moment(args.since, now) if args.since else None
     until = history_moment(args.until, now) if args.until else None
@@ -5236,8 +5236,31 @@ def history_command(args: argparse.Namespace) -> int:
         messages = [row for row in messages if "all" in row["to"]]
     elif args.channel is not None:
         messages = [row for row in messages if args.channel in row["channels"]]
-    sys.stdout.write(history_markdown(messages, root=args.bridge_home, since=since, until=until,
-                                      channel=args.channel, counts=counts, skipped=skipped))
+    if getattr(args, "agent_only", False):
+        messages = [row for row in messages if row["lane"] == "agent"]
+    markdown = history_markdown(messages, root=args.bridge_home, since=since, until=until,
+                                channel=args.channel, counts=counts, skipped=skipped)
+    if getattr(args, "export", False):
+        runtime_env = _runtime_path_env()
+        if getattr(args, "bridge_home_overridden", False) and not runtime_env.get("CODESCRIBE_DATA_DIR", "").strip():
+            data_root = args.bridge_home.parent
+        else:
+            data_root = _config_dir(runtime_env)
+        local = now.astimezone()
+        directory = data_root / "transcriptions" / f"{local:%Y-%m-%d}"
+        directory.mkdir(parents=True, exist_ok=True)
+        time_base = f"{local:%H%M%S}"
+        scope = f"channel-{args.channel}" if args.channel is not None else "bus"
+        kind = f"{scope}-assistant" if getattr(args, "agent_only", False) else scope
+        candidate = directory / f"{time_base}_{kind}.md"
+        for suffix in range(1, 10001):
+            if not candidate.exists():
+                break
+            candidate = directory / f"{time_base}_{kind}_{suffix}.md"
+        candidate.write_text(markdown, encoding="utf-8")
+        sys.stdout.write(f"{candidate}\n")
+        return 0
+    sys.stdout.write(markdown)
     return 0
 
 
@@ -11906,6 +11929,8 @@ def main() -> int:
                         help="print the retained channel conversation as Markdown, every message once; reads only, never ACKs")
     parser.add_argument("--since", metavar="WHEN", help="with --history: a span back from now (90m, 6h, 2d) or an ISO date/time, local unless it has an offset")
     parser.add_argument("--until", metavar="WHEN", help="with --history: the same forms as --since")
+    parser.add_argument("--agent-only", action="store_true", help="with --history: keep only agent replies")
+    parser.add_argument("--export", action="store_true", help="with --history: write the Markdown to the Transcripts folder and print the saved path")
     parser.add_argument(
         "--attach",
         action="store_true",
@@ -12177,19 +12202,20 @@ def main() -> int:
             sys.stderr.write(f"cs-bus: global playback mute refused: {error}\n")
             return 3
     if args.history:
-        allowed = {"history", "since", "until", "channel", "bridge_home", "entrypoint"}
+        allowed = {"history", "since", "until", "channel", "agent_only", "export", "bridge_home", "entrypoint"}
         if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
-            parser.error("--history combines only with --since/--until/--channel/--bridge-home")
+            parser.error("--history combines only with --since/--until/--channel/--agent-only/--export/--bridge-home")
         if args.channel is not None and (len(args.channel) != 1 or args.channel not in "0123456789"):
             parser.error("--history --channel takes one digit 0-9; 0 keeps messages to everyone")
+        args.bridge_home_overridden = args.bridge_home is not None
         args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
         try:
             return history_command(args)
         except (OSError, ValueError) as error:
             sys.stderr.write(f"cs-bus: history refused: {error}\n")
             return 3
-    if args.since is not None or args.until is not None:
-        parser.error("--since and --until require --history")
+    if args.since is not None or args.until is not None or args.agent_only or args.export:
+        parser.error("--since, --until, --agent-only and --export require --history")
     if args.attach_file and not args.send_text:
         parser.error("--attach-file is only valid with --send-text")
     if args.release_reader and args.archive_agent is None:
