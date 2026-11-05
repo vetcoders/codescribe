@@ -3761,6 +3761,8 @@ class SessionLease:
         self._codex_rollout: Path | None = None
         self._next_codex_rollout_scan = 0.0
         self.codex: dict[str, Any] | None = None
+        # Monotonic time of the last lease write; paces idle heartbeats.
+        self.persisted_at = 0.0
         self.focused_requests: set[str] = set()
         canonical_lease_id = lease_identifier(provider, provider_session_id)
         if requested_id and requested_id != canonical_lease_id:
@@ -3972,6 +3974,7 @@ class SessionLease:
             self.cursor = cursor
         if sequence is not None:
             self.last_sequence = sequence
+        self.persisted_at = time.monotonic()
         atomic_json(
             self.path,
             {
@@ -4049,11 +4052,38 @@ class SessionLease:
             rollout=self._codex_rollout is not None, remote=self._codex_remote,
         )
 
-    def refresh_provider_model(self) -> None:
+    def _observed_context(self) -> tuple[Any, ...]:
+        """The lease fields that only the heartbeat refresh can move."""
+        projection = self._provider_model_reader.projection if self._provider_model_reader is not None else {}
+        return copy.deepcopy((projection, self.frame, self.terminal, self.codex))
+
+    def refresh_provider_model(self) -> bool:
+        """Re-read model, pane, tab and Codex thread; True when any of them moved."""
+        before = self._observed_context()
         if self._provider_model_reader is not None:
             self._provider_model_reader.refresh()
         self.refresh_frame_context()
         self.refresh_codex_context()
+        return self._observed_context() != before
+
+    def heartbeat_persist_interval(self) -> float:
+        """Longest an unchanged lease waits for a rewrite: well inside its TTL."""
+        return min(30.0, max(1.0, self.ttl_seconds / 4.0))
+
+    def heartbeat(self, *, cursor: int) -> bool:
+        """Refresh observed context and rewrite the lease only when it says something new.
+
+        Every state change outside this path persists itself. An idle follower
+        therefore rewrites its lease when the cursor or observed context moves,
+        or when the heartbeat would otherwise age toward the TTL; not every
+        second. Returns True when the lease was written.
+        """
+        changed = self.refresh_provider_model()
+        if (changed or cursor != self.cursor
+                or time.monotonic() - self.persisted_at >= self.heartbeat_persist_interval()):
+            self.persist(active=True, cursor=cursor)
+            return True
+        return False
 
     def focus_panel(self, request: dict[str, Any]) -> dict[str, Any] | None:
         """Answer one click on this agent's row; None for another lease or a repeat.
@@ -5801,8 +5831,9 @@ def run(args: argparse.Namespace) -> int:
                     raise ValueError("incomplete storage record")
                 return 0
             if lease and time.monotonic() - last_heartbeat >= 1.0:
-                lease.refresh_provider_model()
-                lease.persist(active=True, cursor=lease.cursor if normalizer.storage.pending else offset)
+                # Observe every second; rewrite the lease only when it changed
+                # or its heartbeat ages (see SessionLease.heartbeat).
+                lease.heartbeat(cursor=lease.cursor if normalizer.storage.pending else offset)
                 last_heartbeat = time.monotonic()
             assert event_trigger is not None
             event_trigger.wait(timeout=1.0)
