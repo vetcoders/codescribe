@@ -188,7 +188,7 @@ struct TrayMenuView: View {
         style: viewModel.quickSettingsExpanded ? .raised : .plain
       ) {
         withAnimation(TrayDisclosureChevron.animation) {
-          viewModel.toggleQuickSettings()
+          viewModel.quickSettingsExpanded.toggle()
         }
       }
 
@@ -347,7 +347,7 @@ struct TrayMenuView: View {
         disclosureExpanded: viewModel.notesExpanded,
         style: viewModel.notesExpanded ? .raised : .plain
       ) {
-        withAnimation(TrayDisclosureChevron.animation) { viewModel.toggleNotes() }
+        withAnimation(TrayDisclosureChevron.animation) { viewModel.notesExpanded.toggle() }
       }
 
       if viewModel.notesExpanded {
@@ -387,7 +387,7 @@ struct TrayMenuView: View {
         style: viewModel.diagnosticsExpanded ? .raised : .plain
       ) {
         withAnimation(TrayDisclosureChevron.animation) {
-          viewModel.toggleDiagnostics()
+          viewModel.diagnosticsExpanded.toggle()
         }
       }
 

@@ -182,23 +182,22 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertFalse(model.quickSettingsExpanded)
   }
 
-  func testTrayDisclosureTogglesAreMutuallyExclusive() {
+  func testTrayDisclosureSectionsOpenIndependently() {
     let model = TrayViewModel()
 
     model.toggleHistory()
+    model.quickSettingsExpanded.toggle()
+    model.notesExpanded.toggle()
+    model.diagnosticsExpanded.toggle()
+
     XCTAssertTrue(model.historyExpanded)
-
-    model.toggleQuickSettings()
     XCTAssertTrue(model.quickSettingsExpanded)
-    XCTAssertFalse(model.historyExpanded)
-
-    model.toggleNotes()
     XCTAssertTrue(model.notesExpanded)
-    XCTAssertFalse(model.quickSettingsExpanded)
-
-    model.toggleDiagnostics()
     XCTAssertTrue(model.diagnosticsExpanded)
-    XCTAssertFalse(model.notesExpanded)
+
+    model.toggleHistory()
+    XCTAssertFalse(model.historyExpanded)
+    XCTAssertTrue(model.quickSettingsExpanded, "closing one section leaves the others open")
   }
 
   func testStatusDotCompositesInsideGlyphBottomRightCorner() throws {

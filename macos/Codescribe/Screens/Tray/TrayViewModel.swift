@@ -310,42 +310,11 @@ final class TrayViewModel: ObservableObject {
   // MARK: - History actions (route through the engine seam)
 
   /// Toggle the "Open history" disclosure, loading the 5 most recent
-  /// transcripts from the engine the moment it opens. Opening one disclosure
-  /// section closes the others so the menu fits within laptop screen heights.
+  /// transcripts from the engine the moment it opens.
   func toggleHistory() {
     historyExpanded.toggle()
     if historyExpanded {
-      quickSettingsExpanded = false
-      notesExpanded = false
-      diagnosticsExpanded = false
       historyItems = engine?.recentTranscripts(limit: 5) ?? []
-    }
-  }
-
-  func toggleQuickSettings() {
-    quickSettingsExpanded.toggle()
-    if quickSettingsExpanded {
-      historyExpanded = false
-      notesExpanded = false
-      diagnosticsExpanded = false
-    }
-  }
-
-  func toggleNotes() {
-    notesExpanded.toggle()
-    if notesExpanded {
-      historyExpanded = false
-      quickSettingsExpanded = false
-      diagnosticsExpanded = false
-    }
-  }
-
-  func toggleDiagnostics() {
-    diagnosticsExpanded.toggle()
-    if diagnosticsExpanded {
-      historyExpanded = false
-      quickSettingsExpanded = false
-      notesExpanded = false
     }
   }
 
