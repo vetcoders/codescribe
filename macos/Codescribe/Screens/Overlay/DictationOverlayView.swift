@@ -1404,11 +1404,6 @@ struct DictationOverlayView: View {
     let mapEnabled = state.channelMapInMini
     let map = channelMap
     let horizontalMap = density == .midi && state.channelMapInHeader && map != nil
-    // The vertical layout's stacked counter is the visible way to the Intercom
-    // group, so it keeps the brand's side in every form, mini included
-    // (Maciej, 2026-10-23). The horizontal mini has no counter (Monika,
-    // 2026-11-04: the Agents list replaces it), so there `channelMap` is nil.
-    let leadingCounter = state.channelMapCounterStacked
     // Mini while a take is live (Monika, 2026-11-04, bus brief §6, §11D): it
     // grows by the waveform, the clock and the addressees, and its gaps open
     // to the 4 pt its controls keep (`DictationOverlayWindow.miniTakeWidth`).
@@ -1438,12 +1433,9 @@ struct DictationOverlayView: View {
     return layout {
       // The shared lockup, with the close button in the brand dot's place.
       // With the channel map enabled mini shows the dot alone (Monika,
-      // 2026-10-22, bus intercom spec §13.4); the horizontal mini's counter
-      // left on 2026-11-04 for the Agents list (bus brief §3), the vertical
-      // mini keeps its stacked counter after the dot, at the word's gap.
-      // Without the map mini keeps the word.
+      // 2026-10-22, bus intercom spec §13.4). Without the map mini keeps the word.
       HStack(
-        spacing: state.channelMapCounterStacked && !mini ? 12 : DictationOverlayWindow.miniBrandGap
+        spacing: DictationOverlayWindow.miniBrandGap
       ) {
         Wordmark(size: density.brandSize, spacing: mini ? 6 : 5, showsWord: !mini || !mapEnabled) {
           closeButton
@@ -1457,9 +1449,6 @@ struct DictationOverlayView: View {
           OverlayWindowDragRegion(
             identifier: mini
               ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
-        }
-        if leadingCounter, let map {
-          refreshingChordModifier(map)
         }
       }
       .layoutValue(key: OverlayBarLayout.PartKey.self, value: .leading)
@@ -1523,7 +1512,7 @@ struct DictationOverlayView: View {
           // any channel records, a press is that capture's stop, never
           // channel 0 or the monitor.
           recordingControls(compact: false, showsPreview: false)
-          channelStatusView
+          agentRouterButton
           recordingControls(compact: false, showsMicrophone: false)
         } else {
           if let error = state.expansionPreferenceError {
@@ -1534,7 +1523,7 @@ struct DictationOverlayView: View {
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")
           }
-          channelStatusView
+          agentRouterButton
           OverlayPinButton(state: state, palette: palette)
           recordingControls(compact: false)
         }
@@ -1648,6 +1637,51 @@ struct DictationOverlayView: View {
       .onHover { inside in
         if inside { state.refreshAgentChannelModifier() }
       }
+  }
+
+  @ViewBuilder
+  private var agentRouterButton: some View {
+    if state.isVerticalIntercom {
+      Button(action: { state.toggleAgentSidebar() }) {
+        OverlayMicrophoneGlyph(
+          character: OverlayHeaderGlyph.agents,
+          tint: palette.mutedText.color,
+          plateOpacity: 0.12
+        )
+      }
+      .buttonStyle(.plain)
+      .csFocusOutline()
+      .fixedSize()
+      .modifier(
+        OverlayHeaderControlChrome(
+          title: String(localized: "Fiszki", comment: "Intercom cards router button"),
+          accent: .agents, palette: palette, selected: false
+        )
+      )
+      .accessibilityLabel(String(localized: "Fiszki", comment: "Intercom cards router button"))
+      .accessibilityIdentifier("overlay-intercom-router-button")
+    } else if state.recording || state.miniTakeLive {
+      Button(action: { state.toggleAgentSidebar() }) {
+        OverlayMicrophoneGlyph(
+          character: OverlayHeaderGlyph.agents,
+          tint: palette.mutedText.color,
+          plateOpacity: 0.12
+        )
+      }
+      .buttonStyle(.plain)
+      .csFocusOutline()
+      .fixedSize()
+      .modifier(
+        OverlayHeaderControlChrome(
+          title: String(localized: "Agents"),
+          accent: .agents, palette: palette, selected: false
+        )
+      )
+      .accessibilityLabel(String(localized: "Agents"))
+      .accessibilityIdentifier("overlay-agent-glyph")
+    } else {
+      channelStatusView
+    }
   }
 
   /// Internal so a test can assert that two body passes share one search model.

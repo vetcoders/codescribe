@@ -1319,10 +1319,9 @@ final class OverlayState {
   /// still shapes mini. The horizontal mini carries no channel counter
   /// (Monika, 2026-11-04: the Agents list replaces it); the vertical mini
   /// keeps its stacked counter (`channelMapCounterStacked`).
-  var channelMapInMini: Bool { channelMapEnabled }
-  /// The vertical layout's counter in mini, the bar and the window wears
-  /// stacked cards and leads to the Intercom group (Maciej, 2026-10-23).
-  var channelMapCounterStacked: Bool { channelMapEnabled && !channelMapInHeader }
+  var channelMapInMini: Bool { channelMapEnabled && !isVerticalIntercom }
+  var isVerticalIntercom: Bool { channelMapEnabled && channelMapPreference.layout == .vertical }
+  var channelMapCounterStacked: Bool { false }
 
   /// The view observes the same presentation preference as Creator. Refitting
   /// changes chrome only: no channel selection, microphone or document event.
@@ -2351,6 +2350,10 @@ final class OverlayState {
   /// in a conversation the press opens the drawer to change agents, and on
   /// the drawer it closes it. The drawer opens first only with nothing to show.
   func toggleAgentSidebar() {
+    if isVerticalIntercom {
+      onRevealIntercom?()
+      return
+    }
     // Maciej, 2026-10-19 08:52: "całe nagrywanie agentowe przenosimy na
     // przycisk fioletowy, który nam rozwija agenta, jeśli jest zwinięty. I
     // jeśli już ma nagranie, to po prostu pulsuje jako mikrofon." While a
@@ -2427,7 +2430,12 @@ final class OverlayState {
     endAgentChoosing()
     showsAgentMonitor = false
     setAgentsLayout(.rail)
-    windowContentSurface = selectedConversationID == nil ? .transcription : .agents
+    if isVerticalIntercom {
+      selectedConversationID = nil
+      windowContentSurface = .transcription
+    } else {
+      windowContentSurface = selectedConversationID == nil ? .transcription : .agents
+    }
     markVisibleConversationRead()
     onChannelPresentationChanged?()
   }
@@ -2625,6 +2633,11 @@ final class OverlayState {
   /// Follow controller intent, never a name guessed from transcript text.
   /// A late observer snapshot may supply the matching conversation afterward.
   private func followChannelConversation(_ row: CsChannelRosterState) {
+    if isVerticalIntercom {
+      // In Fiszki mode, channel recording/presence lives in the intercom cards.
+      // The main agents view is strictly opt-in and never automatically opened.
+      return
+    }
     pendingChannelConversation = row
     resolveChannelConversation()
     if channelOpenExpandsSurface { expandAgentSurface(cause: .automatic) }
@@ -2860,10 +2873,12 @@ final class OverlayState {
       "from=\(traceSelectedChannel) to=\(conversation.channel)",
     ].joined(separator: " ")
     OverlayPresentationTrace.shared.record(.conversationAutoSelected, note: note)
-    if selectedConversationID == conversation.id {
-      if isCollapsed && expandedByDefault { expandAgentSurface(cause: .automatic) }
-    } else {
-      selectConversation(conversation.id, expansion: expandedByDefault ? .automatic : nil)
+    if !isVerticalIntercom {
+      if selectedConversationID == conversation.id {
+        if isCollapsed && expandedByDefault { expandAgentSurface(cause: .automatic) }
+      } else {
+        selectConversation(conversation.id, expansion: expandedByDefault ? .automatic : nil)
+      }
     }
     // A fresh reply is content activity for an already expanded surface.
     noteAutoCollapseActivity()
@@ -3712,10 +3727,12 @@ final class OverlayState {
     if followed.count == 1, let row = followed.first {
       followChannelConversation(row)
     } else if followed.count > 1 {
-      // Simultaneous recipients belong to the existing aggregate conversation.
-      let expansion: OverlayPresentationCause? = channelOpenExpandsSurface ? .automatic : nil
-      selectConversation(conversations.first { $0.channel == "0" }?.id, expansion: expansion)
-      if selectedConversationID == nil { showAgentMonitor(expansion: expansion) }
+      if !isVerticalIntercom {
+        // Simultaneous recipients belong to the existing aggregate conversation.
+        let expansion: OverlayPresentationCause? = channelOpenExpandsSurface ? .automatic : nil
+        selectConversation(conversations.first { $0.channel == "0" }?.id, expansion: expansion)
+        if selectedConversationID == nil { showAgentMonitor(expansion: expansion) }
+      }
     }
     if hasOpenChannel {
       cancelAutoHide()
@@ -6763,8 +6780,11 @@ final class OverlayState {
   /// resolves a channel snapshot that still describes the preceding capture.
   private func selectDictationSurfaceIfNeeded() {
     guard !draftCapture.hasRequest else { return }
-    if !hasOpenChannel, indicatorMode != .assistive, windowContentSurface != .transcription {
-      selectConversation(nil)
+    if isVerticalIntercom || (!hasOpenChannel && indicatorMode != .assistive) {
+      if windowContentSurface != .transcription || selectedConversationID != nil || showsAgentMonitor {
+        selectConversation(nil)
+        showsAgentMonitor = false
+      }
     }
   }
 

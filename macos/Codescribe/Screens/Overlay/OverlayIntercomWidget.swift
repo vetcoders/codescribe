@@ -174,7 +174,16 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     func offscreenHover(_ identity: OverlayIntercomCardIdentity, palette: OverlayAppearancePalette)
       -> some View
     {
-      OverlayIntercomHoverPreview(state: state, identity: identity, palette: palette)
+      if let conversation = state.conversations.first(where: { identity.matches($0) }) {
+        AnyView(
+          OverlayRosterMessagePreview(
+            session: OverlayRosterPreviewSession(conversation: conversation),
+            palette: palette
+          )
+        )
+      } else {
+        AnyView(EmptyView())
+      }
     }
   #endif
 
@@ -1013,9 +1022,21 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// The main overlay's mini counter in the vertical layout: the group
   /// unfolds and stands in front, its detached windows still above it.
   func revealGroup() {
-    guard visible else { return }
+    if !visible {
+      setVisible(true, relativeTo: nil)
+    }
     if presentation.folded { toggleGroup() }
     raisePresentedGroup()
+  }
+
+  func openMainWindow(surface: OverlayContentSurface) {
+    setVisible(false, relativeTo: nil)
+    if surface == .agents {
+      state.showAgentMonitor()
+    } else {
+      state.showTranscription()
+    }
+    revealConversation()
   }
 
   private func raisePresentedGroup() {
@@ -1548,8 +1569,10 @@ private struct OverlayIntercomHeader: View {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.csTextScale) private var scale
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.openWindow) private var openWindow
   let state: OverlayState
   let controller: OverlayIntercomWidgetController
+  @State private var isMenuHovered = false
 
   var body: some View {
     let chips = state.channelMapLayoutModel.agents
@@ -1567,6 +1590,9 @@ private struct OverlayIntercomHeader: View {
       } label: {
         Image(systemName: "circle.grid.2x2.fill")
           .csFont(10, .semibold)
+          .rotationEffect(.degrees(isMenuHovered ? 180 : 0))
+          .scaleEffect(isMenuHovered ? 0.88 : 1.0)
+          .animation(.easeInOut(duration: 0.5), value: isMenuHovered)
           .frame(width: metrics.groupWidth, height: metrics.controlHeight)
           .contentShape(Rectangle())
           .overlay(alignment: .topTrailing) {
@@ -1581,6 +1607,7 @@ private struct OverlayIntercomHeader: View {
       .menuStyle(.borderlessButton)
       .menuIndicator(.hidden)
       .fixedSize()
+      .onHover { isMenuHovered = $0 }
       .conversationActionHover(
         restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
       )
@@ -1685,8 +1712,15 @@ private struct OverlayIntercomHeader: View {
         controller.restoreDockedLayout()
       }
     }
+    Divider()
     Button {
-      state.showAgentMonitor()
+      controller.openMainWindow(surface: .transcription)
+    } label: {
+      Label(String(localized: "Transcription"), systemImage: "waveform")
+    }
+    .accessibilityIdentifier("overlay-intercom-transcription")
+    Button {
+      controller.openMainWindow(surface: .agents)
     } label: {
       Label {
         Text("Agents")
@@ -1715,6 +1749,11 @@ private struct OverlayIntercomHeader: View {
         }
       }
     }
+    Divider()
+    Button(String(localized: "Settings…")) {
+      openWindow.presentSettings()
+    }
+    .accessibilityIdentifier("overlay-intercom-settings")
   }
 
   private func mailboxMenuItem(
@@ -2042,8 +2081,12 @@ private struct OverlayIntercomCard: View {
           } else {
             Group {
               if let preview, let conversation {
-                OverlayIntercomMessagePreview(conversation: conversation, palette: palette)
-                  .frame(height: preview.height)
+                OverlayRosterMessagePreview(
+                  session: OverlayRosterPreviewSession(conversation: conversation),
+                  palette: palette,
+                  onOpen: { if canOpenConversation { controller.expand(identity) } }
+                )
+                .frame(height: preview.height)
               } else {
                 Color.clear
                   .contentShape(Rectangle())
@@ -2080,16 +2123,26 @@ private struct OverlayIntercomCard: View {
           }
         }
         .accessibilitySortPriority(0)
-        cardHeader(
-          palette: palette, expanded: expanded, roster: roster, inactive: inactive,
-          audioBelowName: audioBelowName
-        )
-        .frame(height: titleBarHeight)
-        // Later than the rows, so scrolled text stays under the plate. The
-        // title bar carries the composer's glass, not a glass of its own
-        // (Maciej, 2026-10-23). Reduce Transparency makes this plate opaque.
-        .modifier(OverlayComposerSurface(palette: palette))
-        .accessibilitySortPriority(1)
+        if expanded {
+          cardHeader(
+            palette: palette, expanded: expanded, roster: roster, inactive: inactive,
+            audioBelowName: audioBelowName
+          )
+          .frame(height: titleBarHeight)
+          .background {
+            Rectangle()
+              .fill(palette.desktopBackground.color.opacity(reduceTransparency ? 1.0 : 0.85))
+          }
+          .accessibilitySortPriority(1)
+        } else {
+          cardHeader(
+            palette: palette, expanded: expanded, roster: roster, inactive: inactive,
+            audioBelowName: audioBelowName
+          )
+          .frame(height: titleBarHeight)
+          .modifier(OverlayComposerSurface(palette: palette))
+          .accessibilitySortPriority(1)
+        }
       }
     )
     .foregroundStyle(palette.primaryText.color)
@@ -2185,18 +2238,25 @@ private struct OverlayIntercomCard: View {
       return (text?.isEmpty ?? true) ? nil : text
     }()
     let detached = controller.desktop.openInstance(for: identity) != nil
+    let targetConversation = state.conversations.first(where: { identity.matches($0) })
     let nameHint = OverlayHeaderControlChrome(
       title: identity.displayDigit + " · " + name, accent: nil, palette: palette,
       hintLeading: true,
       showsHint: !expanded && !detached
         && controller.groupCardHeight <= OverlayIntercomWidgetLayout.controlHeight(scale: scale)
         && !hasInlinePreview,
-      hintContent: hasMessage
+      hintContent: hasMessage && targetConversation != nil
         ? AnyView(
-          OverlayIntercomHoverPreview(state: state, identity: identity, palette: palette)
-            .environment(\.csTextScale, scale)
-            .environment(\.colorScheme, colorScheme)) : nil,
-      hintSize: hasMessage ? CGSize(width: 360 * scale, height: 240 * scale) : nil)
+          OverlayRosterMessagePreview(
+            session: OverlayRosterPreviewSession(conversation: targetConversation),
+            palette: palette,
+            onOpen: { if canOpenConversation { controller.expand(identity) } }
+          )
+          .environment(\.csTextScale, scale)
+          .environment(\.colorScheme, colorScheme)) : nil,
+      hintSize: hasMessage ? CGSize(width: 280 * scale, height: 180 * scale) : nil,
+      hintFitsContentHeight: true,
+      hintInteractive: true)
     // The grip stays separate from the open button at every content tier.
     // Its full-height native hit area never overlaps audio or the agent name.
     let detachGrip = OverlayIntercomDetachGrip(palette: palette, highlighted: hovering)
@@ -2823,64 +2883,6 @@ private struct OverlayDetachedRosterValue: ViewModifier {
     } else {
       content
     }
-  }
-}
-
-/// Cards and passive hovers preview the latest committed message through the
-/// shared rich-body renderer without mounting an editable conversation.
-private struct OverlayIntercomMessagePreview: View {
-  @Environment(\.csTextScale) private var textScale
-  let conversation: OverlayConversation
-  let palette: OverlayAppearancePalette
-
-  var body: some View {
-    Group {
-      if let message = conversation.messages.last {
-        VStack(alignment: .leading, spacing: OverlayIntercomWidgetLayout.compactPreviewSpacing) {
-          let route = OverlayChannelStatusView.messageRoute(of: message)
-          if !route.label.isEmpty {
-            // The route belongs to the card, not the scrolling message body. A
-            // scrolled long preview otherwise cuts this line under the metadata.
-            Text(verbatim: route.label)
-              .font(.system(size: 10 * textScale, weight: .bold))
-              .foregroundStyle(palette.mutedText.color)
-              .lineLimit(1)
-              .truncationMode(.tail)
-              .fixedSize(horizontal: false, vertical: true)
-              .accessibilityIdentifier("overlay-intercom-message-route")
-          }
-          ScrollView {
-            OverlayConversationMessageContent(message: message, palette: palette)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, OverlayIntercomWidgetLayout.compactPreviewVerticalPadding)
-      }
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .clipped()
-    .accessibilityIdentifier("overlay-intercom-message-preview")
-  }
-}
-
-private struct OverlayIntercomHoverPreview: View {
-  let state: OverlayState
-  let identity: OverlayIntercomCardIdentity
-  let palette: OverlayAppearancePalette
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text(verbatim: identity.displayDigit + " · " + identity.name).csFont(11, .semibold)
-        .padding(.horizontal, 12).padding(.top, 10)
-      if let conversation = state.conversations.first(where: { identity.matches($0) }) {
-        OverlayIntercomMessagePreview(conversation: conversation, palette: palette)
-          .allowsHitTesting(false)
-      }
-    }
-    .foregroundStyle(palette.primaryText.color)
-    .background(palette.desktopBackground.color.opacity(0.9))
   }
 }
 
