@@ -600,8 +600,9 @@ conversation cell keeps its split width under opacity 0 and a clip, so the
 slide back is a reveal, not a reflow. The glass navigation header does not
 honour that opacity or clip: it stayed on screen over the list's first rows
 at the split width (Monika, 2026-11-05). `OverlayConversationView` therefore
-takes the header off the tree while `isCovered`, keeping its measured height
-as the content margin, and mounts it again when the conversation returns.
+takes the header and the standard composer off the tree while `isCovered`,
+keeping their measured heights as the content margin and the bottom inset,
+and mounts them again when the conversation returns.
 
 ## Independent canvas sizes
 

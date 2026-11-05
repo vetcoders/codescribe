@@ -321,12 +321,21 @@ struct OverlayConversationView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
           if showsComposer && presentation == .standard {
-            composer
-              .onGeometryChange(for: CGFloat.self) {
-                $0.size.height
-              } action: {
-                composerHeight = $0
-              }
+            if isCovered {
+              // The composer's glass leaks through the covering cell like the
+              // header's (Olek, 2026-11-05, on the same screenshot); the
+              // measured height keeps the inset, so the rows do not reflow.
+              Color.clear.frame(height: composerHeight)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            } else {
+              composer
+                .onGeometryChange(for: CGFloat.self) {
+                  $0.size.height
+                } action: {
+                  composerHeight = $0
+                }
+            }
           }
         }
         .overlay(alignment: .bottom) {
