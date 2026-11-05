@@ -956,10 +956,7 @@ final class OverlayState {
   /// canonical ticket becomes terminal. Mirrors and polls add no timer.
   private var selectedReplyPlaybackActive: Bool {
     guard !showsAgentMonitor, let selectedConversation else { return false }
-    return selectedConversation.messages.contains { message in
-      message.kind == .reply
-        && message.playback.map { ["waiting", "playing"].contains($0.state) } == true
-    }
+    return selectedConversation.replyPlaybackActive
   }
 
   /// Editing, an uncommitted draft, the pointer over the panel, the focused
@@ -1629,8 +1626,8 @@ final class OverlayState {
   /// stored in `observedReplyIDs`.
   @ObservationIgnored private var composerTypingDeadline: TimeInterval?
   static let composerTypingHorizon: TimeInterval = 15
-  @ObservationIgnored private(set) var conversationIsVisible = false
-  @ObservationIgnored private(set) var intercomWidgetIsVisible = false
+  private(set) var conversationIsVisible = false
+  private(set) var intercomWidgetIsVisible = false
 
   var isDeliveryObservationActive: Bool {
     conversationIsVisible || intercomWidgetIsVisible || selectedConversationID != nil
@@ -2280,7 +2277,12 @@ final class OverlayState {
   }
 
   func unreadReplies(in conversation: OverlayConversation) -> Int {
-    conversation.replyIDs.filter { !viewedReplyIDs.contains($0) }.count
+    guard !conversation.replyIDs.isEmpty else { return 0 }
+    var unread = 0
+    for replyID in conversation.replyIDs where !viewedReplyIDs.contains(replyID) {
+      unread += 1
+    }
+    return unread
   }
 
   /// Viewing only changes presentation metadata. Capture stays controller-owned.
@@ -2409,7 +2411,7 @@ final class OverlayState {
     }
     func newest(_ candidates: [OverlayConversation]) -> OverlayConversation? {
       candidates.max {
-        ($0.messages.map(\.order).max() ?? 0) < ($1.messages.map(\.order).max() ?? 0)
+        $0.maxMessageOrder < $1.maxMessageOrder
       }
     }
     if let unread = newest(live.filter { unreadReplies(in: $0) > 0 }) { return unread.id }
@@ -2680,12 +2682,16 @@ final class OverlayState {
   }
 
   func setConversationVisible(_ visible: Bool) {
-    conversationIsVisible = visible
+    if conversationIsVisible != visible {
+      conversationIsVisible = visible
+    }
     markVisibleConversationRead()
   }
 
   func setIntercomVisible(_ visible: Bool) {
-    intercomWidgetIsVisible = visible
+    if intercomWidgetIsVisible != visible {
+      intercomWidgetIsVisible = visible
+    }
   }
 
   private func markVisibleConversationRead() {
@@ -3568,7 +3574,8 @@ final class OverlayState {
           guard !Task.isCancelled, let self else { return }
           self.applyChannelRoster(snapshot)
         }
-        let interval: Duration = (self?.isDeliveryObservationActive == true) ? .milliseconds(500) : .milliseconds(2000)
+        let interval: Duration =
+          (self?.isDeliveryObservationActive == true) ? .milliseconds(500) : .milliseconds(2000)
         do { try await Task.sleep(for: interval) } catch { return }
       }
     }
@@ -3601,7 +3608,8 @@ final class OverlayState {
         }
         guard !Task.isCancelled else { return }
         await self?.refreshPlaybackMutes()
-        let interval: Duration = (self?.isDeliveryObservationActive == true) ? .milliseconds(500) : .milliseconds(2000)
+        let interval: Duration =
+          (self?.isDeliveryObservationActive == true) ? .milliseconds(500) : .milliseconds(2000)
         do { try await Task.sleep(for: interval) } catch { return }
       }
     }
@@ -6781,7 +6789,9 @@ final class OverlayState {
   private func selectDictationSurfaceIfNeeded() {
     guard !draftCapture.hasRequest else { return }
     if isVerticalIntercom || (!hasOpenChannel && indicatorMode != .assistive) {
-      if windowContentSurface != .transcription || selectedConversationID != nil || showsAgentMonitor {
+      if windowContentSurface != .transcription || selectedConversationID != nil
+        || showsAgentMonitor
+      {
         selectConversation(nil)
         showsAgentMonitor = false
       }

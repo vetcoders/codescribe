@@ -20,9 +20,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private var appWindowYield: OverlayAppWindowYield?
   @ObservationIgnored private var cards: [OverlayIntercomCardIdentity: OverlayIntercomPanel] = [:]
   @ObservationIgnored private var instancePanels: [UUID: OverlayIntercomPanel] = [:]
-  @ObservationIgnored private var identities: [OverlayIntercomCardIdentity] = []
+  private var identities: [OverlayIntercomCardIdentity] = []
   @ObservationIgnored private var sizes: [OverlayIntercomCardIdentity: CGSize] = [:]
-  @ObservationIgnored private var visible = false
+  private var visible = false
   @ObservationIgnored private var positioning = false
   @ObservationIgnored private var invalidated = false
   /// A reconciliation receipt, never an archive authority. Only newly observed
@@ -221,7 +221,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   func setVisible(_ visible: Bool, relativeTo anchor: NSWindow?) {
     guard !invalidated else { return }
-    self.visible = visible
+    if self.visible != visible {
+      self.visible = visible
+    }
     state.setIntercomVisible(visible)
     guard visible else {
       finishInteractiveResize(cancelled: true)
@@ -310,7 +312,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       return
     }
     if availableHeight != screenFrame.height { availableHeight = screenFrame.height }
-    identities = intercomIdentities(state: state, chips: chips)
+    let nextIdentities = intercomIdentities(state: state, chips: chips)
+    if identities != nextIdentities {
+      identities = nextIdentities
+    }
     let clearedHistoryOpening = desktop.clearHistoryOpenings(for: identities)
     // Channel reuse cannot replace the editor underneath a draft. The old
     // exact owner's open card survives as a durable detached instance.
@@ -392,6 +397,19 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   private var screenFrame: CGRect { visibleFrame(for: header) }
 
   private var groupIdentities: [OverlayIntercomCardIdentity] { desktop.groupRows(of: identities) }
+
+  func isGroupCardRendered(_ identity: OverlayIntercomCardIdentity) -> Bool {
+    guard cards[identity] != nil else { return true }
+    guard visible, !presentation.folded,
+      let index = groupIdentities.firstIndex(of: identity)
+    else { return false }
+    return visibleRows.contains(index)
+  }
+
+  fileprivate func isInstanceCardRendered(_ id: UUID, instance: OverlayIntercomInstance) -> Bool {
+    guard instancePanels[id] != nil else { return !instance.closed }
+    return visible && !instance.closed
+  }
 
   fileprivate var visibleRows: Range<Int> {
     OverlayIntercomWidgetLayout.visibleRange(
@@ -2017,121 +2035,116 @@ private struct OverlayIntercomCard: View {
     conversation?.name ?? identity.name
   }
 
+  @ViewBuilder
   var body: some View {
-    let palette = OverlayAppearancePalette.resolve(colorScheme)
-    let expanded = controller.presentation.expanded.contains(identity)
-    let current =
-      intercomConversation(state: state, digit: identity.digit).map { identity.matches($0) } == true
-    let roster = OverlayChannelStatusView.intercomRoster(
-      state: state, palette: palette, animates: !reduceMotion,
-      onRevealConversation: onRevealConversation,
-      onOpenConversation: { id in
-        if id == identity.conversationID { controller.expand(identity) }
-      })
-    let channelRow = current ? intercomChannelRow(state: state, digit: identity.digit) : nil
-    let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
-    // The row greys only for a gone follower, the same state as the ring
-    // before the name; a stalled reader keeps its colour (Monika, 2026-11-04).
-    let disconnected = channelRow.map { roster.hasDeadFollower($0) } ?? false
-    let audioBelowName =
-      !expanded
-      && controller.contentMetrics.audioFooterHeight(
-        width: controller.groupWidth, cardHeight: controller.groupCardHeight) > 0
-    let content = controller.contentMetrics.cardContent(
-      width: controller.groupWidth, cardHeight: controller.groupCardHeight)
-    let preview = controller.contentMetrics.compactPreviewLayout(
-      width: controller.groupWidth, cardHeight: controller.groupCardHeight)
-    let corner =
-      expanded
-      ? OverlayIntercomWidgetLayout.conversationCornerRadius
-      : OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
-    // The bar is always one row (Maciej, 2026-11-03: "jest za gruby …
-    // żeby on był jednorzędowy"); its descriptor rides the name line at
-    // every content tier, identical to an instance card and expanded card.
-    let titleBarHeight = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-    intercomGlassContainer(
-      ZStack(alignment: .top) {
-        VStack(spacing: 0) {
-          // Resting rows stay below the plate. scrollClipDisabled on the
-          // message list still paints a scrolled row up through this gap.
-          Color.clear
-            .frame(height: titleBarHeight)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-          if expanded {
-            if let conversation {
-              conversationBody(conversation, palette: palette)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-              Text("Conversation unavailable").csFont(12)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-          } else if let preview, preview.showsComposer, let conversation {
-            OverlayIntercomConversationBody(
-              state: state, conversation: conversation, palette: palette, focusRevision: 0,
-              presentation: .intercom, showsComposer: true, messageWindowLimit: 8,
-              composerEditorHeightLimit: preview.composerEditorHeightLimit,
-              onActivity: { controller.noteGroupedActivity() },
-              onEditingChanged: { _ in controller.noteGroupedActivity() }
-            )
-            .frame(height: preview.height)
-          } else {
-            Group {
-              if let preview, let conversation {
-                OverlayRosterMessagePreview(
-                  session: OverlayRosterPreviewSession(conversation: conversation),
-                  palette: palette,
-                  onOpen: { if canOpenConversation { controller.expand(identity) } }
-                )
-                .frame(height: preview.height)
+    if controller.isGroupCardRendered(identity) {
+      let palette = OverlayAppearancePalette.resolve(colorScheme)
+      let expanded = controller.presentation.expanded.contains(identity)
+      let current =
+        intercomConversation(state: state, digit: identity.digit).map { identity.matches($0) }
+        == true
+      let roster = OverlayChannelStatusView.intercomRoster(
+        state: state, palette: palette, animates: !reduceMotion,
+        onRevealConversation: onRevealConversation,
+        onOpenConversation: { id in
+          if id == identity.conversationID { controller.expand(identity) }
+        })
+      let channelRow = current ? intercomChannelRow(state: state, digit: identity.digit) : nil
+      let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
+      // The row greys only for a gone follower, the same state as the ring
+      // before the name; a stalled reader keeps its colour (Monika, 2026-11-04).
+      let disconnected = channelRow.map { roster.hasDeadFollower($0) } ?? false
+      let audioBelowName =
+        !expanded
+        && controller.contentMetrics.audioFooterHeight(
+          width: controller.groupWidth, cardHeight: controller.groupCardHeight) > 0
+      let content = controller.contentMetrics.cardContent(
+        width: controller.groupWidth, cardHeight: controller.groupCardHeight)
+      let preview = controller.contentMetrics.compactPreviewLayout(
+        width: controller.groupWidth, cardHeight: controller.groupCardHeight)
+      let corner =
+        expanded
+        ? OverlayIntercomWidgetLayout.conversationCornerRadius
+        : OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
+      // The bar is always one row (Maciej, 2026-11-03: "jest za gruby …
+      // żeby on był jednorzędowy"); its descriptor rides the name line at
+      // every content tier, identical to an instance card and expanded card.
+      let titleBarHeight = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      intercomGlassContainer(
+        ZStack(alignment: .top) {
+          VStack(spacing: 0) {
+            // Resting rows stay below the plate. scrollClipDisabled on the
+            // message list still paints a scrolled row up through this gap.
+            Color.clear
+              .frame(height: titleBarHeight)
+              .allowsHitTesting(false)
+              .accessibilityHidden(true)
+            if expanded {
+              if let conversation {
+                conversationBody(conversation, palette: palette)
+                  .frame(maxWidth: .infinity, maxHeight: .infinity)
+                  .clipped()
               } else {
-                Color.clear
-                  .contentShape(Rectangle())
-                  .onTapGesture {
-                    if canOpenConversation { controller.expand(identity) }
-                  }
+                Text("Conversation unavailable").csFont(12)
+                  .frame(maxWidth: .infinity, maxHeight: .infinity)
               }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .contentShape(Rectangle())
-            .contextMenu {
-              if let message = conversation?.messages.last {
-                CopyMessageButton(text: message.text, palette: palette)
+            } else if let preview, preview.showsComposer, let conversation {
+              OverlayIntercomConversationBody(
+                state: state, conversation: conversation, palette: palette, focusRevision: 0,
+                presentation: .intercom, showsComposer: true, messageWindowLimit: 8,
+                composerEditorHeightLimit: preview.composerEditorHeightLimit,
+                onActivity: { controller.noteGroupedActivity() },
+                onEditingChanged: { _ in controller.noteGroupedActivity() }
+              )
+              .frame(height: preview.height)
+              .clipped()
+            } else {
+              Group {
+                if let preview, let conversation {
+                  OverlayIntercomMessagePreview(
+                    conversation: conversation, palette: palette
+                  )
+                  .frame(height: preview.height)
+                } else {
+                  Color.clear
+                }
               }
-              Button("Open conversation") { controller.expand(identity) }
-                .disabled(!canOpenConversation)
+              .frame(
+                maxWidth: .infinity,
+                maxHeight: preview != nil || !audioBelowName ? .infinity : 0,
+                alignment: .top
+              )
+              .contentShape(Rectangle())
+              .onTapGesture {
+                if canOpenConversation { controller.expand(identity) }
+              }
+              .contextMenu {
+                if let message = conversation?.messages.last {
+                  CopyMessageButton(text: message.text, palette: palette)
+                }
+                Button("Open conversation") { controller.expand(identity) }
+                  .disabled(!canOpenConversation)
+              }
+              .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
+              .accessibilityAction(named: Text("Open conversation")) {
+                if canOpenConversation { controller.expand(identity) }
+              }
+              .accessibilityIdentifier("overlay-intercom-preview-open-\(identity.digit)")
             }
-            .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
-            .accessibilityAction(named: Text("Open conversation")) {
-              if canOpenConversation { controller.expand(identity) }
+            if audioBelowName {
+              audioSlot(
+                current ? conversation : nil, palette: palette,
+                speaking: current && conversation?.replySpeaking == true,
+                open: current
+                  && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
+              )
+              .frame(maxWidth: .infinity, alignment: .trailing)
+              .padding(.horizontal, 6)
+              .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+              .accessibilityIdentifier("overlay-intercom-audio-footer-\(identity.digit)")
             }
-            .accessibilityIdentifier("overlay-intercom-preview-open-\(identity.digit)")
           }
-          if audioBelowName {
-            audioSlot(
-              current ? conversation : nil, palette: palette,
-              speaking: current && conversation?.replySpeaking == true,
-              open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
-            )
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.horizontal, 6)
-            .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-            .accessibilityIdentifier("overlay-intercom-audio-footer-\(identity.digit)")
-          }
-        }
-        .accessibilitySortPriority(0)
-        if expanded {
-          cardHeader(
-            palette: palette, expanded: expanded, roster: roster, inactive: inactive,
-            audioBelowName: audioBelowName
-          )
-          .frame(height: titleBarHeight)
-          .background {
-            Rectangle()
-              .fill(palette.desktopBackground.color.opacity(reduceTransparency ? 1.0 : 0.85))
-          }
-          .accessibilitySortPriority(1)
-        } else {
+          .accessibilitySortPriority(0)
           cardHeader(
             palette: palette, expanded: expanded, roster: roster, inactive: inactive,
             audioBelowName: audioBelowName
@@ -2140,71 +2153,73 @@ private struct OverlayIntercomCard: View {
           .modifier(OverlayComposerSurface(palette: palette))
           .accessibilitySortPriority(1)
         }
+      )
+      .foregroundStyle(palette.primaryText.color)
+      .modifier(OverlayDisconnectedRowDim(disconnected: current && disconnected))
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      // Header-only icons retain their compact row; text uses its measured space.
+      .frame(
+        height: !expanded && controller.groupTier == .icon && content == .header
+          ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : nil
+      )
+      .background(
+        OverlayCanvasBackdrop(
+          palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner)
+      )
+      .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+      .overlay {
+        RoundedRectangle(cornerRadius: corner, style: .continuous)
+          .strokeBorder(palette.border.color, lineWidth: 1).allowsHitTesting(false)
       }
-    )
-    .foregroundStyle(palette.primaryText.color)
-    .modifier(OverlayDisconnectedRowDim(disconnected: current && disconnected))
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    // Header-only icons retain their compact row; text uses its measured space.
-    .frame(
-      height: !expanded && controller.groupTier == .icon && content == .header
-        ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : nil
-    )
-    .background(
-      OverlayCanvasBackdrop(
-        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner)
-    )
-    .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-    .overlay {
-      RoundedRectangle(cornerRadius: corner, style: .continuous)
-        .strokeBorder(palette.border.color, lineWidth: 1).allowsHitTesting(false)
-    }
-    // The middle-click chooser's focus, as on the agents list's rows; the
-    // pointer entering a row moves it there.
-    .modifier(
-      OverlayGestureFocusRing(
-        focused: identity.conversationID != nil
-          && state.agentGestureFocusID == identity.conversationID,
-        shape: RoundedRectangle(cornerRadius: corner, style: .continuous), palette: palette,
-        targetID: identity.conversationID,
-        onHover: { state.hoverAgentGestureTarget($0) })
-    )
-    .overlay {
-      if expanded {
-        OverlayIntercomResizeHandles(
-          cornerRadius: corner, topRight: false, revealed: hovering,
-          onEnded: { controller.finishInteractiveResize(cancelled: $0) }
-        ) { frame, delta, edge, gesture in
-          controller.resize(identity, from: frame, delta: delta, edge: edge, gesture: gesture)
-        }
-      } else {
-        // Detach owns the top-left corner. Only the other three visible grips
-        // resize; the remaining perimeter does not intercept content controls.
-        OverlayIntercomResizeHandles(
-          cornerRadius: corner, revealed: hovering,
-          onEnded: { controller.finishInteractiveResize(cancelled: $0) }
-        ) { frame, delta, edge, gesture in
-          controller.resizeGroup(
-            from: frame, delta: delta, edge: edge, row: identity, gesture: gesture)
+      // The middle-click chooser's focus, as on the agents list's rows; the
+      // pointer entering a row moves it there.
+      .modifier(
+        OverlayGestureFocusRing(
+          focused: identity.conversationID != nil
+            && state.agentGestureFocusID == identity.conversationID,
+          shape: RoundedRectangle(cornerRadius: corner, style: .continuous), palette: palette,
+          targetID: identity.conversationID,
+          onHover: { state.hoverAgentGestureTarget($0) })
+      )
+      .overlay {
+        if expanded {
+          OverlayIntercomResizeHandles(
+            cornerRadius: corner, topRight: false, revealed: hovering,
+            onEnded: { controller.finishInteractiveResize(cancelled: $0) }
+          ) { frame, delta, edge, gesture in
+            controller.resize(identity, from: frame, delta: delta, edge: edge, gesture: gesture)
+          }
+        } else {
+          // Detach owns the top-left corner. Only the other three visible grips
+          // resize; the remaining perimeter does not intercept content controls.
+          OverlayIntercomResizeHandles(
+            cornerRadius: corner, revealed: hovering,
+            onEnded: { controller.finishInteractiveResize(cancelled: $0) }
+          ) { frame, delta, edge, gesture in
+            controller.resizeGroup(
+              from: frame, delta: delta, edge: edge, row: identity, gesture: gesture)
+          }
         }
       }
+      .opacity(entered ? 1 : 0)
+      .onHover {
+        hovering = $0
+        if $0 { controller.noteGroupedActivity() }
+      }
+      .onChange(of: state.autoFoldSeconds) { _, _ in controller.noteGroupedActivity() }
+      .offset(y: entered || reduceMotion ? 0 : -6)
+      .onAppear {
+        withAnimation(
+          reduceMotion
+            ? nil : .spring(response: 0.28, dampingFraction: 0.86).delay(Double(index) * 0.025)
+        ) { entered = true }
+      }
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("overlay-intercom-row-\(identity.digit)")
+      .frame(maxHeight: .infinity, alignment: .top)
+    } else {
+      Color.clear
     }
-    .opacity(entered ? 1 : 0)
-    .onHover {
-      hovering = $0
-      if $0 { controller.noteGroupedActivity() }
-    }
-    .onChange(of: state.autoFoldSeconds) { _, _ in controller.noteGroupedActivity() }
-    .offset(y: entered || reduceMotion ? 0 : -6)
-    .onAppear {
-      withAnimation(
-        reduceMotion
-          ? nil : .spring(response: 0.28, dampingFraction: 0.86).delay(Double(index) * 0.025)
-      ) { entered = true }
-    }
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-intercom-row-\(identity.digit)")
-    .frame(maxHeight: .infinity, alignment: .top)
   }
 
   @ViewBuilder
@@ -2354,6 +2369,10 @@ private struct OverlayIntercomCard: View {
         }
         .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
       }
+      .modifier(
+        current && !identity.isHumanInbox
+          ? roster.agentPillMenu(for: identity.digit, showsInlineError: false)
+          : OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
     } else {
       // Reuse the menu execution, but Write stays in this card.
       HStack(spacing: 3) {
@@ -2759,6 +2778,42 @@ private struct OverlayIntercomConversationBody: View {
   }
 }
 
+private struct OverlayIntercomMessagePreview: View {
+  @Environment(\.csTextScale) private var textScale
+  let conversation: OverlayConversation
+  let palette: OverlayAppearancePalette
+
+  var body: some View {
+    Group {
+      if let message = conversation.messages.last {
+        VStack(alignment: .leading, spacing: OverlayIntercomWidgetLayout.compactPreviewSpacing) {
+          let route = OverlayChannelStatusView.messageRoute(of: message)
+          if !route.label.isEmpty {
+            Text(verbatim: route.label)
+              .font(.system(size: 10 * textScale, weight: .bold))
+              .foregroundStyle(palette.mutedText.color)
+              .lineLimit(1)
+              .truncationMode(.tail)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("overlay-intercom-message-route")
+          }
+          ScrollView {
+            OverlayConversationMessageContent(message: message, palette: palette)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .csAutohidingScrollers()
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, OverlayIntercomWidgetLayout.compactPreviewVerticalPadding)
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .clipped()
+    .accessibilityIdentifier("overlay-intercom-message-preview")
+  }
+}
+
 /// The agent's name and, when it can be read, its descriptor on one line.
 /// The name always keeps its letters. The descriptor steps down in readable
 /// forms — in full, provider · repository, truncated in the middle to a
@@ -2812,7 +2867,6 @@ private struct OverlayIntercomNameLine: View {
     }
   }
 }
-
 
 /// A tonal surface relief. Its small light/shadow pairs suggest grip without
 /// borrowing the high-contrast four-dot icon of the Intercom's main menu.
@@ -2941,7 +2995,9 @@ private struct OverlayIntercomInstanceCard: View {
   let onRevealConversation: () -> Void
 
   var body: some View {
-    if let instance = controller.instance(for: instanceID) {
+    if let instance = controller.instance(for: instanceID),
+      controller.isInstanceCardRendered(instanceID, instance: instance)
+    {
       content(instance)
     } else {
       Color.clear
@@ -2986,6 +3042,7 @@ private struct OverlayIntercomInstanceCard: View {
                 focusRevision: controller.instanceFocusRevisions[instanceID] ?? 0
               )
               .frame(maxWidth: .infinity, maxHeight: .infinity)
+              .clipped()
             } else {
               // The exact owner is gone from the roster. The saved words stay
               // readable; live actions withdraw instead of guessing a successor.

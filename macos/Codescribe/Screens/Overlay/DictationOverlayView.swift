@@ -681,6 +681,12 @@ struct DictationOverlayView: View {
   private var railIntents: [OverlayIntent] {
     OverlayRecordingControls.railIntents(from: projectedIntents)
   }
+  private var hiddenBehindIntercom: Bool {
+    state.intercomWidgetIsVisible && !overlayVisible && !state.conversationIsVisible
+  }
+  private var expandedCanvasActive: Bool {
+    !state.isCollapsed && !hiddenBehindIntercom
+  }
 
   var body: some View {
     OverlayCanvasSurface(palette: palette) {
@@ -775,7 +781,7 @@ struct DictationOverlayView: View {
         // buttons left it (Maciej, 2026-10-19).
         let listOnScreen =
           agentsSurface
-          && !state.isCollapsed
+          && expandedCanvasActive
           && (state.showsAgentMonitor
             || OverlayAgentDrawerLayout.listPinned(
               layout: state.agentsLayout, docked: docked,
@@ -783,9 +789,9 @@ struct DictationOverlayView: View {
         let columnShown = listOnScreen
         // A folded list leaves its own rail. A folded conversation leaves a
         // separate edge control on the left; neither panel owns the other's toggle.
-        let railShown = agentsSurface && !state.isCollapsed && !listOnScreen
+        let railShown = agentsSurface && expandedCanvasActive && !listOnScreen
         let railWidth = OverlayAgentDrawerLayout.railWidth(textScale: textScale)
-        let transcriptActionsShown = transcriptionSurface && !state.isCollapsed
+        let transcriptActionsShown = transcriptionSurface && expandedCanvasActive
         let transcriptActionsWidth =
           transcriptActionsShown
           ? OverlayTranscriptActionsLayout.columnWidth(textScale: textScale) : 0
@@ -823,18 +829,13 @@ struct DictationOverlayView: View {
         let canvasHidden = canvasWidth < 1 || conversationFolded
         HStack(alignment: .top, spacing: 0) {
           ZStack {
-            // Both ends are numbers, so the fold interpolates with the window's
-            // morph, over the same duration (it follows the distance since
-            // 2026-10-15). A `nil` height has nothing to animate from: the body
-            // snapped to zero on the first frame while the glass kept shrinking
-            // (presentation ledger, 2026-10-14).
-            let transcriptVisible = transcriptionSurface && !state.isCollapsed
-            bodySection
-              .frame(height: state.isCollapsed ? 0 : geometry.size.height)
-              .opacity(transcriptVisible ? 1 : 0)
-              .allowsHitTesting(transcriptVisible)
-              .accessibilityHidden(!transcriptVisible)
-            if agentsSurface, let conversation = state.selectedConversation {
+            if expandedCanvasActive && transcriptionSurface {
+              bodySection
+                .frame(height: geometry.size.height)
+            }
+            if expandedCanvasActive && agentsSurface,
+              let conversation = state.selectedConversation
+            {
               let resolvedTarget = state.resolvedComposerTarget(viewing: conversation)
               // The inbox composes with no recipient of its own: the agents
               // linked to it are the destination (Maciej, 2026-10-30 13:58).
@@ -1277,31 +1278,31 @@ struct DictationOverlayView: View {
     ) { translation in
       commitAgentDrawerWidth((width - translation) / textScale, windowWidth: windowWidth)
     }
-      .accessibilityElement()
-      .accessibilityLabel(String(localized: "Resize agents sidebar"))
-      .accessibilityValue(Text(verbatim: "\(Int(width))"))
-      .accessibilityAdjustableAction { direction in
-        let step: CGFloat
-        switch direction {
-        case .increment: step = 20
-        case .decrement: step = -20
-        @unknown default: return
-        }
-        // Narrowing a roster that covers the window leaves the snap zone at
-        // once; a 20-point step would stay inside it.
-        let fills = state.agentsLayout == .agents
-        // At the rows' minimum one more step down folds the list to its rail.
-        let atMinimum =
-          width <= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale) + 0.5
-        let next =
-          fills && step < 0
-          ? OverlayAgentDrawerLayout.widestSplitWidth(
-            textScale: textScale, windowWidth: windowWidth)
-          : atMinimum && step < 0 ? 0 : width / textScale + step
-        commitAgentDrawerWidth(next, windowWidth: windowWidth)
+    .accessibilityElement()
+    .accessibilityLabel(String(localized: "Resize agents sidebar"))
+    .accessibilityValue(Text(verbatim: "\(Int(width))"))
+    .accessibilityAdjustableAction { direction in
+      let step: CGFloat
+      switch direction {
+      case .increment: step = 20
+      case .decrement: step = -20
+      @unknown default: return
       }
-      .accessibilityIdentifier("overlay-agent-sidebar-resize")
-      .padding(.top, headerHeight)
+      // Narrowing a roster that covers the window leaves the snap zone at
+      // once; a 20-point step would stay inside it.
+      let fills = state.agentsLayout == .agents
+      // At the rows' minimum one more step down folds the list to its rail.
+      let atMinimum =
+        width <= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale) + 0.5
+      let next =
+        fills && step < 0
+        ? OverlayAgentDrawerLayout.widestSplitWidth(
+          textScale: textScale, windowWidth: windowWidth)
+        : atMinimum && step < 0 ? 0 : width / textScale + step
+      commitAgentDrawerWidth(next, windowWidth: windowWidth)
+    }
+    .accessibilityIdentifier("overlay-agent-sidebar-resize")
+    .padding(.top, headerHeight)
   }
 
   // MARK: Header
@@ -1571,6 +1572,7 @@ struct DictationOverlayView: View {
   /// 2026-10-23), so narrowing the overlay never removes the way to the group.
   /// Internal so tests can drive the header's same values.
   var channelMap: OverlayChannelMapView? {
+    guard !hiddenBehindIntercom else { return nil }
     guard state.presentationMode != .mini || state.channelMapCounterStacked else { return nil }
     let counterOnly = state.channelMapCounterStacked
     guard counterOnly || state.channelMapInHeader else { return nil }
