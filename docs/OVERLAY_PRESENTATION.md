@@ -749,13 +749,14 @@ channel's owner is no longer in the group. Resizing an expanded group card is
 an explicit independent placement and turns it into a fiszka with its own
 geometry; the group stays unfolded.
 
-A conversation's title bar is always one row (Maciej, 2026-11-03: "jest za
-gruby … żeby on był jednorzędowy"), on a detached fiszka, on an expanded
-group card, and on a resting docked card alike. The agent descriptor (provider, model, declared repository)
+An open conversation's title bar is one row (Maciej, 2026-11-03: "jest za
+gruby … żeby on był jednorzędowy"), on a detached fiszka and on an expanded
+group card alike. The agent descriptor (provider, model, declared repository)
 stays visible: it joins the name line after the name and truncates in the
 middle, so the provider leads and the repository ends the line. No second
-metadata strip sits on the plate, and no metadata sits on an opaque fill.
-Moving the metadata under the composer is a later redesign, not this one.
+metadata strip sits on the plate, and no metadata sits on an opaque fill. Only a
+resting group card's context tier keeps its full-width metadata line. Moving the
+metadata under the composer is a later redesign, not this one.
 
 The attached group resizes like one window. The left edge of the header and
 the left edge plus bottom corners of any resting pill scale every attached

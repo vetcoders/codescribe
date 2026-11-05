@@ -75,6 +75,7 @@ final class OverlayLostTypographyTests: XCTestCase {
       let metadata = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
       let width = max(900, metrics.actionsWidth + 100)
       let chrome = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+        + OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
       let boundary = chrome + body + metadata + 8 + 5
       XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: boundary - 0.5))
       let admitted = try XCTUnwrap(

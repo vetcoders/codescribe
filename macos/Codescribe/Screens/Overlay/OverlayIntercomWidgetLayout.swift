@@ -142,7 +142,7 @@ struct IntercomContentMetrics: Equatable {
     let scale = nameFontSize / 11
     let row = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
     guard tier(width: width, cardHeight: cardHeight) != .icon, width < actionsWidth,
-      cardHeight >= 2 * row
+      cardHeight >= 2 * row + OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
     else { return 0 }
     return row
   }
@@ -196,6 +196,7 @@ struct IntercomContentMetrics: Equatable {
     let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
     let available =
       cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      - OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
       - audioFooterHeight(width: width, cardHeight: cardHeight)
     let minimum =
       lineHeight + metadataLine

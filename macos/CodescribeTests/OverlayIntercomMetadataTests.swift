@@ -46,7 +46,7 @@ final class OverlayIntercomMetadataTests: XCTestCase {
         body + metadata
         + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
         + OverlayIntercomWidgetLayout.compactPreviewSpacing
-      let firstPreviewHeight = header + previewHeight
+      let firstPreviewHeight = contextHeight + previewHeight
       XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: firstPreviewHeight - 0.5))
       let preview = try XCTUnwrap(
         metrics.compactPreviewLayout(width: width, cardHeight: firstPreviewHeight))
