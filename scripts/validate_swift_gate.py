@@ -270,7 +270,7 @@ xcodebuild test \
   LD_RUNPATH_SEARCH_PATHS="\"$TARGET_DIR\" @executable_path/../Frameworks" \
   -destination 'platform=macOS,arch=arm64' \
   CODE_SIGN_IDENTITY="${SWIFT_TEST_CODESIGN_IDENTITY}" \
-  "${RESULT_ARGS[@]}" \
+  ${RESULT_ARGS[@]+"${RESULT_ARGS[@]}"} \
   "$@" 2>&1 | tee "${SWIFT_TEST_LOG}" | \
   grep -aE "^Test Case .* (failed|error)|Executed [0-9]+ tests|^\*\* TEST|error:"
 rc=${PIPESTATUS[0]}
