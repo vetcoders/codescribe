@@ -2009,13 +2009,10 @@ private struct OverlayIntercomCard: View {
       expanded
       ? OverlayIntercomWidgetLayout.conversationCornerRadius
       : OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
-    // An open conversation's bar is one row (Maciej, 2026-11-03: "jest za
-    // gruby … żeby on był jednorzędowy"). Its descriptor rides the name line;
-    // only a resting card's context tier keeps the separate metadata line.
-    let showsContext = !expanded && content != .header && conversation != nil
-    let titleBarHeight =
-      OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-      + (showsContext ? OverlayIntercomWidgetLayout.contextStripHeight(scale: scale) : 0)
+    // The bar is always one row (Maciej, 2026-11-03: "jest za gruby …
+    // żeby on był jednorzędowy"); its descriptor rides the name line at
+    // every content tier, identical to an instance card and expanded card.
+    let titleBarHeight = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
     intercomGlassContainer(
       ZStack(alignment: .top) {
         VStack(spacing: 0) {
@@ -2083,26 +2080,11 @@ private struct OverlayIntercomCard: View {
           }
         }
         .accessibilitySortPriority(0)
-        VStack(spacing: 0) {
-          cardHeader(
-            palette: palette, expanded: expanded, roster: roster, inactive: inactive,
-            audioBelowName: audioBelowName
-          )
-          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-          if showsContext, let conversation {
-            // One physical metadata line uses the card width, not the narrow name
-            // button between status marks and audio controls. The complete card
-            // shares the exact owner's activity state, including this metadata.
-            OverlayIntercomConversationContext(
-              descriptor: state.conversationAgentDescriptor(conversation)
-                ?? conversation.owner?.provider,
-              palette: palette
-            )
-            .frame(
-              height: OverlayIntercomWidgetLayout.contextStripHeight(scale: scale),
-              alignment: .top)
-          }
-        }
+        cardHeader(
+          palette: palette, expanded: expanded, roster: roster, inactive: inactive,
+          audioBelowName: audioBelowName
+        )
+        .frame(height: titleBarHeight)
         // Later than the rows, so scrolled text stays under the plate. The
         // title bar carries the composer's glass, not a glass of its own
         // (Maciej, 2026-10-23). Reduce Transparency makes this plate opaque.
@@ -2192,13 +2174,10 @@ private struct OverlayIntercomCard: View {
       width: controller.groupWidth, cardHeight: controller.groupCardHeight)
     let hasInlinePreview = contentTier == .preview
     let hasMessage = conversation?.messages.isEmpty == false
-    // A header-only card has no context strip below it, so the metadata joins
-    // the name line instead of vanishing with the card height (Maciej,
-    // 2026-10-28: "meta … na niskim … powinien wchodzić w skład linii").
-    // An expanded card's one-row bar carries it the same way (Maciej,
-    // 2026-11-03): visible, never on a second strip of the plate.
+    // The bar is one row at every content tier; the descriptor rides the
+    // name line (Maciej, 2026-10-28, 2026-11-03).
     let inlineDescriptor: String? = {
-      guard row.marks, expanded || contentTier == .header, let conversation else { return nil }
+      guard row.marks, let conversation else { return nil }
       let text =
         (state.conversationAgentDescriptor(conversation)
         ?? conversation.owner?.provider)?
@@ -2349,21 +2328,11 @@ private struct OverlayIntercomCard: View {
                 descriptorIdentifier: "overlay-intercom-context-\(identity.digit)"
               )
               .layoutPriority(1)
-              if let channelRow, row.marks {
-                OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
-              }
-              // The client focus button lives beside the name, not out with
-              // the audio pair (Maciej, 2026-10-28).
-              if row.slots >= 3 {
-                OverlayIntercomFocusButton(
-                  roster: roster, channel: channelRow,
-                  palette: palette,
-                  diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-              }
               Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .background(OverlayResizeAnchor())
           }
           .buttonStyle(.plain)
           // Names rest lightly smoked; the agent talking brightens instead of
@@ -2391,11 +2360,21 @@ private struct OverlayIntercomCard: View {
           .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
           .modifier(nameHint)
         }
-        .background(OverlayResizeAnchor())
         .opacity(detached ? 0.72 : 1)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .highPriorityGesture(moveGesture)
+        if let channelRow, row.marks {
+          OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
+        }
+        // The client focus button lives beside the name, not out with
+        // the audio pair (Maciej, 2026-10-28).
+        if row.slots >= 3 {
+          OverlayIntercomFocusButton(
+            roster: roster, channel: channelRow,
+            palette: palette,
+            diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+        }
         if current, let conversation, state.hasSynchronizedDraft(conversation.id) {
           OverlayIntercomSyncIndicator(
             state: state, conversationID: conversation.id, palette: palette)
@@ -2777,43 +2756,6 @@ private struct OverlayIntercomNameLine: View {
   }
 }
 
-/// Only metadata already projected for this exact conversation is shown.
-/// The canonical descriptor supplies provider, model and declared repository
-/// on one line. Execution coordinates remain outside the card's metadata row.
-private struct OverlayIntercomConversationContext: View {
-  @Environment(\.csTextScale) private var scale
-  let descriptor: String?
-  let palette: OverlayAppearancePalette
-  var leadingInset: CGFloat = 12
-  var trailingInset: CGFloat = 12
-  var bottomInset: CGFloat = 6
-
-  private var contextLine: String? {
-    guard let descriptor else { return nil }
-    let trimmed = descriptor.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? nil : trimmed
-  }
-
-  var body: some View {
-    if let contextLine {
-      Text(verbatim: contextLine)
-        .lineLimit(1)
-        // Keep the provider at the start and a declared repository at the end.
-        .truncationMode(.middle)
-        .multilineTextAlignment(.leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .help(contextLine)
-        .font(.system(size: 10 * scale))
-        .foregroundStyle(palette.mutedText.color)
-        .padding(.leading, leadingInset)
-        .padding(.trailing, trailingInset)
-        .padding(.bottom, bottomInset)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("overlay-intercom-context")
-    }
-  }
-}
 
 /// A tonal surface relief. Its small light/shadow pairs suggest grip without
 /// borrowing the high-contrast four-dot icon of the Intercom's main menu.
