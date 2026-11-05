@@ -2486,8 +2486,8 @@ impl RecordingController {
                     continue;
                 }
                 let provider = Some(entry.provider.trim().to_string()).filter(|s| !s.is_empty());
-                let session = Some(entry.provider_session_id.clone())
-                    .filter(|s| !s.trim().is_empty());
+                let session =
+                    Some(entry.provider_session_id.clone()).filter(|s| !s.trim().is_empty());
                 states.push(ChannelHudState {
                     open: false,
                     loud: false,
@@ -2514,9 +2514,10 @@ impl RecordingController {
         // once, then project presence, hosts and backlog from that observation.
         let mut observations = BTreeMap::new();
         for state in &mut states {
-            let (Some(provider), Some(session)) =
-                (state.provider.as_deref(), state.provider_session_id.as_deref())
-            else {
+            let (Some(provider), Some(session)) = (
+                state.provider.as_deref(),
+                state.provider_session_id.as_deref(),
+            ) else {
                 continue;
             };
             if ambiguous_open_channels.contains(&state.channel) {
@@ -2532,9 +2533,9 @@ impl RecordingController {
             state.follower_alive = observation.alive;
             state.frame_detected = observation.hosts.map(|hosts| hosts.frame_pane);
             state.terminal_detected = observation.hosts.map(|hosts| hosts.terminal_tab);
-            state.unread_since = observation.unread_since.map(|since| {
-                SystemTime::UNIX_EPOCH + Duration::from_secs_f64(since.max(0.0))
-            });
+            state.unread_since = observation
+                .unread_since
+                .map(|since| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(since.max(0.0)));
             let thread_key = (key.0.clone(), key.1.trim().to_string());
             if let Some(thread) = codex_threads.get(&thread_key) {
                 state.codex_thread_url = Some(format!("codex://threads/{}", thread.thread_id));

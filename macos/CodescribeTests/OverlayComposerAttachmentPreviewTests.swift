@@ -284,4 +284,54 @@ final class OverlayComposerAttachmentPreviewTests: XCTestCase {
       XCTAssertEqual(host.bounds.size, size)
     }
   }
+
+  // MARK: - P0 attachment picker hierarchy & single-instance ownership
+
+  func testConversationAttachmentPickerPresentationLevelSitsAboveOverlayAndIntercom() {
+    let level = ConversationAttachmentPicker.presentationLevel.rawValue
+    XCTAssertGreaterThanOrEqual(
+      level, NSWindow.Level.modalPanel.rawValue,
+      "the file picker never drops below modalPanel")
+    XCTAssertGreaterThan(
+      level, OverlayIntercomPanel.detachedLevel.rawValue,
+      "the file picker must sit above a detached Intercom card")
+    XCTAssertGreaterThan(
+      level, OverlayPresencePolicy.rest.windowLevel.rawValue,
+      "the file picker must sit above the pinned rest overlay")
+  }
+
+  func testBothComposersRouteAttachmentSelectionThroughConversationAttachmentPicker() throws {
+    let overlayComposer = try source(
+      at: "Codescribe/Screens/Overlay/OverlayConversationComposer.swift")
+    XCTAssertTrue(
+      overlayComposer.contains("@State private var attachmentPicker = ConversationAttachmentPicker()"),
+      "overlay composer retains one ConversationAttachmentPicker")
+    XCTAssertTrue(
+      overlayComposer.contains(".onDisappear { attachmentPicker.cancel() }"),
+      "overlay composer cancels its active picker on disappear")
+    let overlayPick = try section(
+      of: overlayComposer, from: "private func pickAttachments()", to: "struct ComposerMicrophoneHintState")
+    XCTAssertTrue(
+      overlayPick.contains("attachmentPicker.present"),
+      "overlay pickAttachments routes through attachmentPicker.present")
+    XCTAssertFalse(
+      overlayPick.contains("NSOpenPanel()"),
+      "overlay pickAttachments must not instantiate an untracked NSOpenPanel directly")
+
+    let chatComposer = try source(at: "Codescribe/Screens/AgentChat/Composer.swift")
+    XCTAssertTrue(
+      chatComposer.contains("@State private var attachmentPicker = ConversationAttachmentPicker()"),
+      "main chat composer retains one ConversationAttachmentPicker")
+    XCTAssertTrue(
+      chatComposer.contains("attachmentPicker.cancel()"),
+      "main chat composer cancels its active picker on disappear")
+    let chatPick = try section(
+      of: chatComposer, from: "private func pickAttachments()", to: "// MARK: Paste")
+    XCTAssertTrue(
+      chatPick.contains("attachmentPicker.present"),
+      "main chat pickAttachments routes through attachmentPicker.present")
+    XCTAssertFalse(
+      chatPick.contains("NSOpenPanel()"),
+      "main chat pickAttachments must not instantiate an untracked NSOpenPanel directly")
+  }
 }

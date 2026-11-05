@@ -1284,8 +1284,7 @@ async fn a_roster_row_carries_the_codex_thread_of_a_dead_follower() {
         .expect("binding");
     let bridge = dir.path().join("bridge");
     std::fs::create_dir_all(bridge.join("leases")).expect("leases dir");
-    let leon_lease =
-        active_names::follower_lease_id("codex", THREAD).expect("leon lease id");
+    let leon_lease = active_names::follower_lease_id("codex", THREAD).expect("leon lease id");
     std::fs::write(
             bridge.join("leases").join(format!("{leon_lease}.json")),
             format!(
