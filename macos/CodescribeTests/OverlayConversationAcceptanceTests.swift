@@ -1406,21 +1406,32 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       try png.write(
         to: FileManager.default.temporaryDirectory
           .appendingPathComponent("codescribe-conversation-\(scheme).png"))
-      var warmCount = 0
-      var warmBorderCount = 0
-      var warmBorderX: Double = 0
+      var outlineCount = 0
+      var outlineBorderCount = 0
+      var outlineBorderX: Double = 0
       var neutralCount = 0
       var neutralLeft = 0
       var neutralRight = 0
-      func isWarm(_ x: Int, _ y: Int) -> Bool {
+      // The user's bubble wears a secondary-ink hairline (no brand colour:
+      // the brand is for listening only); the agent's keeps the panel edge.
+      // The hairline's rendered grey is the secondary label at the stroke
+      // strength over the shared neutral interior.
+      let agentFill = scheme == .dark ? 0.149 : 0.914
+      let ink = OverlayColorToken(
+        CSPalette.secondaryInk, in: OverlayAppearancePalette.resolve(scheme).appearance)
+      let strokeAlpha = ink.alpha * CSAlpha.selectionStroke
+      let inkGrey = Double((ink.rgb >> 16) & 0xFF) / 255
+      let outlineGrey = inkGrey * strokeAlpha + agentFill * (1 - strokeAlpha)
+      func isOutline(_ x: Int, _ y: Int) -> Bool {
         guard let color = bitmap.colorAt(x: x, y: y) else { return false }
-        return color.redComponent - color.greenComponent > 0.035
-          && color.greenComponent - color.blueComponent > 0.025
+        return abs(color.redComponent - outlineGrey) < 0.03
+          && abs(color.redComponent - color.greenComponent) < 0.03
+          && abs(color.greenComponent - color.blueComponent) < 0.03
       }
-      // Rendered interiors must match; the user's brand hairline stays sparse and on the right.
+      // Rendered interiors must match; the user's hairline stays sparse and on the right.
       // Inspect every physical x: a four-pixel grid can see just one rail of
-      // a one-pixel Retina outline. Continuous vertical edges isolate the
-      // bubble border from warm text, metadata and playback controls.
+      // a one-pixel Retina outline. A vertical run taller than a line of text
+      // isolates the bubble border from antialiased glyph stems of the same grey.
       for y in stride(from: 90, to: bitmap.pixelsHigh - 30, by: 4) {
         for x in 0..<bitmap.pixelsWide {
           guard let color = bitmap.colorAt(x: x, y: y) else {
@@ -1428,28 +1439,26 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
           }
           let r = color.redComponent
           let g = color.greenComponent
-          let b = color.blueComponent
-          if r - g > 0.035 && g - b > 0.025 {
-            warmCount += 1
-            if isWarm(x, y - 4), isWarm(x, y + 4) {
-              warmBorderCount += 1
-              warmBorderX += Double(x)
+          if isOutline(x, y) {
+            outlineCount += 1
+            if [-12, -8, -4, 4, 8, 12].allSatisfy({ isOutline(x, y + $0) }) {
+              outlineBorderCount += 1
+              outlineBorderX += Double(x)
             }
           }
-          let agentFill = scheme == .dark ? 0.149 : 0.914
           if abs(r - agentFill) < 0.018 && abs(r - g) < 0.03 {
             neutralCount += 1
             if x < bitmap.pixelsWide / 2 { neutralLeft += 1 } else { neutralRight += 1 }
           }
         }
       }
-      XCTAssertGreaterThan(warmCount, 10, "the human bubble retains its brand outline")
+      XCTAssertGreaterThan(outlineCount, 10, "the human bubble keeps its secondary-ink outline")
       XCTAssertGreaterThan(neutralLeft, 100, "agent bubble has a neutral interior")
       XCTAssertGreaterThan(neutralRight, 100, "human bubble has the same neutral interior")
-      XCTAssertLessThan(warmCount * 10, neutralCount, "orange is a hairline, never a filled bubble")
+      XCTAssertLessThan(outlineCount * 10, neutralCount, "the outline is a hairline, never a fill")
       let viewportMidpoint = Double(viewport.midX) * Double(bitmap.pixelsWide) / host.bounds.width
-      XCTAssertGreaterThan(warmBorderCount, 10, "the brand outline has visible vertical edges")
-      XCTAssertGreaterThan(warmBorderX / Double(max(1, warmBorderCount)), viewportMidpoint)
+      XCTAssertGreaterThan(outlineBorderCount, 10, "the outline has visible vertical edges")
+      XCTAssertGreaterThan(outlineBorderX / Double(max(1, outlineBorderCount)), viewportMidpoint)
 
     }
   }
