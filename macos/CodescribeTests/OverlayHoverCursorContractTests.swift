@@ -156,8 +156,11 @@ final class OverlayHoverCursorContractTests: XCTestCase {
 
       let disabled = AudioControlsFixture(palette: palette, sheet: shade.hex, state: .disabled)
       defer { disabled.close() }
+      // Muted ink is the system secondary label, translucent by itself; the
+      // disabled control draws it at 35 % of its own alpha.
       let expected = token(
-        OverlayColorToken(palette.mutedText.rgb, alpha: 0.35).composited(over: sheet))
+        OverlayColorToken(palette.mutedText.rgb, alpha: palette.mutedText.alpha * 0.35)
+          .composited(over: sheet))
       let disabledSquares = try disabled.squares()
       let disabledRest = try disabled.render()
       for (name, square) in zip(Self.audioNames, disabledSquares) {
