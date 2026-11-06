@@ -222,6 +222,9 @@ final class OverlayHintPanel {
   static let gap: CGFloat = 6
   /// Distance kept from the screen's visible edges.
   static let screenInset: CGFloat = 4
+  /// How far from its window's leading edge an anchor still counts as
+  /// hugging it; a quarter of the window's width when that is larger.
+  static let leadingEdgeReach: CGFloat = 36
 
   private var panel: NSPanel?
   private var controller: NSHostingController<AnyView>?
@@ -397,20 +400,20 @@ final class OverlayHintPanel {
   }
 
   /// Sidebar hints sit over the document, outside the rail's scroll clip.
+  /// The parent window's edges stand in for the anchor's only when the anchor
+  /// hugs the window's leading edge (a fiszka's name, the left column's rows).
+  /// An anchor in a right-hand split column keeps its hint beside itself, so
+  /// the card never jumps across the whole window to its far edge.
   static func frame(
     size: CGSize, leading anchor: NSRect, parentFrame: NSRect? = nil, within visible: NSRect
   ) -> NSRect {
-    // Next to the row it describes whenever the owning window has the room:
-    // in the wide Agents window the list is one column of many, and a hint
-    // hung off the window's far edge sat across the screen from its row
-    // (Maciej, 2026-11-06: "overlay podglądu całkiem poza oknem"). Only a
-    // window too narrow to hold it, a fiszka column, sends it outside.
-    var left = anchor.minX - gap - size.width
-    var right = anchor.maxX + gap
-    if let parentFrame {
-      if left < parentFrame.minX { left = min(left, parentFrame.minX - gap - size.width) }
-      if right + size.width > parentFrame.maxX { right = max(right, parentFrame.maxX + gap) }
+    let parent = parentFrame.flatMap { parent in
+      anchor.minX - parent.minX <= max(leadingEdgeReach, parent.width / 4) ? parent : nil
     }
+    let leadingEdge = min(anchor.minX, parent?.minX ?? anchor.minX)
+    let trailingEdge = max(anchor.maxX, parent?.maxX ?? anchor.maxX)
+    let left = leadingEdge - gap - size.width
+    let right = trailingEdge + gap
     // A column against the left screen edge previews on its right. Clamping
     // the left candidate onto the row used to cover the very control hovered.
     let x =

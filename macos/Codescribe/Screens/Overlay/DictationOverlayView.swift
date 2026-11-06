@@ -795,7 +795,10 @@ struct DictationOverlayView: View {
         let transcriptActionsWidth =
           transcriptActionsShown
           ? OverlayTranscriptActionsLayout.columnWidth(textScale: textScale) : 0
-        let conversationFolded = listOnScreen && state.agentsLayout == .agents
+        // With no conversation chosen the canvas has nothing to paint: the
+        // roster takes the window instead of leaving a blank pane beside it.
+        let conversationFolded =
+          listOnScreen && (state.agentsLayout == .agents || state.selectedConversation == nil)
         let conversationEdgeWidth = min(
           geometry.size.width,
           OverlayAgentDrawerLayout.conversationEdgeWidth(textScale: textScale))
@@ -1404,7 +1407,7 @@ struct DictationOverlayView: View {
     controls.showsRecordingButton = showsMicrophone
     controls.showsPreviewButton = showsPreview
     controls.onShowDictation = state.showTranscription
-    controls.onShowAgents = { state.showAgentMonitor() }
+    controls.onShowAgents = { state.showAgents() }
     controls.onPresentationSelect = state.setPresentationMode
     return controls
   }
@@ -1653,9 +1656,13 @@ struct DictationOverlayView: View {
       }
   }
 
+  /// The header's Agents control. Only the folded Fiszki header (mini and
+  /// the bar) routes it to the Intercom cards; the expanded window keeps its
+  /// smart Agents control beside Show transcription, which switches the
+  /// window between the transcription and its Agents view.
   @ViewBuilder
   private var agentRouterButton: some View {
-    if state.isVerticalIntercom {
+    if state.isVerticalIntercom && state.isCollapsed {
       Button(action: { state.toggleAgentSidebar() }) {
         OverlayMicrophoneGlyph(
           character: OverlayHeaderGlyph.agents,

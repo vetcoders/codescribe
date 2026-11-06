@@ -299,8 +299,16 @@ final class OverlayDividerFoldTests: XCTestCase {
       conversation, from: "ScrollViewReader { proxy in", to: ".onChange(of: replyNavigationID)")
     XCTAssertTrue(
       compact(body).contains(
-        "maxBubbleWidth: Self.bubbleCap( contentWidth: max(0, geometry.size.width - OverlayResizeHit.scrollbarInset), textScale: textScale)"
+        "maxBubbleWidth: Self.bubbleCap( contentWidth: max(0, geometry.size.width - scrollbarGutter), textScale: textScale, presentation: presentation)"
       ))
+    // The window's conversation reserves no gutter, so its bubbles keep the
+    // header card's 20 pt on both sides; only the Intercom keeps one.
+    XCTAssertTrue(
+      compact(conversation).contains(
+        "presentation == .standard ? 0 : OverlayResizeHit.scrollbarInset"))
+    XCTAssertTrue(compact(conversation).contains(".padding(.trailing, scrollbarGutter)"))
+    XCTAssertFalse(
+      compact(conversation).contains(".padding(.trailing, OverlayResizeHit.scrollbarInset)"))
   }
 
   @MainActor

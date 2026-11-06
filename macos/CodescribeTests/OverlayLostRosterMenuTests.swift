@@ -5,15 +5,21 @@ import XCTest
 /// Bounded source contracts. Native geometry and menu tracking need separate
 /// acceptance: these assertions never claim that a ZStack proves hit testing.
 final class OverlayLostRosterMenuTests: XCTestCase {
-  func testPreviewAndStateUseTheFullWidthBelowLayeredActions() throws {
+  func testPreviewAndStateSitBesideTheActionsWithoutBeingCovered() throws {
     let row = try OverlayLostBehaviorSource.section(
       OverlayLostBehaviorSource.overlay("OverlayChannelStatusView.swift"),
       from: "func channelRow(", to: "private func rosterRowLabel(")
     try OverlayLostBehaviorSource.ordered(
-      ["ZStack(alignment: .topTrailing) {", "VStack(alignment: .leading, spacing: 2) {",
+      ["HStack(alignment: .top, spacing: 6) {", "VStack(alignment: .leading, spacing: 2) {",
         "contentOnly: true", "rosterRowState(channel, receiptText: receiptText)",
         "} .frame(maxWidth: .infinity, alignment: .leading)",
         "compactAgentActions(for: channel)"], in: row)
+    // The audio pair has its own column, so nothing covers the preview and
+    // no fade hides the text it used to sit on.
+    XCTAssertFalse(row.contains("ZStack(alignment: .topTrailing)"))
+    XCTAssertFalse(row.contains("LinearGradient("))
+    // The row shows the preview inline; it carries no hover preview card.
+    XCTAssertFalse(row.contains("OverlayRosterMessageHint("))
   }
 
   func testStatePanelAndSyncRemainOutsideTheAudioAndMoreControls() throws {

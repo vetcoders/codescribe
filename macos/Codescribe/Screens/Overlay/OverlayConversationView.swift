@@ -275,14 +275,38 @@ struct OverlayConversationView: View {
   private var visibleNavigationHeight: CGFloat { hidesNavigation ? 0 : navigationHeight }
 
   /// The bubble cap follows ⌘+ text scale until the window's own bound wins.
-  /// The window bound keeps a margin on the far side so leading and trailing
-  /// bubbles stay told apart; at 0.82 that margin was a sixth of the column
-  /// and left an empty band beside the docked drawer (Founder, 2026-10-18).
-  /// 0.92 of the text column is the same cue at a tenth of the width. The
-  /// absolute 660 pt is a reading measure, not a margin, and does not move.
-  nonisolated static func bubbleCap(contentWidth: CGFloat, textScale: CGFloat) -> CGFloat {
-    max(0, min(660 * textScale, (contentWidth - 40) * 0.92))
+  /// The absolute 660 pt is a reading measure, not a margin, and does not move.
+  /// In the window (`.standard`) the bubbles share the measure of the header
+  /// card and the composer: the column inside the same 20 pt insets, never
+  /// narrower than 180 pt. The Intercom keeps a margin on the far side so
+  /// leading and trailing bubbles stay told apart; at 0.82 that margin was a
+  /// sixth of the column and left an empty band beside the docked drawer
+  /// (Founder, 2026-10-18). 0.92 of the text column is the same cue at a
+  /// tenth of the width.
+  nonisolated static func bubbleCap(
+    contentWidth: CGFloat, textScale: CGFloat, presentation: OverlayConversationPresentation
+  ) -> CGFloat {
+    switch presentation {
+    case .standard:
+      return max(0, min(660 * textScale, max(180, contentWidth - 40)))
+    case .intercom:
+      return max(0, min(660 * textScale, (contentWidth - 40) * 0.92))
+    }
   }
+
+  /// The window's conversation reserves no scrollbar gutter: the autohiding
+  /// scroller floats, and the bubbles keep the header card's 20 pt on both
+  /// sides. The Intercom keeps its gutter beside the tighter card.
+  private var scrollbarGutter: CGFloat {
+    presentation == .standard ? 0 : OverlayResizeHit.scrollbarInset
+  }
+
+  /// Where the header card's glass starts. Rows scroll beneath the card, but
+  /// never into the clear gap between the window's header and the card.
+  private var messageClipTop: CGFloat {
+    topInset + (hidesNavigation ? 0 : Self.navigationTopPadding)
+  }
+  private static let navigationTopPadding: CGFloat = 4
 
   /// The newest receiving user turn owns the activity cue, independently of ACKs.
   var activeCaptureMessageID: String? {
@@ -295,8 +319,14 @@ struct OverlayConversationView: View {
       ScrollViewReader { proxy in
         trackedMessages(
           maxBubbleWidth: Self.bubbleCap(
-            contentWidth: max(0, geometry.size.width - OverlayResizeHit.scrollbarInset),
-            textScale: textScale)
+            contentWidth: max(0, geometry.size.width - scrollbarGutter),
+            textScale: textScale, presentation: presentation)
+        )
+        // The window's rows stop at the header card's top edge: nothing
+        // shows through the clear gap above the floating card. Only the top
+        // is clipped; the rows still reach under the composer and the card.
+        .modifier(
+          OverlayConversationTopClip(top: presentation == .standard ? messageClipTop : nil)
         )
         .onChange(of: replyNavigationID) { _, id in
           guard let id else { return }
@@ -314,7 +344,7 @@ struct OverlayConversationView: View {
           orderedMessages.isEmpty ? "empty" : "rows",
         ])
 
-        .padding(.trailing, OverlayResizeHit.scrollbarInset)
+        .padding(.trailing, scrollbarGutter)
         // Nothing above the rows is viewport space: the window's inset and
         // the header card are glass floating over the scrolling text, as the
         // composer is. The rows take both as a content margin and scroll
@@ -1336,6 +1366,40 @@ struct OverlayNamePillGlass: ViewModifier {
     } else {
       content.background(.regularMaterial, in: Capsule())
     }
+  }
+}
+
+/// Clips the window conversation's rows above one line only: the top edge of
+/// its header card. Sides and bottom keep reaching past the list's frame, so
+/// rows still scroll beneath the composer and the card's glass. A nil line
+/// leaves the content untouched (the Intercom).
+private struct OverlayConversationTopClip: ViewModifier {
+  let top: CGFloat?
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let top {
+      content.clipShape(OverlayTopEdgeClipShape(top: top))
+    } else {
+      content
+    }
+  }
+}
+
+private struct OverlayTopEdgeClipShape: Shape {
+  var top: CGFloat
+
+  var animatableData: CGFloat {
+    get { top }
+    set { top = newValue }
+  }
+
+  func path(in rect: CGRect) -> Path {
+    let reach: CGFloat = 10_000
+    return Path(
+      CGRect(
+        x: rect.minX - reach, y: rect.minY + top,
+        width: rect.width + 2 * reach, height: max(0, rect.height - top) + reach))
   }
 }
 

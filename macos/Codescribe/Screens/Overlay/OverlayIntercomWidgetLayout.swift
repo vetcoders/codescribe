@@ -1,4 +1,5 @@
 import AppKit
+import os
 
 enum IntercomContentTier: String, Codable, CaseIterable, Sendable {
   case icon, name, actions
@@ -83,6 +84,56 @@ struct IntercomRowControls: Equatable {
   let marks: Bool
 
   static let all = IntercomRowControls(slots: 3, marks: true)
+}
+
+/// The text measurements behind `IntercomContentMetrics.compactPreviewLayout`.
+/// They depend on the text scale alone, while the gate runs on every card
+/// body evaluation; TextKit layout managers and CoreText string measurement
+/// are paid once per scale and then read back.
+struct IntercomPreviewTypography: Equatable, Sendable {
+  /// "Abc…" in the message body font: the narrowest readable preview.
+  let readableWordWidth: CGFloat
+  /// "Message preview" in the body font: the measure a bubble must keep.
+  let readableMessageWidth: CGFloat
+  let lineHeight: CGFloat
+  let metadataLineHeight: CGFloat
+  let editorHeightLimit: CGFloat
+  let composerHeight: CGFloat
+  let composerWidth: CGFloat
+  let minimumReadableConversationHeight: CGFloat
+
+  private static let cache = OSAllocatedUnfairLock(
+    initialState: [CGFloat: IntercomPreviewTypography]())
+
+  static func measured(scale: CGFloat) -> IntercomPreviewTypography {
+    if let cached = cache.withLock({ $0[scale] }) { return cached }
+    let measured = IntercomPreviewTypography(scale: scale)
+    cache.withLock { entries in
+      // Text scale is a short list of user steps; a long tail means drift.
+      if entries.count >= 32 { entries.removeAll() }
+      entries[scale] = measured
+    }
+    return measured
+  }
+
+  private init(scale: CGFloat) {
+    let font = NSFont.systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)
+    let layout = NSLayoutManager()
+    readableWordWidth = ("Abc…" as NSString).size(withAttributes: [.font: font]).width
+    readableMessageWidth =
+      ("Message preview" as NSString).size(withAttributes: [.font: font]).width
+    lineHeight = ceil(layout.defaultLineHeight(for: font))
+    metadataLineHeight = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
+    editorHeightLimit = 28 * scale
+    // The shared composer owns the stacked editor/action-row measurements.
+    // Only ConversationView's external insets belong to this admission gate.
+    composerHeight =
+      ComposerControlMetrics.intercomComposerHeight(
+        editorHeight: editorHeightLimit, scale: scale) + 6 + 8
+    composerWidth = ComposerControlMetrics.intercomComposerMinimumWidth(scale: scale) + 2 * 12
+    minimumReadableConversationHeight =
+      OverlayIntercomWidgetLayout.minimumReadableConversationHeight(scale: scale)
+  }
 }
 
 /// Measures the same fonts and slots painted by cardHeader. Resizing selects
@@ -185,44 +236,34 @@ struct IntercomContentMetrics: Equatable {
   /// A short preview precedes the input. Mounting the complete conversation
   /// also needs its route, footer, bubble/list insets and readable message text;
   /// a bare line left above the editor cannot accommodate that renderer.
+  /// Every card body asks this on each observation tick, so the typography
+  /// is measured once per text scale (`IntercomPreviewTypography`) and the
+  /// gate itself is arithmetic: no TextKit layout manager per body.
   func compactPreviewLayout(width: CGFloat, cardHeight: CGFloat) -> IntercomCompactPreviewLayout? {
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return nil }
     let scale = nameFontSize / 11
-    let font = NSFont.systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)
-    let previewReadableWidth = ("Abc…" as NSString).size(withAttributes: [.font: font]).width
-    guard width - 24 >= previewReadableWidth else { return nil }
-    let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
-    let contextFont = NSFont.systemFont(ofSize: 10 * scale)
-    let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
+    let type = IntercomPreviewTypography.measured(scale: scale)
+    guard width - 24 >= type.readableWordWidth else { return nil }
     let available =
       cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       - OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
       - audioFooterHeight(width: width, cardHeight: cardHeight)
     let minimum =
-      lineHeight + metadataLine
+      type.lineHeight + type.metadataLineHeight
       + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
       + OverlayIntercomWidgetLayout.compactPreviewSpacing
     guard available >= minimum else { return nil }
-    let readableWidth = ("Message preview" as NSString).size(withAttributes: [.font: font]).width
-    let editorHeightLimit = 28 * scale
-    // The shared composer owns the stacked editor/action-row measurements.
-    // Only ConversationView's external insets belong to this admission gate.
-    let composerHeight =
-      ComposerControlMetrics.intercomComposerHeight(
-        editorHeight: editorHeightLimit, scale: scale) + 6 + 8
-    let composerWidth = ComposerControlMetrics.intercomComposerMinimumWidth(scale: scale) + 2 * 12
     // The full renderer caps its bubbles more narrowly than the passive preview.
     // Preserve a readable text measure inside the bubble's own 12pt padding too.
     let readableConversationWidth =
       OverlayConversationView.bubbleCap(
-        contentWidth: width, textScale: scale) - 2 * 12
+        contentWidth: width, textScale: scale, presentation: .intercom) - 2 * 12
     return IntercomCompactPreviewLayout(
       height: available,
-      showsComposer: width >= composerWidth
-        && readableConversationWidth >= readableWidth
-        && available >= OverlayIntercomWidgetLayout.minimumReadableConversationHeight(scale: scale)
-          + composerHeight,
-      composerEditorHeightLimit: editorHeightLimit)
+      showsComposer: width >= type.composerWidth
+        && readableConversationWidth >= type.readableMessageWidth
+        && available >= type.minimumReadableConversationHeight + type.composerHeight,
+      composerEditorHeightLimit: type.editorHeightLimit)
   }
 
   /// A card stretches with the gesture, from one row up to the space below the
@@ -277,8 +318,10 @@ enum OverlayIntercomWidgetLayout {
 
   static func controlHeight(scale: CGFloat) -> CGFloat { rowHeight * max(1, scale) }
 
+  /// The 10 pt metadata line plus its padding; read from the per-scale
+  /// typography so card bodies never build a layout manager for it.
   static func contextStripHeight(scale: CGFloat) -> CGFloat {
-    ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 10 * scale))) + 6
+    IntercomPreviewTypography.measured(scale: scale).metadataLineHeight + 6
   }
 
   /// Below this width a middle-truncated descriptor on the name line stops
