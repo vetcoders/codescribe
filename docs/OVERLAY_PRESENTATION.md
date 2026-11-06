@@ -103,8 +103,20 @@ agents read as the resting state and made the live ones look bold).
 
 The compact receipt mark describes the newest completed user delivery to the
 exact frozen recipient. Delivered and read use the same compact double-check
-shape: muted ink means delivered; full body ink means read or the canonical agent
+shape in the label ink, read like text (L8, 2026-11-06; the muted ink of
+"delivered" measured below 4:1 on the light sheets): the thin stroke means
+delivered, the heavier stroke means read or the canonical agent
 acknowledgment.
+
+Readability rule for the bar and the roster (L8, 2026-11-06): text to read
+wears the label ink (`primaryText`), secondary text included — timestamps,
+descriptors, previews, row states, hints, the bar's timer and the take's
+detail lines; hierarchy comes from size and weight. `ChannelRosterStyle`
+(`palette.roster`) owns the roster's text and receipt inks. Icons at rest
+(the audio controls, search, sort, chevrons, the crossed antenna, the waiting
+spinner) keep the system's secondary label, which measures 3.6–3.9:1 on the
+light sheets and meets the 3:1 non-text floor. The hover card's muted channel
+0 line and Do not disturb stay muted: there the tone is the state.
 Queue admission and provider acceptance are not delivered/read evidence.
 Skipped and unreceipted deliveries keep distinct marks and explanations; a
 message still held for withdrawal says "Held" under the preview and wears no

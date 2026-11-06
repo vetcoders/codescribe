@@ -40,7 +40,7 @@ struct OverlayAgentRosterLabel: View {
             if let channel {
               Text(verbatim: channel)
                 .font(.system(size: 11 * textScale, weight: .medium, design: .monospaced))
-                .foregroundStyle(palette.mutedText.color)
+                .foregroundStyle(palette.roster.secondaryText.color)
                 .fixedSize()
                 .accessibilityIdentifier("overlay-agent-digit-\(channel)")
             }
@@ -88,7 +88,7 @@ struct OverlayAgentRosterLabel: View {
             if let timestamp {
               MessageTimestampLabel(date: timestamp, compact: true)
                 .font(.system(size: 11 * textScale))
-                .foregroundStyle(palette.mutedText.color)
+                .foregroundStyle(palette.roster.secondaryText.color)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .accessibilityIdentifier(
@@ -100,7 +100,7 @@ struct OverlayAgentRosterLabel: View {
         if !headerOnly, let descriptor, let channel {
           Text(verbatim: descriptor)
             .font(.system(size: 11 * textScale))
-            .foregroundStyle(palette.mutedText.color)
+            .foregroundStyle(palette.roster.secondaryText.color)
             .lineLimit(1)
             .truncationMode(.middle)
             .help(Text(verbatim: descriptor))
@@ -110,7 +110,7 @@ struct OverlayAgentRosterLabel: View {
         if !headerOnly, let preview {
           Text(verbatim: preview)
             .font(.system(size: 13 * textScale))
-            .foregroundStyle(unreadCount > 0 ? palette.bodyText.color : palette.mutedText.color)
+            .foregroundStyle(unreadCount > 0 ? palette.bodyText.color : palette.roster.secondaryText.color)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -203,8 +203,8 @@ private struct OverlayRosterReceiptMark: View {
           .font(.system(size: 11 * textScale, weight: .medium))
       }
     }
-    // Read/ACK is label ink at the heavier stroke; delivery stays muted.
-    .foregroundStyle(receipt.isRead ? palette.primaryText.color : palette.mutedText.color)
+    // Every receipt is read like text (L8): the label ink; the heavier stroke says read.
+    .foregroundStyle(palette.roster.receipt.color)
     .help(Text(verbatim: receipt.helpText))
     .accessibilityLabel(Text(verbatim: receipt.helpText))
     .accessibilityIdentifier("overlay-agent-receipt-\(receipt.symbol)")

@@ -3609,15 +3609,20 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       XCTAssertEqual(style.colorScheme, palette.appearance == .dark ? .dark : .light)
       XCTAssertEqual(style.primaryText, palette.primaryText)
       XCTAssertEqual(style.bodyText, palette.bodyText)
-      XCTAssertEqual(style.mutedText, palette.mutedText)
+      XCTAssertEqual(palette.roster, style, "the roster's views read the same inks")
 
+      // The inks the roster draws: receipts wear the receipt ink and the
+      // header slot's glyphs (no longer the orange and green of before
+      // 2026-11-05). The waiting spinner is an icon at rest: the 3:1
+      // non-text floor (L8, 2026-11-06).
       for (role, foreground, minimum) in [
         ("channel name", style.primaryText, 4.5),
         ("receipt and dead follower", style.bodyText, 4.5),
-        ("secondary text", style.mutedText, 4.5),
+        ("secondary text", style.secondaryText, 4.5),
+        ("delivered and read marks", style.receipt, 4.5),
         ("open microphone", palette.listeningStatus, 4.5),
-        ("queued receipt", palette.processingStatus, 4.5),
-        ("confirmed receipt", palette.successStatus, 4.5),
+        ("waiting for receipt glyph", OverlayAgentGlyph.awaitingReceipt.tone(in: palette), 3.0),
+        ("confirmed receipt glyph", OverlayAgentGlyph.acknowledged.tone(in: palette), 4.5),
         ("toggle failure", palette.errorStatus, 4.5),
       ] {
         let ratio = OverlayColorToken.contrastRatio(
