@@ -762,6 +762,22 @@ final class OverlayState {
     onPlacementChanged?()
   }
 
+  /// The header menu's Free motion switch: on is `selectFreeMotion()`, off
+  /// returns the panel to the last chosen anchor.
+  func setFreeMotion(_ on: Bool) {
+    if on {
+      selectFreeMotion()
+    } else {
+      selectPlacementAnchor(placementAnchor)
+    }
+  }
+
+  /// The anchor the header menu marks as chosen: the selected one while Free
+  /// motion is off, none while it is on.
+  func placementChosen(_ anchor: OverlayAnchor) -> Bool {
+    !freeMotion && placementAnchor == anchor
+  }
+
   /// The window already reached this point through a user drag. Save its origin
   /// for an explicit Free motion choice while preserving the selected anchor.
   func recordUserDrag(at origin: NSPoint) {

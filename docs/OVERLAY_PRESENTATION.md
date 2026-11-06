@@ -737,6 +737,20 @@ placement command still use the selected anchor. Direct edge dragging keeps its
 normal opposite-edge behavior. Use the existing header-frame preference for
 geometry evidence; do not add a second anchor store.
 
+The header's secondary-click menu (`OverlayHeaderMenu`, every header form)
+offers placement as native menu toggles, so the menu draws the checkmark (L9,
+2026-11-06; a checkmark drawn as a `Label` image is not the item's state and
+macOS 26 menus showed none). The six anchors under **Anchor** carry one
+checkmark, on the chosen anchor, while Free motion is off and none while it is
+on (`OverlayState.placementChosen`). Choosing an anchor, the chosen one
+included, places the panel there and leaves Free motion
+(`selectPlacementAnchor`). **Free motion** is a switch with its own checkmark
+(`OverlayState.setFreeMotion`): on keeps the panel where it is dragged
+(`selectFreeMotion`), off returns it to the last chosen anchor
+(`selectPlacementAnchor(placementAnchor)`, which fires `onPlacementChanged`).
+Dragging and the saved origin (`OverlayPlacement`) are unchanged. The auto-fold
+submenu uses the same native toggles.
+
 ## Integration and visual acceptance
 
 This document is not proof of a running design. On 2026-10-20 the Founder

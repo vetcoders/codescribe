@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Overlay bar: the right-click menu shows a checkmark on the chosen position, and **Free motion** is a switch with its own checkmark. Turning Free motion off puts the overlay back on the last chosen position; choosing a position still turns Free motion off. Before, no position showed a checkmark and Free motion looked as if it did nothing.
 - Overlay bar: an agent that has stopped reading its messages shows the green dot with the bold "!" on its hover card, as in the agents list and the Bus window, instead of the "zzz" that means Do not disturb.
 - Overlay: an agent whose session is gone is greyed out more lightly on the bar, in the agents list under ✦ and in the Bus window (65 % opacity, half its colour, instead of 45 % and fully grey), so it still reads as gone without making the live agents look bold beside it.
 - Overlay bar: an agent whose session is gone shows only its number in a circle on the bar, without its name, in the single row and in the two-row bar, still greyed out; the bar gets narrower by the name. Its name stays on the hover card, in the agents list under ✦ and in the Bus window, and clicking it works as before.

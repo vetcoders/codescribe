@@ -79,6 +79,42 @@ final class OverlayPlacementTests: XCTestCase {
     XCTAssertEqual(clamped, inside)
   }
 
+  /// The header menu's placement state (L9, 2026-11-06): one anchor is
+  /// chosen while Free motion is off and none while it is on; switching Free
+  /// motion off returns to the last chosen anchor and places the panel.
+  @MainActor
+  func testFreeMotionSwitchReturnsToTheLastChosenAnchor() {
+    let oldAnchor = OverlayPlacement.anchor
+    let oldFreeMotion = OverlayPlacement.freeMotion
+    defer {
+      OverlayPlacement.anchor = oldAnchor
+      OverlayPlacement.freeMotion = oldFreeMotion
+    }
+    let state = OverlayState.previewListening()
+    var placements = 0
+    state.onPlacementChanged = { placements += 1 }
+    state.selectPlacementAnchor(.bottomRight)
+    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChosen), [.bottomRight])
+
+    state.setFreeMotion(true)
+    XCTAssertTrue(state.freeMotion)
+    XCTAssertTrue(OverlayPlacement.freeMotion)
+    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChosen), [])
+
+    let before = placements
+    state.setFreeMotion(false)
+    XCTAssertFalse(state.freeMotion)
+    XCTAssertFalse(OverlayPlacement.freeMotion)
+    XCTAssertEqual(state.placementAnchor, .bottomRight)
+    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChosen), [.bottomRight])
+    XCTAssertEqual(placements, before + 1, "off places the panel on the anchor")
+
+    state.setFreeMotion(true)
+    state.selectPlacementAnchor(.topCenter)
+    XCTAssertFalse(state.freeMotion, "choosing an anchor still leaves Free motion")
+    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChosen), [.topCenter])
+  }
+
   @MainActor
   func testAnchorSelectionMovesTheRealPanelAndFreeMotionPersistsADrag() throws {
     let oldAnchor = OverlayPlacement.anchor
