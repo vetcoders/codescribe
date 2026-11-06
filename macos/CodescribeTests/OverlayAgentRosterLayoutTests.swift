@@ -383,12 +383,9 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         "let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
     XCTAssertTrue(instanceHeader.contains("OverlayIntercomAudioControls("))
     XCTAssertTrue(instanceHeader.contains("conversation: current ? conversation : nil"))
-    let dim = try sourceSection(
-      "OverlayChannelStatusView.swift", from: "struct OverlayDisconnectedRowDim: ViewModifier {",
-      to: "struct OverlayRowHoverHighlight: ViewModifier {")
-    XCTAssertEqual(OverlayDisconnectedRowDim.opacity, 0.45)
-    XCTAssertTrue(dim.contains(".opacity(disconnected ? Self.opacity : 1)"))
-    XCTAssertTrue(dim.contains(".grayscale(disconnected ? 1 : 0)"))
+    // A gone agent fades but keeps half its colour (L5 variant 3).
+    XCTAssertEqual(OverlayDisconnectedRowDim.opacity, 0.65)
+    XCTAssertEqual(OverlayDisconnectedRowDim.grayscale, 0.5)
     let marks = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayReceptionMarks: View {",
       to: "struct OverlayChannelStatusView: View {")

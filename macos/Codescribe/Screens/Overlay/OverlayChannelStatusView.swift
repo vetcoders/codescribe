@@ -248,14 +248,20 @@ struct OverlayMicrophoneGlyph: View {
 /// faded, so the roster shows at a glance who cannot hear (Maciej,
 /// 2026-10-17: "takie sesje na starcie dawać od razu wyszarzonymi"). The
 /// audio pair sleeps; the cross and reception policy remain actionable.
+/// The one owner of that dim for the bar's pills, the agents list under ✦
+/// and the Bus window's roster. Lighter since L5 (2026-11-06): at 45 % and
+/// fully grey a gone agent beside live ones read as the default and the
+/// live ones as bold; 65 % with half the colour still reads as gone without
+/// looking like the resting state.
 struct OverlayDisconnectedRowDim: ViewModifier {
-  static let opacity: Double = 0.45
+  static let opacity: Double = 0.65
+  static let grayscale: Double = 0.5
   let disconnected: Bool
 
   func body(content: Content) -> some View {
     content
       .opacity(disconnected ? Self.opacity : 1)
-      .grayscale(disconnected ? 1 : 0)
+      .grayscale(disconnected ? Self.grayscale : 0)
   }
 }
 

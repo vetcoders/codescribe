@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Overlay: an agent whose session is gone is greyed out more lightly on the bar, in the agents list under ✦ and in the Bus window (65 % opacity, half its colour, instead of 45 % and fully grey), so it still reads as gone without making the live agents look bold beside it.
 - Overlay bar: an agent whose session is gone shows only its number in a circle on the bar, without its name, in the single row and in the two-row bar, still greyed out; the bar gets narrower by the name. Its name stays on the hover card, in the agents list under ✦ and in the Bus window, and clicking it works as before.
 - Overlay bar: an agent's hover card names channel 0 by its name instead of "In channel 0" / "Not in channel 0" in violet. While the agent hears the channel the line is the antenna and the name (by default **Shared**, PL **Wspólny**) in the regular ink; while it does not, the crossed antenna and the name in grey; Do not disturb keeps the moon. VoiceOver reads "Hears: Shared (channel 0)" or "Does not hear: Shared (channel 0)".
 - Overlay bar: an agent's hover card shows the same presence dot as the agents list under ✦ and the Bus window: green while the agent is online, violet and blinking while its reply plays aloud (violet without blinking under Reduce Motion), a grey ring when its session is gone and a grey "?" without data. Before, the dot before **Online** was black or white and never showed that the agent was speaking.

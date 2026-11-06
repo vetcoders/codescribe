@@ -96,6 +96,10 @@ name: a moon while Do not disturb is on, and a crossed antenna while the agent
 is outside channel zero. These are passive projections of the existing
 `OverlayBroadcastPolicyLedger`, not another policy writer. Disconnected rows
 dim without adding a Disconnected text line and remain available for history.
+One modifier owns that dim for the bar's pills, this list and the agents list
+under ✦ (`OverlayDisconnectedRowDim`): 65 % opacity and half the colour (L5
+variant 3, 2026-11-06; until then 45 % and fully grey, which beside live
+agents read as the resting state and made the live ones look bold).
 
 The compact receipt mark describes the newest completed user delivery to the
 exact frozen recipient. Delivered and read use the same compact double-check
