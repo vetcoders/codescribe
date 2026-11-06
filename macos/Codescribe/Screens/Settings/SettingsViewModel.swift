@@ -943,12 +943,13 @@ struct LLMLaneModel {
     !modelOptions.isEmpty && ["fresh", "cached"].contains(discovery.status)
   }
 
-  /// `unavailableReason` arrives from the core and cannot be localized here.
+  /// The core sends why the lane is unavailable as data; the sentence is
+  /// `CsLlmLaneUnavailable.userFacingSentence`.
   var availabilityDescription: String {
     guard credentialAccessResolved else { return String(localized: "Checking provider access…") }
     if credentialAccessError != nil { return String(localized: "Provider access unavailable") }
     if !runtime.available {
-      return runtime.unavailableReason
+      return runtime.unavailable?.userFacingSentence
         ?? String(localized: "unavailable", comment: "Lane availability, lower case")
     }
     // Presence, not validity: a stored key may still be rejected, and a
@@ -4373,7 +4374,7 @@ final class SettingsViewModel: ObservableObject {
           keyPresent: true,
           accountAuth: false,
           available: true,
-          unavailableReason: nil
+          unavailable: nil
         )
       }
     )

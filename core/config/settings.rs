@@ -748,6 +748,72 @@ impl fmt::Debug for RuntimeLlmCredential {
     }
 }
 
+/// Why a sealed LLM lane cannot send a request. Each variant is one branch of
+/// lane resolution and carries the facts its sentence needs. `Display` is the
+/// English diagnostic for logs and error chains; the interface sentence is
+/// composed in Swift from the variant (`docs/LOCALIZATION.md` §5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeLlmLaneUnavailable {
+    /// The lane points at a Custom provider id the registry no longer has.
+    CustomProviderMissing { custom_id: String },
+    /// The provider has no model from env, settings or a vendor default.
+    ModelMissing { provider: String },
+    /// The provider needs a credential, and neither the Keychain account nor a
+    /// supported signed-in provider account is available.
+    CredentialMissing {
+        lane: RuntimeLlmLaneKind,
+        provider: String,
+        endpoint: String,
+        key_account: String,
+    },
+    /// Cloud Code Assist accepts only Google account credentials or
+    /// authorized-user ADC; an API key cannot authenticate it.
+    CloudCodeAssistAccountRequired { lane: RuntimeLlmLaneKind },
+    /// The ACP launch program or cwd is not an absolute path, or argv carries NUL.
+    AcpLaunchInvalid,
+    /// ACP needs explicit absolute `system.agent_workspace_roots`.
+    AcpWorkspaceRootsMissing,
+    /// The ACP cwd is outside every configured Agent workspace root.
+    AcpCwdOutsideWorkspace,
+}
+
+impl fmt::Display for RuntimeLlmLaneUnavailable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CustomProviderMissing { custom_id } => {
+                write!(formatter, "custom provider `{custom_id}` no longer exists")
+            }
+            Self::ModelMissing { provider } => {
+                write!(formatter, "no model selected for provider {provider}")
+            }
+            Self::CredentialMissing {
+                lane,
+                provider,
+                endpoint,
+                key_account,
+            } => write!(
+                formatter,
+                "The {} lane points at {provider} ({endpoint}), which requires a credential, but neither Keychain account {key_account} nor a supported signed-in provider account is available.",
+                lane.as_str()
+            ),
+            Self::CloudCodeAssistAccountRequired { lane } => write!(
+                formatter,
+                "The {} lane uses Cloud Code Assist, which requires locally provisioned Google account credentials or authorized-user ADC. A public Gemini API key cannot authenticate this endpoint.",
+                lane.as_str()
+            ),
+            Self::AcpLaunchInvalid => formatter.write_str(
+                "ACP requires absolute program/cwd paths and literal argv without NUL or traversal",
+            ),
+            Self::AcpWorkspaceRootsMissing => formatter.write_str(
+                "ACP requires explicit absolute system.agent_workspace_roots; home expansion and process cwd are not implicit grants",
+            ),
+            Self::AcpCwdOutsideWorkspace => {
+                formatter.write_str("ACP cwd must be inside a configured Agent workspace root")
+            }
+        }
+    }
+}
+
 /// One fully resolved LLM lane. Provider (reference, wire, endpoint), model,
 /// and account identity are immutable. Only the secret behind that account is
 /// refreshed at the explicit request boundary through
@@ -759,11 +825,11 @@ pub struct RuntimeLlmLane {
     model: String,
     credential: RuntimeLlmCredential,
     available: bool,
-    unavailable_reason: Option<String>,
+    unavailable: Option<RuntimeLlmLaneUnavailable>,
     /// Sealed topology fault (no model, vanished custom provider). Unlike the
-    /// credential part of `unavailable_reason`, a later Keychain save cannot
+    /// credential part of `unavailable`, a later Keychain save cannot
     /// repair it without a new settings generation.
-    configuration_fault: Option<String>,
+    configuration_fault: Option<RuntimeLlmLaneUnavailable>,
     /// The level requests on this lane ask for. Formatting always carries one
     /// (default `none`); the Agent lane carries one only when the user chose it.
     reasoning: Option<crate::llm::provider::ReasoningEffort>,
@@ -776,16 +842,16 @@ impl RuntimeLlmLane {
         provider: ResolvedProvider,
         model: String,
         credential: RuntimeLlmCredential,
-        configuration_fault: Option<String>,
-        unavailable_reason: Option<String>,
+        configuration_fault: Option<RuntimeLlmLaneUnavailable>,
+        unavailable: Option<RuntimeLlmLaneUnavailable>,
     ) -> Self {
         Self {
             lane,
             provider,
             model,
             credential,
-            available: unavailable_reason.is_none(),
-            unavailable_reason,
+            available: unavailable.is_none(),
+            unavailable,
             configuration_fault,
             reasoning: None,
             acp: None,
@@ -794,19 +860,19 @@ impl RuntimeLlmLane {
 
     pub(super) fn with_acp(
         mut self,
-        configuration: Result<RuntimeAcpConfiguration, String>,
+        configuration: Result<RuntimeAcpConfiguration, RuntimeLlmLaneUnavailable>,
     ) -> Self {
         match configuration {
             Ok(configuration) => {
                 self.model = configuration.command.program.clone();
                 self.acp = Some(configuration);
                 self.configuration_fault = None;
-                self.unavailable_reason = None;
+                self.unavailable = None;
                 self.available = true;
             }
             Err(reason) => {
                 self.configuration_fault = Some(reason.clone());
-                self.unavailable_reason = Some(reason);
+                self.unavailable = Some(reason);
                 self.available = false;
             }
         }
@@ -898,8 +964,9 @@ impl RuntimeLlmLane {
                 && self.provider.wire != WireFamily::GoogleGenerateContent)
     }
 
-    pub fn unavailable_reason(&self) -> Option<&str> {
-        self.unavailable_reason.as_deref()
+    /// Why the lane could not send a request when it was sealed.
+    pub fn unavailable(&self) -> Option<&RuntimeLlmLaneUnavailable> {
+        self.unavailable.as_ref()
     }
 
     /// The one request-time verdict for this lane: a sealed topology fault, or
@@ -907,21 +974,26 @@ impl RuntimeLlmLane {
     /// key-optional endpoint). `None` means a request can be sent. Every
     /// availability gate and request sender reads this, so a lane without a
     /// model can never look ready.
-    pub fn request_unavailable_reason(&self) -> Option<String> {
+    pub fn request_unavailable(&self) -> Option<RuntimeLlmLaneUnavailable> {
         if let Some(fault) = &self.configuration_fault {
             return Some(fault.clone());
         }
         (!self.request_available()).then(|| {
-            self.unavailable_reason.clone().unwrap_or_else(|| {
-                format!(
-                    "The {} lane points at {} ({}), which requires a credential, but neither Keychain account {} nor a supported signed-in provider account is available.",
-                    self.lane.as_str(),
-                    self.provider.display_name,
-                    self.provider.endpoint,
-                    self.credential.key_account,
-                )
+            self.unavailable.clone().unwrap_or_else(|| {
+                RuntimeLlmLaneUnavailable::CredentialMissing {
+                    lane: self.lane,
+                    provider: self.provider.display_name.clone(),
+                    endpoint: self.provider.endpoint.clone(),
+                    key_account: self.credential.key_account.clone(),
+                }
             })
         })
+    }
+
+    /// [`Self::request_unavailable`] as the English diagnostic carried by
+    /// error chains and logs.
+    pub fn request_unavailable_reason(&self) -> Option<String> {
+        self.request_unavailable().map(|reason| reason.to_string())
     }
 
     pub(super) fn digest_material(&self) -> String {

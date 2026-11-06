@@ -1403,7 +1403,7 @@ private func isolatedSettingsModel(licenseService: LicenseService = .preview) ->
         keyPresent: false,
         accountAuth: false,
         available: false,
-        unavailableReason: "visual fixture"
+        unavailable: .modelMissing(provider: "Fixture")
       )
     },
     servingStatusProvider: { nil }

@@ -109,10 +109,10 @@ pub use portable::{
 pub use settings::{
     AcpLaunchSettings, FormattingPolicy, PromptSource, RemovedCustomProvider,
     RuntimeAcpConfiguration, RuntimeAiExecution, RuntimeAiRequestTiming, RuntimeFormatterExecution,
-    RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSealedPrompt,
-    RuntimeSettingsSnapshot, SettingsLoaderInput, SettingsSnapshotDigest,
-    SettingsSnapshotProvenance, SettingsSnapshotValidation, SettingsSnapshotValidationError,
-    UserSettings,
+    RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeLlmLaneUnavailable,
+    RuntimeLlmLanes, RuntimeSealedPrompt, RuntimeSettingsSnapshot, SettingsLoaderInput,
+    SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidation,
+    SettingsSnapshotValidationError, UserSettings,
 };
 pub use storage_reset::{AppDataResetGuard, begin_app_data_reset};
 pub use types::Language;
