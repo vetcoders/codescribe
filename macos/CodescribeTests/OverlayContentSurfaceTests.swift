@@ -237,11 +237,28 @@ final class OverlayContentSurfaceTests: XCTestCase {
         return NSPoint(x: panel.frame.minX + rect.midX, y: panel.frame.maxY - rect.midY)
       }
       let reference = try foldPoint()
+      let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
+      // Since 961ea06a1 (2026-11-04) mini is sized from its content and hugs
+      // its controls with `miniInset`, where the bar and the window pad 16 pt
+      // and centre the control in a 46 pt row. All three forms share the
+      // panel's upper-right corner, so mini's chevron stands nearer that
+      // corner by the difference of the insets: 9 pt right and 5 pt up. The
+      // bar-side statement of the same rule is in OverlayResizeHitTests.
+      let miniShift = CGSize(
+        width: DictationOverlayWindow.midiOuterPadding / 2 - DictationOverlayWindow.miniInset,
+        height: (DictationOverlayWindow.collapsedHeight - DictationOverlayWindow.miniHeight) / 2)
+      XCTAssertEqual(miniShift, CGSize(width: 9, height: 5))
+      XCTAssertLessThan(
+        hypot(miniShift.width, miniShift.height), DictationOverlayWindow.miniControl / 2,
+        "a pointer resting on one chevron's centre must still be on the other")
       for mode in [OverlayPresentationMode.mini, .midi, .expanded] {
         state.setPresentationMode(mode)
         let point = try foldPoint()
-        XCTAssertEqual(point.x, reference.x, accuracy: 0.5, "\(mode)")
-        XCTAssertEqual(point.y, reference.y, accuracy: 0.5, "\(mode)")
+        let shift = mode == .mini ? miniShift : .zero
+        XCTAssertEqual(point.x, reference.x + shift.width, accuracy: 0.5, "\(mode)")
+        XCTAssertEqual(point.y, reference.y + shift.height, accuracy: 0.5, "\(mode)")
+        XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the corner pin: \(mode)")
+        XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5, "the corner pin: \(mode)")
       }
       state.showAgentMonitor()
       panel.setContentSurface(state.windowContentSurface)
