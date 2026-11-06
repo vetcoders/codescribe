@@ -360,9 +360,12 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     let root = try XCTUnwrap(rig.card.contentView)
     root.layoutSubtreeIfNeeded()
     XCTAssertTrue(try XCTUnwrap(rig.instance).minimized)
-    // The title occupies the free leading part of this 500pt bar. The old
-    // restore Button consumed this point before the native drag view saw it.
-    let point = NSPoint(x: 80, y: root.bounds.midY)
+    // A mini is a pill sized by its own name, not the 500 pt conversation it
+    // came from, so its controls begin where the name ends. The title is the
+    // leading part; the old restore Button consumed this point before the
+    // native drag view saw it.
+    XCTAssertLessThan(root.bounds.width, 500, "a mini does not keep the conversation's width")
+    let point = NSPoint(x: 40, y: root.bounds.midY)
     let drag = try XCTUnwrap(root.hitTest(point) as? OverlayIntercomDragView)
     XCTAssertEqual(drag.minimumDragDistance, 4)
     let location = root.convert(point, to: nil)
