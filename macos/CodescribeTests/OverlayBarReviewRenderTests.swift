@@ -64,9 +64,11 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   /// Agents bound on their digits, each with a current conversation, channel
   /// 0's broadcast conversation, the map on in the horizontal layout and the
   /// chord read as Ctrl. The returned conversations include channel 0.
-  /// `speaking` names an agent whose reply is playing aloud.
+  /// `speaking` names an agent whose reply is playing aloud; `dead` the
+  /// digits whose follower the roster reports gone.
   private func barState(
-    _ agents: [(String, String)], mode: OverlayPresentationMode, speaking: String? = nil
+    _ agents: [(String, String)], mode: OverlayPresentationMode, speaking: String? = nil,
+    dead: Set<String> = []
   ) throws -> (OverlayState, [OverlayConversation]) {
     let broadcast = OverlayConversation(
       id: "review-all", channel: "0", name: "All", owner: nil, messages: [])
@@ -87,7 +89,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         }, conversations: [broadcast] + owned))
     state.agentChannelModifierSetting = { "ctrl" }
     let conversations = [broadcast] + owned
-    apply(conversations, open: [], to: state)
+    apply(conversations, open: [], dead: dead, to: state)
     state.setPresentationMode(mode)
     XCTAssertTrue(state.channelMapInHeader, "the horizontal map is on")
     XCTAssertEqual(state.channelMapLayoutModel.count, agents.count)
@@ -114,16 +116,19 @@ final class OverlayBarReviewRenderTests: XCTestCase {
       owner: conversation.owner, messages: [reply])
   }
 
-  /// The controller's roster: `open` names the channels the microphone feeds.
+  /// The controller's roster: `open` names the channels the microphone feeds,
+  /// `dead` the channels whose follower is gone.
   private func apply(
-    _ conversations: [OverlayConversation], open: Set<String>, to state: OverlayState
+    _ conversations: [OverlayConversation], open: Set<String>, dead: Set<String> = [],
+    to state: OverlayState
   ) {
     state.applyChannelRoster(
       conversations.map {
         CsChannelRosterState(
           channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
           providerSessionId: $0.owner?.providerSessionID, open: open.contains($0.channel),
-          loud: false, autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+          loud: false, autosealDeadlineUnixMs: nil, followerAlive: !dead.contains($0.channel),
+          unreadSinceUnixMs: nil)
       })
   }
 
@@ -912,5 +917,87 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         try renderBar(state, scene: "bar-ch0-\(label)-\(rows)")
       }
     }
+  }
+
+  // MARK: - 15. The hover card from the roster
+
+  /// Each agent chip's hover card as the roster builds it, so the card
+  /// carries every fact the chip knows: 1 online on channel 0, 3 speaking,
+  /// 4 gone and off channel 0, 5 online under the moon, 6 without a
+  /// liveness claim, off channel 0 and under the moon, 8 stalled. Run with
+  /// `-testLanguage pl` for channel 0's Polish name.
+  func testRenderChipHoverCardsFromTheRoster() throws {
+    let agents = [
+      ("1", "As"), ("3", "Lena"), ("4", "Lena2"), ("5", "Bo"), ("6", "Nina"), ("8", "Igor"),
+    ]
+    let policies: [String: AgentBroadcastPolicy] = ["4": .off, "5": .quiet, "6": .offQuiet]
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let owned = try agents.enumerated().map { index, agent in
+      let conversation = try ownerConversation(
+        agent.1, channel: agent.0, lease: String(index, radix: 16))
+      return agent.0 == "3" ? playingReply(in: conversation) : conversation
+    }
+    let stale = Date().addingTimeInterval(-OverlayState.followerStallHorizon - 60)
+    var hudStates: [String: OverlayChannelHudProjection] = [:]
+    var channels: [OverlayChannelDelivery] = []
+    for (digit, name) in agents {
+      hudStates[digit] = OverlayChannelHudProjection(
+        open: false, loud: false, autosealDeadline: nil,
+        followerAlive: digit == "4" ? false : (digit == "6" ? nil : true),
+        provider: "codex", providerSessionID: "review-\(digit)",
+        unreadSince: digit == "8" ? stale : nil)
+      var delivery = OverlayChannelDelivery(
+        channel: digit, agent: name, deliveryID: nil, stage: nil, isOpen: false)
+      delivery.broadcastPolicy = policies[digit] ?? .on
+      channels.append(delivery)
+    }
+    for look in Look.allCases {
+      var roster = OverlayChannelStatusView(
+        channels: channels, unavailable: false, palette: look.palette, animates: false,
+        hudStates: hudStates, conversations: [all] + owned, unreadCounts: [:],
+        onSelectConversation: { _ in })
+      roster.sharedChannelStoredName = ""
+      let chips = roster.channelMapModel.agents
+      XCTAssertEqual(chips.map(\.digit), agents.map(\.0))
+      XCTAssertEqual(chips.first { $0.digit == "3" }?.speaking, true, "3 is speaking")
+      for chip in chips {
+        let status = try XCTUnwrap(chip.status, "\(chip.digit): an agent chip has a card")
+        try renderAlone(
+          OverlayChannelChipHoverCard(
+            chip: chip, status: status, modifier: .control, palette: look.palette),
+          size: OverlayChannelChipHoverCard.size(chip: chip, status: status, modifier: .control),
+          look: look, name: "bar-card-\(chip.digit)")
+      }
+    }
+  }
+
+  // MARK: - 16. Dead agents on the bar
+
+  /// Gone followers among live ones: 1 Lena and 5 Bruno live, 3 Roman and
+  /// 4 Tola gone, in the single row; nine agents with 2, 4 and 7 gone in the
+  /// two-row bar; mini; and the agents list under ✦ for the same roster.
+  /// Run with `-testLanguage pl` for channel 0's Polish name.
+  func testRenderBarWithDeadAgents() throws {
+    let mixed = [("1", "Lena"), ("3", "Roman"), ("4", "Tola"), ("5", "Bruno")]
+    for (scene, agents, dead) in [
+      ("dead-4", mixed, Set(["3", "4"])), ("dead-9", nine, Set(["2", "4", "7"])),
+    ] {
+      let (state, _) = try barState(agents, mode: .midi, dead: dead)
+      XCTAssertEqual(
+        Set(state.channelMapLayoutModel.chips.filter(\.disconnected).map(\.digit)), dead,
+        "\(scene): the gone followers stay on the map")
+      try renderBar(state, scene: scene)
+      let rows = DictationOverlayView(state: state).channelStatusView.hoverListRows
+      for look in Look.allCases {
+        let model = OverlayAgentsHoverListModel()
+        model.rows = rows
+        try renderAlone(
+          OverlayAgentsHoverList(model: model, palette: look.palette),
+          size: OverlayAgentsHoverList.size(rows: rows), look: look,
+          name: "bar-hover-list-\(scene)")
+      }
+    }
+    let (mini, _) = try barState(mixed, mode: .mini, dead: ["3", "4"])
+    try renderMini(mini, scene: "mini-dead-4")
   }
 }
