@@ -3,6 +3,7 @@ import SwiftUI
 
 struct RecordingMediaSection: View {
   let media: RecordingMediaDucker
+  @State private var permissionRequestPending = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
@@ -13,12 +14,17 @@ struct RecordingMediaSection: View {
         .foregroundStyle(.secondary)
       if media.volumeState == .permissionRequired {
         HStack {
-          Button("Open Automation settings") {
-            if let url = URL(
-              string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
-            {
-              NSWorkspace.shared.open(url)
+          Button("Allow Spotify control") {
+            permissionRequestPending = true
+            Task { @MainActor in
+              defer { permissionRequestPending = false }
+              _ = await PermissionKind.spotifyAutomation.requestInApp()
+              media.retry()
             }
+          }
+          .disabled(permissionRequestPending)
+          Button("Open Automation settings") {
+            PermissionKind.spotifyAutomation.openSystemSettings()
           }
           Button("Try again") { media.retry() }
         }

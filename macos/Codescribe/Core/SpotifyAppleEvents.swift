@@ -11,6 +11,32 @@ protocol SpotifyVolumeAccess: Sendable {
 /// Events address a verified running PID, so they cannot launch the player.
 /// Calls are serialized off the main actor by SpotifyVolumeController.
 struct SpotifyAppleEvents: SpotifyVolumeAccess {
+  /// Checking never sends an event or launches Spotify. Only an explicit
+  /// permission action passes true; that call must run off the main actor.
+  static func automationPermission(askUserIfNeeded: Bool) -> PermissionState {
+    let target = NSAppleEventDescriptor(bundleIdentifier: "com.spotify.client")
+    let status = withExtendedLifetime(target) {
+      guard let descriptor = target.aeDesc else { return OSStatus(paramErr) }
+      return AEDeterminePermissionToAutomateTarget(
+        descriptor, AEEventClass(kAECoreSuite), AEEventID(kAESetData), askUserIfNeeded)
+    }
+    if askUserIfNeeded {
+      DiagnosticLog.installed?.append(
+        category: "media", "action=spotify-automation-request status=\(status)")
+    }
+    return automationPermissionState(status: status)
+  }
+
+  static func automationPermissionState(status: OSStatus) -> PermissionState {
+    switch status {
+    case noErr: .granted
+    case OSStatus(errAEEventNotPermitted): .denied
+    // Spotify absent, consent not yet requested, or an unavailable check
+    // cannot establish a grant. Never persist a guessed permission state.
+    default: .notDetermined
+    }
+  }
+
   func isPlaying(pid: pid_t) throws -> Bool {
     try property(0x70506c53, pid: pid).enumCodeValue == 0x6b505350
   }
@@ -57,7 +83,12 @@ struct SpotifyAppleEvents: SpotifyVolumeAccess {
       returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
     event.setParam(target, forKeyword: AEKeyword(keyDirectObject))
     if let value { event.setParam(value, forKeyword: AEKeyword(keyAEData)) }
-    let reply = try event.sendEvent(options: [.waitForReply, .neverInteract], timeout: 1)
+    // Recording must not raise a consent dialog. The permission checklist
+    // owns deliberate requests; this AppleEvent returns -1744 when needed.
+    let noPermissionPrompt = NSAppleEventDescriptor.SendOptions(
+      rawValue: UInt(kAEDoNotPromptForUserConsent))
+    let reply = try event.sendEvent(
+      options: [.waitForReply, .neverInteract, noPermissionPrompt], timeout: 1)
     if let error = reply.paramDescriptor(forKeyword: AEKeyword(keyErrorNumber)), error.int32Value != 0 {
       throw NSError(domain: NSOSStatusErrorDomain, code: Int(error.int32Value))
     }

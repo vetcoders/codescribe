@@ -3233,6 +3233,23 @@
         }
       }
     },
+    "Allow Spotify control" : {
+      "comment" : "Explicit action that asks macOS for Spotify Automation access without changing volume",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Spotify control"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zezwól na sterowanie Spotify"
+          }
+        }
+      }
+    },
     "Allow access" : {
       "comment" : "In-app permission repair chip; the row title already names the permission",
       "localizations" : {
@@ -10576,6 +10593,23 @@
         }
       }
     },
+    "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission." : {
+      "comment" : "Optional Automation grant for Spotify volume control, without pausing playback",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe ścisza Spotify o 70% na cały czas nagrania, a potem przywraca głośność. Dyktowanie działa także bez tego uprawnienia."
+          }
+        }
+      }
+    },
     "Libraxis API key" : {
       "comment" : "Libraxis is a company name",
       "localizations" : {
@@ -13742,6 +13776,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Otwórz kreator…"
+          }
+        }
+      }
+    },
+    "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation." : {
+      "comment" : "Optional Spotify control permission; Spotify must be running to ask macOS",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz Spotify, a następnie zezwól Codescribe na ściszanie muzyki podczas nagrywania. Jeśli odmówiono dostępu, włącz Spotify dla Codescribe w Ustawieniach systemowych → Prywatność i ochrona → Automatyzacja."
           }
         }
       }
@@ -19067,6 +19118,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Odtworzono"
+          }
+        }
+      }
+    },
+    "Spotify control" : {
+      "comment" : "Optional target-specific Automation permission in General settings and setup",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify control"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sterowanie Spotify"
           }
         }
       }
