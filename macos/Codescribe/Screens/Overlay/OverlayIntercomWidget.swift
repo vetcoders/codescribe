@@ -2841,6 +2841,13 @@ private struct OverlayIntercomMessagePreview: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .csAutohidingScrollers()
+            // The frame holds whole lines only while the offset does too: a
+            // scroll comes to rest on a line boundary, and a new message
+            // starts from its first line instead of inheriting the offset.
+            .scrollTargetBehavior(
+              OverlayIntercomWholeLineScroll(pitch: Self.linePitch(scale: textScale))
+            )
+            .id(message.id)
             .frame(
               height: Self.wholeLinesHeight(available: proxy.size.height, scale: textScale),
               alignment: .topLeading
@@ -2858,14 +2865,33 @@ private struct OverlayIntercomMessagePreview: View {
     .accessibilityIdentifier("overlay-intercom-message-preview")
   }
 
-  /// Prose in `MarkdownText` is the body font with 5 pt between lines; the
-  /// last line needs no spacing after it. One line always stays.
-  static func wholeLinesHeight(available: CGFloat, scale: CGFloat) -> CGFloat {
+  /// Prose in `MarkdownText` is the body font with this much between lines.
+  static let proseLineSpacing: CGFloat = 5
+
+  /// The distance from one prose line's top to the next.
+  static func linePitch(scale: CGFloat) -> CGFloat {
     let font = NSFont.systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)
-    let line = ceil(NSLayoutManager().defaultLineHeight(for: font))
-    let spacing: CGFloat = 5
-    let lines = max(1, floor((available + spacing) / (line + spacing)))
-    return lines * (line + spacing) - spacing
+    return ceil(NSLayoutManager().defaultLineHeight(for: font)) + proseLineSpacing
+  }
+
+  /// The last line needs no spacing after it. One line always stays.
+  static func wholeLinesHeight(available: CGFloat, scale: CGFloat) -> CGFloat {
+    let pitch = linePitch(scale: scale)
+    let lines = max(1, floor((available + proseLineSpacing) / pitch))
+    return lines * pitch - proseLineSpacing
+  }
+}
+
+/// Rests a scroll on a prose line boundary. Paragraph gaps and code blocks do
+/// not share the pitch, so a long rich message is aligned from its first line
+/// and may drift by a few points further down.
+private struct OverlayIntercomWholeLineScroll: ScrollTargetBehavior {
+  let pitch: CGFloat
+
+  func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
+    guard pitch > 0 else { return }
+    let limit = max(0, context.contentSize.height - context.containerSize.height)
+    target.rect.origin.y = min(limit, max(0, (target.rect.origin.y / pitch).rounded() * pitch))
   }
 }
 
