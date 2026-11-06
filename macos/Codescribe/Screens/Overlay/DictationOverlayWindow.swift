@@ -2091,7 +2091,8 @@ struct OverlayMidiBarGeometry: Equatable, Sendable {
   var twoRowHeight: CGFloat
   /// Every name whole in two rows. With 1–5 agents the widths between this
   /// and `singleRowMinimumWidth` are a dead band: two rows with a hole after
-  /// the chips. `clampedWidth` snaps across it. Zero for the classic bar.
+  /// the chips. `clampedWidth` snaps across it. Zero, or any width below the
+  /// minimum, is no two-row form to snap to: no band (the classic bar).
   var twoRowMaximumWidth: CGFloat = 0
 
   /// No horizontal map: the 410 × 46 floor, widened freely.
@@ -2105,9 +2106,11 @@ struct OverlayMidiBarGeometry: Equatable, Sendable {
     let width = min(max(width, minimumWidth), maximumWidth)
     // The dead band: wider than every name in two rows, narrower than one
     // row of the shortest names. The bar is either form, never the hole
-    // between them (Founder, 2026-11-04): the nearer edge wins.
-    guard twoRowMaximumWidth < singleRowMinimumWidth, width > twoRowMaximumWidth,
-      width < singleRowMinimumWidth
+    // between them (Founder, 2026-11-04): the nearer edge wins. Both edges
+    // are widths the bar can take, so the two-row edge is never below the
+    // minimum; an unset two-row width (zero) opens no band.
+    guard twoRowMaximumWidth >= minimumWidth, twoRowMaximumWidth < singleRowMinimumWidth,
+      width > twoRowMaximumWidth, width < singleRowMinimumWidth
     else { return width }
     return width - twoRowMaximumWidth < singleRowMinimumWidth - width
       ? twoRowMaximumWidth : singleRowMinimumWidth
