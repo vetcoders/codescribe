@@ -221,7 +221,9 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let stale = Date().addingTimeInterval(-(OverlayState.followerStallHorizon + 60))
     XCTAssertTrue(roster(alive: false).isInactive(channel), "a gone follower")
     XCTAssertTrue(roster(alive: true, unreadSince: stale).isInactive(channel), "nobody reads")
-    XCTAssertEqual(roster(alive: true, unreadSince: stale).statusSymbol(for: channel), "zzz")
+    // The stall's mark is the presence dot's "!", never the moon's "zzz" (L6).
+    XCTAssertEqual(roster(alive: true, unreadSince: stale).presenceDotKind(for: channel), .stalled)
+    XCTAssertNotEqual(roster(alive: true, unreadSince: stale).statusSymbol(for: channel), "zzz")
     XCTAssertFalse(roster(alive: true).isInactive(channel), "a reading agent")
     XCTAssertFalse(
       roster(alive: true, unreadSince: Date()).isInactive(channel), "a fresh unread message")
@@ -383,12 +385,9 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         "let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
     XCTAssertTrue(instanceHeader.contains("OverlayIntercomAudioControls("))
     XCTAssertTrue(instanceHeader.contains("conversation: current ? conversation : nil"))
-    let dim = try sourceSection(
-      "OverlayChannelStatusView.swift", from: "struct OverlayDisconnectedRowDim: ViewModifier {",
-      to: "struct OverlayRowHoverHighlight: ViewModifier {")
-    XCTAssertEqual(OverlayDisconnectedRowDim.opacity, 0.45)
-    XCTAssertTrue(dim.contains(".opacity(disconnected ? Self.opacity : 1)"))
-    XCTAssertTrue(dim.contains(".grayscale(disconnected ? 1 : 0)"))
+    // A gone agent fades but keeps half its colour (L5 variant 3).
+    XCTAssertEqual(OverlayDisconnectedRowDim.opacity, 0.65)
+    XCTAssertEqual(OverlayDisconnectedRowDim.grayscale, 0.5)
     let marks = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayReceptionMarks: View {",
       to: "struct OverlayChannelStatusView: View {")

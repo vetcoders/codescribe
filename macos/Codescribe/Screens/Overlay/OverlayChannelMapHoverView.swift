@@ -286,7 +286,8 @@ private struct OverlayAgentsHoverListRow: View {
             height: OverlayAgentsHoverList.markSize)
         } else {
           mark(
-            symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
+            symbol: policy.statusSymbol, lit: policy.member,
+            litColor: OverlayReceptionMarks.antennaInk(palette).color,
             label: policy.statusHelp, identifier: "overlay-agents-hover-antenna-\(row.digit)"
           ) { $0.member.toggle() }
           // The moon speaks through its shape, as on the roster's marks.

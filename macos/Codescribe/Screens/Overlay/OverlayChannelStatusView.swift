@@ -248,14 +248,20 @@ struct OverlayMicrophoneGlyph: View {
 /// faded, so the roster shows at a glance who cannot hear (Maciej,
 /// 2026-10-17: "takie sesje na starcie dawać od razu wyszarzonymi"). The
 /// audio pair sleeps; the cross and reception policy remain actionable.
+/// The one owner of that dim for the bar's pills, the agents list under ✦
+/// and the Bus window's roster. Lighter since L5 (2026-11-06): at 45 % and
+/// fully grey a gone agent beside live ones read as the default and the
+/// live ones as bold; 65 % with half the colour still reads as gone without
+/// looking like the resting state.
 struct OverlayDisconnectedRowDim: ViewModifier {
-  static let opacity: Double = 0.45
+  static let opacity: Double = 0.65
+  static let grayscale: Double = 0.5
   let disconnected: Bool
 
   func body(content: Content) -> some View {
     content
       .opacity(disconnected ? Self.opacity : 1)
-      .grayscale(disconnected ? 1 : 0)
+      .grayscale(disconnected ? Self.grayscale : 0)
   }
 }
 
@@ -1050,6 +1056,15 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
 /// move independently and neither greys the other. The roster, the Intercom
 /// fiszki and the pill menu all issue the same command through the helper.
 struct OverlayReceptionMarks: View {
+  /// The lit antenna's ink, the one owner for these marks and the agents
+  /// list under ✦ (L7, 2026-11-06): the regular ink while the agent hears
+  /// channel 0, as the chip's hover card draws it (`primary`). The crossed
+  /// antenna takes the muted tone. Violet stays with a voice on the bus (an
+  /// agent speaking, your voice to an agent), never with reception.
+  static func antennaInk(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
+    palette.primaryText
+  }
+
   let channel: OverlayChannelDelivery
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
@@ -1064,7 +1079,8 @@ struct OverlayReceptionMarks: View {
   var body: some View {
     HStack(spacing: 3) {
       mark(
-        symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
+        symbol: policy.statusSymbol, lit: policy.member,
+        litColor: Self.antennaInk(palette).color,
         hint: policy.member
           ? String(localized: "Leave channel 0") : String(localized: "Join channel 0"),
         help: policy.statusHelp, identifier: "overlay-broadcast-policy-\(channel.channel)"
@@ -1646,8 +1662,14 @@ struct OverlayChannelStatusView: View {
       selectableDigits: Set(current.map(\.channel)),
       unreadDigits: Set(current.filter { (unreadCounts[$0.id] ?? 0) > 0 }.map(\.channel)),
       statuses: statuses,
-      speakingDigits: Set(currentConversations.filter(\.agentSpeaking).map(\.channel)),
+      speakingDigits: speakingDigits,
       sharedChannelName: sharedChannelStoredName)
+  }
+
+  /// The digits whose agent's reply plays aloud now: one set for the bar's
+  /// chip and its hover card, so both show the speaking dot together.
+  var speakingDigits: Set<String> {
+    Set(currentConversations.filter(\.agentSpeaking).map(\.channel))
   }
 
   /// An agent chip's hover-card facts, each from the projection its roster
@@ -1656,7 +1678,8 @@ struct OverlayChannelStatusView: View {
   /// the channel 0 policy as the ledger paints it, two states like the
   /// roster's antenna and the context menu; unread from the same
   /// counts as the chip's dot; the provider from the conversation's owner,
-  /// else the roster snapshot.
+  /// else the roster snapshot; speaking from the chip's own `speakingDigits`;
+  /// channel 0 by the display name its own chip shows.
   func channelChipStatus(
     for channel: OverlayChannelDelivery, current: [OverlayConversation]
   ) -> OverlayChannelChipStatus {
@@ -1669,7 +1692,8 @@ struct OverlayChannelStatusView: View {
       followerAlive: hudStates[channel.channel]?.followerAlive,
       stalled: hasStalledFollower(channel), policy: policy,
       unread: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
-      provider: conversation?.owner?.provider ?? hudStates[channel.channel]?.provider)
+      provider: conversation?.owner?.provider ?? hudStates[channel.channel]?.provider,
+      speaking: speakingDigits.contains(channel.channel), channelZeroName: sharedChannelName)
   }
 
   /// Channel 0's message carousel for the map's `(0)` chip: the same
@@ -2966,10 +2990,12 @@ struct OverlayChannelStatusView: View {
     return provider.flatMap { $0.isEmpty ? nil : $0 }
   }
 
+  /// The row's explicit glyph. A stall has none of its own: it is the
+  /// presence dot's `stalled` kind (olive with a bold "!"), and "zzz" is the
+  /// moon's alone (L6, 2026-11-06: a stall is not sleep).
   func statusSymbol(for channel: OverlayChannelDelivery) -> String {
     if unavailable { return "exclamationmark.triangle" }
     if hasDeadFollower(channel) { return "xmark.circle" }
-    if hasStalledFollower(channel) { return "zzz" }
     if isOpen(channel) { return OverlayAgentAudioControls.liveSpeechSymbol }
     switch channel.stage {
     case nil: return "circle"

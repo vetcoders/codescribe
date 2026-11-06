@@ -96,6 +96,10 @@ name: a moon while Do not disturb is on, and a crossed antenna while the agent
 is outside channel zero. These are passive projections of the existing
 `OverlayBroadcastPolicyLedger`, not another policy writer. Disconnected rows
 dim without adding a Disconnected text line and remain available for history.
+One modifier owns that dim for the bar's pills, this list and the agents list
+under ✦ (`OverlayDisconnectedRowDim`): 65 % opacity and half the colour (L5
+variant 3, 2026-11-06; until then 45 % and fully grey, which beside live
+agents read as the resting state and made the live ones look bold).
 
 The compact receipt mark describes the newest completed user delivery to the
 exact frozen recipient. Delivered and read use the same compact double-check
@@ -244,10 +248,36 @@ the projection the roster row reads (`channelChipStatus`, carried as
    `nil` "No data". A stalled follower (`hasStalledFollower`) adds "Not
    reading". The dot before the name (`presenceDotKind`) shows this same
    presence; neither it nor the channel 0 policy carries a delivery stage.
+   The card's line wears the same dot as the agents list and the Bus
+   window's roster (`OverlayAgentStatusDot`, one owner of its colour; L2,
+   2026-11-06): olive online, violet and blinking while the agent's reply
+   plays aloud (still violet under Reduce Motion), a muted ring for a gone
+   follower and a muted "?" without data. The speaking fact reaches the
+   card's status (`OverlayChannelChipStatus.speaking`) from the roster's
+   `speakingDigits`, the same set that gives the chip its speaking dot. A
+   stall is the same dot's `stalled` kind, olive with its bold "!", beside
+   "Not reading" (L6, 2026-11-06): a stall is not sleep, and "zzz" is the
+   moon's alone. **Rule (Founder, 2026-11-06):** "zzz" means only an agent
+   asleep under the moon (Do not disturb). A stall is something else, a live
+   agent without the moon that has not acknowledged reading for 10 minutes,
+   and everywhere it looks like the presence dot: green with "!". The
+   card's "Not reading" text stays. `OverlayChannelStatusView.statusSymbol(for:)` names no
+   stall glyph either; the Intercom's status mark draws the presence dot for
+   a stalled reader and an explicit glyph only for a gone one.
 2. **Channel 0** from the policy as `OverlayBroadcastPolicyLedger` paints it,
-   as painted: "In channel 0" or "Not in channel 0", two states like the
-   roster's antenna and the context menu's checkmark, with no unconfirmed
-   third (Founder, 2026-11-04); the moon adds "Do not disturb".
+   two states like the roster's antenna and the context menu's checkmark,
+   with no unconfirmed third (Founder, 2026-11-04). The line is channel 0's
+   display name (`OverlaySharedChannelName`, carried as
+   `OverlayChannelChipStatus.channelZeroName`) in the nominative, never
+   declined and without "in channel" wording (L3, 2026-11-06): behind the
+   antenna in the ink (`primary`, not the agent violet) while the agent
+   hears it, behind the crossed antenna in the muted tone while it does not.
+   The moon takes the symbol's place and adds "Do not disturb", muted; off
+   channel 0 under the moon the crossed antenna stays and the moon stands
+   beside it, so the line shows what VoiceOver reads (Founder, 2026-11-06).
+   VoiceOver, which hears no antenna, reads "Hears: Shared (channel 0)" or
+   "Does not hear: Shared (channel 0)" (PL "Słyszy: Wspólny (kanał 0)"),
+   the name after a colon so it is never declined.
 3. **Unread** from `unreadCounts`: "N unread", or no line.
 
 The first line names the digit, the whole name and the provider; the chord
@@ -336,7 +366,11 @@ they change reception through `OverlayBroadcastPolicyLedger.change`, never
 open the conversation and never close the list, are dimmed while a change is
 pending and repaint from the read-back receipt. Each mark has exactly two
 looks, lit or not, the same state as the context menu's "Channel 0" and "Do
-not disturb" checkmarks (Founder, 2026-11-04); a policy the helper has not
+not disturb" checkmarks (Founder, 2026-11-04). The lit antenna wears the
+regular ink, the crossed one the muted tone, as on the chip's hover card;
+violet stays with a voice on the bus, never with reception (L7, 2026-11-06;
+one owner, `OverlayReceptionMarks.antennaInk`, for this list, the Bus
+window's roster marks and the fiszki). A policy the helper has not
 receipted draws as painted, never as a third, greyed mark, and the receipt
 only confirms this app's own click. The dots
 are decoration for VoiceOver: each row carries one label with every state
@@ -397,6 +431,17 @@ never shrinks, captions never overlap and circles never overlap. A single row
 the user narrows below its shortest names becomes two rows. No tier drops a
 name, shows only digits (an empty name is the exception), collapses the map
 into a counter or `+N`, or hides a channel or a tool.
+
+An agent whose follower is gone (`OverlayChannelMapChip.disconnected`, the
+roster's `followerAlive == false`) is the other exception (L5 variant 1,
+2026-11-06): the bar shows its circled digit alone, in both rows, dimmed
+like a Disconnected row. `OverlayChannelMapChip.captionShown` is false for
+it, so `OverlayChannelMapNameWidths` gives it zero and the window's
+geometry (`DictationOverlayWindow.midiBarGeometry`) and the strip measure
+the same narrower pill; a follower dying or coming back refits the window
+(`OverlayState.noteChannelMapLayout` keys on it). The chip keeps its name
+for its hover card, its hint and VoiceOver; the agents list under ✦ and
+the Bus window name it as before. Selection and the click do not change.
 
 The window owns the geometry. `DictationOverlayWindow.midiBarGeometry`
 measures the bar from the same values: 32 pt of side padding, the brand
@@ -785,7 +830,8 @@ since the fiszka is the surface, not in glass circles of its own (Maciej,
 2026-10-23: "robisz to prosto na powierzchni fiszki"). Its status is one
 `OverlayAgentStatusDot` from `presenceDotKind`, before the figure; after the
 name sit the agent's two reception marks (`OverlayReceptionMarks`): the
-channel-0 antenna (`broadcastPolicy.statusSymbol`, lit for a member) and the
+channel-0 antenna (`broadcastPolicy.statusSymbol`, lit for a member in the
+regular ink, `OverlayReceptionMarks.antennaInk`) and the
 do-not-disturb moon (`quietSymbol`, filled while lit). Both are one-click
 switches that issue the helper's `--broadcast`/`--quiet` command for that
 lease, the same view the agents list draws after its title; the axes are

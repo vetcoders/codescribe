@@ -8020,6 +8020,17 @@
         }
       }
     },
+    "Does not hear: %@ (channel 0)" : {
+      "comment" : "Channel chip hover card, VoiceOver: the agent left channel 0; the argument is channel 0's display name, kept in the nominative",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie słyszy: %@ (kanał 0)"
+          }
+        }
+      }
+    },
     "Done!" : {
       "comment" : "Tray status: the last session finished",
       "localizations" : {
@@ -9488,6 +9499,17 @@
         }
       }
     },
+    "Hears: %@ (channel 0)" : {
+      "comment" : "Channel chip hover card, VoiceOver: broadcasts reach this agent; the argument is channel 0's display name, kept in the nominative",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Słyszy: %@ (kanał 0)"
+          }
+        }
+      }
+    },
     "Held" : {
       "comment" : "Agent message waiting in the edit and withdrawal window",
       "localizations" : {
@@ -9654,17 +9676,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "W trybie Chmura lub gdy samodzielnie uruchomisz ponowną transkrypcję nagrania w chmurze."
-          }
-        }
-      }
-    },
-    "In channel 0" : {
-      "comment" : "Channel chip hover card: a receipt confirms broadcasts reach this agent",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "W kanale 0"
           }
         }
       }
@@ -12972,17 +12983,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie przyznano"
-          }
-        }
-      }
-    },
-    "Not in channel 0" : {
-      "comment" : "Channel chip hover card: a receipt confirms the agent left channel 0",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Poza kanałem 0"
           }
         }
       }

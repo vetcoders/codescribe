@@ -1660,10 +1660,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   /// and its microphone sleeps (Maciej, 2026-10-17).
   func testDockedRowDimsADisconnectedReaderAndUsesCentralAudioGuards() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
-    let modifier = try section(
-      of: source, from: "struct OverlayDisconnectedRowDim: ViewModifier {", to: "\n}\n")
-    XCTAssertTrue(modifier.contains(".opacity(disconnected ? Self.opacity : 1)"))
-    XCTAssertTrue(modifier.contains(".grayscale(disconnected ? 1 : 0)"))
+    XCTAssertLessThan(OverlayDisconnectedRowDim.opacity, 1, "a gone reader's row is dimmed")
+    XCTAssertGreaterThan(OverlayDisconnectedRowDim.grayscale, 0, "and loses colour")
     let docked = try section(
       of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
     XCTAssertTrue(

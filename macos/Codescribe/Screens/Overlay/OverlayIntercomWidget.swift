@@ -2544,11 +2544,11 @@ private func intercomChannelRow(state: OverlayState, digit: String) -> OverlayCh
 /// The list's focus button, drawn flat on the fiszka from the pill menu's
 /// own `focus` action: the same destination, availability and callback. The
 /// slot is reserved even without a button so the audio pair never moves.
-/// The row's state mark: the activity dot while someone reads the channel,
-/// an explicit glyph once nobody does — the follower gone, or alive with a
-/// backlog nobody read past the stall horizon (Maciej, 2026-10-23: inactive
-/// agents "powinny mieć jawne disconnected"). The glyphs are the roster's
-/// own, so the overlay list and the Intercom say one thing.
+/// The row's state mark: the presence dot while the follower lives, a stall
+/// included (its olive dot with the bold "!"), and an explicit glyph once the
+/// follower is gone (Maciej, 2026-10-23: inactive agents "powinny mieć jawne
+/// disconnected"). The glyphs are the roster's own, so the overlay list and
+/// the Intercom say one thing.
 private struct OverlayIntercomStatusMark: View {
   @Environment(\.csTextScale) private var textScale
   let roster: OverlayChannelStatusView

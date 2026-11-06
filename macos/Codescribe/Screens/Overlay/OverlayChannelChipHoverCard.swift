@@ -8,8 +8,13 @@ import SwiftUI
 ///
 /// 1. `5 · Kuba` and the provider;
 /// 2. presence: Online, Not active or No data, with "Not reading" when the
-///    live follower stalls;
-/// 3. channel 0: in it or not, with Do not disturb under the moon;
+///    live follower stalls, behind the presence dot of the agents list
+///    under ✦ and the Bus window's roster (`OverlayAgentStatusDot`, L2
+///    2026-11-06): olive online, violet and blinking while the agent's
+///    reply plays aloud, a muted ring when gone or "?" without data;
+/// 3. channel 0 by its display name (L3, 2026-11-06): the antenna and the
+///    name in the ink while the agent hears it, the crossed antenna and the
+///    name muted while it does not, the moon with Do not disturb;
 /// 4. the unread replies, when there are any;
 /// 5. the chord, last and small, the one line the button already said.
 ///
@@ -20,14 +25,12 @@ struct OverlayChannelChipHoverCard: View {
     case primary
     case success
     case muted
-    case agent
 
     func color(in palette: OverlayAppearancePalette) -> Color {
       switch self {
       case .primary: palette.primaryText.color
       case .success: palette.primaryText.color
       case .muted: palette.mutedText.color
-      case .agent: palette.agentAccent.color
       }
     }
   }
@@ -46,6 +49,11 @@ struct OverlayChannelChipHoverCard: View {
     let text: String
     let tone: Tone
     var symbol: String? = nil
+    /// A second symbol beside the first: the moon beside the crossed antenna
+    /// of an agent off channel 0 under Do not disturb.
+    var secondSymbol: String? = nil
+    /// The presence dot, drawn by the roster's own dot in place of a symbol.
+    var dot: OverlayAgentDotKind? = nil
     /// The title's trailing provider.
     var trailing: String? = nil
 
@@ -91,8 +99,16 @@ struct OverlayChannelChipHoverCard: View {
 
   private func row(_ line: Line) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: Self.symbolGap) {
-      if let symbol = line.symbol {
+      if let dot = line.dot {
+        OverlayAgentStatusDot(kind: dot, palette: palette)
+          .frame(width: Self.symbolWidth)
+      } else if let symbol = line.symbol {
         Image(systemName: symbol)
+          .font(.system(size: line.size))
+          .frame(width: Self.symbolWidth)
+      }
+      if let second = line.secondSymbol {
+        Image(systemName: second)
           .font(.system(size: line.size))
           .frame(width: Self.symbolWidth)
       }
@@ -133,11 +149,11 @@ struct OverlayChannelChipHoverCard: View {
       Line(
         kind: .presence, text: presenceText(status),
         tone: status.stalled ? .muted : (status.presence == .online ? .success : .muted),
-        symbol: presenceSymbol(status)),
+        dot: presenceDot(status)),
       Line(
-        kind: .reception, text: receptionText(status),
-        tone: status.reception == .member && !status.quiet ? .agent : .muted,
-        symbol: receptionSymbol(status)),
+        kind: .reception, text: receptionLine(status),
+        tone: status.reception == .member && !status.quiet ? .primary : .muted,
+        symbol: receptionSymbol(status), secondSymbol: receptionMoonBeside(status)),
     ]
     if status.unread > 0 {
       lines.append(
@@ -165,7 +181,7 @@ struct OverlayChannelChipHoverCard: View {
     var parts: [String] = []
     if let provider = status.provider { parts.append(providerName(provider)) }
     parts.append(presenceText(status))
-    parts.append(receptionText(status))
+    parts.append(spokenReception(status))
     if status.unread > 0 { parts.append(unreadText(status.unread)) }
     return parts
   }
@@ -195,17 +211,34 @@ struct OverlayChannelChipHoverCard: View {
     return presence + " · " + String(localized: "Not reading")
   }
 
-  static func receptionText(_ status: OverlayChannelChipStatus) -> String {
+  /// The reception line as drawn: channel 0's name alone, its symbol (the
+  /// antenna, crossed or not) saying whether the agent hears it; the moon
+  /// adds Do not disturb. No "in channel" wording and no declension: the
+  /// name is the user's own and stays in the nominative.
+  static func receptionLine(_ status: OverlayChannelChipStatus) -> String {
+    guard status.quiet else { return status.channelZeroName }
+    return status.channelZeroName + " · " + String(localized: "Do not disturb")
+  }
+
+  /// The reception as VoiceOver reads it, which hears no antenna: whether
+  /// the agent hears channel 0, named after a colon so the name is never
+  /// declined, then Do not disturb under the moon.
+  static func spokenReception(_ status: OverlayChannelChipStatus) -> String {
+    let name = status.channelZeroName
     let reception: String
     switch status.reception {
     case .member:
       reception = String(
-        localized: "In channel 0",
-        comment: "Channel chip hover card: a receipt confirms broadcasts reach this agent")
+        localized: "Hears: \(name) (channel 0)",
+        comment:
+          "Channel chip hover card, VoiceOver: broadcasts reach this agent; the argument is channel 0's display name, kept in the nominative"
+      )
     case .off:
       reception = String(
-        localized: "Not in channel 0",
-        comment: "Channel chip hover card: a receipt confirms the agent left channel 0")
+        localized: "Does not hear: \(name) (channel 0)",
+        comment:
+          "Channel chip hover card, VoiceOver: the agent left channel 0; the argument is channel 0's display name, kept in the nominative"
+      )
     }
     guard status.quiet else { return reception }
     return reception + " · " + String(localized: "Do not disturb")
@@ -217,21 +250,38 @@ struct OverlayChannelChipHoverCard: View {
       comment: "Channel chip hover card: new replies from the agent not read yet")
   }
 
-  static func presenceSymbol(_ status: OverlayChannelChipStatus) -> String {
-    if status.stalled { return "zzz" }
+  /// The presence line's dot, as the agents list draws its row's: a gone
+  /// follower's ring first, then the speaking dot while the reply plays,
+  /// the stall's olive dot with its bold "!" (L6, 2026-11-06: a stall is
+  /// not sleep; "zzz" belongs to the moon alone), olive online and "?"
+  /// without a liveness claim.
+  static func presenceDot(_ status: OverlayChannelChipStatus) -> OverlayAgentDotKind {
+    if status.presence == .inactive { return .sleeping }
+    if status.speaking { return .speaking }
+    if status.stalled { return .stalled }
     switch status.presence {
-    case .online: return "circle.fill"
-    case .inactive: return "circle.dotted"
-    case .unknown: return "questionmark.circle"
+    case .online: return .present
+    case .inactive: return .sleeping
+    case .unknown: return .idle
     }
   }
 
+  /// The reception line's symbol: the moon under Do not disturb while the
+  /// agent hears channel 0, else the antenna, crossed off channel 0. Off
+  /// channel 0 under the moon keeps the crossed antenna and adds the moon
+  /// beside it (`receptionMoonBeside`), so the line shows what VoiceOver
+  /// reads (Founder, 2026-11-06).
   static func receptionSymbol(_ status: OverlayChannelChipStatus) -> String {
-    if status.quiet { return "moon.fill" }
     switch status.reception {
-    case .member: return "antenna.radiowaves.left.and.right"
+    case .member:
+      return status.quiet ? "moon.fill" : "antenna.radiowaves.left.and.right"
     case .off: return "antenna.radiowaves.left.and.right.slash"
     }
+  }
+
+  /// The moon beside the crossed antenna, off channel 0 under Do not disturb.
+  static func receptionMoonBeside(_ status: OverlayChannelChipStatus) -> String? {
+    status.quiet && status.reception == .off ? "moon.fill" : nil
   }
 
   // MARK: Size
@@ -248,7 +298,8 @@ struct OverlayChannelChipHoverCard: View {
     let widest =
       lines.map { line -> CGFloat in
         var width = OverlayChannelPill.textWidth(line.text, size: line.size)
-        if line.symbol != nil { width += symbolWidth + symbolGap }
+        if line.symbol != nil || line.dot != nil { width += symbolWidth + symbolGap }
+        if line.secondSymbol != nil { width += symbolWidth + symbolGap }
         if let trailing = line.trailing {
           width += trailingGap + OverlayChannelPill.textWidth(trailing, size: lineSize)
         }
