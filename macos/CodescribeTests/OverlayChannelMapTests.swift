@@ -1422,6 +1422,51 @@ final class OverlayChannelMapTests: XCTestCase {
     }
   }
 
+  // MARK: - A gone follower on the bar (L12)
+
+  /// A gone agent keeps its name on the bar, so the bar is as wide as with
+  /// the agent alive, and wears the empty ring the agents list gives it
+  /// before its digit; a live agent wears no dot on the bar, a speaking one
+  /// the violet dot, and a gone one the ring even while a reply plays.
+  func testGoneFollowerKeepsItsNameAndWearsTheRostersRing() {
+    let channels = [delivery("1", "Lena"), delivery("3", "Roman"), delivery("5", "Bruno")]
+    func map(dead: Set<String>) -> OverlayChannelMapModel {
+      OverlayChannelMapModel(
+        channels: channels,
+        hudStates: Dictionary(
+          uniqueKeysWithValues: ["1", "3", "5"].map { ($0, hud(alive: !dead.contains($0))) }),
+        selectableDigits: ["1", "3", "5"], unreadDigits: [])
+    }
+    let alive = map(dead: [])
+    let gone = map(dead: ["3"])
+    let roman = gone.chips.first { $0.digit == "3" }
+    XCTAssertEqual(roman?.disconnected, true)
+    XCTAssertEqual(roman?.selectable, true, "the click is unchanged")
+    let index = gone.chips.firstIndex { $0.digit == "3" }!
+    XCTAssertEqual(
+      OverlayChannelMapNameWidths(chips: gone.chips, scale: 1).full[index],
+      OverlayChannelMapNameWidths(chips: alive.chips, scale: 1).full[index],
+      "the name keeps its room")
+    XCTAssertEqual(
+      DictationOverlayWindow.midiBarGeometry(map: gone, textScale: 1).naturalWidth,
+      DictationOverlayWindow.midiBarGeometry(map: alive, textScale: 1).naturalWidth)
+
+    let view = OverlayChannelStatusView(
+      channels: [channels[1]], unavailable: false, palette: .dark, animates: false,
+      hudStates: ["3": hud(alive: false)])
+    let rosterDot = view.presenceDotKind(for: channels[1])
+    XCTAssertEqual(rosterDot, .sleeping, "the agents list's mark for a gone follower")
+    typealias Display = OverlayChannelPill.Display
+    XCTAssertEqual(Display(figure: "3", name: "Roman", disconnected: true).barDot, rosterDot)
+    XCTAssertEqual(
+      Display(figure: "3", name: "Roman", disconnected: true, speaking: true).barDot, rosterDot)
+    XCTAssertNil(Display(figure: "1", name: "Lena").barDot, "a live agent wears no dot")
+    XCTAssertEqual(Display(figure: "1", name: "Lena", speaking: true).barDot, .speaking)
+    XCTAssertNil(
+      Display(figure: "3", name: "Roman", dot: .sleeping, disconnected: true).barDot,
+      "a list row draws its own dot before the name")
+  }
+
   // MARK: - An agent speaking (L1)
 
   private func owner(_ name: String, channel: String) throws -> OverlayConversationOwner {

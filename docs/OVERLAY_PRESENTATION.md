@@ -401,12 +401,19 @@ the violet waveform say it). The selected conversation's fill is neutral, in
 the text tone, on the pill and on the roster row's leading bar alike (decision
 4): in the bus violet means your voice and terracotta the microphone, so the
 bus is the one surface where "choice = terracotta" does not apply. The bar's
-chips carry no presence dot; the agents list's chip does, between the digit
-and the name, except while the agent's reply plays aloud: then the chip, in
-the single row and the second row alike, shows the blinking violet speaking
-dot just before its circled digit, inside the pill's own margin, so the bar's
-measured width never changes (`OverlayChannelMapChip.speaking`). It receives
-no `OverlayState`, conversation or command.
+chips speak the roster's dot vocabulary (`OverlayAgentStatusDot`, one owner
+of the dot's look) but show only the exceptions: a live agent carries no dot
+on the bar (its hover card says the presence); a gone follower wears the
+empty ring the agents list and the Bus window give it (`.sleeping`, L12,
+2026-11-06), and an agent whose reply plays aloud the blinking violet speaking
+dot (L1). The agents list's chip draws its full presence dot between the
+digit and the name instead. On the bar the dot stands just before the
+circled digit, 6 pt, inside the pill's own margin, in the single row and the
+second row alike, so the bar's measured width never changes
+(`OverlayChannelPill.Display.barDot`; gone wins over speaking, as in the
+roster). A gone agent keeps its name on the bar and its pill is dimmed
+(`OverlayDisconnectedRowDim`). It receives no `OverlayState`, conversation or
+command.
 
 The bar with the horizontal map is as wide as its content (bus brief
 2026-11-04 §4, §5, §8, §11C). `OverlayBarLayout` sets the brand, a waveform of
