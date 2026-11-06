@@ -110,7 +110,9 @@ struct OverlayAgentRosterLabel: View {
         if !headerOnly, let preview {
           Text(verbatim: preview)
             .font(.system(size: 13 * textScale))
-            .foregroundStyle(unreadCount > 0 ? palette.bodyText.color : palette.roster.secondaryText.color)
+            .foregroundStyle(
+              unreadCount > 0 ? palette.bodyText.color : palette.roster.secondaryText.color
+            )
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
         }
