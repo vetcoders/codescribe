@@ -49,14 +49,14 @@ The conversation button and these controls remain siblings; opening a
 conversation never opens its microphone. Long names retain their full tooltip
 and accessibility label.
 
-An agent row already shows its two-line preview inline, so hovering it opens
-no preview card. Hovering a surface without an inline preview — the pinned
-`0 · All` / Your Inbox pill, a folded-rail entry, a saved conversation — for
-350 ms opens
+Hovering an agent row's navigation area, the pinned `0 · All` / Your Inbox
+pill, a folded-rail entry or a saved conversation for 350 ms opens
 a compact bounded carousel (up to five recent loaded messages, starting at the
-latest) in the shared `OverlayHintPanel`. The card sits beside its anchor; it
-takes the window's leading edge only when the anchor hugs that edge, so a row
-in a right-hand split column never sends it across the window. Original
+latest) in the shared `OverlayHintPanel`. The agent row keeps its two-line
+inline preview; the card carries the whole message. A window large enough for
+the card keeps it inside: beside the row, or under it (above it at the
+window's bottom) when the row spans the window. Only a window too small for
+the card, a fiszka or the folded rail, shows it beside the window. Original
 paragraphs, rich formatting and attachments use `OverlayConversationMessageContent`.
 The card is narrow (`260 × textScale`), fits short messages to their content
 height, and scrolls only when a message exceeds its `180 × textScale` ceiling;
@@ -794,8 +794,8 @@ dictation control keeps the plain `mic`, the dictation verb (Maciej,
 Channel activity updates an already visible main overlay, but the vertical
 Intercom does not summon a closed main overlay; Show in Agents remains explicit.
 The floating pills retain their rich informational hover. The classic Agents
-list keeps its inline actions and its inline two-line preview; the pinned pill,
-rail and saved rows offer the last-message hover described above; provider,
+list keeps its inline actions and its inline two-line preview and offers the
+last-message hover described above, like the pinned pill, rail and saved rows; provider,
 model, status and session metadata are not repeated in a second tooltip.
 The same `OverlayChannelMapPreference` stores the layout; switching it preserves
 the selected conversation, drafts and active route. No second inventory or

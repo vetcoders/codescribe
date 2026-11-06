@@ -18,8 +18,9 @@ final class OverlayLostRosterMenuTests: XCTestCase {
     // no fade hides the text it used to sit on.
     XCTAssertFalse(row.contains("ZStack(alignment: .topTrailing)"))
     XCTAssertFalse(row.contains("LinearGradient("))
-    // The row shows the preview inline; it carries no hover preview card.
-    XCTAssertFalse(row.contains("OverlayRosterMessageHint("))
+    // The inline preview is two lines; the hover card carries the whole
+    // message (Maciej, 2026-11-06: "hover cards są spoko").
+    XCTAssertEqual(row.components(separatedBy: "OverlayRosterMessageHint(").count - 1, 2)
   }
 
   func testStatePanelAndSyncRemainOutsideTheAudioAndMoreControls() throws {

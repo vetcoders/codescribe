@@ -615,31 +615,8 @@ final class OverlayBusWindowTests: XCTestCase {
     state.setConversationDraft("Keep the second recipient's draft", for: second.id)
     let generation = state.captureGeneration
     let firstRow = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == first.channel })
-    // The agent row shows its two-line preview inline: hovering it presents
-    // no preview card over the window.
-    do {
-      let (rowPanel, rowHost) = previewPanel(
-        AnyView(DictationOverlayView(state: state).channelStatusView.channelRow(firstRow)))
-      _ = setPreviewHover(true, in: rowHost)
-      try await Task.sleep(for: .milliseconds(450))
-      XCTAssertNotEqual(
-        OverlayHintPanel.shared.presentedTitle, OverlayRosterMessageHint.fullText(in: first),
-        "the agent row repeats its inline preview in no hover card")
-      _ = setPreviewHover(false, in: rowHost)
-      rowPanel.contentView = nil
-      rowPanel.orderOut(nil)
-      try await Task.sleep(for: .milliseconds(300))
-    }
-    // Surfaces without an inline preview (the pinned mailbox pill, rail
-    // pills) carry the hint.
     let (panel, host) = previewPanel(
-      AnyView(
-        Text(verbatim: first.displayTitle).frame(maxWidth: .infinity, maxHeight: .infinity)
-          .modifier(
-            OverlayRosterMessageHint(
-              conversation: first, palette: .dark, textScale: 1,
-              isOpen: first.id == state.selectedConversationID,
-              onOpen: { state.selectConversation(first.id) }))))
+      AnyView(DictationOverlayView(state: state).channelStatusView.channelRow(firstRow)))
     defer {
       setPreviewHover(false, in: host)
       panel.contentView = nil

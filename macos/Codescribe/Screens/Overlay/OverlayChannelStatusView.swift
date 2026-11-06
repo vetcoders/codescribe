@@ -2266,8 +2266,14 @@ struct OverlayChannelStatusView: View {
           .accessibilityIdentifier(
             "overlay-view-conversation-\(conversation?.id ?? channel.channel)"
           )
-          // The row already shows the message preview inline; no hover card
-          // repeats it over the window.
+          // The hover card carries the whole last message and its carousel;
+          // the inline preview is two lines of it (Maciej, 2026-11-06:
+          // "hover cards są spoko, tylko NIE poza oknem").
+          .modifier(
+            OverlayRosterMessageHint(
+              conversation: conversation, palette: palette, textScale: textScale,
+              isOpen: conversation.map { $0.id == selectedConversationID } ?? false,
+              onOpen: { viewConversation(channel) }))
           // The agent's "…" sits beside the clock, outside the row's button,
           // so the name gets the line and the pair the right.
           EmptyView().modifier(
@@ -2295,6 +2301,11 @@ struct OverlayChannelStatusView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(verbatim: identityHint))
+                .modifier(
+                  OverlayRosterMessageHint(
+                    conversation: conversation, palette: palette, textScale: textScale,
+                    isOpen: conversation.id == selectedConversationID,
+                    onOpen: { viewConversation(channel) }))
               } else {
                 rosterRowLabel(
                   title: channel.agent, statusChannel: channel, conversation: conversation,

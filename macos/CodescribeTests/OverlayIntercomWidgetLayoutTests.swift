@@ -270,6 +270,41 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertTrue(screen.contains(mirrored))
   }
 
+  /// A window large enough for the card keeps it inside, clear of the row
+  /// that raised it, wherever that row sits (Maciej, 2026-11-06: hover cards
+  /// are fine, "tylko NIE poza oknem").
+  @MainActor
+  func testLeadingHintNeverLeavesAWindowThatCanHoldIt() {
+    let screen = NSRect(x: 0, y: 0, width: 1728, height: 1000)
+    let size = CGSize(width: 260, height: 180)
+    for window in [
+      NSRect(x: 400, y: 150, width: 900, height: 640),
+      NSRect(x: 400, y: 150, width: 420, height: 640),
+      NSRect(x: 0, y: 150, width: 900, height: 640),
+    ] {
+      let rows: [(String, NSRect)] = [
+        ("left column", NSRect(x: window.minX + 12, y: window.midY, width: 300, height: 44)),
+        (
+          "right column",
+          NSRect(x: window.maxX - 312, y: window.midY, width: 300, height: 44)
+        ),
+        ("full width", NSRect(x: window.minX + 12, y: window.midY, width: window.width - 24, height: 44)),
+        ("bottom row", NSRect(x: window.minX + 12, y: window.minY + 8, width: 300, height: 44)),
+        ("top row", NSRect(x: window.minX + 12, y: window.maxY - 52, width: 300, height: 44)),
+        (
+          "full width at the bottom",
+          NSRect(x: window.minX + 12, y: window.minY + 8, width: window.width - 24, height: 44)
+        ),
+      ]
+      for (name, row) in rows {
+        let frame = OverlayHintPanel.frame(
+          size: size, leading: row, parentFrame: window, within: screen)
+        XCTAssertTrue(window.contains(frame), "\(name) in \(window): card left the window, \(frame)")
+        XCTAssertFalse(frame.intersects(row), "\(name) in \(window): card covers its row, \(frame)")
+      }
+    }
+  }
+
   @MainActor
   func testAgentMetadataUsesTheExactOwnerAndDeclaredExecutionLocation() throws {
     let identity = AgentPlaybackIdentity(provider: "codex", session: "fixture", bus: "/fixture/bus")

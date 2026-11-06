@@ -301,13 +301,6 @@ struct OverlayConversationView: View {
     presentation == .standard ? 0 : OverlayResizeHit.scrollbarInset
   }
 
-  /// Where the header card's glass starts. Rows scroll beneath the card, but
-  /// never into the clear gap between the window's header and the card.
-  private var messageClipTop: CGFloat {
-    topInset + (hidesNavigation ? 0 : Self.navigationTopPadding)
-  }
-  private static let navigationTopPadding: CGFloat = 4
-
   /// The newest receiving user turn owns the activity cue, independently of ACKs.
   var activeCaptureMessageID: String? {
     guard isPresented else { return nil }
@@ -321,12 +314,6 @@ struct OverlayConversationView: View {
           maxBubbleWidth: Self.bubbleCap(
             contentWidth: max(0, geometry.size.width - scrollbarGutter),
             textScale: textScale, presentation: presentation)
-        )
-        // The window's rows stop at the header card's top edge: nothing
-        // shows through the clear gap above the floating card. Only the top
-        // is clipped; the rows still reach under the composer and the card.
-        .modifier(
-          OverlayConversationTopClip(top: presentation == .standard ? messageClipTop : nil)
         )
         .onChange(of: replyNavigationID) { _, id in
           guard let id else { return }
@@ -1366,40 +1353,6 @@ struct OverlayNamePillGlass: ViewModifier {
     } else {
       content.background(.regularMaterial, in: Capsule())
     }
-  }
-}
-
-/// Clips the window conversation's rows above one line only: the top edge of
-/// its header card. Sides and bottom keep reaching past the list's frame, so
-/// rows still scroll beneath the composer and the card's glass. A nil line
-/// leaves the content untouched (the Intercom).
-private struct OverlayConversationTopClip: ViewModifier {
-  let top: CGFloat?
-
-  @ViewBuilder
-  func body(content: Content) -> some View {
-    if let top {
-      content.clipShape(OverlayTopEdgeClipShape(top: top))
-    } else {
-      content
-    }
-  }
-}
-
-private struct OverlayTopEdgeClipShape: Shape {
-  var top: CGFloat
-
-  var animatableData: CGFloat {
-    get { top }
-    set { top = newValue }
-  }
-
-  func path(in rect: CGRect) -> Path {
-    let reach: CGFloat = 10_000
-    return Path(
-      CGRect(
-        x: rect.minX - reach, y: rect.minY + top,
-        width: rect.width + 2 * reach, height: max(0, rect.height - top) + reach))
   }
 }
 
