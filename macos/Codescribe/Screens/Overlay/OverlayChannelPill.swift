@@ -167,9 +167,7 @@ struct OverlayChannelPill: View {
     // the capsule's trailing edge lies past the pill's trailing edge.
     let frame = Self.railBadgeFrame(count: display.unreadCount, pillSize: .zero, scale: textScale)
     let dark = palette.appearance == .dark
-    return Text(verbatim: String(display.unreadCount))
-      .font(.system(size: Self.railBadgeFontSize * textScale, weight: .semibold))
-      .monospacedDigit()
+    return Text(railBadgeFigure)
       .lineLimit(1)
       .fixedSize()
       .foregroundStyle(palette.primaryText.color)
@@ -190,6 +188,22 @@ struct OverlayChannelPill: View {
       // out to its frame beside the pill.
       .offset(x: frame.maxX, y: frame.minY)
       .accessibilityLabel("\(display.unreadCount) unread replies")
+  }
+
+  /// The capsule's figure. Above 99 it reads `99+` in the two digits'
+  /// width: 8 pt digits and a 6 pt plus, where 9 pt ones would not fit.
+  private var railBadgeFigure: AttributedString {
+    let count = display.unreadCount
+    let capped = count > Self.railBadgeReservedCount
+    var digits = AttributedString(String(min(count, Self.railBadgeReservedCount)))
+    digits.font = Font.system(
+      size: (capped ? Self.railBadgeCappedDigitSize : Self.railBadgeFontSize) * textScale,
+      weight: .semibold
+    ).monospacedDigit()
+    guard capped else { return digits }
+    var plus = AttributedString("+")
+    plus.font = Font.system(size: Self.railBadgeCappedPlusSize * textScale, weight: .semibold)
+    return digits + plus
   }
 
   private var spokenValue: String {
@@ -409,16 +423,27 @@ extension OverlayChannelPill {
   static let railBadgeHeight: CGFloat = 13
   static let railBadgeFontSize: CGFloat = 9
   static let railBadgePadding: CGFloat = 3.5
-  /// One monospaced 9 pt semibold digit, as `railPillWidth` counts 7.2 at 12.
+  /// The width counted per digit. The 9 pt glyph advances about 6.1 pt;
+  /// the padding takes the difference.
   static let railBadgeDigitAdvance: CGFloat = 5.4
+  /// `99+` above 99, in the two digits' width.
+  static let railBadgeCappedDigitSize: CGFloat = 8
+  static let railBadgeCappedPlusSize: CGFloat = 6
   static let railBadgeRise: CGFloat = 2
   static let railBadgeOverlap: CGFloat = 1
-  /// The rail keeps room beside its pills for counts of up to two digits.
+  /// The rail keeps room beside its pills for counts of up to two digits;
+  /// a larger count reads `99+` in the same width.
   static let railBadgeReservedCount = 99
 
-  /// The rail capsule's width: a circle for one digit, wider with each more.
+  /// The rail capsule's figure: the count, or `99+` above 99.
+  static func railBadgeLabel(count: Int) -> String {
+    count > railBadgeReservedCount ? "\(railBadgeReservedCount)+" : String(count)
+  }
+
+  /// The rail capsule's width: a circle for one digit, wider with two, and
+  /// the two digits' width for `99+`.
   static func railBadgeWidth(count: Int, scale: CGFloat) -> CGFloat {
-    let digits = CGFloat(String(count).count)
+    let digits = CGFloat(String(min(count, railBadgeReservedCount)).count)
     return ceil(max(railBadgeHeight, digits * railBadgeDigitAdvance + 2 * railBadgePadding) * scale)
   }
 

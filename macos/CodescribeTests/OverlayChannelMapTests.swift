@@ -798,7 +798,7 @@ final class OverlayChannelMapTests: XCTestCase {
       // The antenna's pill and an agent's (dot 8 instead of glyph 12).
       for pillWidth in [widest, widest - 4 * scale] {
         let pill = CGRect(x: 0, y: 0, width: pillWidth, height: 24 * scale)
-        for count in [1, 9, 10, 99, 123] {
+        for count in [1, 9, 10, 99, 100, 250] {
           let badge = OverlayChannelPill.railBadgeFrame(
             count: count, pillSize: pill.size, scale: scale)
           XCTAssertEqual(badge.height, OverlayChannelPill.railBadgeHeight * scale)
@@ -826,7 +826,19 @@ final class OverlayChannelMapTests: XCTestCase {
       XCTAssertEqual(width(9), width(1), "one digit is a circle")
       XCTAssertGreaterThan(width(10), width(9), "10 is wider than 9")
       XCTAssertEqual(width(99), width(10))
-      XCTAssertGreaterThan(width(100), width(99))
+      XCTAssertEqual(width(100), width(99), "99+ keeps the two digits' width")
+      XCTAssertEqual(width(250), width(99))
+      XCTAssertEqual(OverlayChannelPill.railBadgeLabel(count: 99), "99")
+      XCTAssertEqual(OverlayChannelPill.railBadgeLabel(count: 100), "99+")
+      XCTAssertEqual(OverlayChannelPill.railBadgeLabel(count: 250), "99+")
+      // `99+` (8 pt digits, 6 pt plus, each measured with a point of
+      // slack) fits the two digits' width.
+      let figure =
+        OverlayChannelPill.textWidth(
+          "99", size: OverlayChannelPill.railBadgeCappedDigitSize * scale, monospacedDigits: true)
+        + OverlayChannelPill.textWidth(
+          "+", size: OverlayChannelPill.railBadgeCappedPlusSize * scale)
+      XCTAssertLessThanOrEqual(figure, width(250), "@\(scale): 99+ is not clipped")
       // Centred in the column before the reserved room, the widest pill's
       // two-digit capsule ends inside the rail's content, before the band.
       let content =

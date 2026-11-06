@@ -116,6 +116,8 @@ folded rail the count is its own small capsule outside the pill, at the
 pill's top-right shoulder, so neither the pill nor its channel digit is
 covered: white with a hairline and dark figures in light, grey with light
 figures in dark, wider with each digit (Founder's mock-up, 2026-11-06).
+A count above 99 reads `99+` in the two digits' width; the rail does not
+grow for it.
 The roster's positive unread count keeps its fixed badge instead of disappearing
 when space is tight. It has layout priority over the name and clock. The read
 mark consists of two identical translated checks; it is not two different states.

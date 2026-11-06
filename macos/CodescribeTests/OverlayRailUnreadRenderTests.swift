@@ -4,13 +4,13 @@ import XCTest
 
 @testable import Codescribe
 
-/// Review render of the folded agents rail's unread counts (1, 9, 10, 99),
+/// Review renders of the folded agents rail's unread counts (1, 9, 10, 99;
+/// and 100, 250, 99, 9 for the `99+` cap),
 /// drawn the way the overlay mounts it: `OverlayChannelStatusView.railBody`
 /// inside the rail's own width (`OverlayAgentDrawerLayout.railWidth`) and
 /// the resize band's insets on both sides, with channel 0 under its antenna,
-/// your inbox's envelope and the agents on 3, 4 and 5. Channel 0 carries
-/// 1 unread reply, 3 carries 9, 4 carries 10 and 5 carries 99; the inbox has
-/// none. Every scene renders in dark and in light.
+/// your inbox's envelope and the agents on 3, 4 and 5; the inbox has no
+/// unread replies. Every scene renders in dark and in light.
 ///
 /// The assertions only make sure the rail projects the intended counts; the
 /// image is judged by a person. Each PNG is attached
@@ -102,8 +102,19 @@ final class OverlayRailUnreadRenderTests: XCTestCase {
 
   // MARK: - Folded rail
 
-  /// The rail at its own width, 200 pt tall: 0 · envelope · 3 · 4 · 5.
+  /// The rail at its own width, 200 pt tall: 0 · envelope · 3 · 4 · 5,
+  /// with 1, 9, 10 and 99 unread replies on 0, 3, 4 and 5.
   func testRenderFoldedRailUnreadCounts() throws {
+    try renderRail(counts: ["0": 1, "3": 9, "4": 10, "5": 99], scene: "1-9-10-99")
+  }
+
+  /// Counts above 99 read `99+` in the two digits' width: 100 on 0 and 250
+  /// on 3, beside 99 and 9 on 4 and 5.
+  func testRenderFoldedRailUnreadCountsAboveNinetyNine() throws {
+    try renderRail(counts: ["0": 100, "3": 250, "4": 99, "5": 9], scene: "100-250-99-9")
+  }
+
+  private func renderRail(counts: [String: Int], scene: String) throws {
     let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
     let inbox = OverlayConversation.humanInbox(messages: [])
     let agents = [("3", "lena"), ("4", "kaja"), ("5", "olek")]
@@ -111,7 +122,6 @@ final class OverlayRailUnreadRenderTests: XCTestCase {
       try ownerConversation(agent.1, channel: agent.0, lease: String(index, radix: 16))
     }
     let conversations = [all, inbox] + owned
-    let counts = ["0": 1, "3": 9, "4": 10, "5": 99]
     var unreadCounts: [String: Int] = [:]
     for conversation in [all] + owned {
       unreadCounts[conversation.id] = counts[conversation.channel]
@@ -135,7 +145,7 @@ final class OverlayRailUnreadRenderTests: XCTestCase {
         channels: channels, unavailable: false, palette: look.palette, animates: false,
         hudStates: hudStates, conversations: conversations,
         unreadCounts: unreadCounts, onSelectConversation: { _ in })
-      XCTAssertEqual(roster.railPillDisplay(all, channel: nil).unreadCount, 1)
+      XCTAssertEqual(roster.railPillDisplay(all, channel: nil).unreadCount, counts["0"])
       XCTAssertEqual(roster.railPillDisplay(inbox, channel: nil).unreadCount, 0)
       XCTAssertEqual(roster.railPillDisplay(inbox, channel: nil).symbol, "envelope")
       for (index, channel) in channels.enumerated() {
@@ -150,7 +160,7 @@ final class OverlayRailUnreadRenderTests: XCTestCase {
         roster.railBody(maximumHeight: 200)
           .padding(.horizontal, OverlayResizeHit.band)
           .frame(width: width),
-        size: CGSize(width: ceil(width), height: 200), look: look, name: "rail-unread-1-9-10-99")
+        size: CGSize(width: ceil(width), height: 200), look: look, name: "rail-unread-\(scene)")
     }
   }
 }
