@@ -22,6 +22,11 @@ make install-if-idle
 
 **Result**: App bundle installed at `/Applications/Codescribe.app`, with model/cache checks handled by `scripts/build-app.sh`.
 
+**A running app**: the install replaces the bundle and the idle restart swaps
+the running process for the new build at its first idle moment; see
+[RESTART_IF_IDLE.md](RESTART_IF_IDLE.md). An app that was running before the
+install is running after it.
+
 **How it runs**: Launch the app bundle through LaunchServices using Finder,
 Spotlight, or `make start`. For a specific build or per-launch environment,
 use the explicit bundle commands below.

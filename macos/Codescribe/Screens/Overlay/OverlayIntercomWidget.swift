@@ -147,6 +147,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   #if DEBUG
+    /// A test reads a detached card's content in a window it never presents.
+    /// The hidden-canvas gate would leave that card empty on its next update,
+    /// because only the app's layout decision makes this controller visible.
+    var rendersUnpresentedInstanceCards = false
+
     /// Exercise the same header without presenting any desktop windows.
     func offscreenHeader(width: CGFloat) -> some View {
       groupWidth = width
@@ -412,6 +417,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   fileprivate func isInstanceCardRendered(_ id: UUID, instance: OverlayIntercomInstance) -> Bool {
     guard instancePanels[id] != nil else { return !instance.closed }
+    #if DEBUG
+      if rendersUnpresentedInstanceCards { return !instance.closed }
+    #endif
     return visible && !instance.closed
   }
 
@@ -1367,6 +1375,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
               x: frame.minX, y: frame.maxY - headerHeight,
               width: frame.width, height: headerHeight), display: true)
           positioning = false
+          // The window snaps a fractional drag to whole pixels. The store keeps
+          // the width the window took, not the one the pointer asked for.
+          desktop.groupWidth = Double(header.frame.width)
           UserDefaults.standard.set(
             [Double(header.frame.minX), Double(header.frame.minY)], forKey: Self.positionKey)
         }
@@ -2826,11 +2837,28 @@ private struct OverlayIntercomMessagePreview: View {
               .fixedSize(horizontal: false, vertical: true)
               .accessibilityIdentifier("overlay-intercom-message-route")
           }
-          ScrollView {
-            OverlayConversationMessageContent(message: message, palette: palette)
-              .frame(maxWidth: .infinity, alignment: .leading)
+          // The card's height is the user's gesture, not a multiple of a
+          // line. The text takes the whole lines that fit and leaves the rest
+          // empty, so the last visible line is never cut through its letters.
+          GeometryReader { proxy in
+            ScrollView {
+              OverlayConversationMessageContent(message: message, palette: palette)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .csAutohidingScrollers()
+            // The frame holds whole lines only while the offset does too: a
+            // scroll comes to rest on a line boundary, and a new message
+            // starts from its first line instead of inheriting the offset.
+            .scrollTargetBehavior(
+              OverlayIntercomWholeLineScroll(pitch: Self.linePitch(scale: textScale))
+            )
+            .id(message.id)
+            .frame(
+              height: Self.wholeLinesHeight(available: proxy.size.height, scale: textScale),
+              alignment: .topLeading
+            )
+            .clipped()
           }
-          .csAutohidingScrollers()
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .padding(.horizontal, 12)
@@ -2840,6 +2868,35 @@ private struct OverlayIntercomMessagePreview: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .clipped()
     .accessibilityIdentifier("overlay-intercom-message-preview")
+  }
+
+  /// Prose in `MarkdownText` is the body font with this much between lines.
+  static let proseLineSpacing: CGFloat = 5
+
+  /// The distance from one prose line's top to the next.
+  static func linePitch(scale: CGFloat) -> CGFloat {
+    let font = NSFont.systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)
+    return ceil(NSLayoutManager().defaultLineHeight(for: font)) + proseLineSpacing
+  }
+
+  /// The last line needs no spacing after it. One line always stays.
+  static func wholeLinesHeight(available: CGFloat, scale: CGFloat) -> CGFloat {
+    let pitch = linePitch(scale: scale)
+    let lines = max(1, floor((available + proseLineSpacing) / pitch))
+    return lines * pitch - proseLineSpacing
+  }
+}
+
+/// Rests a scroll on a prose line boundary. Paragraph gaps and code blocks do
+/// not share the pitch, so a long rich message is aligned from its first line
+/// and may drift by a few points further down.
+private struct OverlayIntercomWholeLineScroll: ScrollTargetBehavior {
+  let pitch: CGFloat
+
+  func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
+    guard pitch > 0 else { return }
+    let limit = max(0, context.contentSize.height - context.containerSize.height)
+    target.rect.origin.y = min(limit, max(0, (target.rect.origin.y / pitch).rounded() * pitch))
   }
 }
 
@@ -3406,7 +3463,16 @@ private struct OverlayIntercomResizeHandle: NSViewRepresentable {
   }
 }
 
-private final class OverlayIntercomResizeView: NSView {
+/// A gesture view that follows the pointer on screen rather than the events
+/// it is handed. The app asks AppKit; a test names the point, so the Founder's
+/// own mouse moving during a run cannot resize the group under test.
+@MainActor
+protocol OverlayIntercomPointerSource: AnyObject {
+  var pointerLocation: () -> CGPoint { get set }
+}
+
+private final class OverlayIntercomResizeView: NSView, OverlayIntercomPointerSource {
+  var pointerLocation: () -> CGPoint = { NSEvent.mouseLocation }
   var edge = OverlayIntercomWidgetLayout.ResizeEdge.bottomRight
   var accent = OverlayAppearancePalette.dark.agentAccent.nsColor
   var cornerRadius: CGFloat = OverlayIntercomWidgetLayout.conversationCornerRadius
@@ -3425,7 +3491,7 @@ private final class OverlayIntercomResizeView: NSView {
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override func mouseDown(with event: NSEvent) {
     finishResize(cancelled: true)
-    origin = NSEvent.mouseLocation
+    origin = pointerLocation()
     originalFrame = window?.frame
     gesture = UUID()
     moved = false
@@ -3451,7 +3517,7 @@ private final class OverlayIntercomResizeView: NSView {
         return consumed ? nil : event
       }
     }
-    let point = NSEvent.mouseLocation
+    let point = pointerLocation()
     resize(
       originalFrame, CGSize(width: point.x - origin.x, height: point.y - origin.y), edge, gesture)
   }

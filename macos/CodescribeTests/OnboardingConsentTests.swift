@@ -68,7 +68,26 @@ final class OnboardingConsentTests: XCTestCase {
     XCTAssertEqual(engine.snapshotReads, 0)
     XCTAssertEqual(engine.keyReads, 0)
     XCTAssertEqual(
-      PermissionKind.allCases.filter(\.isOptionalForSetup), [.screenRecording, .fullDiskAccess])
+      PermissionKind.allCases.filter(\.isOptionalForSetup),
+      [.screenRecording, .fullDiskAccess, .spotifyAutomation])
+  }
+
+  func testASecondClickWhileSpotifyAccessIsBeingAskedSendsNoSecondRequest() async {
+    let fixture = PermissionRequestFixture(grantOnRequest: true)
+    let model = OnboardingViewModel(
+      engine: ConsentRecordingEngine(), hotkeys: MockHotkeysEngine(),
+      agentStatus: MockAgentStatusEngine(), agentBridge: ConsentTestBridge(), probe: fixture,
+      preferredLanguages: ["en"], processInterfaceLanguage: .english)
+    XCTAssertEqual(model.permissions.state(.spotifyAutomation), .notDetermined)
+
+    model.grantPermission(for: .spotifyAutomation, client: fixture)
+    XCTAssertTrue(model.pendingPermissionRequests.contains(.spotifyAutomation))
+    model.grantPermission(for: .spotifyAutomation, client: fixture)
+    for _ in 0..<20 { await Task.yield() }
+
+    XCTAssertEqual(fixture.requests, [PermissionKind.spotifyAutomation.rawValue])
+    XCTAssertEqual(model.permissions.state(.spotifyAutomation), .granted)
+    XCTAssertTrue(model.pendingPermissionRequests.isEmpty)
   }
 
   private func makeModel(_ engine: ConsentRecordingEngine) -> OnboardingViewModel {

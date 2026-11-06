@@ -1708,6 +1708,36 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, astra.id)
   }
 
+  /// The expanded window's Agents control and "Show agents" return from the
+  /// transcription to the Agents view the user left: the list without a
+  /// conversation, or the conversation with its panes as they were.
+  func testExpandedAgentsPressAndShowAgentsRestoreTheAgentsViewTheUserLeft() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.setPresentationMode(.expanded)
+
+    state.showAgentMonitor()
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertNil(state.selectedConversationID)
+    state.showTranscription()
+    XCTAssertEqual(state.windowContentSurface, .transcription)
+    state.toggleAgentSidebar()
+    XCTAssertEqual(state.windowContentSurface, .agents)
+    XCTAssertTrue(state.showsAgentMonitor, "the list comes back, not a conversation")
+    XCTAssertNil(state.selectedConversationID)
+
+    state.setAgentsLayout(.agents)
+    state.selectConversation(astra.id)
+    state.showTranscription()
+    XCTAssertEqual(state.windowContentSurface, .transcription)
+    state.showAgents()
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertEqual(state.agentsLayout, .agents, "the panes stay as the user left them")
+    XCTAssertFalse(state.showsAgentMonitor)
+  }
+
   func testAgentsPressOpensTheDrawerOnlyWithNothingToShow() throws {
     let empty = OverlayState()
     empty.toggleAgentSidebar()

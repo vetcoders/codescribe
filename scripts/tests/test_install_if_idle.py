@@ -168,7 +168,7 @@ class InstallPrebuiltTests(unittest.TestCase):
         self.namespace["assert_bus_idle"]()
         self.namespace["assert_turn_idle"](self.lease)
         with contextlib.redirect_stdout(self.output), self.assertRaises(SystemExit) as terminal:
-            self.namespace["install_local"](self.lease)
+            self.namespace["install_local"]()
         self.assertEqual(terminal.exception.code, 0)
         self.assertTrue(any(c[0] == "make" for c in self.commands))
         self.assertFalse(any(c[0] in ("lsof", "ps") for c in self.commands))

@@ -31,6 +31,10 @@ final class MarkdownLinkPointerTests: XCTestCase {
     XCTAssertEqual(regions.count, 1, "One link, one pointer region")
     let region = try XCTUnwrap(regions.first)
     let link = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+    let content = try XCTUnwrap(panel.contentView)
+    XCTAssertNil(
+      OverlayResizeHit.edge(at: content.convert(link, from: nil), in: content.bounds),
+      "the fixture's link must lie outside the resize bands")
     let beside = NSPoint(x: 4, y: link.y)
 
     let saved = NSCursor.current
@@ -86,17 +90,25 @@ final class MarkdownLinkPointerTests: XCTestCase {
     XCTAssertEqual(handed, [URL(fileURLWithPath: "/tmp/report.md")])
   }
 
+  /// Past the widest resize zone of an expanded panel.
+  private static let bandClearance: CGFloat = 32
+
   private func mount(_ markdown: String, opener: MarkdownLinkOpener) -> FloatingOverlayPanel {
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 100, y: 100, width: 420, height: 120),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.isReleasedWhenClosed = false
+    // The text keeps clear of the panel's resize bands (16 pt sides, 30 pt
+    // bottom corners), which own the pointer before any link does, and sits
+    // in the product's own container: a bare hosting view is flipped, so the
+    // bands read its top edge as the bottom one and took the first line.
     let host = NSHostingView(
       rootView: MarkdownText(raw: markdown)
         .environment(\.markdownLinkOpener, opener)
-        .frame(width: 400, height: 100, alignment: .topLeading))
+        .padding(Self.bandClearance)
+        .frame(width: 420, height: 120, alignment: .topLeading))
     host.frame = NSRect(x: 0, y: 0, width: 420, height: 120)
-    panel.contentView = host
+    panel.contentView = OverlayContentContainer(hosting: host)
     BackgroundTestWindow.present(panel)
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.3))

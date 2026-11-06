@@ -232,6 +232,79 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertFalse(frame.intersects(parentFrame))
   }
 
+  /// A row in the right-hand column of a split window keeps its hint beside
+  /// itself instead of jumping across the window to the window's left edge.
+  @MainActor
+  func testLeadingHintInARightHandSplitColumnStaysBesideTheAnchor() {
+    let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+    let window = NSRect(x: 200, y: 100, width: 900, height: 600)
+    let rightColumnRow = NSRect(x: 760, y: 500, width: 320, height: 44)
+    let size = CGSize(width: 280, height: 180)
+    let frame = OverlayHintPanel.frame(
+      size: size, leading: rightColumnRow, parentFrame: window, within: screen)
+    XCTAssertEqual(frame.maxX, rightColumnRow.minX - OverlayHintPanel.gap, accuracy: 0.001)
+    XCTAssertGreaterThan(frame.minX, window.minX, "the hint never jumps to the window's far edge")
+    XCTAssertFalse(frame.intersects(rightColumnRow))
+  }
+
+  @MainActor
+  func testLeadingHintStaysBesideItsRowWhenTheWindowHasRoom() {
+    let screen = NSRect(x: 0, y: 0, width: 1728, height: 1000)
+    // The Agents window: a wide document with the list as its right column.
+    let parentFrame = NSRect(x: 260, y: 200, width: 1080, height: 720)
+    let row = NSRect(x: 1130, y: 600, width: 200, height: 70)
+    let size = CGSize(width: 260, height: 180)
+    let frame = OverlayHintPanel.frame(
+      size: size, leading: row, parentFrame: parentFrame, within: screen)
+    XCTAssertEqual(frame.maxX, row.minX - OverlayHintPanel.gap, accuracy: 0.001)
+    XCTAssertEqual(frame.maxY, row.maxY, accuracy: 0.001)
+    XCTAssertTrue(parentFrame.contains(frame), "the preview stays over the document")
+    XCTAssertFalse(frame.intersects(row))
+    // The same list docked on the window's left edge previews on its right.
+    let leftRow = NSRect(x: 270, y: 600, width: 200, height: 70)
+    let mirrored = OverlayHintPanel.frame(
+      size: size, leading: leftRow,
+      parentFrame: NSRect(x: 8, y: 200, width: 1080, height: 720),
+      within: screen)
+    XCTAssertFalse(mirrored.intersects(leftRow))
+    XCTAssertTrue(screen.contains(mirrored))
+  }
+
+  /// A window large enough for the card keeps it inside, clear of the row
+  /// that raised it, wherever that row sits (Maciej, 2026-11-06: hover cards
+  /// are fine, "tylko NIE poza oknem").
+  @MainActor
+  func testLeadingHintNeverLeavesAWindowThatCanHoldIt() {
+    let screen = NSRect(x: 0, y: 0, width: 1728, height: 1000)
+    let size = CGSize(width: 260, height: 180)
+    for window in [
+      NSRect(x: 400, y: 150, width: 900, height: 640),
+      NSRect(x: 400, y: 150, width: 420, height: 640),
+      NSRect(x: 0, y: 150, width: 900, height: 640),
+    ] {
+      let rows: [(String, NSRect)] = [
+        ("left column", NSRect(x: window.minX + 12, y: window.midY, width: 300, height: 44)),
+        (
+          "right column",
+          NSRect(x: window.maxX - 312, y: window.midY, width: 300, height: 44)
+        ),
+        ("full width", NSRect(x: window.minX + 12, y: window.midY, width: window.width - 24, height: 44)),
+        ("bottom row", NSRect(x: window.minX + 12, y: window.minY + 8, width: 300, height: 44)),
+        ("top row", NSRect(x: window.minX + 12, y: window.maxY - 52, width: 300, height: 44)),
+        (
+          "full width at the bottom",
+          NSRect(x: window.minX + 12, y: window.minY + 8, width: window.width - 24, height: 44)
+        ),
+      ]
+      for (name, row) in rows {
+        let frame = OverlayHintPanel.frame(
+          size: size, leading: row, parentFrame: window, within: screen)
+        XCTAssertTrue(window.contains(frame), "\(name) in \(window): card left the window, \(frame)")
+        XCTAssertFalse(frame.intersects(row), "\(name) in \(window): card covers its row, \(frame)")
+      }
+    }
+  }
+
   @MainActor
   func testAgentMetadataUsesTheExactOwnerAndDeclaredExecutionLocation() throws {
     let identity = AgentPlaybackIdentity(provider: "codex", session: "fixture", bus: "/fixture/bus")
