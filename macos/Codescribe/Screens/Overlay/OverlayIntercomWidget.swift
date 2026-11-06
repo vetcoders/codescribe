@@ -147,6 +147,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   #if DEBUG
+    /// A test reads a detached card's content in a window it never presents.
+    /// The hidden-canvas gate would leave that card empty on its next update,
+    /// because only the app's layout decision makes this controller visible.
+    var rendersUnpresentedInstanceCards = false
+
     /// Exercise the same header without presenting any desktop windows.
     func offscreenHeader(width: CGFloat) -> some View {
       groupWidth = width
@@ -412,6 +417,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   fileprivate func isInstanceCardRendered(_ id: UUID, instance: OverlayIntercomInstance) -> Bool {
     guard instancePanels[id] != nil else { return !instance.closed }
+    #if DEBUG
+      if rendersUnpresentedInstanceCards { return !instance.closed }
+    #endif
     return visible && !instance.closed
   }
 
