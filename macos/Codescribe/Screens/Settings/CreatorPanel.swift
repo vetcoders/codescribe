@@ -20,6 +20,7 @@ struct CreatorPanel: View {
 
   private static let permissionKinds: [PermissionKind] = [
     .microphone, .accessibility, .inputMonitoring, .screenRecording, .speechRecognition,
+    .spotifyAutomation,
   ]
 
   var body: some View {
@@ -113,7 +114,7 @@ struct CreatorPanel: View {
         .accessibilityIdentifier("settings-permissions-system-settings")
       }
       .padding(.top, SettingsScale.sectionGap)
-      // With every scope granted the five rows fold into one verified line;
+      // With every listed scope granted the rows fold into one verified line;
       // a missing scope brings the full list back on its own.
       VStack(spacing: 0) {
         if allPermissionsGranted {
@@ -851,6 +852,7 @@ private struct PermissionChecklistRow: View {
   var onRequested: (() -> Void)? = nil
   /// Re-probe after an in-app request (Speech Recognition dialog).
   var onStateChanged: (() -> Void)? = nil
+  @State private var requestPending = false
 
   private var granted: Bool { state.isGranted }
 
@@ -863,10 +865,15 @@ private struct PermissionChecklistRow: View {
           .font(CSFont.ui(14, .medium))
           .foregroundStyle(Color.primary)
           .accessibilityValue(granted ? "" : state.label)
+        if kind == .spotifyAutomation {
+          Text("Optional")
+            .font(.caption)
+            .foregroundStyle(CSColor.secondaryInk)
+        }
         if let note {
           Text(note)
             .font(.caption)
-            .foregroundStyle(CSColor.dangerLight)
+            .foregroundStyle(kind.isRequiredForSetup ? CSColor.dangerLight : CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -882,13 +889,16 @@ private struct PermissionChecklistRow: View {
         // visible label stays generic; VoiceOver keeps the specific one.
         if repair.requestsNatively {
           SettingsChipButton("Allow access", tint: CSColor.secondaryInk) {
+            requestPending = true
             onRequested?()
             Task { @MainActor in
+              defer { requestPending = false }
               // The return value is not a grant; the following probe is.
               _ = await kind.requestInApp()
               onStateChanged?()
             }
           }
+          .disabled(requestPending)
           .accessibilityLabel(Text("allow \(kind.displayName)"))
         }
         if repair.opensSettings {
@@ -907,8 +917,11 @@ private struct PermissionChecklistRow: View {
   /// granted one wears the olive capsule the wizard shows (Founder, 2026-10-26).
   private var missingMark: some View {
     ZStack {
-      Circle().fill(CSColor.dangerLight.opacity(0.2))
-      CSIconView(icon: .warning, size: 11, weight: .semibold, color: CSColor.dangerLight)
+      Circle().fill(
+        (kind.isRequiredForSetup ? CSColor.dangerLight : CSColor.secondaryInk).opacity(0.2))
+      CSIconView(
+        icon: .warning, size: 11, weight: .semibold,
+        color: kind.isRequiredForSetup ? CSColor.dangerLight : CSColor.secondaryInk)
     }
     .frame(width: 20, height: 20)
   }

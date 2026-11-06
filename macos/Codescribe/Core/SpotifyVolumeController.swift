@@ -88,7 +88,11 @@ actor SpotifyVolumeController {
       guard let held = lease else { return .unchanged }
       return try await ramp(to: held.target, restoring: false, revision: request)
     } catch {
-      return (error as NSError).code == -1743 ? .permissionRequired : .unavailable
+      let code = (error as NSError).code
+      DiagnosticLog.installed?.append(
+        category: "media",
+        "action=spotify-volume-error code=\(code) recording=\(recording) revision=\(request)")
+      return code == -1743 || code == -1744 ? .permissionRequired : .unavailable
     }
   }
 
