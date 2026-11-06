@@ -361,6 +361,13 @@ final class SpotifyVolumeControllerTests: XCTestCase {
       recording: true, application: spotify, outputActive: true, revision: 1)
     XCTAssertEqual(refused, .permissionRequired)
 
+    // Recording never raises the consent dialog, so an unasked grant answers
+    // -1744; the checklist is where it gets asked.
+    player.fail(with: NSError(domain: NSOSStatusErrorDomain, code: -1744))
+    let unasked = await controller(player).update(
+      recording: true, application: spotify, outputActive: true, revision: 1)
+    XCTAssertEqual(unasked, .permissionRequired)
+
     player.fail(with: NSError(domain: NSOSStatusErrorDomain, code: -600))
     let gone = await controller(player).update(
       recording: true, application: spotify, outputActive: true, revision: 1)
