@@ -2177,7 +2177,12 @@ private struct OverlayIntercomCard: View {
                 alignment: .top)
             }
           }
-          .modifier(OverlayComposerSurface(palette: palette))
+          // A resting fiszka is one surface, the card's own (Maciej,
+          // 2026-11-06: "to była zawsze jedna powierzchnia"). Its preview is
+          // clipped below the title, so nothing passes under the name and a
+          // plate there was a second surface with its own outline. Only an
+          // open conversation scrolls under its bar and keeps the glass.
+          .modifier(OverlayComposerSurface(palette: palette, isEnabled: expanded))
           .accessibilitySortPriority(1)
         }
       )
@@ -2827,11 +2832,21 @@ private struct OverlayIntercomMessagePreview: View {
               .fixedSize(horizontal: false, vertical: true)
               .accessibilityIdentifier("overlay-intercom-message-route")
           }
-          ScrollView {
-            OverlayConversationMessageContent(message: message, palette: palette)
-              .frame(maxWidth: .infinity, alignment: .leading)
+          // The card's height is the user's gesture, not a multiple of a
+          // line. The text takes the whole lines that fit and leaves the rest
+          // empty, so the last visible line is never cut through its letters.
+          GeometryReader { proxy in
+            ScrollView {
+              OverlayConversationMessageContent(message: message, palette: palette)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .csAutohidingScrollers()
+            .frame(
+              height: Self.wholeLinesHeight(available: proxy.size.height, scale: textScale),
+              alignment: .topLeading
+            )
+            .clipped()
           }
-          .csAutohidingScrollers()
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .padding(.horizontal, 12)
@@ -2841,6 +2856,16 @@ private struct OverlayIntercomMessagePreview: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .clipped()
     .accessibilityIdentifier("overlay-intercom-message-preview")
+  }
+
+  /// Prose in `MarkdownText` is the body font with 5 pt between lines; the
+  /// last line needs no spacing after it. One line always stays.
+  static func wholeLinesHeight(available: CGFloat, scale: CGFloat) -> CGFloat {
+    let font = NSFont.systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)
+    let line = ceil(NSLayoutManager().defaultLineHeight(for: font))
+    let spacing: CGFloat = 5
+    let lines = max(1, floor((available + spacing) / (line + spacing)))
+    return lines * (line + spacing) - spacing
   }
 }
 

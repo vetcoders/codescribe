@@ -195,6 +195,9 @@ struct OverlayControlGlass: ViewModifier {
 /// as a view, so an environment read on it would see the default.
 struct OverlayComposerSurface: ViewModifier {
   let palette: OverlayAppearancePalette
+  /// Off, the content sits on its container's own surface: no sheet, no glass,
+  /// no contour. The view keeps its identity when the plate comes and goes.
+  var isEnabled = true
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
 
@@ -203,12 +206,12 @@ struct OverlayComposerSurface: ViewModifier {
     return
       content
       .background {
-        if opaque {
+        if opaque, isEnabled {
           RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
             .fill(palette.desktopBackground.color)
         }
       }
       .modifier(
-        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !opaque))
+        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: isEnabled && !opaque))
   }
 }
