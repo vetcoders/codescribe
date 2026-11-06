@@ -1275,11 +1275,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   /// The Agents mark is one Dingbats character, in the family of the
   /// roster's ❖, that every macOS font cascade can paint; the transcription
-  /// is the catalog's `note.text` system symbol (decision D7), which resolves.
+  /// is the catalog's `text.quote` system symbol (L10, 2026-11-06), which
+  /// resolves.
   func testHeaderGlyphsAreMarksTheSystemCanPaint() throws {
     XCTAssertEqual(OverlayHeaderGlyph.agents, "\u{2726}")
-    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, "note.text")
-    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, CSIcon.notesMode.systemName)
+    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, "text.quote")
+    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, CSIcon.transcription.systemName)
     XCTAssertNotNil(
       NSImage(
         systemSymbolName: OverlayHeaderGlyph.transcriptionSymbol, accessibilityDescription: nil),

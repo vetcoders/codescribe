@@ -4,13 +4,14 @@ import SwiftUI
 /// Marks of the header's two content controls. The agent roster is one
 /// Dingbats character, the ✦ of the roster's ❖ family, which every macOS font
 /// cascade covers (Zapf Dingbats, Menlo). The transcription is the system
-/// `note.text` symbol from the icon catalog (`CSIcon.notesMode`), one mark in
-/// every form of the bar; the hand and the pen it replaces were one function.
+/// `text.quote` symbol from the icon catalog (`CSIcon.transcription`), one
+/// mark in every form of the bar; the hand and the pen it replaces were one
+/// function, and `note.text` read as a calendar at 11 pt.
 enum OverlayHeaderGlyph {
   /// ✦ the agent roster.
   static let agents = "\u{2726}"
   /// The transcription's system symbol.
-  static let transcriptionSymbol = CSIcon.notesMode.systemName
+  static let transcriptionSymbol = CSIcon.transcription.systemName
 
   /// Size inside the 22 pt header circle at which the ✦ carries the visual
   /// weight of the 9 pt semibold symbols beside it.

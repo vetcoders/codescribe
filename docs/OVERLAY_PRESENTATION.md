@@ -504,8 +504,9 @@ brand dot (the close button), transcription (`transcriptionPreviewButton`),
 the microphone, the Agents button (✦) and the preview chevron, in the bar's
 glyphs, palette and 22 pt controls. No counter, waveform, timer, map or pin:
 the pin is the expanded bar's and the window's. The transcription control is
-the system `note.text` symbol in every form (`OverlayTranscriptionGlyph`,
-decision D7, 2026-11-06); while the window shows the transcription it is
+the system `text.quote` symbol in every form (`OverlayTranscriptionGlyph`,
+`CSIcon.transcription`, decision D7 and L10, 2026-11-06: `note.text` read as a
+calendar at 11 pt); while the window shows the transcription it is
 chosen like the pin, primary ink on the neutral wash
 (`OverlayHeaderAccent.state`), never terracotta. With
 the channel map disabled the `codescribe` word follows the dot, as before;
