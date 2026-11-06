@@ -1076,6 +1076,12 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     panel.appearance = look.appearance
     panel.setContentSize(NSSize(width: 470, height: DictationOverlayWindow.minSize.height))
     BackgroundTestWindow.present(panel)
+    if let visible = NSScreen.main?.visibleFrame {
+      // At the top of the screen the menu opens downward whole, without the
+      // scroll arrow a short space below the click gives it.
+      panel.setFrameOrigin(
+        NSPoint(x: visible.minX + 40, y: visible.maxY - panel.frame.height - 20))
+    }
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.15))
