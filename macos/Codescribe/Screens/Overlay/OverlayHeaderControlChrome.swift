@@ -400,10 +400,17 @@ final class OverlayHintPanel {
   static func frame(
     size: CGSize, leading anchor: NSRect, parentFrame: NSRect? = nil, within visible: NSRect
   ) -> NSRect {
-    let leadingEdge = min(anchor.minX, parentFrame?.minX ?? anchor.minX)
-    let trailingEdge = max(anchor.maxX, parentFrame?.maxX ?? anchor.maxX)
-    let left = leadingEdge - gap - size.width
-    let right = trailingEdge + gap
+    // Next to the row it describes whenever the owning window has the room:
+    // in the wide Agents window the list is one column of many, and a hint
+    // hung off the window's far edge sat across the screen from its row
+    // (Maciej, 2026-11-06: "overlay podglądu całkiem poza oknem"). Only a
+    // window too narrow to hold it, a fiszka column, sends it outside.
+    var left = anchor.minX - gap - size.width
+    var right = anchor.maxX + gap
+    if let parentFrame {
+      if left < parentFrame.minX { left = min(left, parentFrame.minX - gap - size.width) }
+      if right + size.width > parentFrame.maxX { right = max(right, parentFrame.maxX + gap) }
+    }
     // A column against the left screen edge previews on its right. Clamping
     // the left candidate onto the row used to cover the very control hovered.
     let x =

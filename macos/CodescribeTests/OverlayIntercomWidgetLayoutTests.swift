@@ -233,6 +233,29 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   }
 
   @MainActor
+  func testLeadingHintStaysBesideItsRowWhenTheWindowHasRoom() {
+    let screen = NSRect(x: 0, y: 0, width: 1728, height: 1000)
+    // The Agents window: a wide document with the list as its right column.
+    let parentFrame = NSRect(x: 260, y: 200, width: 1080, height: 720)
+    let row = NSRect(x: 1130, y: 600, width: 200, height: 70)
+    let size = CGSize(width: 260, height: 180)
+    let frame = OverlayHintPanel.frame(
+      size: size, leading: row, parentFrame: parentFrame, within: screen)
+    XCTAssertEqual(frame.maxX, row.minX - OverlayHintPanel.gap, accuracy: 0.001)
+    XCTAssertEqual(frame.maxY, row.maxY, accuracy: 0.001)
+    XCTAssertTrue(parentFrame.contains(frame), "the preview stays over the document")
+    XCTAssertFalse(frame.intersects(row))
+    // The same list docked on the window's left edge previews on its right.
+    let leftRow = NSRect(x: 270, y: 600, width: 200, height: 70)
+    let mirrored = OverlayHintPanel.frame(
+      size: size, leading: leftRow,
+      parentFrame: NSRect(x: 8, y: 200, width: 1080, height: 720),
+      within: screen)
+    XCTAssertFalse(mirrored.intersects(leftRow))
+    XCTAssertTrue(screen.contains(mirrored))
+  }
+
+  @MainActor
   func testAgentMetadataUsesTheExactOwnerAndDeclaredExecutionLocation() throws {
     let identity = AgentPlaybackIdentity(provider: "codex", session: "fixture", bus: "/fixture/bus")
     let owner = try XCTUnwrap(
