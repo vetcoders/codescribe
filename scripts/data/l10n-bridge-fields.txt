@@ -250,6 +250,7 @@ data  CsSettings.agentChannelSendPauseSource
 data  CsSettings.agentChannelSegmentFinish
 data CsSettings.widgetShortcut
 data CsSettings.widgetShortcutLabel
+data CsSettings.sharedChannelName
 data  CsSettings.transcriptSendMode
 data  CsSettings.transcriptTagTemplate
 data  CsSettings.overlayPositionMode
