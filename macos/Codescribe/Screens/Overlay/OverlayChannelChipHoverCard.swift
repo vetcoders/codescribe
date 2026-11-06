@@ -224,12 +224,14 @@ struct OverlayChannelChipHoverCard: View {
       reception = String(
         localized: "Hears: \(name) (channel 0)",
         comment:
-          "Channel chip hover card, VoiceOver: broadcasts reach this agent; the argument is channel 0's display name, kept in the nominative")
+          "Channel chip hover card, VoiceOver: broadcasts reach this agent; the argument is channel 0's display name, kept in the nominative"
+      )
     case .off:
       reception = String(
         localized: "Does not hear: \(name) (channel 0)",
         comment:
-          "Channel chip hover card, VoiceOver: the agent left channel 0; the argument is channel 0's display name, kept in the nominative")
+          "Channel chip hover card, VoiceOver: the agent left channel 0; the argument is channel 0's display name, kept in the nominative"
+      )
     }
     guard status.quiet else { return reception }
     return reception + " · " + String(localized: "Do not disturb")
