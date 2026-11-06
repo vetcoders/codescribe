@@ -412,7 +412,7 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   /// A take must not cost the bar its width or its names (bus intercom spec
-  /// §14 W3, bus brief 2026-11-04 §4): the waveform keeps one 82 pt width at
+  /// §14 W3, bus brief 2026-11-04 §4): the waveform keeps one 110 pt width at
   /// rest and while recording, so starting a take with three named agents
   /// changes neither the bar's width nor the pills' widths, and the counter
   /// never replaces them.
@@ -534,14 +534,28 @@ final class OverlayResizeHitTests: XCTestCase {
     state.applyChannelRoster(three)
     let natural = panel.frame.width
     let bar = barGeometry(state, panel)
-    let step = min(CGFloat(20), (natural - bar.minimumWidth) / 2)
-    XCTAssertGreaterThan(step, 1, "the bar has room to narrow")
+    // Short names are whole at once, so the single row has no slack: the
+    // widths between it and two rows are the dead band `clampedWidth` snaps
+    // across (`testMidiBarSnapsAcrossTheDeadBandBetweenTwoRowsAndOneRow`).
+    // A drag that stays nearer the single row moves nothing and records
+    // nothing; a drag past the band's middle lands on the two-row form.
+    XCTAssertGreaterThan(natural - bar.minimumWidth, 2, "the bar has room to narrow")
     XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
-    XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: step, y: 0)))
+    XCTAssertFalse(
+      panel.updateUserResize(to: NSPoint(x: (natural - bar.twoRowMaximumWidth) / 4, y: 0)),
+      "nearer the single row: the edge stays")
+    panel.endUserResize()
+    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5)
+    XCTAssertFalse(panel.midiShrunkByUser, "a drag the band refused is not a chosen width")
+
+    XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
+    XCTAssertTrue(
+      panel.updateUserResize(to: NSPoint(x: (natural - bar.twoRowMaximumWidth) * 3 / 4, y: 0)))
     panel.endUserResize()
     let narrowed = panel.frame.width
-    XCTAssertEqual(narrowed, natural - step, accuracy: 0.5)
-    XCTAssertEqual(panel.frame.height, bar.height(forWidth: narrowed), accuracy: 0.5)
+    XCTAssertEqual(narrowed, bar.twoRowMaximumWidth, accuracy: 0.5, "a whole form, never the hole")
+    XCTAssertLessThan(narrowed, natural - 1)
+    XCTAssertEqual(panel.frame.height, bar.twoRowHeight, accuracy: 0.5)
     XCTAssertTrue(panel.midiShrunkByUser)
 
     state.applyChannelRoster(three + [mapRosterRow("5", "Kuba")])

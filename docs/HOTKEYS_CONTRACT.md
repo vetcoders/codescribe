@@ -58,7 +58,9 @@ The bar (compact) carries the channel map (`docs/guide/chat-overlay.md`,
 "Channel map in the collapsed overlay").
 The expanded bar (compact) is as wide as its content when it carries the
 horizontal map (`docs/OVERLAY_PRESENTATION.md`, channel map section): brand,
-an 82 pt waveform that keeps its width at rest and during a take, the session
+a 110 pt waveform that keeps its width at rest and during a take (up to
+170 pt in the two-row bar's first-row slack; mini's take keeps its own 82 pt
+strip), the session
 timer, the map and the header actions, with nothing stretched between them.
 With 1–5 agents the map follows the timer in one row, each name under its
 circled digit; with 6–9 it is a second row of chips, each name beside its

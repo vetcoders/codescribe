@@ -829,9 +829,21 @@ struct DictationOverlayView: View {
         let canvasHidden = canvasWidth < 1 || conversationFolded
         HStack(alignment: .top, spacing: 0) {
           ZStack {
-            if expandedCanvasActive && transcriptionSurface {
+            // The transcript stays mounted while the bar is collapsed. Both
+            // ends are numbers, so the fold interpolates with the window's
+            // morph, over the same duration (it follows the distance since
+            // 2026-10-15). A `nil` height, or a body removed on collapse, has
+            // nothing to animate from: the body snapped to zero on the first
+            // frame while the glass kept shrinking (presentation ledger,
+            // 2026-10-14). Ordered out behind Fiszki there is no morph to
+            // follow, so the body leaves the tree with the rest of the canvas.
+            if !hiddenBehindIntercom {
+              let transcriptVisible = transcriptionSurface && !state.isCollapsed
               bodySection
-                .frame(height: geometry.size.height)
+                .frame(height: state.isCollapsed ? 0 : geometry.size.height)
+                .opacity(transcriptVisible ? 1 : 0)
+                .allowsHitTesting(transcriptVisible)
+                .accessibilityHidden(!transcriptVisible)
             }
             if expandedCanvasActive && agentsSurface,
               let conversation = state.selectedConversation

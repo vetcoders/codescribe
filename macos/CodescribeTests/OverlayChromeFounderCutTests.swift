@@ -751,7 +751,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       of: source, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertEqual(canvas.components(separatedBy: "transcriptActionsColumn(").count - 1, 1)
     XCTAssertTrue(
-      canvas.contains("let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+      canvas.contains("let transcriptActionsShown = transcriptionSurface && expandedCanvasActive"))
     let column = try section(
       of: source, from: "private func transcriptActionsColumn",
       to: "private func agentDrawerColumn")
@@ -815,7 +815,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(source.contains("overlay-transcript-actions"))
     XCTAssertTrue(
       source.contains(
-        "let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+        "let transcriptActionsShown = transcriptionSurface && expandedCanvasActive"))
     XCTAssertTrue(source.contains("OverlayIntentRail.projectedIntents(for: state)"))
     XCTAssertTrue(source.contains("OverlayRecordingControls.railIntents(from: projectedIntents)"))
     XCTAssertTrue(source.contains("intents: railIntents"))
@@ -935,13 +935,17 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testTakeStartAndCollapseRemoveMountedTools() throws {
     let source = try overlaySource()
+    // The one gate both columns read: collapsed, or ordered out behind Fiszki.
+    XCTAssertTrue(
+      source.contains(
+        "private var expandedCanvasActive: Bool {\n    !state.isCollapsed && !hiddenBehindIntercom"))
     let canvas = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertTrue(
       canvas.contains(
-        "let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+        "let transcriptActionsShown = transcriptionSurface && expandedCanvasActive"))
     XCTAssertTrue(
-      canvas.contains("let railShown = agentsSurface && !state.isCollapsed && !listOnScreen"))
+      canvas.contains("let railShown = agentsSurface && expandedCanvasActive && !listOnScreen"))
     XCTAssertTrue(
       canvas.range(
         of: #"footerMessageRow\s*\.frame\(height: 18\)"#,

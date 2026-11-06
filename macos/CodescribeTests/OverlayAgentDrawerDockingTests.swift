@@ -1180,14 +1180,20 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
             XCTAssertTrue(
               resolved.contains(action), "Incomplete label menu at \(point): \(resolved)")
           }
+          // The channel's Markdown export joined the menu with its section
+          // header (da1ce48c1, 2026-11-06); anything else is still a leak.
           let expected = Set(
             labelActions + [
               String(localized: "Channel 0"), String(localized: "Do not disturb"),
               String(localized: "Disconnect and archive agent"),
+              String(localized: "Export to Markdown"),
+              String(localized: "Export Agent replies only"),
+              String(localized: "Exports save to the Transcripts folder"),
             ])
           XCTAssertEqual(
             Set(resolved.filter { !$0.isEmpty }), expected,
-            "The label menu must contain exactly its guarded actions and reception/archive policy")
+            "The label menu must contain exactly its guarded actions, reception/archive policy "
+              + "and the channel export")
         }
       }
     }

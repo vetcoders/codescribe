@@ -1495,7 +1495,8 @@ enum DictationOverlayWindow {
     miniOuterPadding + miniBrandDot + 2 * miniRowSpacing + miniTrailingControls
 
   /// Mini while a take is live (Monika, 2026-11-04, bus brief §6, §11D):
-  /// between the brand and the tools the bar's 82 pt waveform, the `00:00`
+  /// between the brand and the tools mini's own 82 pt waveform
+  /// (`OverlayBarMetrics.miniWaveformWidth`), the `00:00`
   /// clock and, for an agent take, one circled digit per open channel
   /// (`OverlayChannelPill` in its counter form, 19 pt) or, for channel 0,
   /// the 22 pt megaphone; a dictation alone has no addressees. The row's gaps
@@ -2086,7 +2087,8 @@ struct OverlayMidiBarGeometry: Equatable, Sendable {
   var twoRowHeight: CGFloat
   /// Every name whole in two rows. With 1–5 agents the widths between this
   /// and `singleRowMinimumWidth` are a dead band: two rows with a hole after
-  /// the chips. `clampedWidth` snaps across it. Zero for the classic bar.
+  /// the chips. `clampedWidth` snaps across it. Zero for the classic bar and
+  /// for any geometry that measured no two-row maximum: no band, plain clamp.
   var twoRowMaximumWidth: CGFloat = 0
 
   /// No horizontal map: the 410 × 46 floor, widened freely.
@@ -2101,8 +2103,10 @@ struct OverlayMidiBarGeometry: Equatable, Sendable {
     // The dead band: wider than every name in two rows, narrower than one
     // row of the shortest names. The bar is either form, never the hole
     // between them (Monika, 2026-11-04): the nearer edge wins.
-    guard twoRowMaximumWidth < singleRowMinimumWidth, width > twoRowMaximumWidth,
-      width < singleRowMinimumWidth
+    // A geometry built without a measured two-row maximum has no band to
+    // snap across: its own minimum stays reachable.
+    guard twoRowMaximumWidth > 0, twoRowMaximumWidth < singleRowMinimumWidth,
+      width > twoRowMaximumWidth, width < singleRowMinimumWidth
     else { return width }
     return width - twoRowMaximumWidth < singleRowMinimumWidth - width
       ? twoRowMaximumWidth : singleRowMinimumWidth
