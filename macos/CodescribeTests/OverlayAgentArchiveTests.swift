@@ -134,7 +134,9 @@ final class OverlayAgentArchiveTests: XCTestCase {
         "alive=\(String(describing: alive)) since=\(String(describing: since))")
       let row = try XCTUnwrap(state.visibleChannelRows.first)
       XCTAssertEqual(drawer().hasStalledFollower(row), stalled)
-      XCTAssertEqual(drawer().statusSymbol(for: row) == "zzz", stalled)
+      // A stall is not sleep (L6): its sign is the presence dot's "!".
+      XCTAssertNotEqual(drawer().statusSymbol(for: row), "zzz")
+      if stalled { XCTAssertEqual(drawer().presenceDotKind(for: row), .stalled) }
     }
     state.applyChannelRoster([roster(alive: true, unreadSince: old)])
     let row = try XCTUnwrap(state.visibleChannelRows.first)

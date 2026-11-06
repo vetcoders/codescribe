@@ -221,7 +221,9 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let stale = Date().addingTimeInterval(-(OverlayState.followerStallHorizon + 60))
     XCTAssertTrue(roster(alive: false).isInactive(channel), "a gone follower")
     XCTAssertTrue(roster(alive: true, unreadSince: stale).isInactive(channel), "nobody reads")
-    XCTAssertEqual(roster(alive: true, unreadSince: stale).statusSymbol(for: channel), "zzz")
+    // The stall's mark is the presence dot's "!", never the moon's "zzz" (L6).
+    XCTAssertEqual(roster(alive: true, unreadSince: stale).presenceDotKind(for: channel), .stalled)
+    XCTAssertNotEqual(roster(alive: true, unreadSince: stale).statusSymbol(for: channel), "zzz")
     XCTAssertFalse(roster(alive: true).isInactive(channel), "a reading agent")
     XCTAssertFalse(
       roster(alive: true, unreadSince: Date()).isInactive(channel), "a fresh unread message")

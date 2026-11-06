@@ -254,7 +254,11 @@ the projection the roster row reads (`channelChipStatus`, carried as
    follower and a muted "?" without data. The speaking fact reaches the
    card's status (`OverlayChannelChipStatus.speaking`) from the roster's
    `speakingDigits`, the same set that gives the chip its speaking dot. A
-   stall keeps its "zzz" symbol.
+   stall is the same dot's `stalled` kind, olive with its bold "!", beside
+   "Not reading" (L6, 2026-11-06): a stall is not sleep, and "zzz" is the
+   moon's alone. `OverlayChannelStatusView.statusSymbol(for:)` names no
+   stall glyph either; the Intercom's status mark draws the presence dot for
+   a stalled reader and an explicit glyph only for a gone one.
 2. **Channel 0** from the policy as `OverlayBroadcastPolicyLedger` paints it,
    two states like the roster's antenna and the context menu's checkmark,
    with no unconfirmed third (Founder, 2026-11-04). The line is channel 0's

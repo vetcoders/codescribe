@@ -53,7 +53,7 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
 
   /// The presence line wears the agents list's own dot (L2): olive online,
   /// violet and blinking while the reply plays, a muted ring for a gone
-  /// follower, "?" without data. A stall keeps its "zzz" symbol.
+  /// follower, "?" without data, the stall's olive "!" (L6: not sleep).
   func testPresenceLineWearsTheRosterPresenceDot() {
     func dot(_ status: OverlayChannelChipStatus) -> OverlayAgentDotKind? {
       line(.presence, in: status)?.dot
@@ -66,14 +66,15 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
       "a gone follower is not speaking")
     XCTAssertEqual(dot(.init(presence: .unknown, reception: .member)), .idle)
     let stalled = OverlayChannelChipStatus(presence: .online, stalled: true, reception: .member)
-    XCTAssertNil(dot(stalled))
-    XCTAssertEqual(line(.presence, in: stalled)?.symbol, "zzz")
+    XCTAssertEqual(dot(stalled), .stalled, "a stall is the olive dot with its \"!\"")
+    XCTAssertNil(line(.presence, in: stalled)?.symbol, "never the moon's zzz")
     XCTAssertEqual(
       dot(.init(presence: .online, stalled: true, reception: .member, speaking: true)), .speaking,
       "a reply playing aloud wins over the stall, as in the agents list")
     for status in [
       OverlayChannelChipStatus(presence: .online, reception: .member),
       OverlayChannelChipStatus(presence: .unknown, reception: .member),
+      stalled,
     ] {
       XCTAssertNil(line(.presence, in: status)?.symbol, "the dot stands in the symbol's place")
     }
@@ -84,7 +85,7 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     XCTAssertEqual(line(.presence, in: stalled)?.text, "Online · Not reading")
     // No amber in the bus (Founder, 2026-11-04): a stall reads in the muted tone.
     XCTAssertEqual(line(.presence, in: stalled)?.tone, .muted)
-    XCTAssertEqual(line(.presence, in: stalled)?.symbol, "zzz")
+    XCTAssertEqual(line(.presence, in: stalled)?.dot, .stalled, "the stall is not sleep")
   }
 
   // MARK: - Channel 0

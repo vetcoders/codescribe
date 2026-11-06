@@ -2980,10 +2980,12 @@ struct OverlayChannelStatusView: View {
     return provider.flatMap { $0.isEmpty ? nil : $0 }
   }
 
+  /// The row's explicit glyph. A stall has none of its own: it is the
+  /// presence dot's `stalled` kind (olive with a bold "!"), and "zzz" is the
+  /// moon's alone (L6, 2026-11-06: a stall is not sleep).
   func statusSymbol(for channel: OverlayChannelDelivery) -> String {
     if unavailable { return "exclamationmark.triangle" }
     if hasDeadFollower(channel) { return "xmark.circle" }
-    if hasStalledFollower(channel) { return "zzz" }
     if isOpen(channel) { return OverlayAgentAudioControls.liveSpeechSymbol }
     switch channel.stage {
     case nil: return "circle"

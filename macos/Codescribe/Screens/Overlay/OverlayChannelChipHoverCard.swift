@@ -141,7 +141,6 @@ struct OverlayChannelChipHoverCard: View {
       Line(
         kind: .presence, text: presenceText(status),
         tone: status.stalled ? .muted : (status.presence == .online ? .success : .muted),
-        symbol: presenceDot(status) == nil ? presenceSymbol(status) : nil,
         dot: presenceDot(status)),
       Line(
         kind: .reception, text: receptionLine(status),
@@ -245,25 +244,17 @@ struct OverlayChannelChipHoverCard: View {
 
   /// The presence line's dot, as the agents list draws its row's: a gone
   /// follower's ring first, then the speaking dot while the reply plays,
-  /// olive online and "?" without a liveness claim. A stall keeps its "zzz"
-  /// symbol, as before the dot (nil).
-  static func presenceDot(_ status: OverlayChannelChipStatus) -> OverlayAgentDotKind? {
+  /// the stall's olive dot with its bold "!" (L6, 2026-11-06: a stall is
+  /// not sleep; "zzz" belongs to the moon alone), olive online and "?"
+  /// without a liveness claim.
+  static func presenceDot(_ status: OverlayChannelChipStatus) -> OverlayAgentDotKind {
     if status.presence == .inactive { return .sleeping }
     if status.speaking { return .speaking }
-    if status.stalled { return nil }
+    if status.stalled { return .stalled }
     switch status.presence {
     case .online: return .present
     case .inactive: return .sleeping
     case .unknown: return .idle
-    }
-  }
-
-  static func presenceSymbol(_ status: OverlayChannelChipStatus) -> String {
-    if status.stalled { return "zzz" }
-    switch status.presence {
-    case .online: return "circle.fill"
-    case .inactive: return "circle.dotted"
-    case .unknown: return "questionmark.circle"
     }
   }
 
