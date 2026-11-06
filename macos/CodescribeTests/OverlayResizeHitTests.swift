@@ -534,13 +534,17 @@ final class OverlayResizeHitTests: XCTestCase {
     state.applyChannelRoster(three)
     let natural = panel.frame.width
     let bar = barGeometry(state, panel)
-    let step = min(CGFloat(20), (natural - bar.minimumWidth) / 2)
+    // Names this short are whole in one row, so a small drag lands in the
+    // dead band between one row and two and snaps back. A drag three
+    // quarters of the way to the floor lands nearer the two-row form.
+    let step = (natural - bar.minimumWidth) * 3 / 4
     XCTAssertGreaterThan(step, 1, "the bar has room to narrow")
     XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
     XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: step, y: 0)))
     panel.endUserResize()
     let narrowed = panel.frame.width
-    XCTAssertEqual(narrowed, natural - step, accuracy: 0.5)
+    XCTAssertLessThan(narrowed, natural - 1, "the drag narrowed the bar")
+    XCTAssertEqual(narrowed, bar.clampedWidth(natural - step), accuracy: 0.5)
     XCTAssertEqual(panel.frame.height, bar.height(forWidth: narrowed), accuracy: 0.5)
     XCTAssertTrue(panel.midiShrunkByUser)
 

@@ -448,13 +448,13 @@ A panel reads the role, never a bare number.
   warning sign. The brand terracotta (`CSColor.terracotta`,
   `terracottaLight` as its label rung) stays for the dictation / listening
   state only — the lamp, the waveform, the tray icon while dictating — and
-  the lockup `Wordmark` is the word alone, without a brand dot. Retired
-  roles (`brandAccent`, `olive*`, `eyebrowOlive`, `terracottaText`,
-  `terracottaDeep`, `terracottaTintBars`, `lexicon`, `ink`, `textFaintAlt`)
-  keep their names for one round pointing at their replacement, so every
-  consumer compiles while the screens migrate; they go once no use site
-  remains. Settings follows the same rule: a correct or ready state and an
-  active licence are secondary ink on a neutral capsule, the Save / Sign in
+  the lockup `Wordmark` is the word alone, without a brand dot. The roles
+  this rule retired (`brandAccent`, `olive*`, `eyebrowOlive`,
+  `terracottaText`, `terracottaDeep`, `terracottaTintBars`, `lexicon`,
+  `ink`, `textFaintAlt`) are gone from `Tokens.swift`; no alias keeps their
+  names, so a use site that reaches for one does not compile. Settings
+  follows the same rule: a correct or ready state and an active licence
+  are secondary ink on a neutral capsule, the Save / Sign in
   labels are primary ink on a neutral surface (readable under any accent),
   the accent stays on selected controls and on the outline
   of a shortcut being recorded, a low-confidence word is the warning

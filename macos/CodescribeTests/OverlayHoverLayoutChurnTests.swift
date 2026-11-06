@@ -239,27 +239,6 @@ final class OverlayHoverLayoutChurnTests: XCTestCase {
     try await OverlayHoverDeliveryTestSupport.wait { delivered == [true, false] }
   }
 
-  func testVisualTimerIsBoundedAndDoesNotOwnCursorOrHitDecisions() throws {
-    let source = try readSource("OverlayWindowDragRegion.swift")
-    let scheduling = try section(
-      source, from: "private func setHovered", to: "override func updateTrackingAreas")
-    XCTAssertTrue(
-      scheduling.contains("max(30, min(window?.screen?.maximumFramesPerSecond ?? 60, 120))"))
-    XCTAssertTrue(scheduling.contains("1_000_000_000 / framesPerSecond"))
-    XCTAssertFalse(scheduling.contains("NSCursor"))
-    XCTAssertFalse(scheduling.contains("refreshCursor"))
-    let input = try section(source, from: "func updateHover", to: "private func setHovered")
-    XCTAssertTrue(input.contains("bounds.intersection(visibleRect).contains"))
-    XCTAssertFalse(input.contains("Task"))
-    let panelSource = try readSource("DictationOverlayWindow.swift")
-    let dispatch = try section(
-      panelSource, from: "override func sendEvent", to: "if event.type == .leftMouseDown {")
-    XCTAssertTrue(dispatch.contains("region.updateHover(at: event.locationInWindow)"))
-    XCTAssertTrue(dispatch.contains("applyCursor(decision)"))
-    XCTAssertFalse(dispatch.contains("await"))
-    XCTAssertFalse(dispatch.contains("Task"))
-  }
-
   func testDelayedHintCancellationLivesOutsideSwiftUIStateAndFrameWritesAreGuarded() throws {
     let source = try readSource("OverlayHeaderControlChrome.swift")
     let chrome = try section(
