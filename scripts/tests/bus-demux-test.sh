@@ -1790,9 +1790,13 @@ try:
     assert store["profiles"]["filip"] == {"voice": "rex", "speed": 1.25}, store
     assert store["profiles"]["james"] == {"voice": "sal", "speed": 1.3, "provider": "openai"}, store
 
-    reused = attach(home, "5", "james", "voice-session")
+    # Same identity and spelling: the running follower is reused. A new
+    # spelling of the same name respawns it to carry the display name.
+    reused = attach(home, "5", "James", "voice-session")
     assert reused.returncode == 0, reused.stderr
     receipt = json.loads(reused.stdout)
+    if receipt["follower_spawned"]:
+        followers.append(receipt["follower_pid"])
     assert receipt["follower_spawned"] is False, receipt
     assert receipt["voice_source"] == "profile", receipt
     assert receipt["voice"]["voice"] == "sal", receipt
