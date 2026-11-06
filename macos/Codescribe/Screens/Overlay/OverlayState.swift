@@ -2668,12 +2668,7 @@ final class OverlayState {
     endAgentChoosing()
     showsAgentMonitor = false
     setAgentsLayout(.rail)
-    if isVerticalIntercom {
-      selectedConversationID = nil
-      windowContentSurface = .transcription
-    } else {
-      windowContentSurface = selectedConversationID == nil ? .transcription : .agents
-    }
+    windowContentSurface = selectedConversationID == nil ? .transcription : .agents
     markVisibleConversationRead()
     onChannelPresentationChanged?()
   }

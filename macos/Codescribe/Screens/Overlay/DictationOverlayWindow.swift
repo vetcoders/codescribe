@@ -1755,7 +1755,13 @@ enum DictationOverlayWindow {
     panel.delegate = panel
     state.onPresentationModeChanged = { [weak panel, weak state] mode in
       guard let panel else { return }
-      if let state { panel.setContentSurface(state.windowContentSurface) }
+      if let state {
+        if state.windowContentSurface == .agents, state.agentsLayout == .split {
+          panel.ensureAgentsSplitWidth(
+            OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: textScale.scale))
+        }
+        panel.setContentSurface(state.windowContentSurface)
+      }
       panel.setPresentationMode(
         mode,
         animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)

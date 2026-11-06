@@ -267,9 +267,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       "progressive content starts under the fixed header")
     XCTAssertTrue(body.contains("OverlayIntercomMessagePreview("))
     XCTAssertFalse(body.contains("OverlayRosterMessagePreview("))
-    XCTAssertTrue(
-      body.contains(".modifier(OverlayComposerSurface(palette: palette, isEnabled: expanded))"),
-      "a resting fiszka is one surface; only an open conversation keeps the glass bar")
+    XCTAssertFalse(body.contains("OverlayComposerSurface"))
     XCTAssertFalse(body.contains("palette.desktopBackground.color.opacity"))
     let handles = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomResizeHandles: View {",

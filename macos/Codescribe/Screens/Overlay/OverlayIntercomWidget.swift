@@ -2185,12 +2185,6 @@ private struct OverlayIntercomCard: View {
                 alignment: .top)
             }
           }
-          // A resting fiszka is one surface, the card's own (Maciej,
-          // 2026-11-06: "to była zawsze jedna powierzchnia"). Its preview is
-          // clipped below the title, so nothing passes under the name and a
-          // plate there was a second surface with its own outline. Only an
-          // open conversation scrolls under its bar and keeps the glass.
-          .modifier(OverlayComposerSurface(palette: palette, isEnabled: expanded))
           .accessibilitySortPriority(1)
         }
       )

@@ -419,14 +419,13 @@ final class OverlayController: ObservableObject {
   /// An explicit Tray entry uses the same cached panel and leaves capture,
   /// transcript selection, drafts and recording preferences with their owners.
   func showWidget() {
-    let enabled = readOverlayPreference()
-    if enabled, intercomPresentationStarted, state.channelMapPreference.enabled,
-      state.channelMapPreference.layout == .vertical
-    {
-      showIntercom()
-      return
+    readOverlayPreference()
+    if panel?.isVisible != true {
+      if state.isVerticalIntercom, state.windowContentSurface == .agents {
+        state.selectConversation(nil, expand: false)
+      }
+      state.setPresentationMode(.mini)
     }
-    if panel?.isVisible != true { state.setPresentationMode(.mini) }
     show()
   }
 
@@ -567,6 +566,10 @@ final class OverlayController: ObservableObject {
         // The transition already landed on this height. A later projection
         // can still grow the settled panel; an equal height writes nothing.
         self.resizeForProjectedContent()
+      }
+      if state.windowContentSurface == .agents, state.agentsLayout == .split {
+        floating.ensureAgentsSplitWidth(
+          OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: textScale.scale))
       }
       floating.setContentSurface(state.windowContentSurface)
       floating.setPresentationMode(state.presentationMode)
@@ -710,6 +713,10 @@ final class OverlayController: ObservableObject {
     }
     guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else { return }
     if let floating = panel as? FloatingOverlayPanel {
+      if state.windowContentSurface == .agents, state.agentsLayout == .split {
+        floating.ensureAgentsSplitWidth(
+          OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: textScale.scale))
+      }
       floating.setContentSurface(
         state.windowContentSurface,
         animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
