@@ -1691,12 +1691,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       roster.contains("open ? recordingAccent"),
       "an open microphone takes the active-speaker accent")
     XCTAssertFalse(roster.contains("open ? Color.red"), "recording is no longer a separate red")
+    // The pinned pill is compact (Maciej, 2026-11-06): All keeps one line,
+    // and its last message stays one hover away.
     let all = try section(
-      of: roster, from: "private func scaledMonitorBody(", to: "var currentConversations")
-    XCTAssertTrue(all.contains(".lineLimit(3)"), "three preview lines belong to All")
-    XCTAssertTrue(all.contains("overlay-all-preview"))
-    XCTAssertTrue(
-      roster.contains("includePreview: false"), "the title button does not repeat the preview")
+      of: roster, from: "private func pinnedMailboxPill(", to: "private func scaledMonitorBody(")
+    XCTAssertTrue(all.contains(".lineLimit(1)"), "one line belongs to All")
+    XCTAssertTrue(all.contains("OverlayRosterMessageHint("), "the preview is the hover hint")
+    XCTAssertFalse(roster.contains("overlay-all-preview"))
     let agentLabel = try source(at: "Codescribe/Screens/Overlay/OverlayAgentRosterLabel.swift")
     XCTAssertTrue(agentLabel.contains(".lineLimit(2)"), "agent rows keep a two-line preview")
     let agentBudget = try section(

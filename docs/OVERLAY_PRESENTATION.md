@@ -802,29 +802,33 @@ Hiding the roster chooses the rail, and hovering that rail cannot undo the fold.
 Open nonzero capture uses a violet microphone; only an open channel zero uses
 the outlined broadcast megaphone. These glyphs project routing and never choose it.
 
-### All and inbox rows
+### The pinned mailbox pill
 
-The full Agents column lists `0 · All` and your inbox as its first two rows,
-in the rail's order, then channels 1–9 and the saved conversations: one list,
-scrolled together (Monika, 2026-11-04: one sidebar, no separate card on top).
-Until then the two sat on a pinned card over the list, on the composer's
-surface (Maciej, 2026-10-30); the card and its surface are gone, and the
-monitor's pinned slot stays empty. Each mailbox row wears the agents' glass,
-padding, selection bar, hover and gesture focus ring. All keeps its
-three-line preview, recipient counts, microphone/megaphone and playback
-controls, drawn as the agents' glass circles (`rosterDiameter`), not the
-flat glyphs the card had; there is one All row and one projection of its
-state. The inbox
-row shows the envelope where an agent's digit and presence dot stand (it
-has neither), its name, the last message's preview, the unread badge and the
-clock (`inboxRow`, identifier `overlay-inbox-row`). Keyboard focus and
-scroll-to-selected reach both rows like any other.
+`0 · All` and your inbox are one permanent pill over the Agents column
+(Maciej, 2026-11-06: "Jeden trwały sticky pill"), in Klasyczny and in Fiszki:
+the agents scroll under it and it never moves. The pill is the conversation
+label's twin across the divider: the same two lines (13 pt bold over 11 pt,
+2 pt apart), the same 10 × 5 pt padding, so both stand at one height, on the
+composer's surface with its Reduce Transparency sheet (Maciej, 2026-10-30).
+Line one is All with its recipient counts, line two the inbox with its
+envelope; each line opens its conversation, carries its unread count, takes
+keyboard focus and the gesture ring, and shows its last message as the hover
+hint instead of preview lines. All keeps its microphone/megaphone and
+playback controls as the agents' glass circles (`rosterDiameter`; Monika,
+2026-11-05) and its broadcast policy menu. The list's fold button is the
+pill's trailing control. The scrolling list starts with channels 1–9 and
+never scrolls to a mailbox (`pinnedMailboxPill`, identifiers
+`overlay-inbox-row`, `overlay-channel-toggle-0`).
+
+History: the two sat on a pinned card until commit `1c28de7e8` (2026-11-05)
+made them the list's first two rows and emptied the pinned slot; the pill
+restores the pinned position in a compact form.
 
 ### One fold button
 
-The column's header row holds one `sidebar.right` at its right
-(`overlay-agent-sidebar-fold`, "Hide agents list") and nothing else: no
-"Agents" title (Maciej, 2026-11-01). It calls `foldAgentList`, which keeps
+The pinned mailbox pill holds one `sidebar.right` at its right
+(`overlay-agent-sidebar-fold`, "Hide agents list"); the column has no header
+row and no "Agents" title (Maciej, 2026-11-01). It calls `foldAgentList`, which keeps
 the selection and drafts and leaves the rail of pills. The rail shows the
 same button above its pills (`overlay-agent-rail-unfold`, "Show agents
 list"), calling `unfoldAgentList`, so the glyph stays where the click folded

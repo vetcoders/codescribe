@@ -691,9 +691,11 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
   func testDividersOwnPaneFoldingAndRailHoverCannotUndoFold() throws {
     let roster = try overlaySource("OverlayChannelStatusView.swift")
+    // The fold is the pinned pill's trailing control (Maciej, 2026-11-06:
+    // one permanent pill); no header row stands above the list.
     let header = try section(
-      of: roster, from: "private func scaledMonitorBody(", to: "} content: { rowFocus in")
-    XCTAssertTrue(header.contains("showsHeader: onFoldList != nil"))
+      of: roster, from: "private func pinnedMailboxPill(", to: "} content: { rowFocus in")
+    XCTAssertTrue(header.contains("showsHeader: false"))
     XCTAssertTrue(header.contains("symbol: \"sidebar.right\""))
     XCTAssertTrue(header.contains("identifier: \"overlay-agent-sidebar-fold\""))
     XCTAssertFalse(header.contains("symbol: \"sidebar.left\""))

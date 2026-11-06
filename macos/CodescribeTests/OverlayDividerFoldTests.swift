@@ -207,7 +207,7 @@ final class OverlayDividerFoldTests: XCTestCase {
       ))
     let roster = try overlaySource("OverlayChannelStatusView.swift")
     let allRow = try section(
-      roster, from: "broadcastRow(broadcast, rowFocus: rowFocus)",
+      roster, from: "private func pinnedMailboxPill(",
       to: ".accessibilityIdentifier(\"overlay-channel-toggle-0\")")
     XCTAssertTrue(
       compact(allRow).contains(

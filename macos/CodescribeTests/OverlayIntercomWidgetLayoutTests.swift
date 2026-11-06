@@ -1133,9 +1133,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       "a draft with no visible card still gets a window to speak into")
   }
 
-  /// The All row and your inbox lead the sidebar's scrolling list as plain
-  /// roster rows, with an empty pinned slot and no separate card surface.
-  func testAllRowAndInboxLeadTheSidebarListWithEmptyPinnedSlot() throws {
+  /// Channel 0 and your inbox are one permanent pill over the agents list
+  /// (Maciej, 2026-11-06), on the composer's surface (Maciej, 2026-10-30).
+  /// The scrolling list starts with the agents; the mailboxes are not rows.
+  func testMailboxesArePinnedInOnePillOverTheScrollingAgents() throws {
     let url = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent().deletingLastPathComponent()
       .appendingPathComponent("Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
@@ -1144,36 +1145,34 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     let end = try XCTUnwrap(
       source.range(of: "var currentConversations", range: start.upperBound..<source.endIndex))
     let body = String(source[start.lowerBound..<end.lowerBound])
-    let pinned = try XCTUnwrap(body.range(of: "} pinned: {"))
+    let pinned = try XCTUnwrap(body.range(of: "} pinned: { rowFocus in"))
     let content = try XCTUnwrap(
       body.range(of: "} content: { rowFocus in", range: pinned.upperBound..<body.endIndex))
     let pinnedSection = body[pinned.upperBound..<content.lowerBound]
     let contentSection = body[content.upperBound...]
-    XCTAssertTrue(
-      pinnedSection.contains("_ in EmptyView()")
-        || (pinnedSection.contains("_ in") && pinnedSection.contains("EmptyView()")))
-    XCTAssertFalse(pinnedSection.contains("broadcastRow("))
-    XCTAssertFalse(body.contains("OverlayComposerSurface"))
-    let broadcastCall = try XCTUnwrap(
-      contentSection.range(of: "broadcastRow(broadcast, rowFocus: rowFocus)"))
-    let inboxCall = try XCTUnwrap(
-      contentSection.range(
-        of: "inboxRow(inbox, rowFocus: rowFocus)",
-        range: broadcastCall.upperBound..<contentSection.endIndex))
-    XCTAssertNotNil(
-      contentSection.range(
-        of: "detailsContent(rowFocus: rowFocus)",
-        range: inboxCall.upperBound..<contentSection.endIndex))
-    XCTAssertEqual(body.components(separatedBy: "broadcastRow(").count - 1, 1)
+    XCTAssertTrue(pinnedSection.contains("pinnedMailboxPill(rowFocus: rowFocus)"))
+    XCTAssertFalse(pinnedSection.contains("EmptyView()"))
+    XCTAssertTrue(body.contains("showsHeader: false"), "the pill is the list's only top row")
+    XCTAssertFalse(contentSection.contains("channel == \"0\""), "All is not a scrolling row")
+    XCTAssertFalse(contentSection.contains("isHumanInbox"), "the inbox is not a scrolling row")
+    XCTAssertNotNil(contentSection.range(of: "detailsContent(rowFocus: rowFocus)"))
 
-    let inboxStart = try XCTUnwrap(source.range(of: "private func inboxRow("))
-    let inboxEnd = try XCTUnwrap(
-      source.range(
-        of: "private func conversationRow(", range: inboxStart.upperBound..<source.endIndex))
-    let inboxBody = String(source[inboxStart.lowerBound..<inboxEnd.lowerBound])
-    XCTAssertTrue(inboxBody.contains("dot: nil"))
-    XCTAssertTrue(inboxBody.contains("symbol: \"envelope\""))
-    XCTAssertTrue(inboxBody.contains("overlay-inbox-row"))
+    let pillStart = try XCTUnwrap(source.range(of: "private func pinnedMailboxPill("))
+    let pill = String(source[pillStart.lowerBound..<start.lowerBound])
+    XCTAssertEqual(
+      pill.components(separatedBy: "OverlayComposerSurface(palette: palette)").count - 1, 1,
+      "one surface: one pill")
+    XCTAssertTrue(pill.contains("symbol: \"envelope\""))
+    XCTAssertTrue(pill.contains("overlay-inbox-row"))
+    XCTAssertTrue(pill.contains("overlay-channel-toggle-0"))
+    XCTAssertTrue(pill.contains("identifier: \"overlay-agent-sidebar-fold\""))
+    // The conversation label's metrics, so both stand at one height.
+    XCTAssertTrue(pill.contains("VStack(alignment: .leading, spacing: 2)"))
+    XCTAssertTrue(pill.contains("size: 13, weight: .bold"))
+    XCTAssertTrue(pill.contains("size: 11, weight: .regular"))
+    XCTAssertTrue(pill.contains(".padding(.horizontal, 10)"))
+    XCTAssertTrue(pill.contains(".padding(.vertical, 5)"))
+    XCTAssertTrue(pill.contains(".lineLimit(1)"), "a compact pill has no preview lines")
   }
 
   /// Every Intercom panel (header, group cards, and detached instances) owns
