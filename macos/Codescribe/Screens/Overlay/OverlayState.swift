@@ -2570,8 +2570,57 @@ final class OverlayState {
   }
 
   func showTranscription() {
+    rememberAgentsView()
     selectConversation(nil)
     expandAgentSurface(cause: .user)
+  }
+
+  /// The Agents view the window showed when it last left for the
+  /// transcription: an open conversation (`lastAgentConversationID`, with the
+  /// panes as they were) or the agents list with no conversation, in the
+  /// layout it had. Nil until the window has left an Agents view.
+  enum RememberedAgentsView: Equatable {
+    case conversation
+    case monitor(OverlayAgentsLayout)
+  }
+  @ObservationIgnored private(set) var rememberedAgentsView: RememberedAgentsView?
+
+  /// Folding keeps the surface, so a fold does not forget the view either.
+  private func rememberAgentsView() {
+    guard windowContentSurface == .agents else { return }
+    if selectedConversationID != nil {
+      rememberedAgentsView = .conversation
+    } else if showsAgentMonitor || agentsLayout == .agents {
+      rememberedAgentsView = .monitor(agentsLayout == .rail ? .agents : agentsLayout)
+    }
+  }
+
+  /// From the expanded transcription the Agents control and "Show agents"
+  /// return to the Agents view the user left. False when there is none.
+  private func restoreRememberedAgentsView() -> Bool {
+    switch rememberedAgentsView {
+    case .conversation:
+      guard let last = lastAgentConversationID,
+        conversations.contains(where: { $0.id == last })
+      else { return false }
+      // The panes stay as the user left them, folded list or split.
+      selectConversation(last)
+      return true
+    case .monitor(let layout):
+      setAgentsLayout(layout)
+      showAgentMonitor()
+      return true
+    case nil:
+      return false
+    }
+  }
+
+  /// "Show agents" in the header menu.
+  func showAgents() {
+    if !isCollapsed, windowContentSurface == .transcription, restoreRememberedAgentsView() {
+      return
+    }
+    showAgentMonitor()
   }
 
   func showAgentMonitor(expand: Bool = true) {
@@ -2601,7 +2650,9 @@ final class OverlayState {
   /// in a conversation the press opens the drawer to change agents, and on
   /// the drawer it closes it. The drawer opens first only with nothing to show.
   func toggleAgentSidebar() {
-    if isVerticalIntercom {
+    // Only the folded Fiszki header is the Intercom router. In the expanded
+    // window the same control switches the window to its Agents view.
+    if isVerticalIntercom && isCollapsed {
       onRevealIntercom?()
       return
     }
@@ -2619,7 +2670,14 @@ final class OverlayState {
       }
       return
     }
+    // From the expanded transcription the press returns to the Agents view
+    // the user left, conversation or list, before any automatic destination.
+    if !isCollapsed, windowContentSurface == .transcription, restoreRememberedAgentsView() {
+      return
+    }
     if showsAgentMonitor && !isCollapsed {
+      // The next press from the transcription brings this list back.
+      rememberAgentsView()
       hideAgentSidebar()
     } else if !isCollapsed && selectedConversationID != nil {
       showAgentMonitor()
