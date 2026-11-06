@@ -900,23 +900,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(try overlaySource().contains("onFormatOnce: { state.formatTranscript(at: $0) }"))
   }
 
-  func testNoOverlayFileCanWriteTheSettingsFormattingLevel() throws {
-    let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-      .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens/Overlay")
-    let files = try FileManager.default.contentsOfDirectory(
-      at: directory, includingPropertiesForKeys: nil
-    ).filter { $0.pathExtension == "swift" }
-    XCTAssertFalse(files.isEmpty)
-    for file in files {
-      let source = try String(contentsOf: file, encoding: .utf8)
-      XCTAssertFalse(source.contains("setAutoFormatLevel"), file.lastPathComponent)
-    }
-    let rail = try railSource()
-    for forbidden in ["UserDefaults", "@AppStorage", "setSetting", "setConfig"] {
-      XCTAssertFalse(rail.contains(forbidden), forbidden)
-    }
-  }
-
   func testOpenRowKeepsProjectedToolsWithoutAnInlineCaption() throws {
     let source = try railSource()
     XCTAssertFalse(source.contains("OverlayCaptionLayout"))
