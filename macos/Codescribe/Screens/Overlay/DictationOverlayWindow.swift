@@ -138,6 +138,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var resizePreviewMonitor: Any?
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
   private var expandedSizes: [OverlayContentSurface: NSSize] = [:]
+  private var isSettlingAgentsSplitWidth = false
   fileprivate(set) var contentSurface: OverlayContentSurface = .transcription
   var contentSizeDefaults: UserDefaults = .standard
   private var expandedSize: NSSize? {
@@ -415,17 +416,30 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   /// A direct request for the agent column reserves both panes before the
   /// expansion begins. Width determines geometry, never whether the click works.
+  ///
+  /// The width that decides is the one the split will be drawn at: the window
+  /// on screen while it shows the split, the remembered size otherwise. A
+  /// landed transition forgets the remembered size, so judging the shown
+  /// window by the saved one asked for the same settle after every landing:
+  /// the controller calls this from its transition-completed callback, and a
+  /// settle that is not animated completes inside the call (a stack overflow
+  /// in OverlayContentSurfaceTests since c4fe2f236).
   func ensureAgentsSplitWidth(_ minimum: CGFloat) {
     let screenWidth = (screen ?? NSScreen.main)?.visibleFrame.width ?? minimum
     let floor = min(minimum, screenWidth)
     let saved =
       expandedSizes[.agents]
       ?? DictationOverlayWindow.restoredContentSize(surface: .agents, defaults: contentSizeDefaults)
-    guard saved.width < floor || (contentSurface == .agents && frame.width < floor) else { return }
+    let showsSplit = contentSurface == .agents && presentationMode == .expanded
+    let width = showsSplit ? (frameTransitionTarget ?? frame).width : saved.width
+    guard width < floor - 0.5 else { return }
     expandedSizes[.agents] = NSSize(width: max(saved.width, floor), height: saved.height)
-    if contentSurface == .agents, presentationMode == .expanded, !isUserResizing {
-      setPresentationMode(.expanded, animated: isFrameTransitioning, settleResize: true)
-    }
+    // One settle per request: a display that cannot give the floor leaves the
+    // window narrower, and the landing must not ask again from inside.
+    guard showsSplit, !isUserResizing, !isSettlingAgentsSplitWidth else { return }
+    isSettlingAgentsSplitWidth = true
+    defer { isSettlingAgentsSplitWidth = false }
+    setPresentationMode(.expanded, animated: isFrameTransitioning, settleResize: true)
   }
 
   /// Remembered or default expanded size, raised to the qualified content
