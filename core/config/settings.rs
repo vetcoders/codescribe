@@ -234,6 +234,11 @@ pub struct UserSettings {
     /// Agent-channel modifier: `"ctrl"` (default) or `"fn"`. Command is rejected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_modifier: Option<String>,
+    /// Display name of the shared channel 0 on the Bus. `None` (or an empty
+    /// write) shows the localized default ("Shared" / "Wspólny"). The channel
+    /// itself, its digit and its routing do not depend on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_channel_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub widget_shortcut: Option<String>,
     /// Quick Fn press below the hold delay toggles dictation. `None` keeps the default off.
@@ -1715,6 +1720,8 @@ struct InteractionV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     channel_modifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    shared_channel_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     widget_shortcut: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fn_tap_toggles_dictation: Option<bool>,
@@ -2010,6 +2017,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "HOLD_EXCLUSIVE",
     "HOLD_ARM_MODIFIER",
     "AGENT_CHANNEL_MODIFIER",
+    "SHARED_CHANNEL_NAME",
     "FN_TAP_TOGGLES_DICTATION",
     "MIDDLE_MOUSE_ACTS_AS_FN",
     "MIDDLE_MOUSE_AGENT_GESTURE",
@@ -2209,6 +2217,7 @@ impl UserSettings {
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
                 channel_modifier: self.channel_modifier.clone(),
+                shared_channel_name: self.shared_channel_name.clone(),
                 widget_shortcut: self.widget_shortcut.clone(),
                 fn_tap_toggles_dictation: self.fn_tap_toggles_dictation,
                 middle_mouse_acts_as_fn: self.middle_mouse_acts_as_fn,
@@ -2424,6 +2433,7 @@ impl UserSettings {
             hold_exclusive: copy!(v2.interaction, hold, exclusive),
             hold_arm_modifier: cloned!(v2.interaction, hold, arm_modifier),
             channel_modifier: cloned!(v2.interaction, channel_modifier),
+            shared_channel_name: cloned!(v2.interaction, shared_channel_name),
             widget_shortcut: cloned!(v2.interaction, widget_shortcut),
             fn_tap_toggles_dictation: copy!(v2.interaction, fn_tap_toggles_dictation),
             middle_mouse_acts_as_fn: copy!(v2.interaction, middle_mouse_acts_as_fn),
@@ -3593,6 +3603,11 @@ impl UserSettings {
                 }
             }
             "TRANSCRIPT_TAG_TEMPLATE" => self.transcript_tag_template = Some(value.to_owned()),
+            "SHARED_CHANNEL_NAME" => {
+                // One line of text; an empty name clears back to the default.
+                let name = value.split_whitespace().collect::<Vec<_>>().join(" ");
+                self.shared_channel_name = (!name.is_empty()).then_some(name);
+            }
             "LLM_FORMATTING_MODEL" => self.llm_formatting_model = Some(value.to_owned()),
             "LOCAL_MODEL" => self.local_model = Some(value.to_owned()),
             "STT_ENDPOINT" => {
@@ -5456,6 +5471,37 @@ mod tests {
         let mut cleared = loaded;
         cleared.set_string("LLM_OPENAI_OAUTH_CLIENT_ID", "   ");
         assert_eq!(UserSettings::load().openai_oauth_client_id, None);
+    }
+
+    /// The shared channel's display name persists under `interaction` as one
+    /// line, survives a reload and reaches the runtime snapshot; an empty or
+    /// whitespace-only write clears it back to the default name.
+    #[test]
+    #[serial]
+    fn test_shared_channel_name_persists_as_one_line_and_empty_clears() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_string("SHARED_CHANNEL_NAME", "  Ekipa\n  Codescribe ");
+
+        let loaded = UserSettings::load();
+        assert_eq!(
+            loaded.shared_channel_name.as_deref(),
+            Some("Ekipa Codescribe")
+        );
+        let persisted: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read persisted settings"),
+        )
+        .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("interaction")
+                .and_then(|v| v.get("shared_channel_name"))
+                .and_then(|v| v.as_str()),
+            Some("Ekipa Codescribe")
+        );
+        let mut cleared = loaded;
+        cleared.set_string("SHARED_CHANNEL_NAME", "   ");
+        assert_eq!(UserSettings::load().shared_channel_name, None);
     }
 
     /// "Not yet chosen" is `None`, distinct from any concrete lane — callers

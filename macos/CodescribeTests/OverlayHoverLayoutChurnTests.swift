@@ -28,7 +28,8 @@ final class OverlayHoverLayoutChurnTests: XCTestCase {
       root.contains("onHover: { state.setPointerHovering($0) }"), "Retain auto-hide/fold policy")
     let call = try section(
       source, from: "private var closeButton", to: "private func recordingControls")
-    XCTAssertTrue(call.contains("OverlayCloseButton(palette: palette)"))
+    XCTAssertTrue(
+      call.contains("OverlayCloseButton(palette: palette, takeTint: state.liveTakeMode?.color)"))
     XCTAssertTrue(call.contains("state.relayIntent(.close)"))
     XCTAssertFalse(close.contains("GeometryReader"))
     XCTAssertFalse(boundary.contains("GeometryReader"))

@@ -1,23 +1,20 @@
 import AppKit
 import SwiftUI
 
-/// Text marks of the header's two content controls, one character each, from
-/// the Dingbats family of the roster's ❖ so the header reads as one set.
-/// Fonts every macOS ships cover both (Zapf Dingbats, Menlo). The Legacy
-/// Computing robots (U+1CC5A…, U+1CDF6) are covered by neither the system nor
-/// the bundled fonts and would paint as missing-glyph boxes.
+/// Marks of the header's two content controls. The agent roster is one
+/// Dingbats character, the ✦ of the roster's ❖ family, which every macOS font
+/// cascade covers (Zapf Dingbats, Menlo). The transcription is the system
+/// `note.text` symbol from the icon catalog (`CSIcon.notesMode`), one mark in
+/// every form of the bar; the hand and the pen it replaces were one function.
 enum OverlayHeaderGlyph {
   /// ✦ the agent roster.
   static let agents = "\u{2726}"
-  /// ✍︎ the transcription; U+FE0E pins the monochrome text presentation.
-  static let transcription = "\u{270D}\u{FE0E}"
+  /// The transcription's system symbol.
+  static let transcriptionSymbol = CSIcon.notesMode.systemName
 
-  /// Size inside the 22 pt header circle at which each mark carries the
-  /// visual weight of the 9 pt semibold symbols beside it. The hand is a wide,
-  /// thin outline and needs two points more than the solid star.
-  static func pointSize(_ glyph: String) -> CGFloat {
-    glyph == transcription ? 13 : 11
-  }
+  /// Size inside the 22 pt header circle at which the ✦ carries the visual
+  /// weight of the 9 pt semibold symbols beside it.
+  static let pointSize: CGFloat = 11
 
   /// Menus take images, not text runs: the same mark as a template image, so
   /// the secondary-click menu shows what the header button shows.
@@ -33,6 +30,22 @@ enum OverlayHeaderGlyph {
     }
     image.isTemplate = true
     return image
+  }
+}
+
+/// The transcription control's mark. Chosen, it is a window state like the
+/// pin: primary ink on the chrome's neutral wash (`OverlayHeaderAccent.state`),
+/// never the listening terracotta; at rest the muted ink on its plate.
+struct OverlayTranscriptionGlyph: View {
+  let selected: Bool
+  let palette: OverlayAppearancePalette
+
+  var body: some View {
+    OverlayMicrophoneGlyph(
+      symbol: OverlayHeaderGlyph.transcriptionSymbol,
+      tint: selected
+        ? OverlayHeaderAccent.state.selectionTint(in: palette) : palette.mutedText.color,
+      plateOpacity: selected ? 0 : 0.12)
   }
 }
 
@@ -62,7 +75,7 @@ struct OverlayHeaderMenu: View {
       Label {
         Text("Transcription")
       } icon: {
-        Image(nsImage: OverlayHeaderGlyph.menuImage(OverlayHeaderGlyph.transcription))
+        Image(systemName: OverlayHeaderGlyph.transcriptionSymbol)
       }
     }
 

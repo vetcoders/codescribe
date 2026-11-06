@@ -82,6 +82,8 @@ final class AppModel: ObservableObject {
         guard edge == .settingsWritten else { return }
         overlay.state.canonicalConfigurationDidChange()
       }
+    // Channel 0's display name, read once here and after every Settings write.
+    overlay.state.refreshSharedChannelName()
     overlay.startIntercomPresentation()
     AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
   }

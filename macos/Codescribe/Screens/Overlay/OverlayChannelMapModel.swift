@@ -130,6 +130,11 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
   /// The agent's state for its hover card; channel 0 has none (its hover is
   /// the channel's message carousel).
   var status: OverlayChannelChipStatus? = nil
+  /// The agent's reply is playing aloud: the chip shows the blinking violet
+  /// speaking dot (L1, 2026-11-06).
+  var speaking = false
+  /// Channel 0's short name for a tight bar (`OverlaySharedChannelName`).
+  var shortName: String? = nil
 
   var id: String { digit }
   var isBroadcast: Bool { digit == "0" }
@@ -139,7 +144,7 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
   /// caption to. An agent's chip with a status shows its hover card instead
   /// (`OverlayChannelChipHoverCard`), whose last line is the chord.
   func hint(modifier: OverlayChannelChordModifier) -> String {
-    var parts = isBroadcast || name.isEmpty ? [digit] : [digit, name]
+    var parts = name.isEmpty ? [digit] : [digit, name]
     if let shortcut = modifier.shortcut(digit: digit) { parts.append(shortcut) }
     return parts.joined(separator: " · ")
   }
@@ -205,8 +210,10 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
 
 /// The widths the expanded bar's map gives its chips' names (bus brief
 /// 2026-11-04 §5, §11C). Every value is a string measured in the pill's own
-/// font (`OverlayChannelPill.nameFont`); channel 0 and an agent with an empty
-/// name have zero, so their pill is the circle alone.
+/// font (`OverlayChannelPill.nameFont`); an agent with an empty name has
+/// zero, so its pill is the circle alone. Channel 0 carries its display name
+/// by the same rules; with the default name a cut width is at most its short
+/// form's (`OverlayChannelMapChip.shortName`), which the pill then shows.
 struct OverlayChannelMapNameWidths: Equatable, Sendable {
   /// Each name whole, up to `OverlayChannelPill.maxNameWidth`: the widest
   /// the bar grows to when the user widens it.
@@ -224,20 +231,32 @@ struct OverlayChannelMapNameWidths: Equatable, Sendable {
 
   @MainActor
   init(chips: [OverlayChannelMapChip], scale: CGFloat) {
-    let names = chips.map { $0.isBroadcast ? "" : $0.name }
+    let names = chips.map(\.name)
     full = names.map { $0.isEmpty ? 0 : OverlayChannelPill.nameWidth($0, scale: scale) }
-    preferred = names.map { name in
+    let preferredCut = names.map { name -> CGFloat in
       guard !name.isEmpty else { return 0 }
       return name.count <= OverlayChannelPill.preferredNameLength
         ? OverlayChannelPill.nameWidth(name, scale: scale)
         : OverlayChannelPill.truncatedNameWidth(
           name, prefix: OverlayChannelPill.preferredNamePrefix, scale: scale)
     }
-    shortest = names.map { name in
+    let shortestCut = names.map { name -> CGFloat in
       name.isEmpty
         ? 0
         : OverlayChannelPill.truncatedNameWidth(
           name, prefix: OverlayChannelPill.shortestNamePrefix, scale: scale)
+    }
+    // A short form narrower than a cut name stands in for the cut.
+    let shortWidths = chips.map { chip in
+      chip.shortName.map { OverlayChannelPill.nameWidth($0, scale: scale) }
+    }
+    preferred = zip(zip(preferredCut, full), shortWidths).map { pair, short in
+      let (cut, whole) = pair
+      guard let short, cut < whole else { return cut }
+      return min(cut, short)
+    }
+    shortest = zip(shortestCut, shortWidths).map { cut, short in
+      short.map { min(cut, $0) } ?? cut
     }
   }
 
@@ -271,6 +290,39 @@ struct OverlayChannelMapNameWidths: Equatable, Sendable {
   }
 }
 
+/// The shared channel 0's display name (`SHARED_CHANNEL_NAME` in
+/// settings.json). Only the name is personal: channel 0's digit, chord and
+/// routing never depend on it. An empty stored name shows the interface's
+/// default, "Shared" ("Wspólny" in Polish), whose short form ("Wsp.") a tight
+/// bar may show instead of an ellipsis.
+enum OverlaySharedChannelName {
+  static var defaultName: String {
+    String(
+      localized: "overlay.sharedChannel.defaultName", defaultValue: "Shared",
+      comment: "Default display name of the shared channel 0 on the Bus")
+  }
+
+  static var defaultShortName: String {
+    String(
+      localized: "overlay.sharedChannel.defaultShortName", defaultValue: "Shared",
+      comment:
+        "Short form of the shared channel's default name for a tight bar (Polish: Wsp.); the same word when it is already short"
+    )
+  }
+
+  /// The name to show for a stored value.
+  static func display(_ stored: String) -> String {
+    let name = stored.trimmingCharacters(in: .whitespacesAndNewlines)
+    return name.isEmpty ? defaultName : name
+  }
+
+  /// The short form a tight bar may show: the default name's only. A name
+  /// of the user's own is cut with an ellipsis like an agent's.
+  static func shortName(_ stored: String) -> String? {
+    stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? defaultShortName : nil
+  }
+}
+
 /// The overlay's channel map (bus intercom spec §5.1, §6, §13): a
 /// projection of the same roster snapshot the Agents canvas reads. It holds
 /// no state, polls nothing and never names a session; a click resolves the
@@ -293,7 +345,9 @@ struct OverlayChannelMapModel: Equatable, Sendable {
     selectedDigit: String? = nil,
     selectableDigits: Set<String>,
     unreadDigits: Set<String>,
-    statuses: [String: OverlayChannelChipStatus] = [:]
+    statuses: [String: OverlayChannelChipStatus] = [:],
+    speakingDigits: Set<String> = [],
+    sharedChannelName: String = ""
   ) {
     var agents: [OverlayChannelMapChip] = []
     var placed: Set<String> = []
@@ -309,17 +363,23 @@ struct OverlayChannelMapModel: Equatable, Sendable {
           digit: digit, name: channel.agent,
           disconnected: hud.followerAlive == false, microphoneOpen: hud.open,
           unread: unreadDigits.contains(digit), selectable: selectableDigits.contains(digit),
-          selected: digit == selectedDigit, status: statuses[digit]))
+          selected: digit == selectedDigit, status: statuses[digit],
+          speaking: speakingDigits.contains(digit)))
     }
     let broadcasting = hudStates["0"]?.open == true
     guard broadcasting || !agents.isEmpty else {
       chips = []
       return
     }
+    // Channel 0 carries its name like an agent (number over the name in the
+    // single row, beside it in the second); `sharedChannelName` is the
+    // stored value, empty for the default.
     let zero = OverlayChannelMapChip(
-      digit: "0", name: "", disconnected: false, microphoneOpen: broadcasting,
+      digit: "0", name: OverlaySharedChannelName.display(sharedChannelName),
+      disconnected: false, microphoneOpen: broadcasting,
       unread: unreadDigits.contains("0"), selectable: selectableDigits.contains("0"),
-      selected: selectedDigit == "0")
+      selected: selectedDigit == "0",
+      shortName: OverlaySharedChannelName.shortName(sharedChannelName))
     chips = [zero] + agents
   }
 

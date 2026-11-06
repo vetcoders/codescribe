@@ -177,6 +177,21 @@ extension DictationEngine {
   }
 }
 
+/// The kind of take the microphone feeds (`OverlayState.liveTakeMode`).
+enum OverlayTakeMode: Equatable, Sendable {
+  case dictation
+  case agent
+
+  /// The mode's colour on the bar: the brand terracotta or the agent indigo,
+  /// the same hues the waveform draws.
+  var color: Color {
+    switch self {
+    case .dictation: CSColor.modeDictation
+    case .agent: CSColor.modeAgent
+    }
+  }
+}
+
 /// Paste mode is not part of it: Settings › Shortcuts and the tray cycle own
 /// `paste_mode`, and the overlay neither shows nor writes it (Founder direction
 /// as relayed in the Codex handoff, Annex A2, 2026-09-29).
@@ -1344,6 +1359,14 @@ final class OverlayState {
   /// (see `activateChannelMapCounter`).
   @ObservationIgnored var onRevealIntercom: (() -> Void)?
   @ObservationIgnored private var channelMapLayoutKey: [String] = []
+  /// The shared channel 0's stored display name (`SHARED_CHANNEL_NAME`),
+  /// empty for the interface's default (`OverlaySharedChannelName`).
+  private(set) var sharedChannelStoredName = ""
+  var sharedChannelName: String { OverlaySharedChannelName.display(sharedChannelStoredName) }
+  /// Test seam for the stored setting (`SHARED_CHANNEL_NAME`).
+  @ObservationIgnored var sharedChannelNameSetting: () -> String = {
+    CodescribeConfig().loadSettings().sharedChannelName
+  }
   /// Test seam for the stored setting (`AGENT_CHANNEL_MODIFIER`).
   @ObservationIgnored var agentChannelModifierSetting: () -> String = {
     CodescribeConfig().loadSettings().channelModifier
@@ -3506,6 +3529,32 @@ final class OverlayState {
       || (recording && !finalized && !transcribing && !isFinalPass && mode == .listening)
   }
 
+  /// The mode of the take the microphone feeds now, or nil at rest: an agent
+  /// (an open channel or the assistive take) or a dictation. The bar wears
+  /// this mode's colour on its brand dot and its active recording control
+  /// (decision D6, 2026-11-06): terracotta for a dictation, the agent indigo
+  /// for an agent. Red stays for errors and orange for transcribing.
+  var liveTakeMode: OverlayTakeMode? {
+    guard audioCaptureActive else { return nil }
+    return usesAgentAccent ? .agent : .dictation
+  }
+
+  /// The header's Stop while an agent channel records: closes every open
+  /// channel through the same toggle the chord and the pills use, one at a
+  /// time, re-reading the roster after each, so a channel the controller
+  /// already closed is never opened again. A toggle that leaves its channel
+  /// open (refused or failed) ends the loop; its error is the toggle's.
+  func stopOpenChannels() {
+    Task { @MainActor in
+      while let digit = channelHudStates.filter(\.value.open).keys
+        .compactMap({ UInt8($0) }).sorted().first
+      {
+        await toggleAgentChannel(digit)
+        if channelHudStates[String(digit)]?.open == true { break }
+      }
+    }
+  }
+
   /// A take is live for mini (Founder, 2026-11-04, bus brief §6, §11D): a
   /// dictation from its start to the controller's stop, or any channel,
   /// channel 0 included, with its microphone open. Mini then shows the
@@ -3598,7 +3647,7 @@ final class OverlayState {
   var channelMapLayoutModel: OverlayChannelMapModel {
     OverlayChannelMapModel(
       channels: visibleChannelRows, hudStates: channelHudStates, selectableDigits: [],
-      unreadDigits: [])
+      unreadDigits: [], sharedChannelName: sharedChannelStoredName)
   }
 
   /// Reports a change of the map's agents or names, of its open digits, or
@@ -3610,7 +3659,7 @@ final class OverlayState {
   private func noteChannelMapLayout() {
     let map = channelMapLayoutModel
     let key =
-      map.agents.map { $0.digit + "\u{1F}" + $0.name }
+      map.chips.map { $0.digit + "\u{1F}" + $0.name }
       + ["\u{1E}" + map.openDigits.joined(separator: ",")]
       + ["\u{1D}" + (miniTakeLive ? "take" : "")]
     guard key != channelMapLayoutKey else { return }
@@ -3631,6 +3680,15 @@ final class OverlayState {
       return
     }
     if presentationMode == .midi { onRestoreMidiNaturalWidth?() }
+  }
+
+  /// Re-reads channel 0's name; a new name refits the bar, whose caption
+  /// under or beside the 0 it is.
+  func refreshSharedChannelName() {
+    let stored = sharedChannelNameSetting()
+    guard stored != sharedChannelStoredName else { return }
+    sharedChannelStoredName = stored
+    noteChannelMapLayout()
   }
 
   func refreshAgentChannelModifier() {
@@ -4705,6 +4763,8 @@ final class OverlayState {
   /// one-shot format carries its own level, so neither is touched. Reads
   /// only: transcript, document and presentation state stay as they are.
   func canonicalConfigurationDidChange() {
+    // A display name, not a take policy: it follows the write at once.
+    refreshSharedChannelName()
     guard !warmingUp, !recording, !transcribing, !isFinalPass else { return }
     refreshOverlayPolicyTruth()
   }

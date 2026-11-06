@@ -58,6 +58,11 @@ struct OverlayRecordingControls: View {
   let onPreviewToggle: () -> Void
   var showsRecordingButton = true
   var showsPreviewButton = true
+  /// An agent channel records and no dictation does: the control is the
+  /// take's Stop in the agent violet (decision D6, 2026-11-06), and a press
+  /// closes the open channels through `onStopChannelCapture`.
+  var channelCaptureOpen = false
+  var onStopChannelCapture: (() -> Void)?
   var onShowDictation: (() -> Void)?
   var onShowAgents: (() -> Void)?
   var onPresentationSelect: ((OverlayPresentationMode) -> Void)?
@@ -86,29 +91,33 @@ struct OverlayRecordingControls: View {
   var recordingDisabled: Bool {
     recordingLight == .processing || (isFinalizing && !canFinish)
   }
+  /// A dictation's own Stop, or the agent channels' while only they record.
+  private var stopsAgentChannels: Bool { channelCaptureOpen && !canFinish && !isFinalizing }
+  /// The light that names the control: the dictation's, or the agent's while
+  /// the control stops agent channels.
+  private var shownLight: OverlayRecordingLight? {
+    recordingLight ?? (stopsAgentChannels ? .agent : nil)
+  }
   var recordingTint: Color {
-    switch recordingLight {
-    case .holdToTalk, .handsFree: palette.errorStatus.color
-    case .silence: OverlayRecordingLight.silence.color
-    case .processing: OverlayRecordingLight.processing.color
-    case .agent: OverlayRecordingLight.agent.color
     // At rest the microphone steps back (Founder, 2026-11-05: less visible
-    // while unused); the brand terracotta is for listening, not waiting.
-    case nil: canFinish || isFinalizing ? palette.errorStatus.color : palette.mutedText.color
-    }
+    // while unused); a live take wears its mode's colour, never the error red.
+    if let shownLight { return shownLight.color }
+    return canFinish || isFinalizing ? OverlayTakeMode.dictation.color : palette.mutedText.color
   }
   var recordingStatusValue: String {
-    recordingLight?.name
+    shownLight?.name
       ?? (isFinalizing ? String(localized: "Transcribing") : String(localized: "Ready"))
   }
-  var showsStop: Bool { canFinish }
-  var recordingSymbol: String { canFinish || isFinalizing ? "stop.fill" : "mic.fill" }
+  var showsStop: Bool { canFinish || stopsAgentChannels }
+  /// Before a take the microphone, during any take the Stop square, for a
+  /// dictation and for an agent alike (decision D6, 2026-11-06).
+  var recordingSymbol: String { showsStop || isFinalizing ? "stop.fill" : "mic.fill" }
   var recordingLabel: String {
-    canFinish || isFinalizing
+    showsStop || isFinalizing
       ? String(localized: "Stop recording") : String(localized: "Start dictation")
   }
   var recordingIdentifier: String {
-    canFinish || isFinalizing ? "overlay-stop-recording" : "overlay-start-recording"
+    showsStop || isFinalizing ? "overlay-stop-recording" : "overlay-start-recording"
   }
   var previewAccessibilityLabel: String {
     switch presentationMode {
@@ -156,14 +165,17 @@ struct OverlayRecordingControls: View {
   }
 
   func finishRecording() {
-    guard showsStop else { return }
-    onIntent(.finish)
+    if canFinish {
+      onIntent(.finish)
+    } else if stopsAgentChannels {
+      onStopChannelCapture?()
+    }
   }
 
   func activateRecordingControl() {
     guard !recordingDisabled else { return }
     withAnimation(reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.hover)) {
-      if canFinish { finishRecording() } else { onIntent(.startRecording) }
+      if showsStop { finishRecording() } else { onIntent(.startRecording) }
     }
   }
 
@@ -216,7 +228,7 @@ struct OverlayRecordingControls: View {
     .csFocusOutline()
     .modifier(
       OverlayHeaderControlChrome(
-        title: recordingLabel + (recordingLight.map { ". " + $0.tooltip } ?? ""),
+        title: recordingLabel + (shownLight.map { ". " + $0.tooltip } ?? ""),
         accent: recordingDisabled ? nil : .state, palette: palette)
     )
     .accessibilityLabel(recordingLabel)
@@ -613,13 +625,16 @@ private struct OverlayCloseButton: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var closeDotHovered = false
   let palette: OverlayAppearancePalette
+  /// The live take's mode colour, or nil at rest (`OverlayState.liveTakeMode`).
+  var takeTint: Color? = nil
   let onClose: () -> Void
 
   var body: some View {
     Button(action: onClose) {
       // The close dot is a control, not a brand mark (Founder, 2026-11-05):
-      // muted ink at rest, the cross on hover.
-      ModeDot(color: palette.mutedText.color, size: 9)
+      // muted ink at rest, the cross on hover. During a take it wears the
+      // take's mode colour (decision D6, 2026-11-06).
+      ModeDot(color: takeTint ?? palette.mutedText.color, size: 9)
         .overlay {
           if closeDotHovered {
             OverlayCloseCross()
@@ -687,6 +702,11 @@ struct DictationOverlayView: View {
   }
 
   var body: some View {
+    // Channel 0's display name reaches every conversation header below.
+    overlayBody.environment(\.overlaySharedChannelName, state.sharedChannelName)
+  }
+
+  @ViewBuilder private var overlayBody: some View {
     OverlayCanvasSurface(palette: palette) {
       // The rail reads the live transcript (intents, versions, history
       // refusal). Scoped, a capture tick re-renders the rail, not the root.
@@ -1374,7 +1394,9 @@ struct DictationOverlayView: View {
   }
 
   private var closeButton: some View {
-    OverlayCloseButton(palette: palette) { state.relayIntent(.close) }
+    OverlayCloseButton(palette: palette, takeTint: state.liveTakeMode?.color) {
+      state.relayIntent(.close)
+    }
   }
 
   private func recordingControls(
@@ -1389,6 +1411,8 @@ struct DictationOverlayView: View {
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
     controls.showsPreviewButton = showsPreview
+    controls.channelCaptureOpen = state.channelAudioCaptureActive
+    controls.onStopChannelCapture = state.stopOpenChannels
     controls.onShowDictation = state.showTranscription
     controls.onShowAgents = { state.showAgentMonitor() }
     controls.onPresentationSelect = state.setPresentationMode
@@ -1553,18 +1577,13 @@ struct DictationOverlayView: View {
     let transcriptionSelected =
       !state.isCollapsed && state.windowContentSurface == .transcription
     return Button(action: state.showTranscription) {
-      OverlayMicrophoneGlyph(
-        character: OverlayHeaderGlyph.transcription,
-        tint: transcriptionSelected
-          ? OverlayHeaderAccent.transcription.selectionTint(in: palette)
-          : palette.mutedText.color,
-        plateOpacity: transcriptionSelected ? 0 : 0.12)
+      OverlayTranscriptionGlyph(selected: transcriptionSelected, palette: palette)
     }
     .buttonStyle(.plain)
     .csFocusOutline()
     .modifier(
       OverlayHeaderControlChrome(
-        title: transcriptPreviewHelp, accent: .transcription, palette: palette,
+        title: transcriptPreviewHelp, accent: .state, palette: palette,
         selected: transcriptionSelected)
     )
     .accessibilityLabel("Show transcription")

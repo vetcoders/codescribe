@@ -267,7 +267,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
 
   func testAccentsShareOneHoverHue() {
     for palette in [OverlayAppearancePalette.light, .dark] {
-      let hover = OverlayHeaderAccent.transcription.color(in: palette)
+      let hover = OverlayHeaderAccent.state.color(in: palette)
       XCTAssertEqual(OverlayHeaderAccent.agents.color(in: palette), hover)
       XCTAssertEqual(OverlayHeaderAccent.state.color(in: palette), hover)
       XCTAssertNotEqual(hover, palette.successStatus.color)
@@ -304,8 +304,9 @@ final class OverlayHeaderChromeTests: XCTestCase {
 
   /// Founder, 2026-10-15: the chosen mode was "lekko rozjaśnione tylko kółko"
   /// that ignored hover. A chosen control sits on a pastel of its mode's
-  /// colour (Agents lavender, Transcription the listening terracotta, Pin the
-  /// system accent): noticeable, never the full colour, and hover still moves it.
+  /// colour (Agents lavender, Pin the system accent) or, for the
+  /// transcription since decision D7, the window state's neutral primary ink:
+  /// noticeable, never the full colour, and hover still moves it.
   func testSelectedControlsWearAPastelOfTheirModeAndStillAnswerHover() throws {
     let pinned = OverlayState()
     pinned.engine = OverlayChromePolicyEngine()
@@ -322,7 +323,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
         unreadCounts: [:], onShowMonitor: {})
       let cases: [(String, OverlayColorToken, AnyView, AnyView)] = [
         (
-          "transcription", palette.listeningStatus,
+          "transcription", palette.primaryText,
           AnyView(HeaderHoverTranscription(palette: palette, selected: true)),
           AnyView(HeaderHoverTranscription(palette: palette))
         ),
@@ -364,10 +365,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
   func testEveryHeaderControlUsesTheHoverChromeInsteadOfANativeTooltip() throws {
     let view = try source("Overlay/DictationOverlayView.swift")
     XCTAssertTrue(
-      view.contains("title: transcriptPreviewHelp, accent: .transcription, palette: palette"))
-    XCTAssertTrue(
-      view.contains("? OverlayHeaderAccent.transcription.selectionTint(in: palette)"),
-      "the fixture mirrors the production Transcription tint")
+      view.contains("title: transcriptPreviewHelp, accent: .state, palette: palette"))
     XCTAssertTrue(view.contains("accent: recordingDisabled ? nil : .state, palette: palette"))
     XCTAssertTrue(
       view.contains("title: previewAccessibilityLabel, accent: .state, palette: palette"))
@@ -623,11 +621,13 @@ final class OverlayHeaderChromeTests: XCTestCase {
         palette: palette, microphone: true, preview: false, canFinish: true,
         recordingLight: .holdToTalk),
       palette: palette)
+    // A dictation records in the brand terracotta (decision D6).
+    let dictation = OverlayColorToken(CSPalette.terracotta, in: palette.appearance)
     XCTAssertTrue(
-      headerContains(frames.rest, near: palette.errorStatus, tolerance: 0.2),
+      headerContains(frames.rest, near: dictation, tolerance: 0.2),
       "\(name) microphone lost its recording color before hover")
     XCTAssertTrue(
-      headerContains(frames.hover, near: palette.errorStatus, tolerance: 0.2),
+      headerContains(frames.hover, near: dictation, tolerance: 0.2),
       "\(name) microphone lost its recording color on hover")
     XCTAssertGreaterThan(
       headerShift(frames.rest, frames.hover, toward: headerSystemAccent(palette)), 0.03,
@@ -1085,25 +1085,19 @@ private struct HeaderPixel {
 }
 
 /// The transcription button is private to the overlay. This mounts the same
-/// production glyph and chrome the header uses.
-/// Mirrors the production Transcription control in `DictationOverlayView`.
+/// production glyph (`OverlayTranscriptionGlyph`) and chrome the header uses.
 private struct HeaderHoverTranscription: View {
   let palette: OverlayAppearancePalette
   var selected = false
 
   var body: some View {
     Button(action: {}) {
-      OverlayMicrophoneGlyph(
-        character: OverlayHeaderGlyph.transcription,
-        tint: selected
-          ? OverlayHeaderAccent.transcription.selectionTint(in: palette)
-          : palette.mutedText.color,
-        plateOpacity: selected ? 0 : 0.12)
+      OverlayTranscriptionGlyph(selected: selected, palette: palette)
     }
     .buttonStyle(.plain)
     .modifier(
       OverlayHeaderControlChrome(
-        title: "Show transcription", accent: .transcription, palette: palette,
+        title: "Show transcription", accent: .state, palette: palette,
         selected: selected))
   }
 }

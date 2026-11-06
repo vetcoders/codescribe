@@ -36,8 +36,8 @@ struct OverlayChannelPill: View {
     /// A numberless mailbox uses a glyph in the folded rail and in the
     /// agents list's chip, in the circled digit's place.
     var symbol: String? = nil
-    /// The agent's name on a chip or stacked pill; channel 0, an agent with
-    /// an empty name, the rail and the counter carry none.
+    /// The agent's name, or channel 0's display name, on a chip or stacked
+    /// pill; an agent with an empty name, the rail and the counter carry none.
     var name: String? = nil
     /// The width the map's row gives the name (`OverlayChannelMapNameWidths`);
     /// a narrower width than the name truncates it with an ellipsis, never a
@@ -61,6 +61,13 @@ struct OverlayChannelPill: View {
     var stacked = false
     var unread = false
     var unreadCount = 0
+    /// The agent's reply plays aloud (chip and stacked forms): the blinking
+    /// violet speaking dot stands before the circled digit, in the pill's
+    /// own margin, so the bar's measured widths do not change.
+    var speaking = false
+    /// A short form to show instead of an ellipsis when the name's width is
+    /// cut and the short form fits (channel 0's default name, "Wsp.").
+    var shortName: String? = nil
     var selected = false
     var enabled = true
     /// False while the panel is hidden or occluded. Nothing in the pill
@@ -79,7 +86,7 @@ struct OverlayChannelPill: View {
   /// `headerScale(_:)`, which also sizes the bar's rows.
   let textScale: CGFloat
   /// The floating hint: the agent's hover card on the bar's chips
-  /// (`hintCard`), else `0 · Ctrl+0`; the agent list on the counter, the
+  /// (`hintCard`), else `0 · Shared · Ctrl+0`; the agent list on the counter, the
   /// roster's own hints on the rail.
   var showsHint = true
   /// A bar chip's hover card (`OverlayChannelChipHoverCard`) in place of
@@ -114,10 +121,7 @@ struct OverlayChannelPill: View {
                 .accessibilityHidden(true)
             }
           } else if form == .rail && display.unreadCount > 0 {
-            OverlayAgentUnreadBadge(
-              count: display.unreadCount, palette: palette, textScale: textScale
-            )
-            .offset(x: 7 * textScale, y: -5 * textScale)
+            railUnreadBadge
           } else if display.unread && form != .stacked {
             Circle()
               .fill(palette.primaryText.color)
@@ -156,6 +160,58 @@ struct OverlayChannelPill: View {
   }
 
   private var recording: Bool { display.microphoneOpen && form != .rail }
+
+  /// The folded rail's unread count: its own small capsule outside the pill,
+  /// at the pill's top-right shoulder, so the pill and its channel digit stay
+  /// whole (Founder's mock-up, 2026-11-06). It grows with its figure; the
+  /// rail keeps room for two digits beside the pill
+  /// (`OverlayAgentDrawerLayout.railWidth`). Light: white with a hairline
+  /// and dark figures; dark: grey with light figures. Opaque, so nothing
+  /// behind it shows through. The roster rows keep `OverlayAgentUnreadBadge`,
+  /// which has a whole row's width to sit in.
+  private var railUnreadBadge: some View {
+    // In the pill's coordinates with a zero-width pill: `maxX` is how far
+    // the capsule's trailing edge lies past the pill's trailing edge.
+    let frame = Self.railBadgeFrame(count: display.unreadCount, pillSize: .zero, scale: textScale)
+    let dark = palette.appearance == .dark
+    return Text(railBadgeFigure)
+      .lineLimit(1)
+      .fixedSize()
+      .foregroundStyle(palette.primaryText.color)
+      .frame(width: frame.width, height: frame.height)
+      .background {
+        ZStack {
+          Capsule(style: .continuous).fill(palette.desktopBackground.color)
+          Capsule(style: .continuous)
+            .fill(dark ? palette.primaryText.color.opacity(0.28) : Color.white)
+        }
+      }
+      .overlay {
+        if !dark {
+          Capsule(style: .continuous).strokeBorder(palette.border.color, lineWidth: 1)
+        }
+      }
+      // The overlay lays it inside the pill's top-trailing corner; move it
+      // out to its frame beside the pill.
+      .offset(x: frame.maxX, y: frame.minY)
+      .accessibilityLabel("\(display.unreadCount) unread replies")
+  }
+
+  /// The capsule's figure. Above 99 it reads `99+` in the two digits'
+  /// width: 8 pt digits and a 6 pt plus, where 9 pt ones would not fit.
+  private var railBadgeFigure: AttributedString {
+    let count = display.unreadCount
+    let capped = count > Self.railBadgeReservedCount
+    var digits = AttributedString(String(min(count, Self.railBadgeReservedCount)))
+    digits.font = Font.system(
+      size: (capped ? Self.railBadgeCappedDigitSize : Self.railBadgeFontSize) * textScale,
+      weight: .semibold
+    ).monospacedDigit()
+    guard capped else { return digits }
+    var plus = AttributedString("+")
+    plus.font = Font.system(size: Self.railBadgeCappedPlusSize * textScale, weight: .semibold)
+    return digits + plus
+  }
 
   private var spokenValue: String {
     guard form == .counter, display.stacked, display.unread else { return accessibilityValue }
@@ -223,7 +279,7 @@ struct OverlayChannelPill: View {
               .accessibilityHidden(true)
           }
           if let name = display.name {
-            Text(verbatim: name)
+            Text(verbatim: shownName(name))
               .font(Self.nameFont(textScale))
               .lineLimit(1)
               .truncationMode(.tail)
@@ -237,7 +293,7 @@ struct OverlayChannelPill: View {
         VStack(spacing: Self.captionGap * textScale) {
           circledDigit(display.figure)
           if let name = display.name {
-            Text(verbatim: name)
+            Text(verbatim: shownName(name))
               .font(Self.nameFont(textScale))
               .lineLimit(1)
               .truncationMode(.tail)
@@ -276,6 +332,16 @@ struct OverlayChannelPill: View {
       Capsule(style: .continuous).fill(stackedFace || form == .stacked ? .clear : fill))
   }
 
+  /// The caption: the whole name when its width holds it; else the short
+  /// form when there is one and it fits; else the name, cut with an ellipsis.
+  func shownName(_ name: String) -> String {
+    guard let width = display.nameWidth, let short = display.shortName,
+      width + 0.5 < Self.nameWidth(name, scale: textScale),
+      Self.nameWidth(short, scale: textScale) <= width + 0.5
+    else { return name }
+    return short
+  }
+
   /// The digit: drawn here once, whatever the form.
   private func figure(_ text: String, size: CGFloat) -> some View {
     Text(verbatim: text)
@@ -305,6 +371,14 @@ struct OverlayChannelPill: View {
         Circle().strokeBorder(tint.opacity(0.5), lineWidth: 1)
           .accessibilityHidden(true)
       }
+      .overlay(alignment: .leading) {
+        if display.speaking && (form == .chip || form == .stacked) {
+          OverlayAgentStatusDot(kind: .speaking, palette: palette)
+            .scaleEffect(Self.speakingDotScale, anchor: .trailing)
+            .offset(x: -(OverlayAgentStatusDot.diameter * textScale + Self.speakingDotGap))
+            .accessibilityHidden(true)
+        }
+      }
       .overlay(alignment: .topTrailing) {
         // On a stacked pill the unread dot marks the circle, where the chip
         // form draws it at the capsule's corner.
@@ -333,6 +407,10 @@ extension OverlayChannelPill {
   /// holds its circled digit. The bar's stacked row grows with it up to here.
   static let headerScaleCeiling: CGFloat = 1.25
   static let chipPadding: CGFloat = 6
+  /// The speaking dot in the bar: 6 pt, 1 pt clear of the circle, inside the
+  /// chip's 6 pt margin and the stacked row's 8 pt between circles.
+  static let speakingDotScale: CGFloat = 0.75
+  static let speakingDotGap: CGFloat = 1
   static let chipGap: CGFloat = 4
   /// A stacked pill's side margin: with the map's 4 pt chip spacing two
   /// captions stand at least 8 pt apart, and a caption never overlaps.
@@ -368,6 +446,49 @@ extension OverlayChannelPill {
   static let stackedCardsSymbol = "rectangle.stack"
   static let badgeSize: CGFloat = 6
   static let badgeDiameter: CGFloat = 9
+  /// The folded rail's unread capsule: 13 pt tall with a 9 pt figure, its
+  /// top 2 pt above the pill's and its leading edge 1 pt inside the pill's
+  /// trailing edge, where the pill's rounded end leaves it clear.
+  static let railBadgeHeight: CGFloat = 13
+  static let railBadgeFontSize: CGFloat = 9
+  static let railBadgePadding: CGFloat = 3.5
+  /// The width counted per digit. The 9 pt glyph advances about 6.1 pt;
+  /// the padding takes the difference.
+  static let railBadgeDigitAdvance: CGFloat = 5.4
+  /// `99+` above 99, in the two digits' width.
+  static let railBadgeCappedDigitSize: CGFloat = 8
+  static let railBadgeCappedPlusSize: CGFloat = 6
+  static let railBadgeRise: CGFloat = 2
+  static let railBadgeOverlap: CGFloat = 1
+  /// The rail keeps room beside its pills for counts of up to two digits;
+  /// a larger count reads `99+` in the same width.
+  static let railBadgeReservedCount = 99
+
+  /// The rail capsule's figure: the count, or `99+` above 99.
+  static func railBadgeLabel(count: Int) -> String {
+    count > railBadgeReservedCount ? "\(railBadgeReservedCount)+" : String(count)
+  }
+
+  /// The rail capsule's width: a circle for one digit, wider with two, and
+  /// the two digits' width for `99+`.
+  static func railBadgeWidth(count: Int, scale: CGFloat) -> CGFloat {
+    let digits = CGFloat(String(min(count, railBadgeReservedCount)).count)
+    return ceil(max(railBadgeHeight, digits * railBadgeDigitAdvance + 2 * railBadgePadding) * scale)
+  }
+
+  /// The rail capsule's frame in a rail pill's coordinates (origin at the
+  /// pill's top-leading corner, y down): beside the pill's top-right
+  /// shoulder, outside the pill's capsule.
+  static func railBadgeFrame(count: Int, pillSize: CGSize, scale: CGFloat) -> CGRect {
+    CGRect(
+      x: pillSize.width - railBadgeOverlap * scale, y: -railBadgeRise * scale,
+      width: railBadgeWidth(count: count, scale: scale), height: railBadgeHeight * scale)
+  }
+
+  /// How far a reserved-width capsule reaches past a rail pill's trailing edge.
+  static func railBadgeReach(scale: CGFloat) -> CGFloat {
+    railBadgeFrame(count: railBadgeReservedCount, pillSize: .zero, scale: scale).maxX
+  }
 
   static func headerScale(_ textScale: CGFloat) -> CGFloat {
     min(textScale, headerScaleCeiling)

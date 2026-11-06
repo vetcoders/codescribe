@@ -2012,6 +2012,22 @@ struct OverlayMessageAttachment: Codable, Equatable, Hashable, Sendable {
   }
 }
 
+extension OverlayConversation {
+  /// The agent's reply is playing aloud now (`OverlayReplyPlayback.state`
+  /// "playing"). Synthesis still waiting is not speech yet.
+  var agentSpeaking: Bool {
+    messages.contains { $0.kind == .reply && $0.playback?.state == "playing" }
+  }
+
+  /// The same conversation under another display name (channel 0's name).
+  func renamed(_ name: String) -> OverlayConversation {
+    var copy = OverlayConversation(
+      id: id, channel: channel, name: name, owner: owner, messages: messages)
+    copy.historyLoaded = historyLoaded
+    return copy
+  }
+}
+
 struct OverlayConversation: Equatable, Identifiable, Sendable {
   let id: String
   let channel: String

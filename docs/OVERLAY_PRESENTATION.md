@@ -111,7 +111,13 @@ mark sits near the identity, separately from the last-preview clock; its help
 and accessibility text name the time of its own outgoing message. A later
 incoming reply must not lend its time to that receipt. The circular unread
 reply count is a separate projection, also shown on the folded rail; compact
-map and floating Intercom badge rendering retain their existing form.
+map and floating Intercom badge rendering retain their existing form. On the
+folded rail the count is its own small capsule outside the pill, at the
+pill's top-right shoulder, so neither the pill nor its channel digit is
+covered: white with a hairline and dark figures in light, grey with light
+figures in dark, wider with each digit (Founder's mock-up, 2026-11-06).
+A count above 99 reads `99+` in the two digits' width; the rail does not
+grow for it.
 The roster's positive unread count keeps its fixed badge instead of disappearing
 when space is tight. It has layout priority over the name and clock. The read
 mark consists of two identical translated checks; it is not two different states.
@@ -121,8 +127,10 @@ mark consists of two identical translated checks; it is not two different states
 The horizontal window keeps the conversation header and its current-agent
 actions visible with either the full sidebar or its folded rail. The sidebar
 choice does not replace the current conversation, draft or microphone target.
-Folded-rail controls sit on the full column's centerline, with equal horizontal
-gutters that keep the numbered buttons clear of the native resize band.
+Folded-rail controls sit on one centerline, with equal horizontal gutters that
+keep the numbered buttons clear of the native resize band; beside them the
+column keeps room for a two-digit unread capsule, so the centerline is that of
+the pills and their capsules together (`OverlayAgentDrawerLayout.railWidth`).
 The existing All, Inbox and saved-conversation views keep their current data
 and routing semantics; the earlier proposal's additional history filters are
 not part of this change.
@@ -188,11 +196,24 @@ of the same projections. `OverlayChannelStatusView.channelMapModel` builds
 `OverlayChannelMapModel` from the roster's rows, `hudStates`, current
 conversations, the selection and unread counts. It lists the bound agents
 1–9, preserving each name's entered spelling from the roster without changing
-capitalisation (Founder, 2026-11-05), led by channel 0's chip:
-the digit alone, `(0)` with no word, first in the single row and first in
-the second row of a two-row bar, at rest as well as while the microphone
-broadcasts on it (Founder, 2026-11-04), when the violet open-channel dot
-lights it. It is not an agent: the counter, `OverlayChannelMapModel.count`
+capitalisation (Founder, 2026-11-05), led by channel 0's chip, first in
+the single row and first in the second row of a two-row bar, at rest as well
+as while the microphone broadcasts on it (Founder, 2026-11-04), when the
+violet open-channel dot lights it. Channel 0 carries its display name in the
+agents' own layout: under the 0 in the single row, beside it in the second
+row, cut by the same name rules and never widening the row past them
+(`OverlayChannelMapNameWidths`). The name is the shared channel's
+(`SHARED_CHANNEL_NAME` in settings.json → `Config.shared_channel_name` →
+`CsSettings.sharedChannelName` → `OverlayState.sharedChannelName`, re-read at
+launch and after every Settings write); with none stored it is the
+interface's default, "Shared" ("Wspólny"), whose short form ("Wsp.") a cut
+width shows instead of an ellipsis (`OverlaySharedChannelName`). Settings ›
+Hotkeys › Fn and Agent channels edits it, one line, with **Restore default**;
+the bar does not. The same name heads channel 0's conversation (`0 · <name>`),
+its row in the agents list under ✦ and in the Bus window (`0 · <name> (n of
+m)`), the chip's hint and its message card; action wording such as the
+bubble route `You → All` stays. Only the name is personal: the digit, the
+chord and the routing of channel 0 do not change. It is not an agent: the counter, `OverlayChannelMapModel.count`
 and the 1–5 / 6–9 row split count agents only. With no agent bound and no
 broadcast the map is empty. A chip calls `selectChannelConversation`, the
 rail pill's selection path; `(0)` selects the All conversation the same way
@@ -290,7 +311,10 @@ while a live reader has not read past the stall horizon (no fourth colour,
 no zzz, no greyed row; the card says "Not reading"), the agent violet with
 the microphone open to it (your voice to agents is the system indigo, as
 the waveform and the chip's circle; terracotta stays with dictation outside
-the bus),
+the bus), the same violet blinking on the listening caret's 0.6 s beat while
+the agent's reply plays aloud (`OverlayAgentDotKind.speaking`, a reply whose
+playback is `playing`; still with Reduce Motion; L1, 2026-11-06) and back to
+its presence when the playback ends,
 "zzz" while a live agent sleeps under the moon as the bus paints it (the
 mailbox keeps every message for when it wakes; the moon comes before the
 stall, since a sleeper acknowledges nothing), an empty ring for a gone
@@ -333,7 +357,11 @@ the text tone, on the pill and on the roster row's leading bar alike (decision
 4): in the bus violet means your voice and terracotta the microphone, so the
 bus is the one surface where "choice = terracotta" does not apply. The bar's
 chips carry no presence dot; the agents list's chip does, between the digit
-and the name. It receives no `OverlayState`, conversation or command.
+and the name, except while the agent's reply plays aloud: then the chip, in
+the single row and the second row alike, shows the blinking violet speaking
+dot just before its circled digit, inside the pill's own margin, so the bar's
+measured width never changes (`OverlayChannelMapChip.speaking`). It receives
+no `OverlayState`, conversation or command.
 
 The bar with the horizontal map is as wide as its content (bus brief
 2026-11-04 §4, §5, §8, §11C). `OverlayBarLayout` sets the brand, a waveform of
@@ -407,15 +435,35 @@ both. The waveform and the clock are drawn at rest too, at their fixed
 widths, so the bar has no hole at rest and a take alone never changes its
 length. Channel 0's circle is on the map at rest too, so a broadcast only
 lights it and never changes the bar's width. The
-header microphone is the stop, as before. No recording state reduces the map
+header microphone is the stop. No recording state reduces the map
 to one digit without a name or leaves an empty gap (anti-pattern 09).
+
+The take wears its mode's colour (decision D6, 2026-11-06), the same rule in
+both looks and in mini and the bar: the brand terracotta for a dictation, the
+agent indigo (`CSColor.modeAgent`) for an agent take, whether a channel's
+microphone or the assistive take feeds it (`OverlayState.liveTakeMode`). It is
+on the brand dot (`OverlayCloseButton.takeTint`), the waveform, the active
+recording control and the open channels' pills; at rest the dot and the
+microphone are muted ink. Red is for errors only and orange for transcribing
+(the spinning arc); the silence yellow stays the overlay's own state. The
+recording control is the microphone before a take and the Stop square during
+any take (`OverlayRecordingControls.recordingSymbol`): for a dictation it
+relays `.finish`; while only agent channels record it is their Stop and closes
+every open channel through `OverlayState.stopOpenChannels`, the chord's own
+toggle, never starting a dictation. The Agents button keeps its live-capture
+sign and its stop meaning in mini.
 
 ### Mini
 
 Mini at rest (Founder, 2026-11-04, bus brief §3) reads, from the left: the
 brand dot (the close button), transcription (`transcriptionPreviewButton`),
 the microphone, the Agents button (✦) and the preview chevron, in the bar's
-glyphs, palette and 22 pt controls. No counter, waveform, timer or map. With
+glyphs, palette and 22 pt controls. No counter, waveform, timer, map or pin:
+the pin is the expanded bar's and the window's. The transcription control is
+the system `note.text` symbol in every form (`OverlayTranscriptionGlyph`,
+decision D7, 2026-11-06); while the window shows the transcription it is
+chosen like the pin, primary ink on the neutral wash
+(`OverlayHeaderAccent.state`), never terracotta. With
 the channel map disabled the `codescribe` word follows the dot, as before;
 with it enabled the dot stands alone. Mini is as wide and as tall as its
 content, nothing reserved for hidden elements: 7 pt from a control to the

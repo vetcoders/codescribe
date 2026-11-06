@@ -1682,6 +1682,30 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(writes.map(\.value), [defaultTranscriptTagTemplate])
   }
 
+  /// Channel 0's name is one line under `SHARED_CHANNEL_NAME`; an unchanged
+  /// name writes nothing, and Restore default writes the empty name that
+  /// shows the interface's default.
+  func testSharedChannelNameWritesOneLineAndRestoresTheDefault() {
+    var writes: [(key: String, value: String)] = []
+    var stored = CsSettings.sample
+    var engine = MockSettingsEngine(updateConfigObserver: { key, value in
+      writes.append((key, value))
+      if key == "SHARED_CHANNEL_NAME" { stored.sharedChannelName = value }
+    })
+    engine.settingsLoader = { stored }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.settings.sharedChannelName, "")
+
+    model.setSharedChannelName("  Ekipa\n Codescribe ")
+    XCTAssertEqual(model.settings.sharedChannelName, "Ekipa Codescribe")
+    model.setSharedChannelName("Ekipa Codescribe")
+    model.restoreDefaultSharedChannelName()
+
+    XCTAssertEqual(writes.map(\.key), ["SHARED_CHANNEL_NAME", "SHARED_CHANNEL_NAME"])
+    XCTAssertEqual(writes.map(\.value), ["Ekipa Codescribe", ""])
+    XCTAssertEqual(model.settings.sharedChannelName, "")
+  }
+
   func testResetPreviewMapsLiveCountsIntoConcreteConfirmationCopy() {
     let preview = CsResetPreview(
       audioFiles: 5_000,

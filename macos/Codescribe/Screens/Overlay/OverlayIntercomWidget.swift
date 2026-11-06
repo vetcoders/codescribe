@@ -2647,6 +2647,10 @@ private struct OverlayIntercomConversationBody: View {
   }
 
   var body: some View {
+    conversationView.environment(\.overlaySharedChannelName, state.sharedChannelName)
+  }
+
+  private var conversationView: some View {
     OverlayConversationView(
       conversation: conversation, palette: palette, topInset: 0,
       bottomInset: presentation == .intercom ? 8 : 12,

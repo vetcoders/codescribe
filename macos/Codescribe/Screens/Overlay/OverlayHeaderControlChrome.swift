@@ -4,7 +4,6 @@ import SwiftUI
 /// Hover over an unchosen header control uses the macOS accent; a chosen
 /// control wears its mode's colour (`selectionTint`).
 enum OverlayHeaderAccent {
-  case transcription
   case agents
   case state
 
@@ -15,11 +14,11 @@ enum OverlayHeaderAccent {
   /// The chosen control wears its mode's colour. Founder, 2026-10-15: the
   /// choice shows as a clear, understated tint of the mode's colour.
   /// Founder, 2026-11-05 (fewer lights on the bar): Agents keeps the agent
-  /// indigo, Transcription keeps the one listening terracotta, and a window
-  /// state (pin, preview) wears no colour: a neutral wash of primary ink.
+  /// indigo, and a window state (pin, transcription, preview) wears no
+  /// colour: a neutral wash of primary ink. The transcription left the
+  /// listening terracotta on 2026-11-06 (decision D7).
   func selectionTint(in palette: OverlayAppearancePalette) -> Color {
     switch self {
-    case .transcription: palette.listeningStatus.color
     case .agents: palette.agentAccent.color
     case .state: palette.primaryText.color
     }

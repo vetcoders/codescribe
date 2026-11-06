@@ -162,7 +162,9 @@ final class OverlayChannelMapTests: XCTestCase {
         "10": hud(session: "s10"),
       ])
     XCTAssertEqual(map.chips.map(\.digit), ["0", "3", "5"], "(0) leads at rest")
-    XCTAssertEqual(map.chips.map(\.name), ["", "Igor", "Kuba"], "no All label")
+    XCTAssertEqual(
+      map.chips.map(\.name), [OverlaySharedChannelName.defaultName, "Igor", "Kuba"],
+      "channel 0 carries the shared channel's default name")
     XCTAssertTrue(map.chips[0].isBroadcast)
     XCTAssertFalse(map.chips[0].microphoneOpen, "at rest channel 0 carries no open dot")
     XCTAssertNil(map.chips[0].status, "channel 0's hover is its carousel, not a card")
@@ -190,24 +192,22 @@ final class OverlayChannelMapTests: XCTestCase {
     let zero = map.chips[0]
     XCTAssertTrue(zero.isBroadcast)
     XCTAssertTrue(zero.microphoneOpen)
-    XCTAssertEqual(zero.name, "", "no All label")
-    // Channel 0 is a digit with its badge in every form and at every width.
+    XCTAssertEqual(zero.name, OverlaySharedChannelName.defaultName)
+    // Channel 0's name is measured by the agents' rules, at most its whole
+    // width and never below its shortest cut.
     let names = OverlayChannelMapNameWidths(chips: map.chips, scale: 1)
-    XCTAssertEqual(names.full[0], 0, "channel 0 is a digit with its badge")
-    XCTAssertEqual(names.preferred[0], 0)
-    XCTAssertEqual(names.shortest[0], 0)
     XCTAssertEqual(
-      OverlayChannelPill.chipWidth(nameWidth: names.full[0], form: .stacked, scale: 1),
-      ceil(OverlayChannelPill.digitCircle + 2 * OverlayChannelPill.stackedPadding))
-    XCTAssertEqual(
-      OverlayChannelPill.chipWidth(nameWidth: names.full[0], form: .chip, scale: 1),
-      ceil(2 * OverlayChannelPill.chipPadding + OverlayChannelPill.digitCircle))
+      names.full[0], OverlayChannelPill.nameWidth(OverlaySharedChannelName.defaultName, scale: 1))
+    XCTAssertLessThanOrEqual(names.preferred[0], names.full[0])
+    XCTAssertLessThanOrEqual(names.shortest[0], names.preferred[0])
+    XCTAssertGreaterThan(names.shortest[0], 0)
     XCTAssertEqual(map.count, 3, "channel 0 is not counted")
     XCTAssertEqual(map.agents.map(\.digit), ["2", "3", "5"])
     XCTAssertEqual(map.openDigits, ["0"])
     XCTAssertEqual(map.counterFigure, "0", "the counter shows 0 with the badge")
     XCTAssertEqual(map.counterHint, "2 Miksa · 3 Igor · 5 Kuba", "the hint lists agents only")
-    XCTAssertEqual(zero.hint(modifier: .control), "0 · Ctrl+0")
+    XCTAssertEqual(
+      zero.hint(modifier: .control), "0 · " + OverlaySharedChannelName.defaultName + " · Ctrl+0")
     XCTAssertEqual(
       zero.accessibilityLabel(modifier: .control), "Channel 0, shortcut Ctrl 0, microphone open")
     // At rest the same chip leads, without the dot, and the bar keeps its
@@ -782,6 +782,83 @@ final class OverlayChannelMapTests: XCTestCase {
       OverlayChannelPill.chipWidth(nameWidth: 30, form: .chip, scale: 1))
   }
 
+  /// The folded rail's unread count is its own capsule outside the pill, at
+  /// its top-right shoulder: no point of it lies inside the pill's capsule,
+  /// so the channel digit stays whole; it grows with its digits; and the
+  /// rail keeps room for two digits beside its widest pill.
+  func testRailUnreadCapsuleSitsBesideThePillAndGrowsWithItsDigits() throws {
+    func inCapsule(_ rect: CGRect, _ point: CGPoint) -> Bool {
+      let radius = min(rect.width, rect.height) / 2
+      let x = min(max(point.x, rect.minX + radius), rect.maxX - radius)
+      let y = min(max(point.y, rect.minY + radius), rect.maxY - radius)
+      return hypot(point.x - x, point.y - y) < radius
+    }
+    for scale: CGFloat in [1, 1.2, 1.5, 2] {
+      let widest = OverlayAgentDrawerLayout.railPillWidth(textScale: scale)
+      // The antenna's pill and an agent's (dot 8 instead of glyph 12).
+      for pillWidth in [widest, widest - 4 * scale] {
+        let pill = CGRect(x: 0, y: 0, width: pillWidth, height: 24 * scale)
+        for count in [1, 9, 10, 99, 100, 250] {
+          let badge = OverlayChannelPill.railBadgeFrame(
+            count: count, pillSize: pill.size, scale: scale)
+          XCTAssertEqual(badge.height, OverlayChannelPill.railBadgeHeight * scale)
+          XCTAssertGreaterThan(badge.maxX, pill.maxX, "\(count) @\(scale): beside the pill")
+          XCTAssertLessThan(badge.minY, pill.minY, "\(count) @\(scale): at its top shoulder")
+          XCTAssertLessThan(badge.midY, pill.midY, "\(count) @\(scale): not below its middle")
+          var y = badge.minY
+          while y <= badge.maxY {
+            var x = badge.minX
+            while x <= badge.maxX {
+              let point = CGPoint(x: x, y: y)
+              if inCapsule(badge, point) {
+                XCTAssertFalse(
+                  inCapsule(pill, point), "\(count) @\(scale): the capsule overlaps the pill")
+                if inCapsule(pill, point) { return }
+              }
+              x += 0.25
+            }
+            y += 0.25
+          }
+        }
+      }
+      let width = { OverlayChannelPill.railBadgeWidth(count: $0, scale: scale) }
+      XCTAssertEqual(width(1), OverlayChannelPill.railBadgeHeight * scale, accuracy: 1)
+      XCTAssertEqual(width(9), width(1), "one digit is a circle")
+      XCTAssertGreaterThan(width(10), width(9), "10 is wider than 9")
+      XCTAssertEqual(width(99), width(10))
+      XCTAssertEqual(width(100), width(99), "99+ keeps the two digits' width")
+      XCTAssertEqual(width(250), width(99))
+      XCTAssertEqual(OverlayChannelPill.railBadgeLabel(count: 99), "99")
+      XCTAssertEqual(OverlayChannelPill.railBadgeLabel(count: 100), "99+")
+      XCTAssertEqual(OverlayChannelPill.railBadgeLabel(count: 250), "99+")
+      // `99+` (8 pt digits, 6 pt plus, each measured with a point of
+      // slack) fits the two digits' width.
+      let figure =
+        OverlayChannelPill.textWidth(
+          "99", size: OverlayChannelPill.railBadgeCappedDigitSize * scale, monospacedDigits: true)
+        + OverlayChannelPill.textWidth(
+          "+", size: OverlayChannelPill.railBadgeCappedPlusSize * scale)
+      XCTAssertLessThanOrEqual(figure, width(250), "@\(scale): 99+ is not clipped")
+      // Centred in the column before the reserved room, the widest pill's
+      // two-digit capsule ends inside the rail's content, before the band.
+      let content =
+        OverlayAgentDrawerLayout.railWidth(textScale: scale) - 2 * OverlayResizeHit.band
+      let reserved = OverlayChannelPill.railBadgeFrame(
+        count: 99, pillSize: CGSize(width: widest, height: 24 * scale), scale: scale)
+      XCTAssertLessThanOrEqual(2 + reserved.maxX, content + 0.001, "@\(scale): 99 is not clipped")
+    }
+    let pillSource = try overlaySource("OverlayChannelPill.swift")
+    let badge = try section(
+      of: pillSource, from: "private var railUnreadBadge: some View {",
+      to: "private var spokenValue: String {")
+    XCTAssertTrue(
+      badge.contains(
+        "Self.railBadgeFrame(count: display.unreadCount, pillSize: .zero, scale: textScale)"),
+      "the capsule is drawn from the frame these assertions measure")
+    XCTAssertTrue(badge.contains(".offset(x: frame.maxX, y: frame.minY)"))
+    XCTAssertFalse(pillSource.contains("OverlayAgentUnreadBadge("), "the rail draws its own count")
+  }
+
   /// The bar's pills keep their hint on: an agent's chip shows its hover
   /// card, built from the chip's status, with the plain `5 · Kuba · Ctrl+5`
   /// as the fallback; only channel 0 gives its hover to the carousel.
@@ -879,7 +956,7 @@ final class OverlayChannelMapTests: XCTestCase {
     let roster = view.channelStatusView
     let map = roster.channelMapModel
     XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3"])
-    XCTAssertEqual(map.chips.map(\.name), ["", "lena", "astra"])
+    XCTAssertEqual(map.chips.map(\.name), [OverlaySharedChannelName.defaultName, "lena", "astra"])
     XCTAssertEqual(
       map.chips.map(\.selectable), [true, true, true], "(0) selects the All conversation")
     XCTAssertEqual(map.chips.map(\.selected), [false, false, false])
@@ -1343,5 +1420,135 @@ final class OverlayChannelMapTests: XCTestCase {
         XCTAssertTrue(state.pendingChannelToggles.isEmpty)
       }
     }
+  }
+
+  // MARK: - An agent speaking (L1)
+
+  private func owner(_ name: String, channel: String) throws -> OverlayConversationOwner {
+    try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "s\(channel)",
+        "lease_id": String(repeating: channel, count: 32), "channel": channel, "name": name,
+      ]))
+  }
+
+  private func reply(_ state: String, owner: OverlayConversationOwner) -> OverlayConversationMessage {
+    OverlayConversationMessage(
+      id: "reply:\(state)", kind: .reply, text: "Gotowe.", order: 1,
+      emittedAt: "2026-11-06T03:00:00Z", owner: owner, recipients: [], deliveryID: nil,
+      replyTo: nil, unsolicited: true,
+      playback: OverlayReplyPlayback(
+        replyID: state, ticket: "t-\(state)", state: state, reason: nil, spoken: false,
+        emittedAt: "2026-11-06T03:00:01Z"),
+      busPath: "/dev/null")
+  }
+
+  /// While an agent's reply plays aloud its presence dot is the violet
+  /// speaking dot, in the agents list and on its bar chip; synthesis still
+  /// waiting and a finished playback leave the presence dot as it was.
+  func testAgentSpeakingTurnsItsDotVioletOnlyWhilePlaying() throws {
+    let kuba = try owner("Kuba", channel: "5")
+    func roster(playback: String?) -> OverlayChannelStatusView {
+      let messages = playback.map { [reply($0, owner: kuba)] } ?? []
+      let conversation = OverlayConversation(
+        id: kuba.id, channel: "5", name: "Kuba", owner: kuba, messages: messages)
+      return OverlayChannelStatusView(
+        channels: [delivery("5", "Kuba")], unavailable: false, palette: .light,
+        animates: false, hudStates: ["5": hud(session: "s5")],
+        conversations: [conversation], unreadCounts: [:], onSelectConversation: { _ in })
+    }
+    for (playback, speaking) in [
+      ("playing", true), ("waiting", false), ("finished", false), (nil, false),
+    ] as [(String?, Bool)] {
+      let view = roster(playback: playback)
+      let channel = try XCTUnwrap(view.channels.first)
+      XCTAssertEqual(
+        view.presenceDotKind(for: channel), speaking ? .speaking : .present, "\(playback ?? "none")")
+      XCTAssertEqual(
+        view.channelMapModel.chips.first { $0.digit == "5" }?.speaking, speaking,
+        "\(playback ?? "none")")
+    }
+  }
+
+  /// The speaking dot blinks on the listening caret's beat; with Reduce
+  /// Motion it stays full.
+  func testSpeakingDotBlinksUnlessMotionIsReduced() {
+    let beat = OverlayAgentStatusDot.speakingBeat
+    XCTAssertEqual(OverlayAgentStatusDot.speakingOpacity(at: beat * 0.5, reduceMotion: false), 1)
+    XCTAssertEqual(
+      OverlayAgentStatusDot.speakingOpacity(at: beat * 1.5, reduceMotion: false),
+      OverlayAgentStatusDot.speakingFaintOpacity)
+    for step in 0..<8 {
+      XCTAssertEqual(
+        OverlayAgentStatusDot.speakingOpacity(at: beat * Double(step) + 0.1, reduceMotion: true), 1)
+    }
+  }
+
+  // MARK: - Channel 0's name (shared channel)
+
+  /// Channel 0 carries its display name like an agent: the stored name, or
+  /// the default when none is stored, on the bar's chip, its hint, the row
+  /// in the agents list, the roster's header and the overlay's map that sizes
+  /// the bar. Only the name changes; the digit stays 0.
+  func testChannelZeroCarriesItsDisplayNameEverywhere() throws {
+    let state = OverlayState(micAccessProvider: { true })
+    var stored = ""
+    state.sharedChannelNameSetting = { stored }
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [delivery("3", "Lena")],
+        conversations: [
+          OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+        ]))
+    state.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "3", audience: "Lena", provider: "codex", providerSessionId: "s3", open: false,
+        loud: false, autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    for (value, shown) in [
+      ("", OverlaySharedChannelName.defaultName), ("Ekipa", "Ekipa"),
+      ("  ", OverlaySharedChannelName.defaultName),
+    ] {
+      stored = value
+      state.refreshSharedChannelName()
+      XCTAssertEqual(state.sharedChannelName, shown)
+      let zero = try XCTUnwrap(state.channelMapLayoutModel.chips.first)
+      XCTAssertEqual(zero.digit, "0")
+      XCTAssertEqual(zero.name, shown)
+      let roster = DictationOverlayView(state: state).channelStatusView
+      XCTAssertEqual(roster.channelMapModel.chips.first?.name, shown)
+      XCTAssertEqual(roster.hoverListRows.first { $0.digit == "0" }?.name, shown)
+      XCTAssertTrue(roster.broadcastHeader.hasPrefix("0 · " + shown), roster.broadcastHeader)
+      XCTAssertTrue(
+        zero.hint(modifier: .control).hasPrefix("0 · " + shown), zero.hint(modifier: .control))
+    }
+  }
+
+  /// A cut name shows its short form when it has one and it fits (channel
+  /// 0's default name), else the name with an ellipsis; a name the width
+  /// holds is shown whole.
+  func testChannelZeroDefaultNameShowsItsShortFormWhenCut() {
+    func pill(_ name: String, short: String?, width: CGFloat) -> OverlayChannelPill {
+      OverlayChannelPill(
+        form: .stacked,
+        display: OverlayChannelPill.Display(
+          figure: "0", name: name, nameWidth: width, shortName: short),
+        hint: "", accessibilityText: "", identifier: "t", palette: .light, textScale: 1
+      ) {}
+    }
+    let whole = OverlayChannelPill.nameWidth("Wspólny", scale: 1)
+    let short = OverlayChannelPill.nameWidth("Wsp.", scale: 1)
+    XCTAssertEqual(pill("Wspólny", short: "Wsp.", width: whole).shownName("Wspólny"), "Wspólny")
+    XCTAssertEqual(pill("Wspólny", short: "Wsp.", width: short).shownName("Wspólny"), "Wsp.")
+    XCTAssertEqual(pill("Wspólny", short: "Wsp.", width: short - 4).shownName("Wspólny"), "Wspólny")
+    XCTAssertEqual(pill("Wspólny", short: nil, width: short).shownName("Wspólny"), "Wspólny")
+    let widths = OverlayChannelMapNameWidths(
+      chips: [
+        OverlayChannelMapChip(
+          digit: "0", name: "Wspólny", disconnected: false, microphoneOpen: false, unread: false,
+          selectable: true, selected: false, shortName: "Wsp.")
+      ], scale: 1)
+    XCTAssertEqual(widths.preferred, [short], "the default bar gives the short form's width")
+    XCTAssertEqual(widths.full, [whole])
   }
 }
