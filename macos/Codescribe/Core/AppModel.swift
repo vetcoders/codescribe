@@ -31,6 +31,7 @@ final class AppModel: ObservableObject {
   let chat: AgentChatStore
   let overlay: OverlayController
   let tray: TrayViewModel
+  let recordingMedia = RecordingMediaDucker()
   /// The one invalidation scope for already-open configuration projections
   /// (Settings window, tray Quick Settings). Carries edges, never values.
   let configurationInvalidation: ConfigurationInvalidation

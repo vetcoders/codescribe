@@ -628,6 +628,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
+    model.recordingMedia.start(observing: model.overlay.state)
     // Light, dark or system, before the first window resolves a colour.
     AppearancePreference().apply()
     // Honour the persisted "Show Dock Icon" toggle at launch. LSUIElement
@@ -1089,6 +1090,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     // The launch guards in applicationShouldTerminate keep the XCTest host
     // from constructing a bridge here solely to stop it at teardown.
     let voiceStop = Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
+    let mediaStop = Task { await model.recordingMedia.stop() }
     idleRestartCoordinator?.invalidate()
     trayPanel.dismiss()
     model.chat.invalidate()
@@ -1118,6 +1120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
     await nativeStop.value
     await voiceStop.value
+    await mediaStop.value
   }
 
   /// Bind the active recorder to the real host power lifecycle.
