@@ -344,7 +344,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     state.showAgentMonitor()
     settle()
     XCTAssertTrue(state.showsAgentMonitor, "docked transcription: the button opens the column")
-    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "the asked-for roster docks")
+    XCTAssertEqual(
+      recorder.frame.width, 1162, accuracy: 1,
+      "with no conversation chosen the roster fills the window instead of leaving a blank pane")
 
     state.hideAgentSidebar()
     settle()
@@ -381,15 +383,19 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     settle()
     state.showAgentMonitor()
     settle()
-    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "the list is already a side column")
+    XCTAssertEqual(
+      recorder.frame.width, 662, accuracy: 1,
+      "with no conversation chosen the list fills the window up to the conversation edge")
 
     // Docking engages while the list is open on the transcription: the list
-    // becomes the column instead of vanishing.
+    // stays full-window until a conversation is selected.
     panel.setContentSize(NSSize(width: 1200, height: 500))
     settle()
     XCTAssertTrue(state.agentDrawerDocked)
     XCTAssertTrue(state.showsAgentMonitor)
-    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "the open list docks as the column")
+    XCTAssertEqual(
+      recorder.frame.width, 1162, accuracy: 1,
+      "with no conversation chosen the open list fills the widened window")
     XCTAssertEqual(recorder.frame.maxX, 1200, accuracy: 1)
 
     state.selectConversation(lena.id)
