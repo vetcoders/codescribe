@@ -3216,6 +3216,23 @@
         }
       }
     },
+    "Allow Codescribe to control Spotify in Privacy & Security > Automation." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Codescribe to control Spotify in Privacy & Security > Automation."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozwól Codescribe sterować Spotify w ustawieniach Prywatność i ochrona > Automatyzacja."
+          }
+        }
+      }
+    },
     "Allow access" : {
       "comment" : "In-app permission repair chip; the row title already names the permission",
       "localizations" : {
@@ -3824,6 +3841,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nagranie audio jest usuwane zaraz po zakończeniu przetwarzania. Historia tekstowa pozostaje."
+          }
+        }
+      }
+    },
+    "Audio output in use" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audio output in use"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktywne wyjścia audio"
+          }
+        }
+      }
+    },
+    "Audio playback status is unavailable." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audio playback status is unavailable."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan odtwarzania dźwięku jest niedostępny."
           }
         }
       }
@@ -12627,6 +12678,23 @@
         }
       }
     },
+    "No other application has an active audio output." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No other application has an active audio output."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Żadna inna aplikacja nie ma aktywnego wyjścia audio."
+          }
+        }
+      }
+    },
     "No preview window appears while recording." : {
       "localizations" : {
         "pl" : {
@@ -13619,6 +13687,23 @@
         }
       }
     },
+    "Open Automation settings" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Automation settings"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz ustawienia Automatyzacji"
+          }
+        }
+      }
+    },
     "Open Lab" : {
       "localizations" : {
         "pl" : {
@@ -14467,6 +14552,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odtwórz oryginalne nagranie dla tej poprawki"
+          }
+        }
+      }
+    },
+    "Playback during recording" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Playback during recording"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odtwarzanie podczas nagrywania"
           }
         }
       }
@@ -18969,6 +19071,74 @@
         }
       }
     },
+    "Spotify is lowered by 70 percent for the whole recording and restored afterwards." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify is lowered by 70 percent for the whole recording and restored afterwards."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Głośność Spotify jest zmniejszana o 70 procent na cały czas nagrania, a potem przywracana."
+          }
+        }
+      }
+    },
+    "Spotify is quieter while the microphone is recording." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify is quieter while the microphone is recording."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify jest ściszone na czas nagrywania mikrofonu."
+          }
+        }
+      }
+    },
+    "Spotify keeps playing. Its volume changes only while recording." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify keeps playing. Its volume changes only while recording."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify odtwarza dalej. Jego głośność zmienia się tylko podczas nagrywania."
+          }
+        }
+      }
+    },
+    "Spotify volume could not be adjusted. Recording continues." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify volume could not be adjusted. Recording continues."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zmienić głośności Spotify. Nagrywanie trwa dalej."
+          }
+        }
+      }
+    },
     "Stale configuration entries — do not affect operation" : {
       "comment" : "About panel: several .env entries Codescribe does not read",
       "localizations" : {
@@ -22875,6 +23045,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twoja licencja, wersja Codescribe, lokalne dane i prywatność."
+          }
+        }
+      }
+    },
+    "Your manual Spotify volume change takes priority." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your manual Spotify volume change takes priority."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Twoja ręczna zmiana głośności Spotify ma pierwszeństwo."
           }
         }
       }
