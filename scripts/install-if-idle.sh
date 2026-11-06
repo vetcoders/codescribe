@@ -12,6 +12,13 @@
 #
 # --from-app PATH copies an already signed and stapled Release bundle after
 # a running old app has exited. Without that flag, make install-app stays.
+#
+# The local install never sends Quit. make install-app arms restart-if-idle,
+# and that native protocol alone swaps the running generation; a second Quit
+# from here used to land on the application mid-handshake, or on the
+# generation the waiter had just started, and left it off. The installer
+# watches the swap and reports it. An application that was running when the
+# bundle was replaced is running when the installer returns.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -293,7 +300,50 @@ def copy_prebuilt(source: Path, destination: Path) -> None:
         raise Refuse("rsync copy failed")
 
 
-def install_local(lease_path: Path) -> None:
+SWAP_WAIT = float(os.environ.get("CODESCRIBE_INSTALL_SWAP_WAIT", "90"))
+
+
+def await_swap(old_pids: set[str]) -> tuple[set[str], set[str]]:
+    """Watch the armed waiter work. Returns (old pids left, successors)."""
+    # The window covers one waiter interval plus its bounded handshake. Once
+    # the old generation is gone, a successor gets a short grace to appear.
+    deadline = time.monotonic() + SWAP_WAIT
+    grace = min(10.0, SWAP_WAIT)
+    gone_since = None
+    while True:
+        running = running_app_pids()
+        remaining = old_pids & running
+        successors = running - old_pids
+        now = time.monotonic()
+        if remaining:
+            gone_since = None
+        elif successors:
+            return remaining, successors
+        else:
+            if gone_since is None:
+                gone_since = now
+            if now - gone_since >= grace:
+                return remaining, successors
+        if now >= deadline:
+            return remaining, successors
+        time.sleep(0.25)
+
+
+def launch_installed() -> set[str]:
+    for _ in range(2):
+        opened = subprocess.run(["open", "-g", str(DEST)], capture_output=True, text=True)
+        if opened.returncode != 0:
+            print(f"install-if-idle: launch failed: {opened.stderr.strip()}", file=sys.stderr)
+        deadline = time.monotonic() + min(15.0, SWAP_WAIT)
+        while time.monotonic() < deadline:
+            running = running_app_pids()
+            if running:
+                return running
+            time.sleep(0.25)
+    return set()
+
+
+def install_local() -> None:
     interlock_path = resolved_path("--print-install-interlock-path")
     interlock, held = open_exclusive_probe(interlock_path)
     if held:
@@ -301,7 +351,7 @@ def install_local(lease_path: Path) -> None:
     else:
         print(
             "install-if-idle: no live take, no agent turn; runtime lock is held — "
-            "installing over it, then requesting Quit"
+            "installing over it; the armed waiter swaps the generation when idle"
         )
     try:
         completed = subprocess.run(["make", "-C", str(root), "install-app"])
@@ -311,36 +361,26 @@ def install_local(lease_path: Path) -> None:
         raise SystemExit(completed.returncode)
 
     old_pids = running_app_pids()
-    if old_pids:
-        # A take or agent turn may have begun during the build. Never request
-        # Quit unless the bus and turn lease still prove the app is idle.
-        if subprocess.run([sys.executable, str(demux), "--assert-install-idle"]).returncode != 0:
-            print("install-if-idle: restart required; old generation still running pid="
-                  + ",".join(sorted(old_pids)) + " (take active or bus unreadable)")
-            raise SystemExit(0)
-        lease = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            try:
-                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as error:
-                if error.errno in (errno.EACCES, errno.EAGAIN):
-                    print("install-if-idle: restart required; old generation still running pid="
-                          + ",".join(sorted(old_pids)) + " (agent turn active)")
-                    raise SystemExit(0)
-                raise
-        finally:
-            os.close(lease)
-
-        if old_pids & running_app_pids():
-            request_quit()
-            remaining = wait_for_old_generation(old_pids)
-            if remaining:
-                print("install-if-idle: restart required, old generation still running pid="
-                      + ",".join(sorted(remaining)))
-                raise SystemExit(0)
-        print("install-if-idle: old generation exited; installed app is ready to launch")
-    else:
+    if not old_pids:
         print("install-if-idle: installed app is ready to launch")
+        raise SystemExit(0)
+    remaining, successors = await_swap(old_pids)
+    if remaining:
+        print("install-if-idle: restart required; old generation still running pid="
+              + ",".join(sorted(remaining))
+              + " — the armed waiter swaps it at the first idle moment")
+        raise SystemExit(0)
+    if successors:
+        print("install-if-idle: old generation exited; new generation running pid="
+              + ",".join(sorted(successors)))
+        raise SystemExit(0)
+    started = launch_installed()
+    if not started:
+        print("install-if-idle: old generation exited and the installed app is not running "
+              f"— open {DEST}", file=sys.stderr)
+        raise SystemExit(1)
+    print("install-if-idle: old generation exited without a successor; "
+          "started the installed app pid=" + ",".join(sorted(started)))
     raise SystemExit(0)
 
 
@@ -403,7 +443,7 @@ try:
     lease_path = resolved_path("--print-agent-turn-lease-path")
     assert_turn_idle(lease_path)
     if from_app is None:
-        install_local(lease_path)
+        install_local()
     else:
         install_prebuilt(from_app, lease_path)
 except Refuse as error:
