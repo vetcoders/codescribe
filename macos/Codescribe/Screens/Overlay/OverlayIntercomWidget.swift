@@ -1375,6 +1375,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
               x: frame.minX, y: frame.maxY - headerHeight,
               width: frame.width, height: headerHeight), display: true)
           positioning = false
+          // The window snaps a fractional drag to whole pixels. The store keeps
+          // the width the window took, not the one the pointer asked for.
+          desktop.groupWidth = Double(header.frame.width)
           UserDefaults.standard.set(
             [Double(header.frame.minX), Double(header.frame.minY)], forKey: Self.positionKey)
         }
@@ -3460,7 +3463,16 @@ private struct OverlayIntercomResizeHandle: NSViewRepresentable {
   }
 }
 
-private final class OverlayIntercomResizeView: NSView {
+/// A gesture view that follows the pointer on screen rather than the events
+/// it is handed. The app asks AppKit; a test names the point, so the Founder's
+/// own mouse moving during a run cannot resize the group under test.
+@MainActor
+protocol OverlayIntercomPointerSource: AnyObject {
+  var pointerLocation: () -> CGPoint { get set }
+}
+
+private final class OverlayIntercomResizeView: NSView, OverlayIntercomPointerSource {
+  var pointerLocation: () -> CGPoint = { NSEvent.mouseLocation }
   var edge = OverlayIntercomWidgetLayout.ResizeEdge.bottomRight
   var accent = OverlayAppearancePalette.dark.agentAccent.nsColor
   var cornerRadius: CGFloat = OverlayIntercomWidgetLayout.conversationCornerRadius
@@ -3479,7 +3491,7 @@ private final class OverlayIntercomResizeView: NSView {
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override func mouseDown(with event: NSEvent) {
     finishResize(cancelled: true)
-    origin = NSEvent.mouseLocation
+    origin = pointerLocation()
     originalFrame = window?.frame
     gesture = UUID()
     moved = false
@@ -3505,7 +3517,7 @@ private final class OverlayIntercomResizeView: NSView {
         return consumed ? nil : event
       }
     }
-    let point = NSEvent.mouseLocation
+    let point = pointerLocation()
     resize(
       originalFrame, CGSize(width: point.x - origin.x, height: point.y - origin.y), edge, gesture)
   }

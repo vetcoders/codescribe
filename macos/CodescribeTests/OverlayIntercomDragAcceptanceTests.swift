@@ -282,6 +282,16 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
       XCTAssertFalse(isResize(CGPoint(x: root.bounds.midX, y: bottom)), "No invisible edge band")
       let point = CGPoint(x: right, y: bottom)
       let handle = try XCTUnwrap(target(point))
+      // The handle reads the pointer from the screen, not from these events,
+      // so the Founder's own mouse moving mid-run resized the group by a
+      // fraction of a point (2026-11-06: 494.72 stored against a 495 pt
+      // window). The test names the pointer, and lets it creep left the way
+      // a hand does: the drag ends 0.3 pt short of a whole point.
+      var drift: CGFloat = 0
+      try XCTUnwrap(handle as? OverlayIntercomPointerSource).pointerLocation = {
+        drift -= 0.05
+        return CGPoint(x: 400 + drift, y: 400)
+      }
       let desktop = rig.controller.desktop
       let stored = rig.store.load()
       let frame = rig.card.frame
