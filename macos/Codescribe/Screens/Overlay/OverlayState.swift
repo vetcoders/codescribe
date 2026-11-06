@@ -3650,7 +3650,8 @@ final class OverlayState {
       unreadDigits: [], sharedChannelName: sharedChannelStoredName)
   }
 
-  /// Reports a change of the map's agents or names, of its open digits, or
+  /// Reports a change of the map's agents or names (a gone follower's name
+  /// leaves the bar), of its open digits, or
   /// of a live take. Mini grows by the waveform, the clock and the open
   /// channels' circles while a take is live (`miniTakeLive`), so its width
   /// follows the take and the chord; the bar's waveform and clock keep their
@@ -3659,7 +3660,7 @@ final class OverlayState {
   private func noteChannelMapLayout() {
     let map = channelMapLayoutModel
     let key =
-      map.chips.map { $0.digit + "\u{1F}" + $0.name }
+      map.chips.map { $0.digit + "\u{1F}" + ($0.captionShown ? $0.name : "") }
       + ["\u{1E}" + map.openDigits.joined(separator: ",")]
       + ["\u{1D}" + (miniTakeLive ? "take" : "")]
     guard key != channelMapLayoutKey else { return }

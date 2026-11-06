@@ -155,6 +155,10 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
   var id: String { digit }
   var isBroadcast: Bool { digit == "0" }
 
+  /// The bar draws the name under or beside the digit: not for an agent
+  /// whose follower is gone, which keeps its digit alone (L5, 2026-11-06).
+  var captionShown: Bool { isBroadcast || !disconnected }
+
   /// The plain hint: `5 · Kuba · Ctrl+5`, or `0 · Ctrl+0`; without a chord
   /// `5 · Kuba` or `0`. It names the agent in full whatever the bar cuts its
   /// caption to. An agent's chip with a status shows its hover card instead
@@ -227,7 +231,10 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
 /// The widths the expanded bar's map gives its chips' names (bus brief
 /// 2026-11-04 §5, §11C). Every value is a string measured in the pill's own
 /// font (`OverlayChannelPill.nameFont`); an agent with an empty name has
-/// zero, so its pill is the circle alone. Channel 0 carries its display name
+/// zero, so its pill is the circle alone. So has an agent whose follower is
+/// gone (`disconnected`, L5 2026-11-06): the bar shows its digit alone and
+/// gives the room back, while its hover card, the agents list under ✦ and
+/// the Bus window still name it. Channel 0 carries its display name
 /// by the same rules; with the default name a cut width is at most its short
 /// form's (`OverlayChannelMapChip.shortName`), which the pill then shows.
 struct OverlayChannelMapNameWidths: Equatable, Sendable {
@@ -247,7 +254,7 @@ struct OverlayChannelMapNameWidths: Equatable, Sendable {
 
   @MainActor
   init(chips: [OverlayChannelMapChip], scale: CGFloat) {
-    let names = chips.map(\.name)
+    let names = chips.map { $0.captionShown ? $0.name : "" }
     full = names.map { $0.isEmpty ? 0 : OverlayChannelPill.nameWidth($0, scale: scale) }
     let preferredCut = names.map { name -> CGFloat in
       guard !name.isEmpty else { return 0 }

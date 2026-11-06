@@ -413,6 +413,17 @@ the user narrows below its shortest names becomes two rows. No tier drops a
 name, shows only digits (an empty name is the exception), collapses the map
 into a counter or `+N`, or hides a channel or a tool.
 
+An agent whose follower is gone (`OverlayChannelMapChip.disconnected`, the
+roster's `followerAlive == false`) is the other exception (L5 variant 1,
+2026-11-06): the bar shows its circled digit alone, in both rows, dimmed
+like a Disconnected row. `OverlayChannelMapChip.captionShown` is false for
+it, so `OverlayChannelMapNameWidths` gives it zero and the window's
+geometry (`DictationOverlayWindow.midiBarGeometry`) and the strip measure
+the same narrower pill; a follower dying or coming back refits the window
+(`OverlayState.noteChannelMapLayout` keys on it). The chip keeps its name
+for its hover card, its hint and VoiceOver; the agents list under ✦ and
+the Bus window name it as before. Selection and the click do not change.
+
 The window owns the geometry. `DictationOverlayWindow.midiBarGeometry`
 measures the bar from the same values: 32 pt of side padding, the brand
 (close dot, 5 pt, word), the waveform, the clock (`00:00` in the 11 pt mono
