@@ -1422,6 +1422,51 @@ final class OverlayChannelMapTests: XCTestCase {
     }
   }
 
+  // MARK: - A gone follower on the bar (L12)
+
+  /// A gone agent keeps its name on the bar, so the bar is as wide as with
+  /// the agent alive, and wears the empty ring the agents list gives it
+  /// before its digit; a live agent wears no dot on the bar, a speaking one
+  /// the violet dot, and a gone one the ring even while a reply plays.
+  func testGoneFollowerKeepsItsNameAndWearsTheRostersRing() {
+    let channels = [delivery("1", "Lena"), delivery("3", "Roman"), delivery("5", "Bruno")]
+    func map(dead: Set<String>) -> OverlayChannelMapModel {
+      OverlayChannelMapModel(
+        channels: channels,
+        hudStates: Dictionary(
+          uniqueKeysWithValues: ["1", "3", "5"].map { ($0, hud(alive: !dead.contains($0))) }),
+        selectableDigits: ["1", "3", "5"], unreadDigits: [])
+    }
+    let alive = map(dead: [])
+    let gone = map(dead: ["3"])
+    let roman = gone.chips.first { $0.digit == "3" }
+    XCTAssertEqual(roman?.disconnected, true)
+    XCTAssertEqual(roman?.selectable, true, "the click is unchanged")
+    let index = gone.chips.firstIndex { $0.digit == "3" }!
+    XCTAssertEqual(
+      OverlayChannelMapNameWidths(chips: gone.chips, scale: 1).full[index],
+      OverlayChannelMapNameWidths(chips: alive.chips, scale: 1).full[index],
+      "the name keeps its room")
+    XCTAssertEqual(
+      DictationOverlayWindow.midiBarGeometry(map: gone, textScale: 1).naturalWidth,
+      DictationOverlayWindow.midiBarGeometry(map: alive, textScale: 1).naturalWidth)
+
+    let view = OverlayChannelStatusView(
+      channels: [channels[1]], unavailable: false, palette: .dark, animates: false,
+      hudStates: ["3": hud(alive: false)])
+    let rosterDot = view.presenceDotKind(for: channels[1])
+    XCTAssertEqual(rosterDot, .sleeping, "the agents list's mark for a gone follower")
+    typealias Display = OverlayChannelPill.Display
+    XCTAssertEqual(Display(figure: "3", name: "Roman", disconnected: true).barDot, rosterDot)
+    XCTAssertEqual(
+      Display(figure: "3", name: "Roman", disconnected: true, speaking: true).barDot, rosterDot)
+    XCTAssertNil(Display(figure: "1", name: "Lena").barDot, "a live agent wears no dot")
+    XCTAssertEqual(Display(figure: "1", name: "Lena", speaking: true).barDot, .speaking)
+    XCTAssertNil(
+      Display(figure: "3", name: "Roman", dot: .sleeping, disconnected: true).barDot,
+      "a list row draws its own dot before the name")
+  }
+
   // MARK: - An agent speaking (L1)
 
   private func owner(_ name: String, channel: String) throws -> OverlayConversationOwner {
@@ -1487,72 +1532,6 @@ final class OverlayChannelMapTests: XCTestCase {
       XCTAssertEqual(
         OverlayAgentStatusDot.speakingOpacity(at: beat * Double(step) + 0.1, reduceMotion: true), 1)
     }
-  }
-
-  // MARK: - A gone follower on the bar (L5)
-
-  /// An agent whose follower is gone keeps its digit on the bar but not its
-  /// name, in both rows: the name widths are zero, so the bar measures the
-  /// circle alone and is narrower than with the agent alive. The chip keeps
-  /// its name for the hover card and its click target.
-  func testGoneFollowerShowsItsDigitAloneAndTheBarShrinks() {
-    let channels = [delivery("1", "Lena"), delivery("3", "Roman"), delivery("5", "Bruno")]
-    func map(dead: Set<String>) -> OverlayChannelMapModel {
-      OverlayChannelMapModel(
-        channels: channels,
-        hudStates: Dictionary(
-          uniqueKeysWithValues: ["1", "3", "5"].map { ($0, hud(alive: !dead.contains($0))) }),
-        selectableDigits: ["1", "3", "5"], unreadDigits: [])
-    }
-    let alive = map(dead: [])
-    let gone = map(dead: ["3"])
-    let roman = gone.chips.first { $0.digit == "3" }
-    XCTAssertEqual(roman?.name, "Roman", "the card and the hint still name it")
-    XCTAssertEqual(roman?.captionShown, false)
-    XCTAssertEqual(roman?.selectable, true, "the click is unchanged")
-    XCTAssertEqual(gone.chips.first { $0.digit == "1" }?.captionShown, true)
-    XCTAssertEqual(gone.chips.first?.captionShown, true, "channel 0 keeps its name")
-    let widths = OverlayChannelMapNameWidths(chips: gone.chips, scale: 1)
-    let index = gone.chips.firstIndex { $0.digit == "3" }!
-    XCTAssertEqual(widths.full[index], 0)
-    XCTAssertEqual(widths.preferred[index], 0)
-    XCTAssertEqual(widths.shortest[index], 0)
-    XCTAssertGreaterThan(OverlayChannelMapNameWidths(chips: alive.chips, scale: 1).full[index], 0)
-    for form in [OverlayChannelPill.Form.stacked, .chip] {
-      XCTAssertEqual(
-        OverlayChannelPill.chipWidth(nameWidth: widths.full[index], form: form, scale: 1),
-        OverlayChannelPill.chipWidth(nameWidth: 0, form: form, scale: 1),
-        "\(form): the digit alone")
-    }
-    let liveBar = DictationOverlayWindow.midiBarGeometry(map: alive, textScale: 1)
-    let goneBar = DictationOverlayWindow.midiBarGeometry(map: gone, textScale: 1)
-    XCTAssertLessThan(goneBar.naturalWidth, liveBar.naturalWidth, "the bar gives the room back")
-    XCTAssertLessThanOrEqual(goneBar.minimumWidth, liveBar.minimumWidth)
-  }
-
-  /// A follower dying or coming back refits the window: the layout hook
-  /// fires although the roster's names did not change.
-  func testGoneFollowerRefitsTheBar() {
-    let state = OverlayState(micAccessProvider: { true })
-    var fits = 0
-    state.onChannelMapLayoutChanged = { fits += 1 }
-    func roster(alive: Bool) {
-      state.applyChannelRoster([
-        CsChannelRosterState(
-          channel: "0", audience: "All", provider: nil, providerSessionId: nil, open: false,
-          loud: false, autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil),
-        CsChannelRosterState(
-          channel: "3", audience: "Roman", provider: "codex", providerSessionId: "s3",
-          open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: alive,
-          unreadSinceUnixMs: nil),
-      ])
-    }
-    roster(alive: true)
-    let afterLive = fits
-    roster(alive: false)
-    XCTAssertEqual(fits, afterLive + 1, "the gone follower's name leaves the bar")
-    roster(alive: true)
-    XCTAssertEqual(fits, afterLive + 2, "and comes back with it")
   }
 
   // MARK: - Channel 0's name (shared channel)

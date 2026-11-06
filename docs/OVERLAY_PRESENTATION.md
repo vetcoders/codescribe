@@ -103,8 +103,20 @@ agents read as the resting state and made the live ones look bold).
 
 The compact receipt mark describes the newest completed user delivery to the
 exact frozen recipient. Delivered and read use the same compact double-check
-shape: muted ink means delivered; full body ink means read or the canonical agent
+shape in the label ink, read like text (L8, 2026-11-06; the muted ink of
+"delivered" measured below 4:1 on the light sheets): the thin stroke means
+delivered, the heavier stroke means read or the canonical agent
 acknowledgment.
+
+Readability rule for the bar and the roster (L8, 2026-11-06): text to read
+wears the label ink (`primaryText`), secondary text included — timestamps,
+descriptors, previews, row states, hints, the bar's timer and the take's
+detail lines; hierarchy comes from size and weight. `ChannelRosterStyle`
+(`palette.roster`) owns the roster's text and receipt inks. Icons at rest
+(the audio controls, search, sort, chevrons, the crossed antenna, the waiting
+spinner) keep the system's secondary label, which measures 3.6–3.9:1 on the
+light sheets and meets the 3:1 non-text floor. The hover card's muted channel
+0 line and Do not disturb stay muted: there the tone is the state.
 Queue admission and provider acceptance are not delivered/read evidence.
 Skipped and unreceipted deliveries keep distinct marks and explanations; a
 message still held for withdrawal says "Held" under the preview and wears no
@@ -390,12 +402,19 @@ the violet waveform say it). The selected conversation's fill is neutral, in
 the text tone, on the pill and on the roster row's leading bar alike (decision
 4): in the bus violet means your voice and terracotta the microphone, so the
 bus is the one surface where "choice = terracotta" does not apply. The bar's
-chips carry no presence dot; the agents list's chip does, between the digit
-and the name, except while the agent's reply plays aloud: then the chip, in
-the single row and the second row alike, shows the blinking violet speaking
-dot just before its circled digit, inside the pill's own margin, so the bar's
-measured width never changes (`OverlayChannelMapChip.speaking`). It receives
-no `OverlayState`, conversation or command.
+chips speak the roster's dot vocabulary (`OverlayAgentStatusDot`, one owner
+of the dot's look) but show only the exceptions: a live agent carries no dot
+on the bar (its hover card says the presence); a gone follower wears the
+empty ring the agents list and the Bus window give it (`.sleeping`, L12,
+2026-11-06), and an agent whose reply plays aloud the blinking violet speaking
+dot (L1). The agents list's chip draws its full presence dot between the
+digit and the name instead. On the bar the dot stands just before the
+circled digit, 6 pt, inside the pill's own margin, in the single row and the
+second row alike, so the bar's measured width never changes
+(`OverlayChannelPill.Display.barDot`; gone wins over speaking, as in the
+roster). A gone agent keeps its name on the bar and its pill is dimmed
+(`OverlayDisconnectedRowDim`). It receives no `OverlayState`, conversation or
+command.
 
 The bar with the horizontal map is as wide as its content (bus brief
 2026-11-04 §4, §5, §8, §11C). `OverlayBarLayout` sets the brand, a waveform of
@@ -431,17 +450,6 @@ never shrinks, captions never overlap and circles never overlap. A single row
 the user narrows below its shortest names becomes two rows. No tier drops a
 name, shows only digits (an empty name is the exception), collapses the map
 into a counter or `+N`, or hides a channel or a tool.
-
-An agent whose follower is gone (`OverlayChannelMapChip.disconnected`, the
-roster's `followerAlive == false`) is the other exception (L5 variant 1,
-2026-11-06): the bar shows its circled digit alone, in both rows, dimmed
-like a Disconnected row. `OverlayChannelMapChip.captionShown` is false for
-it, so `OverlayChannelMapNameWidths` gives it zero and the window's
-geometry (`DictationOverlayWindow.midiBarGeometry`) and the strip measure
-the same narrower pill; a follower dying or coming back refits the window
-(`OverlayState.noteChannelMapLayout` keys on it). The chip keeps its name
-for its hover card, its hint and VoiceOver; the agents list under ✦ and
-the Bus window name it as before. Selection and the click do not change.
 
 The window owns the geometry. `DictationOverlayWindow.midiBarGeometry`
 measures the bar from the same values: 32 pt of side padding, the brand
@@ -505,8 +513,9 @@ brand dot (the close button), transcription (`transcriptionPreviewButton`),
 the microphone, the Agents button (✦) and the preview chevron, in the bar's
 glyphs, palette and 22 pt controls. No counter, waveform, timer, map or pin:
 the pin is the expanded bar's and the window's. The transcription control is
-the system `note.text` symbol in every form (`OverlayTranscriptionGlyph`,
-decision D7, 2026-11-06); while the window shows the transcription it is
+the system `text.quote` symbol in every form (`OverlayTranscriptionGlyph`,
+`CSIcon.transcription`, decision D7 and L10, 2026-11-06: `note.text` read as a
+calendar at 11 pt); while the window shows the transcription it is
 chosen like the pin, primary ink on the neutral wash
 (`OverlayHeaderAccent.state`), never terracotta. With
 the channel map disabled the `codescribe` word follows the dot, as before;
@@ -736,6 +745,20 @@ point, subject to keeping the window on screen. Initial placement and an explici
 placement command still use the selected anchor. Direct edge dragging keeps its
 normal opposite-edge behavior. Use the existing header-frame preference for
 geometry evidence; do not add a second anchor store.
+
+The header's secondary-click menu (`OverlayHeaderMenu`, every header form)
+offers placement as native menu toggles, so the menu draws the checkmark (L9,
+2026-11-06; a checkmark drawn as a `Label` image is not the item's state and
+macOS 26 menus showed none). The six anchors under **Anchor** carry one
+checkmark, on the chosen anchor, while Free motion is off and none while it is
+on (`OverlayState.placementChosen`). Choosing an anchor, the chosen one
+included, places the panel there and leaves Free motion
+(`selectPlacementAnchor`). **Free motion** is a switch with its own checkmark
+(`OverlayState.setFreeMotion`): on keeps the panel where it is dragged
+(`selectFreeMotion`), off returns it to the last chosen anchor
+(`selectPlacementAnchor(placementAnchor)`, which fires `onPlacementChanged`).
+Dragging and the saved origin (`OverlayPlacement`) are unchanged. The auto-fold
+submenu uses the same native toggles.
 
 ## Integration and visual acceptance
 

@@ -1755,7 +1755,7 @@ struct DictationOverlayView: View {
       ) { _ in
         Text(state.sessionTimerText)
           .font(CSFont.mono(11, .semibold))
-          .foregroundStyle(palette.mutedText.color)
+          .foregroundStyle(palette.primaryText.color)
           .monospacedDigit()
           // A clock is read in one line or not at all. Without this the HStack
           // squeezed the counter before the waveform and broke `00:20` into one
@@ -1994,11 +1994,11 @@ struct DictationOverlayView: View {
           .fixedSize(horizontal: false, vertical: true)
         Text("No transcript was produced for this take.")
           .csFont(11, .medium)
-          .foregroundStyle(palette.mutedText.color)
+          .foregroundStyle(palette.primaryText.color)
           .fixedSize(horizontal: false, vertical: true)
         Text(state.currentTakeRecoveryDetail)
           .csFont(11, .medium)
-          .foregroundStyle(palette.mutedText.color)
+          .foregroundStyle(palette.primaryText.color)
           .fixedSize(horizontal: false, vertical: true)
       }
       Spacer(minLength: 0)
@@ -2032,7 +2032,7 @@ struct DictationOverlayView: View {
           .fixedSize(horizontal: false, vertical: true)
           Text(state.errorLifecycleDetail)
             .csFont(11, .medium)
-            .foregroundStyle(palette.mutedText.color)
+            .foregroundStyle(palette.primaryText.color)
             .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 0)
@@ -2040,7 +2040,7 @@ struct DictationOverlayView: View {
       if state.errorDiagnosticDetail != nil {
         Text(state.currentTakeRecoveryDetail)
           .csFont(11, .medium)
-          .foregroundStyle(palette.mutedText.color)
+          .foregroundStyle(palette.primaryText.color)
           .fixedSize(horizontal: false, vertical: true)
       }
       if let diagnostic = state.errorDiagnosticDetail {
@@ -2069,7 +2069,7 @@ struct DictationOverlayView: View {
           .fixedSize(horizontal: false, vertical: true)
         Text(status.message)
           .csFont(11, .medium)
-          .foregroundStyle(palette.mutedText.color)
+          .foregroundStyle(palette.primaryText.color)
           .fixedSize(horizontal: false, vertical: true)
       }
       Spacer(minLength: 0)

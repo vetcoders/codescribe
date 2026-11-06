@@ -1927,7 +1927,7 @@ struct OverlayChannelStatusView: View {
                       Text(verbatim: Self.drawerPreview(message: last))
                         .font(.system(size: 13 * textScale))
                         .foregroundStyle(
-                          unread > 0 ? palette.bodyText.color : palette.mutedText.color
+                          unread > 0 ? palette.bodyText.color : palette.roster.secondaryText.color
                         )
                         .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2516,12 +2516,12 @@ struct OverlayChannelStatusView: View {
 
   private func rowStateColor(for channel: OverlayChannelDelivery) -> Color {
     guard let focusState = panelFocusStates[channel.channel] else {
-      return palette.mutedText.color
+      return palette.roster.secondaryText.color
     }
     switch focusState.phase {
     case .requesting, .activating: return palette.processingStatus.color
-    case .succeeded: return palette.mutedText.color
-    case .failed: return palette.mutedText.color
+    case .succeeded: return palette.roster.secondaryText.color
+    case .failed: return palette.roster.secondaryText.color
     }
   }
 
@@ -2683,7 +2683,7 @@ struct OverlayChannelStatusView: View {
           if saved, let owner = conversation.owner {
             Text(verbatim: savedConversationDetail(conversation, owner: owner))
               .font(.system(size: 11 * textScale))
-              .foregroundStyle(palette.mutedText.color)
+              .foregroundStyle(palette.roster.secondaryText.color)
               .lineLimit(1)
           }
         }
@@ -2752,14 +2752,14 @@ struct OverlayChannelStatusView: View {
     VStack(alignment: .leading, spacing: 2) {
       if showsRosterLoading {
         Text("Checking the connection…")
-          .foregroundStyle(palette.mutedText.color)
+          .foregroundStyle(palette.roster.secondaryText.color)
           .padding(.vertical, 12)
           .accessibilityIdentifier("overlay-agent-roster-loading")
       } else if showsConnectionHint {
         Text(
           "No agents connected. To connect an agent to Codescribe, run the `codescribe` skill in its session."
         )
-        .foregroundStyle(palette.mutedText.color)
+        .foregroundStyle(palette.roster.secondaryText.color)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.vertical, 12)
         .accessibilityIdentifier("overlay-agent-connection-hint")
@@ -2903,7 +2903,7 @@ struct OverlayChannelStatusView: View {
       if activeSearchModel.hasExhaustiveNoMatch(in: savedConversations) {
         Text("No matching conversations")
           .font(.system(size: 11 * textScale))
-          .foregroundStyle(palette.mutedText.color)
+          .foregroundStyle(palette.roster.secondaryText.color)
           .padding(.vertical, 4)
           .accessibilityIdentifier("overlay-saved-conversations-empty-matches")
       } else {
@@ -3401,7 +3401,7 @@ struct OverlayRosterMessagePreview: View {
       } else {
         Text("No messages yet")
           .font(.system(size: 12 * textScale))
-          .foregroundStyle(palette.mutedText.color)
+          .foregroundStyle(palette.roster.secondaryText.color)
           .frame(maxWidth: .infinity, alignment: .topLeading)
       }
     }
@@ -3430,7 +3430,7 @@ struct OverlayRosterMessagePreview: View {
       if let id, let message = session.message(for: id) {
         MessageTimestampLabel(date: MessageTimestamp.date(fromISO8601: message.emittedAt))
           .font(.system(size: 10 * textScale))
-          .foregroundStyle(palette.mutedText.color)
+          .foregroundStyle(palette.roster.secondaryText.color)
       }
     }
   }
@@ -3454,7 +3454,7 @@ struct OverlayRosterMessagePreview: View {
       .accessibilityIdentifier("overlay-roster-preview-older")
       Text("\(session.index + 1) of \(session.ids.count)")
         .monospacedDigit()
-        .foregroundStyle(palette.mutedText.color)
+        .foregroundStyle(palette.roster.secondaryText.color)
         .accessibilityIdentifier("overlay-roster-preview-position")
       Button {
         session.stepNewer()
@@ -3479,21 +3479,21 @@ struct OverlayRosterMessagePreview: View {
   private func slot(id: String) -> some View {
     if session.isWithdrawn(id) {
       Text("Message withdrawn")
-        .foregroundStyle(palette.mutedText.color)
+        .foregroundStyle(palette.roster.secondaryText.color)
     } else if let message = session.message(for: id) {
       VStack(alignment: .leading, spacing: 8) {
         let route = OverlayChannelStatusView.messageRoute(of: message).label
         if !route.isEmpty {
           Text(verbatim: route)
             .font(.system(size: 10 * textScale, weight: .bold))
-            .foregroundStyle(palette.mutedText.color)
+            .foregroundStyle(palette.roster.secondaryText.color)
         }
         OverlayConversationMessageContent(message: message, palette: palette)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     } else {
       Text("Message unavailable")
-        .foregroundStyle(palette.mutedText.color)
+        .foregroundStyle(palette.roster.secondaryText.color)
     }
   }
 }
@@ -3645,12 +3645,20 @@ private struct OptionalRowFocus: ViewModifier {
 }
 
 /// The embedded monitor shares the overlay's appearance and readable palette.
+/// Text to read wears the label ink, secondary text included: the system's
+/// secondary label measured 3.6–3.9:1 on the light sheets (L8, 2026-11-06),
+/// so hierarchy comes from size and weight, not a fainter ink. Receipt marks
+/// beside a name are read like text. Icons at rest keep the secondary ink
+/// (`mutedText`), which meets the 3:1 non-text floor.
 struct ChannelRosterStyle: Equatable {
   let surface: OverlayColorToken
   let border: OverlayColorToken
   let primaryText: OverlayColorToken
   let bodyText: OverlayColorToken
-  let mutedText: OverlayColorToken
+  /// Timestamps, descriptors, previews, row states and hints.
+  let secondaryText: OverlayColorToken
+  /// Delivered and read marks beside an agent's name.
+  let receipt: OverlayColorToken
   let colorScheme: ColorScheme
 
   init(palette: OverlayAppearancePalette) {
@@ -3658,9 +3666,15 @@ struct ChannelRosterStyle: Equatable {
     border = palette.border
     primaryText = palette.primaryText
     bodyText = palette.bodyText
-    mutedText = palette.mutedText
+    secondaryText = palette.primaryText
+    receipt = palette.primaryText
     colorScheme = palette.appearance == .dark ? .dark : .light
   }
+}
+
+extension OverlayAppearancePalette {
+  /// The roster's inks in this appearance (`ChannelRosterStyle`).
+  var roster: ChannelRosterStyle { ChannelRosterStyle(palette: self) }
 }
 
 /// Reads `\.csTextScale` where it is installed and hands it to a builder.

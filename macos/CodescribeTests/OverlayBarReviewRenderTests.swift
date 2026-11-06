@@ -1000,4 +1000,120 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     let (mini, _) = try barState(mixed, mode: .mini, dead: ["3", "4"])
     try renderMini(mini, scene: "mini-dead-4")
   }
+
+  // MARK: - 17. The header's secondary-click menu
+
+  /// The header's secondary-click menu on the expanded overlay, once with an
+  /// anchor chosen (Bottom Center) and once with Free motion on: which item
+  /// carries the native checkmark. AppKit draws the menu, so the scene pops it
+  /// up on the panel and draws the menu's own window while it tracks; the
+  /// window's class names go into an attachment when none is found.
+  func testRenderHeaderMenu() throws {
+    let oldAnchor = OverlayPlacement.anchor
+    let oldFreeMotion = OverlayPlacement.freeMotion
+    defer {
+      OverlayPlacement.anchor = oldAnchor
+      OverlayPlacement.freeMotion = oldFreeMotion
+    }
+    for freeMotion in [false, true] {
+      for look in Look.allCases {
+        let state = OverlayState.previewListening()
+        state.setPresentationMode(.expanded)
+        state.selectPlacementAnchor(.bottomCenter)
+        if freeMotion { state.selectFreeMotion() }
+        XCTAssertEqual(state.freeMotion, freeMotion)
+        try renderHeaderMenu(
+          state, look: look,
+          name: "bar-header-menu-\(freeMotion ? "free-motion" : "anchor")")
+      }
+    }
+  }
+
+  /// What the tracking menu's capture saw, owned by the main actor so the
+  /// timer that fires inside the menu's tracking loop can write it.
+  @MainActor
+  private final class MenuCapture {
+    let menu: NSMenu
+    var image: NSImage?
+    var windows: [String] = []
+
+    init(menu: NSMenu) { self.menu = menu }
+
+    func capture() {
+      let candidates = NSApp.windows.filter { $0.isVisible && $0.level.rawValue > 0 }
+      windows = candidates.map {
+        "\(type(of: $0)) level=\($0.level.rawValue) frame=\(NSStringFromRect($0.frame))"
+      }
+      let menuWindow = candidates.first { "\(type(of: $0))".contains("Menu") }
+      if let view = menuWindow?.contentView?.superview ?? menuWindow?.contentView,
+        let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+      {
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let image = NSImage(size: view.bounds.size)
+        image.addRepresentation(bitmap)
+        self.image = image
+      }
+      menu.cancelTracking()
+    }
+  }
+
+  /// Opens the header menu on the real overlay panel in one look and saves
+  /// the menu's window as `<name>-<look>`.
+  private func renderHeaderMenu(_ state: OverlayState, look: Look, name: String) throws {
+    let suite = "OverlayBarReviewRenderTests.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state,
+        textScale: TextScaleController(key: "OverlayBarReviewRenderTests.scale"),
+        sizeDefaults: defaults
+      ) as? FloatingOverlayPanel)
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    panel.appearance = look.appearance
+    panel.setContentSize(NSSize(width: 470, height: DictationOverlayWindow.minSize.height))
+    BackgroundTestWindow.present(panel)
+    if let visible = NSScreen.main?.visibleFrame {
+      // At the top of the screen the menu opens downward whole, without the
+      // scroll arrow a short space below the click gives it.
+      panel.setFrameOrigin(
+        NSPoint(x: visible.minX + 40, y: visible.maxY - panel.frame.height - 20))
+    }
+    let root = try XCTUnwrap(panel.contentView)
+    root.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    let point = NSPoint(x: 150, y: root.bounds.maxY - 22)
+    let event = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .rightMouseDown, location: root.convert(point, to: nil),
+        modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: panel.windowNumber, context: nil, eventNumber: 9_300,
+        clickCount: 1, pressure: 1))
+    var view = root.hitTest(point)
+    var found: NSMenu?
+    while let current = view, found == nil {
+      found = current.menu(for: event)
+      view = current.superview
+    }
+    let menu = try XCTUnwrap(found, "\(name): no header menu at the passive header point")
+    menu.delegate?.menuNeedsUpdate?(menu)
+    menu.appearance = look.appearance
+    let capture = MenuCapture(menu: menu)
+    let timer = Timer(timeInterval: 0.6, repeats: false) { _ in
+      MainActor.assumeIsolated { capture.capture() }
+    }
+    RunLoop.main.add(timer, forMode: .common)
+    defer { timer.invalidate() }
+    menu.popUp(positioning: nil, at: point, in: root)
+    let windows = XCTAttachment(string: capture.windows.joined(separator: "\n"))
+    windows.name = "\(name)-\(look.rawValue)-windows"
+    windows.lifetime = .keepAlways
+    add(windows)
+    let image = try XCTUnwrap(
+      capture.image, "\(name): no menu window among \(capture.windows)")
+    try save(image, name: "\(name)-\(look.rawValue)")
+  }
 }

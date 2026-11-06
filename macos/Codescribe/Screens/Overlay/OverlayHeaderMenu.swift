@@ -4,13 +4,14 @@ import SwiftUI
 /// Marks of the header's two content controls. The agent roster is one
 /// Dingbats character, the ✦ of the roster's ❖ family, which every macOS font
 /// cascade covers (Zapf Dingbats, Menlo). The transcription is the system
-/// `note.text` symbol from the icon catalog (`CSIcon.notesMode`), one mark in
-/// every form of the bar; the hand and the pen it replaces were one function.
+/// `text.quote` symbol from the icon catalog (`CSIcon.transcription`), one
+/// mark in every form of the bar; the hand and the pen it replaces were one
+/// function, and `note.text` read as a calendar at 11 pt.
 enum OverlayHeaderGlyph {
   /// ✦ the agent roster.
   static let agents = "\u{2726}"
   /// The transcription's system symbol.
-  static let transcriptionSymbol = CSIcon.notesMode.systemName
+  static let transcriptionSymbol = CSIcon.transcription.systemName
 
   /// Size inside the 22 pt header circle at which the ✦ carries the visual
   /// weight of the 9 pt semibold symbols beside it.
@@ -81,13 +82,21 @@ struct OverlayHeaderMenu: View {
 
     Divider()
 
+    // The anchors and Free motion are toggles, so the native menu draws the
+    // chosen one's checkmark: a checkmark drawn as a Label's image is not the
+    // item's state, and macOS 26 menus showed no choice at all. Choosing an
+    // anchor, the chosen one included, places the panel there and leaves
+    // Free motion; Free motion off returns to the last chosen anchor.
     Section {
       ForEach(OverlayAnchor.allCases) { anchor in
-        Button {
-          state.selectPlacementAnchor(anchor)
-        } label: {
-          Label(anchor.label, systemImage: menuImage(for: anchor))
+        Toggle(
+          isOn: Binding(
+            get: { state.placementChosen(anchor) },
+            set: { _ in state.selectPlacementAnchor(anchor) })
+        ) {
+          Label(anchor.label, systemImage: anchor.systemImage)
         }
+        .accessibilityIdentifier("overlay-anchor-\(anchor.rawValue)")
       }
     } header: {
       Text(
@@ -97,16 +106,14 @@ struct OverlayHeaderMenu: View {
 
     Divider()
 
-    Button {
-      state.selectFreeMotion()
-    } label: {
-      Label(
-        "Free motion",
-        systemImage: state.freeMotion
-          ? "checkmark"
-          : "arrow.up.and.down.and.arrow.left.and.right"
-      )
+    Toggle(
+      isOn: Binding(
+        get: { state.freeMotion },
+        set: { state.setFreeMotion($0) })
+    ) {
+      Label("Free motion", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
     }
+    .accessibilityIdentifier("overlay-free-motion")
     Divider()
     Toggle(
       "Show transcript by default",
@@ -149,12 +156,6 @@ struct OverlayHeaderMenu: View {
       : Text("Auto-fold: \(Int(state.autoFoldSeconds)) s of inactivity")
   }
 
-  private func menuImage(for anchor: OverlayAnchor) -> String {
-    guard !state.freeMotion, state.placementAnchor == anchor else {
-      return anchor.systemImage
-    }
-    return "checkmark"
-  }
 }
 
 /// The header's one window control: an explicit Pin / Unpin. Pinned is the

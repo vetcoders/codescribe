@@ -1249,7 +1249,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         "symbol: pinned ? OverlayControlSymbols.pinned : OverlayControlSymbols.pin"))
     XCTAssertTrue(menu.contains(".accessibilityAddTraits(.isToggle)"))
     XCTAssertTrue(menu.contains("state.selectPlacementAnchor(anchor)"))
-    XCTAssertTrue(menu.contains("state.selectFreeMotion()"))
     let pinButton = try XCTUnwrap(menu.range(of: "struct OverlayPinButton:"))
     XCTAssertFalse(
       menu[pinButton.lowerBound...].contains("Menu {"),
@@ -1258,11 +1257,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   /// The Agents mark is one Dingbats character, in the family of the
   /// roster's ❖, that every macOS font cascade can paint; the transcription
-  /// is the catalog's `note.text` system symbol (decision D7), which resolves.
+  /// is the catalog's `text.quote` system symbol (L10, 2026-11-06), which
+  /// resolves.
   func testHeaderGlyphsAreMarksTheSystemCanPaint() throws {
     XCTAssertEqual(OverlayHeaderGlyph.agents, "\u{2726}")
-    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, "note.text")
-    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, CSIcon.notesMode.systemName)
+    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, "text.quote")
+    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, CSIcon.transcription.systemName)
     XCTAssertNotNil(
       NSImage(
         systemSymbolName: OverlayHeaderGlyph.transcriptionSymbol, accessibilityDescription: nil),
@@ -1360,6 +1360,83 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         XCTAssertEqual(selected.count, 1)
         XCTAssertEqual(selected.first?.title, seconds == 0 ? "Never" : "\(seconds) s")
       }
+    }
+  }
+
+  /// The placement items are native menu toggles (L9, 2026-11-06): the
+  /// chosen anchor carries the checkmark while Free motion is off, and Free
+  /// motion carries it while it is on. Choosing Free motion in the menu turns
+  /// it on; choosing it again turns it off and returns the panel to the last
+  /// chosen anchor; choosing an anchor leaves Free motion.
+  func testHeaderMenuChecksTheChosenPlacementAndFreeMotionSwitchesBack() throws {
+    let oldAnchor = OverlayPlacement.anchor
+    let oldFreeMotion = OverlayPlacement.freeMotion
+    defer {
+      OverlayPlacement.anchor = oldAnchor
+      OverlayPlacement.freeMotion = oldFreeMotion
+    }
+    let state = OverlayState.previewListening()
+    state.setPresentationMode(.expanded)
+    state.selectPlacementAnchor(.bottomCenter)
+    XCTAssertFalse(state.freeMotion)
+    var placements = 0
+    try withPanel(state: state) { panel, root in
+      state.onPlacementChanged = { placements += 1 }
+      @MainActor func headerMenu() throws -> NSMenu {
+        let point = NSPoint(x: 150, y: root.bounds.maxY - 22)
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .rightMouseDown, location: root.convert(point, to: nil),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: panel.windowNumber, context: nil, eventNumber: 9_102,
+            clickCount: 1, pressure: 1))
+        var view = root.hitTest(point)
+        var menu: NSMenu?
+        while let current = view, menu == nil {
+          menu = current.menu(for: event)
+          view = current.superview
+        }
+        let resolved = try XCTUnwrap(menu)
+        resolved.delegate?.menuNeedsUpdate?(resolved)
+        return resolved
+      }
+      let placement = Set(OverlayAnchor.allCases.map(\.label) + ["Free motion"])
+      @MainActor func checked(_ menu: NSMenu) -> [String] {
+        menu.items.filter { $0.state == .on && placement.contains($0.title) }.map(\.title)
+      }
+      @MainActor func choose(_ title: String) throws {
+        let menu = try headerMenu()
+        let index = try XCTUnwrap(
+          menu.items.firstIndex { $0.title == title }, "\(title) missing from the menu")
+        menu.performActionForItem(at: index)
+        settle(root)
+      }
+      let freeMotion = "Free motion"
+
+      XCTAssertEqual(checked(try headerMenu()), [OverlayAnchor.bottomCenter.label])
+
+      try choose(freeMotion)
+      XCTAssertTrue(state.freeMotion)
+      XCTAssertEqual(state.placementAnchor, .bottomCenter)
+      XCTAssertEqual(checked(try headerMenu()), [freeMotion])
+
+      let before = placements
+      try choose(freeMotion)
+      XCTAssertFalse(state.freeMotion, "a second choice turns Free motion off")
+      XCTAssertEqual(state.placementAnchor, .bottomCenter, "back to the last chosen anchor")
+      XCTAssertGreaterThan(placements, before, "the panel is placed on that anchor again")
+      XCTAssertEqual(checked(try headerMenu()), [OverlayAnchor.bottomCenter.label])
+
+      try choose(freeMotion)
+      try choose(OverlayAnchor.topLeft.label)
+      XCTAssertFalse(state.freeMotion, "choosing an anchor leaves Free motion")
+      XCTAssertEqual(state.placementAnchor, .topLeft)
+      XCTAssertEqual(checked(try headerMenu()), [OverlayAnchor.topLeft.label])
+
+      let again = placements
+      try choose(OverlayAnchor.topLeft.label)
+      XCTAssertEqual(state.placementAnchor, .topLeft, "the chosen anchor stays chosen")
+      XCTAssertGreaterThan(placements, again, "choosing it again places the panel there")
     }
   }
 
