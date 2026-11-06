@@ -297,7 +297,10 @@ while a live reader has not read past the stall horizon (no fourth colour,
 no zzz, no greyed row; the card says "Not reading"), the agent violet with
 the microphone open to it (your voice to agents is the system indigo, as
 the waveform and the chip's circle; terracotta stays with dictation outside
-the bus),
+the bus), the same violet blinking on the listening caret's 0.6 s beat while
+the agent's reply plays aloud (`OverlayAgentDotKind.speaking`, a reply whose
+playback is `playing`; still with Reduce Motion; L1, 2026-11-06) and back to
+its presence when the playback ends,
 "zzz" while a live agent sleeps under the moon as the bus paints it (the
 mailbox keeps every message for when it wakes; the moon comes before the
 stall, since a sleeper acknowledges nothing), an empty ring for a gone
@@ -340,7 +343,11 @@ the text tone, on the pill and on the roster row's leading bar alike (decision
 4): in the bus violet means your voice and terracotta the microphone, so the
 bus is the one surface where "choice = terracotta" does not apply. The bar's
 chips carry no presence dot; the agents list's chip does, between the digit
-and the name. It receives no `OverlayState`, conversation or command.
+and the name, except while the agent's reply plays aloud: then the chip, in
+the single row and the second row alike, shows the blinking violet speaking
+dot just before its circled digit, inside the pill's own margin, so the bar's
+measured width never changes (`OverlayChannelMapChip.speaking`). It receives
+no `OverlayState`, conversation or command.
 
 The bar with the horizontal map is as wide as its content (bus brief
 2026-11-04 §4, §5, §8, §11C). `OverlayBarLayout` sets the brand, a waveform of

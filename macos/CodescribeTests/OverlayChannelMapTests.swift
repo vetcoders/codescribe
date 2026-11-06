@@ -1421,4 +1421,66 @@ final class OverlayChannelMapTests: XCTestCase {
       }
     }
   }
+
+  // MARK: - An agent speaking (L1)
+
+  private func owner(_ name: String, channel: String) throws -> OverlayConversationOwner {
+    try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "s\(channel)",
+        "lease_id": String(repeating: channel, count: 32), "channel": channel, "name": name,
+      ]))
+  }
+
+  private func reply(_ state: String, owner: OverlayConversationOwner) -> OverlayConversationMessage {
+    OverlayConversationMessage(
+      id: "reply:\(state)", kind: .reply, text: "Gotowe.", order: 1,
+      emittedAt: "2026-11-06T03:00:00Z", owner: owner, recipients: [], deliveryID: nil,
+      replyTo: nil, unsolicited: true,
+      playback: OverlayReplyPlayback(
+        replyID: state, ticket: "t-\(state)", state: state, reason: nil, spoken: false,
+        emittedAt: "2026-11-06T03:00:01Z"),
+      busPath: "/dev/null")
+  }
+
+  /// While an agent's reply plays aloud its presence dot is the violet
+  /// speaking dot, in the agents list and on its bar chip; synthesis still
+  /// waiting and a finished playback leave the presence dot as it was.
+  func testAgentSpeakingTurnsItsDotVioletOnlyWhilePlaying() throws {
+    let kuba = try owner("Kuba", channel: "5")
+    func roster(playback: String?) -> OverlayChannelStatusView {
+      let messages = playback.map { [reply($0, owner: kuba)] } ?? []
+      let conversation = OverlayConversation(
+        id: kuba.id, channel: "5", name: "Kuba", owner: kuba, messages: messages)
+      return OverlayChannelStatusView(
+        channels: [delivery("5", "Kuba")], unavailable: false, palette: .light,
+        animates: false, hudStates: ["5": hud(session: "s5")],
+        conversations: [conversation], unreadCounts: [:], onSelectConversation: { _ in })
+    }
+    for (playback, speaking) in [
+      ("playing", true), ("waiting", false), ("finished", false), (nil, false),
+    ] as [(String?, Bool)] {
+      let view = roster(playback: playback)
+      let channel = try XCTUnwrap(view.channels.first)
+      XCTAssertEqual(
+        view.presenceDotKind(for: channel), speaking ? .speaking : .present, "\(playback ?? "none")")
+      XCTAssertEqual(
+        view.channelMapModel.chips.first { $0.digit == "5" }?.speaking, speaking,
+        "\(playback ?? "none")")
+    }
+  }
+
+  /// The speaking dot blinks on the listening caret's beat; with Reduce
+  /// Motion it stays full.
+  func testSpeakingDotBlinksUnlessMotionIsReduced() {
+    let beat = OverlayAgentStatusDot.speakingBeat
+    XCTAssertEqual(OverlayAgentStatusDot.speakingOpacity(at: beat * 0.5, reduceMotion: false), 1)
+    XCTAssertEqual(
+      OverlayAgentStatusDot.speakingOpacity(at: beat * 1.5, reduceMotion: false),
+      OverlayAgentStatusDot.speakingFaintOpacity)
+    for step in 0..<8 {
+      XCTAssertEqual(
+        OverlayAgentStatusDot.speakingOpacity(at: beat * Double(step) + 0.1, reduceMotion: true), 1)
+    }
+  }
 }

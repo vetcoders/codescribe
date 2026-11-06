@@ -2012,6 +2012,14 @@ struct OverlayMessageAttachment: Codable, Equatable, Hashable, Sendable {
   }
 }
 
+extension OverlayConversation {
+  /// The agent's reply is playing aloud now (`OverlayReplyPlayback.state`
+  /// "playing"). Synthesis still waiting is not speech yet.
+  var agentSpeaking: Bool {
+    messages.contains { $0.kind == .reply && $0.playback?.state == "playing" }
+  }
+}
+
 struct OverlayConversation: Equatable, Identifiable, Sendable {
   let id: String
   let channel: String

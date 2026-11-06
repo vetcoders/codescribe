@@ -61,6 +61,10 @@ struct OverlayChannelPill: View {
     var stacked = false
     var unread = false
     var unreadCount = 0
+    /// The agent's reply plays aloud (chip and stacked forms): the blinking
+    /// violet speaking dot stands before the circled digit, in the pill's
+    /// own margin, so the bar's measured widths do not change.
+    var speaking = false
     var selected = false
     var enabled = true
     /// False while the panel is hidden or occluded. Nothing in the pill
@@ -354,6 +358,14 @@ struct OverlayChannelPill: View {
         Circle().strokeBorder(tint.opacity(0.5), lineWidth: 1)
           .accessibilityHidden(true)
       }
+      .overlay(alignment: .leading) {
+        if display.speaking && (form == .chip || form == .stacked) {
+          OverlayAgentStatusDot(kind: .speaking, palette: palette)
+            .scaleEffect(Self.speakingDotScale, anchor: .trailing)
+            .offset(x: -(OverlayAgentStatusDot.diameter * textScale + Self.speakingDotGap))
+            .accessibilityHidden(true)
+        }
+      }
       .overlay(alignment: .topTrailing) {
         // On a stacked pill the unread dot marks the circle, where the chip
         // form draws it at the capsule's corner.
@@ -382,6 +394,10 @@ extension OverlayChannelPill {
   /// holds its circled digit. The bar's stacked row grows with it up to here.
   static let headerScaleCeiling: CGFloat = 1.25
   static let chipPadding: CGFloat = 6
+  /// The speaking dot in the bar: 6 pt, 1 pt clear of the circle, inside the
+  /// chip's 6 pt margin and the stacked row's 8 pt between circles.
+  static let speakingDotScale: CGFloat = 0.75
+  static let speakingDotGap: CGFloat = 1
   static let chipGap: CGFloat = 4
   /// A stacked pill's side margin: with the map's 4 pt chip spacing two
   /// captions stand at least 8 pt apart, and a caption never overlaps.

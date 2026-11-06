@@ -64,14 +64,17 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   /// Agents bound on their digits, each with a current conversation, channel
   /// 0's broadcast conversation, the map on in the horizontal layout and the
   /// chord read as Ctrl. The returned conversations include channel 0.
+  /// `speaking` names an agent whose reply is playing aloud.
   private func barState(
-    _ agents: [(String, String)], mode: OverlayPresentationMode
+    _ agents: [(String, String)], mode: OverlayPresentationMode, speaking: String? = nil
   ) throws -> (OverlayState, [OverlayConversation]) {
     let broadcast = OverlayConversation(
       id: "review-all", channel: "0", name: "All", owner: nil, messages: [])
     let owned = try agents.enumerated().map { index, agent in
-      try ownerConversation(
+      let conversation = try ownerConversation(
         agent.1.lowercased(), channel: agent.0, lease: String(index, radix: 16))
+      guard agent.0 == speaking else { return conversation }
+      return playingReply(in: conversation)
     }
     let state = OverlayState(micAccessProvider: { true })
     optIntoChannelMap(state)
@@ -93,6 +96,22 @@ final class OverlayBarReviewRenderTests: XCTestCase {
       "(0) leads the agents' chips, in digit order")
     XCTAssertEqual(state.presentationMode, mode)
     return (state, conversations)
+  }
+
+  /// The conversation with one reply from its agent, playing aloud.
+  private func playingReply(in conversation: OverlayConversation) -> OverlayConversation {
+    var reply = OverlayConversationMessage(
+      id: "reply:review-\(conversation.channel)", kind: .reply, text: "Gotowe.", order: 1,
+      emittedAt: "2026-11-06T03:00:00Z", owner: conversation.owner, recipients: [],
+      deliveryID: nil, replyTo: nil, unsolicited: true,
+      playback: OverlayReplyPlayback(
+        replyID: "review-\(conversation.channel)", ticket: "review-ticket", state: "playing",
+        reason: nil, spoken: false, emittedAt: "2026-11-06T03:00:01Z"),
+      busPath: "/dev/null")
+    reply.sourceChannel = conversation.channel
+    return OverlayConversation(
+      id: conversation.id, channel: conversation.channel, name: conversation.name,
+      owner: conversation.owner, messages: [reply])
   }
 
   /// The controller's roster: `open` names the channels the microphone feeds.
@@ -849,6 +868,26 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         }
         .padding(10),
         size: CGSize(width: 76, height: 42), look: look, name: "bar-agents-unread-dot")
+    }
+  }
+
+  // MARK: - 13. An agent speaking
+
+  /// Agent 4 plays its reply aloud (L1): the bar's chip and the agents list
+  /// under ✦ show it while it speaks. The dot blinks like the listening
+  /// caret; a render is one still frame.
+  func testRenderBarWhileAnAgentSpeaks() throws {
+    let (state, _) = try barState(four, mode: .midi, speaking: "4")
+    try renderBar(state, scene: "bar-4-speaking")
+    let rows = DictationOverlayView(state: state).channelStatusView.hoverListRows
+    XCTAssertEqual(rows.first { $0.digit == "4" }?.dot, .speaking)
+    XCTAssertEqual(rows.first { $0.digit == "3" }?.dot, .present)
+    for look in Look.allCases {
+      let model = OverlayAgentsHoverListModel()
+      model.rows = rows
+      try renderAlone(
+        OverlayAgentsHoverList(model: model, palette: look.palette),
+        size: OverlayAgentsHoverList.size(rows: rows), look: look, name: "bar-hover-list-speaking")
     }
   }
 }

@@ -1639,7 +1639,8 @@ struct OverlayChannelStatusView: View {
         .channel,
       selectableDigits: Set(current.map(\.channel)),
       unreadDigits: Set(current.filter { (unreadCounts[$0.id] ?? 0) > 0 }.map(\.channel)),
-      statuses: statuses)
+      statuses: statuses,
+      speakingDigits: Set(currentConversations.filter(\.agentSpeaking).map(\.channel)))
   }
 
   /// An agent chip's hover-card facts, each from the projection its roster
@@ -2988,6 +2989,9 @@ struct OverlayChannelStatusView: View {
     if unavailable { return .idle }
     if hasDeadFollower(channel) { return .sleeping }
     if isOpen(channel) { return .listening }
+    // While its reply plays aloud the agent's dot turns violet and blinks;
+    // after the playback it is the presence dot again (L1, 2026-11-06).
+    if conversation(for: channel)?.agentSpeaking == true { return .speaking }
     // Sleep needs a confirmed live reader behind the moon: with no liveness
     // claim a known moon is still no proof of a mailbox that will wake.
     guard hudStates[channel.channel]?.followerAlive == true else { return .idle }
@@ -3464,10 +3468,11 @@ struct OverlayRosterMessagePreview: View {
 /// The presence dot's looks (Founder, 2026-11-04): `present` olive, `stalled`
 /// olive with a bold "!", `asleep` "zzz", `sleeping` an empty ring for a
 /// gone follower, `idle` a "?" in a circle when there is no liveness claim,
-/// `listening` violet with the microphone open; `broadcast` is channel 0's
+/// `listening` violet with the microphone open, `speaking` violet and
+/// blinking while the agent's reply plays aloud; `broadcast` is channel 0's
 /// antenna.
 enum OverlayAgentDotKind {
-  case broadcast, listening, present, stalled, asleep, sleeping, idle
+  case broadcast, listening, speaking, present, stalled, asleep, sleeping, idle
 }
 
 /// Glass rows and their controls morph as one group on macOS 26; older
@@ -3489,16 +3494,27 @@ private func overlayGlassGroup<Content: View>(_ content: Content) -> some View {
 /// The shared channel wears an antenna: it has no reader of its own.
 struct OverlayAgentStatusDot: View {
   @Environment(\.csTextScale) private var textScale
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let kind: OverlayAgentDotKind
   let palette: OverlayAppearancePalette
 
   static let diameter: CGFloat = 8
+  /// The speaking dot blinks on the listening caret's beat (`OverlayCaret`):
+  /// full for one beat, faint for the next. Reduce Motion holds it full.
+  static let speakingBeat: TimeInterval = 0.6
+  static let speakingFaintOpacity = 0.35
+
+  /// The speaking dot's opacity at `time`, or 1 when motion is reduced.
+  static func speakingOpacity(at time: TimeInterval, reduceMotion: Bool) -> Double {
+    guard !reduceMotion else { return 1 }
+    return Int(time / speakingBeat) % 2 == 0 ? 1 : speakingFaintOpacity
+  }
   /// The sleeping mark is wider than the dot: three rising z's.
   static let sleepWidth: CGFloat = 12
 
   private var filled: Bool {
     switch kind {
-    case .broadcast, .listening, .present, .stalled: true
+    case .broadcast, .listening, .speaking, .present, .stalled: true
     case .asleep, .sleeping, .idle: false
     }
   }
@@ -3509,6 +3525,8 @@ struct OverlayAgentStatusDot: View {
     // Your voice to agents is violet, as the waveform and the chip's circle
     // (Founder, 2026-11-04); terracotta stays with dictation outside the bus.
     case .listening: palette.agentAccent
+    // The agent's own voice, violet as the tray's speaking state.
+    case .speaking: palette.agentAccent
     case .present, .stalled: palette.successStatus
     case .asleep, .sleeping, .idle: palette.mutedText
     }
@@ -3531,6 +3549,17 @@ struct OverlayAgentStatusDot: View {
         .foregroundStyle(tone.color)
         .frame(width: Self.sleepWidth * textScale, height: Self.diameter * textScale)
         .accessibilityHidden(true)
+    } else if kind == .speaking {
+      TimelineView(.animation(minimumInterval: Self.speakingBeat, paused: reduceMotion)) {
+        context in
+        Circle()
+          .fill(tone.color)
+          .opacity(
+            Self.speakingOpacity(
+              at: context.date.timeIntervalSinceReferenceDate, reduceMotion: reduceMotion))
+          .frame(width: Self.diameter * textScale, height: Self.diameter * textScale)
+          .accessibilityHidden(true)
+      }
     } else if kind == .idle {
       // No liveness claim: a "?" in a circle, the dot's size, in the muted
       // tone (Founder, 2026-11-04, decision 7). Not "!", which is the stall.

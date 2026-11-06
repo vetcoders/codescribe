@@ -130,6 +130,9 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
   /// The agent's state for its hover card; channel 0 has none (its hover is
   /// the channel's message carousel).
   var status: OverlayChannelChipStatus? = nil
+  /// The agent's reply is playing aloud: the chip shows the blinking violet
+  /// speaking dot (L1, 2026-11-06).
+  var speaking = false
 
   var id: String { digit }
   var isBroadcast: Bool { digit == "0" }
@@ -293,7 +296,8 @@ struct OverlayChannelMapModel: Equatable, Sendable {
     selectedDigit: String? = nil,
     selectableDigits: Set<String>,
     unreadDigits: Set<String>,
-    statuses: [String: OverlayChannelChipStatus] = [:]
+    statuses: [String: OverlayChannelChipStatus] = [:],
+    speakingDigits: Set<String> = []
   ) {
     var agents: [OverlayChannelMapChip] = []
     var placed: Set<String> = []
@@ -309,7 +313,8 @@ struct OverlayChannelMapModel: Equatable, Sendable {
           digit: digit, name: channel.agent,
           disconnected: hud.followerAlive == false, microphoneOpen: hud.open,
           unread: unreadDigits.contains(digit), selectable: selectableDigits.contains(digit),
-          selected: digit == selectedDigit, status: statuses[digit]))
+          selected: digit == selectedDigit, status: statuses[digit],
+          speaking: speakingDigits.contains(digit)))
     }
     let broadcasting = hudStates["0"]?.open == true
     guard broadcasting || !agents.isEmpty else {

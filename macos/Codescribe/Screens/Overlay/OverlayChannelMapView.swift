@@ -118,8 +118,8 @@ struct OverlayChannelMapView: View {
           display: OverlayChannelPill.Display(
             figure: chip.digit, name: nameWidth > 0 ? chip.name : nil, nameWidth: nameWidth,
             disconnected: chip.disconnected, microphoneOpen: chip.microphoneOpen,
-            unread: chip.unread, selected: chip.selected, enabled: chip.selectable,
-            animates: animates),
+            unread: chip.unread, speaking: chip.speaking, selected: chip.selected,
+            enabled: chip.selectable, animates: animates),
           hint: chip.hint(modifier: modifier),
           accessibilityText: chip.accessibilityLabel(modifier: modifier),
           accessibilityValue: accessibilityValue(chip),
