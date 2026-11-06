@@ -179,8 +179,9 @@ menu lists the frozen recipient set of a broadcast. A speaker who is not the
 open conversation stays a button that opens their conversation; the arrow and
 the audience are text.
 
-User-message bubbles retain a quiet warm outline using `terracottaDeep` at
-`CSAlpha.selectionStroke` strength. Incoming bubbles use the neutral panel edge.
+User-message bubbles keep a quiet outline in `CSColor.secondaryInk` at
+`CSAlpha.selectionStroke` strength. Incoming bubbles use the palette's
+`border`, the system separator (`CSPalette.panelEdge`).
 
 The channel map in the expanded bar (`midi`) is another surface
 of the same projections. `OverlayChannelStatusView.channelMapModel` builds

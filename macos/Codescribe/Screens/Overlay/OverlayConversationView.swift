@@ -322,9 +322,9 @@ struct OverlayConversationView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
           if showsComposer && presentation == .standard {
             if isCovered {
-              // The composer's glass leaks through the covering cell like the
-              // header's (Olek, 2026-11-05, on the same screenshot); the
-              // measured height keeps the inset, so the rows do not reflow.
+              // The composer's glass would show through the covering cell, as
+              // the header's does; the measured height keeps the inset, so the
+              // rows do not reflow.
               Color.clear.frame(height: composerHeight)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
