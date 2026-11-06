@@ -786,7 +786,17 @@ final class OverlayResizeHitTests: XCTestCase {
 
   @MainActor
   func testMiniBodyClickExpandsButDragAndPointerJitterKeepTheirMeaning() throws {
+    // Klasyczny, pinned here rather than read from the shared preference: a
+    // still click on the collapsed overlay opens the window (Maciej,
+    // 2026-11-06). Belka's mini <-> bar cycle is pinned at the state level
+    // (`testBelkaHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar`).
+    let name = "CodescribeTests.mini-click.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    preference.selectMode(.classic)
     let state = OverlayState.previewListening()
+    state.channelMapPreference = preference
     state.setPresentationMode(.mini)
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
@@ -822,7 +832,8 @@ final class OverlayResizeHitTests: XCTestCase {
       through: panel, from: point,
       delta: NSSize(width: 1, height: 1), eventNumberBase: 9520)
     XCTAssertEqual(
-      state.presentationMode, .midi, "A body click with normal pointer jitter expands mini")
+      state.presentationMode, .expanded,
+      "A body click with normal pointer jitter opens the window from mini")
     XCTAssertEqual(state.recording, recording, "Expanding never starts or stops capture")
     XCTAssertEqual(
       panel.frame.maxX, parked.maxX, accuracy: 1,
