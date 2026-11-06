@@ -89,24 +89,58 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
 
   // MARK: - Channel 0
 
-  func testReceptionReadsMemberOffAndTheMoon() {
-    func reception(_ value: OverlayChannelChipStatus.Reception, quiet: Bool = false) -> String? {
+  /// Channel 0 by its name (L3): the antenna and the name in the ink while
+  /// the agent hears it, the crossed antenna and the name muted while it
+  /// does not, the moon with Do not disturb. No "in channel", no violet,
+  /// and a name of the user's own stays as written.
+  func testReceptionNamesChannelZeroUnderTheAntenna() {
+    func reception(
+      _ value: OverlayChannelChipStatus.Reception, quiet: Bool = false, name: String = "Shared"
+    ) -> OverlayChannelChipHoverCard.Line? {
       line(
         .reception,
-        in: OverlayChannelChipStatus(presence: .online, reception: value, quiet: quiet))?.text
+        in: OverlayChannelChipStatus(
+          presence: .online, reception: value, quiet: quiet, channelZeroName: name))
     }
-    XCTAssertEqual(reception(.member), "In channel 0")
-    XCTAssertEqual(reception(.off), "Not in channel 0")
-    XCTAssertEqual(reception(.member, quiet: true), "In channel 0 · Do not disturb")
-    XCTAssertEqual(reception(.off, quiet: true), "Not in channel 0 · Do not disturb")
+    XCTAssertEqual(reception(.member)?.text, "Shared")
+    XCTAssertEqual(reception(.member)?.tone, .primary, "the ink, not the agent violet")
+    XCTAssertEqual(reception(.member)?.symbol, "antenna.radiowaves.left.and.right")
+    XCTAssertEqual(reception(.off)?.text, "Shared")
+    XCTAssertEqual(reception(.off)?.tone, .muted)
+    XCTAssertEqual(reception(.off)?.symbol, "antenna.radiowaves.left.and.right.slash")
+    XCTAssertEqual(reception(.member, quiet: true)?.text, "Shared · Do not disturb")
+    XCTAssertEqual(reception(.member, quiet: true)?.symbol, "moon.fill")
+    XCTAssertEqual(reception(.member, quiet: true)?.tone, .muted)
+    XCTAssertEqual(reception(.off, quiet: true)?.text, "Shared · Do not disturb")
+    XCTAssertEqual(reception(.member, name: "Zespół Ekipa")?.text, "Zespół Ekipa")
     XCTAssertEqual(
-      line(.reception, in: OverlayChannelChipStatus(presence: .online, reception: .member))?.tone,
-      .agent)
-    XCTAssertEqual(
-      line(
-        .reception,
-        in: OverlayChannelChipStatus(presence: .online, reception: .member, quiet: true))?.symbol,
-      "moon.fill")
+      OverlayChannelChipStatus(presence: .online, reception: .member).channelZeroName,
+      OverlaySharedChannelName.defaultName, "no stored name: the default")
+  }
+
+  /// The roster hands the card the name its own channel 0 chip shows.
+  func testRosterCardsCarryChannelZerosDisplayName() throws {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "s5",
+        "lease_id": String(repeating: "5", count: 32), "channel": "5", "name": "Kuba",
+      ]))
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "5", name: "Kuba", owner: owner, messages: [])
+    var roster = OverlayChannelStatusView(
+      channels: [
+        OverlayChannelDelivery(
+          channel: "5", agent: "Kuba", deliveryID: nil, stage: nil, isOpen: false)
+      ], unavailable: false, palette: .light, animates: false,
+      hudStates: [
+        "5": OverlayChannelHudProjection(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: true)
+      ],
+      conversations: [conversation], onSelectConversation: { _ in })
+    roster.sharedChannelStoredName = "Ekipa"
+    let chips = roster.channelMapModel.chips
+    XCTAssertEqual(chips.first?.name, "Ekipa")
+    XCTAssertEqual(chips.first { $0.digit == "5" }?.status?.channelZeroName, "Ekipa")
   }
 
   // MARK: - Lines
@@ -155,14 +189,15 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     let kuba = chip(status: status)
     XCTAssertEqual(
       OverlayChannelChipHoverCard.accessibilityText(chip: kuba, status: status, modifier: .control),
-      "Channel 5, Kuba, shortcut Ctrl 5. Codex. Online. In channel 0. 2 unread")
+      "Channel 5, Kuba, shortcut Ctrl 5. Codex. Online. Hears: Shared (channel 0). 2 unread")
     let inactive = OverlayChannelChipStatus(presence: .inactive, reception: .off)
     XCTAssertEqual(
-      OverlayChannelChipHoverCard.spokenStatus(inactive), ["Not active", "Not in channel 0"])
+      OverlayChannelChipHoverCard.spokenStatus(inactive),
+      ["Not active", "Does not hear: Shared (channel 0)"])
     let unknown = OverlayChannelChipStatus(presence: .unknown, reception: .off, quiet: true)
     XCTAssertEqual(
       OverlayChannelChipHoverCard.spokenStatus(unknown),
-      ["No data", "Not in channel 0 · Do not disturb"])
+      ["No data", "Does not hear: Shared (channel 0) · Do not disturb"])
   }
 
   // MARK: - Size

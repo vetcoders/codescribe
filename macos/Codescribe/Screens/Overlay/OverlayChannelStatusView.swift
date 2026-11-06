@@ -1662,7 +1662,8 @@ struct OverlayChannelStatusView: View {
   /// the channel 0 policy as the ledger paints it, two states like the
   /// roster's antenna and the context menu; unread from the same
   /// counts as the chip's dot; the provider from the conversation's owner,
-  /// else the roster snapshot; speaking from the chip's own `speakingDigits`.
+  /// else the roster snapshot; speaking from the chip's own `speakingDigits`;
+  /// channel 0 by the display name its own chip shows.
   func channelChipStatus(
     for channel: OverlayChannelDelivery, current: [OverlayConversation]
   ) -> OverlayChannelChipStatus {
@@ -1676,7 +1677,7 @@ struct OverlayChannelStatusView: View {
       stalled: hasStalledFollower(channel), policy: policy,
       unread: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
       provider: conversation?.owner?.provider ?? hudStates[channel.channel]?.provider,
-      speaking: speakingDigits.contains(channel.channel))
+      speaking: speakingDigits.contains(channel.channel), channelZeroName: sharedChannelName)
   }
 
   /// Channel 0's message carousel for the map's `(0)` chip: the same

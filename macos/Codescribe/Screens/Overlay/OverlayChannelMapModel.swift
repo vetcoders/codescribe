@@ -50,6 +50,7 @@ enum OverlayChannelChordModifier: Equatable, Sendable {
 /// 2. Reception is the channel 0 policy as the ledger paints it, two states
 ///    like the roster's antenna and the context menu's checkmark (Founder,
 ///    2026-11-04: no third, unconfirmed state). The moon is do-not-disturb.
+///    The card names channel 0 by its display name (`channelZeroName`).
 /// 3. Unread is the conversation's count of new replies.
 ///
 /// `speaking` is the agent's reply playing aloud, from the same set of
@@ -78,10 +79,14 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
   let provider: String?
   /// The agent's reply plays aloud now.
   let speaking: Bool
+  /// Channel 0's display name (`OverlaySharedChannelName.display`), which
+  /// the reception line shows in the nominative, never declined.
+  let channelZeroName: String
 
   init(
     presence: Presence, stalled: Bool = false, reception: Reception, quiet: Bool = false,
-    unread: Int = 0, provider: String? = nil, speaking: Bool = false
+    unread: Int = 0, provider: String? = nil, speaking: Bool = false,
+    channelZeroName: String = OverlaySharedChannelName.defaultName
   ) {
     self.presence = presence
     self.stalled = stalled
@@ -90,6 +95,7 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
     self.unread = unread
     self.provider = provider
     self.speaking = speaking
+    self.channelZeroName = channelZeroName
   }
 
   /// The card's facts from the roster's projections: the snapshot's
@@ -97,7 +103,8 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
   /// unread count.
   init(
     followerAlive: Bool?, stalled: Bool, policy: AgentBroadcastPolicy, unread: Int,
-    provider: String?, speaking: Bool = false
+    provider: String?, speaking: Bool = false,
+    channelZeroName: String = OverlaySharedChannelName.defaultName
   ) {
     switch followerAlive {
     case true?: presence = .online
@@ -110,6 +117,7 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
     self.unread = max(0, unread)
     self.provider = provider.flatMap { $0.isEmpty ? nil : $0 }
     self.speaking = speaking
+    self.channelZeroName = channelZeroName
   }
 }
 

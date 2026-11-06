@@ -252,9 +252,17 @@ the projection the roster row reads (`channelChipStatus`, carried as
    `speakingDigits`, the same set that gives the chip its speaking dot. A
    stall keeps its "zzz" symbol.
 2. **Channel 0** from the policy as `OverlayBroadcastPolicyLedger` paints it,
-   as painted: "In channel 0" or "Not in channel 0", two states like the
-   roster's antenna and the context menu's checkmark, with no unconfirmed
-   third (Founder, 2026-11-04); the moon adds "Do not disturb".
+   two states like the roster's antenna and the context menu's checkmark,
+   with no unconfirmed third (Founder, 2026-11-04). The line is channel 0's
+   display name (`OverlaySharedChannelName`, carried as
+   `OverlayChannelChipStatus.channelZeroName`) in the nominative, never
+   declined and without "in channel" wording (L3, 2026-11-06): behind the
+   antenna in the ink (`primary`, not the agent violet) while the agent
+   hears it, behind the crossed antenna in the muted tone while it does not.
+   The moon takes the symbol's place and adds "Do not disturb", muted.
+   VoiceOver, which hears no antenna, reads "Hears: Shared (channel 0)" or
+   "Does not hear: Shared (channel 0)" (PL "Słyszy: Wspólny (kanał 0)"),
+   the name after a colon so it is never declined.
 3. **Unread** from `unreadCounts`: "N unread", or no line.
 
 The first line names the digit, the whole name and the provider; the chord

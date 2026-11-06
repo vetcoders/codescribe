@@ -12,7 +12,9 @@ import SwiftUI
 ///    under ✦ and the Bus window's roster (`OverlayAgentStatusDot`, L2
 ///    2026-11-06): olive online, violet and blinking while the agent's
 ///    reply plays aloud, a muted ring when gone or "?" without data;
-/// 3. channel 0: in it or not, with Do not disturb under the moon;
+/// 3. channel 0 by its display name (L3, 2026-11-06): the antenna and the
+///    name in the ink while the agent hears it, the crossed antenna and the
+///    name muted while it does not, the moon with Do not disturb;
 /// 4. the unread replies, when there are any;
 /// 5. the chord, last and small, the one line the button already said.
 ///
@@ -23,14 +25,12 @@ struct OverlayChannelChipHoverCard: View {
     case primary
     case success
     case muted
-    case agent
 
     func color(in palette: OverlayAppearancePalette) -> Color {
       switch self {
       case .primary: palette.primaryText.color
       case .success: palette.primaryText.color
       case .muted: palette.mutedText.color
-      case .agent: palette.agentAccent.color
       }
     }
   }
@@ -144,8 +144,8 @@ struct OverlayChannelChipHoverCard: View {
         symbol: presenceDot(status) == nil ? presenceSymbol(status) : nil,
         dot: presenceDot(status)),
       Line(
-        kind: .reception, text: receptionText(status),
-        tone: status.reception == .member && !status.quiet ? .agent : .muted,
+        kind: .reception, text: receptionLine(status),
+        tone: status.reception == .member && !status.quiet ? .primary : .muted,
         symbol: receptionSymbol(status)),
     ]
     if status.unread > 0 {
@@ -174,7 +174,7 @@ struct OverlayChannelChipHoverCard: View {
     var parts: [String] = []
     if let provider = status.provider { parts.append(providerName(provider)) }
     parts.append(presenceText(status))
-    parts.append(receptionText(status))
+    parts.append(spokenReception(status))
     if status.unread > 0 { parts.append(unreadText(status.unread)) }
     return parts
   }
@@ -204,17 +204,32 @@ struct OverlayChannelChipHoverCard: View {
     return presence + " · " + String(localized: "Not reading")
   }
 
-  static func receptionText(_ status: OverlayChannelChipStatus) -> String {
+  /// The reception line as drawn: channel 0's name alone, its symbol (the
+  /// antenna, crossed or not) saying whether the agent hears it; the moon
+  /// adds Do not disturb. No "in channel" wording and no declension: the
+  /// name is the user's own and stays in the nominative.
+  static func receptionLine(_ status: OverlayChannelChipStatus) -> String {
+    guard status.quiet else { return status.channelZeroName }
+    return status.channelZeroName + " · " + String(localized: "Do not disturb")
+  }
+
+  /// The reception as VoiceOver reads it, which hears no antenna: whether
+  /// the agent hears channel 0, named after a colon so the name is never
+  /// declined, then Do not disturb under the moon.
+  static func spokenReception(_ status: OverlayChannelChipStatus) -> String {
+    let name = status.channelZeroName
     let reception: String
     switch status.reception {
     case .member:
       reception = String(
-        localized: "In channel 0",
-        comment: "Channel chip hover card: a receipt confirms broadcasts reach this agent")
+        localized: "Hears: \(name) (channel 0)",
+        comment:
+          "Channel chip hover card, VoiceOver: broadcasts reach this agent; the argument is channel 0's display name, kept in the nominative")
     case .off:
       reception = String(
-        localized: "Not in channel 0",
-        comment: "Channel chip hover card: a receipt confirms the agent left channel 0")
+        localized: "Does not hear: \(name) (channel 0)",
+        comment:
+          "Channel chip hover card, VoiceOver: the agent left channel 0; the argument is channel 0's display name, kept in the nominative")
     }
     guard status.quiet else { return reception }
     return reception + " · " + String(localized: "Do not disturb")
