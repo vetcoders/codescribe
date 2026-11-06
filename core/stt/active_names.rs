@@ -358,7 +358,10 @@ pub fn follower_observation_at(root: &Path, provider: &str, session: &str) -> Fo
         return unknown;
     };
     if lease.schema != LEASE_SCHEMA
-        || lease.provider.as_deref().map(|value| value.trim().to_lowercase())
+        || lease
+            .provider
+            .as_deref()
+            .map(|value| value.trim().to_lowercase())
             != Some(provider.trim().to_lowercase())
         || lease.provider_session_id.as_deref() != Some(session)
         || lease.lease_id.as_deref() != Some(lease_id.as_str())
@@ -1426,7 +1429,8 @@ mod tests {
     }
 
     #[test]
-    fn follower_observation_validates_canonical_lease_and_preserves_unknown_on_errors_or_mismatch() {
+    fn follower_observation_validates_canonical_lease_and_preserves_unknown_on_errors_or_mismatch()
+    {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -1498,7 +1502,11 @@ mod tests {
         set_file_mtime(&canonical_path, now_sys - Duration::from_secs(30));
 
         let live = follower_observation_at(temp.path(), provider, session);
-        assert_eq!(live.alive, Some(true), "canonical lease must stay live despite >64 newer leases");
+        assert_eq!(
+            live.alive,
+            Some(true),
+            "canonical lease must stay live despite >64 newer leases"
+        );
         assert_eq!(
             live.hosts,
             Some(FollowerHosts {
@@ -1540,7 +1548,10 @@ mod tests {
         )
         .unwrap();
         let future = follower_observation_at(temp.path(), provider, session);
-        assert_eq!(future.alive, None, "future heartbeat must be treated as unknown");
+        assert_eq!(
+            future.alive, None,
+            "future heartbeat must be treated as unknown"
+        );
 
         // Expired heartbeat -> `alive: Some(false)`.
         fs::write(
@@ -1581,19 +1592,28 @@ mod tests {
         ] {
             fs::write(&canonical_path, serde_json::to_vec(&bad).unwrap()).unwrap();
             let obs = follower_observation_at(temp.path(), provider, session);
-            assert_eq!(obs.alive, None, "mismatched lease identity must report unknown");
+            assert_eq!(
+                obs.alive, None,
+                "mismatched lease identity must report unknown"
+            );
         }
 
         // Non-regular directory at canonical path -> unknown (`alive: None`).
         fs::remove_file(&canonical_path).unwrap();
         fs::create_dir(&canonical_path).unwrap();
-        assert_eq!(follower_observation_at(temp.path(), provider, session).alive, None);
+        assert_eq!(
+            follower_observation_at(temp.path(), provider, session).alive,
+            None
+        );
         fs::remove_dir(&canonical_path).unwrap();
 
         // Unreadable `leases` directory (I/O error on `read_dir` after ENOENT) -> unknown (`alive: None`).
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
         let unreadable_dir = follower_observation_at(temp.path(), provider, session);
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(unreadable_dir.alive, None, "unreadable leases directory must report unknown, not dead");
+        assert_eq!(
+            unreadable_dir.alive, None,
+            "unreadable leases directory must report unknown, not dead"
+        );
     }
 }
