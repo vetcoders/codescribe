@@ -825,4 +825,30 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         name: "bar-expanded-transcription-pinned")
     }
   }
+
+  // MARK: - 12. The unread dot on the Agents button
+
+  /// The Agents button (✦) without and with a message waiting on channel 0,
+  /// at the header's size: the dot's one place (the control's upper-right
+  /// corner, clear of the star) and its neutral text-tone colour.
+  func testRenderAgentsButtonUnreadDot() throws {
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    for look in Look.allCases {
+      func button(_ unread: Int) -> OverlayChannelStatusView {
+        OverlayChannelStatusView(
+          channels: [], unavailable: false, palette: look.palette, animates: false,
+          conversations: [all], unreadCounts: unread > 0 ? [all.id: unread] : [:],
+          onShowMonitor: {})
+      }
+      XCTAssertFalse(button(0).attentionUnread)
+      XCTAssertTrue(button(1).attentionUnread)
+      try renderAlone(
+        HStack(spacing: 12) {
+          button(0)
+          button(1)
+        }
+        .padding(10),
+        size: CGSize(width: 76, height: 42), look: look, name: "bar-agents-unread-dot")
+    }
+  }
 }
