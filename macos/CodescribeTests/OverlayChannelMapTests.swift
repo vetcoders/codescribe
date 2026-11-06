@@ -782,6 +782,71 @@ final class OverlayChannelMapTests: XCTestCase {
       OverlayChannelPill.chipWidth(nameWidth: 30, form: .chip, scale: 1))
   }
 
+  /// The folded rail's unread count is its own capsule outside the pill, at
+  /// its top-right shoulder: no point of it lies inside the pill's capsule,
+  /// so the channel digit stays whole; it grows with its digits; and the
+  /// rail keeps room for two digits beside its widest pill.
+  func testRailUnreadCapsuleSitsBesideThePillAndGrowsWithItsDigits() throws {
+    func inCapsule(_ rect: CGRect, _ point: CGPoint) -> Bool {
+      let radius = min(rect.width, rect.height) / 2
+      let x = min(max(point.x, rect.minX + radius), rect.maxX - radius)
+      let y = min(max(point.y, rect.minY + radius), rect.maxY - radius)
+      return hypot(point.x - x, point.y - y) < radius
+    }
+    for scale: CGFloat in [1, 1.2, 1.5, 2] {
+      let widest = OverlayAgentDrawerLayout.railPillWidth(textScale: scale)
+      // The antenna's pill and an agent's (dot 8 instead of glyph 12).
+      for pillWidth in [widest, widest - 4 * scale] {
+        let pill = CGRect(x: 0, y: 0, width: pillWidth, height: 24 * scale)
+        for count in [1, 9, 10, 99, 123] {
+          let badge = OverlayChannelPill.railBadgeFrame(
+            count: count, pillSize: pill.size, scale: scale)
+          XCTAssertEqual(badge.height, OverlayChannelPill.railBadgeHeight * scale)
+          XCTAssertGreaterThan(badge.maxX, pill.maxX, "\(count) @\(scale): beside the pill")
+          XCTAssertLessThan(badge.minY, pill.minY, "\(count) @\(scale): at its top shoulder")
+          XCTAssertLessThan(badge.midY, pill.midY, "\(count) @\(scale): not below its middle")
+          var y = badge.minY
+          while y <= badge.maxY {
+            var x = badge.minX
+            while x <= badge.maxX {
+              let point = CGPoint(x: x, y: y)
+              if inCapsule(badge, point) {
+                XCTAssertFalse(
+                  inCapsule(pill, point), "\(count) @\(scale): the capsule overlaps the pill")
+                if inCapsule(pill, point) { return }
+              }
+              x += 0.25
+            }
+            y += 0.25
+          }
+        }
+      }
+      let width = { OverlayChannelPill.railBadgeWidth(count: $0, scale: scale) }
+      XCTAssertEqual(width(1), OverlayChannelPill.railBadgeHeight * scale, accuracy: 1)
+      XCTAssertEqual(width(9), width(1), "one digit is a circle")
+      XCTAssertGreaterThan(width(10), width(9), "10 is wider than 9")
+      XCTAssertEqual(width(99), width(10))
+      XCTAssertGreaterThan(width(100), width(99))
+      // Centred in the column before the reserved room, the widest pill's
+      // two-digit capsule ends inside the rail's content, before the band.
+      let content =
+        OverlayAgentDrawerLayout.railWidth(textScale: scale) - 2 * OverlayResizeHit.band
+      let reserved = OverlayChannelPill.railBadgeFrame(
+        count: 99, pillSize: CGSize(width: widest, height: 24 * scale), scale: scale)
+      XCTAssertLessThanOrEqual(2 + reserved.maxX, content + 0.001, "@\(scale): 99 is not clipped")
+    }
+    let pillSource = try overlaySource("OverlayChannelPill.swift")
+    let badge = try section(
+      of: pillSource, from: "private var railUnreadBadge: some View {",
+      to: "private var spokenValue: String {")
+    XCTAssertTrue(
+      badge.contains(
+        "Self.railBadgeFrame(count: display.unreadCount, pillSize: .zero, scale: textScale)"),
+      "the capsule is drawn from the frame these assertions measure")
+    XCTAssertTrue(badge.contains(".offset(x: frame.maxX, y: frame.minY)"))
+    XCTAssertFalse(pillSource.contains("OverlayAgentUnreadBadge("), "the rail draws its own count")
+  }
+
   /// The bar's pills keep their hint on: an agent's chip shows its hover
   /// card, built from the chip's status, with the plain `5 · Kuba · Ctrl+5`
   /// as the fallback; only channel 0 gives its hover to the carousel.

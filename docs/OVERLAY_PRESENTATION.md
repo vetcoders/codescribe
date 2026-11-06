@@ -111,7 +111,11 @@ mark sits near the identity, separately from the last-preview clock; its help
 and accessibility text name the time of its own outgoing message. A later
 incoming reply must not lend its time to that receipt. The circular unread
 reply count is a separate projection, also shown on the folded rail; compact
-map and floating Intercom badge rendering retain their existing form.
+map and floating Intercom badge rendering retain their existing form. On the
+folded rail the count is its own small capsule outside the pill, at the
+pill's top-right shoulder, so neither the pill nor its channel digit is
+covered: white with a hairline and dark figures in light, grey with light
+figures in dark, wider with each digit (Founder's mock-up, 2026-11-06).
 The roster's positive unread count keeps its fixed badge instead of disappearing
 when space is tight. It has layout priority over the name and clock. The read
 mark consists of two identical translated checks; it is not two different states.
@@ -121,8 +125,10 @@ mark consists of two identical translated checks; it is not two different states
 The horizontal window keeps the conversation header and its current-agent
 actions visible with either the full sidebar or its folded rail. The sidebar
 choice does not replace the current conversation, draft or microphone target.
-Folded-rail controls sit on the full column's centerline, with equal horizontal
-gutters that keep the numbered buttons clear of the native resize band.
+Folded-rail controls sit on one centerline, with equal horizontal gutters that
+keep the numbered buttons clear of the native resize band; beside them the
+column keeps room for a two-digit unread capsule, so the centerline is that of
+the pills and their capsules together (`OverlayAgentDrawerLayout.railWidth`).
 The existing All, Inbox and saved-conversation views keep their current data
 and routing semantics; the earlier proposal's additional history filters are
 not part of this change.

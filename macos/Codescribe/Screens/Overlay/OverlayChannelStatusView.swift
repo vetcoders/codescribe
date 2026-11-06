@@ -1523,11 +1523,18 @@ struct OverlayChannelStatusView: View {
       + (currentConversations.contains(where: { $0.channel == "0" }) ? 1 : 0)
       + (currentConversations.contains(where: \.isHumanInbox) ? 1 : 0)
     let gapCount = max(0, rowCount - 1)
+    // The unread capsule rises above a pill's top; the column's top inset
+    // keeps the first pill's capsule inside the scroll view.
+    let badgeRise = OverlayChannelPill.railBadgeRise * textScale
     let rowSpacing =
       gapCount == 0
       ? 0
       : min(
-        6, max(0, (viewportHeight - CGFloat(rowCount) * 24 * textScale - 4) / CGFloat(gapCount)))
+        6,
+        max(
+          0,
+          (viewportHeight - CGFloat(rowCount) * 24 * textScale - 2 * badgeRise)
+            / CGFloat(gapCount)))
     return VStack(spacing: 0) {
       ScrollView(.vertical, showsIndicators: false) {
         VStack(spacing: rowSpacing) {
@@ -1541,7 +1548,10 @@ struct OverlayChannelStatusView: View {
             railPill(conversation(for: channel), channel: channel)
           }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, badgeRise)
+        // Room for the unread capsule beside the pills: they stay centred in
+        // the column before it (`OverlayAgentDrawerLayout.railWidth`).
+        .padding(.trailing, OverlayChannelPill.railBadgeReach(scale: textScale))
         .frame(maxWidth: .infinity)
         .csAutohidingScrollers(.verticalHidden)
       }
