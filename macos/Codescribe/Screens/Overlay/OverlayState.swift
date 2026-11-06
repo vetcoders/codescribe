@@ -1892,11 +1892,24 @@ final class OverlayState {
     else { return nil }
     let owner = OverlayConversationOwner(row: [
       "provider": provider, "provider_session_id": session, "channel": channel, "name": name,
-      "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: provider, session: session),
+      "lease_id": archiveLeaseIdentifier(provider: provider, session: session),
     ])
     guard let owner, !archivedAgentOwners.contains(owner) else { return nil }
     return owner
   }
+
+  /// The lease id is a SHA-256 digest hex-formatted byte by byte. The roster
+  /// asks for every visible row on each observation tick, so the digest is
+  /// computed once per provider session and then read back.
+  private func archiveLeaseIdentifier(provider: String, session: String) -> String {
+    let key = provider + "\u{0}" + session
+    if let cached = archiveLeaseIdentifiers[key] { return cached }
+    if archiveLeaseIdentifiers.count >= 64 { archiveLeaseIdentifiers.removeAll() }
+    let lease = AgentPlaybackIdentity.leaseIdentifier(provider: provider, session: session)
+    archiveLeaseIdentifiers[key] = lease
+    return lease
+  }
+  @ObservationIgnored private var archiveLeaseIdentifiers: [String: String] = [:]
 
   func archiveAgent(_ owner: OverlayConversationOwner) async {
     guard archiveCandidate(for: owner.channel) == owner,

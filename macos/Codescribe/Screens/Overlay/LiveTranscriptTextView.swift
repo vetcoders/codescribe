@@ -229,8 +229,11 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     coordinator.showsDiagnostics = showsDiagnostics
     coordinator.onPlayUncertainWord = onPlayUncertainWord
     coordinator.onTeachUncertainWord = onTeachUncertainWord
-    coordinator.popoverPalette = OverlayAppearancePalette.resolve(appearance)
-    let attributes = transcriptAttributes()
+    // One palette per tick: the popover, the caret and the base attributes
+    // all read the same resolved roles.
+    let palette = OverlayAppearancePalette.resolve(appearance)
+    coordinator.popoverPalette = palette
+    let attributes = transcriptAttributes(palette: palette)
     textView.isEditable = isEditable
     textView.setTranscriptActivity(
       showsActivityUnderline && !coordinator.isEditing, subdued: !text.isEmpty)
@@ -239,7 +242,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     // the text again they would point into a different transcript.
     if !isEditable { coordinator.undoHistory.removeAllActions() }
     textView.typingAttributes = attributes
-    textView.insertionPointColor = OverlayAppearancePalette.resolve(appearance).bodyText.nsColor
+    textView.insertionPointColor = palette.bodyText.nsColor
 
     let sameBytes = textView.string.utf8.elementsEqual(text.utf8)
     let sameAttributes =
@@ -261,7 +264,6 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     coordinator.applyingUpdate = true
     let previous = textView.string as NSString
     let incoming = text as NSString
-    let palette = OverlayAppearancePalette.resolve(appearance)
     if sameAttributes, sameUncertain, samePending {
       // Preserve the recorded prefix in TextKit. Replacing the whole storage
       // invalidates every paragraph on each live append or open-tail revision.
@@ -311,8 +313,13 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       textView.setSelectedRange(tail)
       coordinator.scheduleTailReveal(for: textView, expectedLength: tail.location)
     }
-    if !wasFollowingTail, !coordinator.isEditing, let previousOrigin,
-      let scroll = textView.enclosingScrollView
+    // Synchronous full-document layout is paid only when the glyphs or their
+    // base metrics moved; a pending/uncertain repaint keeps the same layout,
+    // so the clip view's origin is still valid without forcing TextKit.
+    let textChanged = !sameBytes
+    let attributesChanged = !sameAttributes
+    if textChanged || attributesChanged, !wasFollowingTail, !coordinator.isEditing,
+      let previousOrigin, let scroll = textView.enclosingScrollView
     {
       textView.layoutSubtreeIfNeeded()
       scroll.contentView.scroll(to: previousOrigin)
@@ -322,14 +329,16 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     textView.needsLayout = true
   }
 
-  private func transcriptAttributes() -> [NSAttributedString.Key: Any] {
+  private func transcriptAttributes(
+    palette: OverlayAppearancePalette
+  ) -> [NSAttributedString.Key: Any] {
     let size = 15 * textScale
     let font = NSFont.systemFont(ofSize: size, weight: .regular)
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineSpacing = 5
     return [
       .font: font,
-      .foregroundColor: OverlayAppearancePalette.resolve(appearance).bodyText.nsColor,
+      .foregroundColor: palette.bodyText.nsColor,
       .paragraphStyle: paragraph,
     ]
   }
