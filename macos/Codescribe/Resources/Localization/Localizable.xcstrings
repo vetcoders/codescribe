@@ -6421,7 +6421,7 @@
       }
     },
     "Copied" : {
-      "comment" : "Tray banner: the transcript was copied",
+      "comment" : "Button state after copying\nTray banner: the transcript was copied",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11870,16 +11870,6 @@
         }
       }
     },
-    "Multilingual" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wielojęzyczny"
-          }
-        }
-      }
-    },
     "Mute" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -15374,17 +15364,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ostatnie nagrania"
-          }
-        }
-      }
-    },
-    "Reception policy unknown" : {
-      "comment" : "Agents list: no reception receipt has been read for this agent yet",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Polityka odbioru nieznana"
           }
         }
       }
@@ -23434,7 +23413,7 @@
       }
     },
     "copied" : {
-      "comment" : "Button state after copying\nDictionary: quality record action",
+      "comment" : "Dictionary: quality record action",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
