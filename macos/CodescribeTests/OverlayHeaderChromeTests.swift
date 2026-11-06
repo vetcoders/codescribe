@@ -621,11 +621,13 @@ final class OverlayHeaderChromeTests: XCTestCase {
         palette: palette, microphone: true, preview: false, canFinish: true,
         recordingLight: .holdToTalk),
       palette: palette)
+    // A dictation records in the brand terracotta (decision D6).
+    let dictation = OverlayColorToken(CSPalette.terracotta, in: palette.appearance)
     XCTAssertTrue(
-      headerContains(frames.rest, near: palette.errorStatus, tolerance: 0.2),
+      headerContains(frames.rest, near: dictation, tolerance: 0.2),
       "\(name) microphone lost its recording color before hover")
     XCTAssertTrue(
-      headerContains(frames.hover, near: palette.errorStatus, tolerance: 0.2),
+      headerContains(frames.hover, near: dictation, tolerance: 0.2),
       "\(name) microphone lost its recording color on hover")
     XCTAssertGreaterThan(
       headerShift(frames.rest, frames.hover, toward: headerSystemAccent(palette)), 0.03,

@@ -1182,7 +1182,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         of: source, from: "private struct OverlayCloseButton",
         to: "struct DictationOverlayView")
       XCTAssertTrue(close.contains("ModeDot("))
-      XCTAssertTrue(close.contains("color: CSColor.terracotta"))
       XCTAssertTrue(close.contains("if closeDotHovered {"))
       XCTAssertTrue(close.contains("OverlayCloseCross()"))
       XCTAssertTrue(close.contains(".accessibilityHidden(true)"))
@@ -1211,7 +1210,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let close = try section(
       of: source, from: "private struct OverlayCloseButton",
       to: "struct DictationOverlayView")
-    XCTAssertTrue(call.contains("OverlayCloseButton(palette: palette)"))
+    XCTAssertTrue(call.contains("OverlayCloseButton(palette: palette"))
     XCTAssertTrue(close.contains("Button(action: onClose)"))
     XCTAssertTrue(
       call.contains("state.relayIntent(.close)"),
@@ -1221,9 +1220,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       "The brand dot must stay discoverable as the close control")
     XCTAssertTrue(
       close.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
-    XCTAssertTrue(
-      close.contains("color: CSColor.terracotta"),
-      "The close control keeps the brand color regardless of engine state")
     XCTAssertEqual(header.components(separatedBy: "state.relayIntent(.close)").count - 1, 1)
     XCTAssertEqual(source.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
     // The dot keeps its pre-b83e95538 place: the hit target grows through the

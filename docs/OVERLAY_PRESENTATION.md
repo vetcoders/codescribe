@@ -414,8 +414,23 @@ both. The waveform and the clock are drawn at rest too, at their fixed
 widths, so the bar has no hole at rest and a take alone never changes its
 length. Channel 0's circle is on the map at rest too, so a broadcast only
 lights it and never changes the bar's width. The
-header microphone is the stop, as before. No recording state reduces the map
+header microphone is the stop. No recording state reduces the map
 to one digit without a name or leaves an empty gap (anti-pattern 09).
+
+The take wears its mode's colour (decision D6, 2026-11-06), the same rule in
+both looks and in mini and the bar: the brand terracotta for a dictation, the
+agent indigo (`CSColor.modeAgent`) for an agent take, whether a channel's
+microphone or the assistive take feeds it (`OverlayState.liveTakeMode`). It is
+on the brand dot (`OverlayCloseButton.takeTint`), the waveform, the active
+recording control and the open channels' pills; at rest the dot and the
+microphone are muted ink. Red is for errors only and orange for transcribing
+(the spinning arc); the silence yellow stays the overlay's own state. The
+recording control is the microphone before a take and the Stop square during
+any take (`OverlayRecordingControls.recordingSymbol`): for a dictation it
+relays `.finish`; while only agent channels record it is their Stop and closes
+every open channel through `OverlayState.stopOpenChannels`, the chord's own
+toggle, never starting a dictation. The Agents button keeps its live-capture
+sign and its stop meaning in mini.
 
 ### Mini
 

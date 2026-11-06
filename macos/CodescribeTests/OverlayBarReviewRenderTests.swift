@@ -394,6 +394,18 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     try renderBar(state, scene: "bar-4-take-1")
   }
 
+  /// A dictation in the bar: no addressee, the take's mode colour on the
+  /// brand dot and the Stop.
+  func testRenderBarWithFourAgentsDictating() throws {
+    let (state, _) = try barState(four, mode: .midi)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.setPresentationMode(.midi)
+    XCTAssertTrue(state.recording)
+    XCTAssertTrue(state.channelMapLayoutModel.openDigits.isEmpty, "a dictation has no addressee")
+    try renderBar(state, scene: "bar-4-take-dictation")
+  }
+
   func testRenderBarWithNineAgentsTakingThree() throws {
     let (state, conversations) = try barState(nine, mode: .midi)
     openChannels(["2", "4", "7"], conversations, in: state)

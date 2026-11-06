@@ -14884,13 +14884,13 @@
         }
       }
     },
-    "Pulsing red" : {
+    "Pulsing terracotta" : {
       "comment" : "Recording light colour",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pulsujący czerwony"
+            "value" : "Pulsująca terakota"
           }
         }
       }
@@ -15685,17 +15685,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odzyskany tekst — sprawdź przed użyciem"
-          }
-        }
-      }
-    },
-    "Red" : {
-      "comment" : "Recording light colour",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Czerwony"
           }
         }
       }
@@ -19855,6 +19844,17 @@
         }
       }
     },
+    "Terracotta" : {
+      "comment" : "Recording light colour",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Terakota"
+          }
+        }
+      }
+    },
     "Test" : {
       "comment" : "Button label: run a connection test\nButton: send one formatting request\nSettings row: send one formatting request now",
       "localizations" : {
@@ -23434,7 +23434,7 @@
       }
     },
     "copied" : {
-      "comment" : "Button state after copying\nDictionary: quality record action",
+      "comment" : "Dictionary: quality record action",
       "localizations" : {
         "pl" : {
           "stringUnit" : {

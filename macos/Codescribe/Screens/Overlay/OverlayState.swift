@@ -177,6 +177,21 @@ extension DictationEngine {
   }
 }
 
+/// The kind of take the microphone feeds (`OverlayState.liveTakeMode`).
+enum OverlayTakeMode: Equatable, Sendable {
+  case dictation
+  case agent
+
+  /// The mode's colour on the bar: the brand terracotta or the agent indigo,
+  /// the same hues the waveform draws.
+  var color: Color {
+    switch self {
+    case .dictation: CSColor.modeDictation
+    case .agent: CSColor.modeAgent
+    }
+  }
+}
+
 /// Paste mode is not part of it: Settings › Shortcuts and the tray cycle own
 /// `paste_mode`, and the overlay neither shows nor writes it (Founder direction
 /// as relayed in the Codex handoff, Annex A2, 2026-09-29).
@@ -3504,6 +3519,32 @@ final class OverlayState {
   var audioCaptureActive: Bool {
     channelAudioCaptureActive
       || (recording && !finalized && !transcribing && !isFinalPass && mode == .listening)
+  }
+
+  /// The mode of the take the microphone feeds now, or nil at rest: an agent
+  /// (an open channel or the assistive take) or a dictation. The bar wears
+  /// this mode's colour on its brand dot and its active recording control
+  /// (decision D6, 2026-11-06): terracotta for a dictation, the agent indigo
+  /// for an agent. Red stays for errors and orange for transcribing.
+  var liveTakeMode: OverlayTakeMode? {
+    guard audioCaptureActive else { return nil }
+    return usesAgentAccent ? .agent : .dictation
+  }
+
+  /// The header's Stop while an agent channel records: closes every open
+  /// channel through the same toggle the chord and the pills use, one at a
+  /// time, re-reading the roster after each, so a channel the controller
+  /// already closed is never opened again. A toggle that leaves its channel
+  /// open (refused or failed) ends the loop; its error is the toggle's.
+  func stopOpenChannels() {
+    Task { @MainActor in
+      while let digit = channelHudStates.filter(\.value.open).keys
+        .compactMap({ UInt8($0) }).sorted().first
+      {
+        await toggleAgentChannel(digit)
+        if channelHudStates[String(digit)]?.open == true { break }
+      }
+    }
   }
 
   /// A take is live for mini (Founder, 2026-11-04, bus brief §6, §11D): a

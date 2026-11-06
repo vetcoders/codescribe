@@ -100,10 +100,15 @@ final class OverlayRecordingLightTests: XCTestCase {
     }
   }
 
-  /// The overlay names the hues the cursor badge and the menu-bar dot use.
-  func testLightsSpeakTheBadgeAndTrayColours() {
-    XCTAssertTrue(OverlayRecordingLight.holdToTalk.nsColor === CSPalette.indicatorRecording)
-    XCTAssertTrue(OverlayRecordingLight.handsFree.nsColor === CSPalette.indicatorRecording)
+  /// A dictation records in the brand terracotta, an agent take in the agent
+  /// violet; red is not a recording colour on the bar (decision D6).
+  func testLightsWearTheModeColours() {
+    XCTAssertTrue(OverlayRecordingLight.holdToTalk.nsColor === CSPalette.terracotta)
+    XCTAssertTrue(OverlayRecordingLight.handsFree.nsColor === CSPalette.terracotta)
+    for light in OverlayRecordingLight.allCases {
+      XCTAssertFalse(light.nsColor === CSPalette.indicatorRecording, "\(light)")
+      XCTAssertFalse(light.nsColor === CSPalette.dangerLight, "\(light)")
+    }
     XCTAssertTrue(OverlayRecordingLight.processing.nsColor === CSPalette.modeProcessing)
     XCTAssertTrue(OverlayRecordingLight.agent.nsColor === CSPalette.assistive)
     XCTAssertTrue(OverlayRecordingLight.silence.nsColor === CSPalette.indicatorSilence)
@@ -492,14 +497,74 @@ final class OverlayRecordingLightTests: XCTestCase {
       XCTAssertEqual(control.recordingSymbol, "stop.fill", "\(light)")
       XCTAssertEqual(control.recordingStatusValue, light.name)
       XCTAssertEqual(control.recordingDisabled, light == .processing)
-      XCTAssertEqual(
-        control.recordingTint,
-        light == .holdToTalk || light == .handsFree
-          ? OverlayAppearancePalette.dark.errorStatus.color : light.color)
+      XCTAssertEqual(control.recordingTint, light.color)
+      XCTAssertNotEqual(control.recordingTint, OverlayAppearancePalette.dark.errorStatus.color)
       control.activateRecordingControl()
       XCTAssertEqual(intents, light == .processing ? [] : [.finish])
       XCTAssertEqual(OverlayRecordingControls.controlDiameter, 22)
     }
+  }
+
+  // MARK: Mode colour and Stop for every take (decision D6, 2026-11-06)
+
+  /// Before a take the microphone; while only an agent channel records, the
+  /// same control is that take's Stop in the agent violet, and a press closes
+  /// the channels instead of starting a dictation.
+  func testAgentChannelTakeTurnsTheMicrophoneIntoAVioletStop() {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      var intents: [OverlayIntent] = []
+      var stops = 0
+      var rest = OverlayRecordingControls(
+        canFinish: false, presentationMode: .midi, compact: false, palette: palette,
+        onIntent: { intents.append($0) }, onPreviewToggle: {})
+      rest.onStopChannelCapture = { stops += 1 }
+      XCTAssertEqual(rest.recordingSymbol, "mic.fill")
+      XCTAssertEqual(rest.recordingTint, palette.mutedText.color)
+      XCTAssertEqual(rest.recordingIdentifier, "overlay-start-recording")
+
+      var agent = rest
+      agent.channelCaptureOpen = true
+      XCTAssertEqual(agent.recordingSymbol, "stop.fill")
+      XCTAssertTrue(agent.showsStop)
+      XCTAssertEqual(agent.recordingTint, OverlayTakeMode.agent.color)
+      XCTAssertEqual(agent.recordingStatusValue, OverlayRecordingLight.agent.name)
+      XCTAssertEqual(agent.recordingIdentifier, "overlay-stop-recording")
+      agent.activateRecordingControl()
+      XCTAssertEqual(stops, 1, "the press closes the agent channels")
+      XCTAssertEqual(intents, [], "it never starts a dictation")
+
+      // A dictation that records keeps its own Stop, in terracotta.
+      var dictation = OverlayRecordingControls(
+        canFinish: true, presentationMode: .midi, compact: false, palette: palette,
+        onIntent: { intents.append($0) }, onPreviewToggle: {}, recordingLight: .holdToTalk)
+      dictation.channelCaptureOpen = true
+      dictation.onStopChannelCapture = { stops += 1 }
+      XCTAssertEqual(dictation.recordingSymbol, "stop.fill")
+      XCTAssertEqual(dictation.recordingTint, OverlayTakeMode.dictation.color)
+      dictation.activateRecordingControl()
+      XCTAssertEqual(intents, [.finish])
+      XCTAssertEqual(stops, 1)
+    }
+  }
+
+  /// The live take's mode: nil at rest, dictation while one records, agent
+  /// while a channel's microphone is open.
+  func testLiveTakeModeFollowsTheMicrophone() {
+    let state = OverlayState(micAccessProvider: { true })
+    XCTAssertNil(state.liveTakeMode)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertEqual(state.liveTakeMode, .dictation)
+    XCTAssertEqual(OverlayTakeMode.dictation.color, CSColor.modeDictation)
+
+    let channel = OverlayState(micAccessProvider: { true })
+    channel.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "3", audience: "lena", provider: "codex", providerSessionId: "s-3", open: true,
+        loud: false, autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    XCTAssertEqual(channel.liveTakeMode, .agent)
+    XCTAssertEqual(OverlayTakeMode.agent.color, CSColor.modeAgent)
   }
 
   private func rms(_ db: Double) -> Float {
