@@ -57,7 +57,9 @@ final class OverlayFastHintTests: XCTestCase {
       Bundle.main.path(forResource: "pl", ofType: "lproj").flatMap(Bundle.init(path:)))
     let expected = [
       "Microphone unavailable": "Mikrofon niedostępny",
+      "Show agents list": "Pokaż listę agentów",
       "No conversation on this channel": "Na tym kanale nie ma rozmowy",
+      "Hide agents list": "Schowaj listę agentów",
       "Nothing to copy": "Nie ma czego skopiować",
       "Playback unavailable": "Odtwarzanie niedostępne",
       "Reply to this message": "Odpowiedz na tę wiadomość",
