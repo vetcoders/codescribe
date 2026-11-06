@@ -1,5 +1,11 @@
 import SwiftUI
 
+extension EnvironmentValues {
+  /// Channel 0's display name for views below the overlay and the Intercom,
+  /// set at their roots from the overlay state's `sharedChannelName`.
+  @Entry var overlaySharedChannelName: String = OverlaySharedChannelName.defaultName
+}
+
 /// The overlay's channel map (bus intercom spec §5.1, §13; bus brief
 /// 2026-11-04 §4, §5).
 ///
@@ -118,8 +124,8 @@ struct OverlayChannelMapView: View {
           display: OverlayChannelPill.Display(
             figure: chip.digit, name: nameWidth > 0 ? chip.name : nil, nameWidth: nameWidth,
             disconnected: chip.disconnected, microphoneOpen: chip.microphoneOpen,
-            unread: chip.unread, speaking: chip.speaking, selected: chip.selected,
-            enabled: chip.selectable, animates: animates),
+            unread: chip.unread, speaking: chip.speaking, shortName: chip.shortName,
+            selected: chip.selected, enabled: chip.selectable, animates: animates),
           hint: chip.hint(modifier: modifier),
           accessibilityText: chip.accessibilityLabel(modifier: modifier),
           accessibilityValue: accessibilityValue(chip),

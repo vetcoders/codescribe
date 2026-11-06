@@ -1169,6 +1169,10 @@ struct OverlayChannelStatusView: View {
   /// mini's auto-hide and the auto-collapse held while the list is in use.
   var onAgentsListHover: ((Bool) -> Void)? = nil
   var headerSelected = false
+  /// The stored display name of the shared channel 0, empty for the default
+  /// (`OverlaySharedChannelName`).
+  var sharedChannelStoredName = ""
+  var sharedChannelName: String { OverlaySharedChannelName.display(sharedChannelStoredName) }
   /// The recording agent is on screen: a press stops its capture.
   var agentMicrophoneStops = false
   var mutedChannels: [String: Bool] = [:]
@@ -1282,6 +1286,7 @@ struct OverlayChannelStatusView: View {
     view.mutedChannels = state.channelPlaybackMuted
     view.headerSelected =
       !state.isCollapsed && state.windowContentSurface == .agents
+    view.sharedChannelStoredName = state.sharedChannelStoredName
     view.agentMicrophoneStops = state.agentsButtonStopsRecording
     view.pendingMuteChannels = state.pendingPlaybackChannels
     view.onTogglePlayback = { channel in
@@ -1486,8 +1491,9 @@ struct OverlayChannelStatusView: View {
     let listening = broadcastMembers.filter { $0.broadcastPolicy.receivesWake }.count
     let bound = broadcastMembers.count
     return String(
-      localized: "0 · All (\(listening) of \(bound))",
-      comment: "Channel zero: agents woken by broadcasts out of all bound agents")
+      localized: "0 · \(sharedChannelName) (\(listening) of \(bound))",
+      comment:
+        "Channel zero: its display name, then agents woken by broadcasts out of all bound agents")
   }
 
   /// The roster body. Wide windows dock it as the right-hand column, so the
@@ -1640,7 +1646,8 @@ struct OverlayChannelStatusView: View {
       selectableDigits: Set(current.map(\.channel)),
       unreadDigits: Set(current.filter { (unreadCounts[$0.id] ?? 0) > 0 }.map(\.channel)),
       statuses: statuses,
-      speakingDigits: Set(currentConversations.filter(\.agentSpeaking).map(\.channel)))
+      speakingDigits: Set(currentConversations.filter(\.agentSpeaking).map(\.channel)),
+      sharedChannelName: sharedChannelStoredName)
   }
 
   /// An agent chip's hover-card facts, each from the projection its roster
@@ -1673,8 +1680,10 @@ struct OverlayChannelStatusView: View {
     guard onSelectConversation != nil,
       let broadcast = currentConversations.first(where: { $0.channel == "0" })
     else { return nil }
+    // The card names channel 0 by its display name.
     return OverlayRosterMessageHint(
-      conversation: broadcast, palette: palette, textScale: textScale,
+      conversation: broadcast.renamed(sharedChannelName), palette: palette,
+      textScale: textScale,
       emptyHint: String(localized: "View conversation without changing the microphone"),
       isOpen: broadcast.id == selectedConversationID,
       onOpen: { onSelectConversation?(broadcast.id) })

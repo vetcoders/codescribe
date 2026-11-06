@@ -123,6 +123,9 @@ pub struct CsSettings {
     /// records is never the channel modifier (one key, one role), so this can
     /// differ from the stored choice. Command is not a value.
     pub channel_modifier: String,
+    /// Display name of the shared channel 0 (`SHARED_CHANNEL_NAME`); empty
+    /// means the interface's default name ("Shared" / "Wspólny").
+    pub shared_channel_name: String,
     /// Fn records dictation (Hold Fn/Globe or the Fn tap), so Settings offers
     /// no Fn channel modifier.
     pub fn_records_dictation: bool,
@@ -295,6 +298,7 @@ impl CsSettings {
             ledger_sensitivity: config.ledger_sensitivity,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             channel_modifier: config.channel_modifier.as_str().to_string(),
+            shared_channel_name: config.shared_channel_name.clone(),
             fn_records_dictation: recording_keys.fn_key,
             fn_binding_records_dictation: recording_keys.fn_binding,
             ctrl_records_dictation: recording_keys.ctrl,

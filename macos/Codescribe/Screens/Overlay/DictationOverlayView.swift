@@ -702,6 +702,11 @@ struct DictationOverlayView: View {
   }
 
   var body: some View {
+    // Channel 0's display name reaches every conversation header below.
+    overlayBody.environment(\.overlaySharedChannelName, state.sharedChannelName)
+  }
+
+  @ViewBuilder private var overlayBody: some View {
     OverlayCanvasSurface(palette: palette) {
       // The rail reads the live transcript (intents, versions, history
       // refusal). Scoped, a capture tick re-renders the rail, not the root.

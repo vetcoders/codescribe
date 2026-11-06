@@ -1073,6 +1073,7 @@ extension CsSettings {
     ledgerSensitivity: 0,
     deferredInsertShortcut: "disabled",
     channelModifier: "ctrl",
+    sharedChannelName: "",
     fnRecordsDictation: true,
     fnBindingRecordsDictation: true,
     ctrlRecordsDictation: false,

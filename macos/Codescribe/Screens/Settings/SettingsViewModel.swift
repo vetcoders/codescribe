@@ -2928,6 +2928,19 @@ final class SettingsViewModel: ObservableObject {
     setTranscriptTagTemplate(defaultTranscriptTagTemplate)
   }
 
+  /// Channel 0's display name on the Bus (`SHARED_CHANNEL_NAME`). An empty
+  /// name stores nothing and shows the default; the core keeps one line.
+  func setSharedChannelName(_ name: String) {
+    let line = name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    guard line != settings.sharedChannelName else { return }
+    settings.sharedChannelName = line
+    persist("SHARED_CHANNEL_NAME", line)
+  }
+
+  func restoreDefaultSharedChannelName() {
+    setSharedChannelName("")
+  }
+
   /// A field chip in About appends its placeholder to the template. The edit
   /// goes through the same persisted write as typing, so the preview, the
   /// warning and the saved value stay one truth.

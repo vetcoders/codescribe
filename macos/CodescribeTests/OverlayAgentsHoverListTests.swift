@@ -205,7 +205,8 @@ final class OverlayAgentsHoverListTests: XCTestCase {
     XCTAssertEqual(rows.map(\.kind), [.broadcast, .inbox, .agent, .agent])
     XCTAssertEqual(rows.map(\.mailbox), [true, true, false, false])
     XCTAssertEqual(
-      rows.map(\.name), [String(localized: "All"), inbox.displayTitle, "Miksa", "Kuba"])
+      rows.map(\.name),
+      [OverlaySharedChannelName.defaultName, inbox.displayTitle, "Miksa", "Kuba"])
     XCTAssertEqual(rows.map(\.conversationID), [all.id, inbox.id, miksa.id, kuba.id])
     XCTAssertEqual(rows.map(\.unread), [1, 2, 0, 4])
     XCTAssertNil(rows[0].identity)

@@ -2018,6 +2018,14 @@ extension OverlayConversation {
   var agentSpeaking: Bool {
     messages.contains { $0.kind == .reply && $0.playback?.state == "playing" }
   }
+
+  /// The same conversation under another display name (channel 0's name).
+  func renamed(_ name: String) -> OverlayConversation {
+    var copy = OverlayConversation(
+      id: id, channel: channel, name: name, owner: owner, messages: messages)
+    copy.historyLoaded = historyLoaded
+    return copy
+  }
 }
 
 struct OverlayConversation: Equatable, Identifiable, Sendable {

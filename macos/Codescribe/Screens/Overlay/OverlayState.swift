@@ -1359,6 +1359,14 @@ final class OverlayState {
   /// (see `activateChannelMapCounter`).
   @ObservationIgnored var onRevealIntercom: (() -> Void)?
   @ObservationIgnored private var channelMapLayoutKey: [String] = []
+  /// The shared channel 0's stored display name (`SHARED_CHANNEL_NAME`),
+  /// empty for the interface's default (`OverlaySharedChannelName`).
+  private(set) var sharedChannelStoredName = ""
+  var sharedChannelName: String { OverlaySharedChannelName.display(sharedChannelStoredName) }
+  /// Test seam for the stored setting (`SHARED_CHANNEL_NAME`).
+  @ObservationIgnored var sharedChannelNameSetting: () -> String = {
+    CodescribeConfig().loadSettings().sharedChannelName
+  }
   /// Test seam for the stored setting (`AGENT_CHANNEL_MODIFIER`).
   @ObservationIgnored var agentChannelModifierSetting: () -> String = {
     CodescribeConfig().loadSettings().channelModifier
@@ -3639,7 +3647,7 @@ final class OverlayState {
   var channelMapLayoutModel: OverlayChannelMapModel {
     OverlayChannelMapModel(
       channels: visibleChannelRows, hudStates: channelHudStates, selectableDigits: [],
-      unreadDigits: [])
+      unreadDigits: [], sharedChannelName: sharedChannelStoredName)
   }
 
   /// Reports a change of the map's agents or names, of its open digits, or
@@ -3651,7 +3659,7 @@ final class OverlayState {
   private func noteChannelMapLayout() {
     let map = channelMapLayoutModel
     let key =
-      map.agents.map { $0.digit + "\u{1F}" + $0.name }
+      map.chips.map { $0.digit + "\u{1F}" + $0.name }
       + ["\u{1E}" + map.openDigits.joined(separator: ",")]
       + ["\u{1D}" + (miniTakeLive ? "take" : "")]
     guard key != channelMapLayoutKey else { return }
@@ -3672,6 +3680,15 @@ final class OverlayState {
       return
     }
     if presentationMode == .midi { onRestoreMidiNaturalWidth?() }
+  }
+
+  /// Re-reads channel 0's name; a new name refits the bar, whose caption
+  /// under or beside the 0 it is.
+  func refreshSharedChannelName() {
+    let stored = sharedChannelNameSetting()
+    guard stored != sharedChannelStoredName else { return }
+    sharedChannelStoredName = stored
+    noteChannelMapLayout()
   }
 
   func refreshAgentChannelModifier() {
@@ -4746,6 +4763,8 @@ final class OverlayState {
   /// one-shot format carries its own level, so neither is touched. Reads
   /// only: transcript, document and presentation state stay as they are.
   func canonicalConfigurationDidChange() {
+    // A display name, not a take policy: it follows the write at once.
+    refreshSharedChannelName()
     guard !warmingUp, !recording, !transcribing, !isFinalPass else { return }
     refreshOverlayPolicyTruth()
   }

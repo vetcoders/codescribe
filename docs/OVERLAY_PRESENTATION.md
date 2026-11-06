@@ -195,11 +195,24 @@ of the same projections. `OverlayChannelStatusView.channelMapModel` builds
 `OverlayChannelMapModel` from the roster's rows, `hudStates`, current
 conversations, the selection and unread counts. It lists the bound agents
 1–9, preserving each name's entered spelling from the roster without changing
-capitalisation (Founder, 2026-11-05), led by channel 0's chip:
-the digit alone, `(0)` with no word, first in the single row and first in
-the second row of a two-row bar, at rest as well as while the microphone
-broadcasts on it (Founder, 2026-11-04), when the violet open-channel dot
-lights it. It is not an agent: the counter, `OverlayChannelMapModel.count`
+capitalisation (Founder, 2026-11-05), led by channel 0's chip, first in
+the single row and first in the second row of a two-row bar, at rest as well
+as while the microphone broadcasts on it (Founder, 2026-11-04), when the
+violet open-channel dot lights it. Channel 0 carries its display name in the
+agents' own layout: under the 0 in the single row, beside it in the second
+row, cut by the same name rules and never widening the row past them
+(`OverlayChannelMapNameWidths`). The name is the shared channel's
+(`SHARED_CHANNEL_NAME` in settings.json → `Config.shared_channel_name` →
+`CsSettings.sharedChannelName` → `OverlayState.sharedChannelName`, re-read at
+launch and after every Settings write); with none stored it is the
+interface's default, "Shared" ("Wspólny"), whose short form ("Wsp.") a cut
+width shows instead of an ellipsis (`OverlaySharedChannelName`). Settings ›
+Hotkeys › Fn and Agent channels edits it, one line, with **Restore default**;
+the bar does not. The same name heads channel 0's conversation (`0 · <name>`),
+its row in the agents list under ✦ and in the Bus window (`0 · <name> (n of
+m)`), the chip's hint and its message card; action wording such as the
+bubble route `You → All` stays. Only the name is personal: the digit, the
+chord and the routing of channel 0 do not change. It is not an agent: the counter, `OverlayChannelMapModel.count`
 and the 1–5 / 6–9 row split count agents only. With no agent bound and no
 broadcast the map is empty. A chip calls `selectChannelConversation`, the
 rail pill's selection path; `(0)` selects the All conversation the same way

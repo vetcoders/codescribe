@@ -1709,6 +1709,10 @@ impl Config {
         {
             self.channel_modifier = modifier;
         }
+        // A display name only: settings.json alone owns it, no env override.
+        if let Some(ref name) = settings.shared_channel_name {
+            self.shared_channel_name = name.clone();
+        }
         apply_copy!(
             "FN_TAP_TOGGLES_DICTATION",
             self.fn_tap_toggles_dictation,
@@ -4266,6 +4270,22 @@ mod tests {
             !Config::env_path().exists(),
             "a fully promoted settings batch must not create a legacy .env"
         );
+    }
+
+    /// The runtime snapshot carries the shared channel's stored display name,
+    /// and an unset name stays empty (the interface shows its default).
+    #[test]
+    fn test_shared_channel_name_reaches_the_snapshot() {
+        let mut config = Config::default();
+        config.apply_user_settings(&super::super::settings::UserSettings::default());
+        assert_eq!(config.shared_channel_name, "");
+
+        let settings = super::super::settings::UserSettings {
+            shared_channel_name: Some("Ekipa".into()),
+            ..Default::default()
+        };
+        config.apply_user_settings(&settings);
+        assert_eq!(config.shared_channel_name, "Ekipa");
     }
 
     /// apply_user_settings copies hold/double-tap/silence/exclusive timing into Config.

@@ -51,7 +51,7 @@ extension OverlayChannelStatusView {
     if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
       rows.append(
         OverlayAgentsHoverRow(
-          kind: .broadcast, digit: "0", name: String(localized: "All"),
+          kind: .broadcast, digit: "0", name: sharedChannelName,
           conversationID: broadcast.id, dot: .broadcast, status: "", microphoneOpen: false,
           disconnected: false, identity: nil, policy: .on,
           unread: unreadCounts[broadcast.id] ?? 0))

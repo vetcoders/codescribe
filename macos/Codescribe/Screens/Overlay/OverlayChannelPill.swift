@@ -36,8 +36,8 @@ struct OverlayChannelPill: View {
     /// A numberless mailbox uses a glyph in the folded rail and in the
     /// agents list's chip, in the circled digit's place.
     var symbol: String? = nil
-    /// The agent's name on a chip or stacked pill; channel 0, an agent with
-    /// an empty name, the rail and the counter carry none.
+    /// The agent's name, or channel 0's display name, on a chip or stacked
+    /// pill; an agent with an empty name, the rail and the counter carry none.
     var name: String? = nil
     /// The width the map's row gives the name (`OverlayChannelMapNameWidths`);
     /// a narrower width than the name truncates it with an ellipsis, never a
@@ -65,6 +65,9 @@ struct OverlayChannelPill: View {
     /// violet speaking dot stands before the circled digit, in the pill's
     /// own margin, so the bar's measured widths do not change.
     var speaking = false
+    /// A short form to show instead of an ellipsis when the name's width is
+    /// cut and the short form fits (channel 0's default name, "Wsp.").
+    var shortName: String? = nil
     var selected = false
     var enabled = true
     /// False while the panel is hidden or occluded. Nothing in the pill
@@ -83,7 +86,7 @@ struct OverlayChannelPill: View {
   /// `headerScale(_:)`, which also sizes the bar's rows.
   let textScale: CGFloat
   /// The floating hint: the agent's hover card on the bar's chips
-  /// (`hintCard`), else `0 · Ctrl+0`; the agent list on the counter, the
+  /// (`hintCard`), else `0 · Shared · Ctrl+0`; the agent list on the counter, the
   /// roster's own hints on the rail.
   var showsHint = true
   /// A bar chip's hover card (`OverlayChannelChipHoverCard`) in place of
@@ -276,7 +279,7 @@ struct OverlayChannelPill: View {
               .accessibilityHidden(true)
           }
           if let name = display.name {
-            Text(verbatim: name)
+            Text(verbatim: shownName(name))
               .font(Self.nameFont(textScale))
               .lineLimit(1)
               .truncationMode(.tail)
@@ -290,7 +293,7 @@ struct OverlayChannelPill: View {
         VStack(spacing: Self.captionGap * textScale) {
           circledDigit(display.figure)
           if let name = display.name {
-            Text(verbatim: name)
+            Text(verbatim: shownName(name))
               .font(Self.nameFont(textScale))
               .lineLimit(1)
               .truncationMode(.tail)
@@ -327,6 +330,16 @@ struct OverlayChannelPill: View {
     // a capsule around the circle and the caption would read as a card.
     .background(
       Capsule(style: .continuous).fill(stackedFace || form == .stacked ? .clear : fill))
+  }
+
+  /// The caption: the whole name when its width holds it; else the short
+  /// form when there is one and it fits; else the name, cut with an ellipsis.
+  func shownName(_ name: String) -> String {
+    guard let width = display.nameWidth, let short = display.shortName,
+      width + 0.5 < Self.nameWidth(name, scale: textScale),
+      Self.nameWidth(short, scale: textScale) <= width + 0.5
+    else { return name }
+    return short
   }
 
   /// The digit: drawn here once, whatever the form.

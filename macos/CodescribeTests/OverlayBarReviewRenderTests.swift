@@ -890,4 +890,27 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         size: OverlayAgentsHoverList.size(rows: rows), look: look, name: "bar-hover-list-speaking")
     }
   }
+
+  // MARK: - 14. Channel 0's name
+
+  /// Channel 0 named by default, with a short name of the user's and with a
+  /// long one, in the single row (number over the name) and the two-row bar
+  /// (number beside the name). The long name is cut to the room its row
+  /// leaves; the hint and the card carry it whole. Run with
+  /// `-testLanguage pl` for the Polish default ("Wspólny", short "Wsp.").
+  func testRenderChannelZeroNames() throws {
+    for (label, stored) in [
+      ("default", ""), ("short", "Ekipa"), ("long", "Zespół Codescribe i przyjaciele"),
+    ] {
+      for (rows, agents) in [("1row", four), ("2rows", six)] {
+        let (state, _) = try barState(agents, mode: .midi)
+        state.sharedChannelNameSetting = { stored }
+        state.refreshSharedChannelName()
+        XCTAssertEqual(
+          state.channelMapLayoutModel.chips.first?.name,
+          OverlaySharedChannelName.display(stored))
+        try renderBar(state, scene: "bar-ch0-\(label)-\(rows)")
+      }
+    }
+  }
 }

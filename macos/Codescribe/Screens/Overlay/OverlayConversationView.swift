@@ -110,6 +110,8 @@ struct OverlayConversationMessageContent: View {
 
 /// Paints the passive observer's immutable conversation projection.
 struct OverlayConversationView: View {
+  /// Channel 0's display name for its "0 · <name>" header.
+  @Environment(\.overlaySharedChannelName) private var sharedChannelName
   @Environment(\.displayScale) private var displayScale
   @Environment(\.csTextScale) private var textScale
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -618,7 +620,7 @@ struct OverlayConversationView: View {
           HStack(spacing: 6) {
             Group {
               if conversation.channel == "0" {
-                Text("0 · All")
+                Text(verbatim: "0 · " + sharedChannelName)
               } else {
                 Text(verbatim: conversation.displayTitle)
               }
@@ -724,7 +726,7 @@ struct OverlayConversationView: View {
   private var namePillLabel: some View {
     VStack(alignment: .leading, spacing: 1) {
       if conversation.channel == "0" {
-        Text("0 · All")
+        Text(verbatim: "0 · " + sharedChannelName)
       } else {
         Text(verbatim: conversation.displayTitle)
 

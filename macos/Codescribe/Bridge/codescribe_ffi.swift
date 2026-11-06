@@ -14379,6 +14379,11 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var channelModifier: String
     /**
+     * Display name of the shared channel 0 (`SHARED_CHANNEL_NAME`); empty
+     * means the interface's default name ("Shared" / "Wspólny").
+     */
+    public var sharedChannelName: String
+    /**
      * Fn records dictation (Hold Fn/Globe or the Fn tap), so Settings offers
      * no Fn channel modifier.
      */
@@ -14608,6 +14613,10 @@ public struct CsSettings: Equatable, Hashable {
          * differ from the stored choice. Command is not a value.
          */channelModifier: String,
         /**
+         * Display name of the shared channel 0 (`SHARED_CHANNEL_NAME`); empty
+         * means the interface's default name ("Shared" / "Wspólny").
+         */sharedChannelName: String,
+        /**
          * Fn records dictation (Hold Fn/Globe or the Fn tap), so Settings offers
          * no Fn channel modifier.
          */fnRecordsDictation: Bool,
@@ -14740,6 +14749,7 @@ public struct CsSettings: Equatable, Hashable {
         self.ledgerSensitivity = ledgerSensitivity
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
+        self.sharedChannelName = sharedChannelName
         self.fnRecordsDictation = fnRecordsDictation
         self.fnBindingRecordsDictation = fnBindingRecordsDictation
         self.ctrlRecordsDictation = ctrlRecordsDictation
@@ -14845,6 +14855,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 ledgerSensitivity: FfiConverterInt32.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
+                sharedChannelName: FfiConverterString.read(from: &buf),
                 fnRecordsDictation: FfiConverterBool.read(from: &buf),
                 fnBindingRecordsDictation: FfiConverterBool.read(from: &buf),
                 ctrlRecordsDictation: FfiConverterBool.read(from: &buf),
@@ -14938,6 +14949,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterInt32.write(value.ledgerSensitivity, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)
+        FfiConverterString.write(value.sharedChannelName, into: &buf)
         FfiConverterBool.write(value.fnRecordsDictation, into: &buf)
         FfiConverterBool.write(value.fnBindingRecordsDictation, into: &buf)
         FfiConverterBool.write(value.ctrlRecordsDictation, into: &buf)
