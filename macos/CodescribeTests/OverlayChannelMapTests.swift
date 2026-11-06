@@ -1464,9 +1464,14 @@ final class OverlayChannelMapTests: XCTestCase {
       let channel = try XCTUnwrap(view.channels.first)
       XCTAssertEqual(
         view.presenceDotKind(for: channel), speaking ? .speaking : .present, "\(playback ?? "none")")
+      let chip = view.channelMapModel.chips.first { $0.digit == "5" }
+      XCTAssertEqual(chip?.speaking, speaking, "\(playback ?? "none")")
+      // The chip's hover card hears it from the same source (L2).
+      let status = try XCTUnwrap(chip?.status)
+      XCTAssertEqual(status.speaking, speaking, "\(playback ?? "none"): the card's status")
       XCTAssertEqual(
-        view.channelMapModel.chips.first { $0.digit == "5" }?.speaking, speaking,
-        "\(playback ?? "none")")
+        OverlayChannelChipHoverCard.presenceDot(status), speaking ? .speaking : .present,
+        "\(playback ?? "none"): the card's presence dot")
     }
   }
 

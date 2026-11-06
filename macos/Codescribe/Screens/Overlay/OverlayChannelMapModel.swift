@@ -51,6 +51,10 @@ enum OverlayChannelChordModifier: Equatable, Sendable {
 ///    like the roster's antenna and the context menu's checkmark (Founder,
 ///    2026-11-04: no third, unconfirmed state). The moon is do-not-disturb.
 /// 3. Unread is the conversation's count of new replies.
+///
+/// `speaking` is the agent's reply playing aloud, from the same set of
+/// conversations as the chip's own speaking dot (L2, 2026-11-06), so the
+/// card's presence dot turns violet exactly when the chip's does.
 struct OverlayChannelChipStatus: Equatable, Sendable {
   enum Presence: Equatable, Sendable {
     case online
@@ -72,10 +76,12 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
   let unread: Int
   /// The agent's provider (`codex`, `claude`) when the roster names one.
   let provider: String?
+  /// The agent's reply plays aloud now.
+  let speaking: Bool
 
   init(
     presence: Presence, stalled: Bool = false, reception: Reception, quiet: Bool = false,
-    unread: Int = 0, provider: String? = nil
+    unread: Int = 0, provider: String? = nil, speaking: Bool = false
   ) {
     self.presence = presence
     self.stalled = stalled
@@ -83,6 +89,7 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
     self.quiet = quiet
     self.unread = unread
     self.provider = provider
+    self.speaking = speaking
   }
 
   /// The card's facts from the roster's projections: the snapshot's
@@ -90,7 +97,7 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
   /// unread count.
   init(
     followerAlive: Bool?, stalled: Bool, policy: AgentBroadcastPolicy, unread: Int,
-    provider: String?
+    provider: String?, speaking: Bool = false
   ) {
     switch followerAlive {
     case true?: presence = .online
@@ -102,6 +109,7 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
     quiet = policy.moon
     self.unread = max(0, unread)
     self.provider = provider.flatMap { $0.isEmpty ? nil : $0 }
+    self.speaking = speaking
   }
 }
 

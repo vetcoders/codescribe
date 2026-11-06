@@ -51,6 +51,34 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     }
   }
 
+  /// The presence line wears the agents list's own dot (L2): olive online,
+  /// violet and blinking while the reply plays, a muted ring for a gone
+  /// follower, "?" without data. A stall keeps its "zzz" symbol.
+  func testPresenceLineWearsTheRosterPresenceDot() {
+    func dot(_ status: OverlayChannelChipStatus) -> OverlayAgentDotKind? {
+      line(.presence, in: status)?.dot
+    }
+    XCTAssertEqual(dot(.init(presence: .online, reception: .member)), .present)
+    XCTAssertEqual(dot(.init(presence: .online, reception: .member, speaking: true)), .speaking)
+    XCTAssertEqual(dot(.init(presence: .inactive, reception: .member)), .sleeping)
+    XCTAssertEqual(
+      dot(.init(presence: .inactive, reception: .member, speaking: true)), .sleeping,
+      "a gone follower is not speaking")
+    XCTAssertEqual(dot(.init(presence: .unknown, reception: .member)), .idle)
+    let stalled = OverlayChannelChipStatus(presence: .online, stalled: true, reception: .member)
+    XCTAssertNil(dot(stalled))
+    XCTAssertEqual(line(.presence, in: stalled)?.symbol, "zzz")
+    XCTAssertEqual(
+      dot(.init(presence: .online, stalled: true, reception: .member, speaking: true)), .speaking,
+      "a reply playing aloud wins over the stall, as in the agents list")
+    for status in [
+      OverlayChannelChipStatus(presence: .online, reception: .member),
+      OverlayChannelChipStatus(presence: .unknown, reception: .member),
+    ] {
+      XCTAssertNil(line(.presence, in: status)?.symbol, "the dot stands in the symbol's place")
+    }
+  }
+
   func testStallIsFlaggedBesidePresence() {
     let stalled = OverlayChannelChipStatus(presence: .online, stalled: true, reception: .member)
     XCTAssertEqual(line(.presence, in: stalled)?.text, "Online · Not reading")

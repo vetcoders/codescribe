@@ -243,6 +243,14 @@ the projection the roster row reads (`channelChipStatus`, carried as
    `nil` "No data". A stalled follower (`hasStalledFollower`) adds "Not
    reading". The dot before the name (`presenceDotKind`) shows this same
    presence; neither it nor the channel 0 policy carries a delivery stage.
+   The card's line wears the same dot as the agents list and the Bus
+   window's roster (`OverlayAgentStatusDot`, one owner of its colour; L2,
+   2026-11-06): olive online, violet and blinking while the agent's reply
+   plays aloud (still violet under Reduce Motion), a muted ring for a gone
+   follower and a muted "?" without data. The speaking fact reaches the
+   card's status (`OverlayChannelChipStatus.speaking`) from the roster's
+   `speakingDigits`, the same set that gives the chip its speaking dot. A
+   stall keeps its "zzz" symbol.
 2. **Channel 0** from the policy as `OverlayBroadcastPolicyLedger` paints it,
    as painted: "In channel 0" or "Not in channel 0", two states like the
    roster's antenna and the context menu's checkmark, with no unconfirmed

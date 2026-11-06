@@ -1646,8 +1646,14 @@ struct OverlayChannelStatusView: View {
       selectableDigits: Set(current.map(\.channel)),
       unreadDigits: Set(current.filter { (unreadCounts[$0.id] ?? 0) > 0 }.map(\.channel)),
       statuses: statuses,
-      speakingDigits: Set(currentConversations.filter(\.agentSpeaking).map(\.channel)),
+      speakingDigits: speakingDigits,
       sharedChannelName: sharedChannelStoredName)
+  }
+
+  /// The digits whose agent's reply plays aloud now: one set for the bar's
+  /// chip and its hover card, so both show the speaking dot together.
+  var speakingDigits: Set<String> {
+    Set(currentConversations.filter(\.agentSpeaking).map(\.channel))
   }
 
   /// An agent chip's hover-card facts, each from the projection its roster
@@ -1656,7 +1662,7 @@ struct OverlayChannelStatusView: View {
   /// the channel 0 policy as the ledger paints it, two states like the
   /// roster's antenna and the context menu; unread from the same
   /// counts as the chip's dot; the provider from the conversation's owner,
-  /// else the roster snapshot.
+  /// else the roster snapshot; speaking from the chip's own `speakingDigits`.
   func channelChipStatus(
     for channel: OverlayChannelDelivery, current: [OverlayConversation]
   ) -> OverlayChannelChipStatus {
@@ -1669,7 +1675,8 @@ struct OverlayChannelStatusView: View {
       followerAlive: hudStates[channel.channel]?.followerAlive,
       stalled: hasStalledFollower(channel), policy: policy,
       unread: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
-      provider: conversation?.owner?.provider ?? hudStates[channel.channel]?.provider)
+      provider: conversation?.owner?.provider ?? hudStates[channel.channel]?.provider,
+      speaking: speakingDigits.contains(channel.channel))
   }
 
   /// Channel 0's message carousel for the map's `(0)` chip: the same

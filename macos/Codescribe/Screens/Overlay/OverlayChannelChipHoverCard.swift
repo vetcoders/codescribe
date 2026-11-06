@@ -8,7 +8,10 @@ import SwiftUI
 ///
 /// 1. `5 · Kuba` and the provider;
 /// 2. presence: Online, Not active or No data, with "Not reading" when the
-///    live follower stalls;
+///    live follower stalls, behind the presence dot of the agents list
+///    under ✦ and the Bus window's roster (`OverlayAgentStatusDot`, L2
+///    2026-11-06): olive online, violet and blinking while the agent's
+///    reply plays aloud, a muted ring when gone or "?" without data;
 /// 3. channel 0: in it or not, with Do not disturb under the moon;
 /// 4. the unread replies, when there are any;
 /// 5. the chord, last and small, the one line the button already said.
@@ -46,6 +49,8 @@ struct OverlayChannelChipHoverCard: View {
     let text: String
     let tone: Tone
     var symbol: String? = nil
+    /// The presence dot, drawn by the roster's own dot in place of a symbol.
+    var dot: OverlayAgentDotKind? = nil
     /// The title's trailing provider.
     var trailing: String? = nil
 
@@ -91,7 +96,10 @@ struct OverlayChannelChipHoverCard: View {
 
   private func row(_ line: Line) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: Self.symbolGap) {
-      if let symbol = line.symbol {
+      if let dot = line.dot {
+        OverlayAgentStatusDot(kind: dot, palette: palette)
+          .frame(width: Self.symbolWidth)
+      } else if let symbol = line.symbol {
         Image(systemName: symbol)
           .font(.system(size: line.size))
           .frame(width: Self.symbolWidth)
@@ -133,7 +141,8 @@ struct OverlayChannelChipHoverCard: View {
       Line(
         kind: .presence, text: presenceText(status),
         tone: status.stalled ? .muted : (status.presence == .online ? .success : .muted),
-        symbol: presenceSymbol(status)),
+        symbol: presenceDot(status) == nil ? presenceSymbol(status) : nil,
+        dot: presenceDot(status)),
       Line(
         kind: .reception, text: receptionText(status),
         tone: status.reception == .member && !status.quiet ? .agent : .muted,
@@ -217,6 +226,21 @@ struct OverlayChannelChipHoverCard: View {
       comment: "Channel chip hover card: new replies from the agent not read yet")
   }
 
+  /// The presence line's dot, as the agents list draws its row's: a gone
+  /// follower's ring first, then the speaking dot while the reply plays,
+  /// olive online and "?" without a liveness claim. A stall keeps its "zzz"
+  /// symbol, as before the dot (nil).
+  static func presenceDot(_ status: OverlayChannelChipStatus) -> OverlayAgentDotKind? {
+    if status.presence == .inactive { return .sleeping }
+    if status.speaking { return .speaking }
+    if status.stalled { return nil }
+    switch status.presence {
+    case .online: return .present
+    case .inactive: return .sleeping
+    case .unknown: return .idle
+    }
+  }
+
   static func presenceSymbol(_ status: OverlayChannelChipStatus) -> String {
     if status.stalled { return "zzz" }
     switch status.presence {
@@ -248,7 +272,7 @@ struct OverlayChannelChipHoverCard: View {
     let widest =
       lines.map { line -> CGFloat in
         var width = OverlayChannelPill.textWidth(line.text, size: line.size)
-        if line.symbol != nil { width += symbolWidth + symbolGap }
+        if line.symbol != nil || line.dot != nil { width += symbolWidth + symbolGap }
         if let trailing = line.trailing {
           width += trailingGap + OverlayChannelPill.textWidth(trailing, size: lineSize)
         }
