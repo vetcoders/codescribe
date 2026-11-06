@@ -271,7 +271,9 @@ the projection the roster row reads (`channelChipStatus`, carried as
    declined and without "in channel" wording (L3, 2026-11-06): behind the
    antenna in the ink (`primary`, not the agent violet) while the agent
    hears it, behind the crossed antenna in the muted tone while it does not.
-   The moon takes the symbol's place and adds "Do not disturb", muted.
+   The moon takes the symbol's place and adds "Do not disturb", muted; off
+   channel 0 under the moon the crossed antenna stays and the moon stands
+   beside it, so the line shows what VoiceOver reads (Founder, 2026-11-06).
    VoiceOver, which hears no antenna, reads "Hears: Shared (channel 0)" or
    "Does not hear: Shared (channel 0)" (PL "Słyszy: Wspólny (kanał 0)"),
    the name after a colon so it is never declined.

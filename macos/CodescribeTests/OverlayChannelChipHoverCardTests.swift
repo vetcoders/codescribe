@@ -113,6 +113,13 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     XCTAssertEqual(reception(.member, quiet: true)?.symbol, "moon.fill")
     XCTAssertEqual(reception(.member, quiet: true)?.tone, .muted)
     XCTAssertEqual(reception(.off, quiet: true)?.text, "Shared · Do not disturb")
+    // Off channel 0 under the moon: the crossed antenna and the moon beside
+    // it, so the line shows what VoiceOver reads (Founder, 2026-11-06).
+    XCTAssertEqual(
+      reception(.off, quiet: true)?.symbol, "antenna.radiowaves.left.and.right.slash")
+    XCTAssertEqual(reception(.off, quiet: true)?.secondSymbol, "moon.fill")
+    XCTAssertNil(reception(.member, quiet: true)?.secondSymbol, "the moon alone while it hears")
+    XCTAssertNil(reception(.off)?.secondSymbol)
     XCTAssertEqual(reception(.member, name: "Zespół Ekipa")?.text, "Zespół Ekipa")
     XCTAssertEqual(
       OverlayChannelChipStatus(presence: .online, reception: .member).channelZeroName,

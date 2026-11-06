@@ -49,6 +49,9 @@ struct OverlayChannelChipHoverCard: View {
     let text: String
     let tone: Tone
     var symbol: String? = nil
+    /// A second symbol beside the first: the moon beside the crossed antenna
+    /// of an agent off channel 0 under Do not disturb.
+    var secondSymbol: String? = nil
     /// The presence dot, drawn by the roster's own dot in place of a symbol.
     var dot: OverlayAgentDotKind? = nil
     /// The title's trailing provider.
@@ -104,6 +107,11 @@ struct OverlayChannelChipHoverCard: View {
           .font(.system(size: line.size))
           .frame(width: Self.symbolWidth)
       }
+      if let second = line.secondSymbol {
+        Image(systemName: second)
+          .font(.system(size: line.size))
+          .frame(width: Self.symbolWidth)
+      }
       Text(verbatim: line.text)
         .font(.system(size: line.size, weight: line.kind == .title ? .semibold : .regular))
         .monospacedDigit()
@@ -145,7 +153,7 @@ struct OverlayChannelChipHoverCard: View {
       Line(
         kind: .reception, text: receptionLine(status),
         tone: status.reception == .member && !status.quiet ? .primary : .muted,
-        symbol: receptionSymbol(status)),
+        symbol: receptionSymbol(status), secondSymbol: receptionMoonBeside(status)),
     ]
     if status.unread > 0 {
       lines.append(
@@ -258,12 +266,22 @@ struct OverlayChannelChipHoverCard: View {
     }
   }
 
+  /// The reception line's symbol: the moon under Do not disturb while the
+  /// agent hears channel 0, else the antenna, crossed off channel 0. Off
+  /// channel 0 under the moon keeps the crossed antenna and adds the moon
+  /// beside it (`receptionMoonBeside`), so the line shows what VoiceOver
+  /// reads (Founder, 2026-11-06).
   static func receptionSymbol(_ status: OverlayChannelChipStatus) -> String {
-    if status.quiet { return "moon.fill" }
     switch status.reception {
-    case .member: return "antenna.radiowaves.left.and.right"
+    case .member:
+      return status.quiet ? "moon.fill" : "antenna.radiowaves.left.and.right"
     case .off: return "antenna.radiowaves.left.and.right.slash"
     }
+  }
+
+  /// The moon beside the crossed antenna, off channel 0 under Do not disturb.
+  static func receptionMoonBeside(_ status: OverlayChannelChipStatus) -> String? {
+    status.quiet && status.reception == .off ? "moon.fill" : nil
   }
 
   // MARK: Size
@@ -281,6 +299,7 @@ struct OverlayChannelChipHoverCard: View {
       lines.map { line -> CGFloat in
         var width = OverlayChannelPill.textWidth(line.text, size: line.size)
         if line.symbol != nil || line.dot != nil { width += symbolWidth + symbolGap }
+        if line.secondSymbol != nil { width += symbolWidth + symbolGap }
         if let trailing = line.trailing {
           width += trailingGap + OverlayChannelPill.textWidth(trailing, size: lineSize)
         }
