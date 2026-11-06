@@ -1,6 +1,228 @@
 import AppKit
+import CoreServices
 import Observation
+import OSLog
 import SwiftUI
+import Synchronization
+
+/// One wake source, shared by the independent roster and history readers.
+/// Tests can inject a controlled stream without a timer or a live bridge.
+struct OverlayChannelObservationSource: Sendable {
+  let events: AsyncStream<Void>
+  let wake: @Sendable () -> Void
+  let setDeadline: @Sendable (Int64?) -> Void
+  let cancel: @Sendable () -> Void
+
+  /// An explicitly driven source for injected readers. It observes no real
+  /// files and owns no clock; a caller supplies the events it wants to read.
+  static func manual() -> Self {
+    let (events, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    return Self(
+      events: events,
+      wake: { continuation.yield(()) },
+      setDeadline: { _ in },
+      cancel: { continuation.finish() })
+  }
+
+  static func fileSystem(root: URL) -> Self {
+    let observer = OverlayChannelFileObservation(root: root)
+    return Self(
+      events: observer.events,
+      wake: { observer.wake() },
+      setDeadline: { observer.setDeadline($0) },
+      cancel: { observer.cancel() })
+  }
+}
+
+/// The C callback owns only this sink, never the UI or the native observer.
+/// A mutex preserves a root-change signal even when wakeups are coalesced.
+private final class OverlayChannelObservationSink: Sendable {
+  let continuation: AsyncStream<Void>.Continuation
+  let root: String
+  private let rootChanged = Mutex(false)
+
+  init(continuation: AsyncStream<Void>.Continuation, root: String) {
+    self.continuation = continuation
+    self.root = root
+  }
+
+  func changedRoot() { rootChanged.withLock { $0 = true } }
+  func takeRootChange() -> Bool {
+    rootChanged.withLock { value in
+      let changed = value
+      value = false
+      return changed
+    }
+  }
+
+  func wake() { continuation.yield(()) }
+}
+
+/// FSEvents and one reschedulable timer are the only producers of wakeups.
+/// All native handles and scheduling state are owned under the same mutex;
+/// callbacks retain a Sendable sink and perform no file I/O or UI work.
+private final class OverlayChannelFileObservation: Sendable {
+  private struct State {
+    var stream: FSEventStreamRef?
+    var timer: DispatchSourceTimer?
+    var deadlineUnixMs: Int64?
+    var nextSafety = DispatchTime.now() + 60
+    var stopped = false
+  }
+
+  private static let logger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+    category: "channel-observation")
+  let events: AsyncStream<Void>
+  private let sink: OverlayChannelObservationSink
+  private let root: URL
+  private let queue = DispatchQueue(label: "com.vetcoders.codescribe.channel-observation")
+  private let state: Mutex<State>
+
+  init(root: URL) {
+    let root = root.standardizedFileURL.resolvingSymlinksInPath()
+    self.root = root
+    let (events, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    self.events = events
+    sink = OverlayChannelObservationSink(continuation: continuation, root: root.path)
+    state = Mutex(State())
+    state.withLock { value in
+      // Native callbacks touch only the sink. Keep timer callbacks, which take
+      // the state mutex, off the FSEvents queue used during stream shutdown.
+      let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+      timer.setEventHandler { [weak self] in self?.timerFired() }
+      value.timer = timer
+      value.stream = makeStream()
+      schedule(&value)
+      timer.activate()
+    }
+  }
+
+  deinit { cancel() }
+
+  func wake() { sink.wake() }
+
+  func setDeadline(_ deadlineUnixMs: Int64?) {
+    state.withLock { value in
+      guard !value.stopped else { return }
+      // A past deadline was already evaluated by the read that just finished.
+      // Do not turn an unchanged expired value into an immediate-wakeup loop.
+      value.deadlineUnixMs = deadlineUnixMs.flatMap {
+        Double($0) / 1000 > Date().timeIntervalSince1970 ? $0 : nil
+      }
+      if sink.takeRootChange(), let stream = value.stream {
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        value.stream = nil
+      }
+      if value.stream == nil { value.stream = makeStream() }
+      schedule(&value)
+    }
+  }
+
+  func cancel() {
+    let resources: (FSEventStreamRef?, DispatchSourceTimer?) = state.withLock { value in
+      guard !value.stopped else { return (nil, nil) }
+      value.stopped = true
+      let resources = (value.stream, value.timer)
+      value.stream = nil
+      value.timer = nil
+      return resources
+    }
+    resources.1?.cancel()
+    if let stream = resources.0 {
+      FSEventStreamStop(stream)
+      FSEventStreamInvalidate(stream)
+      FSEventStreamRelease(stream)
+    }
+    sink.continuation.finish()
+  }
+
+  private func timerFired() {
+    let active = state.withLock { value in
+      guard !value.stopped else { return false }
+      if DispatchTime.now() >= value.nextSafety { value.nextSafety = .now() + 60 }
+      if let deadline = value.deadlineUnixMs,
+        Double(deadline) / 1000 <= Date().timeIntervalSince1970
+      {
+        value.deadlineUnixMs = nil
+      }
+      schedule(&value)
+      return true
+    }
+    if active { sink.wake() }
+  }
+
+  private func schedule(_ value: inout State) {
+    let now = DispatchTime.now().uptimeNanoseconds
+    let safety = value.nextSafety.uptimeNanoseconds
+    var delay = safety > now ? Double(safety - now) / 1_000_000_000 : 0
+    if let deadline = value.deadlineUnixMs {
+      delay = min(delay, max(0, Double(deadline) / 1000 - Date().timeIntervalSince1970))
+    }
+    value.timer?.schedule(deadline: .now() + delay, leeway: .milliseconds(5))
+  }
+
+  private func makeStream() -> FSEventStreamRef? {
+    var context = FSEventStreamContext(
+      version: 0, info: Unmanaged.passUnretained(sink).toOpaque(),
+      retain: { info in
+        guard let info else { return nil }
+        _ = Unmanaged<OverlayChannelObservationSink>.fromOpaque(info).retain()
+        return info
+      },
+      release: { info in
+        guard let info else { return }
+        Unmanaged<OverlayChannelObservationSink>.fromOpaque(info).release()
+      }, copyDescription: nil)
+    // Watch the parent while the bridge is absent so its creation is a wakeup.
+    let watched = FileManager.default.fileExists(atPath: root.path)
+      ? root : root.deletingLastPathComponent()
+    let callback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
+      guard let info else { return }
+      let sink = Unmanaged<OverlayChannelObservationSink>.fromOpaque(info).takeUnretainedValue()
+      let names = paths.assumingMemoryBound(to: UnsafePointer<CChar>.self)
+      var relevant = false
+      for index in 0..<count {
+        let path = String(cString: names[index])
+        let rootEvent = flags[index] & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0
+        // Dropped/coalesced events can name "/", outside the selected root.
+        // They still require the reader's inventory/cursor reconciliation.
+        let rescan = flags[index] & FSEventStreamEventFlags(
+          kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
+            | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped) != 0
+        guard rescan || rootEvent || path == sink.root || path.hasPrefix(sink.root + "/") else {
+          continue
+        }
+        relevant = true
+        let replaced = FSEventStreamEventFlags(
+          kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemRemoved
+            | kFSEventStreamEventFlagItemRenamed)
+        if rootEvent || (path == sink.root && flags[index] & replaced != 0) { sink.changedRoot() }
+      }
+      if relevant { sink.wake() }
+    }
+    guard let stream = FSEventStreamCreate(
+      nil, callback, &context, [watched.path] as CFArray,
+      FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.05,
+      FSEventStreamCreateFlags(
+        kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot
+          | kFSEventStreamCreateFlagNoDefer))
+    else {
+      Self.logger.error("Could not create bridge FSEvents observer; safety wakeup remains armed")
+      return nil
+    }
+    FSEventStreamSetDispatchQueue(stream, queue)
+    guard FSEventStreamStart(stream) else {
+      FSEventStreamInvalidate(stream)
+      FSEventStreamRelease(stream)
+      Self.logger.error("Could not start bridge FSEvents observer; safety wakeup remains armed")
+      return nil
+    }
+    return stream
+  }
+}
 
 /// Window presentation only; the reducer continues to own the transcript.
 enum OverlayPresentationMode: CaseIterable, Hashable {
@@ -1374,7 +1596,9 @@ final class OverlayState {
   }
   private(set) var pendingAgentArchives: Set<OverlayConversationOwner> = []
   private(set) var agentArchiveError: String?
-  @ObservationIgnored private var agentArchiveRevision: UInt64 = 0
+  @ObservationIgnored private var agentArchiveRevision: UInt64 = 0 {
+    didSet { channelObservationSource?.wake() }
+  }
   /// Test seam for the archive helper: the owner and whether its live reader
   /// is to be stopped first.
   @ObservationIgnored var archiveAgentCommand:
@@ -3036,7 +3260,9 @@ final class OverlayState {
   private(set) var pendingTextMessages: Set<String> = []
   private(set) var textMessageErrors: [String: String] = [:]
   var publishedMessageSkips: [String: [AgentBusSkippedRecipient]] = [:]
-  private(set) var conversationFocusRevision: UInt64 = 0
+  private(set) var conversationFocusRevision: UInt64 = 0 {
+    didSet { channelObservationSource?.wake() }
+  }
   @ObservationIgnored var publishConversationText:
     @MainActor (
       OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
@@ -3546,42 +3772,51 @@ final class OverlayState {
   var miniTakeLive: Bool { recording || channelAudioCaptureActive }
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
+  @ObservationIgnored private var channelObservationSource: OverlayChannelObservationSource?
 
   deinit {
     channelObservationTask?.cancel()
+    channelObservationSource?.cancel()
   }
 
   func observeChannelDelivery(using reader: OverlayChannelDeliveryReader) {
-    observeChannelDelivery { selectedOwner in
+    // Retire native handles before constructing the replacement source.
+    stopObservingChannelDelivery()
+    observeChannelDelivery(
+      source: .fileSystem(root: reader.root)
+    ) { selectedOwner in
       try await reader.readSnapshot(selectedOwner: selectedOwner)
     }
   }
 
   /// The reader remains the document projection owner. Injecting only its read
   /// operation lets a suspended history read falsify roster responsiveness.
-  /// One parent task owns both loops and propagates cancellation to both.
+  /// One parent owns two event consumers and propagates cancellation to both.
+  /// The closure-only seam is explicitly driven; production supplies FSEvents.
   @discardableResult
   func observeChannelDelivery(
+    source: OverlayChannelObservationSource = .manual(),
+    nextDeadlineUnixMs: @escaping @MainActor @Sendable () -> Int64? = { nil },
     readSnapshot:
       @escaping @MainActor (OverlayConversationOwner?) async throws
       -> OverlayChannelDeliverySnapshot
   ) -> Task<Void, Never> {
     stopObservingChannelDelivery()
-    let readRoster: @MainActor @Sendable () async -> Void = { [weak self] in
-      while !Task.isCancelled {
-        guard self != nil else { return }
+    channelObservationSource = source
+    let readRoster: @MainActor @Sendable (AsyncStream<Void>) async -> Void = { [weak self] events in
+      for await _ in events {
+        guard !Task.isCancelled, self != nil else { return }
         if let snapshot = await self?.engine?.channelRosterSnapshot() {
           guard !Task.isCancelled, let self else { return }
           self.applyChannelRoster(snapshot)
         }
-        let interval: Duration =
-          (self?.isDeliveryObservationActive == true) ? .milliseconds(500) : .milliseconds(2000)
-        do { try await Task.sleep(for: interval) } catch { return }
+        guard !Task.isCancelled else { return }
+        source.setDeadline(nextDeadlineUnixMs())
       }
     }
-    let readHistory: @MainActor @Sendable () async -> Void = { [weak self] in
-      while !Task.isCancelled {
-        guard self != nil else { return }
+    let readHistory: @MainActor @Sendable (AsyncStream<Void>) async -> Void = { [weak self] events in
+      for await _ in events {
+        guard !Task.isCancelled, self != nil else { return }
         do {
           let archiveRevision = self?.agentArchiveRevision
           let focusRevision = self?.conversationFocusRevision
@@ -3592,7 +3827,7 @@ final class OverlayState {
           let snapshot = try await readSnapshot(archivedOwner)
           guard !Task.isCancelled, self != nil else { return }
           // A focus change can discard this paint, but not turn that archive's
-          // first-read history into a fresh admission on the next poll.
+          // first-read history into a fresh admission on the next wakeup.
           self?.observedReplyIDs.formUnion(snapshot.historyReplyIDs)
           if archiveRevision == self?.agentArchiveRevision,
             focusRevision == self?.conversationFocusRevision
@@ -3608,15 +3843,33 @@ final class OverlayState {
         }
         guard !Task.isCancelled else { return }
         await self?.refreshPlaybackMutes()
-        let interval: Duration =
-          (self?.isDeliveryObservationActive == true) ? .milliseconds(500) : .milliseconds(2000)
-        do { try await Task.sleep(for: interval) } catch { return }
+        guard !Task.isCancelled else { return }
+        source.setDeadline(nextDeadlineUnixMs())
       }
     }
-    let observation = Task {
-      await withTaskGroup(of: Void.self) { group in
-        group.addTask { await readRoster() }
-        group.addTask { await readHistory() }
+    // Register the native source before bootstrap. Each consumer has one
+    // pending wakeup, so slow history never blocks roster updates or loses a
+    // change that arrived during its read.
+    source.wake()
+    let observation = Task { @MainActor [weak self] in
+      await withTaskCancellationHandler {
+        defer { source.cancel() }
+        let roster = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let history = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        await withTaskGroup(of: Void.self) { group in
+          group.addTask { await readRoster(roster.stream) }
+          group.addTask { await readHistory(history.stream) }
+          for await _ in source.events {
+            guard !Task.isCancelled, self != nil else { break }
+            roster.continuation.yield(())
+            history.continuation.yield(())
+          }
+          roster.continuation.finish()
+          history.continuation.finish()
+          group.cancelAll()
+        }
+      } onCancel: {
+        source.cancel()
       }
     }
     channelObservationTask = observation
@@ -3626,6 +3879,8 @@ final class OverlayState {
   func stopObservingChannelDelivery() {
     channelObservationTask?.cancel()
     channelObservationTask = nil
+    channelObservationSource?.cancel()
+    channelObservationSource = nil
   }
 
   /// The compact channel map as the window owner sizes it: the projection
