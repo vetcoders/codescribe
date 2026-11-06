@@ -1529,18 +1529,18 @@ final class OverlayState {
   }
   private(set) var channelRosterNames: [String: String] = [:]
   @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
-  var channelMapEnabled: Bool { channelMapPreference.enabled }
+  /// The active layout's contract: the one owner of shared-surface decisions
+  /// per layout (Klasyczny / Belka / Fiszki). See `OverlayLayoutContract`.
+  var layoutContract: any OverlayLayoutContract { channelMapPreference.mode.contract }
+  var channelMapEnabled: Bool { layoutContract.mode != .classic }
   /// Compact's chips: the horizontal strip alone carries them in the header.
-  var channelMapInHeader: Bool {
-    channelMapEnabled && channelMapPreference.layout == .horizontal
-  }
+  var channelMapInHeader: Bool { layoutContract.mapInHeader }
   /// With the map enabled mini drops the brand word, so the map setting
   /// still shapes mini. The horizontal mini carries no channel counter
-  /// (Monika, 2026-11-04: the Agents list replaces it); the vertical mini
-  /// keeps its stacked counter (`channelMapCounterStacked`).
-  var channelMapInMini: Bool { channelMapEnabled && !isVerticalIntercom }
-  var isVerticalIntercom: Bool { channelMapEnabled && channelMapPreference.layout == .vertical }
-  var channelMapCounterStacked: Bool { false }
+  /// (Monika, 2026-11-04: the Agents list replaces it).
+  var channelMapInMini: Bool { layoutContract.mapInMini }
+  var isVerticalIntercom: Bool { layoutContract.mode == .vertical }
+  var channelMapCounterStacked: Bool { layoutContract.counterStacked }
 
   /// The view observes the same presentation preference as Creator. Refitting
   /// changes chrome only: no channel selection, microphone or document event.
