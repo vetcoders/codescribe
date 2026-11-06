@@ -847,7 +847,10 @@ final class OverlayStateTests: XCTestCase {
       if state.channelRosterNames["2"] != nil { readyPainted.fulfill() }
       if state.channelRosterNames["3"] != nil { changePainted.fulfill() }
     }
-    let observation = state.observeChannelDelivery { _ in
+    // The closure seam is explicitly driven: each roster read below follows a
+    // wake this test issues, never a timer, while history stays suspended.
+    let source = OverlayChannelObservationSource.manual()
+    let observation = state.observeChannelDelivery(source: source) { _ in
       await withCheckedContinuation { continuation in
         historyResponse = continuation
         historyEntered.fulfill()
@@ -863,12 +866,16 @@ final class OverlayStateTests: XCTestCase {
     let first = try XCTUnwrap(rosterResponse)
     rosterResponse = nil
     first.resume(returning: [])
+    // The roster consumer holds one pending wake, so this lands whether or not
+    // the first read has finished applying; history keeps only its own pending one.
+    source.wake()
     await fulfillment(of: [readyRoster], timeout: 2)
     XCTAssertFalse(state.hasLoadedChannelRoster)
     let broadcast = navigationRoster(channel: "0", open: false)
     let second = try XCTUnwrap(rosterResponse)
     rosterResponse = nil
     second.resume(returning: [broadcast, navigationRoster(open: false)])
+    source.wake()
     await fulfillment(of: [readyPainted, changedRoster], timeout: 2)
     XCTAssertTrue(state.hasLoadedChannelRoster)
     XCTAssertNotNil(historyResponse, "History is still held at the same barrier")
@@ -885,6 +892,129 @@ final class OverlayStateTests: XCTestCase {
     historyResponse = nil
     history.resume(returning: .init(deliveries: [], conversations: []))
     await observation.value
+  }
+
+  /// FSEvents reports real paths, while Foundation's resolvingSymlinksInPath
+  /// strips `/private` from a temporaryDirectory path, so the observer's root
+  /// filter would never match it. A scratch root under the repo's ignored
+  /// build/ directory crosses no symlink, so both sides see one path.
+  private func channelObservationScratchRoot() throws -> URL {
+    let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().deletingLastPathComponent()
+    let root = repo.appendingPathComponent(
+      "build/test-scratch/channel-observation-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent("buses", isDirectory: true),
+      withIntermediateDirectories: true)
+    return root
+  }
+
+  func testFileSystemChannelObservationWakesOnBridgeWrite() async throws {
+    let root = try channelObservationScratchRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let state = OverlayState()
+    let bootstrap = expectation(description: "bootstrap read before any bridge write")
+    let written = expectation(description: "bridge write woke the history reader")
+    // FileEvents can split one write into a few coalesced batches; a reread
+    // loop would exceed this bound many times over inside the idle window.
+    let idleLoop = expectation(description: "history kept rereading after the write settled")
+    idleLoop.isInverted = true
+    idleLoop.expectedFulfillmentCount = 3
+    let channelLog = root.appendingPathComponent("buses/channel-4.jsonl")
+    var reads = 0
+    var readsAfterWrite = 0
+    let source = OverlayChannelObservationSource.fileSystem(root: root)
+    let observation = state.observeChannelDelivery(source: source) { _ in
+      reads += 1
+      if reads == 1 { bootstrap.fulfill() }
+      if FileManager.default.fileExists(atPath: channelLog.path) {
+        readsAfterWrite += 1
+        if readsAfterWrite == 1 { written.fulfill() } else { idleLoop.fulfill() }
+      }
+      return .init(deliveries: [], conversations: [])
+    }
+    defer { state.stopObservingChannelDelivery() }
+    await fulfillment(of: [bootstrap], timeout: 5)
+    // No `source.wake()` from here on: only the native file event may wake.
+    try Data("{\"kind\":\"agent_reply\"}\n".utf8).write(to: channelLog)
+    await fulfillment(of: [written], timeout: 5)
+    await fulfillment(of: [idleLoop], timeout: 0.5)
+    state.stopObservingChannelDelivery()
+    await observation.value
+  }
+
+  func testFileSystemChannelObservationFiresScheduledDeadlineOnce() async throws {
+    let root = try channelObservationScratchRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let state = OverlayState()
+    let deadline = Date().addingTimeInterval(0.25)
+    let deadlineUnixMs = Int64(deadline.timeIntervalSince1970 * 1000)
+    let bootstrap = expectation(description: "bootstrap read")
+    let deadlineRead = expectation(description: "deadline woke the history reader")
+    let expiredLoop = expectation(description: "an expired deadline woke the reader again")
+    expiredLoop.isInverted = true
+    var reads = 0
+    var firedAtDeadline = false
+    let source = OverlayChannelObservationSource.fileSystem(root: root)
+    let observation = state.observeChannelDelivery(
+      source: source, nextDeadlineUnixMs: { deadlineUnixMs },
+      readSnapshot: { _ in
+        reads += 1
+        if reads == 1 { bootstrap.fulfill() }
+        // The bootstrap read never stands in for the deadline. The timer has a
+        // 5 ms leeway and never fires early; allow skew between DispatchTime
+        // and wall-clock Date.
+        if reads > 1, Date() >= deadline.addingTimeInterval(-0.02) {
+          if firedAtDeadline { expiredLoop.fulfill() } else { deadlineRead.fulfill() }
+          firedAtDeadline = true
+        }
+        return .init(deliveries: [], conversations: [])
+      })
+    defer { state.stopObservingChannelDelivery() }
+    await fulfillment(of: [bootstrap], timeout: 5)
+    XCTAssertLessThan(
+      Date(), deadline, "The deadline must be scheduled before it elapses to prove the wake")
+    await fulfillment(of: [deadlineRead], timeout: 5)
+    // Both consumers already re-passed the expired deadline after that read;
+    // passing it once more must not arm an immediate wakeup either.
+    source.setDeadline(deadlineUnixMs)
+    await fulfillment(of: [expiredLoop], timeout: 0.4)
+    state.stopObservingChannelDelivery()
+    await observation.value
+  }
+
+  func testStoppingChannelObservationFinishesConsumerStreams() async throws {
+    let root = try channelObservationScratchRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let state = OverlayState()
+    let bootstrap = expectation(description: "bootstrap read")
+    let lateRead = expectation(description: "a stopped observation read again")
+    lateRead.isInverted = true
+    var reads = 0
+    let source = OverlayChannelObservationSource.fileSystem(root: root)
+    let observation = state.observeChannelDelivery(source: source) { _ in
+      reads += 1
+      if reads == 1 { bootstrap.fulfill() } else { lateRead.fulfill() }
+      return .init(deliveries: [], conversations: [])
+    }
+    await fulfillment(of: [bootstrap], timeout: 5)
+    state.stopObservingChannelDelivery()
+    // Joining the parent proves both consumers and the fan-out loop returned.
+    await observation.value
+    // The cancelled source finished its stream: draining terminates, at most
+    // after one buffered wake, instead of waiting for further events.
+    let drained = expectation(description: "cancelled source stream finished")
+    Task {
+      for await _ in source.events {}
+      drained.fulfill()
+    }
+    await fulfillment(of: [drained], timeout: 2)
+    // The native stream is closed: neither a bridge write nor an explicit wake
+    // reaches a reader any more.
+    source.wake()
+    try Data("{\"kind\":\"agent_reply\"}\n".utf8)
+      .write(to: root.appendingPathComponent("buses/channel-4.jsonl"))
+    await fulfillment(of: [lateRead], timeout: 0.4)
   }
 
   func testStoppedChannelObservationRejectsLateRosterAndHistory() async throws {
