@@ -51,18 +51,14 @@ final class OverlayTrayCoherenceTests: XCTestCase {
     }
   }
 
-  /// Header diagnostic marks stay neutral. A lagging transcript and a
-  /// preference-save error do not paint the caution yellow on the glyph.
+  /// Header diagnostic marks stay neutral. A preference-save error does not
+  /// paint the caution yellow on the glyph. The transcription mark's neutral
+  /// tints are measured in pixels (`OverlayHeaderChromeTests`).
   func testHeaderDiagnosticsStayNeutral() throws {
     let view = try source("Overlay/DictationOverlayView.swift")
-    let acoustic = try XCTUnwrap(view.range(of: "character: OverlayHeaderGlyph.transcription"))
     let preference = try XCTUnwrap(view.range(of: "exclamationmark.triangle.fill"))
-    // The chosen tint (2026-10-15) sits before the resting muted colour.
-    let acousticWindow = String(view[acoustic.lowerBound...].prefix(260))
     let preferenceWindow = String(view[preference.lowerBound...].prefix(180))
-    XCTAssertTrue(acousticWindow.contains("palette.mutedText.color"))
     XCTAssertTrue(preferenceWindow.contains("palette.primaryText.color"))
-    XCTAssertFalse(acousticWindow.contains("palette.processingStatus.color"))
     XCTAssertFalse(preferenceWindow.contains("palette.processingStatus.color"))
   }
 

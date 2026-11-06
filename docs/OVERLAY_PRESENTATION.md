@@ -422,7 +422,12 @@ to one digit without a name or leaves an empty gap (anti-pattern 09).
 Mini at rest (Founder, 2026-11-04, bus brief §3) reads, from the left: the
 brand dot (the close button), transcription (`transcriptionPreviewButton`),
 the microphone, the Agents button (✦) and the preview chevron, in the bar's
-glyphs, palette and 22 pt controls. No counter, waveform, timer or map. With
+glyphs, palette and 22 pt controls. No counter, waveform, timer, map or pin:
+the pin is the expanded bar's and the window's. The transcription control is
+the system `note.text` symbol in every form (`OverlayTranscriptionGlyph`,
+decision D7, 2026-11-06); while the window shows the transcription it is
+chosen like the pin, primary ink on the neutral wash
+(`OverlayHeaderAccent.state`), never terracotta. With
 the channel map disabled the `codescribe` word follows the dot, as before;
 with it enabled the dot stands alone. Mini is as wide and as tall as its
 content, nothing reserved for hidden elements: 7 pt from a control to the

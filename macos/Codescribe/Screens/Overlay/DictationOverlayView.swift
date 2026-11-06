@@ -1553,18 +1553,13 @@ struct DictationOverlayView: View {
     let transcriptionSelected =
       !state.isCollapsed && state.windowContentSurface == .transcription
     return Button(action: state.showTranscription) {
-      OverlayMicrophoneGlyph(
-        character: OverlayHeaderGlyph.transcription,
-        tint: transcriptionSelected
-          ? OverlayHeaderAccent.transcription.selectionTint(in: palette)
-          : palette.mutedText.color,
-        plateOpacity: transcriptionSelected ? 0 : 0.12)
+      OverlayTranscriptionGlyph(selected: transcriptionSelected, palette: palette)
     }
     .buttonStyle(.plain)
     .csFocusOutline()
     .modifier(
       OverlayHeaderControlChrome(
-        title: transcriptPreviewHelp, accent: .transcription, palette: palette,
+        title: transcriptPreviewHelp, accent: .state, palette: palette,
         selected: transcriptionSelected)
     )
     .accessibilityLabel("Show transcription")

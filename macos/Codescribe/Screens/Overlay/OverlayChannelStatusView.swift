@@ -211,7 +211,7 @@ struct OverlayMicrophoneGlyph: View {
   }
 
   init(character: String, tint: Color, plateOpacity: Double = 0.12) {
-    mark = .character(character, pointSize: OverlayHeaderGlyph.pointSize(character))
+    mark = .character(character, pointSize: OverlayHeaderGlyph.pointSize)
     self.tint = tint
     self.plateOpacity = plateOpacity
   }

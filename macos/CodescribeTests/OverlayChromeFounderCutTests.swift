@@ -1277,27 +1277,30 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       "the pin button toggles directly instead of opening a placement menu")
   }
 
-  /// The header's content controls are one Dingbats character each, in the
-  /// family of the roster's ❖, and every macOS font cascade can paint them.
-  func testHeaderGlyphsAreTextMarksThatSystemFontsCover() throws {
+  /// The Agents mark is one Dingbats character, in the family of the
+  /// roster's ❖, that every macOS font cascade can paint; the transcription
+  /// is the catalog's `note.text` system symbol (decision D7), which resolves.
+  func testHeaderGlyphsAreMarksTheSystemCanPaint() throws {
     XCTAssertEqual(OverlayHeaderGlyph.agents, "\u{2726}")
-    XCTAssertEqual(OverlayHeaderGlyph.transcription, "\u{270D}\u{FE0E}")
+    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, "note.text")
+    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, CSIcon.notesMode.systemName)
+    XCTAssertNotNil(
+      NSImage(
+        systemSymbolName: OverlayHeaderGlyph.transcriptionSymbol, accessibilityDescription: nil),
+      "the transcription symbol must exist on this system")
     let base = NSFont.systemFont(ofSize: 11) as CTFont
-    for glyph in [OverlayHeaderGlyph.agents, OverlayHeaderGlyph.transcription] {
-      let scalar = try XCTUnwrap(glyph.unicodeScalars.first)
-      let font = CTFontCreateForString(
-        base, String(scalar) as CFString, CFRange(location: 0, length: 1))
-      var characters = Array(String(scalar).utf16)
-      var glyphs = [CGGlyph](repeating: 0, count: characters.count)
-      XCTAssertTrue(
-        CTFontGetGlyphsForCharacters(font, &characters, &glyphs, characters.count),
-        "\(glyph) must not paint as a missing-glyph box")
-      let menuImage = OverlayHeaderGlyph.menuImage(glyph)
-      XCTAssertTrue(menuImage.isTemplate)
-      XCTAssertGreaterThan(menuImage.size.width, 0)
-    }
-    let header = try headerSource(try overlaySource())
-    XCTAssertTrue(header.contains("character: OverlayHeaderGlyph.transcription"))
+    let agents = OverlayHeaderGlyph.agents
+    let scalar = try XCTUnwrap(agents.unicodeScalars.first)
+    let font = CTFontCreateForString(
+      base, String(scalar) as CFString, CFRange(location: 0, length: 1))
+    var characters = Array(String(scalar).utf16)
+    var glyphs = [CGGlyph](repeating: 0, count: characters.count)
+    XCTAssertTrue(
+      CTFontGetGlyphsForCharacters(font, &characters, &glyphs, characters.count),
+      "\(agents) must not paint as a missing-glyph box")
+    let menuImage = OverlayHeaderGlyph.menuImage(agents)
+    XCTAssertTrue(menuImage.isTemplate)
+    XCTAssertGreaterThan(menuImage.size.width, 0)
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     XCTAssertTrue(roster.contains("character: OverlayHeaderGlyph.agents"))
     // The header's Agents mark remains distinct from the sidebar glyph.

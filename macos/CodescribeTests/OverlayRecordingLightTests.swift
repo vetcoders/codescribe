@@ -452,7 +452,7 @@ final class OverlayRecordingLightTests: XCTestCase {
         .deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
       encoding: .utf8)
-    XCTAssertTrue(source.contains("title: transcriptPreviewHelp, accent: .transcription"))
+    XCTAssertTrue(source.contains("title: transcriptPreviewHelp, accent: .state"))
     XCTAssertTrue(
       source.contains(".accessibilityValue(transcriptPreviewAccessibilityValue)"))
     let help = source.components(separatedBy: "private var transcriptPreviewHelp: String {")[1]

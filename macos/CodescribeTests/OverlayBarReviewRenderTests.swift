@@ -793,4 +793,24 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         name: "bus-intercom-fiszki")
     }
   }
+
+  // MARK: - 11. The header's chosen window controls
+
+  /// The expanded overlay on its transcription, pinned: the transcription
+  /// control and the pin are both chosen, side by side in one header.
+  func testRenderExpandedTranscriptionAndPinChosen() throws {
+    let (state, _) = try barState(four, mode: .midi)
+    state.engine = OverlayChromePolicyEngine()
+    state.setKeepVisibleBetweenTakes(true)
+    state.showTranscription()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.windowContentSurface, .transcription)
+    XCTAssertTrue(state.keepVisibleBetweenTakes)
+    let panel = panel(for: state)
+    for look in Look.allCases {
+      try renderOverlay(
+        state, panel: panel, size: NSSize(width: 620, height: 140), look: look,
+        name: "bar-expanded-transcription-pinned")
+    }
+  }
 }
