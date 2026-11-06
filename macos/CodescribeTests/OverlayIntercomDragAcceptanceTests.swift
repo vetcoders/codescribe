@@ -282,6 +282,16 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
       XCTAssertFalse(isResize(CGPoint(x: root.bounds.midX, y: bottom)), "No invisible edge band")
       let point = CGPoint(x: right, y: bottom)
       let handle = try XCTUnwrap(target(point))
+      // The handle reads the pointer from the screen, not from these events,
+      // so the Founder's own mouse moving mid-run resized the group by a
+      // fraction of a point (2026-11-06: 494.72 stored against a 495 pt
+      // window). The test names the pointer, and lets it creep left the way
+      // a hand does: the drag ends 0.3 pt short of a whole point.
+      var drift: CGFloat = 0
+      try XCTUnwrap(handle as? OverlayIntercomPointerSource).pointerLocation = {
+        drift -= 0.05
+        return CGPoint(x: 400 + drift, y: 400)
+      }
       let desktop = rig.controller.desktop
       let stored = rig.store.load()
       let frame = rig.card.frame
@@ -360,9 +370,12 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     let root = try XCTUnwrap(rig.card.contentView)
     root.layoutSubtreeIfNeeded()
     XCTAssertTrue(try XCTUnwrap(rig.instance).minimized)
-    // The title occupies the free leading part of this 500pt bar. The old
-    // restore Button consumed this point before the native drag view saw it.
-    let point = NSPoint(x: 80, y: root.bounds.midY)
+    // A mini is a pill sized by its own name, not the 500 pt conversation it
+    // came from, so its controls begin where the name ends. The title is the
+    // leading part; the old restore Button consumed this point before the
+    // native drag view saw it.
+    XCTAssertLessThan(root.bounds.width, 500, "a mini does not keep the conversation's width")
+    let point = NSPoint(x: 40, y: root.bounds.midY)
     let drag = try XCTUnwrap(root.hitTest(point) as? OverlayIntercomDragView)
     XCTAssertEqual(drag.minimumDragDistance, 4)
     let location = root.convert(point, to: nil)
