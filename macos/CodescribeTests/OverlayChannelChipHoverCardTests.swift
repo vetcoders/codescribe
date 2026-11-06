@@ -126,6 +126,18 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
       OverlaySharedChannelName.defaultName, "no stored name: the default")
   }
 
+  /// The antenna's ink has one owner for the agents list, the roster's marks
+  /// and the fiszki (L7): the regular ink the card's reception line wears,
+  /// never the voice violet.
+  func testAntennaWearsTheInkNotTheVoiceViolet() {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      XCTAssertEqual(OverlayReceptionMarks.antennaInk(palette), palette.primaryText)
+      XCTAssertNotEqual(OverlayReceptionMarks.antennaInk(palette), palette.agentAccent)
+    }
+    let hears = OverlayChannelChipStatus(presence: .online, reception: .member)
+    XCTAssertEqual(line(.reception, in: hears)?.tone, .primary, "the card's same ink")
+  }
+
   /// The roster hands the card the name its own channel 0 chip shows.
   func testRosterCardsCarryChannelZerosDisplayName() throws {
     let owner = try XCTUnwrap(

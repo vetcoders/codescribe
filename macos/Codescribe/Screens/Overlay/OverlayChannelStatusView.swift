@@ -1056,6 +1056,15 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
 /// move independently and neither greys the other. The roster, the Intercom
 /// fiszki and the pill menu all issue the same command through the helper.
 struct OverlayReceptionMarks: View {
+  /// The lit antenna's ink, the one owner for these marks and the agents
+  /// list under ✦ (L7, 2026-11-06): the regular ink while the agent hears
+  /// channel 0, as the chip's hover card draws it (`primary`). The crossed
+  /// antenna takes the muted tone. Violet stays with a voice on the bus (an
+  /// agent speaking, your voice to an agent), never with reception.
+  static func antennaInk(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
+    palette.primaryText
+  }
+
   let channel: OverlayChannelDelivery
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
@@ -1070,7 +1079,8 @@ struct OverlayReceptionMarks: View {
   var body: some View {
     HStack(spacing: 3) {
       mark(
-        symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
+        symbol: policy.statusSymbol, lit: policy.member,
+        litColor: Self.antennaInk(palette).color,
         hint: policy.member
           ? String(localized: "Leave channel 0") : String(localized: "Join channel 0"),
         help: policy.statusHelp, identifier: "overlay-broadcast-policy-\(channel.channel)"

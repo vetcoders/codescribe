@@ -365,7 +365,11 @@ they change reception through `OverlayBroadcastPolicyLedger.change`, never
 open the conversation and never close the list, are dimmed while a change is
 pending and repaint from the read-back receipt. Each mark has exactly two
 looks, lit or not, the same state as the context menu's "Channel 0" and "Do
-not disturb" checkmarks (Founder, 2026-11-04); a policy the helper has not
+not disturb" checkmarks (Founder, 2026-11-04). The lit antenna wears the
+regular ink, the crossed one the muted tone, as on the chip's hover card;
+violet stays with a voice on the bus, never with reception (L7, 2026-11-06;
+one owner, `OverlayReceptionMarks.antennaInk`, for this list, the Bus
+window's roster marks and the fiszki). A policy the helper has not
 receipted draws as painted, never as a third, greyed mark, and the receipt
 only confirms this app's own click. The dots
 are decoration for VoiceOver: each row carries one label with every state
@@ -825,7 +829,8 @@ since the fiszka is the surface, not in glass circles of its own (Maciej,
 2026-10-23: "robisz to prosto na powierzchni fiszki"). Its status is one
 `OverlayAgentStatusDot` from `presenceDotKind`, before the figure; after the
 name sit the agent's two reception marks (`OverlayReceptionMarks`): the
-channel-0 antenna (`broadcastPolicy.statusSymbol`, lit for a member) and the
+channel-0 antenna (`broadcastPolicy.statusSymbol`, lit for a member in the
+regular ink, `OverlayReceptionMarks.antennaInk`) and the
 do-not-disturb moon (`quietSymbol`, filled while lit). Both are one-click
 switches that issue the helper's `--broadcast`/`--quiet` command for that
 lease, the same view the agents list draws after its title; the axes are
