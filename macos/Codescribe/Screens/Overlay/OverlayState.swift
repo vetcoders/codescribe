@@ -79,8 +79,28 @@ private final class OverlayChannelFileObservation: Sendable {
   private let queue = DispatchQueue(label: "com.vetcoders.codescribe.channel-observation")
   private let state: Mutex<State>
 
+  /// The path FSEvents will name. `resolvingSymlinksInPath` drops `/private`
+  /// from `/private/var` and `/private/tmp`, FSEvents does not, so a bridge
+  /// under a temporary directory matched none of its own events. `realpath`
+  /// answers for the deepest directory that exists; the rest is appended.
+  private static func physical(_ url: URL) -> URL {
+    var existing = url.standardizedFileURL
+    var missing: [String] = []
+    while existing.path != "/", !FileManager.default.fileExists(atPath: existing.path) {
+      missing.insert(existing.lastPathComponent, at: 0)
+      existing.deleteLastPathComponent()
+    }
+    guard let resolved = realpath(existing.path, nil) else {
+      return url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    defer { free(resolved) }
+    return missing.reduce(URL(fileURLWithPath: String(cString: resolved), isDirectory: true)) {
+      $0.appendingPathComponent($1)
+    }
+  }
+
   init(root: URL) {
-    let root = root.standardizedFileURL.resolvingSymlinksInPath()
+    let root = Self.physical(root)
     self.root = root
     let (events, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
     self.events = events
@@ -3780,6 +3800,8 @@ final class OverlayState {
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
   @ObservationIgnored private var channelObservationSource: OverlayChannelObservationSource?
+  /// One more pass of the history reader alone, while an observation runs.
+  @ObservationIgnored private var wakeChannelHistory: (() -> Void)?
 
   deinit {
     channelObservationTask?.cancel()
@@ -3863,6 +3885,7 @@ final class OverlayState {
         defer { source.cancel() }
         let roster = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let history = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        self?.wakeChannelHistory = { history.continuation.yield(()) }
         await withTaskGroup(of: Void.self) { group in
           group.addTask { await readRoster(roster.stream) }
           group.addTask { await readHistory(history.stream) }
@@ -3884,6 +3907,7 @@ final class OverlayState {
   }
 
   func stopObservingChannelDelivery() {
+    wakeChannelHistory = nil
     channelObservationTask?.cancel()
     channelObservationTask = nil
     channelObservationSource?.cancel()
@@ -3973,11 +3997,23 @@ final class OverlayState {
     let wasOpen = hasOpenChannel
     let wasChannelCapturing = channelAudioCaptureActive
     let wasCapturingAudio = audioCaptureActive
+    func bindings(_ rows: [CsChannelRosterState]) -> Set<String> {
+      Set(
+        rows.map {
+          "\($0.channel)|\(String(describing: $0.provider))|\(String(describing: $0.providerSessionId))"
+        })
+    }
+    let rebound = bindings(snapshot) != bindings(channelRoster)
     channelRoster = snapshot
     hasLoadedChannelRoster = rosterReady
     channelHudStates = projected
     channelRosterNames = names
     noteChannelMapLayout()
+    // A digit bound to another session changes who owns its descriptor and
+    // its mute, and no file need change for that. The history reader wakes
+    // on file events only, so ask it for one pass. The roster reader is not
+    // asked: it has just delivered this very snapshot.
+    if rebound { wakeChannelHistory?() }
     if wasCapturingAudio != audioCaptureActive {
       levelMeter.reset()
       hasMeasuredAudioLevel = false
