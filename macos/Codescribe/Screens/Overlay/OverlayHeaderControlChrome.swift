@@ -222,6 +222,9 @@ final class OverlayHintPanel {
   static let gap: CGFloat = 6
   /// Distance kept from the screen's visible edges.
   static let screenInset: CGFloat = 4
+  /// How far from its window's leading edge an anchor still counts as
+  /// hugging it; a quarter of the window's width when that is larger.
+  static let leadingEdgeReach: CGFloat = 36
 
   private var panel: NSPanel?
   private var controller: NSHostingController<AnyView>?
@@ -397,11 +400,18 @@ final class OverlayHintPanel {
   }
 
   /// Sidebar hints sit over the document, outside the rail's scroll clip.
+  /// The parent window's edges stand in for the anchor's only when the anchor
+  /// hugs the window's leading edge (a fiszka's name, the left column's rows).
+  /// An anchor in a right-hand split column keeps its hint beside itself, so
+  /// the card never jumps across the whole window to its far edge.
   static func frame(
     size: CGSize, leading anchor: NSRect, parentFrame: NSRect? = nil, within visible: NSRect
   ) -> NSRect {
-    let leadingEdge = min(anchor.minX, parentFrame?.minX ?? anchor.minX)
-    let trailingEdge = max(anchor.maxX, parentFrame?.maxX ?? anchor.maxX)
+    let parent = parentFrame.flatMap { parent in
+      anchor.minX - parent.minX <= max(leadingEdgeReach, parent.width / 4) ? parent : nil
+    }
+    let leadingEdge = min(anchor.minX, parent?.minX ?? anchor.minX)
+    let trailingEdge = max(anchor.maxX, parent?.maxX ?? anchor.maxX)
     let left = leadingEdge - gap - size.width
     let right = trailingEdge + gap
     // A column against the left screen edge previews on its right. Clamping

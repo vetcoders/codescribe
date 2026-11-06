@@ -2266,11 +2266,8 @@ struct OverlayChannelStatusView: View {
           .accessibilityIdentifier(
             "overlay-view-conversation-\(conversation?.id ?? channel.channel)"
           )
-          .modifier(
-            OverlayRosterMessageHint(
-              conversation: conversation, palette: palette, textScale: textScale,
-              isOpen: conversation.map { $0.id == selectedConversationID } ?? false,
-              onOpen: { viewConversation(channel) }))
+          // The row already shows the message preview inline; no hover card
+          // repeats it over the window.
           // The agent's "…" sits beside the clock, outside the row's button,
           // so the name gets the line and the pair the right.
           EmptyView().modifier(
@@ -2279,14 +2276,13 @@ struct OverlayChannelStatusView: View {
           .fixedSize()
         }
         .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
-        // Identity owns the full first line. Like message-header actions,
-        // audio and More float over the preview's top trailing corner without
-        // narrowing its text layout.
+        // Identity owns the full first line. Audio and More sit in their own
+        // column beside the preview, so they never cover its text.
         // Under the preview, the delivery state of the last sent message in
         // the bubble's own words, then the reader's state: the mini status
         // Maciej asked back for in place of the name row's checkmarks
         // (2026-10-30: "mini statusy pod podglądem wiadomości").
-        ZStack(alignment: .topTrailing) {
+        HStack(alignment: .top, spacing: 6) {
           VStack(alignment: .leading, spacing: 2) {
             Group {
               if let conversation, onSelectConversation != nil {
@@ -2299,11 +2295,6 @@ struct OverlayChannelStatusView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(verbatim: identityHint))
-                .modifier(
-                  OverlayRosterMessageHint(
-                    conversation: conversation, palette: palette, textScale: textScale,
-                    isOpen: conversation.id == selectedConversationID,
-                    onOpen: { viewConversation(channel) }))
               } else {
                 rosterRowLabel(
                   title: channel.agent, statusChannel: channel, conversation: conversation,
@@ -2314,16 +2305,6 @@ struct OverlayChannelStatusView: View {
           }
           .frame(maxWidth: .infinity, alignment: .leading)
           .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
-          // The preview fades lightly toward the window's edge, where the
-          // pair floats over it.
-          .mask {
-            LinearGradient(
-              stops: [
-                .init(color: .black, location: 0.6),
-                .init(color: .black.opacity(0.35), location: 1),
-              ],
-              startPoint: .leading, endPoint: .trailing)
-          }
           compactAgentActions(for: channel)
         }
       }

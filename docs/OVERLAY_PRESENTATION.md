@@ -40,19 +40,23 @@ records the compact-card layout and its matching More/right-click menu.
 The runtime action semantics and availability are defined below.
 
 An agent row gives its full first line to identity, receipt and clock. The
-waveform microphone, speaker and More menu remain visible over the top trailing
-corner of the provider/model/project descriptor and routed two-line preview
-below it. The preview keeps the full text layout width underneath the controls,
-like the conversation's message-header actions. The delivery/reader state line
+waveform microphone, speaker and More menu sit in their own column beside the
+provider/model/project descriptor and routed two-line preview below it, so they
+never cover its text and no fade hides it. The delivery/reader state line
 remains below the preview; panel and Sync controls keep their separate targets
 on the identity row.
 The conversation button and these controls remain siblings; opening a
 conversation never opens its microphone. Long names retain their full tooltip
 and accessibility label.
 
-Hovering the row's navigation area or a folded-rail entry for 350 ms opens
+An agent row already shows its two-line preview inline, so hovering it opens
+no preview card. Hovering a surface without an inline preview — the pinned
+`0 · All` / Your Inbox pill, a folded-rail entry, a saved conversation — for
+350 ms opens
 a compact bounded carousel (up to five recent loaded messages, starting at the
-latest) in the shared `OverlayHintPanel`. Original
+latest) in the shared `OverlayHintPanel`. The card sits beside its anchor; it
+takes the window's leading edge only when the anchor hugs that edge, so a row
+in a right-hand split column never sends it across the window. Original
 paragraphs, rich formatting and attachments use `OverlayConversationMessageContent`.
 The card is narrow (`260 × textScale`), fits short messages to their content
 height, and scrolls only when a message exceeds its `180 × textScale` ceiling;
@@ -250,7 +254,13 @@ replaces the button's "Agents" hint; while agent capture is open, or with no
 row to show (no current mailbox conversation and no agent bound), the button
 keeps its one-line hint, because a click then stops the capture or opens the
 Agents canvas. A click on ✦ keeps its action
-(`OverlayState.toggleAgentSidebar`). The list rides the shared interactive
+(`OverlayState.toggleAgentSidebar`). In Fiszki only the folded header (mini
+and the bar) routes ✦ to the Intercom cards; in the expanded window ✦ stays
+the window's own Agents control beside Show transcription. From the expanded
+transcription, ✦ and **Show agents** (`OverlayState.showAgents`) return to the
+Agents view the user left: the open conversation with its panes as they were,
+or the agents list without a conversation. With no conversation chosen the
+list takes the window; no blank canvas stands beside it. The list rides the shared interactive
 hint panel (`OverlayHeaderControlChrome`, as the roster's message preview):
 it is a child window of the overlay, stays while the pointer crosses from ✦
 onto it, and closes 220 ms after the pointer has left both; Esc closes it.
@@ -784,9 +794,9 @@ dictation control keeps the plain `mic`, the dictation verb (Maciej,
 Channel activity updates an already visible main overlay, but the vertical
 Intercom does not summon a closed main overlay; Show in Agents remains explicit.
 The floating pills retain their rich informational hover. The classic Agents
-list keeps its inline actions and also offers the last-message hover described
-above; provider, model, status and session metadata are not repeated in a
-second tooltip.
+list keeps its inline actions and its inline two-line preview; the pinned pill,
+rail and saved rows offer the last-message hover described above; provider,
+model, status and session metadata are not repeated in a second tooltip.
 The same `OverlayChannelMapPreference` stores the layout; switching it preserves
 the selected conversation, drafts and active route. No second inventory or
 recorder is created. The default remains horizontal, and an absent opt-in stays off.

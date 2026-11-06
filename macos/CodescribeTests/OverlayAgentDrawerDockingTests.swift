@@ -93,18 +93,33 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   }
 
   func testBubbleCapScalesWithTextAndYieldsToTheWindow() {
+    for presentation: OverlayConversationPresentation in [.standard, .intercom] {
+      XCTAssertEqual(
+        OverlayConversationView.bubbleCap(
+          contentWidth: 2000, textScale: 1.0, presentation: presentation), 660,
+        accuracy: 0.001)
+      XCTAssertEqual(
+        OverlayConversationView.bubbleCap(
+          contentWidth: 2000, textScale: 1.4, presentation: presentation), 924,
+        accuracy: 0.001, "⌘+ grows the cap with the letters")
+    }
     XCTAssertEqual(
-      OverlayConversationView.bubbleCap(contentWidth: 2000, textScale: 1.0), 660,
-      accuracy: 0.001)
+      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.0, presentation: .intercom),
+      (700 - 40) * 0.92, accuracy: 0.001)
     XCTAssertEqual(
-      OverlayConversationView.bubbleCap(contentWidth: 2000, textScale: 1.4), 924,
-      accuracy: 0.001, "⌘+ grows the cap with the letters")
+      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.4, presentation: .intercom),
+      (700 - 40) * 0.92, accuracy: 0.001, "the window bound wins regardless of scale")
+    // The window's bubbles share the header card's and the composer's
+    // measure: the column inside the same 20 pt insets.
     XCTAssertEqual(
-      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.0), (700 - 40) * 0.92,
-      accuracy: 0.001)
+      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.0, presentation: .standard),
+      700 - 40, accuracy: 0.001)
     XCTAssertEqual(
-      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.4), (700 - 40) * 0.92,
-      accuracy: 0.001, "the window bound wins regardless of scale")
+      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.4, presentation: .standard),
+      700 - 40, accuracy: 0.001)
+    XCTAssertEqual(
+      OverlayConversationView.bubbleCap(contentWidth: 150, textScale: 1.0, presentation: .standard),
+      180, accuracy: 0.001, "a narrow window keeps a readable bubble")
   }
 
   // MARK: - Narrow list (below the threshold, 2026-10-19)

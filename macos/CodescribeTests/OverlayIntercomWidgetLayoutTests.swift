@@ -232,6 +232,21 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertFalse(frame.intersects(parentFrame))
   }
 
+  /// A row in the right-hand column of a split window keeps its hint beside
+  /// itself instead of jumping across the window to the window's left edge.
+  @MainActor
+  func testLeadingHintInARightHandSplitColumnStaysBesideTheAnchor() {
+    let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+    let window = NSRect(x: 200, y: 100, width: 900, height: 600)
+    let rightColumnRow = NSRect(x: 760, y: 500, width: 320, height: 44)
+    let size = CGSize(width: 280, height: 180)
+    let frame = OverlayHintPanel.frame(
+      size: size, leading: rightColumnRow, parentFrame: window, within: screen)
+    XCTAssertEqual(frame.maxX, rightColumnRow.minX - OverlayHintPanel.gap, accuracy: 0.001)
+    XCTAssertGreaterThan(frame.minX, window.minX, "the hint never jumps to the window's far edge")
+    XCTAssertFalse(frame.intersects(rightColumnRow))
+  }
+
   @MainActor
   func testAgentMetadataUsesTheExactOwnerAndDeclaredExecutionLocation() throws {
     let identity = AgentPlaybackIdentity(provider: "codex", session: "fixture", bus: "/fixture/bus")
