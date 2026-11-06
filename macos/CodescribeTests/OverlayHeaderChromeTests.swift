@@ -161,8 +161,14 @@ final class OverlayHeaderChromeTests: XCTestCase {
       interactive: true)
     owner.hide(allowPointerRetention: true)
     XCTAssertTrue(owner.isPresented, "the row-to-preview gap has a short grace period")
-    try await Task.sleep(for: .milliseconds(300))
-    XCTAssertFalse(owner.isPresented)
+    // The grace is a 220 ms timer on the main actor. A fixed 300 ms wait
+    // raced it by 80 ms and lost under a loaded full suite; wait for the
+    // dismissal itself, bounded.
+    let deadline = ContinuousClock.now + .seconds(3)
+    while owner.isPresented, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertFalse(owner.isPresented, "the card closes once the grace has passed")
     XCTAssertNil(OverlayHintPanel.shared.presentedTitle)
   }
 
