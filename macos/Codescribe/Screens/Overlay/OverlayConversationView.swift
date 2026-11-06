@@ -294,9 +294,9 @@ struct OverlayConversationView: View {
     }
   }
 
-  /// The window's conversation reserves no scrollbar gutter: the autohiding
-  /// scroller floats, and the bubbles keep the header card's 20 pt on both
-  /// sides. The Intercom keeps its gutter beside the tighter card.
+  /// The window's conversation reserves no scrollbar gutter, so the bubbles
+  /// keep the header card's 20 pt on both sides; its scroller is inset on its
+  /// own instead. The Intercom keeps its gutter beside the tighter card.
   private var scrollbarGutter: CGFloat {
     presentation == .standard ? 0 : OverlayResizeHit.scrollbarInset
   }
@@ -919,6 +919,13 @@ struct OverlayConversationView: View {
     // The window inset and the header card's height: the newest rows rest
     // under them and scroll through the glass, the way they do under the composer.
     .contentMargins(.top, topInset + visibleNavigationHeight)
+    // The window's list reaches its trailing edge so the bubbles keep the
+    // header card's measure. Only the scroller steps in: inside the window's
+    // resize band the pointer resizes and the knob cannot be grabbed.
+    .contentMargins(
+      .trailing, presentation == .standard ? OverlayResizeHit.scrollbarInset : 0,
+      for: .scrollIndicators
+    )
     // Both halves of the Agents window end their rows on the same line: the
     // roster stops at the top of its mailbox card, the transcript at the top
     // of its conversation label (Maciej, 2026-11-06: "zrób po prostu po obu

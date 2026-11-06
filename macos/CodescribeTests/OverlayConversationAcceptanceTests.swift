@@ -784,7 +784,16 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       for _ in 0..<6 { scale.increase() }
       settle()
       let viewport = scroll.convert(scroll.bounds, to: host)
-      XCTAssertEqual(host.bounds.maxX - viewport.maxX, 15, accuracy: 1)
+      // The scroller keeps clear of the window's resize band in both
+      // presentations. The Intercom narrows the list for it; the window
+      // keeps the list at the card's measure and insets the scroller alone.
+      let gutter = host.bounds.maxX - viewport.maxX
+      let clearance = presentation == .standard ? scroll.scrollerInsets.right : gutter
+      XCTAssertEqual(
+        clearance, OverlayResizeHit.scrollbarInset, accuracy: 1,
+        "\(presentation): gutter \(gutter), scroller insets \(scroll.scrollerInsets), "
+          + "scroller \(String(describing: scroll.verticalScroller?.frame))")
+      if presentation == .standard { XCTAssertEqual(gutter, 0, accuracy: 1) }
       XCTAssertEqual(viewport.height, host.bounds.height, accuracy: 1)
       XCTAssertLessThanOrEqual(document.bounds.width, viewport.width + 1)
       XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
@@ -1528,7 +1537,13 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       XCTAssertLessThan(warmCount * 10, neutralCount, "orange is a hairline, never a filled bubble")
       let viewportMidpoint = Double(viewport.midX) * Double(bitmap.pixelsWide) / host.bounds.width
       XCTAssertGreaterThan(warmBorderCount, 10, "the brand outline has visible vertical edges")
-      XCTAssertGreaterThan(warmBorderX / Double(max(1, warmBorderCount)), viewportMidpoint)
+      // In the window a bubble spans the header card's measure, 20 pt in on
+      // both sides (72cded822), so the human outline is centred on the
+      // column; the far-side margin that tells the sides apart is the
+      // Intercom's cue. Colour and outline carry it here.
+      XCTAssertEqual(
+        warmBorderX / Double(max(1, warmBorderCount)), viewportMidpoint, accuracy: 4,
+        "the human bubble shares the header card's measure")
 
     }
   }
