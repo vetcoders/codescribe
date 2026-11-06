@@ -2177,7 +2177,6 @@ private struct OverlayIntercomCard: View {
                 alignment: .top)
             }
           }
-          .modifier(OverlayComposerSurface(palette: palette))
           .accessibilitySortPriority(1)
         }
       )
