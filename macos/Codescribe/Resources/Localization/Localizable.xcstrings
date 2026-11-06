@@ -18285,6 +18285,23 @@
         }
       }
     },
+    "Skipped %@ (channel %@): %@" : {
+      "comment" : "Line under a conversation after a broadcast skipped an agent: name, channel, why",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Skipped %1$@ (channel %2$@): %3$@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pominięto %1$@ (kanał %2$@): %3$@"
+          }
+        }
+      }
+    },
     "Skipped: off channel 0" : {
       "comment" : "Agent row receipt: a broadcast skipped because the agent is off channel 0",
       "localizations" : {
@@ -23246,6 +23263,17 @@
         }
       }
     },
+    "channel %@" : {
+      "comment" : "Name of a skipped recipient with no name and no audience: its channel number",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "kanał %@"
+          }
+        }
+      }
+    },
     "chat.callout.caution" : {
       "comment" : "Callout header in agent chat: an action with a risky outcome",
       "extractionState" : "extracted_with_value",
@@ -23409,6 +23437,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "skonfigurowana ścieżka"
+          }
+        }
+      }
+    },
+    "connection out of date" : {
+      "comment" : "Why a broadcast skipped an agent: its lease no longer matches its binding",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "połączenie nieaktualne"
           }
         }
       }
@@ -24640,6 +24679,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "brak mowy"
+          }
+        }
+      }
+    },
+    "not listening" : {
+      "comment" : "Why a broadcast skipped an agent: its listener process is gone",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "nie nasłuchuje"
           }
         }
       }
@@ -26823,6 +26873,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisano: %@."
+          }
+        }
+      }
+    },
+    "skipped" : {
+      "comment" : "Why a broadcast skipped an agent, for a reason code the app does not know",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "pominięto"
           }
         }
       }

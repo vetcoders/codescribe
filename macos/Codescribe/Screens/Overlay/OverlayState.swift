@@ -3057,7 +3057,9 @@ final class OverlayState {
   static func formatSkippedRecipientsNotice(_ skipped: [AgentBusSkippedRecipient]) -> String? {
     guard !skipped.isEmpty else { return nil }
     return skipped.map { item in
-      "Skipped \(item.displayName) (channel \(item.channel)): \(item.reasonText)"
+      String(
+        localized: "Skipped \(item.displayName) (channel \(item.channel)): \(item.reasonText)",
+        comment: "Line under a conversation after a broadcast skipped an agent: name, channel, why")
     }.joined(separator: "; ")
   }
 

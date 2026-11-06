@@ -2245,7 +2245,7 @@ final class OverlayStateTests: XCTestCase {
     let skipped = try XCTUnwrap(publication.skipped.first)
     XCTAssertEqual(skipped.channel, "2")
     XCTAssertEqual(skipped.reason, "not_listening")
-    XCTAssertEqual(skipped.reasonText, "not listening")
+    XCTAssertEqual(skipped.reasonText, String(localized: "not listening"))
     XCTAssertEqual(skipped.displayName, "beta")
     XCTAssertEqual(skipped.owner?.name, "beta")
     XCTAssertEqual(skipped.owner?.channel, "2")
@@ -2291,9 +2291,27 @@ final class OverlayStateTests: XCTestCase {
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDraft(for: "0"), "")
     XCTAssertEqual(state.publishedMessageSkips[messageID], [skippedBeta, skippedGamma])
+    let beta = String(
+      localized: "Skipped \("beta") (channel \("2")): \(String(localized: "not listening"))")
+    let gamma = String(
+      localized:
+        "Skipped \("gamma") (channel \("4")): \(String(localized: "connection out of date"))")
+    XCTAssertEqual(state.textMessageErrors["0"], "\(beta); \(gamma)")
+    // The helper's raw code never reaches the screen.
+    XCTAssertFalse(try XCTUnwrap(state.textMessageErrors["0"]).contains("stale_lease"))
+    XCTAssertFalse(try XCTUnwrap(state.textMessageErrors["0"]).contains("not_listening"))
+  }
+
+  func testSkippedRecipientWithoutNameFallsBackToLocalizedChannelAndUnknownReasonIsSkipped() {
+    let nameless = AgentBusSkippedRecipient(channel: "7", reason: "some_new_code")
+    XCTAssertEqual(nameless.displayName, String(localized: "channel \("7")"))
+    XCTAssertEqual(nameless.reasonText, String(localized: "skipped"))
     XCTAssertEqual(
-      state.textMessageErrors["0"],
-      "Skipped beta (channel 2): not listening; Skipped gamma (channel 4): stale lease")
+      OverlayState.formatSkippedRecipientsNotice([nameless]),
+      String(
+        localized:
+          "Skipped \(String(localized: "channel \("7")")) (channel \("7")): \(String(localized: "skipped"))"
+      ))
   }
 
   func testSelectingConversationExpandsTheCanvasWithoutChangingCapture() {

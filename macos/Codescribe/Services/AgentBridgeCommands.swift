@@ -340,11 +340,32 @@ struct AgentBusSkippedRecipient: Codable, Equatable, Sendable {
   var displayName: String {
     if let name, !name.isEmpty { return name }
     if let audience, !audience.isEmpty { return audience }
-    return "channel \(channel)"
+    return String(
+      localized: "channel \(channel)",
+      comment: "Name of a skipped recipient with no name and no audience: its channel number")
   }
 
+  /// The helper's refusal code (`bus-demux.py` `owner_refusal`) as words for the Founder.
+  /// The raw code never reaches the screen; an unknown one is logged and shown as "skipped".
   var reasonText: String {
-    reason.replacingOccurrences(of: "_", with: " ")
+    switch reason {
+    case "stale_lease":
+      return String(
+        localized: "connection out of date",
+        comment: "Why a broadcast skipped an agent: its lease no longer matches its binding")
+    case "not_listening":
+      return String(
+        localized: "not listening",
+        comment: "Why a broadcast skipped an agent: its listener process is gone")
+    default:
+      Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+        category: "agent-bus-skipped"
+      ).notice("unknown skipped-recipient reason=\(reason, privacy: .public)")
+      return String(
+        localized: "skipped",
+        comment: "Why a broadcast skipped an agent, for a reason code the app does not know")
+    }
   }
 }
 
