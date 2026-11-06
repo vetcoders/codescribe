@@ -82,6 +82,85 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     }
   }
 
+  /// Maciej, 2026-11-06, on the two halves of the Agents window: the roster
+  /// stops at the top of its mailbox card, the transcript ran on through the
+  /// gap between the bar and the conversation label ("zrób po prostu po obu
+  /// stronach tak samo"). The transcript now stops at its label too: rows
+  /// still pass under the label's glass, none shows above it. A conversation
+  /// without the label (a fiszka) keeps flowing under its own header.
+  /// The hosts are never ordered onto the desktop.
+  @MainActor
+  func testTranscriptStopsAtTheTopOfItsConversationLabel() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    for index in 0..<16 {
+      var row = reply(String(format: "%024x", index + 1), delivery: "label-clip-\(index)")
+      row["text"] =
+        "Wiadomość \(index): "
+        + String(repeating: "tekst przewijany pod plakietką rozmowy ", count: 5)
+      bus.consume(row)
+    }
+    let conversation = try lenaConversation(bus)
+    let topInset: CGFloat = 40
+    let size = NSSize(width: 620, height: 520)
+    for dark in [true, false] {
+      let palette: OverlayAppearancePalette = dark ? .dark : .light
+      /// Painted pixels that differ from the flat backdrop, in a band of points.
+      func paintedPixels(hidesNavigation: Bool, band: ClosedRange<CGFloat>) throws -> Int {
+        let view = OverlayConversationView(
+          conversation: conversation, palette: palette, topInset: topInset, bottomInset: 8,
+          pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+          draft: .constant(""), sending: false, sendError: nil, onSend: {},
+          hidesNavigation: hidesNavigation)
+        let host = NSHostingView(
+          rootView: view.frame(width: size.width, height: size.height)
+            .background(palette.desktopBackground.color)
+            .environment(\.colorScheme, dark ? .dark : .light))
+        let window = NSWindow(
+          contentRect: NSRect(origin: NSPoint(x: -10000, y: -10000), size: size),
+          styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil }
+        for _ in 0..<4 {
+          host.layoutSubtreeIfNeeded()
+          RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
+        }
+        XCTAssertFalse(window.isVisible)
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let name = "label-clip-\(dark ? "dark" : "light")-\(hidesNavigation ? "bare" : "label").png"
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(
+          to: FileManager.default.temporaryDirectory.appendingPathComponent(name))
+        let scale = CGFloat(bitmap.pixelsHigh) / size.height
+        let backdrop = try XCTUnwrap(bitmap.colorAt(x: 1, y: 1))
+        var painted = 0
+        for y in Int(band.lowerBound * scale)..<Int(band.upperBound * scale) {
+          for x in stride(from: 0, to: bitmap.pixelsWide, by: 3) {
+            let pixel = try XCTUnwrap(bitmap.colorAt(x: x, y: y))
+            let delta =
+              abs(pixel.redComponent - backdrop.redComponent)
+              + abs(pixel.greenComponent - backdrop.greenComponent)
+              + abs(pixel.blueComponent - backdrop.blueComponent)
+            if delta > 0.02 { painted += 1 }
+          }
+        }
+        return painted
+      }
+      let scheme = dark ? "dark" : "light"
+      // The label's card starts 4 pt under the inset; everything above is the gap.
+      let gap: ClosedRange<CGFloat> = 2...(topInset + 2)
+      XCTAssertEqual(
+        try paintedPixels(hidesNavigation: false, band: gap), 0,
+        "no row may show between the bar and the conversation label: \(scheme)")
+      XCTAssertGreaterThan(
+        try paintedPixels(hidesNavigation: false, band: 120...400), 500,
+        "the transcript itself must paint: \(scheme)")
+      XCTAssertGreaterThan(
+        try paintedPixels(hidesNavigation: true, band: gap), 500,
+        "without the label, rows keep flowing under the header: \(scheme)")
+    }
+  }
+
   @MainActor
   func testWholeReplyBubbleKeepsPlaybackCopyAndBottomInsetCompact() throws {
     for state in ["spoken", "playing", "waiting", "stopped"] {
