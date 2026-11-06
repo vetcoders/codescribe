@@ -178,14 +178,26 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.finishControllerRecording()
   }
 
-  /// Monika, 2026-11-04 (bus brief §12.1): a still click on the free
+  private func headerClickState(_ mode: OverlayIntercomPresentationMode) -> OverlayState {
+    let name = "CodescribeTests.header-click.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    preference.selectMode(mode)
+    let state = OverlayState()
+    state.channelMapPreference = preference
+    state.engine = OverlayChromePolicyEngine()
+    state.attach()
+    XCTAssertEqual(state.layoutContract.mode, mode)
+    return state
+  }
+
+  /// Belka (Monika, 2026-11-04, bus brief §12.1): a still click on the free
   /// background toggles mini and the bar round and round. The window opens
   /// only from the chevron, the Agents button and the menus; from the window
   /// a header click returns to the bar.
-  func testHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar() {
-    let state = OverlayState()
-    state.engine = OverlayChromePolicyEngine()
-    state.attach()
+  func testBelkaHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar() {
+    let state = headerClickState(.horizontal)
     XCTAssertEqual(state.presentationMode, .mini)
     state.advancePresentationFromHeader()
     XCTAssertEqual(state.presentationMode, .midi)
@@ -203,6 +215,37 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .expanded)
     state.toggleCollapsed()
     XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  /// Klasyczny and Fiszki (Maciej, 2026-11-06): a still click on the
+  /// collapsed overlay opens the window on its last full view, not the bar,
+  /// and a click on the window's header returns to the compact form the
+  /// window replaced, mini or the bar. Belka's cycle above is untouched.
+  func testClassicAndFiszkiHeaderClickOpensTheWindowAndReturnsToTheRememberedCompactForm() {
+    for mode in [OverlayIntercomPresentationMode.classic, .vertical] {
+      let state = headerClickState(mode)
+      XCTAssertEqual(state.presentationMode, .mini)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .expanded, "\(mode): mini opens the window")
+      XCTAssertEqual(state.windowContentSurface, .transcription)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .mini, "\(mode): the window returns to mini")
+      state.setPresentationMode(.midi)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .expanded, "\(mode): the bar opens the window")
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .midi, "\(mode): the window returns to the bar")
+      // The last full view is remembered across the fold: Agents stays Agents.
+      state.showAgentMonitor()
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertEqual(state.windowContentSurface, .agents)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .midi, "\(mode): Agents folds to the bar it replaced")
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertEqual(
+        state.windowContentSurface, .agents, "\(mode): the click reopens the last full view")
+    }
   }
 
   /// Outside mini only the header band advances the presentation: a still

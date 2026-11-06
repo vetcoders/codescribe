@@ -37,6 +37,19 @@ protocol OverlayLayoutContract: Sendable {
   /// in classic and fiszki; flipping this value is that follow-up cut's
   /// entry point, not a side effect of other work. Nothing reads it yet.
   var meterVisibleAtRest: Bool { get }
+
+  /// A still click on the collapsed overlay's free background opens the
+  /// window on its last full view (agents or transcription), not the bar
+  /// (Maciej, 2026-11-06, for Klasyczny and Fiszki). Belka keeps Monika's
+  /// cycle (2026-11-04, bus brief §12.1): mini opens the bar, the bar folds
+  /// back to mini, and the window opens only from the chevron, the Agents
+  /// button and the menus.
+  var collapsedClickOpensWindow: Bool { get }
+
+  /// A click on the window's header returns to the compact form the window
+  /// replaced, mini or the bar (Maciej, 2026-11-06, for Klasyczny and
+  /// Fiszki). Belka keeps the bar as the header's one destination.
+  var windowHeaderClickRestoresCompactForm: Bool { get }
 }
 
 /// Klasyczny (default): the proven strip. No agent map anywhere; the bar is
@@ -48,6 +61,8 @@ struct ClassicLayoutContract: OverlayLayoutContract {
   let counterStacked = false
   let takeResizesSurface = false
   let meterVisibleAtRest = true
+  let collapsedClickOpensWindow = true
+  let windowHeaderClickRestoresCompactForm = true
 }
 
 /// Belka (beta): the horizontal bar with the agent map in its header; mini
@@ -59,6 +74,8 @@ struct BarLayoutContract: OverlayLayoutContract {
   let counterStacked = false
   let takeResizesSurface = false
   let meterVisibleAtRest = true
+  let collapsedClickOpensWindow = false
+  let windowHeaderClickRestoresCompactForm = false
 }
 
 /// Fiszki (beta): the vertical Intercom of floating cards. The map lives in
@@ -70,6 +87,8 @@ struct FiszkiLayoutContract: OverlayLayoutContract {
   let counterStacked = false
   let takeResizesSurface = false
   let meterVisibleAtRest = true
+  let collapsedClickOpensWindow = true
+  let windowHeaderClickRestoresCompactForm = true
 }
 
 extension OverlayIntercomPresentationMode {

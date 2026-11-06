@@ -1019,16 +1019,28 @@ final class OverlayState {
     }
   }
 
-  /// A still click on the bar's free background switches its size (Monika,
-  /// 2026-11-04, bus brief §12.1): mini opens the bar and the bar folds back
-  /// to mini, round and round. The window is never opened from here: the
-  /// chevron, the Agents button and the menu open it. From the window a
-  /// header click still returns to the bar.
+  /// A still click on the header's free background. Each layout owns its
+  /// answer (`OverlayLayoutContract`), so one layout's decision never
+  /// rewrites another's.
+  /// Belka (Monika, 2026-11-04, bus brief §12.1): mini opens the bar and the
+  /// bar folds back to mini, round and round; the window is never opened
+  /// from here, and from the window a header click returns to the bar.
+  /// Klasyczny and Fiszki (Maciej, 2026-11-06): a click on the collapsed
+  /// overlay opens the window on its last full view, and a click on the
+  /// window's header returns to the compact form the window replaced.
   func advancePresentationFromHeader() {
+    let contract = layoutContract
     switch presentationMode {
-    case .mini: setPresentationMode(.midi)
-    case .midi: setPresentationMode(.mini)
-    case .expanded: setPresentationMode(.midi)
+    case .mini, .midi:
+      if contract.collapsedClickOpensWindow {
+        setPresentationMode(.expanded)
+      } else {
+        setPresentationMode(presentationMode == .mini ? .midi : .mini)
+      }
+    case .expanded:
+      setPresentationMode(
+        contract.windowHeaderClickRestoresCompactForm
+          ? autoCollapse.restoreMode ?? .midi : .midi)
     }
   }
 

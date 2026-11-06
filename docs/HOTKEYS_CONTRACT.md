@@ -8,10 +8,14 @@ The channel map in compact is opt-in in Settings → Creator →
 explicit user resize stays respected. The map geometry below applies when that
 switch is enabled. The switch changes presentation only.
 
-Overlay size is selected explicitly. A still click on the free background of
-mini or the bar (compact, midi) switches between them, round and round: mini →
-bar → mini (`OverlayState.advancePresentationFromHeader`, Monika 2026-11-04,
-bus brief §12.1). Free background is the draggable chrome
+Overlay size is selected explicitly, and each layout owns the still click on
+its free background (`OverlayLayoutContract`,
+`OverlayState.advancePresentationFromHeader`). In Belka the click switches
+between mini and the bar (compact, midi), round and round: mini → bar → mini
+(Monika 2026-11-04, bus brief §12.1). In Klasyczny and Fiszki the click on the
+collapsed overlay opens the window on its last full view, and a click on the
+window's header returns to the compact form the window replaced (Maciej
+2026-11-06). Free background is the draggable chrome
 (`FloatingOverlayPanel.isPresentationClickHit`): all of mini outside its
 controls, and the bar's `overlay-header*` drag regions. A control, an agent's
 circle, the 8 pt resize bands and a drag that moved 3 pt or more never switch

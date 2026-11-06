@@ -25,6 +25,19 @@ final class OverlayLayoutContractTests: XCTestCase {
     XCTAssertFalse(c.counterStacked)
     XCTAssertFalse(c.takeResizesSurface, "the bar's width never follows a take")
     XCTAssertTrue(c.meterVisibleAtRest)
+    XCTAssertFalse(
+      c.collapsedClickOpensWindow, "mini and the bar toggle (Monika, 2026-11-04 §12.1)")
+    XCTAssertFalse(c.windowHeaderClickRestoresCompactForm, "the window returns to the bar")
+  }
+
+  /// Maciej, 2026-11-06: in Klasyczny and Fiszki a click on the collapsed
+  /// overlay opens the window, and the window's header returns to the compact
+  /// form it replaced.
+  func testClassicAndFiszkiOwnTheirHeaderClick() {
+    for c in [ClassicLayoutContract() as any OverlayLayoutContract, FiszkiLayoutContract()] {
+      XCTAssertTrue(c.collapsedClickOpensWindow, "\(c.mode)")
+      XCTAssertTrue(c.windowHeaderClickRestoresCompactForm, "\(c.mode)")
+    }
   }
 
   func testFiszkiKeepTheMapInTheIntercomGroup() {

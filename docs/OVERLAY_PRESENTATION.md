@@ -454,10 +454,13 @@ never clipped; with Reduce Motion it is one step. The Agents button keeps
 its stop meaning during an agent take, and the background click still
 toggles mini and the bar.
 
-A still click on mini's free background opens the bar; a still click on the
-bar's free background (its `overlay-header*` drag regions) folds it back to
-mini (`OverlayState.advancePresentationFromHeader`, decision 12.1). From the
-window a header click returns to the bar. Controls, an agent's circle, the
+In Belka a still click on mini's free background opens the bar; a still click
+on the bar's free background (its `overlay-header*` drag regions) folds it
+back to mini (`OverlayState.advancePresentationFromHeader`, decision 12.1).
+From the window a header click returns to the bar. Klasyczny and Fiszki answer
+the same click through their own `OverlayLayoutContract` (Maciej, 2026-11-06):
+the collapsed overlay opens the window on its last full view, and the window's
+header returns to the compact form the window replaced, mini or the bar. Controls, an agent's circle, the
 8 pt resize bands and a drag past the 3 pt threshold never switch the form;
 the window opens from the chevron, ✦ and the menus. The chevron's context
 menu picks the form directly: **Mini / Bar / Window**.
