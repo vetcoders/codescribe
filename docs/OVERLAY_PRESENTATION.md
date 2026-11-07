@@ -62,7 +62,8 @@ card's header names an agent as its rows do, the digit, the presence dot
 2026-11-07; `OverlayRosterMessagePreview.headerDot`); channel 0, the inbox
 and a saved conversation without a live roster row keep the plain
 `N · name` title. The open conversation's own header is unchanged. An already
-selected conversation has no duplicate hover preview. Clicking an unselected
+selected conversation has no duplicate hover preview in the roster (the
+bar's `(0)` chip is the exception, see the channel map below). Clicking an unselected
 preview's header or body uses that row's existing conversation-navigation
 command; hovering or stepping the carousel never selects it. Its pointer target
 stays open while the cursor crosses the gap or rests on the preview, then
@@ -279,7 +280,10 @@ Hovering `(0)` opens channel 0's message carousel: the same
 messages, withdrawn ones hidden) over the same All conversation, with the
 same open action, as the Bus window's All row
 (`OverlayChannelStatusView.channelZeroMessageHint`, handed to the map as
-`channelZeroHint`). The map keeps no messages of its own.
+`channelZeroHint`). The map keeps no messages of its own. Unlike a roster
+row, the chip's card shows while All is the selected conversation: the bar
+shows no conversation to duplicate, and a click on `(0)` selects All, so the
+roster's rule hid the card after one click (Monika, 2026-11-07, Z2).
 
 Hovering an agent's chip opens its card (`OverlayChannelChipHoverCard`), not
 the old `5 · Kuba · Ctrl+5`, which only repeated the button (Founder,

@@ -1816,6 +1816,12 @@ struct OverlayChannelStatusView: View {
   /// `OverlayRosterMessageHint` over the same All conversation, with the
   /// same open action, as the Bus window's pinned All row. Nil without that
   /// conversation or a way to open it.
+  ///
+  /// The chip's card shows whether or not All is the selected conversation.
+  /// The roster withholds the card of the selected conversation because that
+  /// conversation is on screen beside it; the bar shows no conversation, and
+  /// a click on `(0)` selects All, so that rule hid the card for good after
+  /// one click (Monika, 2026-11-07, Z2).
   var channelZeroMessageHint: OverlayRosterMessageHint? {
     guard onSelectConversation != nil,
       let broadcast = currentConversations.first(where: { $0.channel == "0" })
@@ -1825,7 +1831,6 @@ struct OverlayChannelStatusView: View {
       conversation: broadcast.renamed(sharedChannelName), palette: palette,
       textScale: textScale,
       emptyHint: String(localized: "View conversation without changing the microphone"),
-      isOpen: broadcast.id == selectedConversationID,
       onOpen: { onSelectConversation?(broadcast.id) })
   }
 
