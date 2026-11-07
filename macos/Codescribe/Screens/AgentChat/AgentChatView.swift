@@ -255,14 +255,6 @@ private struct AgentIntegratedChrome: ViewModifier {
     content
       .toolbar { agentToolbar }
       .modifier(CSWindowHeaderChrome())
-      .background {
-        CSColumnHeaderAccessory(
-          header: HStack(spacing: 0) {
-            CSWindowHeaderItem { wordmark }
-            identity
-            Spacer(minLength: 0)
-          })
-      }
       .alert("Rename conversation", isPresented: $isRenaming) {
         TextField("Conversation title", text: $renameText)
         Button("Rename") {
@@ -298,28 +290,21 @@ private struct AgentIntegratedChrome: ViewModifier {
   /// capsules. The bar stays visible as the turns scroll beneath it.
   @ToolbarContentBuilder
   private var agentToolbar: some ToolbarContent {
-    // Without a principal item the unified bar packs `.primaryAction` right
-    // after the wordmark (seen on the installed build, 2026-10-21); the
-    // flexible space in the group keeps pin and menu on the trailing edge.
-    if #available(macOS 26.0, *) {
-      ToolbarItemGroup(placement: .navigation) {
-        EmptyView()
-      }
-      .sharedBackgroundVisibility(.hidden)
-      ToolbarItemGroup(placement: .primaryAction) {
-        Spacer()
-        CSWindowHeaderItem { trailingCluster }
-      }
-      .sharedBackgroundVisibility(.hidden)
-    } else {
-      ToolbarItemGroup(placement: .navigation) {
-        EmptyView()
-      }
-      ToolbarItemGroup(placement: .primaryAction) {
-        Spacer()
-        CSWindowHeaderItem { trailingCluster }
+    // One system glass group owns both information and actions. Its backing
+    // contains the real controls, rather than an empty plane behind a second
+    // toolbar owner. AppKit allocates the group's width alongside the sidebar.
+    ToolbarItemGroup(placement: .navigation) {
+      CSWindowHeaderItem {
+        HStack(spacing: 12) {
+          wordmark
+          identity
+          Spacer(minLength: 12)
+          trailingCluster
+        }
+        .frame(maxWidth: .infinity)
       }
     }
+    .sharedBackgroundVisibility(.automatic)
   }
 
   private var wordmark: some View {
@@ -504,7 +489,6 @@ private struct ThreadDetail: View {
         .transition(.move(edge: .trailing).combined(with: .opacity))
       }
     }
-    .modifier(CSDetailHeaderGlass())
     .animation(.easeOut(duration: CSMotion.Tempo.hover), value: isContextOpen)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(CSColor.sheet)

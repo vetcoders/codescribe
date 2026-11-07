@@ -30,7 +30,8 @@ struct CSWindowHeaderChrome: ViewModifier {
   @ViewBuilder
   func body(content: Content) -> some View {
     if #available(macOS 15.0, *) {
-      content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+      content.toolbarBackgroundVisibility(.automatic, for: .windowToolbar)
+        .toolbar(removing: .title)
     } else {
       content.toolbarBackground(.hidden, for: .windowToolbar)
     }

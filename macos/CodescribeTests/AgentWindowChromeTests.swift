@@ -13,41 +13,42 @@ final class AgentWindowChromeTests: XCTestCase {
   private let sidebarKey = "AgentChat.sidebarExpanded.v1"
   private let panelKey = AgentContextPanelPreference.defaultsKey
 
-  /// T1 admission: a column accessory must replace the identity's toolbar
-  /// footprint, rather than adding a second 52-point row beneath the actions.
-  func testColumnAccessoryOccupiesTheExistingHeaderBand() throws {
+  /// The whole header belongs to one native toolbar glass group. It must
+  /// remain in the window bar instead of adding split-item accessory rows.
+  func testHeaderUsesOneNativeToolbarGroup() throws {
     let store = AgentChatStore(
       engine: nil,
-      threads: [ChatThread(title: "Column accessory admission", meta: "synthetic", messages: [])])
+      threads: [ChatThread(title: "Native header admission", meta: "synthetic", messages: [])])
     let window = mount(contentWidth: 1120, store: store)
     defer { window.close() }
-    pump(window) {
-      guard let split = self.splitView(in: window)?.delegate as? NSSplitViewController else {
-        return false
-      }
-      return split.splitViewItems.last?.topAlignedAccessoryViewControllers.count == 1
-    }
+    pump(window) { (window.toolbar?.items.compactMap(\.view).count ?? 0) >= 2 }
     let split = try XCTUnwrap(splitView(in: window)?.delegate as? NSSplitViewController)
     let detail = try XCTUnwrap(split.splitViewItems.last)
-    let accessory = try XCTUnwrap(detail.topAlignedAccessoryViewControllers.first)
-    XCTAssertEqual(detail.topAlignedAccessoryViewControllers.count, 1)
-    let rect = frame(accessory.view)
-    let actions = try XCTUnwrap(window.toolbar?.items.compactMap(\.view).last)
-    let actionRect = frame(actions)
+    XCTAssertTrue(detail.topAlignedAccessoryViewControllers.isEmpty)
+    let sidebar = try XCTUnwrap(split.splitViewItems.first)
+    let boundary = frame(sidebar.viewController.view).maxX
+    let headers = try XCTUnwrap(window.toolbar).items.compactMap(\.view).filter {
+      frame($0).minX >= boundary - 1 && frame($0).height >= 51
+    }
+    XCTAssertEqual(headers.count, 1, "one group owns identity and actions")
+    let header = try XCTUnwrap(headers.first)
+    let rect = frame(header)
+    let theme = try XCTUnwrap(window.contentView?.superview)
+    let glass = first(in: theme) {
+      $0 is NSGlassEffectView && self.frame($0).minX >= boundary - 1
+        && self.frame($0).maxY > window.contentLayoutRect.maxY
+    }
     let attachment = XCTAttachment(
       string: "window=\(window.frame) contentLayout=\(window.contentLayoutRect) "
-        + "accessory=\(rect) toolbarActions=\(actionRect) "
+        + "header=\(rect) nativeGlass=\(glass.map { frame($0) }.description) "
         + "detailSafeArea=\(detail.viewController.view.safeAreaInsets)")
-    attachment.name = "T1 native accessory geometry"
+    attachment.name = "Unified native header geometry"
     attachment.lifetime = .keepAlways
     add(attachment)
-    XCTAssertGreaterThan(rect.height, 1)
-    XCTAssertGreaterThanOrEqual(
-      rect.minY, window.contentLayoutRect.maxY - 1,
-      "T1 STOP: accessory adds a row below the existing toolbar")
-    XCTAssertTrue(
-      rect.minY < actionRect.maxY && rect.maxY > actionRect.minY,
-      "identity and actions must occupy the same vertical band")
+    XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY - 1)
+    XCTAssertLessThanOrEqual(rect.maxX, window.frame.width + 1)
+    XCTAssertNotNil(glass, "the real header must retain native glass")
+    XCTAssertEqual(window.titleVisibility, .hidden)
   }
 
   func testIntegratedHeaderAtMinimumAndNormalWidths() throws {
