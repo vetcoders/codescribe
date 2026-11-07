@@ -117,7 +117,14 @@ detail lines; hierarchy comes from size and weight. `ChannelRosterStyle`
 spinner) keep the system's secondary label, which measures 3.6–3.9:1 on the
 light sheets and meets the 3:1 non-text floor. The hover card's muted channel
 0 line and Do not disturb stay muted: there the tone is the state.
-Queue admission and provider acceptance are not delivered/read evidence.
+Error and warning messages follow the same rule (round 5 decision (a),
+2026-11-07): their words wear the label ink and only the icon before them
+carries the meaning's colour (`OverlayStatusNotice`): an error's
+`exclamationmark.circle.fill` in the error red, at least 3:1 on the sheets,
+a warning's `exclamationmark.triangle.fill` with a dark "!" on the orange
+fill (`warningMarkInk`), since the orange alone stays under 3:1 on the light
+sheets. A row's pending state ("connecting…") reads in the ink beside its
+spinner. Queue admission and provider acceptance are not delivered/read evidence.
 Skipped and unreceipted deliveries keep distinct marks and explanations; a
 message still held for withdrawal says "Held" under the preview and wears no
 mark beside the name, since the hold is the sender's and no receipt exists yet

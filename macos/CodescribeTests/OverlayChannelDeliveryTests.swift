@@ -3623,13 +3623,22 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         ("open microphone", palette.listeningStatus, 4.5),
         ("waiting for receipt glyph", OverlayAgentGlyph.awaitingReceipt.tone(in: palette), 3.0),
         ("confirmed receipt glyph", OverlayAgentGlyph.acknowledged.tone(in: palette), 4.5),
-        ("toggle failure", palette.errorStatus, 4.5),
+        // Status messages (round 5 decision (a), 2026-11-07): the words in
+        // the text ink, the error's red only on its icon, at the icon floor.
+        ("toggle failure text", OverlayStatusNotice.textInk(palette), 4.5),
+        ("error icon", palette.errorStatus, 3.0),
       ] {
         let ratio = OverlayColorToken.contrastRatio(
           foreground: foreground, surface: style.surface, background: style.surface)
         XCTAssertGreaterThanOrEqual(
           ratio, minimum, "\(palette.appearance) \(role) contrast was \(ratio):1")
       }
+      // A warning's icon carries a dark "!" on the orange fill.
+      let mark = OverlayColorToken.contrastRatio(
+        foreground: OverlayStatusNotice.warningMarkInk(palette), surface: palette.processingStatus,
+        background: style.surface)
+      XCTAssertGreaterThanOrEqual(
+        mark, 3.0, "\(palette.appearance) warning mark on its fill was \(mark):1")
     }
   }
 

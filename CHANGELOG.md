@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Overlay bar and agents roster: error and warning messages are written in the regular text colour; the red or orange stays on the icon before them (a warning's triangle with a dark "!"), so the message is readable on the light sheets. A row that is connecting reads in the text colour beside its spinner.
 - Overlay bar: the orange "Finishing…" caption no longer appears while a take is processed; it overlapped the agent pills. VoiceOver still reads the take's state.
 - Overlay bar: the right-click menu chooses the mode first: **Free motion** or **Fixed position**, one of them checked, and the six places in a **Place** submenu, where the remembered place stays checked even under Free motion. Choosing a place switches to Fixed position and moves the overlay; choosing Fixed position brings it back to the remembered place.
 - Overlay bar: an agent's hover card says more of its state in the same width: since when a stalled agent has not read ("Not reading for 12 min") or when a gone agent was last heard, the newest message with its direction, time and fate (Read, Delivered, Spoken), and whether the microphone is open on its channel or its voice is muted.

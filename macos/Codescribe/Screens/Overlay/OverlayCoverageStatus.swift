@@ -186,12 +186,19 @@ struct OverlayCoverageStatus: View {
       id: "overlay-coverage-status", title: warning.chip, palette: palette,
       presented: $presented
     ) {
-      Label(warning.chip, systemImage: warning.owner == .microphone ? "mic" : "info.circle")
-        .font(CSFont.ui(11, .medium))
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .foregroundStyle(
-          warning.owner == .microphone ? palette.processingStatus.color : palette.mutedText.color)
+      // The words in the text ink, the warning's orange only on its icon
+      // (round 5 decision (a), 2026-11-07).
+      Label {
+        Text(warning.chip)
+          .foregroundStyle(palette.primaryText.color)
+      } icon: {
+        Image(systemName: warning.owner == .microphone ? "mic" : "info.circle")
+          .foregroundStyle(
+            warning.owner == .microphone ? palette.processingStatus.color : palette.mutedText.color)
+      }
+      .font(CSFont.ui(11, .medium))
+      .lineLimit(1)
+      .truncationMode(.tail)
     } detail: { close in
       ScrollView {
         VStack(alignment: .leading, spacing: 10) {

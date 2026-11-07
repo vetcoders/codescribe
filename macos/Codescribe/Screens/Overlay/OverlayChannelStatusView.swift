@@ -935,9 +935,10 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
           content.contextMenu { menuContents }
         }
         if let commandError, showsInlineError {
-          Text(verbatim: commandError)
-            .foregroundStyle(palette.errorStatus.color)
-            .accessibilityIdentifier("overlay-broadcast-policy-error")
+          OverlayStatusNotice(
+            text: Text(verbatim: commandError), severity: .error, palette: palette, size: 13
+          )
+          .accessibilityIdentifier("overlay-broadcast-policy-error")
         }
       }
     }
@@ -2585,8 +2586,10 @@ struct OverlayChannelStatusView: View {
     guard let focusState = panelFocusStates[channel.channel] else {
       return palette.roster.secondaryText.color
     }
+    // Every row state reads in the text ink (round 5 decision (a),
+    // 2026-11-07); the request's spinner beside it says it is pending.
     switch focusState.phase {
-    case .requesting, .activating: return palette.processingStatus.color
+    case .requesting, .activating: return palette.roster.secondaryText.color
     case .succeeded: return palette.roster.secondaryText.color
     case .failed: return palette.roster.secondaryText.color
     }
@@ -2854,29 +2857,33 @@ struct OverlayChannelStatusView: View {
         }
       }
       if unavailable {
-        Text("Channel status unavailable — last open state retained")
-          .font(.system(size: 13 * textScale, weight: .medium))
-          .foregroundStyle(palette.processingStatus.color)
-          .accessibilityIdentifier("overlay-channel-status-unavailable")
+        OverlayStatusNotice(
+          text: Text("Channel status unavailable — last open state retained"),
+          severity: .warning, palette: palette, size: 13 * textScale, weight: .medium
+        )
+        .accessibilityIdentifier("overlay-channel-status-unavailable")
       }
       if let toggleError {
         // A refused toggle is an error, not a pending state (N roster palette).
-        Text("Channel toggle failed: \(toggleError)")
-          .font(.system(size: 13 * textScale, weight: .medium))
-          .foregroundStyle(palette.errorStatus.color)
-          .accessibilityIdentifier("overlay-channel-toggle-error")
+        OverlayStatusNotice(
+          text: Text("Channel toggle failed: \(toggleError)"), severity: .error,
+          palette: palette, size: 13 * textScale, weight: .medium
+        )
+        .accessibilityIdentifier("overlay-channel-toggle-error")
       }
       if let playbackError {
-        Text(verbatim: playbackError)
-          .font(.system(size: 11 * textScale))
-          .foregroundStyle(palette.errorStatus.color)
-          .accessibilityIdentifier("overlay-agent-playback-error")
+        OverlayStatusNotice(
+          text: Text(verbatim: playbackError), severity: .error, palette: palette,
+          size: 11 * textScale
+        )
+        .accessibilityIdentifier("overlay-agent-playback-error")
       }
       if let archiveError {
-        Text(verbatim: archiveError)
-          .font(.system(size: 11 * textScale))
-          .foregroundStyle(palette.errorStatus.color)
-          .accessibilityIdentifier("overlay-agent-archive-error")
+        OverlayStatusNotice(
+          text: Text(verbatim: archiveError), severity: .error, palette: palette,
+          size: 11 * textScale
+        )
+        .accessibilityIdentifier("overlay-agent-archive-error")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2950,20 +2957,18 @@ struct OverlayChannelStatusView: View {
       .padding(.vertical, 2)
 
       if let error = activeSearchModel.effectiveSearchError {
-        Text("Search failed")
-          .font(.system(size: 10 * textScale, weight: .medium))
-          .foregroundStyle(palette.errorStatus.color)
-          .overlayFastHint(error, palette: palette)
-          .accessibilityHint(Text(verbatim: error))
-          .accessibilityIdentifier("overlay-saved-conversations-search-error")
+        OverlayStatusNotice(
+          text: Text("Search failed"), severity: .error, palette: palette,
+          size: 10 * textScale, weight: .medium
+        )
+        .overlayFastHint(error, palette: palette)
+        .accessibilityHint(Text(verbatim: error))
+        .accessibilityIdentifier("overlay-saved-conversations-search-error")
       } else if activeSearchModel.isEffectivePartial {
-        HStack(spacing: 4) {
-          Image(systemName: "exclamationmark.triangle")
-            .font(.system(size: 10 * textScale))
-          Text("Partial results")
-            .font(.system(size: 10 * textScale))
-        }
-        .foregroundStyle(palette.processingStatus.color)
+        OverlayStatusNotice(
+          text: Text("Partial results"), severity: .warning, palette: palette,
+          size: 10 * textScale
+        )
         .accessibilityIdentifier("overlay-saved-conversations-search-partial")
       }
 
@@ -3890,5 +3895,69 @@ enum OverlayAgentMonitorLayout {
   ) -> CGFloat {
     let available = max(0, maximumHeight - headerHeight - pinnedHeight - 16 - 16)
     return min(contentHeight ?? available, available)
+  }
+}
+
+/// A status message on the bar and in the agents roster (round 5 decision
+/// (a), 2026-11-07): the words in the text ink like every other text, the
+/// meaning's colour only on the icon before them. An error's icon is the
+/// error red (`errorStatus`, at least 3:1 on the sheets); a warning's is the
+/// system triangle with a dark "!" on the orange fill (`processingStatus`),
+/// as macOS draws warnings, because the orange alone does not reach 3:1 on
+/// the light sheets.
+struct OverlayStatusNotice: View {
+  enum Severity: Equatable {
+    case error
+    case warning
+
+    var symbol: String {
+      switch self {
+      case .error: "exclamationmark.circle.fill"
+      case .warning: "exclamationmark.triangle.fill"
+      }
+    }
+  }
+
+  let text: Text
+  let severity: Severity
+  let palette: OverlayAppearancePalette
+  let size: CGFloat
+  var weight: Font.Weight = .regular
+
+  /// The ink of the words, for every severity.
+  static func textInk(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
+    palette.primaryText
+  }
+
+  /// The warning triangle's "!": the dark one of the palette's inks in both
+  /// looks (the text ink in light, the sheet in dark), as the system's
+  /// warning draws a dark mark on its bright fill.
+  static func warningMarkInk(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
+    palette.appearance == .dark ? palette.desktopBackground : palette.primaryText
+  }
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 4) {
+      icon
+        .font(.system(size: size * 0.9, weight: .semibold))
+        .accessibilityHidden(true)
+      text
+        .font(.system(size: size, weight: weight))
+        .foregroundStyle(Self.textInk(palette).color)
+    }
+    .accessibilityElement(children: .combine)
+  }
+
+  @ViewBuilder
+  private var icon: some View {
+    switch severity {
+    case .error:
+      Image(systemName: severity.symbol)
+        .foregroundStyle(palette.errorStatus.color)
+    case .warning:
+      Image(systemName: severity.symbol)
+        .symbolRenderingMode(.palette)
+        .foregroundStyle(Self.warningMarkInk(palette).color, palette.processingStatus.color)
+    }
   }
 }
