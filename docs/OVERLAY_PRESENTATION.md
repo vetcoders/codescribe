@@ -1036,23 +1036,31 @@ scroll-to-selected reach both rows like any other.
 
 The list has no header row: no "Agents" title (Maciej, 2026-11-01) and no
 row for the fold. One `sidebar.right` (`overlay-agent-sidebar-fold`, "Hide
-agents list") stands at the trailing end of the list's first line, the line
-of channel 0's title, centred on it, in a slot that line leaves free
-(`withListFold`, `listFoldSlotWidth`: the 22 pt button and a 4 pt gap,
-scaled with the text). The audio pair under the title keeps the right of
-the second line. Before channel 0's row exists (before the first snapshot)
-the list's content leaves the same column free at its right and the button
-heads it. A row of its own pushed every row down by 30 pt and was rejected
-(Monika, 2026-11-07: "to spychanie nie jest akceptowalne, na pewno nie");
-the rows stand where they stand without the button
-(`testFoldButtonsLeaveTheRowsAndPillsWhereTheyStand`).
+agents list") stands in the pane's top-right corner, in the empty band
+between the window header and the first row (Monika, 2026-11-07, from her
+screenshot of the installed build). The band is the column's 8 pt gap under
+the header (`listColumnTopGap`), the roster's 8 pt inset and the scroll
+content's 8 pt margin: `listTopBand`, 24 pt to the first row's frame, 27 pt
+to its card, at every text scale, since none of the three grows with the
+text. The button is a fixed 22 pt square there (`listFoldSide`; 22 pt times
+1.5 or 2 would be taller than the band), centred in it (frame 1 to 23 pt
+below the header) and flush with the rows' trailing content, where the
+clocks and the "…" end (`listFoldTrailingInset`: the roster's 4 pt and a
+row's 5 pt). It is an overlay of the list's body, not part of the scrolled
+content: it does not scroll with channel 0's row and takes no width from
+its title line. A row of its own pushed every row down by 30 pt and was
+rejected (Monika, 2026-11-07: "to spychanie nie jest akceptowalne, na pewno
+nie"); the rows stand where they stand without the button
+(`testFoldButtonsLeaveTheRowsAndPillsWhereTheyStand`, at text scales 1, 1.5
+and 2).
 
 The button calls `foldAgentList`, which keeps the selection and drafts and
 leaves the rail of pills. The rail shows the same button under its pills, at
 its foot (`overlay-agent-rail-unfold`, "Show agents list"), calling
-`unfoldAgentList`: the rail's top margin is shorter than the button, and
-above the pills it pushed them down. There is no second button on the left
-and none on the conversation's edge (Monika, 2026-11-05: "jeden po prawej
-stronie to był dokładnie taki układ, jaki chciałam"). The divider still
-folds and unfolds the list; the button is the visible way, the divider the
-dragged one.
+`unfoldAgentList`: the rail's band above its first pill is the column's 8 pt
+gap, the rail's 8 pt top and the unread badge's 2 pt rise (scaled), 18 pt at
+text scale 1, under the button's 20 pt minimum, and above the pills it
+pushed them down. There is no second button on the left and none on the
+conversation's edge (Monika, 2026-11-05: "jeden po prawej stronie to był
+dokładnie taki układ, jaki chciałam"). The divider still folds and unfolds
+the list; the button is the visible way, the divider the dragged one.

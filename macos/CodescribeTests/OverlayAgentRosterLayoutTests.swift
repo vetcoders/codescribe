@@ -493,10 +493,12 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     }
   }
 
-  /// Monika, 2026-11-07 ("to spychanie nie jest akceptowalne"): the list's
-  /// fold rides on channel 0's first line, centred on its title, and the
-  /// rail's unfold sits under its pills, so neither button moves a row or a
-  /// pill. Ink bands are the pixel rows that carry text or glyphs.
+  /// Monika, 2026-11-07 ("to spychanie nie jest akceptowalne"; then, from
+  /// her screenshot, the empty band above the rows): the list's fold stands
+  /// in the pane's top corner, in the band between the window header and the
+  /// first row, and the rail's unfold sits under its pills, so neither button
+  /// moves a row or a pill. The list renders under the column's gap, as in
+  /// the Bus window. Ink bands are the pixel rows that carry text or glyphs.
   func testFoldButtonsLeaveTheRowsAndPillsWhereTheyStand() throws {
     let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
     let inbox = OverlayConversation(
@@ -513,15 +515,22 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       }
       return view
     }
+    let gap = OverlayChannelStatusView.listColumnTopGap
+    let band = OverlayChannelStatusView.listTopBand
+    let side = OverlayChannelStatusView.listFoldSide
+    XCTAssertGreaterThanOrEqual(side, 20, "the fold keeps a 20 pt hit target")
+    XCTAssertLessThan(side, band, "the fold fits the band above the rows")
+    var report: [String] = ["band (header to first row frame) = \(band) pt at every scale"]
     for scale in [CGFloat(1), 1.5, 2] {
       let width = 360 * scale
       let height = 300 * scale
       let plain = try renderBitmap(
-        roster(folds: false).monitorBody(maximumHeight: height), width: width, height: height,
-        scale: scale)
+        roster(folds: false).monitorBody(maximumHeight: height).padding(.top, gap), width: width,
+        height: height, scale: scale)
       let folded = try renderBitmap(
-        roster(folds: true).monitorBody(maximumHeight: height), width: width, height: height,
-        scale: scale)
+        roster(folds: true).monitorBody(maximumHeight: height).padding(.top, gap), width: width,
+        height: height, scale: scale)
+      let pixels = CGFloat(plain.pixelsWide) / width
       let strip = 40 * scale
       let left = 0..<(width - strip)
       let titleBand = try XCTUnwrap(inkBands(plain, width: width, columns: left).first)
@@ -534,19 +543,38 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         Array(foldedStrip.dropFirst()), plainStrip,
         "the button is a band of its own above the row controls at scale \(scale)")
       let button = try XCTUnwrap(foldedStrip.first)
-      let pixels = CGFloat(plain.pixelsWide) / width
+      // The rows' frames start where the band ends; the button's ink stays
+      // inside the band, above every row's ink.
+      XCTAssertGreaterThan(CGFloat(button.lowerBound), 0)
+      XCTAssertLessThan(CGFloat(button.upperBound), band * pixels, "scale \(scale)")
+      XCTAssertLessThan(button.upperBound, titleBand.lowerBound, "scale \(scale)")
+      if let firstControl = plainStrip.first {
+        XCTAssertLessThan(button.upperBound, firstControl.lowerBound, "scale \(scale)")
+      }
       XCTAssertEqual(
-        CGFloat(button.lowerBound + button.upperBound) / 2,
-        CGFloat(titleBand.lowerBound + titleBand.upperBound) / 2, accuracy: 3 * scale * pixels,
-        "the button is centred on channel 0's title line at scale \(scale)")
+        CGFloat(button.lowerBound + button.upperBound) / 2 / pixels, band / 2, accuracy: 2,
+        "the button is centred in the band at scale \(scale)")
+      let ink = try XCTUnwrap(inkColumns(folded, width: width, rows: button))
+      let contentEdge = width - OverlayChannelStatusView.listFoldTrailingInset
+      XCTAssertLessThanOrEqual(CGFloat(ink.upperBound) / pixels, contentEdge, "scale \(scale)")
+      XCTAssertGreaterThan(
+        CGFloat(ink.lowerBound) / pixels, contentEdge - side,
+        "the button ends at the rows' trailing content at scale \(scale)")
+      let frameTop = (band - side) / 2
+      report.append(
+        "scale \(scale): title ink y \(CGFloat(titleBand.lowerBound) / pixels)-"
+          + "\(CGFloat(titleBand.upperBound + 1) / pixels) pt; button frame y \(frameTop)-"
+          + "\(frameTop + side) pt, x \(contentEdge - side)-\(contentEdge) of \(width) pt; "
+          + "button ink y \(CGFloat(button.lowerBound) / pixels)-"
+          + "\(CGFloat(button.upperBound + 1) / pixels) pt")
 
       let railWidth = 88 * scale
       let plainRail = try renderBitmap(
-        roster(folds: false).railBody(maximumHeight: height), width: railWidth, height: height,
-        scale: scale)
+        roster(folds: false).railBody(maximumHeight: height).padding(.top, gap), width: railWidth,
+        height: height, scale: scale)
       let foldedRail = try renderBitmap(
-        roster(folds: true).railBody(maximumHeight: height), width: railWidth, height: height,
-        scale: scale)
+        roster(folds: true).railBody(maximumHeight: height).padding(.top, gap), width: railWidth,
+        height: height, scale: scale)
       let plainPills = inkBands(plainRail, width: railWidth, columns: 0..<railWidth)
       let foldedPills = inkBands(foldedRail, width: railWidth, columns: 0..<railWidth)
       XCTAssertFalse(plainPills.isEmpty)
@@ -555,7 +583,19 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         "the pills keep their places above the unfold button at scale \(scale)")
       let unfold = try XCTUnwrap(foldedPills.last)
       XCTAssertGreaterThan(unfold.lowerBound, try XCTUnwrap(plainPills.last).upperBound)
+      // The rail's band: the column's gap, the rail's 8 pt top and the
+      // badge's rise. Under 20 pt at scale 1, so the unfold stays at the foot.
+      let railBand = gap + 8 + OverlayChannelPill.railBadgeRise * scale
+      let railPixels = CGFloat(plainRail.pixelsWide) / railWidth
+      let firstPill = try XCTUnwrap(plainPills.first)
+      report.append(
+        "scale \(scale): rail band to first pill frame \(railBand) pt; first pill ink y "
+          + "\(CGFloat(firstPill.lowerBound) / railPixels) pt")
     }
+    let measurements = XCTAttachment(string: report.joined(separator: "\n"))
+    measurements.name = "fold-band-measurements"
+    measurements.lifetime = .keepAlways
+    add(measurements)
   }
 
   private func renderBitmap<Content: View>(
@@ -621,6 +661,27 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     }
     if let open = start { bands.append(open...(bitmap.pixelsHigh - 1)) }
     return bands
+  }
+
+  /// The span of columns (pixels) holding dark ink within `rows` (pixels).
+  private func inkColumns(
+    _ bitmap: NSBitmapImageRep, width: CGFloat, rows: ClosedRange<Int>
+  ) -> ClosedRange<Int>? {
+    guard let data = bitmap.bitmapData else { return nil }
+    let offset = bitmap.bitmapFormat.contains(.alphaFirst) ? 1 : 0
+    var first: Int?
+    var last: Int?
+    for y in rows {
+      for x in 0..<bitmap.pixelsWide {
+        let base = y * bitmap.bytesPerRow + x * bitmap.samplesPerPixel + offset
+        let sum = Int(data[base]) + Int(data[base + 1]) + Int(data[base + 2])
+        guard sum < 3 * 180 else { continue }
+        first = min(first ?? x, x)
+        last = max(last ?? x, x)
+      }
+    }
+    guard let first, let last else { return nil }
+    return first...last
   }
 
   private func overlaySource(_ file: String) throws -> String {

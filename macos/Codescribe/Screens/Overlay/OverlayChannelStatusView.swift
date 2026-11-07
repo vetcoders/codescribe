@@ -268,21 +268,24 @@ struct OverlayDisconnectedRowDim: ViewModifier {
 /// The list's one fold button (Monika, 2026-11-05: "jeden po prawej stronie
 /// to był dokładnie taki układ, jaki chciałam"): a muted glyph blended into
 /// the background with the rows' hover wash (Maciej, 2026-10-19: "wtopione w
-/// tło"). The same button ends the list's first line and sits under the
-/// folded rail's pills.
+/// tło"). The same button stands in the list's top corner, above its rows,
+/// and under the folded rail's pills. `side` fixes its square where the room
+/// around it does not grow with the text; the glyph keeps its proportion.
 struct OverlaySidebarToggleButton: View {
   let symbol: String
   let title: String
   let identifier: String
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
+  var side: CGFloat? = nil
   let action: () -> Void
 
   var body: some View {
+    let square = side ?? 22 * textScale
     Button(action: action) {
       Image(systemName: symbol)
-        .font(.system(size: 13 * textScale))
-        .frame(width: 22 * textScale, height: 22 * textScale)
+        .font(.system(size: 13 * square / 22))
+        .frame(width: square, height: square)
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -1243,7 +1246,7 @@ struct OverlayChannelStatusView: View {
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?
   var onGestureHover: ((String) -> Void)?
-  /// The list's fold, on the trailing end of its first line, and the rail's
+  /// The list's fold, in the band above its first row, and the rail's
   /// unfold, under its pills. Nil leaves the column without the button.
   var onFoldList: (() -> Void)?
   var onUnfoldList: (() -> Void)?
@@ -2007,45 +2010,43 @@ struct OverlayChannelStatusView: View {
     return String(localized: "Sync draft")
   }
 
-  /// The fold button's slot at the trailing end of the list's first line:
-  /// the button and the gap before it.
-  static func listFoldSlotWidth(textScale: CGFloat) -> CGFloat { 22 * textScale + 4 }
+  /// The gap the Bus window's list column leaves under the window header
+  /// (`DictationOverlayView.agentDrawerColumn`), above this body.
+  static let listColumnTopGap: CGFloat = 8
+  /// The empty band between the window header and the list's first row: the
+  /// column's gap, the roster's 8 pt inset and the scroll content's 8 pt
+  /// margin. None of them grows with the text, so neither does the band.
+  static let listTopBand: CGFloat = listColumnTopGap + 8 + 8
+  /// The fold button's square in that band, whatever the text scale: a
+  /// 22 pt square at 1.5 or 2 would be taller than the band.
+  static let listFoldSide: CGFloat = 22
+  /// From the body's trailing edge to the rows' content: the roster's 4 pt
+  /// inset and a row's 5 pt padding, where the clocks and the "…" end.
+  static let listFoldTrailingInset: CGFloat = 4 + 5
 
+  /// The list's fold in the pane's top corner (Monika, 2026-11-07, from her
+  /// screenshot: the empty band above the rows), centred in the band and
+  /// flush with the rows' trailing content. It does not scroll and takes no
+  /// room from the rows, so no row moves ("to spychanie nie jest
+  /// akceptowalne"). It straddles this body's top: the band begins in the
+  /// column's gap above it.
   private func listFoldButton(_ action: @escaping () -> Void) -> some View {
     OverlaySidebarToggleButton(
       symbol: "sidebar.right", title: String(localized: "Hide agents list"),
       identifier: "overlay-agent-sidebar-fold", palette: palette, textScale: textScale,
-      action: action)
-  }
-
-  /// The list's fold shares the first line of channel 0's row, centred on
-  /// its title, in a slot the line leaves free at its trailing end: no row of
-  /// its own, so the rows keep their places (Monika, 2026-11-07: "to
-  /// spychanie nie jest akceptowalne"). The pair under the title keeps the
-  /// right of the second line.
-  @ViewBuilder
-  private func withListFold<Line: View>(_ line: Line) -> some View {
-    if let onFoldList {
-      line
-        .padding(.trailing, Self.listFoldSlotWidth(textScale: textScale))
-        .overlay(alignment: .trailing) { listFoldButton(onFoldList) }
-    } else {
-      line
-    }
+      side: Self.listFoldSide, action: action
+    )
+    .padding(.trailing, Self.listFoldTrailingInset)
+    .offset(y: (Self.listTopBand - Self.listFoldSide) / 2 - Self.listColumnTopGap)
   }
 
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
-    let showsBroadcastRow =
-      onSelectConversation != nil && currentConversations.contains(where: { $0.channel == "0" })
-    // Without channel 0's row (before the first snapshot) the list's content
-    // leaves the slot's column free at its right and the fold heads it.
-    let foldsBesideContent = onFoldList != nil && !showsBroadcastRow
-    return OverlayAgentMonitorBody(
+    OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
       focusRevision: focusRevision, focusedRowID: selectedConversationID,
       scrollTargetID: gestureFocusID,
       // No header row: no "Agents" title (Maciej, 2026-11-01), and the fold
-      // rides on the first row's line instead of pushing the rows down.
+      // stands in the band above the rows instead of pushing them down.
       showsHeader: false
     ) {
       EmptyView()
@@ -2063,7 +2064,7 @@ struct OverlayChannelStatusView: View {
           if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
             rowGlassContainer(
               VStack(alignment: .leading, spacing: 2) {
-                withListFold(broadcastRow(broadcast, rowFocus: rowFocus))
+                broadcastRow(broadcast, rowFocus: rowFocus)
                 // The pair sits beside the preview, not in the Agents header
                 // and not in the agent-row footer. Three lines belong to All.
                 HStack(alignment: .center, spacing: 8) {
@@ -2147,15 +2148,12 @@ struct OverlayChannelStatusView: View {
           .font(.system(size: 13 * textScale, weight: .medium))
           .foregroundStyle(palette.primaryText.color)
       }
-      .padding(
-        .trailing, foldsBesideContent ? Self.listFoldSlotWidth(textScale: textScale) : 0
-      )
-      .overlay(alignment: .topTrailing) {
-        if foldsBesideContent, let onFoldList { listFoldButton(onFoldList) }
-      }
     }
     .font(.system(size: 13 * textScale))
     .accessibilityIdentifier("overlay-agent-monitor")
+    .overlay(alignment: .topTrailing) {
+      if let onFoldList { listFoldButton(onFoldList) }
+    }
   }
 
   var currentConversations: [OverlayConversation] {

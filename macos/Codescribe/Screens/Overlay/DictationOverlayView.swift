@@ -1136,8 +1136,8 @@ struct DictationOverlayView: View {
   }
 
   /// The roster is always a side column, sized by the user and capped to
-  /// leave the conversation readable. Its divider and the `sidebar.right` at
-  /// the end of its first line fold it.
+  /// leave the conversation readable. Its divider and the `sidebar.right` in
+  /// its top corner, in the band above the rows, fold it.
   private func agentDrawerColumn(
     maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
   ) -> some View {
@@ -1151,11 +1151,13 @@ struct DictationOverlayView: View {
       roster.gestureFocusID = state.agentGestureFocusID
       roster.onFoldList = { state.foldAgentList() }
       return roster.monitorBody(
-        maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
+        maximumHeight: max(
+          0, maximumHeight - headerHeight - OverlayChannelStatusView.listColumnTopGap - 16),
         focusRevision: state.agentDrawerFocusRevision
       )
     }
-    .padding(.top, headerHeight + 8)
+    // The fold button's band begins in this gap (`listTopBand`).
+    .padding(.top, headerHeight + OverlayChannelStatusView.listColumnTopGap)
     .padding(.horizontal, 8)
     .padding(.bottom, 16)
     .frame(width: max(width, contentMinimum))
