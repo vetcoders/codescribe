@@ -1600,9 +1600,9 @@ final class OverlayChannelMapTests: XCTestCase {
   // MARK: - Channel 0's name (shared channel)
 
   /// Channel 0 carries its display name like an agent: the stored name, or
-  /// the default when none is stored, on the bar's chip, its hint, the row
-  /// in the agents list, the roster's header and the overlay's map that sizes
-  /// the bar. Only the name changes; the digit stays 0.
+  /// the default when none is stored, on the bar's chip, its hint, the
+  /// roster's header and the overlay's map that sizes the bar (the agents
+  /// list has no channel 0 row since 2026-11-07). Only the name changes; the digit stays 0.
   func testChannelZeroCarriesItsDisplayNameEverywhere() throws {
     let state = OverlayState(micAccessProvider: { true })
     var stored = ""
@@ -1630,7 +1630,6 @@ final class OverlayChannelMapTests: XCTestCase {
       XCTAssertEqual(zero.name, shown)
       let roster = DictationOverlayView(state: state).channelStatusView
       XCTAssertEqual(roster.channelMapModel.chips.first?.name, shown)
-      XCTAssertEqual(roster.hoverListRows.first { $0.digit == "0" }?.name, shown)
       XCTAssertTrue(roster.broadcastHeader.hasPrefix("0 · " + shown), roster.broadcastHeader)
       XCTAssertTrue(
         zero.hint(modifier: .control).hasPrefix("0 · " + shown), zero.hint(modifier: .control))

@@ -453,9 +453,9 @@ final class OverlayBarReviewRenderTests: XCTestCase {
 
   // MARK: - 7. The agents list under ✦
 
-  /// Eleven rows from the roster's own projection (channel 0 and your inbox
-  /// above the nine agents): channel 1 open (listening dot), an unread reply
-  /// on 0 and 4, agent 6 off channel 0 (`member = false`), agent 7 under the
+  /// Ten rows from the roster's own projection (your inbox above the nine
+  /// agents; channel 0 lives on the bar): channel 1 open (listening dot), an
+  /// unread reply on 4, agent 6 off channel 0 (`member = false`), agent 7 under the
   /// moon (zzz), agent 8 stalled (olive with "!"), agent 9 without a liveness
   /// claim ("?") and without a helper receipt.
   func testRenderAgentsHoverListWithNineAgents() throws {
@@ -497,10 +497,10 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         hudStates: hudStates, conversations: conversations,
         unreadCounts: [all.id: 1, unreadConversation.id: 2])
       let rows = roster.hoverListRows
-      XCTAssertEqual(rows.map(\.digit), ["0", "10"] + nine.map(\.0))
-      XCTAssertEqual(rows.prefix(2).map(\.kind), [.broadcast, .inbox])
-      XCTAssertEqual(rows.dropFirst(2).map(\.name), nine.map(\.1))
-      XCTAssertEqual(rows.first { $0.digit == "0" }?.unread, 1)
+      XCTAssertEqual(rows.map(\.digit), ["10"] + nine.map(\.0))
+      XCTAssertEqual(rows.first?.kind, .inbox)
+      XCTAssertEqual(rows.dropFirst().map(\.name), nine.map(\.1))
+      XCTAssertNil(rows.first { $0.digit == "0" }, "channel 0 lives on the bar")
       XCTAssertEqual(
         rows.first { $0.digit == "1" }?.dot, .listening,
         "the open channel's row reads as listening")

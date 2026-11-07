@@ -179,12 +179,12 @@ final class OverlayAgentsHoverListTests: XCTestCase {
     XCTAssertTrue(view.hoverListRows.isEmpty, "without a current conversation there is no mailbox row")
   }
 
-  /// Founder, 2026-11-04 (Round II): channel 0 (`0 · All`) and your inbox
-  /// (`10 · Your Inbox`) lead the list under ✦ in the sidebar's pinned order,
-  /// open their conversations through `conversationID`, carry unread counts
-  /// without presence or reception marks, and still appear when zero agents
-  /// are bound.
-  func testHoverListRowsLeadWithChannelZeroAndInboxBeforeAgents() throws {
+  /// Founder, 2026-11-04 (Round II), narrowed 2026-11-07: your inbox
+  /// (`10 · Your Inbox`) leads the list under ✦, opens its conversation
+  /// through `conversationID`, carries its unread count without presence or
+  /// reception marks, and still appears when zero agents are bound. Channel 0
+  /// lives on the bar and has no row.
+  func testHoverListRowsLeadWithInboxBeforeAgents() throws {
     let miksa = try conversation("2", session: "s2", lease: "a")
     let kuba = try conversation("5", session: "s5", lease: "b")
     let all = OverlayConversation(id: "all", channel: "0", name: "All", owner: nil, messages: [])
@@ -201,27 +201,44 @@ final class OverlayAgentsHoverListTests: XCTestCase {
       unreadCounts: [all.id: 1, inbox.id: 2, kuba.id: 4])
 
     let rows = view.hoverListRows
-    XCTAssertEqual(rows.map(\.digit), ["0", "10", "2", "5"], "0 and 10 lead in pinned order")
-    XCTAssertEqual(rows.map(\.kind), [.broadcast, .inbox, .agent, .agent])
-    XCTAssertEqual(rows.map(\.mailbox), [true, true, false, false])
-    XCTAssertEqual(
-      rows.map(\.name),
-      [OverlaySharedChannelName.defaultName, inbox.displayTitle, "Miksa", "Kuba"])
-    XCTAssertEqual(rows.map(\.conversationID), [all.id, inbox.id, miksa.id, kuba.id])
-    XCTAssertEqual(rows.map(\.unread), [1, 2, 0, 4])
+    XCTAssertEqual(rows.map(\.digit), ["10", "2", "5"], "the inbox leads the agents")
+    XCTAssertEqual(rows.map(\.kind), [.inbox, .agent, .agent])
+    XCTAssertEqual(rows.map(\.mailbox), [true, false, false])
+    XCTAssertEqual(rows.map(\.name), [inbox.displayTitle, "Miksa", "Kuba"])
+    XCTAssertEqual(rows.map(\.conversationID), [inbox.id, miksa.id, kuba.id])
+    XCTAssertEqual(rows.map(\.unread), [2, 0, 4])
     XCTAssertNil(rows[0].identity)
-    XCTAssertNil(rows[1].identity)
     XCTAssertFalse(rows[0].microphoneOpen)
-    XCTAssertFalse(rows[1].microphoneOpen)
 
     let mailboxesOnly = OverlayChannelStatusView(
       channels: [delivery("0", "All")], unavailable: false, palette: .dark, animates: false,
       hudStates: ["0": hud(session: nil, alive: nil)],
       conversations: [all, inbox], unreadCounts: [inbox.id: 1])
     XCTAssertTrue(mailboxesOnly.agentsHoverRows.isEmpty)
-    XCTAssertEqual(mailboxesOnly.hoverListRows.map(\.digit), ["0", "10"])
-    XCTAssertEqual(mailboxesOnly.hoverListRows.map(\.conversationID), [all.id, inbox.id])
-    XCTAssertEqual(mailboxesOnly.hoverListRows.map(\.unread), [0, 1])
+    XCTAssertEqual(mailboxesOnly.hoverListRows.map(\.digit), ["10"])
+    XCTAssertEqual(mailboxesOnly.hoverListRows.map(\.conversationID), [inbox.id])
+    XCTAssertEqual(mailboxesOnly.hoverListRows.map(\.unread), [1])
+  }
+
+  /// Founder, 2026-11-07: channel 0 lives on the bar, so the list under ✦
+  /// has no `0` row, not even with channel 0's conversation current and
+  /// unread, nor when it is the only conversation.
+  func testHoverListHasNoChannelZeroRow() throws {
+    let kuba = try conversation("5", session: "s5", lease: "b")
+    let all = OverlayConversation(id: "all", channel: "0", name: "All", owner: nil, messages: [])
+    let inbox = OverlayConversation.humanInbox(messages: [])
+    let full = OverlayChannelStatusView(
+      channels: [delivery("0", "All"), delivery("5", "Kuba")], unavailable: false,
+      palette: .dark, animates: false,
+      hudStates: ["0": hud(session: nil, alive: nil), "5": hud(session: "s5")],
+      conversations: [all, inbox, kuba], unreadCounts: [all.id: 3])
+    XCTAssertFalse(full.hoverListRows.map(\.digit).contains("0"), "\(full.hoverListRows)")
+    XCTAssertFalse(full.hoverListRows.contains { $0.conversationID == all.id })
+    let zeroOnly = OverlayChannelStatusView(
+      channels: [delivery("0", "All")], unavailable: false, palette: .dark, animates: false,
+      hudStates: ["0": hud(session: nil, alive: nil)], conversations: [all],
+      unreadCounts: [all.id: 1])
+    XCTAssertTrue(zeroOnly.hoverListRows.isEmpty, "channel 0 alone opens no list")
   }
 
   // MARK: - Ledger receipts

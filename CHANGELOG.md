@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Overlay: the list under the Agents button (✦) no longer has a row for channel 0 (**Shared**) in any mode; channel 0 is on the bar. Your inbox still leads the list, above the agents.
+- `cs-bus --provider` accepts only an ASCII client id (`[A-Za-z0-9][A-Za-z0-9-]{0,63}`, lower-cased); other tokens are rejected with one message.
 - Overlay bar: the microphone icon on the quiet-input warning is a deeper shade of the same orange in the light look, so it stands out from the light sheets (at least 3:1); the dark look is unchanged.
 - Settings › Shortcuts: the shared channel's name keeps at most 24 characters; a longer name, typed or edited into settings.json, is cut there.
 - Overlay: an agent's reply that was played aloud to the end counts as read, so its unread dot and count go away; a reply whose playback was interrupted, failed or refused stays unread.

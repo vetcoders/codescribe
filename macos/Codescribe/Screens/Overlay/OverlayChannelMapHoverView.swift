@@ -1,17 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// One row of the list under ✦, as plain values: an agent, or one of the two
-/// quick-access entries above them (channel 0 and your inbox; Founder,
-/// 2026-11-04). Every field comes from a projection `OverlayChannelStatusView`
+/// One row of the list under ✦, as plain values: an agent, or the one
+/// quick-access entry above them, your inbox (Founder, 2026-11-04; channel 0
+/// left the list on 2026-11-07, it lives on the bar). Every field comes from a projection `OverlayChannelStatusView`
 /// already owns; the list computes no status of its own. The reception axes
 /// are read live from `OverlayBroadcastPolicyLedger` when the row draws.
 struct OverlayAgentsHoverRow: Equatable, Identifiable {
   /// What the row stands for; only an agent carries presence and reception.
   enum Kind: Equatable {
     case agent
-    /// Channel 0, the shared conversation: `0 · All`.
-    case broadcast
     /// Your inbox (10): the envelope and its name, as the sidebar's card.
     case inbox
   }
@@ -43,19 +41,11 @@ struct OverlayAgentsHoverRow: Equatable, Identifiable {
 }
 
 extension OverlayChannelStatusView {
-  /// The list under ✦: channel 0 and your inbox first, in the sidebar's
-  /// pinned order, then the agents. A mailbox without a current conversation
-  /// has no row, as it has no rail pill.
+  /// The list under ✦: your inbox first, then the agents. Channel 0 has no
+  /// row in any mode: it lives on the bar (Founder, 2026-11-07). An inbox
+  /// without a current conversation has no row, as it has no rail pill.
   var hoverListRows: [OverlayAgentsHoverRow] {
     var rows: [OverlayAgentsHoverRow] = []
-    if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
-      rows.append(
-        OverlayAgentsHoverRow(
-          kind: .broadcast, digit: "0", name: sharedChannelName,
-          conversationID: broadcast.id, dot: .broadcast, status: "", microphoneOpen: false,
-          disconnected: false, identity: nil, policy: .on,
-          unread: unreadCounts[broadcast.id] ?? 0))
-    }
     if let inbox = currentConversations.first(where: \.isHumanInbox) {
       rows.append(
         OverlayAgentsHoverRow(
@@ -150,7 +140,7 @@ struct OverlayAgentsHoverListChrome: ViewModifier {
   }
 }
 
-/// The list under ✦: two quick-access rows (channel 0, your inbox) above one
+/// The list under ✦: one quick-access row (your inbox) above one
 /// low row per agent, no header or cards. Columns: numbered pill with the
 /// name (opens the conversation), status dot, antenna (channel 0), moon (do
 /// not disturb), the unread dot in the text tone. A mailbox row has the pill
@@ -260,8 +250,8 @@ private struct OverlayAgentsHoverListRow: View {
     HStack(spacing: OverlayAgentsHoverList.columnGap) {
       // The presence dot sits between the digit and the name, as on the
       // Bus window's roster rows (Founder, 2026-11-04): `nr · dot · name`.
-      // A mailbox row has no presence: channel 0 as the circled 0 and your
-      // inbox as the envelope, each with its name, as the sidebar's cards.
+      // The inbox row has no presence: the envelope with its name, as the
+      // sidebar's card.
       OverlayChannelPill(
         form: .chip,
         display: OverlayChannelPill.Display(

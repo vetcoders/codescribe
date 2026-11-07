@@ -256,7 +256,7 @@ Hotkeys › Fn and Agent channels edits it, one line of at most 24 characters
 (grapheme clusters; `SettingsViewModel.sharedChannelNameLimit`, and
 `shared_channel_name_line` in the loader cuts a hand-edited settings.json
 the same way), with **Restore default**; the bar does not. The same name heads channel 0's conversation (`0 · <name>`),
-its row in the agents list under ✦ and in the Bus window (`0 · <name> (n of
+its row in the Bus window (`0 · <name> (n of
 m)`), the chip's hint and its message card; action wording such as the
 bubble route `You → All` stays. Only the name is personal: the digit, the
 chord and the routing of channel 0 do not change. It is not an agent: the counter, `OverlayChannelMapModel.count`
@@ -394,16 +394,17 @@ live model, so a roster or policy refresh repaints rows without re-showing,
 raising or re-timing the panel. No hint opens from inside the list: the
 shared hint panel is the list itself.
 
-Two quick-access rows lead the list, in the sidebar's order (Founder,
-2026-11-04): channel 0 as the circled 0 with "All", and your inbox (10) as
-the envelope with its name, each a chip that opens that conversation through
+One quick-access row leads the list (Founder, 2026-11-04): your inbox (10)
+as the envelope with its name, a chip that opens that conversation through
 `onSelectConversation` without touching the microphone, with the unread dot
 in the text tone and nothing else (no presence dot, no antenna or moon; the
-marks' width stays empty so the unread dots stand in one column). A mailbox
-without a current conversation has no row, as it has no rail pill
-(`hoverListRows`). Under them one low row per agent 1–9 in ascending order
-(`agentsHoverRows`), no header or cards, sized to its rows so the two
-mailboxes and nine agents fit without scrolling. Columns: the
+marks' width stays empty so the unread dots stand in one column). Channel 0
+has no row in any mode (Founder, 2026-11-07: channel 0 lives on the bar; the
+list keeps only the inbox); mini has no shortcut to it.
+An inbox without a current conversation has no row, as it has no rail pill
+(`hoverListRows`). Under it one low row per agent 1–9 in ascending order
+(`agentsHoverRows`), no header or cards, sized to its rows so the inbox and
+nine agents fit without scrolling. Columns: the
 numbered `OverlayChannelPill` chip carrying the presence dot
 (`presenceDotKind`) between the digit and the agent's name (`nr · dot · name`, as the Bus window's roster rows; Founder, 2026-11-04), the antenna
 (channel-0 membership), the moon (do not disturb) and the unread dot in the
