@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Overlay: resting the pointer on the Agents button (✦) opens the agents list and keeps it; it no longer flickers between the list and a conversation's preview card from a row scrolled out of view under the bar.
 - Settings: the window's minimise button works from the first opening and after switching tabs.
 - Settings › User › License: the reason a licence check failed reads in the interface language, Polish included, instead of always in English.
 - Image attachments open in their own window sized to fit the screen; after zooming, **Fit** brings the whole image back into view.

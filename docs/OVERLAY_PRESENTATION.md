@@ -67,6 +67,15 @@ message, and fetches no saved history. Audio and menu controls keep their own
 action hints. Empty entries retain their existing navigation hint without
 opening an empty preview card.
 
+The roster scrolls without a scroll clip, so rows passing above its viewport
+stay mounted under the window header, and AppKit's `visibleRect` still counts
+them. A cursor region takes the pointer only inside the frame of its enclosing
+scroll view (`OverlayMenuCursorRegionView`), so a row outside the viewport
+takes no hover and opens no card; before, a hidden row under ✦ answered the
+pointer there and its card fought the agents list over the shared panel. A card closed because
+another owner took the panel does not order itself again: its content revision
+re-measures an open card and never opens one.
+
 The more menu contains channel-zero membership, Do not disturb, the detected
 client/terminal destination and removal into saved conversations. The same
 commands are available from the row's context menu. Existing pending,
@@ -366,6 +375,8 @@ Agents canvas. A click on ✦ keeps its action
 hint panel (`OverlayHeaderControlChrome`, as the roster's message preview):
 it is a child window of the overlay, stays while the pointer crosses from ✦
 onto it, and closes 220 ms after the pointer has left both; Esc closes it.
+While the pointer rests on ✦ the list is the panel's only owner: roster rows
+scrolled under the header take no hover (see the row preview above).
 The panel takes its parent's window level (`OverlayHintPanel.synchronizeLevel`)
 and follows it when `OverlayPresence` moves the overlay between rest, normal
 and capture levels; it is ordered above its parent and raised to the front
