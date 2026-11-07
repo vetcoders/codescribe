@@ -4220,6 +4220,24 @@
         }
       }
     },
+    "Bus header" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bus header"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Belka busa"
+          }
+        }
+      }
+    },
     "By name" : {
       "comment" : "Sorting option for saved conversations: alphabetical by conversation name",
       "localizations" : {
@@ -7656,6 +7674,24 @@
         }
       }
     },
+    "Developer preview only. Changes appear immediately." : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer preview only. Changes appear immediately."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tylko podgląd deweloperski. Zmiany widać od razu."
+          }
+        }
+      }
+    },
     "Device Control and Data Access" : {
       "comment" : "Privacy permission pane name on macOS 27 and later; formerly Accessibility",
       "localizations" : {
@@ -9368,6 +9404,42 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Token GitHub"
+          }
+        }
+      }
+    },
+    "Glass amount" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glass amount"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ilość szkła"
+          }
+        }
+      }
+    },
+    "Glass tuning" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glass tuning"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Regulacja szkła"
           }
         }
       }
@@ -11515,6 +11587,24 @@
         }
       }
     },
+    "Mini and MIDI" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mini and MIDI"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mini i midi"
+          }
+        }
+      }
+    },
     "Minimize" : {
       "localizations" : {
         "pl" : {
@@ -11640,6 +11730,42 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Więcej działań"
+          }
+        }
+      }
+    },
+    "More glass" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More glass"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Więcej szkła"
+          }
+        }
+      }
+    },
+    "More solid" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More solid"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bardziej kryjące"
           }
         }
       }
@@ -13494,6 +13620,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Włączone. Zmienisz to przełącznikiem w Ustawieniach › Lab."
+          }
+        }
+      }
+    },
+    "Onboarding" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Onboarding"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kreator"
           }
         }
       }
@@ -16316,6 +16460,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wymaga potwierdzenia i zachowuje kopię zapasową, którą można przywrócić."
+          }
+        }
+      }
+    },
+    "Reset" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Resetuj"
           }
         }
       }
@@ -19624,6 +19786,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Podsumowanie"
+          }
+        }
+      }
+    },
+    "Surface" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Surface"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Powierzchnia"
           }
         }
       }

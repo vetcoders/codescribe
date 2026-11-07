@@ -55,11 +55,14 @@ struct OverlayCanvasBackdrop: View {
   var increasedContrast = false
   var cornerRadius: CGFloat = CSRadius.window
   var role: OverlayGlassRole = .readingCanvas
+  var tuningSurface: ChromeGlassSurface = .compactOverlay
+  var glassPreferences = ChromeGlassPreferences()
 
   var body: some View {
     ZStack {
       if (reduceTransparencyOverride ?? reduceTransparency) || increasedContrast
         || (contrastOverride ?? contrast) == .increased
+        || (role == .chrome && glassPreferences.amount(for: tuningSurface) == 0)
       {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
@@ -67,6 +70,14 @@ struct OverlayCanvasBackdrop: View {
         if role == .readingCanvas {
           Rectangle()
             .fill(Color(nsColor: Self.glassVeil(palette)))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        } else {
+          Rectangle()
+            .fill(
+              palette.desktopBackground.color.opacity(
+                1 - glassPreferences.amount(for: tuningSurface))
+            )
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
@@ -161,10 +172,12 @@ struct OverlayControlGlass: ViewModifier {
   var cornerRadius: CGFloat = CSRadius.window
   var isEnabled = true
   var role: OverlayGlassRole = .readingCanvas
+  var glassPreferences = ChromeGlassPreferences()
 
   @ViewBuilder
   func body(content: Content) -> some View {
     let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    let glassAmount = glassPreferences.amount(for: .busHeader)
     let veilColor =
       colorScheme == .dark
       ? Color(red: 0.08, green: 0.08, blue: 0.09).opacity(0.76)
@@ -177,8 +190,17 @@ struct OverlayControlGlass: ViewModifier {
         content
           .background {
             if isEnabled && role == .readingCanvas { shape.fill(veilColor) }
+            if isEnabled && role == .chrome {
+              shape.fill(
+                (colorScheme == .dark
+                  ? Color(red: 0.08, green: 0.08, blue: 0.09)
+                  : Color(red: 0.97, green: 0.96, blue: 0.94)).opacity(1 - glassAmount))
+            }
           }
-          .glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
+          .glassEffect(
+            isEnabled && (role == .readingCanvas || glassAmount > 0)
+              ? .regular.interactive() : .identity, in: shape
+          )
           .environment(\.controlActiveState, .key)
       } else {
         content.background {

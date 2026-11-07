@@ -1628,7 +1628,8 @@ private struct OverlayIntercomHeader: View {
       OverlayCanvasBackdrop(
         palette: palette, reduceTransparency: reduceTransparency,
         cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
-        role: .chrome
+        role: .chrome,
+        tuningSurface: .busHeader
       )
       .clipShape(
         RoundedRectangle(

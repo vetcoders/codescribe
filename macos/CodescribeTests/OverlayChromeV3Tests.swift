@@ -204,4 +204,14 @@ final class OverlayChromeV3Tests: XCTestCase {
       }
     }
   }
+
+  func testGlassTuningIsBoundedAndDeveloperOnly() {
+    XCTAssertEqual(ChromeGlassTuning.effectiveAmount(0.35, developerEnabled: true), 0.35)
+    XCTAssertEqual(ChromeGlassTuning.effectiveAmount(-1, developerEnabled: true), 0)
+    XCTAssertEqual(ChromeGlassTuning.effectiveAmount(2, developerEnabled: true), 1)
+    XCTAssertEqual(ChromeGlassTuning.effectiveAmount(.nan, developerEnabled: true), 1)
+    XCTAssertEqual(ChromeGlassTuning.effectiveAmount(.infinity, developerEnabled: true), 1)
+    XCTAssertEqual(ChromeGlassTuning.effectiveAmount(0, developerEnabled: false), 1)
+    XCTAssertEqual(ChromeGlassTuning.effectiveAmount(0.35, developerEnabled: false), 1)
+  }
 }

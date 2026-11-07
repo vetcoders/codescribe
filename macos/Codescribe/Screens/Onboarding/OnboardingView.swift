@@ -22,7 +22,8 @@ struct OnboardingView: View {
         OverlayCanvasBackdrop(
           palette: OverlayAppearancePalette.resolve(colorScheme),
           reduceTransparency: reduceTransparency,
-          role: .chrome
+          role: .chrome,
+          tuningSurface: .onboarding
         )
         .ignoresSafeArea()
       }

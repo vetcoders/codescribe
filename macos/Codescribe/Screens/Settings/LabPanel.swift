@@ -7,6 +7,8 @@ struct LabPanel: View {
   @AppStorage("codescribe.lab_mode") private var labMode = false
   /// A drag on the ledger slider persists once, at release.
   @State private var ledgerGate = SliderCommitGate()
+  @State private var glassSurface: ChromeGlassSurface = .onboarding
+  var glassPreferences = ChromeGlassPreferences()
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -22,6 +24,8 @@ struct LabPanel: View {
       // The take's word pins lead the desk, open on arrival (Maciej, 2026-10-20:
       // "jest, ale na spodzie zamiast na górze"); the switches follow.
       DictionaryWordPins(configDir: model.configDir)
+
+      glassTuning
 
       // One column: every switch sits on the trailing edge of its row, so
       // the desk reads as a list and not as a staircase (Founder, 2026-10-20).
@@ -85,6 +89,42 @@ struct LabPanel: View {
     .settingsPage()
     .frame(maxWidth: .infinity, alignment: .leading)
     .task { await model.refreshAdmission() }
+  }
+
+  private var glassTuning: some View {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+      SettingsSectionLabel(String(localized: "Glass tuning"))
+      Picker("Surface", selection: $glassSurface) {
+        ForEach(ChromeGlassSurface.allCases) { surface in
+          Text(surface.title).tag(surface)
+        }
+      }
+      .pickerStyle(.menu)
+      .accessibilityIdentifier("lab-glass-surface")
+      HStack {
+        Slider(value: glassPreferences.binding(for: glassSurface), in: 0...1, step: 0.05) {
+          Text("Glass amount")
+        }
+        .accessibilityIdentifier("lab-glass-amount")
+        Text(verbatim: "\(Int(glassPreferences.amount(for: glassSurface) * 100))%")
+          .monospacedDigit()
+        Button("Reset") {
+          glassPreferences.binding(for: glassSurface).wrappedValue = ChromeGlassTuning.defaultAmount
+        }
+        .accessibilityIdentifier("lab-glass-reset")
+      }
+      HStack {
+        Text("More solid")
+        Spacer()
+        Text("More glass")
+      }
+      .font(SettingsScale.helper)
+      .foregroundStyle(CSColor.secondaryInk)
+      Text("Developer preview only. Changes appear immediately.")
+        .font(SettingsScale.helper)
+        .foregroundStyle(CSColor.secondaryInk)
+    }
+    .settingsGroupedInset()
   }
 
   /// The committing lane. Settings › Audio states the effective value and
