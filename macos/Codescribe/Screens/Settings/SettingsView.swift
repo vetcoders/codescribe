@@ -42,7 +42,10 @@ struct SettingsView: View {
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
-        .background(CSColor.sheet)
+        // Native detail extends under the floating sidebar. Keep its opaque
+        // reading canvas out of that leading safe area so sidebar glass can sample
+        // the scene behind the window instead of a sheet-coloured backing.
+        .background(CSColor.sheet, ignoresSafeAreaEdges: [.top, .bottom, .trailing])
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
     .toolbarVisibility(.visible, for: .windowToolbar)

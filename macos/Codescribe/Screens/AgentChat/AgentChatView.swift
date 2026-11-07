@@ -36,7 +36,8 @@ struct AgentChatView: View {
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
     .modifier(
-      AgentIntegratedChrome(store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen))
+      AgentIntegratedChrome(store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen)
+    )
     .csFocusPolicy()
     .background(
       AgentWindowCapabilities(isPinned: isPinned, contextPanelOpen: contextPanelOpen)
@@ -487,7 +488,10 @@ private struct ThreadDetail: View {
     }
     .animation(.easeOut(duration: CSMotion.Tempo.hover), value: isContextOpen)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(CSColor.sheet)
+    // Native detail extends under the floating sidebar. Keep its opaque
+    // reading canvas out of that leading safe area so sidebar glass can sample
+    // the scene behind the window instead of a sheet-coloured backing.
+    .background(CSColor.sheet, ignoresSafeAreaEdges: [.top, .bottom, .trailing])
     .alert(
       "Speech unavailable",
       isPresented: Binding(
