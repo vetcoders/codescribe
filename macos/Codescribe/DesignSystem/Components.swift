@@ -7,8 +7,14 @@ import SwiftUI
 /// row gives Agent and Settings the same rhythm without individual title pills.
 struct CSWindowHeaderItem<Content: View>: View {
   var fillsAvailableWidth = false
+  var maximumWidth: CGFloat?
   @ViewBuilder let content: Content
   @State private var availableWidth: CGFloat?
+
+  private var fittedWidth: CGFloat? {
+    guard fillsAvailableWidth else { return nil }
+    return [availableWidth, maximumWidth].compactMap { $0 }.min()
+  }
 
   var body: some View {
     content
@@ -16,8 +22,8 @@ struct CSWindowHeaderItem<Content: View>: View {
       .padding(.vertical, 17)
       .padding(.horizontal, 12)
       .frame(
-        idealWidth: fillsAvailableWidth ? availableWidth : nil,
-        maxWidth: fillsAvailableWidth ? (availableWidth ?? .infinity) : nil
+        idealWidth: fittedWidth,
+        maxWidth: fillsAvailableWidth ? (fittedWidth ?? .infinity) : nil
       )
       .background {
         if fillsAvailableWidth {
