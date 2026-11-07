@@ -1,7 +1,9 @@
 import AppKit
 import Foundation
+import Observation
 import SwiftUI
 import XCTest
+import os
 
 @testable import Codescribe
 
@@ -429,6 +431,77 @@ final class OverlayAgentArchiveTests: XCTestCase {
     try bytes.write(to: path, options: .atomic)
     let recovered = try await reader.readSnapshot()
     XCTAssertEqual(recovered.archivedOwners, [fixture.owner])
+  }
+
+  /// Tola IV.6: the "!" comes at the horizon, not at the next change on the
+  /// bus. One wake is planned for the oldest backlog of a live follower plus
+  /// the horizon; an unchanged poll keeps it. At the wake every reader of
+  /// the roster is told to draw again, and the next wake follows the next
+  /// follower. Without a backlog there is no wake.
+  func testStallWakeIsPlannedAtTheHorizonAndRepaintsTheRoster() async throws {
+    let state = OverlayState()
+    let probe = StallProbe()
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    probe.now = start
+    state.followerStallClock = { probe.now }
+    state.followerStallSleep = { deadline in
+      probe.waits.append(deadline)
+      await withCheckedContinuation { probe.release = $0 }
+    }
+    func row(_ channel: String, since: Date?) -> CsChannelRosterState {
+      .init(
+        channel: channel, audience: "agent-\(channel)", provider: "codex",
+        providerSessionId: "stall-\(channel)", open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true,
+        unreadSinceUnixMs: since.map { Int64($0.timeIntervalSince1970 * 1_000) })
+    }
+    func settle(_ count: Int) async {
+      for _ in 0..<200 where probe.waits.count < count { await Task.yield() }
+    }
+    let horizon = OverlayState.followerStallHorizon
+    let roster = [
+      row("4", since: start.addingTimeInterval(-horizon + 60)),
+      row("5", since: start.addingTimeInterval(-horizon + 300)),
+    ]
+    state.applyChannelRoster(roster)
+    await settle(1)
+    XCTAssertEqual(probe.waits, [start.addingTimeInterval(60)], "the oldest backlog's horizon")
+    XCTAssertEqual(state.followerStallDeadline, start.addingTimeInterval(60))
+    XCTAssertEqual(state.channelHudStates["4"]?.isStalled(now: probe.now), false)
+
+    state.applyChannelRoster(roster)
+    await settle(2)
+    XCTAssertEqual(probe.waits.count, 1, "an unchanged poll plans no second wake")
+
+    let repainted = OSAllocatedUnfairLock(initialState: false)
+    withObservationTracking {
+      _ = state.channelHudStates
+    } onChange: {
+      repainted.withLock { $0 = true }
+    }
+    probe.now = start.addingTimeInterval(61)
+    probe.release?.resume()
+    probe.release = nil
+    await settle(2)
+    XCTAssertTrue(repainted.withLock { $0 }, "the wake tells the roster's readers to draw")
+    XCTAssertEqual(state.channelHudStates["4"]?.isStalled(now: probe.now), true)
+    XCTAssertEqual(
+      probe.waits, [start.addingTimeInterval(60), start.addingTimeInterval(300)],
+      "the next wake follows the next follower")
+
+    state.applyChannelRoster([row("4", since: nil), row("5", since: nil)])
+    XCTAssertNil(state.followerStallDeadline, "no backlog, no wake")
+    probe.release?.resume()
+    probe.release = nil
+    for _ in 0..<20 { await Task.yield() }
+    XCTAssertEqual(probe.waits.count, 2, "a cancelled wake plans nothing")
+  }
+
+  @MainActor
+  private final class StallProbe {
+    var now = Date()
+    var waits: [Date] = []
+    var release: CheckedContinuation<Void, Never>?
   }
 
   private func roster(

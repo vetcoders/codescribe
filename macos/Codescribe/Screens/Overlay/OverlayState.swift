@@ -1338,7 +1338,25 @@ final class OverlayState {
   private(set) var channelDelivery: [OverlayChannelDelivery] = []
   private(set) var channelStatusUnavailable = false
   private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:] {
-    didSet { refreshCurrentMicrophoneOwners() }
+    didSet {
+      refreshCurrentMicrophoneOwners()
+      scheduleFollowerStallRefresh()
+    }
+  }
+  /// The one wake for the stall horizon. `isStalled(now:)` reads the clock
+  /// when a view draws, and an unchanged roster poll draws nothing, so the
+  /// "!" used to wait for another change on the bus. The wake is planned for
+  /// the moment the next live follower crosses the horizon, never a poll.
+  @ObservationIgnored private var followerStallTask: Task<Void, Never>?
+  /// When `followerStallTask` fires; nil while no live follower has a backlog
+  /// short of the horizon.
+  @ObservationIgnored private(set) var followerStallDeadline: Date?
+  /// The horizon's wall clock (`unreadSince` is wall time); tests inject it.
+  @ObservationIgnored var followerStallClock: () -> Date = { Date() }
+  /// Waits until the deadline; tests replace it to hold the wake.
+  @ObservationIgnored var followerStallSleep: @MainActor (Date) async throws -> Void = {
+    deadline in
+    try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
   }
   private(set) var channelRosterNames: [String: String] = [:]
   @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
@@ -1681,6 +1699,42 @@ final class OverlayState {
   /// shown as "not reading": the process heartbeats, the conversation behind
   /// it does not. Ten minutes outlives any tool call a reading agent makes.
   nonisolated static let followerStallHorizon: TimeInterval = 10 * 60
+
+  /// When the next live follower turns stalled: the oldest backlog among
+  /// live followers not yet stalled, plus the horizon. Nil when none will.
+  static func nextFollowerStall(
+    in huds: [String: OverlayChannelHudProjection], now: Date
+  ) -> Date? {
+    huds.values.compactMap { hud -> Date? in
+      guard hud.followerAlive == true, let since = hud.unreadSince, !hud.isStalled(now: now)
+      else { return nil }
+      return since.addingTimeInterval(followerStallHorizon)
+    }.min()
+  }
+
+  /// Plans the stall wake for the current roster. An unchanged deadline keeps
+  /// the wake it has. When it fires, the same projection is announced again
+  /// (`withMutation`), so every reader of `channelHudStates` (the bar's
+  /// chips, the list under ✦, the roster, the Bus window) draws the "!"
+  /// at the horizon; then the next deadline is planned.
+  private func scheduleFollowerStallRefresh() {
+    let deadline = Self.nextFollowerStall(in: channelHudStates, now: followerStallClock())
+    guard deadline != followerStallDeadline else { return }
+    followerStallTask?.cancel()
+    followerStallDeadline = deadline
+    guard let deadline else {
+      followerStallTask = nil
+      return
+    }
+    let sleep = followerStallSleep
+    followerStallTask = Task { @MainActor [weak self] in
+      do { try await sleep(deadline) } catch { return }
+      guard let self, !Task.isCancelled else { return }
+      self.followerStallDeadline = nil
+      self.withMutation(keyPath: \.channelHudStates) {}
+      self.scheduleFollowerStallRefresh()
+    }
+  }
 
   /// The owner the drawer's cross acts on. Every bound digit (1–9) whose
   /// owner is known and not yet archived is a candidate — dead, stalled or

@@ -305,7 +305,16 @@ the projection the roster row reads (`channelChipStatus`, carried as
    and everywhere it looks like the presence dot: green with "!". The
    card's "Not reading" text stays. `OverlayChannelStatusView.statusSymbol(for:)` names no
    stall glyph either; the Intercom's status mark draws the presence dot for
-   a stalled reader and an explicit glyph only for a gone one.
+   a stalled reader and an explicit glyph only for a gone one. The "!"
+   comes at the horizon itself, not with the next change on the bus:
+   `isStalled(now:)` reads the clock when a view draws and an unchanged
+   roster poll draws nothing, so `OverlayState` plans one wake for the
+   oldest backlog of a live follower plus the horizon
+   (`nextFollowerStall`, `followerStallDeadline`). The wake announces the
+   same `channelHudStates` again, so the bar, the list under ✦, the roster
+   and the Bus window draw the "!", and plans the next follower's wake; no
+   poll, and an unchanged roster keeps the wake it has (Tola IV.6,
+   2026-11-07).
 2. **Channel 0** from the policy as `OverlayBroadcastPolicyLedger` paints it,
    two states like the roster's antenna and the context menu's checkmark,
    with no unconfirmed third (Founder, 2026-11-04). The line is channel 0's
