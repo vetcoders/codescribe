@@ -223,11 +223,15 @@ if [[ "$CS_DEVELOPER_SURFACE" == "1" || "${CODESCRIBE_INSTALL_LANE:-0}" == "1" ]
       CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(tr -d '[:space:]' <"$key_dir/license-public.hex" || true)"
     fi
   done
-  if [[ ${#SPARKLE_ED_PUBLIC_KEY} -lt 32 || ! "${SPARKLE_ED_PUBLIC_KEY:-}" =~ ^[A-Za-z0-9+/=]+$ ]]; then
+  # Under set -u an unset key must reach the message below, not "unbound
+  # variable": measure the defaulted values.
+  sparkle_key="${SPARKLE_ED_PUBLIC_KEY:-}"
+  license_key="${CODESCRIBE_LICENSE_PUBLIC_KEY_HEX:-}"
+  if [[ ${#sparkle_key} -lt 32 || ! "$sparkle_key" =~ ^[A-Za-z0-9+/=]+$ ]]; then
     echo "error: install/developer build requires SPARKLE_ED_PUBLIC_KEY (or sparkle-public.b64)" >&2
     exit 1
   fi
-  if [[ ${#CODESCRIBE_LICENSE_PUBLIC_KEY_HEX} -ne 64 || ! "${CODESCRIBE_LICENSE_PUBLIC_KEY_HEX:-}" =~ ^[0-9A-Fa-f]+$ ]]; then
+  if [[ ${#license_key} -ne 64 || ! "$license_key" =~ ^[0-9A-Fa-f]+$ ]]; then
     echo "error: install/developer build requires 64-hex CODESCRIBE_LICENSE_PUBLIC_KEY_HEX (or license-public.hex)" >&2
     exit 1
   fi

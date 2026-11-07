@@ -235,6 +235,12 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
     elif mode == "cross-config":
         (repo / ".cargo").mkdir(exist_ok=True)
         (repo / ".cargo/config.toml").write_text('[build]\ntarget = "aarch64-unknown-linux-gnu"\n')
+    if mode in ("missing-sparkle-key", "missing-license-key"):
+        # An install lane without its keys must stop with its own message;
+        # under set -u an unset key used to die on "unbound variable".
+        env["CODESCRIBE_INSTALL_LANE"] = "1"
+        if mode == "missing-license-key":
+            env["SPARKLE_ED_PUBLIC_KEY"] = "A" * 43 + "="
     if skip:
         env["SKIP_XCODEBUILD"] = "1"
     args = ["/bin/bash", str(repo / "scripts/build-app.sh"), profile]
@@ -247,6 +253,12 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
         if mode == "stage":
             assert result.returncode == 0 and set(names) <= {"git"}, (result.returncode, names)
             assert (case / "staged/manifest.json").is_file()
+        elif mode in ("missing-sparkle-key", "missing-license-key"):
+            assert result.returncode == 1, (result.returncode, result.stdout)
+            assert "unbound variable" not in result.stdout, result.stdout
+            key = "SPARKLE_ED_PUBLIC_KEY" if mode == "missing-sparkle-key" else "CODESCRIBE_LICENSE_PUBLIC_KEY_HEX"
+            assert f"install/developer build requires" in result.stdout and key in result.stdout, result.stdout
+            assert not set(names) & {"install_name_tool", "uniffi-bindgen", "xcodegen", "xcodebuild", "swiftc", "codesign"}, names
         elif mode in ("success", "fresh-receipt"):
             assert result.returncode == 0, f"script exit {result.returncode}"
             if signing_identity == "-":
@@ -288,7 +300,7 @@ with tempfile.TemporaryDirectory(prefix="build-app-target-root-") as tmp:
             run_case(base, profile, layout)
         run_case(base, profile, "spaces", skip=True)
         run_case(base, profile, "spaces", signing_identity="-")
-    for mode in ("metadata-error", "metadata-malformed", "metadata-relative", "ffi-error", "sidecar-error", "missing-receipt", "missing-file", "malformed-receipt", "unfinished", "cross-env", "cross-config", "fresh-receipt", "stage", "publisher-library-only"):
+    for mode in ("metadata-error", "metadata-malformed", "metadata-relative", "ffi-error", "sidecar-error", "missing-receipt", "missing-file", "malformed-receipt", "unfinished", "cross-env", "cross-config", "fresh-receipt", "stage", "publisher-library-only", "missing-sparkle-key", "missing-license-key"):
         run_case(base, "debug", "spaces", mode)
 print(f"build-app-target-root: scenarios={passed + failed} passed={passed} failed={failed}")
 sys.exit(1 if failed or not passed else 0)
