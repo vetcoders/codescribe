@@ -16,13 +16,12 @@ struct CSWindowHeaderItem<Content: View>: View {
   }
 }
 
-/// System-owned toolbar chrome. Real information and controls share a native
-/// glass group; the window's accessible title must not add a second visual
-/// identity alongside that content.
+/// One titlebar band without an extra toolbar backing or a second visual
+/// title. The detail header owns its actual glass and content.
 struct CSWindowHeaderChrome: ViewModifier {
   @ViewBuilder
   func body(content: Content) -> some View {
-    content.toolbarBackgroundVisibility(.automatic, for: .windowToolbar)
+    content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
       .toolbar(removing: .title)
   }
 }

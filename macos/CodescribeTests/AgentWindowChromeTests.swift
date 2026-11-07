@@ -13,81 +13,40 @@ final class AgentWindowChromeTests: XCTestCase {
   private let sidebarKey = "AgentChat.sidebarExpanded.v1"
   private let panelKey = AgentContextPanelPreference.defaultsKey
 
-  /// Public `.top` titlebar accessories replace the titlebar instead of
-  /// adding a row beneath the split. Prove geometry and native window buttons
-  /// on the real Agent host before moving the whole header into this owner.
+  /// The approved shape is one rectangular real-content glass view across
+  /// the entire upper detail region, with the native window controls intact.
   func testTopTitlebarOwnerKeepsOneBandAndNativeWindowButtons() throws {
     let window = mount(contentWidth: 1120)
     defer { window.close() }
-    pump(window) { window.toolbar != nil }
-    window.toolbar?.isVisible = true
-    let accessory = NSTitlebarAccessoryViewController()
-    accessory.layoutAttribute = .top
-    accessory.view = NSHostingView(
-      rootView: HStack {
-        CSWindowHeaderItem { Wordmark(size: 16) }
-        Spacer()
-      }.frame(width: 1120, height: 52))
-    window.addTitlebarAccessoryViewController(accessory)
-    pump(window) { self.frame(accessory.view).height == 52 }
-    let rect = frame(accessory.view)
+    pump(window) { self.rectangularHeaderGlass(in: window) != nil }
+    let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }
+    XCTAssertEqual(owners.count, 1)
+    let owner = try XCTUnwrap(owners.first)
+    let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
+    let rect = frame(glass)
+    let sidebar = try XCTUnwrap(
+      (splitView(in: window)?.delegate as? NSSplitViewController)?.splitViewItems.first)
     let lights = trafficLights(in: window)
     let attachment = XCTAttachment(
-      string: "window=\(window.frame) layout=\(window.contentLayoutRect) top=\(rect) "
-        + "lights=\(lights.map { frame($0) }) "
-        + "lightsHidden=\(lights.map { $0.isHiddenOrHasHiddenAncestor })")
-    attachment.name = "Public top titlebar admission"
+      string: "window=\(window.frame) layout=\(window.contentLayoutRect) "
+        + "top=\(frame(owner.view)) glass=\(rect) lights=\(lights.map { frame($0) })")
+    attachment.name = "Rectangular titlebar owner"
     attachment.lifetime = .keepAlways
     add(attachment)
+    XCTAssertEqual(frame(owner.view).height, 52, accuracy: 1)
     XCTAssertEqual(rect.height, 52, accuracy: 1)
     XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
+    XCTAssertEqual(rect.minX, frame(sidebar.viewController.view).maxX, accuracy: 1)
+    XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
     XCTAssertEqual(window.contentLayoutRect.maxY, window.frame.height - 52, accuracy: 1)
+    XCTAssertEqual(glass.cornerRadius, 0)
+    XCTAssertEqual(glass.style, .regular)
+    XCTAssertNotNil(glass.contentView, "the real information and actions belong inside glass")
     XCTAssertEqual(lights.count, 3)
     XCTAssertTrue(lights.allSatisfy { !$0.isHiddenOrHasHiddenAncestor })
   }
 
-  /// The whole header belongs to one native toolbar glass group. It must
-  /// remain in the window bar instead of adding split-item accessory rows.
-  func testNativeToolbarOwnsInformationAndActions() throws {
-    let store = AgentChatStore(
-      engine: nil,
-      threads: [ChatThread(title: "Native header admission", meta: "synthetic", messages: [])])
-    let window = mount(contentWidth: 1120, store: store)
-    defer { window.close() }
-    pump(window) { (window.toolbar?.items.compactMap(\.view).count ?? 0) >= 2 }
-    let split = try XCTUnwrap(splitView(in: window)?.delegate as? NSSplitViewController)
-    let detail = try XCTUnwrap(split.splitViewItems.last)
-    XCTAssertTrue(detail.topAlignedAccessoryViewControllers.isEmpty)
-    let sidebar = try XCTUnwrap(split.splitViewItems.first)
-    let boundary = frame(sidebar.viewController.view).maxX
-    let headers = try XCTUnwrap(window.toolbar).items.compactMap(\.view).filter {
-      frame($0).minX >= boundary - 1 && frame($0).height >= 51
-    }
-    XCTAssertEqual(headers.count, 2, "the native toolbar owns information and actions")
-    let rects = headers.map { frame($0) }
-    let theme = try XCTUnwrap(window.contentView?.superview)
-    func glassViews(_ view: NSView) -> [NSGlassEffectView] {
-      (view as? NSGlassEffectView).map { [$0] } ?? view.subviews.flatMap { glassViews($0) }
-    }
-    let glass = glassViews(theme).map { frame($0) }.filter {
-      $0.minX >= boundary - 1 && $0.maxY > window.contentLayoutRect.maxY
-    }
-    let attachment = XCTAttachment(
-      string: "window=\(window.frame) contentLayout=\(window.contentLayoutRect) "
-        + "headerItems=\(rects) nativeGlass=\(glass) "
-        + "detailSafeArea=\(detail.viewController.view.safeAreaInsets)")
-    attachment.name = "Unified native header geometry"
-    attachment.lifetime = .keepAlways
-    add(attachment)
-    for rect in rects {
-      XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY - 1)
-      XCTAssertLessThanOrEqual(rect.maxX, window.frame.width + 1)
-      XCTAssertTrue(glass.contains { $0.intersects(rect) }, "each real item retains native glass")
-    }
-    XCTAssertEqual(window.titleVisibility, .hidden)
-  }
-
-  func testUnifiedHeaderFillsTheBandAtMinimumAndNormalWidths() throws {
+  func testRectangularHeaderAtMinimumAndNormalWidths() throws {
     let previousSidebar = UserDefaults.standard.object(forKey: sidebarKey)
     let previousPanel = UserDefaults.standard.object(forKey: panelKey)
     UserDefaults.standard.set(false, forKey: panelKey)
@@ -105,34 +64,34 @@ final class AgentWindowChromeTests: XCTestCase {
             meta: "synthetic", messages: [])])
         let window = mount(contentWidth: width, store: store)
         defer { window.close() }
-        func headers() -> [NSView] {
-          (window.toolbar?.items.compactMap(\.view) ?? []).filter { frame($0).height >= 51 }
-        }
         pump(window) {
-          headers().count == 2
-            && (headers().map { self.frame($0).maxX }.max() ?? 0)
-              >= window.frame.width - CSSpace.lg
+          guard let glass = self.rectangularHeaderGlass(in: window) else { return false }
+          return self.frame(glass).width > 200 && self.frame(glass).maxX >= width - 1
         }
-        let rects = headers().map { frame($0) }
+        let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
+        let rect = frame(glass)
         let attachment = XCTAttachment(
           string: "requestedWidth=\(width) expanded=\(expanded) window=\(window.frame) "
-            + "layout=\(window.contentLayoutRect) headerItems=\(rects)")
-        attachment.name = "Header width \(width) expanded \(expanded)"
+            + "layout=\(window.contentLayoutRect) glass=\(rect)")
+        attachment.name = "Rectangular header \(width) expanded \(expanded)"
         attachment.lifetime = .keepAlways
         add(attachment)
-        XCTAssertEqual(rects.count, 2)
-        XCTAssertGreaterThanOrEqual(
-          try XCTUnwrap(rects.map(\.maxX).max()), window.frame.width - CSSpace.lg,
-          "actions reach the trailing edge at \(width), expanded \(expanded)")
-        for rect in rects {
-          XCTAssertLessThanOrEqual(rect.maxX, window.frame.width + 1)
-          XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY - 1)
-          for light in trafficLights(in: window) {
-            XCTAssertFalse(rect.intersects(frame(light)), "header covers a traffic light")
-          }
+        XCTAssertEqual(window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }.count, 1)
+        XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
+        XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
+        XCTAssertEqual(rect.height, 52, accuracy: 1)
+        XCTAssertEqual(glass.cornerRadius, 0)
+        for light in trafficLights(in: window) {
+          XCTAssertFalse(rect.intersects(frame(light)), "detail glass covers a native window button")
         }
       }
     }
+  }
+
+  private func rectangularHeaderGlass(in window: NSWindow) -> NSGlassEffectView? {
+    guard let theme = window.contentView?.superview else { return nil }
+    return first(in: theme) { $0.identifier?.rawValue == "codescribe-header-glass" }
+      as? NSGlassEffectView
   }
 
   func testIntegratedHeaderAtMinimumAndNormalWidths() throws {

@@ -12,6 +12,7 @@ struct AgentChatView: View {
   /// column geometry inside the bounds `CSSidebarColumn` carries.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
+  @State private var sidebarWidth = CSSidebarWidth.navigation.ideal
   /// View state only: opening the context panel never touches the thread,
   /// draft, model, recording or any agent call.
   @AppStorage(AgentContextPanelPreference.defaultsKey) private var contextPanelOpen =
@@ -25,6 +26,12 @@ struct AgentChatView: View {
   var body: some View {
     NavigationSplitView(columnVisibility: sidebarVisibility) {
       ThreadRail(store: store)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+          let limits = CSSidebarWidth.navigation
+          if sidebarExpanded, width >= limits.minimum, width <= limits.maximum {
+            sidebarWidth = width
+          }
+        }
     } detail: {
       ThreadDetail(
         store: store, maxPermissions: maxPermissions, isContextOpen: $contextPanelOpen
@@ -36,7 +43,9 @@ struct AgentChatView: View {
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
     .modifier(
-      AgentIntegratedChrome(store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen))
+      AgentIntegratedChrome(
+        store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen,
+        sidebarExpanded: sidebarExpanded, sidebarWidth: sidebarWidth))
     .csFocusPolicy()
     .background(
       AgentWindowCapabilities(isPinned: isPinned, contextPanelOpen: contextPanelOpen)
@@ -241,6 +250,8 @@ private struct AgentIntegratedChrome: ViewModifier {
   @ObservedObject var store: AgentChatStore
   @Binding var isPinned: Bool
   @Binding var isContextOpen: Bool
+  let sidebarExpanded: Bool
+  let sidebarWidth: CGFloat
   @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
   @State private var renameText = ""
@@ -253,8 +264,13 @@ private struct AgentIntegratedChrome: ViewModifier {
 
   func body(content: Content) -> some View {
     content
-      .toolbar { agentToolbar }
+      .toolbarVisibility(.visible, for: .windowToolbar)
       .modifier(CSWindowHeaderChrome())
+      .background {
+        CSWindowTopHeader(leadingWidth: sidebarExpanded ? sidebarWidth : 0) {
+          headerContent
+        }
+      }
       .alert("Rename conversation", isPresented: $isRenaming) {
         TextField("Conversation title", text: $renameText)
         Button("Rename") {
@@ -286,26 +302,17 @@ private struct AgentIntegratedChrome: ViewModifier {
       }
   }
 
-  /// Brand and actions occupy one native bar, without separate glass
-  /// capsules. The bar stays visible as the turns scroll beneath it.
-  @ToolbarContentBuilder
-  private var agentToolbar: some ToolbarContent {
-    // AppKit owns allocation of the two real content items and the flexible
-    // space between them. Neither item measures or imposes a toolbar width.
-    ToolbarItemGroup(placement: .navigation) {
-      CSWindowHeaderItem {
-        HStack(spacing: 12) {
-          wordmark
-          identity
-        }
-      }
+  /// Actual information and controls inside the rectangular detail glass.
+  /// AppKit's top accessory places this in the existing titlebar band.
+  private var headerContent: some View {
+    HStack(spacing: 12) {
+      wordmark
+      identity
+      Spacer(minLength: 12)
+      trailingCluster
     }
-    .sharedBackgroundVisibility(.visible)
-    ToolbarItemGroup(placement: .primaryAction) {
-      Spacer()
-      CSWindowHeaderItem { trailingCluster }
-    }
-    .sharedBackgroundVisibility(.visible)
+    .padding(.horizontal, 12)
+    .frame(height: 52)
   }
 
   private var wordmark: some View {
