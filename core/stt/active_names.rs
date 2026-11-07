@@ -232,11 +232,13 @@ fn canonical_name(value: &str) -> Option<String> {
 /// The provider id of every lease identity, or `None` when the helper would
 /// refuse it. The rule is stated once, at `provider_token` in
 /// `scripts/bus-demux.py`, and pinned by
-/// `scripts/tests/fixtures/lease-identity-vectors.json`: ASCII whitespace
-/// trimmed, `[A-Za-z0-9][A-Za-z0-9-]{0,63}`, ASCII lower-case, never a Unicode
-/// case mapping.
+/// `scripts/tests/fixtures/lease-identity-vectors.json`: exactly space, tab,
+/// LF, CR and FF trimmed, spelled out so the set is the rule's own and not
+/// whatever a standard-library predicate means (the vertical tab is not
+/// trimmed and is refused), `[A-Za-z0-9][A-Za-z0-9-]{0,63}`, ASCII
+/// lower-case, never a Unicode case mapping.
 pub fn provider_token(provider: &str) -> Option<String> {
-    let value = provider.trim_matches(|c: char| c.is_ascii_whitespace());
+    let value = provider.trim_matches([' ', '\t', '\n', '\r', '\x0c']);
     let valid = value.len() <= 64
         && value
             .bytes()

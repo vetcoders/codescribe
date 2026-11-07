@@ -1,6 +1,6 @@
 {
   "schema": "codescribe.lease-identity-vectors.v1",
-  "rule": "lease_id = first 32 hex digits of SHA-256(provider_token(provider) + NUL + provider_session_id); provider_token = trim ASCII whitespace (space, tab, LF, CR, FF), require [A-Za-z0-9][A-Za-z0-9-]{0,63}, then ASCII lower-case; any other provider, any non-ASCII character included, is refused (normalized_provider and lease_id null); the session is taken byte for byte, never trimmed. Stated once at provider_token in scripts/bus-demux.py",
+  "rule": "lease_id = first 32 hex digits of SHA-256(provider_token(provider) + NUL + provider_session_id); provider_token = trim exactly space, tab, LF, CR and FF (a vertical tab is not trimmed and is refused), require [A-Za-z0-9][A-Za-z0-9-]{0,63}, then ASCII lower-case; any other provider, any non-ASCII character included, is refused (normalized_provider and lease_id null); the session is taken byte for byte, never trimmed. Stated once at provider_token in scripts/bus-demux.py",
   "vectors": [
     {
       "case": "plain",
@@ -75,6 +75,13 @@
     {
       "case": "no-break space is not trimmed and is refused",
       "provider": "\u00a0codex",
+      "provider_session_id": "x",
+      "normalized_provider": null,
+      "lease_id": null
+    },
+    {
+      "case": "vertical tab is not trimmed and is refused",
+      "provider": "\u000bcodex",
       "provider_session_id": "x",
       "normalized_provider": null,
       "lease_id": null
