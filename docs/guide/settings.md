@@ -130,6 +130,16 @@ The Agent page has **AI models, Prompts, Workspace, Diagnostics, Tools** and
 **MCP** tabs. These configure the built-in Agent and related functions; an
 external attached agent also has its own client's configuration.
 
+### Conversation window context
+
+The **Context** button in the separate Agent conversation window opens a
+fixed-width panel beside the conversation. One continuous native glass surface
+contains its heading, conversation facts and tool-settings action below the
+existing window header. The conversation retains a neutral reading canvas;
+that canvas does not extend behind either side panel. Reduce Transparency or
+Increase Contrast replaces the context glass with the opaque reading surface.
+Opening or closing Context keeps the current conversation and draft.
+
 ### AI models
 
 Choose the provider and model separately for Agent and formatting functions.

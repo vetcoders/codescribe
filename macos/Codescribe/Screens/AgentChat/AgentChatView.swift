@@ -473,6 +473,9 @@ private struct ThreadDetail: View {
   var body: some View {
     HStack(spacing: 0) {
       conversationColumn
+        // Keep the reading canvas inside the conversation: neither the native
+        // sidebar's leading safe area nor the context glass gets an opaque backing.
+        .background(CSColor.sheet, ignoresSafeAreaEdges: [.top, .bottom])
       if isContextOpen {
         HStack(spacing: 0) {
           Divider()
@@ -488,10 +491,6 @@ private struct ThreadDetail: View {
     }
     .animation(.easeOut(duration: CSMotion.Tempo.hover), value: isContextOpen)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    // Native detail extends under the floating sidebar. Keep its opaque
-    // reading canvas out of that leading safe area so sidebar glass can sample
-    // the scene behind the window instead of a sheet-coloured backing.
-    .background(CSColor.sheet, ignoresSafeAreaEdges: [.top, .bottom, .trailing])
     .alert(
       "Speech unavailable",
       isPresented: Binding(
