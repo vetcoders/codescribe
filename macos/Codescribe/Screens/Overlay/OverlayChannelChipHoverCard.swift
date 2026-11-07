@@ -77,10 +77,31 @@ struct OverlayChannelChipHoverCard: View {
     }
   }
 
-  let chip: OverlayChannelMapChip
-  let status: OverlayChannelChipStatus
-  let modifier: OverlayChannelChordModifier
+  let digit: String
+  let lines: [Line]
+  let accessibilityText: String
   let palette: OverlayAppearancePalette
+
+  init(
+    chip: OverlayChannelMapChip, status: OverlayChannelChipStatus,
+    modifier: OverlayChannelChordModifier, palette: OverlayAppearancePalette
+  ) {
+    self.init(
+      digit: chip.digit, lines: Self.lines(chip: chip, status: status, modifier: modifier),
+      accessibilityText: Self.accessibilityText(chip: chip, status: status, modifier: modifier),
+      palette: palette)
+  }
+
+  /// The card from lines already worded, as the tests give the longer
+  /// Polish lines.
+  init(
+    digit: String, lines: [Line], accessibilityText: String, palette: OverlayAppearancePalette
+  ) {
+    self.digit = digit
+    self.lines = lines
+    self.accessibilityText = accessibilityText
+    self.palette = palette
+  }
 
   static let padding: CGFloat = 10
   static let lineSpacing: CGFloat = 4
@@ -105,7 +126,7 @@ struct OverlayChannelChipHoverCard: View {
     .background(palette.desktopBackground.color.opacity(0.9))
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(Text(verbatim: accessibilityText))
-    .accessibilityIdentifier("overlay-channel-chip-card-\(chip.digit)")
+    .accessibilityIdentifier("overlay-channel-chip-card-\(digit)")
   }
 
   private func row(_ line: Line) -> some View {
@@ -137,14 +158,6 @@ struct OverlayChannelChipHoverCard: View {
       }
     }
     .foregroundStyle(line.tone.color(in: palette))
-  }
-
-  var lines: [Line] {
-    Self.lines(chip: chip, status: status, modifier: modifier)
-  }
-
-  var accessibilityText: String {
-    Self.accessibilityText(chip: chip, status: status, modifier: modifier)
   }
 
   // MARK: Text
@@ -376,7 +389,12 @@ struct OverlayChannelChipHoverCard: View {
     chip: OverlayChannelMapChip, status: OverlayChannelChipStatus,
     modifier: OverlayChannelChordModifier
   ) -> CGSize {
-    let lines = lines(chip: chip, status: status, modifier: modifier)
+    size(lines: lines(chip: chip, status: status, modifier: modifier))
+  }
+
+  /// The size of a card drawing these lines.
+  @MainActor
+  static func size(lines: [Line]) -> CGSize {
     let widest =
       lines.map { line -> CGFloat in
         var width = OverlayChannelPill.textWidth(line.text, size: line.size)
