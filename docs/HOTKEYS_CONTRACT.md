@@ -106,19 +106,23 @@ commit-on-blur admission; explicit transcript actions still use the existing
 reducer compare-and-swap path. Conversation messages are selectable read-only
 text. Unread reply counts describe viewing only, independently of delivery ACK.
 
-An explicit ordinary hold or toggle start closes active agent capture channels
-through their normal hangup path before admitting dictation (Founder delivery
-`f3cbd666a0d7d7e61d4d1971`, 2026-10-05).
-Each channel releases its PCM feed before dictation admission. Its retained
-terminal task then joins and publishes the final receipt; its words are retained.
-For hold gestures, handover waits until the existing start delay has elapsed.
+Ordinary dictation and agent channels join the same recognized text stream in
+either start order (current user delivery `806be5087709d09a2cdc9e9e`,
+2026-11-07: use the existing text demux to join and cut transcripts with the
+same formatting settings). An ordinary Double Option or raw hold start never hangs up agents.
+The first opener owns the capture namespace, ledger, recognition settings and
+archive; subsequent participants attach their own document at the current
+sample. They hear no earlier speech and open no second PCM feed or recognizer.
+Their explicit delivery targets remain independent. Stop detaches only that
+document; the last participant closes the common producer and microphone.
+For hold gestures, joining waits until the existing start delay has elapsed.
 A hold key released inside the delay starts no take, and an explicit channel
 gesture during the delay (an agents-list click) cancels that pending hold.
 The channel modifier never records (one key, one role, below), so a hold or
-toggle take is never a channel chord's prefix. A take on another key keeps
-running beside a channel opened from the agents list.
+toggle take is never a channel chord's prefix. A dictation take and a channel
+opened from the agents list remain participants of that same stream.
 The same unified overlay then shows My dictation. The channel silence poll shares
-the controller's serial transition lock with this handover. Repeated lifecycle
+the controller's serial transition lock with admission. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.
 
 A recording Stop gesture binds the already published capture identity before

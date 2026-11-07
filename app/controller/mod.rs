@@ -461,6 +461,22 @@ fn finish_audio_capture(id: Option<&str>) {
     }
 }
 
+/// A dictation document and its initiating capture have distinct namespaces.
+/// Failed admission may have acquired the capture lease before a Bus existed.
+/// A surviving shared source keeps that lease until its last participant stops.
+fn finish_document_audio_capture(document_id: Option<&str>, live_capture: Option<&str>) {
+    let Some(document_id) = retainable_session_id(document_id) else {
+        return;
+    };
+    if Some(document_id) != live_capture {
+        finish_audio_capture(Some(document_id));
+    }
+    let capture = StreamingRecorder::dictation_capture_session_id(document_id);
+    if Some(capture.as_str()) != live_capture {
+        finish_audio_capture(Some(&capture));
+    }
+}
+
 /// Observe the original take ledger after its final refinement completes.
 ///
 /// The handle belongs to the recorder that just stopped. A missing handle, a
@@ -1400,6 +1416,10 @@ impl codescribe_core::pipeline::contracts::EventSink for TakeExternalEventSink {
         self.sink.on_capture_opened(session_id, capture_epoch);
     }
 
+    fn close_participation(&self, session_id: &str, capture_epoch: u64) -> Result<()> {
+        self.presentation.close_participation(session_id, capture_epoch)
+    }
+
     fn wait_presentation_published<'a>(
         &'a self,
         session_id: &'a str,
@@ -1581,13 +1601,86 @@ async fn try_stop_closed_take_for_terminal(
     let session = session.map(str::to_owned);
     let ledger = take.acoustic_ledger_handle();
     let stopped = take.finish().await;
-    let observer = observe_take_ledger((session.as_deref(), epoch), ledger, session_id);
+    let retention_id = if take.is_shared_document() {
+        session.as_deref()
+    } else {
+        session_id
+    };
+    let observer = observe_take_ledger((session.as_deref(), epoch), ledger, retention_id);
     if !take.is_settled() {
         return (stopped, observer, Some(take));
     }
-    let classified =
-        classify_terminal_stop(stopped, session_id, session, epoch, observer.clone()).await;
+    if let Some((capture, path)) = take.take_shared_capture_archive() {
+        retain_session_audio(
+            Some(&capture),
+            &path,
+            codescribe_core::state::SessionTranscriptArchive::Unavailable(
+                "shared capture; transcript documents belong to participation intervals",
+            ),
+            &observer,
+        )
+        .await;
+    }
+    let released_capture = take.released_shared_capture().map(str::to_owned);
+    let classified = classify_terminal_stop(
+        stopped,
+        retention_id,
+        session.clone(),
+        epoch,
+        observer.clone(),
+    )
+    .await;
+    finish_audio_capture(released_capture.as_deref());
     (classified, observer, None)
+}
+
+/// Retain one document through the existing history owner. A shared interval
+/// without an exact WAV still owns text; it never claims the whole capture's
+/// audio. The capture archive is retained separately under its physical id.
+async fn retain_stopped_document(
+    session_id: Option<&str>,
+    capture_session_id: Option<&str>,
+    text: &str,
+    audio_path: Option<&std::path::Path>,
+    shared_document: bool,
+    observer: &codescribe_core::pipeline::take_truth::TakeTruth,
+) -> Option<std::path::PathBuf> {
+    if let Some(path) = audio_path {
+        let lease = retainable_session_id(capture_session_id.or(session_id)).and_then(|id| {
+            codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
+        });
+        let archived = retain_session_audio_with_lease(
+            session_id,
+            path,
+            codescribe_core::state::SessionTranscriptArchive::from_committed(text),
+            lease,
+            observer,
+        )
+        .await;
+        if shared_document {
+            finish_audio_capture(capture_session_id);
+        }
+        return archived;
+    }
+    if !shared_document || text.trim().is_empty() {
+        return None;
+    }
+    let text = text.to_string();
+    match tokio::task::spawn_blocking(move || {
+        codescribe_core::state::history::save_entry(&text).path
+    })
+    .await
+    {
+        Ok(path) if path.is_file() => Some(path),
+        Ok(path) => {
+            warn!(?session_id, path = %path.display(), "shared document history was not saved");
+            None
+        }
+        Err(error) => {
+            warn!(?session_id, %error, "shared document history worker failed");
+            None
+        }
+    }
 }
 
 async fn classify_terminal_stop(
@@ -3335,6 +3428,21 @@ impl RecordingController {
         Arc::clone(&*self.runtime_settings.read().await)
     }
 
+    /// Stop consumes the generation bound to its capture, including when this
+    /// document joined an older shared recognizer after Settings changed.
+    async fn capture_runtime_settings(&self) -> Arc<RuntimeSettingsSnapshot> {
+        let bound = self
+            .recorder
+            .lock()
+            .await
+            .as_ref()
+            .and_then(StreamingRecorder::bound_runtime_settings);
+        match bound {
+            Some(settings) => automatic_take_settings(settings),
+            None => automatic_take_settings(self.runtime_settings_arc().await),
+        }
+    }
+
     /// Snapshot of current controller configuration
     pub async fn get_config(&self) -> Config {
         self.runtime_settings_arc().await.values().clone()
@@ -3795,8 +3903,8 @@ impl RecordingController {
             .read()
             .await
             .as_ref()
-            .and_then(|emitter| emitter.begin_stop_canvas())
-            .filter(|canvas| Some(canvas.session_id.as_str()) == take_id);
+            .filter(|emitter| take_id.is_some_and(|id| emitter.owns_document(id)))
+            .and_then(|emitter| emitter.begin_stop_canvas());
         StopCanvasRequest {
             stopped_at,
             painted_at_stop,
@@ -3829,8 +3937,8 @@ impl RecordingController {
             || {
                 presentation
                     .as_ref()
+                    .filter(|emitter| take_id.is_some_and(|id| emitter.owns_document(id)))
                     .and_then(|emitter| emitter.finish_stop_canvas())
-                    .filter(|canvas| Some(canvas.session_id.as_str()) == take_id)
             },
             // The virtual capture grace precedes EOF. It must not consume the
             // recognizers' separate end-final budget after that fence.
@@ -3979,7 +4087,12 @@ impl RecordingController {
             .snapshot
             .as_ref()
             .is_some_and(|canvas| canvas.has_committed_document && canvas.preview_only_words == 0);
-        if !wait.permits_first_delivery(take_id) {
+        let capture_id = presentation.and_then(|emitter| {
+            emitter
+                .capture_session_for_document(take_id.unwrap_or_default())
+                .ok()
+        });
+        if !wait.permits_first_delivery(capture_id.as_deref()) {
             info!(
                 take_id,
                 stop_final_wait_ms = wait.stop_final_wait_ms,
@@ -4010,12 +4123,14 @@ impl RecordingController {
     /// pending terminal work and its exact Bus into one tracked take-owned tail.
     /// It retains audio and Bus finality but has no authority over the next UI.
     async fn detach_preempted_stop(&self, take: ClosedTake, take_id: Option<&str>) -> Result<()> {
+        let shared_document = take.is_shared_document();
+        let capture_session = take.capture_identity().0.map(str::to_owned);
         if let Some(emitter) = self.active_presentation.read().await.as_ref() {
             emitter.retire_presentation();
         }
         let bus = self.active_transcript_bus.write().await.take();
         let take_id = take_id.map(str::to_owned);
-        let retained_capture = retainable_session_id(take_id.as_deref()).and_then(|id| {
+        let retained_capture = retainable_session_id(capture_session.as_deref()).and_then(|id| {
             codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
         });
         let delivery = *self.delivery_disposition.read().await;
@@ -4029,6 +4144,19 @@ impl RecordingController {
                             path,
                             codescribe_core::state::SessionTranscriptArchive::from_committed(text),
                             retained_capture.clone(),
+                            &observer,
+                        )
+                        .await;
+                        if shared_document {
+                            finish_audio_capture(capture_session.as_deref());
+                        }
+                    } else {
+                        retain_stopped_document(
+                            take_id.as_deref(),
+                            capture_session.as_deref(),
+                            text,
+                            None,
+                            shared_document,
                             &observer,
                         )
                         .await;
@@ -4085,7 +4213,13 @@ impl RecordingController {
             preempted,
             armed_order,
         } = wait;
-        let snapshot = snapshot.filter(|canvas| Some(canvas.session_id.as_str()) == take_id);
+        let capture_id = presentation.and_then(|emitter| {
+            emitter
+                .capture_session_for_document(take_id.unwrap_or_default())
+                .ok()
+        });
+        let snapshot = snapshot
+            .filter(|canvas| Some(canvas.session_id.as_str()) == capture_id.as_deref());
         let painted_words_at_stop = painted_at_stop
             .as_ref()
             .map_or(0, |canvas| canvas.visible_words.len());
@@ -4824,7 +4958,14 @@ impl RecordingController {
             Some(&self.event_broadcast),
         )
         .await;
-        finish_audio_capture(session_id.as_deref());
+        let live_capture = self
+            .recorder
+            .lock()
+            .await
+            .as_ref()
+            .and_then(StreamingRecorder::shared_channel_view)
+            .map(|view| view.capture_session_id);
+        finish_document_audio_capture(session_id.as_deref(), live_capture.as_deref());
         *self.assistive_context.write().await = None;
         self.start_transition_in_flight
             .store(false, Ordering::SeqCst);
@@ -4887,6 +5028,7 @@ impl RecordingController {
         abort: HoldStartAbort,
     ) {
         warn!("Hold-start unwound before recording became active: {abort:?}");
+        let mut live_capture = None;
         if let Some(rec) = rec {
             if rec.recorder.is_active()
                 && let Err(stop_err) = rec.stop_and_discard_path().await
@@ -4894,6 +5036,7 @@ impl RecordingController {
                 warn!("Hold-start unwind: stale-session stop failed: {stop_err}");
             }
             Self::clear_recorder_callbacks(rec);
+            live_capture = rec.shared_channel_view().map(|view| view.capture_session_id);
         }
         // A hold that never became a recording delivered nothing; the take is
         // not "failed delivery", it had no delivery attempt at all.
@@ -4908,7 +5051,7 @@ impl RecordingController {
         .await;
         *session.active_presentation.write().await = None;
         let aborted_id = session.session_id.write().await.take();
-        finish_audio_capture(aborted_id.as_deref());
+        finish_document_audio_capture(aborted_id.as_deref(), live_capture.as_deref());
         *session.assistive_context.write().await = None;
         *session.pre_overlay_frontmost_app.write().await = None;
         set_assistive_session(false);
@@ -5103,7 +5246,7 @@ impl RecordingController {
         *self.force_ai_mode.write().await = false;
         *self.assistive_context.write().await = None;
         let ended_id = self.session_id.write().await.take();
-        finish_audio_capture(ended_id.as_deref());
+        finish_document_audio_capture(ended_id.as_deref(), None);
         self.assistive_loop_active.store(false, Ordering::SeqCst);
         self.toggle_user_has_text.store(false, Ordering::SeqCst);
         self.toggle_assistant_has_text
@@ -6212,7 +6355,6 @@ impl RecordingController {
         let delay_ms = effective_hold_start_delay_ms(configured_delay_ms, assistive);
         let beep = config.beep_on_start;
         let sound_volume = config.sound_volume;
-        let language = config.whisper_language;
 
         let hold_mode = Arc::clone(&self.hold_mode);
 
@@ -6323,22 +6465,33 @@ impl RecordingController {
                 return;
             }
 
-            if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
-                if let Err(error) = controller.close_agent_channels_for_dictation().await {
-                    error!(%error, "Hold-start refused: agent channel did not close");
-                    return;
-                }
-                if hold_start_generation.load(Ordering::SeqCst) != task_generation {
-                    debug!("Hold-start cancelled while closing the preceding channels");
-                    return;
-                }
-            }
-
             let _start_guard = AtomicFlagGuard::new(Arc::clone(&start_transition_in_flight));
 
             // Generate session ID
             let new_session_id = Uuid::new_v4().to_string();
-            if let Err(error) = begin_audio_capture(&new_session_id, config.audio_retention).await {
+            let shared = if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
+                recorder
+                    .lock()
+                    .await
+                    .as_ref()
+                    .and_then(StreamingRecorder::shared_channel_view)
+            } else {
+                None
+            };
+            let runtime_settings = shared
+                .as_ref()
+                .map(|view| Arc::clone(&view.runtime_settings))
+                .unwrap_or(runtime_settings);
+            let config = runtime_settings.values().clone();
+            let language = config.whisper_language;
+            let capture_session_id = if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
+                StreamingRecorder::dictation_capture_session_id(&new_session_id)
+            } else {
+                new_session_id.clone()
+            };
+            if shared.is_none()
+                && let Err(error) = begin_audio_capture(&capture_session_id, config.audio_retention).await
+            {
                 error!(%error, "capture storage lease refused; microphone remains closed");
                 return;
             }
@@ -6470,7 +6623,15 @@ impl RecordingController {
             // Set session mode for delta routing BEFORE starting the pipeline,
             // so the very first deltas route to the correct overlay.
             set_assistive_session(is_assistive);
-            rec.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
+            if !is_assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
+                rec.bind_dictation_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
+            } else {
+                rec.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
+            }
+            let capture_session_id = rec
+                .bound_capture_session_id()
+                .unwrap_or(&new_session_id)
+                .to_string();
             hold_session.delivery_tagger.begin(
                 if is_assistive {
                     "assistive"
@@ -6494,7 +6655,7 @@ impl RecordingController {
                 audience: None,
                 badge_only: false,
             })
-            .map(Arc::new);
+            .map(|bus| Arc::new(bus.with_capture_session(capture_session_id)));
             // Install the Bus before the recorder starts: from here every exit
             // runs through `unwind_hold_start`, which ends whatever is in this
             // slot — silently while un-started, with one terminal line once
@@ -6626,14 +6787,24 @@ impl RecordingController {
             );
             return Ok(CaptureAdmission::NotAdmitted);
         }
-        if !is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree) {
-            self.close_agent_channels_for_dictation().await?;
-        }
         // A new take inherits no destination from the previous one.
         *self.delivery_disposition.write().await = TranscriptDelivery::Unattempted;
         self.refresh_pending_runtime_settings_locked().await?;
         // The take seals the automatic policy: a capture never runs Max.
         let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
+        let shared = if !is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree) {
+            self.recorder
+                .lock()
+                .await
+                .as_ref()
+                .and_then(StreamingRecorder::shared_channel_view)
+        } else {
+            None
+        };
+        let runtime_settings = shared
+            .as_ref()
+            .map(|view| Arc::clone(&view.runtime_settings))
+            .unwrap_or(runtime_settings);
         let config = runtime_settings.values();
         let _start_guard = AtomicFlagGuard::new(Arc::clone(&self.start_transition_in_flight));
 
@@ -6659,7 +6830,14 @@ impl RecordingController {
 
         // Generate session ID
         let new_session_id = Uuid::new_v4().to_string();
-        begin_audio_capture(&new_session_id, config.audio_retention).await?;
+        let capture_session_id = if !is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree) {
+            StreamingRecorder::dictation_capture_session_id(&new_session_id)
+        } else {
+            new_session_id.clone()
+        };
+        if shared.is_none() {
+            begin_audio_capture(&capture_session_id, config.audio_retention).await?;
+        }
         *self.session_id.write().await = Some(new_session_id.clone());
 
         if is_assistive {
@@ -6771,7 +6949,15 @@ impl RecordingController {
         // Set session mode for delta routing BEFORE starting the pipeline,
         // so the very first deltas route to the correct overlay.
         set_assistive_session(is_assistive);
-        recorder.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
+        if !is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree) {
+            recorder.bind_dictation_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
+        } else {
+            recorder.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
+        }
+        let capture_session_id = recorder
+            .bound_capture_session_id()
+            .unwrap_or(&new_session_id)
+            .to_string();
         self.delivery_tagger.begin(
             if is_assistive { "agent" } else { "dictation" },
             config.whisper_language.as_str(),
@@ -6791,7 +6977,7 @@ impl RecordingController {
             audience: None,
             badge_only: false,
         })
-        .map(Arc::new);
+        .map(|bus| Arc::new(bus.with_capture_session(capture_session_id)));
 
         // A hands-free assistive take ends after its voiceless limit
         // (Settings › Built-in Agent); any other take clears the previous
@@ -6944,7 +7130,7 @@ impl RecordingController {
 
         // The same automatic seal as the take's start: Stop formatting and
         // projection selection never run Max for a capture.
-        let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
+        let runtime_settings = self.capture_runtime_settings().await;
 
         // Self-deadlock guard (Rust 2024): the read guard temporary from an
         // if-let chain scrutinee outlives the chain body. Inlining the read
@@ -6991,6 +7177,8 @@ impl RecordingController {
             let was_active = recorder.close_capture().await;
             let capture_closed_at = std::time::Instant::now();
             let mut take = recorder.detach_closed_take(was_active);
+            let shared_document = take.is_shared_document();
+            let capture_session = take.capture_identity().0.map(str::to_owned);
             Self::clear_recorder_callbacks(recorder);
             drop(recorder_guard);
             drop(serial);
@@ -7089,18 +7277,17 @@ impl RecordingController {
                 )
                 .await
             } else { streaming_text };
-            if let Some(path) = raw_audio_path_opt.as_deref() {
-                let archived = retain_session_audio(
-                    session_id_snapshot.as_deref(),
-                    path,
-                    codescribe_core::state::SessionTranscriptArchive::from_committed(
-                        streaming_text.as_str(),
-                    ),
-                    &observer,
-                ).await;
-                self.link_live_archive(session_id_snapshot.as_deref(), archived)
-                    .await;
-            }
+            let archived = retain_stopped_document(
+                session_id_snapshot.as_deref(),
+                capture_session.as_deref(),
+                &streaming_text,
+                raw_audio_path_opt.as_deref(),
+                shared_document,
+                &observer,
+            )
+            .await;
+            self.link_live_archive(session_id_snapshot.as_deref(), archived)
+                .await;
             let settled = initial_delivery?;
             deliver_terminal_unless_settled(settled, || async {
                 self.deliver_stop_transcript(
@@ -7648,10 +7835,7 @@ impl RecordingController {
             return raw;
         };
         let expected_session = take_id.map(|id| id.strip_suffix(STOPPING_SUFFIX).unwrap_or(id));
-        if !presentation
-            .visible_canvas_snapshot()
-            .is_some_and(|canvas| Some(canvas.session_id.as_str()) == expected_session)
-        {
+        if !expected_session.is_some_and(|session| presentation.owns_document(session)) {
             warn!(
                 take_id,
                 "Stop formatter selection refused a different capture presentation"
@@ -7798,7 +7982,7 @@ impl RecordingController {
     ) -> Result<ProcessRecordingOutcome> {
         let (assistive, hold_mode, force_raw, force_ai) = mode;
         // The same automatic seal as the take's start: Stop never runs Max.
-        let runtime_settings = automatic_take_settings(self.runtime_settings_arc().await);
+        let runtime_settings = self.capture_runtime_settings().await;
         if cfg!(test) {
             info!(
                 "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",
@@ -7815,10 +7999,13 @@ impl RecordingController {
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
         let serving_engine = recorder.streaming_engine_label();
+        let capture_turn = recorder.capture_turn_intent();
         recorder.await_stop_pause(None, stop.stopped_at).await;
         let was_active = recorder.close_capture().await;
         let capture_closed_at = std::time::Instant::now();
         let mut take = recorder.detach_closed_take(was_active);
+        let shared_document = take.is_shared_document();
+        let capture_session = take.capture_identity().0.map(str::to_owned);
         Self::clear_recorder_callbacks(recorder);
         drop(recorder_guard);
         drop(serial);
@@ -7832,7 +8019,7 @@ impl RecordingController {
             .deliver_frozen_canvas_at_stop(
                 &mut take,
                 take_id.as_deref(),
-                (assistive, force_ai, CaptureTurnIntent::HandsFree),
+                (assistive, force_ai, capture_turn),
                 stop,
                 capture_closed_at,
                 runtime_settings.as_ref(),
@@ -7860,12 +8047,20 @@ impl RecordingController {
                 return self
                     .process_terminal_stop_error(err, |text| async move {
                         deliver_terminal_unless_settled(settled, || async {
+                            let text = self
+                                .format_composer_turn_once(
+                                    take_id.as_deref(),
+                                    runtime_settings.as_ref(),
+                                    capture_turn,
+                                    text,
+                                )
+                                .await;
                             self.deliver_stop_transcript(
                                 take_id.as_deref(),
                                 &text,
                                 assistive,
                                 force_ai,
-                                CaptureTurnIntent::HandsFree,
+                                capture_turn,
                                 true,
                             )
                             .await
@@ -7876,6 +8071,14 @@ impl RecordingController {
             }
         };
 
+        let streaming_text = self
+            .format_composer_turn_once(
+                take_id.as_deref(),
+                runtime_settings.as_ref(),
+                capture_turn,
+                streaming_text,
+            )
+            .await;
         let streaming_text = if !assistive {
             self.select_paste_projection(
                 take_id.as_deref(),
@@ -7887,18 +8090,16 @@ impl RecordingController {
             streaming_text
         };
 
-        if let Some(path) = raw_audio_path_opt.as_deref() {
-            let archived = retain_session_audio(
-                take_id.as_deref(),
-                path,
-                codescribe_core::state::SessionTranscriptArchive::from_committed(
-                    streaming_text.as_str(),
-                ),
-                &observer,
-            )
-            .await;
-            self.link_live_archive(take_id.as_deref(), archived).await;
-        }
+        let archived = retain_stopped_document(
+            take_id.as_deref(),
+            capture_session.as_deref(),
+            &streaming_text,
+            raw_audio_path_opt.as_deref(),
+            shared_document,
+            &observer,
+        )
+        .await;
+        self.link_live_archive(take_id.as_deref(), archived).await;
         // Ctrl-hold literal (`force_raw`) and the hold flavour are sink-time
         // facts already consumed when the emitter was built; delivery reads
         // only the frozen intent.
@@ -7910,7 +8111,7 @@ impl RecordingController {
                 &streaming_text,
                 assistive,
                 force_ai,
-                CaptureTurnIntent::HandsFree,
+                capture_turn,
                 false,
             )
             .await

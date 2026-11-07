@@ -1430,6 +1430,12 @@ pub trait EventSink: Send + Sync {
     /// ledger receipt, or public IPC message.
     fn on_capture_opened(&self, _session_id: &str, _capture_epoch: u64) {}
 
+    /// Close only a settled document participation in this capture. This is
+    /// not capture EOF or an acoustic seal. An unwired observer must refuse.
+    fn close_participation(&self, _session_id: &str, _capture_epoch: u64) -> anyhow::Result<()> {
+        anyhow::bail!("document participation completion owner unavailable")
+    }
+
     /// Report whether per-occurrence formatter jobs are currently queued or in
     /// flight for this take. Passive sinks ignore this signal.
     fn on_formatter_pending(&self, _pending: bool) {}

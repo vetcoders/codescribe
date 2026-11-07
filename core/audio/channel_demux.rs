@@ -1,6 +1,6 @@
-//! Sample-clock participant demuxer for the shared agent-channel capture.
+//! Sample-clock participant demuxer for the shared dictation/agent capture.
 //!
-//! Every open agent channel listens to ONE recognizer, ONE acoustic ledger and
+//! Every open dictation/agent participant listens to ONE recognizer, ONE acoustic ledger and
 //! ONE archive. What differs per channel is only *when* it listened: each
 //! participant owns half-open intervals `[start_sample, end_sample)` on the
 //! shared capture clock, which is the count of PCM samples the shared session
@@ -141,6 +141,7 @@ struct SettledParticipant {
 #[derive(Default)]
 struct DemuxState {
     opened: Option<(String, u64)>,
+    formatter_pending: bool,
     participants: Vec<Participant>,
     history: Vec<ParticipationInterval>,
     settled_participants: Vec<SettledParticipant>,
@@ -258,6 +259,7 @@ impl ChannelDemux {
         if let Some((session, epoch)) = state.opened.clone() {
             sink.on_capture_opened(&session, epoch);
         }
+        sink.on_formatter_pending(state.formatter_pending);
         info!(
             ?id,
             start_sample,
@@ -315,6 +317,7 @@ impl ChannelDemux {
         if let Some((session, epoch)) = state.opened.clone() {
             sink.on_capture_opened(&session, epoch);
         }
+        sink.on_formatter_pending(state.formatter_pending);
         info!(
             ?from,
             ?to,
@@ -563,7 +566,11 @@ impl EventSink for ChannelDemux {
     }
 
     fn on_formatter_pending(&self, pending: bool) {
-        for participant in &self.lock().participants {
+        let mut state = self.lock();
+        state.formatter_pending = pending;
+        // Settling sinks still receive their range's formatter results. A new
+        // sink inherits the current flag at attach, without replaying text.
+        for participant in &state.participants {
             participant.sink.on_formatter_pending(pending);
         }
     }

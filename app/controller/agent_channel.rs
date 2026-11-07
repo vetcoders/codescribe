@@ -909,8 +909,6 @@ pub(crate) enum ChannelSealReason {
     Silence,
     /// Fn+digit pressed again: the Founder hung up and nothing reopens it.
     Hangup,
-    /// Capture is handed to dictation, without extending each channel's feed.
-    DictationHandoff,
     /// The process that opened the session ended without closing it (quit,
     /// crash, or a build that wrote no hang-up row). The next controller
     /// start seals it; no microphone of this process ever belonged to it.
@@ -921,7 +919,7 @@ impl ChannelSealReason {
     fn as_str(self) -> &'static str {
         match self {
             Self::Silence => "silence",
-            Self::Hangup | Self::DictationHandoff => "hangup",
+            Self::Hangup => "hangup",
             Self::Orphan => "orphan",
         }
     }
@@ -1500,6 +1498,11 @@ impl RecordingController {
         let recorder = recorder_guard.as_mut().ok_or_else(|| {
             anyhow!("agent channel refused: recording controller has no recorder")
         })?;
+        let shared = recorder.shared_channel_view();
+        let runtime_settings = shared
+            .as_ref()
+            .map(|view| Arc::clone(&view.runtime_settings))
+            .unwrap_or(runtime_settings);
 
         let (
             subscriber,
@@ -1539,7 +1542,6 @@ impl RecordingController {
                 // channel. The first channel opens the shared capture and
                 // its retention lease; later ones join it at the current
                 // sample and hear nothing said before (no backfill).
-                let shared = recorder.shared_channel_view();
                 let owner = participant_owner(
                     digit,
                     bound.provider.as_deref(),
@@ -2498,42 +2500,6 @@ impl RecordingController {
     pub(crate) async fn poll_channel_autoseal(&self, now: SystemTime, bus: &Path) -> Vec<u8> {
         let _serial = self.serial_lock.lock().await;
         self.seal_channels_silent_for(now, bus).await
-    }
-
-    /// Ordinary capture admission holds the controller's serial lock. Release
-    /// each channel feed before admission; tracked tails join and publish its
-    /// existing close receipt independently of the next capture.
-    pub(crate) async fn close_agent_channels_for_dictation(&self) -> Result<()> {
-        let mut open: Vec<_> = {
-            let mut channels = self.agent_channels.lock().await;
-            self.freeze_closing_cohort(channels.values());
-            let open: Vec<_> = channels.drain().collect();
-            self.publish_cohort(&channels);
-            open
-        };
-        open.sort_by_key(|(digit, _)| *digit);
-        let bus = crate::presentation::transcript_bus::transcript_bus_path();
-        let mut first_error = None;
-        for (digit, channel) in open {
-            let retained = channel.clone();
-            if let Err(error) = self
-                .close_open_channel(digit, channel, ChannelSealReason::DictationHandoff, &bus)
-                .await
-            {
-                let mut channels = self.agent_channels.lock().await;
-                self.follow_cohort(digit, retained.transcript_bus.as_ref());
-                channels.insert(digit, retained);
-                self.publish_cohort(&channels);
-                drop(channels);
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
     }
 
     /// The pause after heard voice (`agent_channel.send_pause_sec`, frozen in

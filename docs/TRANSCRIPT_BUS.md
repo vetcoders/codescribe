@@ -2269,16 +2269,32 @@ hosts do not implicitly join a local controller's roster.
 
 ## Shared channel recognition and participation intervals
 
-Every Live agent channel open at the same time listens to ONE capture
+Every Live agent channel and ordinary dictation open at the same time listen to ONE capture
 subscriber, ONE `transcription_session`, ONE `AcousticLedger` and ONE archive
 (`StreamingRecorder::begin_channel_session` / `join_channel_session` in
 `core/audio/streaming_recorder.rs`). `RecordingController` stays the only
-microphone owner. The first channel opens the shared capture under its own
-ledger namespace, `agent-channels-<uuid>`; it is the logical routing owner, not
-a second recorder owner. The stream, ledger and archive run until the last
-participant leaves. Each channel keeps its own reducer, bus session
+microphone owner. The first opener fixes the capture namespace and immutable
+recognition/formatting settings: `agent-channels-<uuid>` when an agent opens it,
+or `dictation-capture-<document UUID>` when dictation opens it. The capture id
+is distinct from every document id even for the initiator. Neither start
+order adds another PCM subscriber, decoder or archive for ordinary dictation.
+The stream, ledger and archive run until the last participant leaves.
+Each channel keeps its own reducer, bus session
 (`agent-channel-<digit>-<uuid>`, `-s<n>` per message), receipts and send hold;
 the bus and reducer authenticate revisions against the capture session.
+Ordinary dictation keeps its own UUID, `Dictation` bus mode, presentation,
+delivery target and version history. Its owner is not a fabricated agent;
+its demux delivery seat is Primary in either start order. UI edits, formatting
+and navigation name that document UUID; the emitter validates it and resolves
+the physical capture namespace before reducer/ledger admission. A reply names
+the document again, while occurrence coordinates keep their physical identity.
+
+The first opener also fixes whether the shared producer formats live. A later
+dictation participant consumes that same stream and its frozen settings. If the
+source does not format live, dictation uses the existing one-pass terminal
+formatter at Stop, retaining its normal delivery target. Formatter-pending
+notifications reach attached and settling sinks; a new attachment or message
+handover inherits the current shared flag, without backfilling earlier text.
 
 What differs per channel is the interval it listened. The capture clock is the
 count of PCM samples the shared session actually received, the same clock its
@@ -2338,6 +2354,17 @@ The shared WAV and its retention lease belong to `capture_session_id`, never to
 a channel session, so no follower maps another channel's audio to its own take.
 When more than one interval shared it, the take store records no single
 transcript for it.
+An ordinary Stop uses the existing `ClosedChannel` settlement through its
+retained `ClosedTake`; it does not emit capture EOF to make one document
+terminal. `EventSink::close_participation(capture_session_id, epoch)` defaults
+to refusal. The take's presentation sink validates the exact opened identity
+and closes only its settled reducer lifecycle and direct-document capability,
+then acknowledges the existing publication FIFO. It does not seal the ledger.
+If dictation is the only interval, its exact shared WAV is also its document
+audio. Otherwise the common WAV stays capture-owned and the dictation document
+is saved through the existing text history and version mirror. It has no exact
+per-interval WAV or Retranscribe input; a whole shared recording is never
+misrepresented as that document's audio. Text operations remain available.
 
 Channel buses keep the quiet contract in both `publish_revision` and
 `publish_direct_revision`: one start row per document, terminal publication,

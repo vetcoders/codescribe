@@ -4694,14 +4694,20 @@ impl PresentationEmitter {
     /// emitted first, and only that callback may repaint the canvas.
     pub fn apply_user_revision(
         &self,
-        intent: UserRevisionIntent,
+        mut intent: UserRevisionIntent,
     ) -> Result<UserRevisionCommit, UserRevisionRefusal> {
+        let document_id = intent.session_id.clone();
+        intent.session_id = self.capture_session_for_document(&document_id)?;
         let ledger = self
             .acoustic_ledger
             .as_ref()
             .ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
         let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
         self.commit_document_revision(&mut ledger, DocumentRequest::Revise(intent))
+            .map(|mut commit| {
+                commit.session_id = document_id;
+                commit
+            })
     }
 
     /// Undo, Redo or a version pick: re-select accepted step `target` of the
@@ -4713,6 +4719,8 @@ impl PresentationEmitter {
         source_revision: u64,
         target: usize,
     ) -> Result<UserRevisionCommit, UserRevisionRefusal> {
+        let document_id = session_id;
+        let session_id = self.capture_session_for_document(&document_id)?;
         let ledger = self
             .acoustic_ledger
             .as_ref()
@@ -4726,6 +4734,34 @@ impl PresentationEmitter {
                 target,
             },
         )
+        .map(|mut commit| {
+            commit.session_id = document_id;
+            commit
+        })
+    }
+
+    pub fn owns_document(&self, document_id: &str) -> bool {
+        self.transcript_bus
+            .as_ref()
+            .map(|bus| bus.session_id())
+            .or_else(|| self.cursor_capture.get().map(|(session, _)| session.as_str()))
+            .is_some_and(|session| session == document_id)
+    }
+
+    /// UI commands name the document; ledger operations name its physical
+    /// capture. Neither a display label nor another document can select it.
+    pub fn capture_session_for_document(
+        &self,
+        document_id: &str,
+    ) -> Result<String, UserRevisionRefusal> {
+        if !self.owns_document(document_id) {
+            return Err(UserRevisionRefusal::SessionMismatch);
+        }
+        self.transcript_bus
+            .as_ref()
+            .map(|bus| bus.capture_session_id().to_string())
+            .or_else(|| self.cursor_capture.get().map(|(session, _)| session.clone()))
+            .ok_or(UserRevisionRefusal::AuthorityUnavailable)
     }
 
     /// Steps and cursor of the take the reducer holds, with the revision a
@@ -5239,10 +5275,22 @@ impl PresentationEmitter {
     /// Finish only this settled participant's lifecycle. Other participants
     /// still own the live ledger; detaching must never seal their speech.
     pub(crate) fn note_channel_detached(&self) {
-        self.session_state
+        let mut state = self
+            .session_state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .mark_terminal_lifecycle();
+            .unwrap_or_else(|error| error.into_inner());
+        state.mark_terminal_lifecycle();
+        // The settled interval owns a terminal direct document, even while
+        // other recipients keep the common recognizer running. This capability
+        // authenticates only its existing observations, never an acoustic seal.
+        let revision = self
+            .cursor_capture
+            .get()
+            .and_then(|(session, epoch)| state.apply_direct_transcript_end(session, *epoch));
+        drop(state);
+        if let Some(revision) = revision {
+            self.publish_direct_revision(revision);
+        }
     }
 
     /// Authenticate formatter input without mutating reducer, ledger, Bus, or
@@ -5253,10 +5301,11 @@ impl PresentationEmitter {
         session_id: &str,
         source_revision: u64,
     ) -> Result<String, UserRevisionRefusal> {
+        let session_id = self.capture_session_for_document(session_id)?;
         self.session_state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .terminal_revision_source(session_id, source_revision)
+            .terminal_revision_source(&session_id, source_revision)
     }
 
     /// The one paid formatter pass this terminal take is owed, if any.
@@ -5269,10 +5318,18 @@ impl PresentationEmitter {
         if self.literal_delivery() {
             return None;
         }
-        self.session_state
+        let mut request = self
+            .session_state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .terminal_formatter_request()
+            .terminal_formatter_request()?;
+        if let Some(bus) = &self.transcript_bus {
+            if request.session_id != bus.capture_session_id() {
+                return None;
+            }
+            request.session_id = bus.session_id().to_string();
+        }
+        Some(request)
     }
 
     /// Inspect admitted Raw labels before presentation shaping in falsifiers.
@@ -5301,6 +5358,8 @@ impl PresentationEmitter {
             AiFormatStatus::Skipped => return Err(UserRevisionRefusal::FormatterUnavailable),
             AiFormatStatus::AiNoop => return Err(UserRevisionRefusal::FormatterNoop),
         }
+        let document_id = session_id;
+        let session_id = self.capture_session_for_document(&document_id)?;
         let ledger = self
             .acoustic_ledger
             .as_ref()
@@ -5315,6 +5374,10 @@ impl PresentationEmitter {
                 result,
             },
         )
+        .map(|mut commit| {
+            commit.session_id = document_id;
+            commit
+        })
     }
 
     /// Wait while background occurrence formatter jobs are still in flight for
@@ -5685,6 +5748,17 @@ impl Drop for PresentationEmitter {
 }
 
 impl EventSink for PresentationEmitter {
+    fn close_participation(&self, session_id: &str, capture_epoch: u64) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.cursor_capture.get().is_some_and(|(session, epoch)| {
+                session == session_id && *epoch == capture_epoch && capture_epoch != 0
+            }),
+            "document participation completion capture identity mismatch"
+        );
+        self.note_channel_detached();
+        Ok(())
+    }
+
     fn wait_presentation_published<'a>(
         &'a self,
         session_id: &'a str,

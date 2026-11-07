@@ -71,6 +71,9 @@ pub enum CaptureTurnIntent {
     SingleTurn,
     /// A channel delivers shaped Raw after acoustic refinement, without LLM formatting.
     AgentChannel,
+    /// Ordinary dictation joined a stream that does not format live. Its
+    /// document is formatted once at Stop, without opening another recognizer.
+    SharedDictation,
 }
 
 impl CaptureTurnIntent {
@@ -82,7 +85,7 @@ impl CaptureTurnIntent {
     /// rests, not the VAD — Silero keeps running for identity and tail repair.
     pub fn utterance_silence_sec(self, configured_sec: f32) -> Option<f32> {
         match self {
-            Self::HandsFree | Self::AgentChannel => Some(configured_sec),
+            Self::HandsFree | Self::AgentChannel | Self::SharedDictation => Some(configured_sec),
             Self::SingleTurn => None,
         }
     }
@@ -99,10 +102,10 @@ impl CaptureTurnIntent {
 
     /// Whether the take may be formatted once when it terminates.
     ///
-    /// A hands-free take has already paid per occurrence; a channel never
-    /// formats with an LLM. Only a composer take formats at stop.
+    /// A hands-free source has already paid per occurrence. Composer takes
+    /// and dictation on an unformatted shared source format once at Stop.
     pub const fn formats_once_at_terminal(self) -> bool {
-        matches!(self, Self::SingleTurn)
+        matches!(self, Self::SingleTurn | Self::SharedDictation)
     }
 }
 
@@ -744,6 +747,11 @@ pub struct StreamingRecorder {
     /// The one recognition stream every open agent channel shares. Separate
     /// from the take's `transcription_handle`.
     shared_channel: Option<SharedChannelCapture>,
+    /// Ordinary dictation is a text participant of this same stream, never a
+    /// second PCM feed. Assistive/composer takes retain their turn contract.
+    dictation_participation_requested: bool,
+    dictation_participation: Option<ChannelParticipation>,
+    closed_dictation_participation: Option<ClosedChannel>,
     channel_recognizer_factory: Option<Arc<ChannelRecognizerSessionFactory>>,
     captured_samples: Arc<AtomicU64>,
     /// Exact take archive, independent of the physical capture's lifetime.
@@ -928,6 +936,8 @@ struct SharedChannelCapture {
     delivered_samples: Arc<AtomicU64>,
     /// Attached participants, each with an open interval in `demux`.
     participants: Vec<CaptureSubscriberId>,
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    capture_turn: CaptureTurnIntent,
 }
 
 /// The participant a channel brings to the shared capture: its logical
@@ -957,6 +967,8 @@ pub struct SharedChannelView {
     pub acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
     pub demux: Arc<ChannelDemux>,
     pub participants: usize,
+    pub runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    pub capture_turn: CaptureTurnIntent,
 }
 
 /// What [`StreamingRecorder::register_channel_feed`] handed the caller.
@@ -1054,6 +1066,9 @@ impl StreamingRecorder {
             take_subscriber: None,
             pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
             shared_channel: None,
+            dictation_participation_requested: false,
+            dictation_participation: None,
+            closed_dictation_participation: None,
             channel_recognizer_factory: None,
             captured_samples: Arc::new(AtomicU64::new(0)),
             take_archive: None,
@@ -1095,6 +1110,9 @@ impl StreamingRecorder {
             take_subscriber: None,
             pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
             shared_channel: None,
+            dictation_participation_requested: false,
+            dictation_participation: None,
+            closed_dictation_participation: None,
             channel_recognizer_factory: None,
             captured_samples: Arc::new(AtomicU64::new(0)),
             take_archive: None,
@@ -1130,8 +1148,53 @@ impl StreamingRecorder {
         self.authority_session_id = Some(session_id);
         self.runtime_settings = Some(runtime_settings);
         self.live_formatting_agent = None;
+        self.dictation_participation_requested = false;
         self.acoustic_ledger = Some(Arc::clone(&acoustic_ledger));
         acoustic_ledger
+    }
+
+    /// A physical capture must never collide with its initiating document:
+    /// that document can leave while agents continue recording into this id.
+    pub fn dictation_capture_session_id(document_id: &str) -> String {
+        format!("dictation-capture-{document_id}")
+    }
+
+    /// Bind a normal document to the existing shared text capture. The Bus
+    /// keeps its own document id; only physical occurrences use this namespace.
+    pub fn bind_dictation_authority(
+        &mut self,
+        document_id: String,
+        runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    ) -> Arc<StdMutex<AcousticLedger>> {
+        if let Some(shared) = self.shared_channel_view() {
+            self.authority_session_id = Some(shared.capture_session_id);
+            self.runtime_settings = Some(shared.runtime_settings);
+            self.acoustic_ledger = Some(Arc::clone(&shared.acoustic_ledger));
+            self.capture_epoch = 1;
+            self.live_formatting_agent = None;
+            self.dictation_participation_requested = true;
+            self.capture_turn = if shared.capture_turn.schedules_live_formatting() {
+                CaptureTurnIntent::HandsFree
+            } else {
+                CaptureTurnIntent::SharedDictation
+            };
+            shared.acoustic_ledger
+        } else {
+            let ledger = self.bind_session_authority(
+                Self::dictation_capture_session_id(&document_id),
+                runtime_settings,
+            );
+            self.dictation_participation_requested = true;
+            ledger
+        }
+    }
+
+    pub fn bound_capture_session_id(&self) -> Option<&str> {
+        self.authority_session_id.as_deref()
+    }
+
+    pub fn bound_runtime_settings(&self) -> Option<Arc<RuntimeSettingsSnapshot>> {
+        self.runtime_settings.as_ref().map(Arc::clone)
     }
 
     /// Inject only recognizer completion ingress for cross-crate controller tests.
@@ -1236,9 +1299,11 @@ impl StreamingRecorder {
 
     /// Whether a dictation take currently subscribes to the capture.
     pub fn has_take_subscriber(&self) -> bool {
-        self.capture_subscribers
-            .iter()
-            .any(|(_, kind)| *kind == CaptureSubscriberKind::Take)
+        self.dictation_participation.is_some()
+            || self
+                .capture_subscribers
+                .iter()
+                .any(|(_, kind)| *kind == CaptureSubscriberKind::Take)
     }
 
     /// Whether a non-take consumer (agent channel) currently subscribes.
@@ -1260,7 +1325,11 @@ impl StreamingRecorder {
         subscriber: Option<CaptureSubscriberId>,
         stopped_at: Instant,
     ) {
-        let Some(id) = subscriber.or(self.take_subscriber) else {
+        let Some(id) = subscriber.or(self.take_subscriber).or_else(|| {
+            self.dictation_participation
+                .as_ref()
+                .map(|participation| participation.id)
+        }) else {
             return;
         };
         // A channel participant holds the shared feed, not a subscriber.
@@ -1362,11 +1431,18 @@ impl StreamingRecorder {
     /// No active capture is a normal no-op. This method only enqueues a typed
     /// boundary; the session loop owns the fail-closed Layer 1 transition.
     pub fn note_sleep_wake(&self) -> bool {
-        self.recorder.is_active()
-            && self
-                .lifecycle_handle
-                .as_ref()
-                .is_some_and(RecorderLifecycleHandle::note_sleep_wake)
+        if !self.recorder.is_active() {
+            return false;
+        }
+        let take = self
+            .lifecycle_handle
+            .as_ref()
+            .is_some_and(RecorderLifecycleHandle::note_sleep_wake);
+        let shared = self
+            .shared_channel
+            .as_ref()
+            .is_some_and(|capture| capture.task.lifecycle.note_sleep_wake());
+        take || shared
     }
 
     /// Engine label of the live route this recorder's sessions run on.
@@ -1378,11 +1454,70 @@ impl StreamingRecorder {
         LIVE_STREAMING_ENGINE_LABEL
     }
 
+    async fn start_dictation_participation(&mut self, language: Option<String>) -> Result<()> {
+        anyhow::ensure!(
+            !self.has_take_subscriber()
+                && self.closed_dictation_participation.is_none()
+                && self.terminal_take.is_none(),
+            "ordinary dictation still owns an active or closing participation"
+        );
+        *self.transcript_buffer.lock().await = String::new();
+        self.closed_capture_was_active = None;
+        let sink = self
+            .event_sink
+            .clone()
+            .context("dictation presentation sink unavailable")?;
+        let participant = ChannelParticipantOpen { owner: None, sink };
+        let participation = if self.shared_channel.is_some() {
+            self.join_channel_session(participant)?
+        } else {
+            let spec = ChannelSessionSpec {
+                session_id: self
+                    .authority_session_id
+                    .clone()
+                    .context("dictation capture authority unavailable")?,
+                runtime_settings: self
+                    .runtime_settings
+                    .clone()
+                    .context("dictation settings unavailable")?,
+                language,
+                acoustic_ledger: self
+                    .acoustic_ledger
+                    .clone()
+                    .context("dictation ledger unavailable")?,
+                participant,
+            };
+            let silence = self
+                .utterance_silence_sec
+                .unwrap_or_else(|| spec.runtime_settings.values().toggle_silence_sec);
+            match self.begin_channel_session(spec, silence).await {
+                Ok(participation) => participation,
+                Err(error) => {
+                    // Opening the first shared source can fail after device
+                    // start but before admission. Only an unowned device may
+                    // be stopped here; a refused join never stops its peers.
+                    if !self.has_capture_subscribers() && self.recorder.is_active()
+                        && let Err(stop_error) = self.recorder.stop().await
+                    {
+                        warn!(%stop_error, "failed dictation admission cleanup failed");
+                    }
+                    return Err(error);
+                }
+            }
+        };
+        self.capture_epoch = 1;
+        self.dictation_participation = Some(participation);
+        Ok(())
+    }
+
     /// Start recording with the new event-based pipeline.
     ///
     /// Uses `transcription_session` which emits `EngineEvent`s to the configured
     /// `event_sink`.
     pub async fn start_event_session(&mut self, language: Option<String>) -> Result<()> {
+        if self.dictation_participation_requested {
+            return self.start_dictation_participation(language).await;
+        }
         anyhow::ensure!(
             self.prepared_capture_archive.is_none()
                 && self.take_archive.is_none()
@@ -1769,6 +1904,19 @@ impl StreamingRecorder {
             acoustic_ledger,
             participant,
         } = spec;
+        let capture_turn = if self.dictation_participation_requested
+            && self.dictation_participation.is_none()
+        {
+            CaptureTurnIntent::HandsFree
+        } else {
+            CaptureTurnIntent::AgentChannel
+        };
+        let shared_settings = Arc::clone(&runtime_settings);
+        let live_formatting_agent = live_max_capability(
+            capture_turn,
+            runtime_settings.formatting_policy(),
+            self.live_formatting_agent.as_ref(),
+        );
         let actual_sample_rate = {
             let actual = self.recorder.actual_sample_rate();
             if actual == 0 {
@@ -1777,11 +1925,14 @@ impl StreamingRecorder {
                 actual
             }
         };
-        // Scoped to the shared subscription, like a take's. A stream that
-        // cannot open its scratch WAV still transcribes; only its retention is
-        // lost, and the log says so.
+        // One archive belongs to the shared source. Ordinary initiation keeps
+        // its existing strict archive admission; an agent source can still
+        // transcribe with an explicit retention warning.
         let archive = match TakeArchive::spawn(actual_sample_rate, Arc::new(AtomicU64::new(0))) {
             Ok(archive) => Some(archive),
+            Err(error) if capture_turn == CaptureTurnIntent::HandsFree => {
+                return Err(error.context("Cannot admit dictation without its capture PCM archive"));
+            }
             Err(error) => {
                 warn!(%error, "shared channel capture admitted without its PCM archive; its audio is not retained");
                 None
@@ -1848,14 +1999,18 @@ impl StreamingRecorder {
                 session_id: task_session_id,
                 capture_epoch: 1,
                 runtime_settings,
-                live_formatting_agent: None,
+                live_formatting_agent,
                 acoustic_ledger: task_ledger,
                 sample_rate: actual_sample_rate,
                 capture_device_name,
                 language,
-                stream_log_path: None,
+                stream_log_path: if capture_turn == CaptureTurnIntent::HandsFree {
+                    stream_log_path()
+                } else {
+                    None
+                },
                 utterance_silence_sec,
-                capture_turn: CaptureTurnIntent::AgentChannel,
+                capture_turn,
                 layer1,
                 lifecycle_events: Some(lifecycle_events),
                 terminal_audio,
@@ -1881,6 +2036,8 @@ impl StreamingRecorder {
             acoustic_ledger,
             delivered_samples,
             participants: vec![first],
+            runtime_settings: shared_settings,
+            capture_turn,
         });
         Ok((
             ChannelParticipation {
@@ -1903,6 +2060,8 @@ impl StreamingRecorder {
                 acoustic_ledger: Arc::clone(&shared.acoustic_ledger),
                 demux: Arc::clone(&shared.demux),
                 participants: shared.participants.len(),
+                runtime_settings: Arc::clone(&shared.runtime_settings),
+                capture_turn: shared.capture_turn,
             })
     }
 
@@ -2049,6 +2208,24 @@ impl StreamingRecorder {
     /// belongs to this stop and must be passed to finalization; `false` covers
     /// both "no stream was active" and "the capture stays open for others".
     pub async fn close_capture(&mut self) -> bool {
+        if let Some(participation) = self.dictation_participation.take() {
+            let closed = self.close_channel_session(participation.id).await;
+            let was_active = closed.last;
+            self.closed_dictation_participation = Some(closed);
+            self.closed_capture_was_active = Some(was_active);
+            return was_active;
+        }
+        if self.dictation_participation_requested {
+            if let Some(closed) = self.closed_dictation_participation.as_ref() {
+                return closed.last;
+            }
+            // A failed/canceled join never owns another participant's device.
+            // Its sink was never admitted to the demux and owes no close/FIFO
+            // receipt. Keeping it would strand recovery in a permanent retry.
+            self.event_sink = None;
+            self.closed_capture_was_active = Some(false);
+            return false;
+        }
         let was_active = match self.release_take_pcm_feed() {
             TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
                 self.recorder.close_capture().await
@@ -2111,6 +2288,9 @@ impl StreamingRecorder {
         if let Some(take) = self.terminal_take.take() {
             return take;
         }
+        if self.dictation_participation_requested {
+            return self.detach_take_state(None, None, None);
+        }
         let archive = self.take_archive.take();
         let physical_archive = if was_active {
             self.recorder.detach_closed_spill()
@@ -2131,7 +2311,28 @@ impl StreamingRecorder {
         archive: Option<TakeArchive>,
         physical_archive: Option<ClosedCaptureArchive>,
     ) -> ClosedTake {
+        let shared_close = self.closed_dictation_participation.take();
+        let shared_document = self.dictation_participation_requested;
+        let shared_archive_is_document = shared_close
+            .as_ref()
+            .and_then(|closed| closed.participant.as_ref())
+            .is_some_and(|(demux, _)| demux.intervals().len() == 1);
+        let shared_stream_released = shared_close
+            .as_ref()
+            .is_some_and(ClosedChannel::released_stream);
+        let stopped = if shared_document && shared_close.is_none() {
+            Some(Ok(None))
+        } else {
+            stopped
+        };
+        self.dictation_participation_requested = false;
         ClosedTake {
+            shared_document,
+            shared_close,
+            shared_close_worker: None,
+            shared_archive_is_document,
+            shared_stream_released,
+            shared_capture_archive: None,
             stopped,
             archive,
             physical_archive,
@@ -2328,6 +2529,12 @@ impl ClosedChannel {
 /// The existing take's detached stop tail, never a second capture owner.
 /// Its ledger and sink are the original authority, moved with the worker.
 pub struct ClosedTake {
+    shared_document: bool,
+    shared_close: Option<ClosedChannel>,
+    shared_close_worker: Option<JoinHandle<Result<(bool, Option<std::path::PathBuf>)>>>,
+    shared_archive_is_document: bool,
+    shared_stream_released: bool,
+    shared_capture_archive: Option<std::path::PathBuf>,
     stopped: Option<Result<Option<std::path::PathBuf>>>,
     archive: Option<TakeArchive>,
     physical_archive: Option<ClosedCaptureArchive>,
@@ -2356,9 +2563,81 @@ pub struct ClosedTake {
 }
 
 impl ClosedTake {
+    pub fn is_shared_document(&self) -> bool {
+        self.shared_document
+    }
+
+    pub fn released_shared_capture(&self) -> Option<&str> {
+        if self.shared_stream_released && !self.shared_archive_is_document {
+            self.authority_session_id.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Move a common archive only to its capture owner, never to a narrower
+    /// document. The controller retains it under this exact namespace.
+    pub fn take_shared_capture_archive(&mut self) -> Option<(String, std::path::PathBuf)> {
+        let session = self.authority_session_id.clone()?;
+        self.shared_capture_archive.take().map(|path| (session, path))
+    }
+
+    async fn finish_shared_document(&mut self) -> Result<(String, Option<std::path::PathBuf>)> {
+        if let Some(closed) = self.shared_close.take() {
+            self.shared_close_worker = Some(tokio::spawn(closed.finish()));
+        }
+        if let Some(worker) = self.shared_close_worker.as_mut() {
+            self.stopped = Some(match worker.await {
+                Ok(result) => result.map(|(_, path)| path),
+                Err(error) => Err(anyhow!("shared document settlement worker failed: {error}")),
+            });
+            self.shared_close_worker = None;
+        }
+        let session = self
+            .authority_session_id
+            .as_deref()
+            .context("shared document capture identity unavailable")?;
+        if let Some(sink) = self.event_sink.as_ref() {
+            sink.close_participation(session, self.capture_epoch)?;
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                sink.wait_presentation_published(session, self.capture_epoch),
+            )
+            .await
+            .context("shared document publication timed out")??;
+            self.event_sink = None;
+        }
+        let text = self.transcript_buffer.lock().await.clone();
+        let archive = self
+            .stopped
+            .as_ref()
+            .context("shared document has no participation settlement")?;
+        match archive {
+            Ok(path) => {
+                if self.shared_archive_is_document {
+                    Ok((text, path.clone()))
+                } else {
+                    self.shared_capture_archive = path.clone();
+                    Ok((text, None))
+                }
+            }
+            Err(error) => Err(anyhow::Error::new(CaptureStopFailure {
+                session_id: self.authority_session_id.clone(),
+                capture_epoch: self.capture_epoch,
+                audio_path: error
+                    .downcast_ref::<CaptureStopFailure>()
+                    .and_then(|failure| failure.audio_path.clone()),
+                cause: copy_stop_error(error),
+                task_failure: None,
+            })),
+        }
+    }
+
     /// True only after archive, producer and publication ownership all settled.
     pub fn is_settled(&self) -> bool {
-        self.archive.is_none()
+        self.shared_close.is_none()
+            && self.shared_close_worker.is_none()
+            && self.archive.is_none()
             && self.physical_archive.is_none()
             && self.archive_worker.is_none()
             && self.transcription_handle.is_none()
@@ -2382,6 +2661,10 @@ impl ClosedTake {
     }
 
     pub async fn wait_live_finals_admitted(&mut self) -> bool {
+        if self.shared_document {
+            // A participant's bound is not the common producer's EOF.
+            return false;
+        }
         if self.direct_transcript
             && let Some(complete) = self.direct_decoder_complete
         {
@@ -2500,6 +2783,9 @@ impl ClosedTake {
     /// Save the exact take PCM before terminal refinement and wait for the
     /// original task/reducer. Blocking disk work never holds capture's mutex.
     pub async fn finish(&mut self) -> Result<(String, Option<std::path::PathBuf>)> {
+        if self.shared_document {
+            return self.finish_shared_document().await;
+        }
         self.prepare_terminal_audio().await;
         self.lifecycle_handle = None;
 
