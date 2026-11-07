@@ -360,9 +360,12 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     let root = try XCTUnwrap(rig.card.contentView)
     root.layoutSubtreeIfNeeded()
     XCTAssertTrue(try XCTUnwrap(rig.instance).minimized)
-    // The title occupies the free leading part of this 500pt bar. The old
-    // restore Button consumed this point before the native drag view saw it.
-    let point = NSPoint(x: 80, y: root.bounds.midY)
+    // The title occupies the free leading part of this bar. The old restore
+    // Button consumed this point before the native drag view saw it. The
+    // agent's reception marks stand after the name (OVERLAY_PRESENTATION.md,
+    // the fiszka's marks; since a6e772fe4), so the point is on the name,
+    // before them, not 80 pt in where the antenna now sits.
+    let point = NSPoint(x: 40, y: root.bounds.midY)
     let drag = try XCTUnwrap(root.hitTest(point) as? OverlayIntercomDragView)
     XCTAssertEqual(drag.minimumDragDistance, 4)
     let location = root.convert(point, to: nil)
