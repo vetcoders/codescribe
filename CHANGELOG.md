@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Overlay bar: an agent's hover card says more of its state in the same width: since when a stalled agent has not read ("Not reading for 12 min") or when a gone agent was last heard, the newest message with its direction, time and fate (Read, Delivered, Spoken), and whether the microphone is open on its channel or its voice is muted.
 - Overlay mini: while an agent's reply plays aloud, the Agents button (✦) turns violet and blinks gently, since mini has no agent pills to show it; with Reduce Motion it is violet without blinking. The expanded bar is unchanged.
 - Overlay bar: the unread dot on an agent's pill is smaller and sits on the pill's edge with a narrow gap in the bar's colour around it, like the system's badges, instead of a large dot stuck to the corner. Its colour is unchanged.
 - Overlay bar and agents roster: secondary text (times, descriptions, message previews, row states, hints, the take timer and the take's detail lines) is in the regular text colour instead of the system grey, which was hard to read on the light sheets; the delivered and read marks beside an agent's name are in the text colour too, the heavier stroke still meaning read. Icons at rest stay grey.

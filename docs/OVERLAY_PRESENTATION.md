@@ -250,7 +250,7 @@ Hovering an agent's chip opens its card (`OverlayChannelChipHoverCard`), not
 the old `5 · Kuba · Ctrl+5`, which only repeated the button (Founder,
 2026-11-04). The card is a tight, non-interactive panel in the header's
 hint window (`OverlayHeaderControlChrome` with `hintContent`, sized from its
-measured lines, 200–240 pt) and states three facts kept apart, each from
+measured lines, 200–240 pt) and states the agent's facts kept apart, each from
 the projection the roster row reads (`channelChipStatus`, carried as
 `OverlayChannelMapChip.status`):
 
@@ -290,12 +290,31 @@ the projection the roster row reads (`channelChipStatus`, carried as
    VoiceOver, which hears no antenna, reads "Hears: Shared (channel 0)" or
    "Does not hear: Shared (channel 0)" (PL "Słyszy: Wspólny (kanał 0)"),
    the name after a colon so it is never declined.
-3. **Unread** from `unreadCounts`: "N unread", or no line.
+3. **The newest message** (L16, 2026-11-06) from the conversation's
+   visible messages: an arrow for its direction (`arrow.up.right` yours,
+   `arrow.down.left` the agent's), its time and its fate in the roster's
+   own words: for yours the receipt line's reading
+   (`deliveryReceiptDisplay`: Read, Delivered, Held, …), for a reply
+   "Spoken" once its playback finished. No line without a message.
+4. **Audio** (L16): "Microphone open" while the HUD feeds the channel,
+   "Voice muted" while the roster's speaker mutes the agent's replies
+   (`mutedChannels`); one line when either is so, else none.
+5. **Unread** from `unreadCounts`: "N unread", or no line.
+
+**Since when** (L16) rides the presence line: a stalled reader says
+"Not reading for N min" (`stalledMinutes`, from the roster's
+`unread_since_unix_ms`), a gone agent "last heard 20:36", the time of its
+newest reply. The roster snapshot carries no time of a presence change, so
+"Not active for 3 h" is not drawn; it would need a field such as a
+follower-state-since timestamp on `CsChannelRosterState`. The agent's
+project ("Agy · Codescribe") is not drawn either: neither the lease owner
+(`OverlayConversationOwner`) nor the roster row carries one.
 
 The first line names the digit, the whole name and the provider; the chord
-(`Ctrl+5`) is the last, small line. The card is one accessibility element
-whose label reads every line, and the chip's accessibility value carries the
-same facts. The fate of the last message is not on the card. Mini
+(`Ctrl+5`) is the last, small line: at most seven short lines, the card's
+width bounds unchanged. The card is one accessibility element whose label
+reads every line, and the chip's accessibility value carries the same
+facts. The card stays non-interactive. Mini
 carries no map and no counter (Founder, 2026-11-04): the interactive list of
 agents under the Agents button (✦), described below, replaces the counter
 that stood there since 2026-10-22. The vertical layout's stacked counter

@@ -10246,6 +10246,28 @@
         }
       }
     },
+    "Last reply" : {
+      "comment" : "Chip hover card, VoiceOver: the newest message is the agent's",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ostatnia odpowiedź"
+          }
+        }
+      }
+    },
+    "Last sent message" : {
+      "comment" : "Chip hover card, VoiceOver: the newest message is yours",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ostatnia wysłana wiadomość"
+          }
+        }
+      }
+    },
     "Last sent message at %@: %@" : {
       "comment" : "Outgoing message time, followed by its frozen delivery receipt",
       "extractionState" : "manual",
@@ -13053,6 +13075,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie odczytuje"
+          }
+        }
+      }
+    },
+    "Not reading for %lld min" : {
+      "comment" : "Channel chip hover card: the live follower has not read its backlog for this many minutes",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie odczytuje od %lld min"
           }
         }
       }
@@ -21983,6 +22016,17 @@
         }
       }
     },
+    "Voice muted" : {
+      "comment" : "Channel chip hover card: the agent's replies are not played aloud",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Głos wyciszony"
+          }
+        }
+      }
+    },
     "Volume" : {
       "localizations" : {
         "pl" : {
@@ -24396,6 +24440,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zachowano do odzyskania w edytorze."
+          }
+        }
+      }
+    },
+    "last heard %@" : {
+      "comment" : "Channel chip hover card: the time of the gone agent's newest reply",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "ostatnio słyszany %@"
           }
         }
       }

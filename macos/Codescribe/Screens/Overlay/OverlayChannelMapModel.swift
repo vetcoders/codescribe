@@ -83,6 +83,29 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
   /// the reception line shows in the nominative, never declined.
   let channelZeroName: String
 
+  /// The newest message of the agent's conversation (L16, 2026-11-06): its
+  /// direction, its time and its fate in the roster's own words (Read,
+  /// Delivered, Held, … for a message to the agent; Spoken for a reply
+  /// played aloud; nil when there is none to say).
+  struct LastMessage: Equatable, Sendable {
+    let outgoing: Bool
+    let at: Date?
+    let fate: String?
+  }
+
+  /// When the agent was last heard: its newest reply's time. The roster
+  /// carries no time of a presence change, so the card says this instead
+  /// of "inactive since".
+  var lastHeard: Date? = nil
+  /// Whole minutes the live follower has not read its backlog, while it is
+  /// stalled (`unreadSince`).
+  var stalledMinutes: Int? = nil
+  var lastMessage: LastMessage? = nil
+  /// The microphone feeds this agent's channel now.
+  var microphoneOpen = false
+  /// The agent's replies are not played aloud (the roster's speaker).
+  var voiceMuted = false
+
   init(
     presence: Presence, stalled: Bool = false, reception: Reception, quiet: Bool = false,
     unread: Int = 0, provider: String? = nil, speaking: Bool = false,

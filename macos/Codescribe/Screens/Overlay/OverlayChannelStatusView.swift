@@ -1728,12 +1728,39 @@ struct OverlayChannelStatusView: View {
       channel.broadcastIdentity.map { ledger.policy(for: $0, polled: channel.broadcastPolicy) }
       ?? channel.broadcastPolicy
     let conversation = current.first { $0.channel == channel.channel }
-    return OverlayChannelChipStatus(
+    var status = OverlayChannelChipStatus(
       followerAlive: hudStates[channel.channel]?.followerAlive,
       stalled: hasStalledFollower(channel), policy: policy,
       unread: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
       provider: conversation?.owner?.provider ?? hudStates[channel.channel]?.provider,
       speaking: speakingDigits.contains(channel.channel), channelZeroName: sharedChannelName)
+    // L16 (2026-11-06): the card's full state, each fact from the roster's
+    // own projection: the conversation's messages, the receipt line's
+    // reading, the stall's minutes, the HUD's microphone and the speaker.
+    status.stalledMinutes = stalledMinutes(channel)
+    status.microphoneOpen = hudStates[channel.channel]?.open == true
+    status.voiceMuted = mutedChannels[channel.channel] == true
+    if let conversation {
+      let visible = OverlayConversationView.visibleMessages(in: conversation)
+      status.lastHeard =
+        visible.last { $0.kind == .reply }
+        .flatMap { MessageTimestamp.date(fromISO8601: $0.emittedAt) }
+      if let newest = visible.last {
+        let outgoing = newest.kind == .user
+        let fate: String?
+        if outgoing {
+          fate =
+            newest.showsDeliveryReceipts
+            ? deliveryReceiptDisplay(for: channel, conversation: conversation)?.text : nil
+        } else {
+          fate = newest.playback?.state == "spoken" ? String(localized: "Spoken") : nil
+        }
+        status.lastMessage = .init(
+          outgoing: outgoing, at: MessageTimestamp.date(fromISO8601: newest.emittedAt),
+          fate: fate.flatMap { $0.isEmpty ? nil : $0 })
+      }
+    }
+    return status
   }
 
   /// Channel 0's message carousel for the map's `(0)` chip: the same
