@@ -1505,14 +1505,35 @@ addressing, the follower's audience gate, voice profiles) casefolds both
 sides. The spelling the agent gave is kept beside it as `display_name` on the
 binding entry, the lease (`codescribe.agent-bridge.lease.v1`), the attach
 receipt and `--status`, and it travels with messages for people to read: the
-peer sender block and its frozen `recipients` entries, the typed message's
-owner block and `sent_to`, and the controller's frozen channel recipients all
-carry `display_name` (and `name` as that spelling) next to the unchanged
-`audience`. Readers that match (seals, acks, receipts, routing) keep using
-`audience`; surfaces that show a name prefer `display_name` and fall back to
-`audience` for bindings written before it existed (Founder, 2026-11-04: the
-Bus window showed every agent in lowercase). A re-attach of the same session
-with `--takeover` refreshes the spelling without changing the identity.
+peer sender block (`sender.display_name`) and the published target
+(`target.recipients[].name` as that spelling), the typed message's owner
+block and `sent_to`, and the controller's frozen channel recipients carry the
+spelling next to the unchanged `audience`. A peer message's frozen
+`recipients[]` entries carry no `display_name`: their `name` is the
+casefolded `audience` (`scripts/bus-demux.py`, the peer publication). Readers
+that match (seals, acks, receipts, routing) keep using `audience`; surfaces
+that show a name prefer `display_name` and fall back to `audience` for
+bindings written before it existed (Founder, 2026-11-04: the Bus window
+showed every agent in lowercase). A re-attach of the same session with
+`--takeover` refreshes the spelling without changing the identity.
+
+The field `name` is therefore a label in some records and the identity in
+others:
+
+| Record | `name` carries | Spelling beside it |
+| --- | --- | --- |
+| Lease (`codescribe.agent-bridge.lease.v1`) | identity (casefolded) | `display_name` |
+| Per-copy receipts (`<delivery_id>.delivered.json`, `.read.json`; `receipt_recipient`) | identity (casefolded; `audience` wins) | `display_name` when it casefolds to `name` |
+| `--status` | identity (casefolded) | `display_name` |
+| Peer message frozen `recipients[]` | identity (`audience`) | none |
+| `binding_identity` | spelling | `audience` beside it is the identity |
+| `sent_to`, `message_published` `target.recipients[]` | spelling | `audience` where present |
+| Rust `frozen_channel_recipients` | spelling | `display_name`; `audience` is the identity |
+
+Rule for consumers: compare identities by `audience` or by a casefolded key
+(`name` casefolded together with the channel, as `--receipts` does), never
+by `name` with `==`; `Bruno` in `sent_to` and `bruno` in a lease are one
+agent.
 
 ### Broadcast policy
 
