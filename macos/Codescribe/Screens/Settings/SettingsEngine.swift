@@ -866,7 +866,7 @@ final class MockProviderStore {
       keyPresent: provider?.apiKeySet ?? false,
       accountAuth: provider?.accountSignedIn ?? false,
       available: provider.map { $0.apiKeySet || $0.accountSignedIn || !$0.keyRequired } ?? false,
-      unavailableReason: nil
+      unavailable: nil
     )
   }
 }

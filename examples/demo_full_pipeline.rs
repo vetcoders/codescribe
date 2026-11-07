@@ -152,7 +152,8 @@ async fn main() -> Result<()> {
     if !codescribe::ai_formatting::is_formatting_available(lane) {
         println!(
             "      SKIPPED - {}",
-            lane.unavailable_reason().unwrap_or("LLM lane unavailable")
+            lane.request_unavailable_reason()
+                .unwrap_or_else(|| "LLM lane unavailable".to_string())
         );
         println!("\n═══════════════════════════════════════════════════════════");
         return Ok(());

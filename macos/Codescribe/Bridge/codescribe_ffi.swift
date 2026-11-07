@@ -643,9 +643,9 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
 
     /**
      * Availability of the assistive lane as one record: `available` mirrors
-     * [`Self::is_available`]; `detail` carries the actionable, user-facing
-     * reason when the lane cannot reach a model (which lane, endpoint or key
-     * is missing — never a generic "add an API key"). Empty when ready.
+     * [`Self::is_available`] (the same request-time verdict); `reason` names
+     * what is missing (which lane, endpoint or key — never a generic "add an
+     * API key"). `None` when ready.
      */
     func availability()  -> CsAgentAvailability
 
@@ -858,9 +858,9 @@ public convenience init() {
 
     /**
      * Availability of the assistive lane as one record: `available` mirrors
-     * [`Self::is_available`]; `detail` carries the actionable, user-facing
-     * reason when the lane cannot reach a model (which lane, endpoint or key
-     * is missing — never a generic "add an API key"). Empty when ready.
+     * [`Self::is_available`] (the same request-time verdict); `reason` names
+     * what is missing (which lane, endpoint or key — never a generic "add an
+     * API key"). `None` when ready.
      */
 open func availability() -> CsAgentAvailability  {
     return try!  FfiConverterTypeCsAgentAvailability_lift(try! rustCall() {
@@ -8949,8 +8949,8 @@ public func FfiConverterTypeCsAgentArchiveRequest_lower(_ value: CsAgentArchiveR
 
 /**
  * Assistive-lane availability for the Swift chat surface: `available` gates
- * the send, `detail` is the honest reason shown in the thread when the lane
- * cannot reach a model (empty when ready).
+ * the send, `reason` says which lane, endpoint or key is missing when the
+ * lane cannot reach a model (`None` when ready). Swift owns the sentence.
  */
 public struct CsAgentAvailability: Equatable, Hashable {
     /**
@@ -8958,9 +8958,9 @@ public struct CsAgentAvailability: Equatable, Hashable {
      */
     public var available: Bool
     /**
-     * Actionable reason the lane is unreachable; empty when `available`.
+     * Why the lane is unreachable; `None` when `available`.
      */
-    public var detail: String
+    public var reason: CsLlmLaneUnavailable?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -8969,10 +8969,10 @@ public struct CsAgentAvailability: Equatable, Hashable {
          * Whether the assistive lane can reach a model right now.
          */available: Bool,
         /**
-         * Actionable reason the lane is unreachable; empty when `available`.
-         */detail: String) {
+         * Why the lane is unreachable; `None` when `available`.
+         */reason: CsLlmLaneUnavailable?) {
         self.available = available
-        self.detail = detail
+        self.reason = reason
     }
 
 
@@ -8990,13 +8990,13 @@ public struct FfiConverterTypeCsAgentAvailability: FfiConverterRustBuffer {
         return
             try CsAgentAvailability(
                 available: FfiConverterBool.read(from: &buf),
-                detail: FfiConverterString.read(from: &buf)
+                reason: FfiConverterOptionTypeCsLlmLaneUnavailable.read(from: &buf)
         )
     }
 
     public static func write(_ value: CsAgentAvailability, into buf: inout [UInt8]) {
         FfiConverterBool.write(value.available, into: &buf)
-        FfiConverterString.write(value.detail, into: &buf)
+        FfiConverterOptionTypeCsLlmLaneUnavailable.write(value.reason, into: &buf)
     }
 }
 
@@ -14238,11 +14238,11 @@ public struct CsRuntimeLlmLane: Equatable, Hashable {
     public var keyPresent: Bool
     public var accountAuth: Bool
     public var available: Bool
-    public var unavailableReason: String?
+    public var unavailable: CsLlmLaneUnavailable?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(lane: CsLlmLane, providerId: String, providerDisplayName: String, wire: String, endpoint: String, model: String, keyAccount: String, keyPresent: Bool, accountAuth: Bool, available: Bool, unavailableReason: String?) {
+    public init(lane: CsLlmLane, providerId: String, providerDisplayName: String, wire: String, endpoint: String, model: String, keyAccount: String, keyPresent: Bool, accountAuth: Bool, available: Bool, unavailable: CsLlmLaneUnavailable?) {
         self.lane = lane
         self.providerId = providerId
         self.providerDisplayName = providerDisplayName
@@ -14253,7 +14253,7 @@ public struct CsRuntimeLlmLane: Equatable, Hashable {
         self.keyPresent = keyPresent
         self.accountAuth = accountAuth
         self.available = available
-        self.unavailableReason = unavailableReason
+        self.unavailable = unavailable
     }
 
 
@@ -14280,7 +14280,7 @@ public struct FfiConverterTypeCsRuntimeLlmLane: FfiConverterRustBuffer {
                 keyPresent: FfiConverterBool.read(from: &buf),
                 accountAuth: FfiConverterBool.read(from: &buf),
                 available: FfiConverterBool.read(from: &buf),
-                unavailableReason: FfiConverterOptionString.read(from: &buf)
+                unavailable: FfiConverterOptionTypeCsLlmLaneUnavailable.read(from: &buf)
         )
     }
 
@@ -14295,7 +14295,7 @@ public struct FfiConverterTypeCsRuntimeLlmLane: FfiConverterRustBuffer {
         FfiConverterBool.write(value.keyPresent, into: &buf)
         FfiConverterBool.write(value.accountAuth, into: &buf)
         FfiConverterBool.write(value.available, into: &buf)
-        FfiConverterOptionString.write(value.unavailableReason, into: &buf)
+        FfiConverterOptionTypeCsLlmLaneUnavailable.write(value.unavailable, into: &buf)
     }
 }
 
@@ -18997,6 +18997,147 @@ public func FfiConverterTypeCsLlmLane_lower(_ value: CsLlmLane) -> RustBuffer {
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Why a lane cannot send a request, as data: Swift composes the sentence
+ * (`LLMLaneUnavailablePresentation.swift`). Provider names, endpoints and
+ * Keychain account names travel verbatim.
+ */
+
+public enum CsLlmLaneUnavailable: Equatable, Hashable {
+
+    /**
+     * The lane points at a Custom provider id that no longer exists.
+     */
+    case customProviderMissing(customId: String
+    )
+    /**
+     * The provider has no model selected.
+     */
+    case modelMissing(provider: String
+    )
+    /**
+     * No Keychain credential and no supported signed-in provider account.
+     */
+    case credentialMissing(lane: CsLlmLane, provider: String, endpoint: String, keyAccount: String
+    )
+    /**
+     * Cloud Code Assist needs Google account credentials or authorized-user ADC.
+     */
+    case cloudCodeAssistAccountRequired(lane: CsLlmLane
+    )
+    /**
+     * ACP program/cwd not absolute, or argv not literal.
+     */
+    case acpLaunchInvalid
+    /**
+     * ACP needs explicit absolute `system.agent_workspace_roots`.
+     */
+    case acpWorkspaceRootsMissing
+    /**
+     * ACP cwd is outside every configured Agent workspace root.
+     */
+    case acpCwdOutsideWorkspace
+
+
+
+}
+
+#if compiler(>=6)
+extension CsLlmLaneUnavailable: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsLlmLaneUnavailable: FfiConverterRustBuffer {
+    typealias SwiftType = CsLlmLaneUnavailable
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsLlmLaneUnavailable {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .customProviderMissing(customId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 2: return .modelMissing(provider: try FfiConverterString.read(from: &buf)
+        )
+
+        case 3: return .credentialMissing(lane: try FfiConverterTypeCsLlmLane.read(from: &buf), provider: try FfiConverterString.read(from: &buf), endpoint: try FfiConverterString.read(from: &buf), keyAccount: try FfiConverterString.read(from: &buf)
+        )
+
+        case 4: return .cloudCodeAssistAccountRequired(lane: try FfiConverterTypeCsLlmLane.read(from: &buf)
+        )
+
+        case 5: return .acpLaunchInvalid
+
+        case 6: return .acpWorkspaceRootsMissing
+
+        case 7: return .acpCwdOutsideWorkspace
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsLlmLaneUnavailable, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .customProviderMissing(customId):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(customId, into: &buf)
+
+
+        case let .modelMissing(provider):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(provider, into: &buf)
+
+
+        case let .credentialMissing(lane,provider,endpoint,keyAccount):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeCsLlmLane.write(lane, into: &buf)
+            FfiConverterString.write(provider, into: &buf)
+            FfiConverterString.write(endpoint, into: &buf)
+            FfiConverterString.write(keyAccount, into: &buf)
+
+
+        case let .cloudCodeAssistAccountRequired(lane):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeCsLlmLane.write(lane, into: &buf)
+
+
+        case .acpLaunchInvalid:
+            writeInt(&buf, Int32(5))
+
+
+        case .acpWorkspaceRootsMissing:
+            writeInt(&buf, Int32(6))
+
+
+        case .acpCwdOutsideWorkspace:
+            writeInt(&buf, Int32(7))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsLlmLaneUnavailable_lift(_ buf: RustBuffer) throws -> CsLlmLaneUnavailable {
+    return try FfiConverterTypeCsLlmLaneUnavailable.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsLlmLaneUnavailable_lower(_ value: CsLlmLaneUnavailable) -> RustBuffer {
+    return FfiConverterTypeCsLlmLaneUnavailable.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum CsMaxPreparation: Equatable, Hashable {
 
@@ -21044,6 +21185,30 @@ fileprivate struct FfiConverterOptionTypeCsIndicatorState: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCsLlmLaneUnavailable: FfiConverterRustBuffer {
+    typealias SwiftType = CsLlmLaneUnavailable?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsLlmLaneUnavailable.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsLlmLaneUnavailable.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -22687,7 +22852,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_whisper_model_status() != 33505) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_availability() != 21425) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_availability() != 28937) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_cancel_turn() != 14066) {

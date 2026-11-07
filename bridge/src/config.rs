@@ -19,9 +19,9 @@ use codescribe_core::config::settings::normalize_agent_workspace_roots;
 use codescribe_core::config::{
     AppDataResetGuard, Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT,
     FormattingPolicy, PasteMode, PromptKind, PromptSnapshot, PromptWriteReason, RuntimeLlmLane,
-    RuntimeLlmLaneKind, RuntimeSettingsSnapshot, UserSettings, begin_app_data_reset,
-    prompt_snapshot, prompts, reset_to_defaults, restore_prompt_to_default, write_prompt,
-    write_prompt_bytes_during_reset,
+    RuntimeLlmLaneKind, RuntimeLlmLaneUnavailable, RuntimeSettingsSnapshot, UserSettings,
+    begin_app_data_reset, prompt_snapshot, prompts, reset_to_defaults, restore_prompt_to_default,
+    write_prompt, write_prompt_bytes_during_reset,
 };
 use codescribe_core::llm::account_auth;
 use codescribe_core::llm::key_liveness::{
@@ -678,6 +678,75 @@ impl From<CsLlmLane> for RuntimeLlmLaneKind {
     }
 }
 
+/// Why a lane cannot send a request, as data: Swift composes the sentence
+/// (`LLMLaneUnavailablePresentation.swift`). Provider names, endpoints and
+/// Keychain account names travel verbatim.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum CsLlmLaneUnavailable {
+    /// The lane points at a Custom provider id that no longer exists.
+    CustomProviderMissing { custom_id: String },
+    /// The provider has no model selected.
+    ModelMissing { provider: String },
+    /// No Keychain credential and no supported signed-in provider account.
+    CredentialMissing {
+        lane: CsLlmLane,
+        provider: String,
+        endpoint: String,
+        key_account: String,
+    },
+    /// Cloud Code Assist needs Google account credentials or authorized-user ADC.
+    CloudCodeAssistAccountRequired { lane: CsLlmLane },
+    /// ACP program/cwd not absolute, or argv not literal.
+    AcpLaunchInvalid,
+    /// ACP needs explicit absolute `system.agent_workspace_roots`.
+    AcpWorkspaceRootsMissing,
+    /// ACP cwd is outside every configured Agent workspace root.
+    AcpCwdOutsideWorkspace,
+}
+
+impl From<RuntimeLlmLaneKind> for CsLlmLane {
+    fn from(value: RuntimeLlmLaneKind) -> Self {
+        match value {
+            RuntimeLlmLaneKind::Formatting => Self::Formatting,
+            RuntimeLlmLaneKind::Assistive => Self::Assistive,
+        }
+    }
+}
+
+impl From<&RuntimeLlmLaneUnavailable> for CsLlmLaneUnavailable {
+    fn from(value: &RuntimeLlmLaneUnavailable) -> Self {
+        match value {
+            RuntimeLlmLaneUnavailable::CustomProviderMissing { custom_id } => {
+                Self::CustomProviderMissing {
+                    custom_id: custom_id.clone(),
+                }
+            }
+            RuntimeLlmLaneUnavailable::ModelMissing { provider } => Self::ModelMissing {
+                provider: provider.clone(),
+            },
+            RuntimeLlmLaneUnavailable::CredentialMissing {
+                lane,
+                provider,
+                endpoint,
+                key_account,
+            } => Self::CredentialMissing {
+                lane: (*lane).into(),
+                provider: provider.clone(),
+                endpoint: endpoint.clone(),
+                key_account: key_account.clone(),
+            },
+            RuntimeLlmLaneUnavailable::CloudCodeAssistAccountRequired { lane } => {
+                Self::CloudCodeAssistAccountRequired {
+                    lane: (*lane).into(),
+                }
+            }
+            RuntimeLlmLaneUnavailable::AcpLaunchInvalid => Self::AcpLaunchInvalid,
+            RuntimeLlmLaneUnavailable::AcpWorkspaceRootsMissing => Self::AcpWorkspaceRootsMissing,
+            RuntimeLlmLaneUnavailable::AcpCwdOutsideWorkspace => Self::AcpCwdOutsideWorkspace,
+        }
+    }
+}
+
 /// Complete canonical projection for one sealed LLM lane. Credentials never cross the
 /// bridge: only the owning account name and presence/auth booleans are exposed.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
@@ -692,17 +761,14 @@ pub struct CsRuntimeLlmLane {
     pub key_present: bool,
     pub account_auth: bool,
     pub available: bool,
-    pub unavailable_reason: Option<String>,
+    pub unavailable: Option<CsLlmLaneUnavailable>,
 }
 
 impl From<&RuntimeLlmLane> for CsRuntimeLlmLane {
     /// Secret-free projection outward from the loader-owned lane.
     fn from(value: &RuntimeLlmLane) -> Self {
         Self {
-            lane: match value.lane() {
-                RuntimeLlmLaneKind::Formatting => CsLlmLane::Formatting,
-                RuntimeLlmLaneKind::Assistive => CsLlmLane::Assistive,
-            },
+            lane: value.lane().into(),
             provider_id: value.provider().as_string(),
             provider_display_name: value.provider_display_name().to_string(),
             wire: value.wire_family().as_str().to_string(),
@@ -712,7 +778,7 @@ impl From<&RuntimeLlmLane> for CsRuntimeLlmLane {
             key_present: value.credential().api_key().is_some(),
             account_auth: value.credential().account_auth(),
             available: value.available(),
-            unavailable_reason: value.unavailable_reason().map(str::to_string),
+            unavailable: value.unavailable().map(CsLlmLaneUnavailable::from),
         }
     }
 }
@@ -4600,6 +4666,73 @@ mod settings_snapshot_tests {
     }
 }
 
+/// Every lane-unavailable variant crosses the bridge with its data intact and
+/// without a sentence: Swift owns the wording.
+#[cfg(test)]
+mod lane_unavailable_projection_tests {
+    use super::{CsLlmLane, CsLlmLaneUnavailable};
+    use codescribe_core::config::{RuntimeLlmLaneKind, RuntimeLlmLaneUnavailable};
+
+    #[test]
+    fn every_variant_projects_its_data() {
+        let cases = [
+            (
+                RuntimeLlmLaneUnavailable::CustomProviderMissing {
+                    custom_id: "gone".into(),
+                },
+                CsLlmLaneUnavailable::CustomProviderMissing {
+                    custom_id: "gone".into(),
+                },
+            ),
+            (
+                RuntimeLlmLaneUnavailable::ModelMissing {
+                    provider: "My Box".into(),
+                },
+                CsLlmLaneUnavailable::ModelMissing {
+                    provider: "My Box".into(),
+                },
+            ),
+            (
+                RuntimeLlmLaneUnavailable::CredentialMissing {
+                    lane: RuntimeLlmLaneKind::Formatting,
+                    provider: "OpenAI (Responses)".into(),
+                    endpoint: "https://api.openai.com/v1/responses".into(),
+                    key_account: "LLM_OPENAI_API_KEY".into(),
+                },
+                CsLlmLaneUnavailable::CredentialMissing {
+                    lane: CsLlmLane::Formatting,
+                    provider: "OpenAI (Responses)".into(),
+                    endpoint: "https://api.openai.com/v1/responses".into(),
+                    key_account: "LLM_OPENAI_API_KEY".into(),
+                },
+            ),
+            (
+                RuntimeLlmLaneUnavailable::CloudCodeAssistAccountRequired {
+                    lane: RuntimeLlmLaneKind::Assistive,
+                },
+                CsLlmLaneUnavailable::CloudCodeAssistAccountRequired {
+                    lane: CsLlmLane::Assistive,
+                },
+            ),
+            (
+                RuntimeLlmLaneUnavailable::AcpLaunchInvalid,
+                CsLlmLaneUnavailable::AcpLaunchInvalid,
+            ),
+            (
+                RuntimeLlmLaneUnavailable::AcpWorkspaceRootsMissing,
+                CsLlmLaneUnavailable::AcpWorkspaceRootsMissing,
+            ),
+            (
+                RuntimeLlmLaneUnavailable::AcpCwdOutsideWorkspace,
+                CsLlmLaneUnavailable::AcpCwdOutsideWorkspace,
+            ),
+        ];
+        for (core, bridge) in cases {
+            assert_eq!(CsLlmLaneUnavailable::from(&core), bridge);
+        }
+    }
+}
+
 /// The last-good runtime snapshot is keyed on `settings.json` mtime. Pasting a
 /// key writes the Keychain bundle (test env: process env / bundle cache) and
 /// never touches that file, so a cached lane row must not keep saying "no key".
@@ -4728,6 +4861,16 @@ mod runtime_snapshot_cache_tests {
             before.key_account, "LLM_OPENAI_API_KEY",
             "pinned openai-responses formatting lane"
         );
+        assert_eq!(
+            before.unavailable,
+            Some(super::CsLlmLaneUnavailable::CredentialMissing {
+                lane: CsLlmLane::Formatting,
+                provider: before.provider_display_name.clone(),
+                endpoint: before.endpoint.clone(),
+                key_account: "LLM_OPENAI_API_KEY".to_string(),
+            }),
+            "a keyless lane crosses the bridge as a typed reason, not a sentence"
+        );
         assert_eq!(mtime, fs::metadata(&path).unwrap().modified().unwrap());
 
         // Test-env `save_key` writes a static account into process env (custom
@@ -4749,6 +4892,7 @@ mod runtime_snapshot_cache_tests {
             after.key_present,
             "cached snapshot must not hide a key saved after the cache filled"
         );
+        assert_eq!(after.unavailable, None);
     }
 
     fn with_save_log_count<R>(f: impl FnOnce() -> R) -> (R, usize) {
