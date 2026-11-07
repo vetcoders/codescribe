@@ -1219,6 +1219,19 @@ struct OverlayReceptionMarks: View {
   }
 }
 
+/// One `currentConversations` answer per input set. The roster value is a
+/// struct the overlay rebuilds every body pass, but inside that pass each
+/// row, pill and menu asked for the filtered list again (Time Profiler,
+/// 2026-11-07, 40 s of dictation: 12 % of the main thread in the rebuilds).
+/// Copies of the struct share this reference, so one pass computes once; a
+/// changed input (tests mutate `archivedOwners` after init) recomputes.
+private final class OverlayCurrentConversationsMemo {
+  var conversations: [OverlayConversation] = []
+  var archivedOwners: Set<OverlayConversationOwner> = []
+  var hudStates: [String: OverlayChannelHudProjection] = [:]
+  var value: [OverlayConversation]?
+}
+
 /// A quiet notification affordance opens the full monitor on the overlay canvas.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1290,6 +1303,7 @@ struct OverlayChannelStatusView: View {
   var onUnfoldList: (() -> Void)?
   var searchModel: OverlayConversationSearchModel?
   @State private var internalSearchModel = OverlayConversationSearchModel()
+  private let currentConversationsMemo = OverlayCurrentConversationsMemo()
 
   var activeSearchModel: OverlayConversationSearchModel {
     searchModel ?? internalSearchModel
@@ -1338,8 +1352,10 @@ struct OverlayChannelStatusView: View {
     let ownedConversations = Self.currentConversations(
       conversations: state.conversations, archivedOwners: state.archivedAgentOwners,
       hudStates: state.channelHudStates)
+    // Filtered, projected and sorted on every read: take it once per roster.
+    let visibleRows = state.visibleChannelRows
     var view = OverlayChannelStatusView(
-      channels: state.visibleChannelRows.filter { $0.channel != "0" },
+      channels: visibleRows.filter { $0.channel != "0" },
       unavailable: state.channelStatusUnavailable,
       palette: palette, animates: animates,
       hudStates: state.channelHudStates,
@@ -1394,7 +1410,7 @@ struct OverlayChannelStatusView: View {
     }
     view.playbackError = state.playbackPreferenceError
     view.archiveCandidates = Dictionary(
-      uniqueKeysWithValues: state.visibleChannelRows.compactMap {
+      uniqueKeysWithValues: visibleRows.compactMap {
         state.archiveCandidate(for: $0.channel).map { ($0.channel, $0) }
       })
     view.pendingArchives = state.pendingAgentArchives
@@ -2108,8 +2124,21 @@ struct OverlayChannelStatusView: View {
   }
 
   var currentConversations: [OverlayConversation] {
-    Self.currentConversations(
+    let memo = currentConversationsMemo
+    // Unchanged inputs share storage with the memo's copies, so these
+    // comparisons are identity checks, not element walks.
+    if let value = memo.value, memo.conversations == conversations,
+      memo.archivedOwners == archivedOwners, memo.hudStates == hudStates
+    {
+      return value
+    }
+    let value = Self.currentConversations(
       conversations: conversations, archivedOwners: archivedOwners, hudStates: hudStates)
+    memo.conversations = conversations
+    memo.archivedOwners = archivedOwners
+    memo.hudStates = hudStates
+    memo.value = value
+    return value
   }
 
   /// Static so the overlay state's middle-click chooser walks the same rows.

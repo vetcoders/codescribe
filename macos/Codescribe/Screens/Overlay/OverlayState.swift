@@ -2547,8 +2547,12 @@ final class OverlayState {
 
   func unreadReplies(in conversation: OverlayConversation) -> Int {
     guard !conversation.replyIDs.isEmpty else { return 0 }
+    // Read the observed set once: inside the loop every reply registered an
+    // observation access and retained the set (Time Profiler, 2026-11-07:
+    // 0.9 s of a 40 s take, called per row per body pass).
+    let viewed = viewedReplyIDs
     var unread = 0
-    for replyID in conversation.replyIDs where !viewedReplyIDs.contains(replyID) {
+    for replyID in conversation.replyIDs where !viewed.contains(replyID) {
       unread += 1
     }
     return unread

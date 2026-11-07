@@ -871,6 +871,9 @@ struct DictationOverlayView: View {
               // The inbox composes with no recipient of its own: the agents
               // linked to it are the destination (Maciej, 2026-10-30 13:58).
               let composesText = resolvedTarget != nil || conversation.isDraftSyncSource
+              // One roster for the header's menu, actions and indicators: each
+              // helper built its own, six `intercomRoster` passes per body.
+              let roster = channelStatusView
               OverlayConversationView(
                 conversation: conversation, palette: palette,
                 topInset: headerHeight + 8, bottomInset: 20,
@@ -912,9 +915,9 @@ struct DictationOverlayView: View {
                 },
                 focusAgentPanelHint: conversation.owner.flatMap { state.agentPanelFocusHelp($0) },
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
-                navigationMenu: conversationHeaderMenu(conversation),
-                navigationActions: conversationHeaderActions(conversation),
-                navigationIndicators: conversationHeaderIndicators(conversation),
+                navigationMenu: conversationHeaderMenu(conversation, roster: roster),
+                navigationActions: conversationHeaderActions(conversation, roster: roster),
+                navigationIndicators: conversationHeaderIndicators(conversation, roster: roster),
                 composerConversation: resolvedTarget,
                 composerAvailable: composesText,
                 composerMicrophoneOpen: state.conversationMicrophoneOpen(conversation),
@@ -1736,11 +1739,11 @@ struct DictationOverlayView: View {
   }
 
   /// A digit may be reused; roster actions belong only to the exact live lease.
-  private func conversationHeaderChannel(_ conversation: OverlayConversation)
-    -> OverlayChannelDelivery?
-  {
+  private func conversationHeaderChannel(
+    _ conversation: OverlayConversation, roster: OverlayChannelStatusView
+  ) -> OverlayChannelDelivery? {
     guard let owner = conversation.owner else { return nil }
-    return channelStatusView.channels.first { channel in
+    return roster.channels.first { channel in
       guard channel.channel == conversation.channel, let identity = channel.broadcastIdentity else {
         return false
       }
@@ -1749,25 +1752,29 @@ struct DictationOverlayView: View {
     }
   }
 
-  private func conversationHeaderMenu(_ conversation: OverlayConversation)
-    -> OverlayBroadcastPolicyMenu?
-  {
-    conversationHeaderChannel(conversation).map {
-      channelStatusView.agentPillMenu(for: $0.channel, showsInlineError: false)
+  private func conversationHeaderMenu(
+    _ conversation: OverlayConversation, roster: OverlayChannelStatusView
+  ) -> OverlayBroadcastPolicyMenu? {
+    conversationHeaderChannel(conversation, roster: roster).map {
+      roster.agentPillMenu(for: $0.channel, showsInlineError: false)
     }
   }
 
   /// The header card is itself a glass surface, like the composer under it:
   /// its pair paints flat on the card, not as glass circles on glass.
-  private func conversationHeaderActions(_ conversation: OverlayConversation) -> AnyView? {
-    conversationHeaderChannel(conversation).map {
-      AnyView(channelStatusView.compactAgentActions(for: $0, chrome: false, panel: true))
+  private func conversationHeaderActions(
+    _ conversation: OverlayConversation, roster: OverlayChannelStatusView
+  ) -> AnyView? {
+    conversationHeaderChannel(conversation, roster: roster).map {
+      AnyView(roster.compactAgentActions(for: $0, chrome: false, panel: true))
     }
   }
 
-  private func conversationHeaderIndicators(_ conversation: OverlayConversation) -> AnyView? {
-    conversationHeaderChannel(conversation).map {
-      AnyView(channelStatusView.compactReceptionIndicators(for: $0))
+  private func conversationHeaderIndicators(
+    _ conversation: OverlayConversation, roster: OverlayChannelStatusView
+  ) -> AnyView? {
+    conversationHeaderChannel(conversation, roster: roster).map {
+      AnyView(roster.compactReceptionIndicators(for: $0))
     }
   }
 

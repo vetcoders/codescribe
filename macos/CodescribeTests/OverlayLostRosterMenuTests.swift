@@ -60,9 +60,10 @@ final class OverlayLostRosterMenuTests: XCTestCase {
       source, from: "private func conversationHeaderMenu(",
       to: "private func conversationHeaderActions(")
     try OverlayLostBehaviorSource.ordered(
-      ["conversationHeaderChannel(conversation).map", "channelStatusView.agentPillMenu("],
+      ["conversationHeaderChannel(conversation, roster: roster).map", "roster.agentPillMenu("],
       in: menu)
-    XCTAssertTrue(source.contains("navigationMenu: conversationHeaderMenu(conversation)"))
+    XCTAssertTrue(
+      source.contains("navigationMenu: conversationHeaderMenu(conversation, roster: roster)"))
   }
 
   func testBothTitlePresentationsRefuseMenusWhenLiveActionsAreDisabled() throws {

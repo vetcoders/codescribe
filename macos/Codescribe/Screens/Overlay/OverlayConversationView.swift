@@ -127,6 +127,12 @@ struct OverlayTranscriptTopClip: Shape {
   }
 }
 
+private final class OverlayOrderedMessagesMemo {
+  var conversation: OverlayConversation?
+  var limit: Int?
+  var value: [OverlayConversationMessage] = []
+}
+
 struct OverlayConversationView: View {
   @Environment(\.displayScale) private var displayScale
   @Environment(\.csTextScale) private var textScale
@@ -264,10 +270,26 @@ struct OverlayConversationView: View {
     return conversation.messages.filter { !isSkippedBroadcast($0, for: owner) }
   }
 
+  /// One filter per conversation value. A body pass reads `orderedMessages`
+  /// from `.id`, two `onChange`s, the window arithmetic and the rows; each
+  /// read walked every message's recipients and receipts again, and the fresh
+  /// array made `onChange(of: orderedMessages)` compare element by element
+  /// (Time Profiler, 2026-11-07). Copies of the view share this reference.
+  private let orderedMessagesMemo = OverlayOrderedMessagesMemo()
+
   var orderedMessages: [OverlayConversationMessage] {
+    let memo = orderedMessagesMemo
+    if let cached = memo.conversation, memo.limit == messageWindowLimit,
+      cached == conversation
+    {
+      return memo.value
+    }
     let visible = Self.visibleMessages(in: conversation)
-    guard let messageWindowLimit else { return visible }
-    return Array(visible.suffix(max(0, messageWindowLimit)))
+    let value = messageWindowLimit.map { Array(visible.suffix(max(0, $0))) } ?? visible
+    memo.conversation = conversation
+    memo.limit = messageWindowLimit
+    memo.value = value
+    return value
   }
   private var followsLatest: Bool { scrollFollow.followingLive }
   private var contentInset: CGFloat { presentation == .intercom ? 12 : 20 }

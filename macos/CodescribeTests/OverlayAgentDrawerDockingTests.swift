@@ -1697,9 +1697,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let canvas = try section(
       of: overlay, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertFalse(canvas.contains("hidesNavigation: columnShown"))
-    XCTAssertTrue(canvas.contains("navigationActions: conversationHeaderActions(conversation)"))
+    // The header helpers share one roster built once per body pass.
     XCTAssertTrue(
-      canvas.contains("navigationIndicators: conversationHeaderIndicators(conversation)"))
+      canvas.contains("navigationActions: conversationHeaderActions(conversation, roster: roster)"))
+    XCTAssertTrue(
+      canvas.contains(
+        "navigationIndicators: conversationHeaderIndicators(conversation, roster: roster)"))
     let conversation = try overlaySource("OverlayConversationView.swift")
     let anchor = try section(
       of: conversation, from: ".overlay(alignment: .top)", to: ".onChange(of: conversation.id)")
