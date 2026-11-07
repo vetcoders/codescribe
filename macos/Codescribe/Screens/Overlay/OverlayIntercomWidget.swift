@@ -260,7 +260,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       } else {
         origin = CGPoint(x: fallback.maxX + 16, y: fallback.maxY - 30)
       }
-      panel.setFrame(CGRect(origin: origin, size: CGSize(width: 160, height: 30)), display: false)
+      panel.resize(to: CGRect(origin: origin, size: CGSize(width: 160, height: 30)), display: false)
       header = panel
       let observer = OverlayAppWindowYield(panel: panel, state: state, foldsOverlay: false) {
         [weak self] window in
@@ -381,7 +381,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let fitted = OverlayIntercomWidgetLayout.clampedHeader(
       frame, count: presentation.folded ? 0 : visibleRows.count,
       visibleFrame: screenFrame, scale: scale, cardHeight: groupCardHeight)
-    if header.frame != fitted { header.setFrame(fitted, display: true) }
+    if header.frame != fitted { header.resize(to: fitted, display: true) }
     positioning = false
     // Detached conversations are absent; the remaining rows use compact indices.
     for (index, identity) in groupIdentities.enumerated() where cards[identity] == nil {
@@ -496,7 +496,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       panel.yieldToAppWindow(NSApp.isActive ? NSApp.keyWindow : nil)
       positioning = true
       let fitted = instanceFrame(instance, for: panel)
-      if panel.frame != fitted { panel.setFrame(fitted, display: true) }
+      if panel.frame != fitted { panel.resize(to: fitted, display: true) }
       positioning = false
       panel.setPresented(
         visible, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
@@ -796,7 +796,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
             panel.animator().setFrame(frame, display: true)
           }
         } else {
-          panel.setFrame(frame, display: true)
+          panel.resize(to: frame, display: true)
         }
       }
       let wasPresented = panel.isPresented
@@ -1370,8 +1370,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         }
         if let header {
           positioning = true
-          header.setFrame(
-            CGRect(
+          header.resize(
+            to: CGRect(
               x: frame.minX, y: frame.maxY - headerHeight,
               width: frame.width, height: headerHeight), display: true)
           positioning = false
@@ -1441,7 +1441,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
           headerHeight: OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale))
       if panel.frame != fitted {
         positioning = true
-        panel.setFrame(fitted, display: true)
+        instancePanels[id]?.resize(to: fitted, display: true)
         positioning = false
       }
       // A mini window moves the stored expanded frame by its top-right corner,
@@ -1598,6 +1598,57 @@ class OverlayIntercomPanel: NSPanel {
 
   override var canBecomeKey: Bool { acceptsConversationFocus || allowsKeyForSelection }
   override var canBecomeMain: Bool { false }
+
+  // MARK: - Frame authority
+
+  /// SwiftUI's `NSHostingView` gives a card's window the content's ideal size
+  /// from inside `windowDidLayout()` (`updateAnimatedWindowSize`), whatever its
+  /// `sizingOptions` say: a presented card with a long conversation became a
+  /// 16296×4462 window with its top-left corner pinned, the controller fitted
+  /// it back, and the two traded frames inside one display cycle until AppKit's
+  /// pass limit threw `NSGenericException` (three SIGABRTs on 2026-11-07:
+  /// 04:44, 14:36, 16:09). The controller is the only owner of a card's size.
+  /// A frame that changes the size arrives only through `resize(to:display:)`;
+  /// every other size is dropped, which also starves the loop of the frame
+  /// change that kept it alive. Moves at the same size (slides, Window Server
+  /// drags) pass untouched.
+  private var sizeChangeAuthorized = false
+  #if DEBUG
+    private(set) var refusedForeignSizes = 0
+  #endif
+
+  /// The controller's only way to change a card's size.
+  func resize(to frameRect: NSRect, display flag: Bool) {
+    sizeChangeAuthorized = true
+    defer { sizeChangeAuthorized = false }
+    setFrame(frameRect, display: flag)
+  }
+
+  private func admitsFrameSize(_ size: NSSize) -> Bool {
+    if sizeChangeAuthorized || size == frame.size { return true }
+    #if DEBUG
+      refusedForeignSizes += 1
+    #endif
+    return false
+  }
+
+  override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+    guard admitsFrameSize(frameRect.size) else { return }
+    super.setFrame(frameRect, display: flag)
+  }
+
+  override func setFrame(_ frameRect: NSRect, display displayFlag: Bool, animate animateFlag: Bool)
+  {
+    guard admitsFrameSize(frameRect.size) else { return }
+    super.setFrame(frameRect, display: displayFlag, animate: animateFlag)
+  }
+
+  override func setContentSize(_ size: NSSize) {
+    guard admitsFrameSize(frameRect(forContentRect: NSRect(origin: .zero, size: size)).size) else {
+      return
+    }
+    super.setContentSize(size)
+  }
 }
 
 private struct OverlayIntercomHeader: View {

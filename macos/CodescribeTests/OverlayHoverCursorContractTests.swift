@@ -363,7 +363,7 @@ final class OverlayHoverCursorContractTests: XCTestCase {
         defer: false)
     case .intercom:
       let intercom = OverlayIntercomPanel()
-      intercom.setFrame(frame, display: false)
+      intercom.resize(to: frame, display: false)
       intercom.acceptsConversationFocus = true
       panel = intercom
     }
@@ -658,7 +658,7 @@ private final class ComposerSurface {
       panel = overlay
     case .intercom:
       let intercom = OverlayIntercomPanel()
-      intercom.setFrame(frame, display: false)
+      intercom.resize(to: frame, display: false)
       // An opened conversation card: the one that takes typing.
       intercom.acceptsConversationFocus = true
       intercom.contentView = host

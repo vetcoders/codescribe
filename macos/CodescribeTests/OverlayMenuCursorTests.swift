@@ -74,7 +74,7 @@ final class OverlayMenuCursorTests: XCTestCase {
   func testRetiredTrackingAreaExitCannotClearANewerNativeHoverEntry() async throws {
     let panel = OverlayIntercomPanel()
     let foreign = OverlayIntercomPanel()
-    panel.setFrame(NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
+    panel.resize(to: NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
     let region = OverlayMenuCursorRegionView(frame: NSRect(x: 0, y: 0, width: 80, height: 30))
     panel.contentView = region
     defer {
@@ -110,7 +110,7 @@ final class OverlayMenuCursorTests: XCTestCase {
 
   func testUnchangedIntercomHoverGeometryKeepsOneTrackingArea() throws {
     let panel = OverlayIntercomPanel()
-    panel.setFrame(NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
+    panel.resize(to: NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
     let region = OverlayMenuCursorRegionView(frame: NSRect(x: 0, y: 0, width: 80, height: 30))
     panel.contentView = region
     defer { panel.close() }
@@ -133,7 +133,7 @@ final class OverlayMenuCursorTests: XCTestCase {
 
   func testNativeIntercomHoverClearsWhenItsRegionLeavesTheWindow() async throws {
     let panel = OverlayIntercomPanel()
-    panel.setFrame(NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
+    panel.resize(to: NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
     let region = OverlayMenuCursorRegionView(frame: NSRect(x: 0, y: 0, width: 80, height: 30))
     var changes: [Bool] = []
     region.onHover = { changes.append($0) }
