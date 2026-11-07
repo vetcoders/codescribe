@@ -305,6 +305,26 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     XCTAssertFalse(live.voiceMuted)
   }
 
+  /// The card's text reads on the bar's sheet in both looks: its title
+  /// and its facts in the ink at AA (4.5:1); the muted lines (channel 0 not
+  /// heard, Do not disturb), whose tone is the state (L3, 2026-11-06), at
+  /// least the 3:1 of the secondary rung.
+  func testCardTextClearsItsFloorOnTheSheet() {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      for (tone, floor) in [
+        (OverlayChannelChipHoverCard.Tone.primary, 4.5), (.success, 4.5), (.muted, 3.0),
+      ] {
+        let ink =
+          tone == .muted ? palette.mutedText : palette.primaryText
+        XCTAssertEqual(tone.color(in: palette), ink.color, "\(tone)")
+        let ratio = OverlayColorToken.contrastRatio(
+          foreground: ink, surface: palette.desktopBackground,
+          background: palette.desktopBackground)
+        XCTAssertGreaterThanOrEqual(ratio, floor, "\(palette.appearance) \(tone): \(ratio):1")
+      }
+    }
+  }
+
   // MARK: - VoiceOver
 
   func testCardIsOneAccessibilityLabelReadingEveryFact() {

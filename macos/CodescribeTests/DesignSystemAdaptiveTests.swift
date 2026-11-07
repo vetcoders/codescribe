@@ -221,6 +221,44 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     XCTAssertTrue(CSPalette.chromeAccent === NSColor.controlAccentColor)
   }
 
+  /// The readability floor survives the system colours (D6): every text
+  /// role clears AA, 4.5:1, on every real surface in light, dark and both
+  /// increased-contrast appearances, resolved per appearance. The label
+  /// rungs carry all text to read on the bar, its pills, the hover card and
+  /// the status messages (round 5 decision (a)); the secondary rung is the
+  /// icons' at rest (its own floor above).
+  func testTextRolesClearAaOnEveryRealSurface() {
+    let roles: [(String, NSColor)] = [
+      ("textHigh", CSPalette.textHigh), ("textBody", CSPalette.textBody),
+    ]
+    for name in Self.auditAppearances {
+      for (role, color) in roles {
+        let ink = resolvedRGBA(color, name)
+        for (surface, background) in realSurfaces(name) {
+          let ratio = ink.over(background, alpha: ink.alpha).contrast(background)
+          XCTAssertGreaterThanOrEqual(
+            ratio, 4.5, "\(role) on \(surface) in \(name.rawValue): \(ratio):1")
+        }
+      }
+    }
+  }
+
+  /// With any accent the user picks, no text is drawn in it: the text
+  /// roles are label rungs and fixed hues, never `controlAccentColor`, so
+  /// the accent's contrast is not text's to carry.
+  func testNoTextRoleIsDrawnInTheAccent() {
+    let roles: [(String, NSColor)] = [
+      ("textHigh", CSPalette.textHigh), ("textBody", CSPalette.textBody),
+      ("textMuted", CSPalette.textMuted), ("secondaryInk", CSPalette.secondaryInk),
+      ("terracottaLight", CSPalette.terracottaLight), ("dangerLight", CSPalette.dangerLight),
+      ("amberLight", CSPalette.amberLight), ("assistiveLight", CSPalette.assistiveLight),
+    ]
+    for (role, color) in roles {
+      XCTAssertFalse(color === NSColor.controlAccentColor, "\(role) is the accent")
+      XCTAssertFalse(color === CSPalette.chromeAccent, "\(role) is the chrome accent")
+    }
+  }
+
   // MARK: - Veil polarity
 
   func testHairlineAndRaisedVeilsFlipPolarityWithTheAppearance() {
