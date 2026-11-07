@@ -284,6 +284,28 @@ views can change the recognition path or its diagnostics. They are not
 prerequisites for using Codescribe and should not be enabled simply to complete
 setup. Preserve a known configuration when comparing recordings.
 
+### Glass tuning
+
+Developer builds expose **Lab → Glass tuning** for the experimental
+**Onboarding**, **Mini and MIDI**, and **Bus header** surfaces. Select a surface,
+then adjust **Glass tint**. Already-open views update immediately; each surface
+retains its own macOS preference. **Reset glass** restores the selected surface
+to the unmodified system material, with zero additional tint.
+
+This control changes the native glass tint, not blur radius, refractive strength
+or an opaque layer over the window. Reading canvases and the accepted Agent and
+Settings chrome keep their own material policy. Reduce Transparency and Increase
+Contrast still take precedence.
+
+The controls require a developer bundle with `CSDeveloperSurface` enabled and do
+not require enabling the Voice Lab recording experiments. Production bundles
+ignore saved developer tint values. The UI-only preferences are
+`codescribe.dev_glass_tint.onboarding.v1`,
+`codescribe.dev_glass_tint.compact.v1`, and
+`codescribe.dev_glass_tint.bus_header.v1`; they do not alter `settings.json` or a
+recording snapshot. Values from the earlier backing-opacity experiment are not
+reused as native tint values.
+
 ## User
 
 This page shows the installed app's version/build, licence and local data
