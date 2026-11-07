@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Overlay bar: the right-click menu chooses the mode first: **Free motion** or **Fixed position**, one of them checked, and the six places in a **Place** submenu, where the remembered place stays checked even under Free motion. Choosing a place switches to Fixed position and moves the overlay; choosing Fixed position brings it back to the remembered place.
 - Overlay bar: an agent's hover card says more of its state in the same width: since when a stalled agent has not read ("Not reading for 12 min") or when a gone agent was last heard, the newest message with its direction, time and fate (Read, Delivered, Spoken), and whether the microphone is open on its channel or its voice is muted.
 - Overlay mini: while an agent's reply plays aloud, the Agents button (✦) turns violet and blinks gently, since mini has no agent pills to show it; with Reduce Motion it is violet without blinking. The expanded bar is unchanged.
 - Overlay bar: the unread dot on an agent's pill is smaller and sits on the pill's edge with a narrow gap in the bar's colour around it, like the system's badges, instead of a large dot stuck to the corner. Its colour is unchanged.

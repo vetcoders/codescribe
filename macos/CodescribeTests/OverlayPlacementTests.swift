@@ -94,25 +94,27 @@ final class OverlayPlacementTests: XCTestCase {
     var placements = 0
     state.onPlacementChanged = { placements += 1 }
     state.selectPlacementAnchor(.bottomRight)
-    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChosen), [.bottomRight])
+    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementRemembered), [.bottomRight])
 
     state.setFreeMotion(true)
     XCTAssertTrue(state.freeMotion)
     XCTAssertTrue(OverlayPlacement.freeMotion)
-    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChosen), [])
+    XCTAssertEqual(
+      OverlayAnchor.allCases.filter(state.placementRemembered), [.bottomRight],
+      "the remembered place stays under Free motion")
 
     let before = placements
     state.setFreeMotion(false)
     XCTAssertFalse(state.freeMotion)
     XCTAssertFalse(OverlayPlacement.freeMotion)
     XCTAssertEqual(state.placementAnchor, .bottomRight)
-    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChosen), [.bottomRight])
+    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementRemembered), [.bottomRight])
     XCTAssertEqual(placements, before + 1, "off places the panel on the anchor")
 
     state.setFreeMotion(true)
     state.selectPlacementAnchor(.topCenter)
     XCTAssertFalse(state.freeMotion, "choosing an anchor still leaves Free motion")
-    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChosen), [.topCenter])
+    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementRemembered), [.topCenter])
   }
 
   @MainActor

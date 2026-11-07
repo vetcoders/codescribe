@@ -1104,7 +1104,8 @@ final class OverlayBarReviewRenderTests: XCTestCase {
 
   /// The header's secondary-click menu on the expanded overlay, once with an
   /// anchor chosen (Bottom Center) and once with Free motion on: which item
-  /// carries the native checkmark. AppKit draws the menu, so the scene pops it
+  /// carries the native checkmark, on the first level and in the Place
+  /// submenu (L17). AppKit draws the menu, so the scene pops it
   /// up on the panel and draws the menu's own window while it tracks; the
   /// window's class names go into an attachment when none is found.
   func testRenderHeaderMenu() throws {
@@ -1121,9 +1122,11 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         state.selectPlacementAnchor(.bottomCenter)
         if freeMotion { state.selectFreeMotion() }
         XCTAssertEqual(state.freeMotion, freeMotion)
+        let scene = freeMotion ? "free-motion" : "anchor"
+        try renderHeaderMenu(state, look: look, name: "bar-header-menu-\(scene)")
+        // The Place submenu alone (L17): the remembered place's checkmark.
         try renderHeaderMenu(
-          state, look: look,
-          name: "bar-header-menu-\(freeMotion ? "free-motion" : "anchor")")
+          state, look: look, name: "bar-header-menu-place-\(scene)", submenu: "Place")
       }
     }
   }
@@ -1215,8 +1218,11 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     header.delegate?.menuNeedsUpdate?(header)
     var menu = header
     if let submenu {
+      // The title as the app shows it, also under `-testLanguage pl`.
+      let shown = Bundle.main.localizedString(forKey: submenu, value: nil, table: nil)
       let item = try XCTUnwrap(
-        header.items.first { $0.title == submenu }?.submenu, "\(name): no \(submenu) submenu")
+        header.items.first { [submenu, shown].contains($0.title) }?.submenu,
+        "\(name): no \(submenu) submenu among \(header.items.map(\.title))")
       item.delegate?.menuNeedsUpdate?(item)
       menu = try XCTUnwrap(item.copy() as? NSMenu)
     }

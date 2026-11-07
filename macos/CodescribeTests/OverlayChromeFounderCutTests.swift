@@ -1363,12 +1363,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  /// The placement items are native menu toggles (L9, 2026-11-06): the
-  /// chosen anchor carries the checkmark while Free motion is off, and Free
-  /// motion carries it while it is on. Choosing Free motion in the menu turns
-  /// it on; choosing it again turns it off and returns the panel to the last
-  /// chosen anchor; choosing an anchor leaves Free motion.
-  func testHeaderMenuChecksTheChosenPlacementAndFreeMotionSwitchesBack() throws {
+  /// Position in the header menu (L17, 2026-11-06): the first level holds
+  /// the mode, Free motion or Fixed position, with exactly one checkmark;
+  /// the six places live in the Place submenu with a checkmark on the
+  /// remembered one, also while Free motion is on. Choosing a place switches
+  /// to Fixed position and moves the panel; choosing Fixed position returns
+  /// the panel to the remembered place; choosing Free motion again does too.
+  func testHeaderMenuChoosesTheModeFirstAndThePlaceUnderIt() throws {
     let oldAnchor = OverlayPlacement.anchor
     let oldFreeMotion = OverlayPlacement.freeMotion
     defer {
@@ -1400,9 +1401,21 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         resolved.delegate?.menuNeedsUpdate?(resolved)
         return resolved
       }
-      let placement = Set(OverlayAnchor.allCases.map(\.label) + ["Free motion"])
-      @MainActor func checked(_ menu: NSMenu) -> [String] {
-        menu.items.filter { $0.state == .on && placement.contains($0.title) }.map(\.title)
+      let freeMotion = "Free motion"
+      let fixed = "Fixed position"
+      let anchors = Set(OverlayAnchor.allCases.map(\.label))
+      @MainActor func places(_ menu: NSMenu) throws -> NSMenu {
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Place" }, "no Place submenu")
+        let submenu = try XCTUnwrap(item.submenu)
+        submenu.delegate?.menuNeedsUpdate?(submenu)
+        return submenu
+      }
+      @MainActor func checkedModes(_ menu: NSMenu) -> [String] {
+        menu.items.filter { $0.state == .on && [freeMotion, fixed].contains($0.title) }
+          .map(\.title)
+      }
+      @MainActor func checkedPlaces(_ menu: NSMenu) throws -> [String] {
+        try places(menu).items.filter { $0.state == .on }.map(\.title)
       }
       @MainActor func choose(_ title: String) throws {
         let menu = try headerMenu()
@@ -1411,32 +1424,52 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         menu.performActionForItem(at: index)
         settle(root)
       }
-      let freeMotion = "Free motion"
+      @MainActor func choosePlace(_ title: String) throws {
+        let submenu = try places(try headerMenu())
+        let index = try XCTUnwrap(
+          submenu.items.firstIndex { $0.title == title }, "\(title) missing from Place")
+        submenu.performActionForItem(at: index)
+        settle(root)
+      }
 
-      XCTAssertEqual(checked(try headerMenu()), [OverlayAnchor.bottomCenter.label])
+      let menu = try headerMenu()
+      XCTAssertTrue(
+        menu.items.allSatisfy { !anchors.contains($0.title) },
+        "no place on the first level")
+      XCTAssertEqual(checkedModes(menu), [fixed])
+      XCTAssertEqual(try checkedPlaces(menu), [OverlayAnchor.bottomCenter.label])
 
       try choose(freeMotion)
       XCTAssertTrue(state.freeMotion)
-      XCTAssertEqual(state.placementAnchor, .bottomCenter)
-      XCTAssertEqual(checked(try headerMenu()), [freeMotion])
+      XCTAssertEqual(checkedModes(try headerMenu()), [freeMotion])
+      XCTAssertEqual(
+        try checkedPlaces(try headerMenu()), [OverlayAnchor.bottomCenter.label],
+        "the remembered place stays checked under Free motion")
 
-      let before = placements
-      try choose(freeMotion)
-      XCTAssertFalse(state.freeMotion, "a second choice turns Free motion off")
-      XCTAssertEqual(state.placementAnchor, .bottomCenter, "back to the last chosen anchor")
-      XCTAssertGreaterThan(placements, before, "the panel is placed on that anchor again")
-      XCTAssertEqual(checked(try headerMenu()), [OverlayAnchor.bottomCenter.label])
+      var before = placements
+      try choose(fixed)
+      XCTAssertFalse(state.freeMotion, "Fixed position leaves Free motion")
+      XCTAssertEqual(state.placementAnchor, .bottomCenter, "back to the remembered place")
+      XCTAssertGreaterThan(placements, before, "the panel is placed there again")
+      XCTAssertEqual(checkedModes(try headerMenu()), [fixed])
 
       try choose(freeMotion)
-      try choose(OverlayAnchor.topLeft.label)
-      XCTAssertFalse(state.freeMotion, "choosing an anchor leaves Free motion")
+      before = placements
+      try choose(freeMotion)
+      XCTAssertFalse(state.freeMotion, "a second choice of Free motion turns it off")
+      XCTAssertGreaterThan(placements, before)
+
+      try choose(freeMotion)
+      try choosePlace(OverlayAnchor.topLeft.label)
+      XCTAssertFalse(state.freeMotion, "choosing a place switches to Fixed position")
       XCTAssertEqual(state.placementAnchor, .topLeft)
-      XCTAssertEqual(checked(try headerMenu()), [OverlayAnchor.topLeft.label])
+      XCTAssertEqual(checkedModes(try headerMenu()), [fixed])
+      XCTAssertEqual(try checkedPlaces(try headerMenu()), [OverlayAnchor.topLeft.label])
 
-      let again = placements
-      try choose(OverlayAnchor.topLeft.label)
-      XCTAssertEqual(state.placementAnchor, .topLeft, "the chosen anchor stays chosen")
-      XCTAssertGreaterThan(placements, again, "choosing it again places the panel there")
+      before = placements
+      try choosePlace(OverlayAnchor.topLeft.label)
+      XCTAssertEqual(state.placementAnchor, .topLeft, "the remembered place stays")
+      XCTAssertGreaterThan(placements, before, "choosing it again places the panel there")
     }
   }
 

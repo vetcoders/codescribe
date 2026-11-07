@@ -772,10 +772,11 @@ final class OverlayState {
     }
   }
 
-  /// The anchor the header menu marks as chosen: the selected one while Free
-  /// motion is off, none while it is on.
-  func placementChosen(_ anchor: OverlayAnchor) -> Bool {
-    !freeMotion && placementAnchor == anchor
+  /// The place the header menu's Place submenu checks: the remembered
+  /// anchor, also while Free motion is on (L17, 2026-11-06), so the user
+  /// sees where Fixed position returns.
+  func placementRemembered(_ anchor: OverlayAnchor) -> Bool {
+    placementAnchor == anchor
   }
 
   /// The window already reached this point through a user drag. Save its origin

@@ -82,38 +82,54 @@ struct OverlayHeaderMenu: View {
 
     Divider()
 
-    // The anchors and Free motion are toggles, so the native menu draws the
-    // chosen one's checkmark: a checkmark drawn as a Label's image is not the
-    // item's state, and macOS 26 menus showed no choice at all. Choosing an
-    // anchor, the chosen one included, places the panel there and leaves
-    // Free motion; Free motion off returns to the last chosen anchor.
+    // Position: the mode first, the place under it (L17, 2026-11-06). The
+    // first level is two native toggles with exactly one checkmark, Free
+    // motion or Fixed position; the six places live in their own submenu,
+    // the remembered one checked even while Free motion is on. Choosing a
+    // place switches to Fixed position and moves the panel there; choosing
+    // Fixed position returns the panel to the remembered place. A native
+    // menu item that opens a submenu carries neither a checkmark nor an
+    // action, so the mode and the places are separate items.
     Section {
-      ForEach(OverlayAnchor.allCases) { anchor in
-        Toggle(
-          isOn: Binding(
-            get: { state.placementChosen(anchor) },
-            set: { _ in state.selectPlacementAnchor(anchor) })
-        ) {
-          Label(anchor.label, systemImage: anchor.systemImage)
+      Toggle(
+        isOn: Binding(
+          get: { state.freeMotion },
+          set: { state.setFreeMotion($0) })
+      ) {
+        Label("Free motion", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+      }
+      .accessibilityIdentifier("overlay-free-motion")
+      Toggle(
+        isOn: Binding(
+          get: { !state.freeMotion },
+          set: { _ in state.setFreeMotion(false) })
+      ) {
+        Text(
+          "Fixed position",
+          comment: "Overlay placement menu: the overlay stays on its remembered place")
+      }
+      .accessibilityIdentifier("overlay-fixed-position")
+      Menu {
+        ForEach(OverlayAnchor.allCases) { anchor in
+          Toggle(
+            isOn: Binding(
+              get: { state.placementRemembered(anchor) },
+              set: { _ in state.selectPlacementAnchor(anchor) })
+          ) {
+            Label(anchor.label, systemImage: anchor.systemImage)
+          }
+          .accessibilityIdentifier("overlay-anchor-\(anchor.rawValue)")
         }
-        .accessibilityIdentifier("overlay-anchor-\(anchor.rawValue)")
+      } label: {
+        Text(
+          "Place",
+          comment: "Overlay placement menu: submenu of the six places the overlay snaps to")
       }
     } header: {
       Text(
         "Anchor",
         comment: "Overlay placement menu: header above the screen positions the overlay snaps to")
     }
-
-    Divider()
-
-    Toggle(
-      isOn: Binding(
-        get: { state.freeMotion },
-        set: { state.setFreeMotion($0) })
-    ) {
-      Label("Free motion", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
-    }
-    .accessibilityIdentifier("overlay-free-motion")
     Divider()
     Toggle(
       "Show transcript by default",
