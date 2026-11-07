@@ -91,12 +91,6 @@ struct OverlayActionsPresentation {
     panelPresented = presented
     interact()
   }
-
-  static func finishingLabel(mode: OverlayMode, transcribing: Bool, terminal: Bool) -> String? {
-    guard !terminal, transcribing || mode == .finalizing else { return nil }
-    return String(
-      localized: "Finishing…", comment: "Overlay cap while the take is transcribed")
-  }
 }
 
 /// Symbols shared by the rendered controls and their collision census.

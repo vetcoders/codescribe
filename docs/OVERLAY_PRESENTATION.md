@@ -538,6 +538,12 @@ sign and its stop meaning in mini.
 
 ### Mini
 
+No form of the bar (mini, folded, expanded, two-row) draws a processing
+caption: the orange "Finishing…" under the header or at the folded bar's
+bottom is gone (L13, 2026-11-07), with no replacement. The take's phase
+still reaches assistive technology through the intent dock's accessibility
+value (`OverlayState.statusText`), which never was the caption's source.
+
 Mini at rest (Founder, 2026-11-04, bus brief §3) reads, from the left: the
 brand dot (the close button), transcription (`transcriptionPreviewButton`),
 the microphone, the Agents button (✦) and the preview chevron, in the bar's

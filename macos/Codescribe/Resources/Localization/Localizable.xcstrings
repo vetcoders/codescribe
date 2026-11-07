@@ -8827,17 +8827,6 @@
         }
       }
     },
-    "Finishing…" : {
-      "comment" : "Overlay cap while the take is transcribed",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Końcowe przetwarzanie…"
-          }
-        }
-      }
-    },
     "First dictation confirmation" : {
       "comment" : "User panel section",
       "localizations" : {

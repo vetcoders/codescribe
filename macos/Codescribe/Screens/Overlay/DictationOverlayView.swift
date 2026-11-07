@@ -1037,25 +1037,16 @@ struct DictationOverlayView: View {
           if hidden { state.focusAgentRoster() }
         }
       }
-      VStack(spacing: 0) {
-        header
-        if !state.isCollapsed,
-          let label = OverlayActionsPresentation.finishingLabel(
-            mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
-        {
-          Text(label)
-            .csFont(10, .medium)
-            .foregroundStyle(palette.processingStatus.color)
-            .accessibilityIdentifier("overlay-finishing")
-            .allowsHitTesting(false)
+      // No processing caption under the header (L13, 2026-11-07): the bar
+      // shows no "Finishing…" in any form; assistive tech still hears the
+      // phase through the intent dock's accessibility value.
+      header
+        .onGeometryChange(for: CGFloat.self) {
+          $0.size.height
+        } action: {
+          headerHeight = $0
         }
-      }
-      .onGeometryChange(for: CGFloat.self) {
-        $0.size.height
-      } action: {
-        headerHeight = $0
-      }
-      .frame(maxHeight: .infinity, alignment: .top)
+        .frame(maxHeight: .infinity, alignment: .top)
       VStack(spacing: 0) {
         if !state.isCollapsed && state.windowContentSurface == .transcription {
           VStack(spacing: CSSpace.sm) {
@@ -1081,19 +1072,6 @@ struct DictationOverlayView: View {
 
           }
           .padding(.bottom, OverlayResizeChrome.actionsBottomInset)
-        } else if let label = OverlayActionsPresentation.finishingLabel(
-          mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)
-        {
-          // The folded bar keeps its height; the passive wait label uses its
-          // bottom center without touching the header timer or capture state.
-          Text(label)
-            .csFont(10, .medium)
-            .foregroundStyle(palette.processingStatus.color)
-            .padding(.horizontal, 4)
-            .background(palette.desktopBackground.color, in: Capsule())
-            .padding(.bottom, 2)
-            .accessibilityIdentifier("overlay-finishing")
-            .allowsHitTesting(false)
         }
       }
       .onGeometryChange(for: CGFloat.self) {

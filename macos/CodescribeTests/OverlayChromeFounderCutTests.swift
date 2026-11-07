@@ -38,7 +38,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let footer = try section(
       of: overlay,
       from: "if !state.isCollapsed && state.windowContentSurface == .transcription {",
-      to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
+      to: "footerHeight = $0")
     XCTAssertFalse(footer.contains("intentRail"), "notices stay out of the actions column")
     XCTAssertTrue(footer.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
     XCTAssertTrue(overlay.contains("OverlayCanvasSurface(palette: palette)"))
@@ -988,7 +988,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let footer = try section(
       of: source,
       from: "if !state.isCollapsed && state.windowContentSurface == .transcription {",
-      to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
+      to: "footerHeight = $0")
     XCTAssertFalse(footer.contains("intentRail"))
     XCTAssertFalse(footer.contains("state.toast"))
     XCTAssertTrue(footer.contains("footerMessageRow"))
@@ -1040,66 +1040,35 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(material.contains("colorSchemeContrast"))
   }
 
-  func testFinishingNoticeSurvivesFoldWithoutChangingBarHeight() throws {
+  /// The bar draws no processing caption (L13, 2026-11-07): while the take
+  /// is finalized neither the expanded overlay nor the folded bar shows a
+  /// "Finishing…" element, folding keeps the bar's height and the words.
+  func testBarShowsNoFinishingCaptionWhileTheTakeIsFinalized() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
-    let canvas = try section(
-      of: overlaySource(), from: "private func canvasStack", to: "private var header: some View")
-    let expanded = try section(of: canvas, from: "if !state.isCollapsed,", to: ".onGeometryChange(")
-    let folded = try section(
-      of: canvas, from: "} else if let label = OverlayActionsPresentation.finishingLabel(",
-      to: ".overlay(alignment: .bottom)")
-    for branch in [expanded, folded] {
-      XCTAssertTrue(branch.contains("OverlayActionsPresentation.finishingLabel("))
-      XCTAssertTrue(
-        branch.contains(
-          "mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)"))
-      XCTAssertTrue(branch.contains("Text(label)"))
-      XCTAssertTrue(branch.contains(".accessibilityIdentifier(\"overlay-finishing\")"))
-      XCTAssertTrue(branch.contains(".allowsHitTesting(false)"))
-    }
     let state = OverlayState.previewListening()
     state.handleRecordingStarted()
     defer { state.finishControllerRecording() }
     state.handleRecordingFinalising()
+    XCTAssertEqual(state.mode, .finalizing)
     let words = state.canvasText
     try withPanel(state: state) { panel, root in
+      @MainActor func finishing() -> [String] {
+        accessibilityTree(root).compactMap { element in
+          let identifier = element.accessibilityIdentifier()
+          let label = element.accessibilityLabel() ?? ""
+          return identifier == "overlay-finishing" || label.contains("Finishing")
+            ? identifier : nil
+        }
+      }
       XCTAssertFalse(state.isCollapsed)
-      XCTAssertEqual(
-        OverlayActionsPresentation.finishingLabel(
-          mode: state.mode, transcribing: state.transcribing, terminal: state.terminal),
-        "Finishing…")
+      XCTAssertEqual(finishing(), [], "no caption in the expanded overlay")
       state.toggleCollapsed()
       settle(root)
       XCTAssertTrue(state.isCollapsed)
-      XCTAssertEqual(
-        OverlayActionsPresentation.finishingLabel(
-          mode: state.mode, transcribing: state.transcribing, terminal: state.terminal),
-        "Finishing…")
+      XCTAssertEqual(finishing(), [], "no caption on the folded bar")
       XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
       XCTAssertEqual(state.canvasText, words)
     }
-  }
-
-  func testFinishingFollowsStopLifecycleAndTerminalReceiptWithoutADuration() {
-    let state = OverlayState.previewListening()
-    state.handleRecordingStarted()
-    XCTAssertNil(
-      OverlayActionsPresentation.finishingLabel(
-        mode: state.mode, transcribing: state.transcribing, terminal: state.terminal))
-    state.handleRecordingFinalising()
-    XCTAssertEqual(
-      OverlayActionsPresentation.finishingLabel(
-        mode: state.mode, transcribing: state.transcribing, terminal: state.terminal), "Finishing…")
-    state.finishControllerRecording()
-    XCTAssertNil(
-      OverlayActionsPresentation.finishingLabel(
-        mode: .formatted, transcribing: state.transcribing, terminal: true))
-    XCTAssertEqual(
-      OverlayActionsPresentation.finishingLabel(
-        mode: .finalizing, transcribing: false, terminal: false), "Finishing…")
-    XCTAssertNil(
-      OverlayActionsPresentation.finishingLabel(
-        mode: .finalizing, transcribing: true, terminal: true))
   }
 
   func testResizeChromeKeepsPassiveSurfacesAndMountsBothDividerGestures() throws {
