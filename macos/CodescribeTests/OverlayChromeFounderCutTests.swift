@@ -1049,7 +1049,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.handleRecordingStarted()
     defer { state.finishControllerRecording() }
     state.handleRecordingFinalising()
-    XCTAssertEqual(state.mode, .finalizing)
+    XCTAssertTrue(state.transcribing, "the take is being finalized")
     let words = state.canvasText
     try withPanel(state: state) { panel, root in
       @MainActor func finishing() -> [String] {
@@ -1094,8 +1094,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(chrome.contains("pointerInsideOverlay"))
     let passiveChrome = chrome + pointerChrome
     // Geometry readers and decorative chrome stay passive. Both dividers
-    // are interactive, including the rail's formerly passive hairline.
-    XCTAssertEqual(passiveChrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 7)
+    // are interactive, including the rail's formerly passive hairline. The
+    // two passive "Finishing…" captions are gone (L13, 2026-11-07).
+    XCTAssertEqual(passiveChrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 5)
     XCTAssertEqual(passiveChrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 2)
     let rail = try section(
       of: chrome, from: "private func agentRail(", to: "private func agentRailUnfoldHandle")

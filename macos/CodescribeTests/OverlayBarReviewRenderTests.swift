@@ -930,7 +930,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
       let (state, _) = try barState(four, mode: mode)
       state.handleRecordingStarted()
       state.handleRecordingFinalising()
-      XCTAssertEqual(state.mode, .finalizing)
+      XCTAssertTrue(state.transcribing, "\(scene): the take is being finalized")
       if mode == .mini {
         try renderMini(state, scene: scene)
       } else {
