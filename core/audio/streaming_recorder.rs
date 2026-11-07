@@ -2526,12 +2526,16 @@ impl ClosedChannel {
     }
 }
 
+/// What a detached shared close reports back: whether it released the
+/// stream, and the capture archive it came to own when it did.
+type SharedCloseOutcome = Result<(bool, Option<std::path::PathBuf>)>;
+
 /// The existing take's detached stop tail, never a second capture owner.
 /// Its ledger and sink are the original authority, moved with the worker.
 pub struct ClosedTake {
     shared_document: bool,
     shared_close: Option<ClosedChannel>,
-    shared_close_worker: Option<JoinHandle<Result<(bool, Option<std::path::PathBuf>)>>>,
+    shared_close_worker: Option<JoinHandle<SharedCloseOutcome>>,
     shared_archive_is_document: bool,
     shared_stream_released: bool,
     shared_capture_archive: Option<std::path::PathBuf>,
