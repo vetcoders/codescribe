@@ -5134,8 +5134,19 @@ final class OverlayState {
 
   /// Consume the canonical Rust indicator mode. Agent arm is a one-shot
   /// session latch; the accepted orange processing phase must not disarm it.
+  /// `@Observable` publishes every write, not every change: assigning the
+  /// value a field already holds still invalidates every view that read it.
+  /// The hot setters (`applyTranscriptProjection`, `applyIndicatorMode`,
+  /// `applyVad`, `applyAudioLevel`) run many times a second with mostly
+  /// unchanged values, so they write only through this guard.
+  private func publish<Value: Equatable>(
+    _ keyPath: ReferenceWritableKeyPath<OverlayState, Value>, _ value: Value
+  ) {
+    if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+  }
+
   func applyIndicatorMode(_ mode: CsIndicatorMode) {
-    indicatorMode = mode
+    publish(\.indicatorMode, mode)
     if mode == .assistive {
       agentSessionArmed = true
     }
@@ -6422,31 +6433,36 @@ final class OverlayState {
       // value to decide whether the app-level stopped callback is still owed.
       abortRecordingSession()
     }
-    latestTranscriptProjection = projection
+    // Every field below is published through `publish`: a projection that
+    // repeats the current value must not wake the views reading it (SwiftUI
+    // template, 2026-11-07: `revision` and `mode` alone invalidated the whole
+    // canvas ~75 times a second during a take with nothing changing on screen).
+    publish(\.latestTranscriptProjection, projection)
     if projection.reducerAction == "light_plus_tick_deadline" {
       showFooterNotice(projection.label)
     }
     // Mirror this accepted projection; a successor or a later document verdict
     // cannot inherit a notice belonging to its predecessor.
-    coverageRefusalNotice =
+    publish(
+      \.coverageRefusalNotice,
       projection.terminal && projection.phase == OverlayMode.coverageRefused.rawValue
-      ? coverageRefusalCopy.notice : nil
+        ? coverageRefusalCopy.notice : nil)
     if !projection.terminal, !finalized {
       markTranscriptActivity()
     }
-    transcriptMode = projection.mode
-    mode = OverlayMode(rawValue: projection.phase) ?? mode
-    revision = projection.reducerRevision
-    canPaste = projection.canPaste
-    canInsert = projection.canInsert
-    canCopy = projection.canCopy
-    canRetranscribe = projection.canRetranscribe
-    canFormat = projection.canFormat
-    canSendToAgent = projection.canSendToAgent
-    terminal = projection.terminal
+    publish(\.transcriptMode, projection.mode)
+    publish(\.mode, OverlayMode(rawValue: projection.phase) ?? mode)
+    publish(\.revision, projection.reducerRevision)
+    publish(\.canPaste, projection.canPaste)
+    publish(\.canInsert, projection.canInsert)
+    publish(\.canCopy, projection.canCopy)
+    publish(\.canRetranscribe, projection.canRetranscribe)
+    publish(\.canFormat, projection.canFormat)
+    publish(\.canSendToAgent, projection.canSendToAgent)
+    publish(\.terminal, projection.terminal)
     if projection.terminal { refreshRetranscriptionAvailability() }
     // A document observation cannot consume a stopped callback or reopen capture.
-    if isLifecycleTerminal { finalized = true }
+    if isLifecycleTerminal { publish(\.finalized, true) }
 
     userRevisionProvenance = revisionReceipt
     if completesPendingRevision {
@@ -7234,18 +7250,18 @@ final class OverlayState {
   ) {
     guard audioCaptureActive else { return }
     levelMeter.push(rms: rms, speechActive: vadActive, now: now)
-    if levelMeter.gain != nil { hasMeasuredAudioLevel = true }
+    if !hasMeasuredAudioLevel, levelMeter.gain != nil { hasMeasuredAudioLevel = true }
   }
 
   func applyVad(_ active: Bool) {
     // Drop late VAD toggles after finalize: the waveform is gone in Idle and a
     // stray `vadActive` flip is just another needless invalidation.
     guard !finalized else { return }
-    vadActive = active
+    publish(\.vadActive, active)
     if active {
       cancelWarmupWatchdog()
-      warmingUp = false
-      audioReady = true
+      publish(\.warmingUp, false)
+      publish(\.audioReady, true)
     }
   }
 

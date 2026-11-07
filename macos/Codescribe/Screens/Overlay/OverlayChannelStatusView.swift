@@ -422,12 +422,11 @@ struct OverlayAgentControlStyle: ViewModifier {
   private func styled(_ content: Content) -> some View {
     if !chrome {
       content.buttonStyle(OverlayFlatControlButtonStyle(diameter: diameter ?? 22))
-    } else if let diameter {
-      content.buttonStyle(OverlaySizedAudioButtonStyle(diameter: diameter))
-    } else if #available(macOS 26.0, *) {
-      content.buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.regular)
     } else {
-      content.buttonStyle(.bordered).buttonBorderShape(.circle).controlSize(.regular)
+      // Still glass, not `.glass`: the interactive style tracks the pointer and
+      // commits a frame per mouse move (CA Commits, 2026-11-07: ~33/s under the
+      // cursor during a take). The regular circle keeps its 28 pt footprint.
+      content.buttonStyle(OverlaySizedAudioButtonStyle(diameter: diameter ?? 28))
     }
   }
 }

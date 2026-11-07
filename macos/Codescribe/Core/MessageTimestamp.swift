@@ -140,6 +140,31 @@ enum MessageTimestamp {
   }
 }
 
+/// One minute-aligned tick shared by every timestamp label and day separator.
+/// Each label used to run its own `TimelineView(.periodic(by: 60))`, so a
+/// history with N visible turns scheduled N timelines (SwiftUI template,
+/// 2026-11-07: `PeriodicTimelineSchedule` ~19 updates/s during a take). Views
+/// read `now`; `@Observable` redraws them together, once a minute.
+@MainActor @Observable
+final class MinuteClock {
+  static let shared = MinuteClock()
+
+  private(set) var now = Date()
+  @ObservationIgnored private var ticker: Task<Void, Never>?
+
+  private init() {
+    ticker = Task { [weak self] in
+      while !Task.isCancelled {
+        let seconds = Date().timeIntervalSinceReferenceDate
+        let untilMinute = 60 - seconds.truncatingRemainder(dividingBy: 60)
+        try? await Task.sleep(for: .seconds(untilMinute), tolerance: .seconds(2))
+        guard let self else { return }
+        self.now = Date()
+      }
+    }
+  }
+}
+
 struct MessageTimestampLabel: View {
   let date: Date?
   /// Tight places (the sidebar roster, the turn meta rows) take the short
@@ -148,21 +173,20 @@ struct MessageTimestampLabel: View {
 
   var body: some View {
     // History left open across midnight must acquire its new day label.
-    TimelineView(.periodic(from: .now, by: 60)) { context in
-      let full = MessageTimestamp.label(for: date, now: context.date)
-      if compact {
-        Text(verbatim: MessageTimestamp.compactLabel(for: date, now: context.date))
-          .monospacedDigit()
-          .lineLimit(1)
-          .fixedSize(horizontal: true, vertical: false)
-          .help(full)
-          .accessibilityLabel(Text(verbatim: full))
-      } else {
-        Text(verbatim: full)
-          .monospacedDigit()
-          .lineLimit(1)
-          .fixedSize(horizontal: true, vertical: false)
-      }
+    let now = MinuteClock.shared.now
+    let full = MessageTimestamp.label(for: date, now: now)
+    if compact {
+      Text(verbatim: MessageTimestamp.compactLabel(for: date, now: now))
+        .monospacedDigit()
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .help(full)
+        .accessibilityLabel(Text(verbatim: full))
+    } else {
+      Text(verbatim: full)
+        .monospacedDigit()
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
     }
   }
 }
@@ -174,19 +198,17 @@ struct MessageDaySeparator: View {
   let date: Date
 
   var body: some View {
-    TimelineView(.periodic(from: .now, by: 60)) { context in
-      HStack(spacing: 10) {
-        hairline
-        Text(verbatim: MessageTimestamp.dayLabel(for: date, now: context.date))
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(CSColor.textTertiary)
-          .lineLimit(1)
-          .fixedSize()
-        hairline
-      }
-      .accessibilityElement(children: .combine)
-      .accessibilityAddTraits(.isHeader)
+    HStack(spacing: 10) {
+      hairline
+      Text(verbatim: MessageTimestamp.dayLabel(for: date, now: MinuteClock.shared.now))
+        .font(CSFont.mono(10, .medium))
+        .foregroundStyle(CSColor.textTertiary)
+        .lineLimit(1)
+        .fixedSize()
+      hairline
     }
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
   }
 
   private var hairline: some View {
