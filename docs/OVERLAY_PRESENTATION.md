@@ -111,7 +111,11 @@ acknowledgment.
 Readability rule for the bar and the roster (L8, 2026-11-06): text to read
 wears the label ink (`primaryText`), secondary text included — timestamps,
 descriptors, previews, row states, hints, the bar's timer and the take's
-detail lines; hierarchy comes from size and weight. `ChannelRosterStyle`
+detail lines; hierarchy comes from size and weight. An unread
+conversation's preview is semibold until the conversation is opened (round 5
+decision (b), 2026-11-07; `OverlayAgentRosterLabel.previewWeight`), from the
+same unread count as its badge, so read and unread previews differ though
+they share the ink. `ChannelRosterStyle`
 (`palette.roster`) owns the roster's text and receipt inks. Icons at rest
 (the audio controls, search, sort, chevrons, the crossed antenna, the waiting
 spinner) keep the system's secondary label, which measures 3.6–3.9:1 on the

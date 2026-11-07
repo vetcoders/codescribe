@@ -109,7 +109,8 @@ struct OverlayAgentRosterLabel: View {
         }
         if !headerOnly, let preview {
           Text(verbatim: preview)
-            .font(.system(size: 13 * textScale))
+            .font(
+              .system(size: 13 * textScale, weight: Self.previewWeight(unreadCount: unreadCount)))
             .foregroundStyle(
               unreadCount > 0 ? palette.bodyText.color : palette.roster.secondaryText.color
             )
@@ -121,6 +122,13 @@ struct OverlayAgentRosterLabel: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .contentShape(Rectangle())
+  }
+
+  /// The preview of an unread conversation is semibold until it is opened
+  /// (round 5 decision (b), 2026-11-07), from the same unread count as the
+  /// badge beside it; opening clears the count and the weight returns.
+  static func previewWeight(unreadCount: Int) -> Font.Weight {
+    unreadCount > 0 ? .semibold : .regular
   }
 }
 
