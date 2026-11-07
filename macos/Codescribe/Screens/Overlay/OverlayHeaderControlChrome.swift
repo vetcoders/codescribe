@@ -115,7 +115,12 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .onChange(of: hintWithinWindow) { _, _ in syncHint(inside: hovered) }
       .onChange(of: hintSize) { _, _ in syncHint(inside: hovered) }
       .onChange(of: hintFitsContentHeight) { _, _ in syncHint(inside: hovered) }
-      .onChange(of: hintContentRevision) { _, _ in syncHint(inside: hovered) }
+      // The revision re-measures an open card; it never opens one. A card
+      // closed because another owner took the panel bumps it too, and
+      // answering that with `show` ordered the card straight back.
+      .onChange(of: hintContentRevision) { _, _ in
+        if anchor.isPresented { syncHint(inside: hovered) }
+      }
       .onChange(of: hintInteractive) { _, _ in syncHint(inside: hovered) }
       .onChange(of: palette) { _, _ in syncHint(inside: hovered) }
       .onDisappear {

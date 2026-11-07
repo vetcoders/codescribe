@@ -89,7 +89,7 @@ final class OverlayMenuCursorRegionView: NSView {
     let inside =
       point.map {
         guard let window, !isHiddenOrHasHiddenAncestor,
-          bounds.intersection(visibleRect).contains(convert($0, from: nil))
+          reachableRect.contains(convert($0, from: nil))
         else { return false }
         // A tracking-area entry can reach the owner directly; the open
         // interactive card over this window still owns the pointer.
@@ -97,6 +97,17 @@ final class OverlayMenuCursorRegionView: NSView {
           at: window.convertPoint(toScreen: $0), under: window)
       } ?? false
     setHovered(inside)
+  }
+
+  /// The part of this region the pointer can reach: its visible rect cut to
+  /// the frame of the enclosing scroll view. A roster scrolled without a
+  /// scroll clip (`scrollClipDisabled`) keeps rows past its viewport mounted,
+  /// and its clip view does not bound their `visibleRect`; such a row lying
+  /// under the bar header took the pointer from ✦ and opened its own card.
+  private var reachableRect: NSRect {
+    let rect = bounds.intersection(visibleRect)
+    guard let scroll = enclosingScrollView else { return rect }
+    return rect.intersection(convert(scroll.bounds, from: scroll))
   }
 
   private func setHovered(_ inside: Bool) {
@@ -132,7 +143,7 @@ final class OverlayMenuCursorRegionView: NSView {
 
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
-    let rect = bounds.intersection(visibleRect)
+    let rect = reachableRect
     // View updates do not imply a new pointer region. Replacing an unchanged
     // area makes AppKit queue needless exit/entry events and cursor resets.
     if let hoverArea, hoverArea.rect == rect { return }
