@@ -693,9 +693,12 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// The lease rule shared with Python and Swift
+/// (`scripts/tests/fixtures/lease-identity-vectors.json`): the provider
+/// trimmed and lower-cased, the session byte for byte.
 fn lease_identifier(provider: &str, session: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(provider.to_lowercase().as_bytes());
+    hasher.update(provider.trim().to_lowercase().as_bytes());
     hasher.update([0u8]);
     hasher.update(session.as_bytes());
     hex::encode(&hasher.finalize()[..16])
@@ -823,6 +826,27 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    /// The search's lease rule is the shared one: every vector of the
+    /// common fixture gives the same id as in Python and Swift.
+    #[test]
+    fn lease_identifier_matches_the_shared_vectors() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../scripts/tests/fixtures/lease-identity-vectors.json"
+        ))
+        .unwrap();
+        for vector in fixture["vectors"].as_array().unwrap() {
+            assert_eq!(
+                lease_identifier(
+                    vector["provider"].as_str().unwrap(),
+                    vector["provider_session_id"].as_str().unwrap()
+                ),
+                vector["lease_id"].as_str().unwrap(),
+                "{}",
+                vector["case"]
+            );
+        }
+    }
 
     fn conversation_id(provider: &str, session: &str) -> String {
         format!(

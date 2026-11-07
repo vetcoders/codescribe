@@ -151,8 +151,12 @@ struct AgentPlaybackIdentity: Hashable, Sendable {
   }
 
   var leaseID: String { Self.leaseIdentifier(provider: provider, session: session) }
+  /// The lease rule shared with Python and Rust
+  /// (`scripts/tests/fixtures/lease-identity-vectors.json`): the provider
+  /// trimmed and lower-cased, the session byte for byte, never trimmed.
   static func leaseIdentifier(provider: String, session: String) -> String {
-    Self.digest([provider.lowercased(), session], bytes: 16)
+    Self.digest(
+      [provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), session], bytes: 16)
   }
   var storageKey: String { Self.digest([provider, session, bus], bytes: 12) }
 

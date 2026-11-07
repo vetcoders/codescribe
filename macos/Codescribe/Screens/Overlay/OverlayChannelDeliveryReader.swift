@@ -227,10 +227,7 @@ actor OverlayChannelDeliveryReader {
         guard let provider = binding["provider"] as? String,
           let session = binding["provider_session_id"] as? String
         else { continue }
-        let identity = SHA256.hash(
-          data: Data([provider.lowercased(), session].joined(separator: "\0").utf8)
-        )
-        .prefix(16).map { String(format: "%02x", $0) }.joined()
+        let identity = AgentPlaybackIdentity.leaseIdentifier(provider: provider, session: session)
         let file = leasesURL.appendingPathComponent(identity + ".json")
         if !selected.contains(file) { selected.append(file) }
       }

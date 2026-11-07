@@ -2171,7 +2171,12 @@ def lease_identifier(provider: str, provider_session_id: str) -> str:
     # The provider session owns the cursor. Name is mutable during --become and
     # therefore cannot participate in the key: binding a name must not fork the
     # greeting follower onto a fresh cursor.
-    identity = "\0".join((provider.casefold(), provider_session_id))
+    # One rule in Python, Rust and Swift (scripts/tests/fixtures/
+    # lease-identity-vectors.json): the provider trimmed and lower-cased
+    # (str.lower, which Rust's to_lowercase and Swift's lowercased() match;
+    # casefold would turn "ß" into "ss" and part ways with them), the session
+    # byte for byte, never trimmed.
+    identity = "\0".join((provider.strip().lower(), provider_session_id))
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
 
 

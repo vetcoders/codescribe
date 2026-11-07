@@ -745,6 +745,28 @@ fn read_active_names_at(root: &Path, now: f64, ttl_seconds: f64) -> Vec<String> 
 mod tests {
     use super::*;
 
+    /// The lease rule shared with Python and Swift: every vector of the
+    /// common fixture gives the same id here.
+    #[test]
+    fn follower_lease_id_matches_the_shared_vectors() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../scripts/tests/fixtures/lease-identity-vectors.json"
+        ))
+        .unwrap();
+        let vectors = fixture["vectors"].as_array().unwrap();
+        assert!(!vectors.is_empty());
+        for vector in vectors {
+            let provider = vector["provider"].as_str().unwrap();
+            let session = vector["provider_session_id"].as_str().unwrap();
+            assert_eq!(
+                follower_lease_id(provider, session).as_deref(),
+                vector["lease_id"].as_str(),
+                "{}",
+                vector["case"]
+            );
+        }
+    }
+
     fn write_lease(root: &Path, file: &str, name: &str, active: bool, heartbeat: f64) {
         let dir = root.join("leases");
         fs::create_dir_all(&dir).unwrap();
