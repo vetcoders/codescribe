@@ -1135,10 +1135,14 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     let menu: NSMenu
     var image: NSImage?
     var windows: [String] = []
+    /// The timer fired inside the menu's tracking loop. False after
+    /// `popUp` returns means AppKit did not track the menu at all.
+    var fired = false
 
     init(menu: NSMenu) { self.menu = menu }
 
     func capture() {
+      fired = true
       let candidates = NSApp.windows.filter { $0.isVisible && $0.level.rawValue > 0 }
       windows = candidates.map {
         "\(type(of: $0)) level=\($0.level.rawValue) frame=\(NSStringFromRect($0.frame))"
@@ -1157,8 +1161,18 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   }
 
   /// Opens the header menu on the real overlay panel in one look and saves
-  /// the menu's window as `<name>-<look>`.
-  private func renderHeaderMenu(_ state: OverlayState, look: Look, name: String) throws {
+  /// the menu's window as `<name>-<look>`. With `submenu`, the item of that
+  /// title's submenu is popped up alone (a copy, since a submenu belongs to
+  /// its item), so its own checkmarks can be judged.
+  ///
+  /// The scene owns its state: it activates the app and ends any menu
+  /// tracking an earlier test left before it pops up, because `popUp`
+  /// returns at once without tracking (and the capture timer never fires)
+  /// when another menu still tracks or the app is not active. A failure
+  /// names whether the timer fired inside a tracking loop.
+  private func renderHeaderMenu(
+    _ state: OverlayState, look: Look, name: String, submenu: String? = nil
+  ) throws {
     let suite = "OverlayBarReviewRenderTests.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
@@ -1197,9 +1211,21 @@ final class OverlayBarReviewRenderTests: XCTestCase {
       found = current.menu(for: event)
       view = current.superview
     }
-    let menu = try XCTUnwrap(found, "\(name): no header menu at the passive header point")
-    menu.delegate?.menuNeedsUpdate?(menu)
+    let header = try XCTUnwrap(found, "\(name): no header menu at the passive header point")
+    header.delegate?.menuNeedsUpdate?(header)
+    var menu = header
+    if let submenu {
+      let item = try XCTUnwrap(
+        header.items.first { $0.title == submenu }?.submenu, "\(name): no \(submenu) submenu")
+      item.delegate?.menuNeedsUpdate?(item)
+      menu = try XCTUnwrap(item.copy() as? NSMenu)
+    }
     menu.appearance = look.appearance
+    // An earlier test's menu or an inactive app makes `popUp` return at
+    // once, untracked; the scene starts from its own clean state.
+    NSApp.activate(ignoringOtherApps: true)
+    NSApp.mainMenu?.cancelTrackingWithoutAnimation()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     let capture = MenuCapture(menu: menu)
     let timer = Timer(timeInterval: 0.6, repeats: false) { _ in
       MainActor.assumeIsolated { capture.capture() }
@@ -1212,7 +1238,8 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     windows.lifetime = .keepAlways
     add(windows)
     let image = try XCTUnwrap(
-      capture.image, "\(name): no menu window among \(capture.windows)")
+      capture.image,
+      "\(name): no menu window among \(capture.windows) (tracked: \(capture.fired))")
     try save(image, name: "\(name)-\(look.rawValue)")
   }
 }
