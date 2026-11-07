@@ -940,6 +940,26 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     }
   }
 
+  /// The roster's status messages (round 5 decision (a)): channel status
+  /// unavailable (a warning), a refused toggle and a playback failure
+  /// (errors), as the agents roster draws them.
+  func testRenderRosterStatusMessages() throws {
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    for look in Look.allCases {
+      var roster = OverlayChannelStatusView(
+        channels: [
+          OverlayChannelDelivery(
+            channel: "3", agent: "Lena", deliveryID: nil, stage: nil, isOpen: false)
+        ], unavailable: true, palette: look.palette, animates: false,
+        toggleError: "the bus refused the change", conversations: [all],
+        onSelectConversation: { _ in })
+      roster.playbackError = "Speech failed: no connection to the voice service"
+      try renderAlone(
+        roster.monitorBody(maximumHeight: 320), size: CGSize(width: 360, height: 320),
+        look: look, name: "bar-roster-status-messages")
+    }
+  }
+
   // MARK: - 14. Channel 0's name
 
   /// Channel 0 named by default, with a short name of the user's and with a
