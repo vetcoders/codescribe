@@ -51,6 +51,46 @@ final class AgentWindowChromeTests: XCTestCase {
     XCTAssertEqual(window.titleVisibility, .hidden)
   }
 
+  func testUnifiedHeaderFillsTheBandAtMinimumAndNormalWidths() throws {
+    let previousSidebar = UserDefaults.standard.object(forKey: sidebarKey)
+    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
+    UserDefaults.standard.set(false, forKey: panelKey)
+    defer {
+      restoreSidebarDefault(previousSidebar)
+      restore(previousPanel, forKey: panelKey)
+    }
+    for width in [AgentWindowMetrics.minWidth, 1120 as CGFloat] {
+      for expanded in [true, false] {
+        UserDefaults.standard.set(expanded, forKey: sidebarKey)
+        let store = AgentChatStore(
+          engine: nil,
+          threads: [ChatThread(
+            title: String(repeating: "Long conversation title ", count: 6),
+            meta: "synthetic", messages: [])])
+        let window = mount(contentWidth: width, store: store)
+        defer { window.close() }
+        func headers() -> [NSView] {
+          (window.toolbar?.items.compactMap(\.view) ?? []).filter { frame($0).height >= 51 }
+        }
+        pump(window) {
+          headers().count == 1
+            && self.frame(headers()[0]).maxX >= window.frame.width - CSSpace.lg
+        }
+        let header = try XCTUnwrap(headers().first)
+        let rect = frame(header)
+        XCTAssertEqual(headers().count, 1)
+        XCTAssertGreaterThanOrEqual(
+          rect.maxX, window.frame.width - CSSpace.lg,
+          "actions reach the trailing edge at \(width), expanded \(expanded)")
+        XCTAssertLessThanOrEqual(rect.maxX, window.frame.width + 1)
+        XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY - 1)
+        for light in trafficLights(in: window) {
+          XCTAssertFalse(rect.intersects(frame(light)), "header covers a traffic light")
+        }
+      }
+    }
+  }
+
   func testIntegratedHeaderAtMinimumAndNormalWidths() throws {
     let previous = UserDefaults.standard.object(forKey: sidebarKey)
     let previousPanel = UserDefaults.standard.object(forKey: panelKey)

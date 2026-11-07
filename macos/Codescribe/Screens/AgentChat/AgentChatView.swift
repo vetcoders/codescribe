@@ -294,7 +294,7 @@ private struct AgentIntegratedChrome: ViewModifier {
     // contains the real controls, rather than an empty plane behind a second
     // toolbar owner. AppKit allocates the group's width alongside the sidebar.
     ToolbarItemGroup(placement: .navigation) {
-      CSWindowHeaderItem {
+      CSWindowHeaderItem(fillsAvailableWidth: true) {
         HStack(spacing: 12) {
           wordmark
           identity
