@@ -2315,8 +2315,15 @@ final class OverlayState {
     if playbackMutes != mutes { playbackMutes = mutes }
   }
 
+  /// The conversation's replies not read yet: neither viewed nor heard. A
+  /// reply whose playback finished (`spoken`, the state its bubble reads as
+  /// "Spoken") was heard to the end, so it counts as read (L14b,
+  /// 2026-11-07); an interrupted, failed or refused one stays unread.
   func unreadReplies(in conversation: OverlayConversation) -> Int {
-    conversation.replyIDs.filter { !viewedReplyIDs.contains($0) }.count
+    conversation.messages.filter { message in
+      message.kind == .reply && !viewedReplyIDs.contains(message.id)
+        && message.playback?.state != "spoken"
+    }.count
   }
 
   /// Viewing only changes presentation metadata. Capture stays controller-owned.

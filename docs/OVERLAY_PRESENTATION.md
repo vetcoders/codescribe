@@ -137,7 +137,10 @@ into checkmarks read as an intruder). The
 mark sits near the identity, separately from the last-preview clock; its help
 and accessibility text name the time of its own outgoing message. A later
 incoming reply must not lend its time to that receipt. The circular unread
-reply count is a separate projection, also shown on the folded rail; compact
+reply count is a separate projection (`OverlayState.unreadReplies`), also
+shown on the folded rail; a reply heard to the end, its playback `spoken`
+(the bubble's "Spoken"), counts as read and leaves the count (L14b,
+2026-11-07), while an interrupted, failed or refused one stays unread; compact
 map and floating Intercom badge rendering retain their existing form. On the
 folded rail the count is its own small capsule outside the pill, at the
 pill's top-right shoulder, so neither the pill nor its channel digit is

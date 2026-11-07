@@ -1081,6 +1081,35 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, lena.id)
   }
 
+  /// A reply heard to the end counts as read (L14b, 2026-11-07): the
+  /// playback state its bubble reads as "Spoken". Waiting, playing,
+  /// stopped, failed and refused replies and a reply with no playback stay
+  /// unread until viewed.
+  func testSpokenReplyCountsAsRead() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let owner = try XCTUnwrap(lena.owner)
+    func reply(_ id: String, _ playback: String?) -> OverlayConversationMessage {
+      OverlayConversationMessage(
+        id: id, kind: .reply, text: "Gotowe.", order: 1, emittedAt: "2026-11-06T19:36:00Z",
+        owner: owner, recipients: [], deliveryID: nil, replyTo: nil, unsolicited: true,
+        playback: playback.map {
+          OverlayReplyPlayback(
+            replyID: id, ticket: "t-\(id)", state: $0, reason: nil, spoken: $0 == "spoken",
+            emittedAt: "2026-11-06T19:36:01Z")
+        }, busPath: "/dev/null")
+    }
+    for (playback, unread) in [
+      ("spoken", 0), ("playing", 1), ("waiting", 1), ("stopped", 1), ("failed", 1),
+      ("refused", 1), (nil, 1),
+    ] as [(String?, Int)] {
+      let conversation = OverlayConversation(
+        id: lena.id, channel: lena.channel, name: lena.name, owner: owner,
+        messages: [reply("reply:\(playback ?? "none")", playback)])
+      XCTAssertEqual(state.unreadReplies(in: conversation), unread, playback ?? "none")
+    }
+  }
+
   func testReplyAdmissionAmbiguousOwnersPreserveManualViewAndUnread() throws {
     let state = OverlayState()
     let lena = try navigationConversation()

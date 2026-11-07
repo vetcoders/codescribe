@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Overlay: an agent's reply that was played aloud to the end counts as read, so its unread dot and count go away; a reply whose playback was interrupted, failed or refused stays unread.
 - Agents roster: the preview of a conversation with unread replies is bold until you open it.
 - Overlay bar and agents roster: error and warning messages are written in the regular text colour; the red or orange stays on the icon before them (a warning's triangle with a dark "!"), so the message is readable on the light sheets. A row that is connecting reads in the text colour beside its spinner.
 - Overlay bar: the orange "Finishing…" caption no longer appears while a take is processed; it overlapped the agent pills. VoiceOver still reads the take's state.
