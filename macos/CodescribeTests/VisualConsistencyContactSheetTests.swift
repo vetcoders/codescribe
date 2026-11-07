@@ -760,10 +760,19 @@ private final class SheetRun {
       expect(abs(scale - scaleY) < 0.05, "\(id) pixel scale x \(scale) != y \(scaleY)")
 
       let stats = scanPixels(bitmap)
-      expect(
-        stats.inkRatio > inkRatioFloor,
-        "\(id) ink ratio \(stats.inkRatio) over \(stats.sampleCount) samples looks blank (\(stats.alphaSource))"
-      )
+      if surface == "tray" {
+        // The tray is a translucent menu: since the system materials its
+        // capture is mostly transparent, so pixel coverage measures the
+        // glass, not the menu (decision (c) of the gate repair round,
+        // 2026-11-06). The tray is judged by its content, the rows' words.
+        let words = accessibilityWords(host)
+        expect(words.count >= 3, "\(id) tray shows \(words.count) labelled rows: \(words)")
+      } else {
+        expect(
+          stats.inkRatio > inkRatioFloor,
+          "\(id) ink ratio \(stats.inkRatio) over \(stats.sampleCount) samples looks blank (\(stats.alphaSource))"
+        )
+      }
       if surface == "overlay" {
         expect(
           stats.maxCornerAlpha < 0.2,
@@ -1068,6 +1077,24 @@ private struct PixelScan {
   var luminance: Double?
   var maxCornerAlpha: Double
   var alphaSource: String
+}
+
+/// The distinct non-empty labels a view exposes to assistive technology:
+/// the words a surface actually shows, independent of its material.
+@MainActor
+private func accessibilityWords(_ root: NSView) -> [String] {
+  func walk(_ object: Any) -> [any NSAccessibilityProtocol] {
+    guard let element = object as? any NSAccessibilityProtocol else { return [] }
+    let views = (object as? NSView)?.subviews ?? []
+    return [element] + ((element.accessibilityChildren() ?? []) + views).flatMap(walk)
+  }
+  var words: [String] = []
+  for element in walk(root) {
+    guard let label = element.accessibilityLabel(), !label.isEmpty, !words.contains(label)
+    else { continue }
+    words.append(label)
+  }
+  return words
 }
 
 private func scanPixels(_ bitmap: NSBitmapImageRep) -> PixelScan {
