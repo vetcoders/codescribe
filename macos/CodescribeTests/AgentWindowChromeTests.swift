@@ -40,7 +40,7 @@ final class AgentWindowChromeTests: XCTestCase {
     }
     let attachment = XCTAttachment(
       string: "window=\(window.frame) contentLayout=\(window.contentLayoutRect) "
-        + "header=\(rect) nativeGlass=\(glass.map { frame($0) }.description) "
+        + "header=\(rect) nativeGlass=\(String(describing: glass.map { frame($0) })) "
         + "detailSafeArea=\(detail.viewController.view.safeAreaInsets)")
     attachment.name = "Unified native header geometry"
     attachment.lifetime = .keepAlways
