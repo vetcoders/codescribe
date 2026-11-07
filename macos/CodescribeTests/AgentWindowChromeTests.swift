@@ -20,7 +20,7 @@ final class AgentWindowChromeTests: XCTestCase {
     let window = mount(contentWidth: 1120)
     defer { window.close() }
     pump(window) { window.toolbar != nil }
-    window.toolbar?.isVisible = false
+    window.toolbar?.isVisible = true
     let accessory = NSTitlebarAccessoryViewController()
     accessory.layoutAttribute = .top
     accessory.view = NSHostingView(
