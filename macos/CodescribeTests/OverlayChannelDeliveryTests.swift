@@ -3399,7 +3399,20 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       }
     }
     if name.hasPrefix("native-menu-") {
-      let expected = try XCTUnwrap(palette.mutedText.nsColor.usingColorSpace(.deviceRGB))
+      // The muted ink is the system's secondary label, translucent since the
+      // overlay took the system colours: what reaches the screen is that ink
+      // over the glyph's plate (the same ink at 12 %) over the sheet, not its
+      // raw components.
+      let ink = palette.mutedText
+      let plateRGB = OverlayColorToken(ink.rgb, alpha: ink.alpha * 0.12)
+        .composited(over: palette.desktopBackground)
+      let plate = OverlayColorToken(
+        UInt32((plateRGB.red * 255).rounded()) << 16
+          | UInt32((plateRGB.green * 255).rounded()) << 8 | UInt32((plateRGB.blue * 255).rounded()))
+      let muted = ink.composited(over: plate)
+      let expected = try XCTUnwrap(
+        NSColor(srgbRed: muted.red, green: muted.green, blue: muted.blue, alpha: 1)
+          .usingColorSpace(.deviceRGB))
       XCTAssertLessThan(
         max(
           abs(strongestColor.redComponent - expected.redComponent),
