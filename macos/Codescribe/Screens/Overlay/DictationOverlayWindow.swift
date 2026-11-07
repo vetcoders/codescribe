@@ -90,6 +90,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   let menuCursorRegions = NSHashTable<NSView>.weakObjects()
   let windowDragRegions = NSHashTable<NSView>.weakObjects()
   private var cursorState = OverlayCursorState()
+  /// A resize cursor pressed inside a mounted region stays the panel's cursor
+  /// until the button is released, wherever the pointer travels. The list's
+  /// divider band is 10 points wide, so a drag leaves it on its first move and
+  /// the arrow came back in the middle of the gesture (Maciej, 2026-11-07).
+  private var grabbedCursor: NSCursor?
 
   enum CursorInvalidationReason {
     case boundary, mounting, orderOut
@@ -731,6 +736,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       }
     }
     if event.type == .mouseMoved || event.type == .cursorUpdate {
+      // A grabbed resize cursor outranks every zone until the button is up.
+      if let grabbedCursor {
+        if NSCursor.current !== grabbedCursor { grabbedCursor.set() }
+        return
+      }
       // Resolve once. Owned zones consume motion before overlapping text
       // tracking can set an I-beam. Leaving resize restores the arrow before
       // native dispatch; ordinary interior motion never writes a cursor.
@@ -749,6 +759,26 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       {
         beginUserResize(edge: edge, at: screenPoint(for: event))
         return
+      }
+      // Only resize affordances are grabbed: a pointing hand on a button has
+      // nothing to hold through a drag, and native text keeps its I-beam.
+      let decision = pointerDecision(at: event.locationInWindow)
+      if case .menu = decision.zone, let cursor = decision.cursor,
+        cursor === NSCursor.resizeLeftRight || cursor === NSCursor.resizeUpDown
+      {
+        grabbedCursor = cursor
+      }
+    }
+    if event.type == .leftMouseDragged, let grabbedCursor, NSCursor.current !== grabbedCursor {
+      grabbedCursor.set()
+    }
+    defer {
+      if event.type == .leftMouseUp, grabbedCursor != nil {
+        // SwiftUI has ended the gesture by now; resolve the cursor afresh for
+        // wherever the pointer was released, whatever the drag left on screen.
+        grabbedCursor = nil
+        cursorState = OverlayCursorState()
+        refreshCursor(at: event.locationInWindow)
       }
     }
     switch event.type {
@@ -1008,6 +1038,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// by another window must not suppress our next region entry.
   func invalidateCursorOwnership(reason: CursorInvalidationReason = .boundary) {
     cursorState = OverlayCursorState()
+    grabbedCursor = nil
     guard DiagnosticLog.installed != nil else { return }
     switch reason {
     case .boundary: pointerMetrics.boundaryResets += 1

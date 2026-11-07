@@ -180,24 +180,37 @@ struct OverlayRecordingControls: View {
   private var recordingButton: some View {
     Button(action: activateRecordingControl) {
       Group {
+        // Both loops run on the render server (`OverlayRenderServerMotion`):
+        // a 30 Hz timeline here committed the whole overlay window thirty
+        // times a second through every take (Instruments, 2026-11-07).
         if recordingLight?.spins == true {
           if animates && !reduceMotion {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-              recordingGlyph.overlay {
-                processingArc(
-                  rotation: OverlayRecordingLight.arcRotation(
-                    at: timeline.date.timeIntervalSinceReferenceDate))
-              }
+            recordingGlyph.overlay {
+              OverlayRenderServerArc(
+                from: 0, to: OverlayRecordingLight.arcFraction,
+                lineWidth: Self.processingArcWidth, color: recordingTint,
+                period: OverlayRecordingLight.rotationPeriod,
+                phase: OverlayRecordingLight.arcRotation(
+                  at: Date().timeIntervalSinceReferenceDate)
+              )
+              .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
+              .accessibilityHidden(true)
             }
           } else {
             // Still motion: the open arc keeps the shape that tells it from red.
             recordingGlyph.overlay { processingArc(rotation: 0) }
           }
         } else if recordingLight?.pulses == true && animates && !reduceMotion {
-          TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            recordingGlyph.opacity(
-              OverlayRecordingLight.pulseOpacity(at: timeline.date.timeIntervalSinceReferenceDate))
+          OverlayRenderServerPulse(
+            period: CSMotion.Tempo.lampPulse,
+            // The breath's floor from the same curve the clock-driven pulse drew.
+            floor: OverlayRecordingLight.pulseOpacity(at: CSMotion.Tempo.lampPulse / 2),
+            phase: Date().timeIntervalSinceReferenceDate
+              .truncatingRemainder(dividingBy: CSMotion.Tempo.lampPulse)
+          ) {
+            recordingGlyph
           }
+          .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
         } else {
           recordingGlyph
         }
@@ -651,6 +664,9 @@ struct DictationOverlayView: View {
   @AppStorage(OverlayAgentDrawerLayout.widthDefaultsKey) private var preferredAgentDrawerWidth =
     300.0
   @State private var overlayVisible = false
+  /// True from the agents divider's first drag event to its release. Both
+  /// panes dim behind the moving guide; the flag flips twice per gesture.
+  @State private var agentDividerDragging = false
   @State private var headerHeight: CGFloat = 48
   @State private var footerHeight: CGFloat = 0
   @State private var footerDetail: String?
@@ -975,6 +991,7 @@ struct DictationOverlayView: View {
           // brings it back.
           .frame(width: canvasWidth, height: geometry.size.height, alignment: .leading)
           .clipped()
+          .modifier(OverlayDividerDragDim(active: agentDividerDragging))
           .animation(
             reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
             value: state.isCollapsed
@@ -1181,6 +1198,8 @@ struct DictationOverlayView: View {
     .frame(width: width, alignment: width < contentMinimum ? .leading : .trailing)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()
+    // Dimmed below the handle's overlay: the divider and its guide stay sharp.
+    .modifier(OverlayDividerDragDim(active: agentDividerDragging))
     .background { OverlayMenuCursorRegion() }
     .overlay(alignment: .leading) {
       agentDrawerResizeHandle(width: width, windowWidth: windowWidth)
@@ -1289,7 +1308,8 @@ struct DictationOverlayView: View {
 
   private func agentDrawerResizeHandle(width: CGFloat, windowWidth: CGFloat) -> some View {
     OverlayAgentDrawerDivider(
-      width: width, windowWidth: windowWidth, palette: palette, displayScale: displayScale
+      width: width, windowWidth: windowWidth, palette: palette, displayScale: displayScale,
+      onDragActive: { agentDividerDragging = $0 }
     ) { translation in
       commitAgentDrawerWidth((width - translation) / textScale, windowWidth: windowWidth)
     }
@@ -2346,6 +2366,9 @@ private struct OverlayAgentDrawerDivider: View {
   let windowWidth: CGFloat
   let palette: OverlayAppearancePalette
   let displayScale: CGFloat
+  /// Once with `true` at the first drag event, once with `false` after
+  /// release; never per pointer move. The parent dims both panes on it.
+  let onDragActive: (Bool) -> Void
   /// The pointer's horizontal travel at release, in window points.
   let onCommit: (CGFloat) -> Void
   @GestureState private var translation: CGFloat?
@@ -2357,6 +2380,9 @@ private struct OverlayAgentDrawerDivider: View {
       .frame(width: 10, alignment: .leading)
       .contentShape(Rectangle())
       .background { OverlayMenuCursorRegion(cursor: .resizeLeftRight) }
+      // `translation` resets to nil after `onEnded`, so the committed width
+      // and the undim land in the same transaction: no sharp stale frame.
+      .onChange(of: translation != nil) { _, dragging in onDragActive(dragging) }
       .overlay(alignment: .leading) {
         if let translation {
           // The guide stays inside the window: from its leading edge to the
@@ -2375,5 +2401,18 @@ private struct OverlayAgentDrawerDivider: View {
           }
           .onEnded { value in onCommit(value.translation.width) }
       )
+  }
+}
+
+/// The fade both panes wear while the agents divider is dragged. One state
+/// flip applies it, one removes it; nothing here is recomputed per move.
+private struct OverlayDividerDragDim: ViewModifier {
+  let active: Bool
+
+  func body(content: Content) -> some View {
+    content
+      .opacity(active ? OverlayAgentDrawerLayout.dragDimOpacity : 1)
+      .blur(radius: active ? OverlayAgentDrawerLayout.dragBlurRadius : 0)
+      .allowsHitTesting(!active)
   }
 }

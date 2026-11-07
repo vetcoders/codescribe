@@ -134,11 +134,15 @@ struct OverlayAgentStatusMark: View {
     Group {
       if showsSpinner {
         if rotates {
-          TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            spinner.rotationEffect(
-              rotation(at: timeline.date.timeIntervalSinceReferenceDate)
-            )
-          }
+          // Spun by the render server: one of these per waiting row under a
+          // 30 Hz timeline committed the window every frame (2026-11-07).
+          OverlayRenderServerArc(
+            from: 0.08, to: 0.82, lineWidth: 1.5, color: glyph.tone(in: palette).color,
+            period: 1,
+            phase: rotation(at: Date().timeIntervalSinceReferenceDate).radians,
+            accessibilityIdentifier: "overlay-agent-spinner"
+          )
+          .frame(width: fontSize, height: fontSize)
         } else {
           spinner
         }

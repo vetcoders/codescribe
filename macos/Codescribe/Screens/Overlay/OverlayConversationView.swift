@@ -1356,7 +1356,10 @@ struct OverlayNamePillGlass: ViewModifier {
   @ViewBuilder
   func body(content: Content) -> some View {
     if #available(macOS 26.0, *) {
-      content.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())
+      // `interactive` no longer asks for `.interactive()` glass: one pill per
+      // row tracking the pointer committed the window on every mouse move
+      // (Instruments, 2026-11-07). The button's own style answers a press.
+      content.glassEffect(.regular, in: Capsule())
     } else {
       content.background(.regularMaterial, in: Capsule())
     }

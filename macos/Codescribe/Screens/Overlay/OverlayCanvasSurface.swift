@@ -163,7 +163,12 @@ struct OverlayControlGlass: ViewModifier {
           .background {
             if isEnabled { shape.fill(veilColor) }
           }
-          .glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
+          // Not `.interactive()`: interactive glass follows the pointer and
+          // SwiftUI's flex interaction sat in three of every four overlay
+          // transactions while the mouse moved (Instruments, 2026-11-07,
+          // 37 commits/s moving against 14 still). Control glass has no
+          // press to answer; the buttons on it keep their own feedback.
+          .glassEffect(isEnabled ? .regular : .identity, in: shape)
           .environment(\.controlActiveState, .key)
       } else {
         content.background {
