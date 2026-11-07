@@ -496,9 +496,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
   /// Monika, 2026-11-07 ("to spychanie nie jest akceptowalne"; then, from
   /// her screenshot, the empty band above the rows): the list's fold stands
   /// in the pane's top corner, in the band between the window header and the
-  /// first row, and the rail's unfold sits under its pills, so neither button
-  /// moves a row or a pill. The list renders under the column's gap, as in
-  /// the Bus window. Ink bands are the pixel rows that carry text or glyphs.
+  /// first row, so the button moves no row. The rail's unfold stands in the
+  /// same band, centred on the pills' column, and the pills start just below
+  /// it, each lower by the same drop. The list renders under the column's
+  /// gap, as in the Bus window. Ink bands are the pixel rows that carry text or glyphs.
   func testFoldButtonsLeaveTheRowsAndPillsWhereTheyStand() throws {
     let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
     let inbox = OverlayConversation(
@@ -579,18 +580,48 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       let foldedPills = inkBands(foldedRail, width: railWidth, columns: 0..<railWidth)
       XCTAssertFalse(plainPills.isEmpty)
       XCTAssertEqual(
-        Array(foldedPills.dropLast()), plainPills,
-        "the pills keep their places above the unfold button at scale \(scale)")
-      let unfold = try XCTUnwrap(foldedPills.last)
-      XCTAssertGreaterThan(unfold.lowerBound, try XCTUnwrap(plainPills.last).upperBound)
-      // The rail's band: the column's gap, the rail's 8 pt top and the
-      // badge's rise. Under 20 pt at scale 1, so the unfold stays at the foot.
-      let railBand = gap + 8 + OverlayChannelPill.railBadgeRise * scale
+        foldedPills.count, plainPills.count + 1,
+        "the unfold button is one band above the pills at scale \(scale)")
+      let unfold = try XCTUnwrap(foldedPills.first)
       let railPixels = CGFloat(plainRail.pixelsWide) / railWidth
-      let firstPill = try XCTUnwrap(plainPills.first)
+      // The button stands in the top band, where the list's fold stands.
+      XCTAssertGreaterThan(unfold.lowerBound, 0)
+      XCTAssertLessThan(CGFloat(unfold.upperBound) / railPixels, band, "scale \(scale)")
+      XCTAssertEqual(
+        CGFloat(unfold.lowerBound + unfold.upperBound) / 2 / railPixels, band / 2, accuracy: 2,
+        "the unfold is centred in the band at scale \(scale)")
+      // Centred on the pills' column: the pills' ink is the column's width.
+      let firstRow = try XCTUnwrap(plainPills.first).lowerBound
+      let lastRow = try XCTUnwrap(plainPills.last).upperBound
+      let pillsInk = try XCTUnwrap(
+        inkColumns(plainRail, width: railWidth, rows: firstRow...lastRow))
+      let unfoldInk = try XCTUnwrap(inkColumns(foldedRail, width: railWidth, rows: unfold))
+      XCTAssertEqual(
+        CGFloat(unfoldInk.lowerBound + unfoldInk.upperBound) / 2 / railPixels,
+        CGFloat(pillsInk.lowerBound + pillsInk.upperBound) / 2 / railPixels, accuracy: 1.5,
+        "the unfold is centred on the pills' column at scale \(scale)")
+      // The pills start below the button, every one lower by the same drop:
+      // their own spacing is unchanged.
+      let drop = OverlayChannelStatusView.railFoldDrop * railPixels
+      let pills = Array(foldedPills.dropFirst())
+      XCTAssertGreaterThan(try XCTUnwrap(pills.first).lowerBound, unfold.upperBound)
+      for (moved, original) in zip(pills, plainPills) {
+        XCTAssertEqual(CGFloat(moved.lowerBound - original.lowerBound), drop, accuracy: 1)
+        XCTAssertEqual(CGFloat(moved.upperBound - original.upperBound), drop, accuracy: 1)
+      }
+      let firstPill = try XCTUnwrap(pills.first)
+      let pillFrameTop = gap + 8 + OverlayChannelPill.railBadgeRise * scale + drop / railPixels
       report.append(
-        "scale \(scale): rail band to first pill frame \(railBand) pt; first pill ink y "
-          + "\(CGFloat(firstPill.lowerBound) / railPixels) pt")
+        "scale \(scale): rail unfold frame y 1-23 pt, ink y "
+          + "\(CGFloat(unfold.lowerBound) / railPixels)-"
+          + "\(CGFloat(unfold.upperBound + 1) / railPixels) pt, ink x "
+          + "\(CGFloat(unfoldInk.lowerBound) / railPixels)-"
+          + "\(CGFloat(unfoldInk.upperBound + 1) / railPixels) of \(railWidth) pt; "
+          + "first pill frame top y \(pillFrameTop) pt, ink y "
+          + "\(CGFloat(firstPill.lowerBound) / railPixels) pt (without the button "
+          + "\(CGFloat(plainPills[0].lowerBound) / railPixels) pt); pills' column ink x "
+          + "\(CGFloat(pillsInk.lowerBound) / railPixels)-"
+          + "\(CGFloat(pillsInk.upperBound + 1) / railPixels) pt")
     }
     let measurements = XCTAttachment(string: report.joined(separator: "\n"))
     measurements.name = "fold-band-measurements"

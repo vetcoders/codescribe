@@ -1055,12 +1055,20 @@ nie"); the rows stand where they stand without the button
 and 2).
 
 The button calls `foldAgentList`, which keeps the selection and drafts and
-leaves the rail of pills. The rail shows the same button under its pills, at
-its foot (`overlay-agent-rail-unfold`, "Show agents list"), calling
-`unfoldAgentList`: the rail's band above its first pill is the column's 8 pt
-gap, the rail's 8 pt top and the unread badge's 2 pt rise (scaled), 18 pt at
-text scale 1, under the button's 20 pt minimum, and above the pills it
-pushed them down. There is no second button on the left and none on the
-conversation's edge (Monika, 2026-11-05: "jeden po prawej stronie to był
-dokładnie taki układ, jaki chciałam"). The divider still folds and unfolds
+leaves the rail of pills. The rail shows the same button in the same top band
+(`overlay-agent-rail-unfold`, "Show agents list"), calling `unfoldAgentList`
+(Monika, 2026-11-07, on the render of the folded rail): the same 22 pt
+`sidebar.right` at the same height (frame 1 to 23 pt below the header),
+centred on the pills' column, which leaves the room beside it for the unread
+capsule. The rail's own band above its first pill (the column's 8 pt gap, the
+rail's 8 pt top and the capsule's 2 pt rise, scaled: 18 pt at text scale 1)
+is shorter than the button, so the pills sit lower by `railFoldDrop`, 6 pt at
+every text scale: the first pill's frame begins 1 pt under the button's at
+scale 1 and the glyph's ink ends 6 pt above it. Their own spacing is
+unchanged, and without the button (no `onUnfoldList`) they stand where they
+stood. The button used to stand at the rail's foot, because the pills were
+not to move; they may, and one button stands in one place. There is no second
+button on the left and none on the conversation's edge (Monika, 2026-11-05:
+"jeden po prawej stronie to był dokładnie taki układ, jaki chciałam").
+The divider still folds and unfolds
 the list; the button is the visible way, the divider the dragged one.

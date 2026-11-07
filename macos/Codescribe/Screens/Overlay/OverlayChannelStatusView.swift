@@ -1247,7 +1247,7 @@ struct OverlayChannelStatusView: View {
   var gestureFocusID: String?
   var onGestureHover: ((String) -> Void)?
   /// The list's fold, in the band above its first row, and the rail's
-  /// unfold, under its pills. Nil leaves the column without the button.
+  /// unfold, in the same band above its pills. Nil leaves the column without the button.
   var onFoldList: (() -> Void)?
   var onUnfoldList: (() -> Void)?
   var searchModel: OverlayConversationSearchModel?
@@ -1608,7 +1608,7 @@ struct OverlayChannelStatusView: View {
   }
 
   /// The folded list (Maciej, 2026-10-19: "zostawia pigułki"): one pill per
-  /// row of the list, channel 0 first, above the `sidebar.right` that unfolds
+  /// row of the list, channel 0 first, under the `sidebar.right` that unfolds
   /// it; the divider unfolds it too. A pill switches the conversation and the
   /// list stays folded.
   func railBody(maximumHeight: CGFloat) -> some View {
@@ -1620,8 +1620,10 @@ struct OverlayChannelStatusView: View {
   }
 
   private func scaledRailBody(maximumHeight: CGFloat) -> some View {
-    let unfold = onUnfoldList == nil ? 0 : 22 * textScale + 8
-    let viewportHeight = max(0, maximumHeight - 8 - unfold)
+    // The unfold button stands in the top band, as the list's fold does; the
+    // pills start just below it.
+    let drop = onUnfoldList == nil ? 0 : Self.railFoldDrop
+    let viewportHeight = max(0, maximumHeight - 8 - drop)
     let rowCount =
       channels.count
       + (currentConversations.contains(where: { $0.channel == "0" }) ? 1 : 0)
@@ -1661,19 +1663,12 @@ struct OverlayChannelStatusView: View {
       }
       .csRailOverflowHints(color: palette.mutedText.color)
       .frame(maxHeight: viewportHeight)
-      // Under the pills, at the foot of the rail: the rail's top margin is
-      // shorter than the button, and above the pills it pushed them down
-      // (Monika, 2026-11-07). The pills keep their places.
-      if let onUnfoldList {
-        OverlaySidebarToggleButton(
-          symbol: "sidebar.right", title: String(localized: "Show agents list"),
-          identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
-          action: onUnfoldList)
-      }
     }
-    // The pills start where the list's first row starts.
-    .padding(.top, 8)
+    // The pills start where the list's first row starts, lower by `drop`
+    // when the unfold button takes the band above them.
+    .padding(.top, 8 + drop)
     .frame(maxWidth: .infinity)
+    .overlay(alignment: .top) { railUnfoldButton }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-rail-pills")
   }
@@ -2038,6 +2033,29 @@ struct OverlayChannelStatusView: View {
     )
     .padding(.trailing, Self.listFoldTrailingInset)
     .offset(y: (Self.listTopBand - Self.listFoldSide) / 2 - Self.listColumnTopGap)
+  }
+
+  /// How far the folded rail's pills sit lower than they would without the
+  /// unfold button, at every text scale. At scale 1 the first pill's frame
+  /// begins 1 pt under the button's (the glyph's ink ends 6 pt above it); the
+  /// unread capsule's rise, which grows with the text, adds to that.
+  static let railFoldDrop: CGFloat = 6
+
+  /// The rail's unfold in the same top band as the list's fold (Monika,
+  /// 2026-11-07, on the render of the folded rail): the same 22 pt
+  /// `sidebar.right` at the same height, centred on the pills' column, which
+  /// leaves room for the unread capsule on its trailing side.
+  @ViewBuilder
+  private var railUnfoldButton: some View {
+    if let onUnfoldList {
+      OverlaySidebarToggleButton(
+        symbol: "sidebar.right", title: String(localized: "Show agents list"),
+        identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
+        side: Self.listFoldSide, action: onUnfoldList
+      )
+      .padding(.trailing, OverlayChannelPill.railBadgeReach(scale: textScale))
+      .offset(y: (Self.listTopBand - Self.listFoldSide) / 2 - Self.listColumnTopGap)
+    }
   }
 
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
