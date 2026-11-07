@@ -255,6 +255,14 @@ private struct AgentIntegratedChrome: ViewModifier {
     content
       .toolbar { agentToolbar }
       .modifier(CSWindowHeaderChrome())
+      .background {
+        CSColumnHeaderAccessory(
+          header: HStack(spacing: 0) {
+            CSWindowHeaderItem { wordmark }
+            identity
+            Spacer(minLength: 0)
+          })
+      }
       .alert("Rename conversation", isPresented: $isRenaming) {
         TextField("Conversation title", text: $renameText)
         Button("Rename") {
@@ -295,8 +303,7 @@ private struct AgentIntegratedChrome: ViewModifier {
     // flexible space in the group keeps pin and menu on the trailing edge.
     if #available(macOS 26.0, *) {
       ToolbarItemGroup(placement: .navigation) {
-        CSWindowHeaderItem { wordmark }
-        identity
+        EmptyView()
       }
       .sharedBackgroundVisibility(.hidden)
       ToolbarItemGroup(placement: .primaryAction) {
@@ -306,8 +313,7 @@ private struct AgentIntegratedChrome: ViewModifier {
       .sharedBackgroundVisibility(.hidden)
     } else {
       ToolbarItemGroup(placement: .navigation) {
-        CSWindowHeaderItem { wordmark }
-        identity
+        EmptyView()
       }
       ToolbarItemGroup(placement: .primaryAction) {
         Spacer()

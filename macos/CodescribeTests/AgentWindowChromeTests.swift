@@ -13,6 +13,40 @@ final class AgentWindowChromeTests: XCTestCase {
   private let sidebarKey = "AgentChat.sidebarExpanded.v1"
   private let panelKey = AgentContextPanelPreference.defaultsKey
 
+  /// T1 admission: a column accessory must replace the identity's toolbar
+  /// footprint, rather than adding a second 52-point row beneath the actions.
+  func testColumnAccessoryOccupiesTheExistingHeaderBand() throws {
+    let window = mount(contentWidth: 1120)
+    defer { window.close() }
+    pump(window) {
+      guard let split = self.splitView(in: window)?.delegate as? NSSplitViewController else {
+        return false
+      }
+      return split.splitViewItems.last?.topAlignedAccessoryViewControllers.count == 1
+    }
+    let split = try XCTUnwrap(splitView(in: window)?.delegate as? NSSplitViewController)
+    let detail = try XCTUnwrap(split.splitViewItems.last)
+    let accessory = try XCTUnwrap(detail.topAlignedAccessoryViewControllers.first)
+    XCTAssertEqual(detail.topAlignedAccessoryViewControllers.count, 1)
+    let rect = frame(accessory.view)
+    let actions = try XCTUnwrap(window.toolbar?.items.compactMap(\.view).last)
+    let actionRect = frame(actions)
+    let attachment = XCTAttachment(
+      string: "window=\(window.frame) contentLayout=\(window.contentLayoutRect) "
+        + "accessory=\(rect) toolbarActions=\(actionRect) "
+        + "detailSafeArea=\(detail.viewController.view.safeAreaInsets)")
+    attachment.name = "T1 native accessory geometry"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+    XCTAssertGreaterThan(rect.height, 1)
+    XCTAssertGreaterThanOrEqual(
+      rect.minY, window.contentLayoutRect.maxY - 1,
+      "T1 STOP: accessory adds a row below the existing toolbar")
+    XCTAssertTrue(
+      rect.intersects(actionRect),
+      "identity and actions must occupy the same vertical band")
+  }
+
   func testIntegratedHeaderAtMinimumAndNormalWidths() throws {
     let previous = UserDefaults.standard.object(forKey: sidebarKey)
     let previousPanel = UserDefaults.standard.object(forKey: panelKey)
