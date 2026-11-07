@@ -15,7 +15,7 @@ final class AgentWindowChromeTests: XCTestCase {
 
   /// The whole header belongs to one native toolbar glass group. It must
   /// remain in the window bar instead of adding split-item accessory rows.
-  func testHeaderUsesOneNativeToolbarGroup() throws {
+  func testNativeToolbarOwnsInformationAndActions() throws {
     let store = AgentChatStore(
       engine: nil,
       threads: [ChatThread(title: "Native header admission", meta: "synthetic", messages: [])])
@@ -30,7 +30,7 @@ final class AgentWindowChromeTests: XCTestCase {
     let headers = try XCTUnwrap(window.toolbar).items.compactMap(\.view).filter {
       frame($0).minX >= boundary - 1 && frame($0).height >= 51
     }
-    XCTAssertEqual(headers.count, 2, "one native group contains information and actions")
+    XCTAssertEqual(headers.count, 2, "the native toolbar owns information and actions")
     let rects = headers.map { frame($0) }
     let theme = try XCTUnwrap(window.contentView?.superview)
     func glassViews(_ view: NSView) -> [NSGlassEffectView] {

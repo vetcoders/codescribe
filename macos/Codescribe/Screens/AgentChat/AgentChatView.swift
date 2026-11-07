@@ -299,6 +299,9 @@ private struct AgentIntegratedChrome: ViewModifier {
           identity
         }
       }
+    }
+    .sharedBackgroundVisibility(.visible)
+    ToolbarItemGroup(placement: .primaryAction) {
       Spacer()
       CSWindowHeaderItem { trailingCluster }
     }
