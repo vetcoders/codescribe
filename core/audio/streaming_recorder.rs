@@ -1496,7 +1496,8 @@ impl StreamingRecorder {
                     // Opening the first shared source can fail after device
                     // start but before admission. Only an unowned device may
                     // be stopped here; a refused join never stops its peers.
-                    if !self.has_capture_subscribers() && self.recorder.is_active()
+                    if !self.has_capture_subscribers()
+                        && self.recorder.is_active()
                         && let Err(stop_error) = self.recorder.stop().await
                     {
                         warn!(%stop_error, "failed dictation admission cleanup failed");
@@ -1904,13 +1905,12 @@ impl StreamingRecorder {
             acoustic_ledger,
             participant,
         } = spec;
-        let capture_turn = if self.dictation_participation_requested
-            && self.dictation_participation.is_none()
-        {
-            CaptureTurnIntent::HandsFree
-        } else {
-            CaptureTurnIntent::AgentChannel
-        };
+        let capture_turn =
+            if self.dictation_participation_requested && self.dictation_participation.is_none() {
+                CaptureTurnIntent::HandsFree
+            } else {
+                CaptureTurnIntent::AgentChannel
+            };
         let shared_settings = Arc::clone(&runtime_settings);
         let live_formatting_agent = live_max_capability(
             capture_turn,
@@ -2579,7 +2579,9 @@ impl ClosedTake {
     /// document. The controller retains it under this exact namespace.
     pub fn take_shared_capture_archive(&mut self) -> Option<(String, std::path::PathBuf)> {
         let session = self.authority_session_id.clone()?;
-        self.shared_capture_archive.take().map(|path| (session, path))
+        self.shared_capture_archive
+            .take()
+            .map(|path| (session, path))
     }
 
     async fn finish_shared_document(&mut self) -> Result<(String, Option<std::path::PathBuf>)> {
@@ -3123,6 +3125,7 @@ mod tests {
     use super::*;
     use crate::audio::chunker::{SpeechEvent, SpeechSession, VadGateMode};
     use crate::audio::load_audio_file;
+    use crate::config::{CapturedRuntimeInputs, Config};
     use crate::vad;
     use serial_test::serial;
     use std::fs;
@@ -3137,6 +3140,10 @@ mod tests {
             acoustic_ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
             delivered_samples: Arc::new(AtomicU64::new(0)),
             participants: vec![participant],
+            runtime_settings: Arc::new(Config::runtime_snapshot_from_captured(
+                CapturedRuntimeInputs::defaults_at(std::env::temp_dir(), 7),
+            )),
+            capture_turn: CaptureTurnIntent::AgentChannel,
             task,
         });
     }

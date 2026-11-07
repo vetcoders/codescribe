@@ -347,3 +347,236 @@ async fn f7_streaming_recorder_error_releases_last_seat_exactly_once() {
 async fn f7_streaming_recorder_cancellation_releases_last_seat_exactly_once() {
     last_failure(true).await;
 }
+
+// ---------------------------------------------------------------------------
+// Ordinary dictation as a text participant of the shared stream (Maciej,
+// 2026-11-07, relayed by Lena's delivery 806be508: one text demux, no second
+// PCM feed or recognizer; a document joins from the current sample).
+// ---------------------------------------------------------------------------
+
+/// Stands in for the production emitter: it admits a document's participation
+/// close (the contract default refuses) and records the formatter flag it
+/// inherits at attach.
+struct DocumentSink {
+    formatter_pending: Arc<AtomicBool>,
+}
+
+impl EventSink for DocumentSink {
+    fn on_event(&self, _: &EngineEvent) {}
+
+    fn on_formatter_pending(&self, pending: bool) {
+        self.formatter_pending.store(pending, Ordering::SeqCst);
+    }
+
+    fn close_participation(&self, _: &str, _: u64) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn wait_presentation_published<'a>(
+        &'a self,
+        _: &'a str,
+        _: u64,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn settings(root: &std::path::Path) -> Arc<RuntimeSettingsSnapshot> {
+    Arc::new(Config::runtime_snapshot_from_captured(
+        CapturedRuntimeInputs::defaults_at(root.to_owned(), 7),
+    ))
+}
+
+/// Bind and start a normal document the way a Raw hold or toggle does:
+/// `bind_dictation_authority` then the same `start_event_session`. The
+/// physical recorder is flagged active so no microphone opens.
+async fn start_document(
+    recorder: &mut StreamingRecorder,
+    root: &std::path::Path,
+    document: &str,
+) -> Arc<AtomicBool> {
+    let formatter_pending = Arc::new(AtomicBool::new(false));
+    recorder.set_event_sink(Some(Arc::new(DocumentSink {
+        formatter_pending: Arc::clone(&formatter_pending),
+    })));
+    recorder.bind_dictation_authority(document.to_string(), settings(root));
+    recorder.recorder.set_active_for_test(true);
+    recorder
+        .start_event_session(None)
+        .await
+        .expect("the document joins the shared text stream");
+    formatter_pending
+}
+
+/// The controller's Stop in two steps: close the participation, detach the take.
+async fn stop_document(recorder: &mut StreamingRecorder) -> (bool, ClosedTake) {
+    let last = recorder.close_capture().await;
+    let take = recorder.detach_closed_take(last);
+    assert!(take.is_shared_document());
+    (last, take)
+}
+
+fn agent_seat() -> ChannelParticipantOpen {
+    ChannelParticipantOpen {
+        owner: None,
+        sink: Arc::new(NullSink),
+    }
+}
+
+/// Dictation first: the capture is `dictation-capture-<document>`, never the
+/// document's own id. The document stops while the agent continues: it gets
+/// text, no WAV, and does not release the lease; the agent's last stop owns
+/// the whole capture's WAV. (HANDOFF "mandatory collision case".)
+#[tokio::test]
+#[serial_test::serial]
+async fn dictation_first_document_stops_without_the_wav_and_the_agents_last_stop_owns_it() {
+    let root = tempfile::tempdir().unwrap();
+    let mut recorder = StreamingRecorder::new().unwrap();
+    let mut fake = fake(&mut recorder, false);
+    start_document(&mut recorder, root.path(), "doc-d").await;
+    fake.started.recv().await.unwrap();
+    let shared = recorder.shared_channel_view().expect("one shared source");
+    assert_eq!(shared.capture_session_id, "dictation-capture-doc-d");
+    assert_eq!(
+        recorder.bound_capture_session_id(),
+        Some("dictation-capture-doc-d")
+    );
+    assert_eq!(shared.capture_turn, CaptureTurnIntent::HandsFree);
+    assert!(recorder.has_take_subscriber());
+    feed(&recorder, &mut fake, 100, 100).await;
+
+    // The agent joins the running recognizer at the current sample.
+    let agent = recorder.join_channel_session(agent_seat()).unwrap();
+    assert_eq!(agent.start_sample, 100);
+    assert_eq!(agent.capture_session_id, "dictation-capture-doc-d");
+    feed(&recorder, &mut fake, 60, 160).await;
+    assert_eq!(fake.starts.load(Ordering::SeqCst), 1, "one recognizer");
+    assert_eq!(recorder.channel_participant_count(), 2);
+
+    // DocD stops first.
+    let (last, mut take) = stop_document(&mut recorder).await;
+    assert!(!last, "the agent still records");
+    assert!(!recorder.has_take_subscriber());
+    assert_eq!(recorder.channel_participant_count(), 1);
+    assert!(
+        recorder.shared_channel_view().is_some(),
+        "the physical lease survives the document's stop"
+    );
+    feed(&recorder, &mut fake, 40, 200).await;
+
+    // The agent's stop is the last one: it releases the stream and its WAV.
+    let closed = recorder.close_channel_session(agent.id).await;
+    assert!(closed.released_stream());
+    let (released, path) = closed.finish().await.unwrap();
+    assert!(released);
+    let path = path.expect("the capture's WAV");
+    assert_eq!(hound::WavReader::open(&path).unwrap().duration(), 200);
+    assert_eq!(fake.receipts.load(Ordering::SeqCst), 1);
+    assert!(recorder.shared_channel_view().is_none());
+
+    // DocD's settlement after the producer ended: text only, never root.wav.
+    let (_, own_wav) = take.finish().await.expect("participation settles");
+    assert_eq!(own_wav, None, "a shared interval has no exact WAV alias");
+    assert!(take.released_shared_capture().is_none());
+    assert!(take.take_shared_capture_archive().is_none());
+    assert!(take.is_settled());
+    std::fs::remove_file(path).unwrap();
+}
+
+/// Agent first: the document joins the agent's recognizer (no second start),
+/// inherits the live formatter flag at attach, and runs as `SharedDictation`.
+/// The agent leaves first; the document's last stop hands the WAV to the
+/// capture namespace, never to the document.
+#[tokio::test]
+#[serial_test::serial]
+async fn agent_first_document_joins_once_and_its_last_stop_hands_the_wav_to_the_capture() {
+    let root = tempfile::tempdir().unwrap();
+    let mut recorder = StreamingRecorder::new().unwrap();
+    let mut fake = fake(&mut recorder, false);
+    let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+    let agent = recorder
+        .begin_channel_session_for_test(spec(root.path(), "agent-channels-a1", ledger))
+        .unwrap();
+    fake.started.recv().await.unwrap();
+    feed(&recorder, &mut fake, 80, 80).await;
+    // A formatter job is in flight when the document joins.
+    recorder
+        .shared_channel_view()
+        .unwrap()
+        .demux
+        .on_formatter_pending(true);
+
+    let formatter_pending = start_document(&mut recorder, root.path(), "doc-e").await;
+    assert!(
+        formatter_pending.load(Ordering::SeqCst),
+        "a joining document inherits the current formatter flag"
+    );
+    assert_eq!(
+        fake.starts.load(Ordering::SeqCst),
+        1,
+        "no second recognizer"
+    );
+    assert_eq!(
+        recorder.bound_capture_session_id(),
+        Some("agent-channels-a1")
+    );
+    assert_eq!(
+        recorder.capture_turn_intent(),
+        CaptureTurnIntent::SharedDictation
+    );
+    assert_eq!(recorder.channel_participant_count(), 2);
+    assert!(recorder.has_take_subscriber());
+    feed(&recorder, &mut fake, 70, 150).await;
+
+    // The agent leaves first; the document keeps recording.
+    let closed = recorder.close_channel_session(agent.id).await;
+    assert!(!closed.released_stream());
+    assert_eq!(recorder.channel_participant_count(), 1);
+    feed(&recorder, &mut fake, 50, 200).await;
+
+    // The document's stop is the last: it releases the stream.
+    let (last, mut take) = stop_document(&mut recorder).await;
+    assert!(last);
+    let (_, own_wav) = take.finish().await.unwrap();
+    assert_eq!(
+        own_wav, None,
+        "two intervals: the document owns no exact WAV"
+    );
+    assert_eq!(take.released_shared_capture(), Some("agent-channels-a1"));
+    let (capture, path) = take
+        .take_shared_capture_archive()
+        .expect("the capture's archive moves under its own id");
+    assert_eq!(capture, "agent-channels-a1");
+    assert_eq!(hound::WavReader::open(&path).unwrap().duration(), 200);
+    assert!(take.is_settled());
+    assert_eq!(closed.finish().await.unwrap(), (false, None));
+    assert_eq!(fake.receipts.load(Ordering::SeqCst), 1);
+    assert!(recorder.shared_channel_view().is_none());
+    std::fs::remove_file(path).unwrap();
+}
+
+/// A document alone on its capture keeps the exact WAV alias it always had.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_lone_document_keeps_its_exact_wav_alias() {
+    let root = tempfile::tempdir().unwrap();
+    let mut recorder = StreamingRecorder::new().unwrap();
+    let mut fake = fake(&mut recorder, false);
+    start_document(&mut recorder, root.path(), "doc-solo").await;
+    fake.started.recv().await.unwrap();
+    feed(&recorder, &mut fake, 120, 120).await;
+    let (last, mut take) = stop_document(&mut recorder).await;
+    assert!(last);
+    let (_, wav) = take.finish().await.unwrap();
+    let wav = wav.expect("one interval: the document's exact WAV");
+    assert_eq!(hound::WavReader::open(&wav).unwrap().duration(), 120);
+    assert!(
+        take.released_shared_capture().is_none(),
+        "the document itself retains the archive"
+    );
+    assert!(take.take_shared_capture_archive().is_none());
+    assert!(take.is_settled());
+    assert_eq!(fake.receipts.load(Ordering::SeqCst), 1);
+    assert!(recorder.shared_channel_view().is_none());
+    std::fs::remove_file(wav).unwrap();
+}

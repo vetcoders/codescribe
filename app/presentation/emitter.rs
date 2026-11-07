@@ -4744,7 +4744,11 @@ impl PresentationEmitter {
         self.transcript_bus
             .as_ref()
             .map(|bus| bus.session_id())
-            .or_else(|| self.cursor_capture.get().map(|(session, _)| session.as_str()))
+            .or_else(|| {
+                self.cursor_capture
+                    .get()
+                    .map(|(session, _)| session.as_str())
+            })
             .is_some_and(|session| session == document_id)
     }
 
@@ -4760,7 +4764,11 @@ impl PresentationEmitter {
         self.transcript_bus
             .as_ref()
             .map(|bus| bus.capture_session_id().to_string())
-            .or_else(|| self.cursor_capture.get().map(|(session, _)| session.clone()))
+            .or_else(|| {
+                self.cursor_capture
+                    .get()
+                    .map(|(session, _)| session.clone())
+            })
             .ok_or(UserRevisionRefusal::AuthorityUnavailable)
     }
 

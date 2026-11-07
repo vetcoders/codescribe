@@ -1417,7 +1417,8 @@ impl codescribe_core::pipeline::contracts::EventSink for TakeExternalEventSink {
     }
 
     fn close_participation(&self, session_id: &str, capture_epoch: u64) -> Result<()> {
-        self.presentation.close_participation(session_id, capture_epoch)
+        self.presentation
+            .close_participation(session_id, capture_epoch)
     }
 
     fn wait_presentation_published<'a>(
@@ -4218,8 +4219,8 @@ impl RecordingController {
                 .capture_session_for_document(take_id.unwrap_or_default())
                 .ok()
         });
-        let snapshot = snapshot
-            .filter(|canvas| Some(canvas.session_id.as_str()) == capture_id.as_deref());
+        let snapshot =
+            snapshot.filter(|canvas| Some(canvas.session_id.as_str()) == capture_id.as_deref());
         let painted_words_at_stop = painted_at_stop
             .as_ref()
             .map_or(0, |canvas| canvas.visible_words.len());
@@ -5036,7 +5037,9 @@ impl RecordingController {
                 warn!("Hold-start unwind: stale-session stop failed: {stop_err}");
             }
             Self::clear_recorder_callbacks(rec);
-            live_capture = rec.shared_channel_view().map(|view| view.capture_session_id);
+            live_capture = rec
+                .shared_channel_view()
+                .map(|view| view.capture_session_id);
         }
         // A hold that never became a recording delivered nothing; the take is
         // not "failed delivery", it had no delivery attempt at all.
@@ -6484,13 +6487,15 @@ impl RecordingController {
                 .unwrap_or(runtime_settings);
             let config = runtime_settings.values().clone();
             let language = config.whisper_language;
-            let capture_session_id = if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
-                StreamingRecorder::dictation_capture_session_id(&new_session_id)
-            } else {
-                new_session_id.clone()
-            };
+            let capture_session_id =
+                if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
+                    StreamingRecorder::dictation_capture_session_id(&new_session_id)
+                } else {
+                    new_session_id.clone()
+                };
             if shared.is_none()
-                && let Err(error) = begin_audio_capture(&capture_session_id, config.audio_retention).await
+                && let Err(error) =
+                    begin_audio_capture(&capture_session_id, config.audio_retention).await
             {
                 error!(%error, "capture storage lease refused; microphone remains closed");
                 return;
@@ -6623,7 +6628,8 @@ impl RecordingController {
             // Set session mode for delta routing BEFORE starting the pipeline,
             // so the very first deltas route to the correct overlay.
             set_assistive_session(is_assistive);
-            if !is_assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
+            // `hold_mode` is the value read above, not the lock.
+            if !is_assistive && matches!(hold_mode, HoldMode::Raw) {
                 rec.bind_dictation_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
             } else {
                 rec.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
@@ -6830,11 +6836,12 @@ impl RecordingController {
 
         // Generate session ID
         let new_session_id = Uuid::new_v4().to_string();
-        let capture_session_id = if !is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree) {
-            StreamingRecorder::dictation_capture_session_id(&new_session_id)
-        } else {
-            new_session_id.clone()
-        };
+        let capture_session_id =
+            if !is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree) {
+                StreamingRecorder::dictation_capture_session_id(&new_session_id)
+            } else {
+                new_session_id.clone()
+            };
         if shared.is_none() {
             begin_audio_capture(&capture_session_id, config.audio_retention).await?;
         }
@@ -6950,7 +6957,8 @@ impl RecordingController {
         // so the very first deltas route to the correct overlay.
         set_assistive_session(is_assistive);
         if !is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree) {
-            recorder.bind_dictation_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
+            recorder
+                .bind_dictation_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
         } else {
             recorder.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
         }
