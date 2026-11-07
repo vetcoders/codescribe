@@ -103,20 +103,20 @@ struct LabPanel: View {
       .accessibilityIdentifier("lab-glass-surface")
       HStack {
         Slider(value: glassPreferences.binding(for: glassSurface), in: 0...1, step: 0.05) {
-          Text("Glass amount")
+          Text("Glass tint")
         }
         .accessibilityIdentifier("lab-glass-amount")
-        Text(verbatim: "\(Int(glassPreferences.amount(for: glassSurface) * 100))%")
+        Text(verbatim: "\(Int(glassPreferences.tint(for: glassSurface) * 100))%")
           .monospacedDigit()
         Button("Reset glass") {
-          glassPreferences.binding(for: glassSurface).wrappedValue = ChromeGlassTuning.defaultAmount
+          glassPreferences.binding(for: glassSurface).wrappedValue = ChromeGlassTuning.defaultTint
         }
         .accessibilityIdentifier("lab-glass-reset")
       }
       HStack {
-        Text("More solid")
+        Text("Less tint")
         Spacer()
-        Text("More glass")
+        Text("More tint")
       }
       .font(SettingsScale.helper)
       .foregroundStyle(CSColor.secondaryInk)

@@ -62,22 +62,18 @@ struct OverlayCanvasBackdrop: View {
     ZStack {
       if (reduceTransparencyOverride ?? reduceTransparency) || increasedContrast
         || (contrastOverride ?? contrast) == .increased
-        || (role == .chrome && glassPreferences.amount(for: tuningSurface) == 0)
       {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
-        OverlayDesktopMaterial(palette: palette, cornerRadius: cornerRadius)
+        OverlayDesktopMaterial(
+          palette: palette, cornerRadius: cornerRadius,
+          tintColor: role == .chrome && glassPreferences.tint(for: tuningSurface) > 0
+            ? palette.desktopBackground.nsColor.withAlphaComponent(
+              glassPreferences.tint(for: tuningSurface))
+            : nil)
         if role == .readingCanvas {
           Rectangle()
             .fill(Color(nsColor: Self.glassVeil(palette)))
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        } else {
-          Rectangle()
-            .fill(
-              palette.desktopBackground.color.opacity(
-                1 - glassPreferences.amount(for: tuningSurface))
-            )
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
@@ -108,6 +104,7 @@ struct OverlayCanvasBackdrop: View {
 private struct OverlayDesktopMaterial: NSViewRepresentable {
   let palette: OverlayAppearancePalette
   let cornerRadius: CGFloat
+  var tintColor: NSColor? = nil
 
   func makeNSView(context: Context) -> NSView {
     if #available(macOS 26, *) {
@@ -140,11 +137,9 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
       view.appearance = NSAppearance(named: name)
     }
     if #available(macOS 26, *), let glass = view as? OverlayDesktopGlassView,
-      glass.tintColor != nil
+      glass.tintColor != tintColor
     {
-      // The sheet colour lives in `OverlayCanvasBackdrop.glassVeil` above the
-      // glass; a tint here would vanish whenever the window is not key.
-      glass.tintColor = nil
+      glass.tintColor = tintColor
     }
   }
 }
@@ -177,7 +172,15 @@ struct OverlayControlGlass: ViewModifier {
   @ViewBuilder
   func body(content: Content) -> some View {
     let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-    let glassAmount = glassPreferences.amount(for: .busHeader)
+    let tint = glassPreferences.tint(for: .busHeader)
+    let base = Glass.regular.interactive()
+    let material =
+      role == .chrome && tint > 0
+      ? base.tint(
+        (colorScheme == .dark
+          ? Color(red: 0.08, green: 0.08, blue: 0.09)
+          : Color(red: 0.97, green: 0.96, blue: 0.94)).opacity(tint))
+      : base
     let veilColor =
       colorScheme == .dark
       ? Color(red: 0.08, green: 0.08, blue: 0.09).opacity(0.76)
@@ -190,17 +193,8 @@ struct OverlayControlGlass: ViewModifier {
         content
           .background {
             if isEnabled && role == .readingCanvas { shape.fill(veilColor) }
-            if isEnabled && role == .chrome {
-              shape.fill(
-                (colorScheme == .dark
-                  ? Color(red: 0.08, green: 0.08, blue: 0.09)
-                  : Color(red: 0.97, green: 0.96, blue: 0.94)).opacity(1 - glassAmount))
-            }
           }
-          .glassEffect(
-            isEnabled && (role == .readingCanvas || glassAmount > 0)
-              ? .regular.interactive() : .identity, in: shape
-          )
+          .glassEffect(isEnabled ? material : .identity, in: shape)
           .environment(\.controlActiveState, .key)
       } else {
         content.background {

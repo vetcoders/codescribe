@@ -9408,20 +9408,20 @@
         }
       }
     },
-    "Glass amount" : {
-      "comment" : "Developer Lab glass tuning control",
+    "Glass tint" : {
+      "comment" : "Developer Lab native glass tint control",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Glass amount"
+            "value" : "Glass tint"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ilość szkła"
+            "value" : "Tonowanie szkła"
           }
         }
       }
@@ -10621,6 +10621,24 @@
         }
       }
     },
+    "Less tint" : {
+      "comment" : "Developer Lab native glass tint control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Less tint"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mniej tonowania"
+          }
+        }
+      }
+    },
     "Libraxis API key" : {
       "comment" : "Libraxis is a company name",
       "localizations" : {
@@ -11734,38 +11752,20 @@
         }
       }
     },
-    "More glass" : {
-      "comment" : "Developer Lab glass tuning control",
+    "More tint" : {
+      "comment" : "Developer Lab native glass tint control",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "More glass"
+            "value" : "More tint"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Więcej szkła"
-          }
-        }
-      }
-    },
-    "More solid" : {
-      "comment" : "Developer Lab glass tuning control",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "More solid"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bardziej kryjące"
+            "value" : "Więcej tonowania"
           }
         }
       }
