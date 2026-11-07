@@ -112,8 +112,13 @@ struct OverlayChannelChipHoverCard: View {
   nonisolated static let lineSize: CGFloat = 11
   nonisolated static let shortcutSize: CGFloat = 10
   /// A tight card: wide enough for its longest line, within these bounds.
+  /// No line is ever cut (Monika, 2026-11-07): a line wider than the
+  /// ceiling wraps, and a title whose provider and project do not fit
+  /// beside the name puts them under it.
   static let minWidth: CGFloat = 200
-  static let maxWidth: CGFloat = 240
+  static let maxWidth: CGFloat = 320
+  /// The gap between the name and the provider and project under it.
+  static let trailingBelowSpacing: CGFloat = 2
 
   var body: some View {
     VStack(alignment: .leading, spacing: Self.lineSpacing) {
@@ -144,20 +149,37 @@ struct OverlayChannelChipHoverCard: View {
           .font(.system(size: line.size))
           .frame(width: Self.symbolWidth)
       }
-      Text(verbatim: line.text)
-        .font(.system(size: line.size, weight: line.kind == .title ? .semibold : .regular))
-        .monospacedDigit()
-        .lineLimit(1)
-        .truncationMode(.tail)
-      if let trailing = line.trailing {
-        Spacer(minLength: Self.trailingGap)
-        Text(verbatim: trailing)
-          .font(.system(size: Self.lineSize))
-          .foregroundStyle(Tone.muted.color(in: palette))
-          .lineLimit(1)
+      if let trailing = line.trailing, !Self.trailingBeside(line) {
+        VStack(alignment: .leading, spacing: Self.trailingBelowSpacing) {
+          text(line)
+          trailingText(trailing)
+        }
+      } else {
+        text(line)
+        if let trailing = line.trailing {
+          Spacer(minLength: Self.trailingGap)
+          trailingText(trailing)
+        }
       }
     }
     .foregroundStyle(line.tone.color(in: palette))
+  }
+
+  /// A line's words, wrapped and never cut: the card is measured for them.
+  private func text(_ line: Line) -> some View {
+    Text(verbatim: line.text)
+      .font(.system(size: line.size, weight: line.kind == .title ? .semibold : .regular))
+      .monospacedDigit()
+      .lineLimit(nil)
+      .fixedSize(horizontal: false, vertical: true)
+  }
+
+  private func trailingText(_ trailing: String) -> some View {
+    Text(verbatim: trailing)
+      .font(.system(size: Self.lineSize))
+      .foregroundStyle(Tone.muted.color(in: palette))
+      .lineLimit(nil)
+      .fixedSize(horizontal: false, vertical: true)
   }
 
   // MARK: Text
@@ -381,9 +403,10 @@ struct OverlayChannelChipHoverCard: View {
 
   // MARK: Size
 
-  /// The card's size, measured from its lines in their own fonts: the
-  /// widest line between `minWidth` and `maxWidth`, every line's height and
-  /// the gaps between them. The hint panel takes this size as given.
+  /// The card's size, measured from its lines in the fonts it draws them
+  /// in: the widest line between `minWidth` and `maxWidth`, every line's
+  /// height as wrapped at the card's width and the gaps between them. The
+  /// hint panel takes this size as given, so nothing is cut.
   @MainActor
   static func size(
     chip: OverlayChannelMapChip, status: OverlayChannelChipStatus,
@@ -395,23 +418,83 @@ struct OverlayChannelChipHoverCard: View {
   /// The size of a card drawing these lines.
   @MainActor
   static func size(lines: [Line]) -> CGSize {
-    let widest =
-      lines.map { line -> CGFloat in
-        var width = OverlayChannelPill.textWidth(line.text, size: line.size)
-        if line.symbol != nil || line.dot != nil { width += symbolWidth + symbolGap }
-        if line.secondSymbol != nil { width += symbolWidth + symbolGap }
-        if let trailing = line.trailing {
-          width += trailingGap + OverlayChannelPill.textWidth(trailing, size: lineSize)
-        }
-        return width
-      }.max() ?? 0
-    let heights = lines.map { lineHeight(size: $0.size) }
+    let widest = lines.map(naturalWidth).max() ?? 0
+    let width = ceil(min(maxWidth, max(minWidth, widest + 2 * padding)))
+    let heights = lines.map { height($0, within: width - 2 * padding) }
     let height =
       heights.reduce(0, +) + lineSpacing * CGFloat(max(0, lines.count - 1)) + 2 * padding
-    // A point of slack per line for the symbols' own line height.
-    return CGSize(
-      width: ceil(min(maxWidth, max(minWidth, widest + 2 * padding))),
-      height: ceil(height + CGFloat(lines.count)))
+    return CGSize(width: width, height: ceil(height))
+  }
+
+  /// The font a line's words are drawn in (`text(_:)`), for the measure.
+  static func font(_ line: Line) -> NSFont {
+    NSFont.monospacedDigitSystemFont(
+      ofSize: line.size, weight: line.kind == .title ? .semibold : .regular)
+  }
+
+  /// The title's provider and project as `trailingText(_:)` draws them.
+  static var trailingFont: NSFont { NSFont.systemFont(ofSize: lineSize) }
+
+  /// The symbol column(s) before a line's words.
+  static func symbolsWidth(_ line: Line) -> CGFloat {
+    var width: CGFloat = 0
+    if line.symbol != nil || line.dot != nil { width += symbolWidth + symbolGap }
+    if line.secondSymbol != nil { width += symbolWidth + symbolGap }
+    return width
+  }
+
+  /// Whether the title's provider and project stand beside the name on one
+  /// line within the ceiling; else they go under it, whole.
+  @MainActor
+  static func trailingBeside(_ line: Line) -> Bool {
+    guard let trailing = line.trailing else { return true }
+    let beside =
+      symbolsWidth(line) + textWidth(line.text, font(line)) + besideGap
+      + textWidth(trailing, trailingFont)
+    return beside <= maxWidth - 2 * padding
+  }
+
+  /// A line's width unwrapped: what the card grows to, up to the ceiling.
+  @MainActor
+  static func naturalWidth(_ line: Line) -> CGFloat {
+    let words = textWidth(line.text, font(line))
+    guard let trailing = line.trailing else { return symbolsWidth(line) + words }
+    let after = textWidth(trailing, trailingFont)
+    return symbolsWidth(line)
+      + (trailingBeside(line) ? words + besideGap + after : max(words, after))
+  }
+
+  /// The room between the name and the provider beside it: the spacer's
+  /// minimum and the row's spacing on both of its sides.
+  static var besideGap: CGFloat { trailingGap + 2 * symbolGap }
+
+  /// A line's height with its words wrapped within the card's content width.
+  @MainActor
+  static func height(_ line: Line, within content: CGFloat) -> CGFloat {
+    let column = content - symbolsWidth(line)
+    var height = wrappedHeight(line.text, font(line), within: column)
+    if let trailing = line.trailing, !trailingBeside(line) {
+      height += trailingBelowSpacing + wrappedHeight(trailing, trailingFont, within: column)
+    }
+    return height
+  }
+
+  /// Words measured in their font, with two points of slack against
+  /// SwiftUI's own rounding, so a line measured to fit is never cut.
+  static func textWidth(_ text: String, _ font: NSFont) -> CGFloat {
+    ceil((text as NSString).size(withAttributes: [.font: font]).width) + 2
+  }
+
+  /// The height of words wrapped at `width`: whole lines of the font, each
+  /// a point taller, as SwiftUI lays out the card's 10 and 11 pt lines
+  /// (13 and 14 pt where the font's own line is 12 and 13).
+  static func wrappedHeight(_ text: String, _ font: NSFont, within width: CGFloat) -> CGFloat {
+    let one = ceil(font.ascender - font.descender + font.leading) + 1
+    let bounds = (text as NSString).boundingRect(
+      with: CGSize(width: max(1, width - 2), height: .greatestFiniteMagnitude),
+      options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
+    let count = max(1, (bounds.height / one - 0.25).rounded(.up))
+    return count * one
   }
 
   @MainActor

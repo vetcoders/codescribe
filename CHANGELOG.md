@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Overlay bar: an agent's hover card never cuts its text with an ellipsis. It grows to fit its longest line, up to 320 pt; a longer line, such as the time a gone agent was last heard, wraps to a second line, and a provider and project too long to stand beside the agent's name go under it, whole.
 - Bus window: one fold button (`sidebar.right`) in the top-right corner of the agents list, in the empty band between the window header and the first row, hides the list to the rail of pills, and the same button at the top of the rail, just above the pills, shows it again; in the list it takes no row and no room from the rows, so the list does not move. The divider still folds and unfolds it too.
 - Overlay and Bus window: the card that previews an agent's last messages shows the agent's presence dot between its number and its name, as in the agents list under ✦ and the roster's rows; channel 0 and your inbox keep their plain title.
 - Overlay and Bus window: an agent that stops reading shows its "!" once its oldest unread message is 10 minutes old, without waiting for another change on the bus.

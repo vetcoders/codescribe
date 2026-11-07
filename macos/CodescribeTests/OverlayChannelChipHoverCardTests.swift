@@ -366,4 +366,110 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
       + 2 * OverlayChannelChipHoverCard.padding
     XCTAssertGreaterThan(large.height, fiveLines, "every line has room")
   }
+
+  // MARK: - Nothing is cut (Monika, 2026-11-07)
+
+  /// The two cards of Monika's screenshots in their Polish length: Tola,
+  /// not active with the time she was last heard, and Bruno with a long
+  /// runtime label beside his name. Fixture strings, not product copy.
+  static let tolaLines: [OverlayChannelChipHoverCard.Line] = [
+    .init(kind: .title, text: "4 · Tola", tone: .primary, trailing: "Agy · Codescribe"),
+    .init(
+      kind: .presence, text: "Nieaktywny · ostatnio słyszany 8:51 PM", tone: .muted,
+      dot: .sleeping),
+    .init(
+      kind: .reception, text: "All", tone: .primary,
+      symbol: "antenna.radiowaves.left.and.right"),
+    .init(kind: .lastMessage, text: "8:51 PM", tone: .primary, symbol: "arrow.down.left"),
+    .init(kind: .shortcut, text: "Ctrl+4", tone: .muted, symbol: "keyboard"),
+  ]
+
+  static let brunoLines: [OverlayChannelChipHoverCard.Line] = [
+    .init(
+      kind: .title, text: "5 · Bruno", tone: .primary,
+      trailing: "Claude Code · gpt-6.1-sol · Codescribe"),
+    .init(kind: .presence, text: "Aktywny", tone: .success, dot: .present),
+    .init(
+      kind: .reception, text: "All", tone: .primary,
+      symbol: "antenna.radiowaves.left.and.right"),
+    .init(
+      kind: .lastMessage, text: "8:51 PM · Przeczytane", tone: .primary,
+      symbol: "arrow.up.right"),
+    .init(kind: .shortcut, text: "Ctrl+5", tone: .muted, symbol: "keyboard"),
+  ]
+
+  /// The card's width the requirement allows at text scale 1.
+  private let ceiling: CGFloat = 320
+
+  private func card(_ lines: [OverlayChannelChipHoverCard.Line]) -> OverlayChannelChipHoverCard {
+    OverlayChannelChipHoverCard(
+      digit: "4", lines: lines, accessibilityText: "", palette: .light)
+  }
+
+  /// What SwiftUI itself needs to draw every line whole: the card's ideal
+  /// width with nothing wrapped, and its height wrapped at `width`.
+  private func swiftUINeeds(
+    _ lines: [OverlayChannelChipHoverCard.Line], width: CGFloat
+  ) -> (unwrapped: CGFloat, height: CGFloat) {
+    let unwrapped = NSHostingView(rootView: card(lines).fixedSize()).fittingSize.width
+    let wrapped = NSHostingView(
+      rootView: card(lines).frame(width: width).fixedSize(horizontal: false, vertical: true)
+    ).fittingSize.height
+    return (unwrapped, wrapped)
+  }
+
+  /// The card is as wide as its widest line drawn whole, up to the ceiling,
+  /// and as tall as its lines wrapped at that width: the hint panel draws
+  /// it at exactly this size, so a narrower or shorter card cuts a line.
+  private func assertNothingCut(
+    _ lines: [OverlayChannelChipHoverCard.Line], _ name: String,
+    file: StaticString = #filePath, line: UInt = #line
+  ) {
+    let size = OverlayChannelChipHoverCard.size(lines: lines)
+    let needs = swiftUINeeds(lines, width: size.width)
+    if needs.unwrapped <= ceiling {
+      XCTAssertGreaterThanOrEqual(
+        size.width, needs.unwrapped,
+        "\(name): every line fits whole on one line, so the card is that wide", file: file,
+        line: line)
+    } else {
+      XCTAssertEqual(
+        size.width, ceiling, "\(name): a line over the ceiling grows the card to it", file: file,
+        line: line)
+    }
+    XCTAssertLessThanOrEqual(
+      size.width, ceiling, "\(name): within the ceiling", file: file, line: line)
+    XCTAssertGreaterThanOrEqual(
+      size.height, needs.height, "\(name): room for every wrapped line", file: file, line: line)
+  }
+
+  func testTheInactivePresenceLineIsNeverCut() {
+    assertNothingCut(Self.tolaLines, "Tola")
+  }
+
+  func testALongRuntimeLabelStaysWholeBesideTheName() {
+    assertNothingCut(Self.brunoLines, "Bruno")
+  }
+
+  /// A line longer than the ceiling wraps to a second line instead of an
+  /// ellipsis, and a runtime label that cannot stand beside the name goes
+  /// under it, whole.
+  func testLinesOverTheCeilingWrapInsteadOfBeingCut() {
+    var lines = Self.tolaLines
+    lines[0] = .init(
+      kind: .title, text: "4 · Tola", tone: .primary,
+      trailing: "Claude Code · gpt-6.1-sol · Codescribe-wt · bar-polish-clean-20261106")
+    lines[1] = .init(
+      kind: .presence,
+      text: "Nieaktywny · ostatnio słyszany 8:51 PM · nie czyta od 125 min · głos wyciszony",
+      tone: .muted, dot: .sleeping)
+    assertNothingCut(lines, "over the ceiling")
+    let oneLine = OverlayChannelChipHoverCard.size(lines: Self.tolaLines)
+    let wrapped = OverlayChannelChipHoverCard.size(lines: lines)
+    XCTAssertGreaterThanOrEqual(
+      wrapped.height,
+      oneLine.height + 2
+        * OverlayChannelChipHoverCard.lineHeight(size: OverlayChannelChipHoverCard.lineSize),
+      "the presence line wraps to two lines and the label stands under the name")
+  }
 }

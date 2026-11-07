@@ -361,8 +361,17 @@ the agent works in ("Agy · Codescribe", L16), the project from the same
 verified lease as the roster's descriptor (`AgentPlaybackBinding.repositoryName`,
 `OverlayState.channelAgentProjects`), either alone when the other is unknown;
 the chord
-(`Ctrl+5`) is the last, small line: at most seven short lines, the card's
-width bounds unchanged. The card is one accessibility element whose label
+(`Ctrl+5`) is the last, small line: at most seven short lines. Nothing on
+the card is ever cut (Monika, 2026-11-07): the card is as wide as its widest
+line drawn whole, between 200 and 320 pt, measured in the fonts it draws
+them in (`OverlayChannelChipHoverCard.size(lines:)`), and a line still wider
+than 320 pt wraps to the next line instead of ending in an ellipsis; the
+height counts every wrapped line, since the hint panel draws the card at
+exactly that size. The provider and project stay whole beside the name when
+the title fits within 320 pt, else they stand under the name. The panel
+stays centred under the chip and inside the screen, so a wider card grows
+to both sides. The card's fonts do not follow the bar's text scale, so the
+ceiling does not either. The card is one accessibility element whose label
 reads every line, and the chip's accessibility value carries the same
 facts. The card stays non-interactive. Mini
 carries no map and no counter (Founder, 2026-11-04): the interactive list of

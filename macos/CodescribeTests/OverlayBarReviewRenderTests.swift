@@ -588,6 +588,28 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     }
   }
 
+  /// Monika's two cards (2026-11-07) in their Polish length, whole: Tola
+  /// not active with the time she was last heard, Bruno with a long
+  /// runtime label beside his name; at 1× and 2×.
+  func testRenderChipHoverCardsWithLongLines() throws {
+    let cards = [
+      ("bar-9-hover-card-tola-long", OverlayChannelChipHoverCardTests.tolaLines),
+      ("bar-9-hover-card-bruno-long", OverlayChannelChipHoverCardTests.brunoLines),
+    ]
+    for (name, lines) in cards {
+      let size = OverlayChannelChipHoverCard.size(lines: lines)
+      for look in Look.allCases {
+        for scale: CGFloat in [1, 2] {
+          try renderAlone(
+            OverlayChannelChipHoverCard(
+              digit: "4", lines: lines, accessibilityText: "", palette: look.palette),
+            size: size, look: look, name: "\(name)-\(Int(size.width))pt-\(Int(scale))x",
+            scale: scale)
+        }
+      }
+    }
+  }
+
   // MARK: - 8. Mini to the bar and back
 
   /// A still click on the free background: mini opens the bar, the bar folds
