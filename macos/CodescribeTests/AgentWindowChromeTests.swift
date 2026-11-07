@@ -108,6 +108,11 @@ final class AgentWindowChromeTests: XCTestCase {
     }
   }
 
+  private func nativeSidebarGlass(in window: NSWindow) -> NSGlassEffectView? {
+    guard let content = window.contentView else { return nil }
+    return first(in: content) { $0 is NSGlassEffectView } as? NSGlassEffectView
+  }
+
   private func rectangularHeaderGlass(in window: NSWindow) -> NSGlassEffectView? {
     guard let theme = window.contentView?.superview else { return nil }
     return first(in: theme) { $0.identifier?.rawValue == "codescribe-header-glass" }
@@ -136,7 +141,7 @@ final class AgentWindowChromeTests: XCTestCase {
 
         pump(window) {
           self.rectangularHeaderGlass(in: window) != nil
-            && (!expanded || self.sidebarMaterial(in: window) != nil)
+            && (!expanded || self.nativeSidebarGlass(in: window) != nil)
             && window.title == "Agent"
             && window.titleVisibility == .hidden
             && window.toolbarStyle == .unified
@@ -170,10 +175,9 @@ final class AgentWindowChromeTests: XCTestCase {
         }
 
         if expanded {
-          let material = try XCTUnwrap(sidebarMaterial(in: window))
-          XCTAssertEqual(material.material, .sidebar, "width \(width) expanded \(expanded)")
-          XCTAssertEqual(
-            material.blendingMode, .behindWindow, "width \(width) expanded \(expanded)")
+          let material = try XCTUnwrap(nativeSidebarGlass(in: window))
+          XCTAssertNil(
+            sidebarMaterial(in: window), "no second material inside system sidebar glass")
           XCTAssertEqual(frame(material).maxY, window.frame.height, accuracy: 1)
           XCTAssertEqual(frame(material).minY, 0, accuracy: 1)
         }

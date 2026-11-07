@@ -100,8 +100,9 @@ final class SettingsWindowChromeTests: XCTestCase {
       "sidebar column must reach the bottom edge")
 
     let material = try XCTUnwrap(sidebarMaterial(in: window))
-    XCTAssertEqual(material.material, .sidebar)
-    XCTAssertEqual(material.blendingMode, .behindWindow)
+    XCTAssertNil(
+      first(in: theme) { $0 is CSSidebarVisualEffectNSView },
+      "no second visual-effect material inside the native sidebar")
     XCTAssertEqual(
       frame(material).maxY, window.frame.height, accuracy: 1,
       "sidebar material must run from the bottom to the top of the window")
@@ -153,9 +154,9 @@ final class SettingsWindowChromeTests: XCTestCase {
     return first(in: content) { $0 is NSSplitView } as? NSSplitView
   }
 
-  private func sidebarMaterial(in window: NSWindow) -> NSVisualEffectView? {
+  private func sidebarMaterial(in window: NSWindow) -> NSGlassEffectView? {
     guard let content = window.contentView else { return nil }
-    return first(in: content) { $0 is CSSidebarVisualEffectNSView } as? NSVisualEffectView
+    return first(in: content) { $0 is NSGlassEffectView } as? NSGlassEffectView
   }
 
   private func frame(_ view: NSView) -> NSRect {
