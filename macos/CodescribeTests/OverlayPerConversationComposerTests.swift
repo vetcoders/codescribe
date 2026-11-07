@@ -42,7 +42,7 @@ final class OverlayPerConversationComposerTests: XCTestCase {
       let owner = try XCTUnwrap(
         OverlayConversationOwner(row: [
           "provider": "codex", "provider_session_id": session,
-          "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
+          "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)!,
           "channel": digit, "name": session,
         ]))
       return .init(id: owner.id, channel: digit, name: owner.name, owner: owner, messages: [])

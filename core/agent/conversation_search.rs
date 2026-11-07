@@ -16,6 +16,8 @@ use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::stt::active_names::follower_lease_id;
+
 /// One saved conversation the archive walk could prove.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BusConversationSearchHit {
@@ -280,7 +282,7 @@ fn read_archive(archives: &Path, name: &str) -> ArchiveRead {
     if name != format!("{}-{}.json", owner.lease, owner.channel) {
         return ArchiveRead::Malformed;
     }
-    if owner.lease != lease_identifier(&owner.provider, &owner.session) {
+    if Some(owner.lease.as_str()) != follower_lease_id(&owner.provider, &owner.session).as_deref() {
         return ArchiveRead::Malformed;
     }
     let Some(bus) = field_str(row, "bus") else {
@@ -693,17 +695,6 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// The lease rule shared with Python and Swift
-/// (`scripts/tests/fixtures/lease-identity-vectors.json`): the provider
-/// trimmed and lower-cased, the session byte for byte.
-fn lease_identifier(provider: &str, session: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(provider.trim().to_lowercase().as_bytes());
-    hasher.update([0u8]);
-    hasher.update(session.as_bytes());
-    hex::encode(&hasher.finalize()[..16])
-}
-
 fn identity(parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     for (index, part) in parts.iter().enumerate() {
@@ -827,25 +818,10 @@ mod tests {
 
     use super::*;
 
-    /// The search's lease rule is the shared one: every vector of the
-    /// common fixture gives the same id as in Python and Swift.
-    #[test]
-    fn lease_identifier_matches_the_shared_vectors() {
-        let fixture: Value = serde_json::from_str(include_str!(
-            "../../scripts/tests/fixtures/lease-identity-vectors.json"
-        ))
-        .unwrap();
-        for vector in fixture["vectors"].as_array().unwrap() {
-            assert_eq!(
-                lease_identifier(
-                    vector["provider"].as_str().unwrap(),
-                    vector["provider_session_id"].as_str().unwrap()
-                ),
-                vector["lease_id"].as_str().unwrap(),
-                "{}",
-                vector["case"]
-            );
-        }
+    /// Archives are checked with the one lease rule
+    /// (`active_names::follower_lease_id`, pinned by the shared vectors).
+    fn lease_identifier(provider: &str, session: &str) -> String {
+        follower_lease_id(provider, session).expect("valid provider token")
     }
 
     fn conversation_id(provider: &str, session: &str) -> String {

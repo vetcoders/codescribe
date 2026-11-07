@@ -280,12 +280,12 @@ final class OverlayAgentArchiveTests: XCTestCase {
     let otherRow: [String: Any] = [
       "provider": "codex", "provider_session_id": "other-session", "channel": "7",
       "lease_id": AgentPlaybackIdentity.leaseIdentifier(
-        provider: "codex", session: "other-session"),
+        provider: "codex", session: "other-session")!,
       "name": "other-agent",
     ]
     for index in 0..<17 {
       let session = "saved-session-\(index)"
-      let lease = AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)
+      let lease = AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)!
       let row: [String: Any] = [
         "provider": "codex", "provider_session_id": session, "lease_id": lease,
         "channel": "4", "name": "saved-\(index)",
@@ -460,7 +460,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
           "provider": "codex", "provider_session_id": "archive-session", "name": "adam",
           "channel": "4",
           "lease_id": AgentPlaybackIdentity.leaseIdentifier(
-            provider: "codex", session: "archive-session"),
+            provider: "codex", session: "archive-session")!,
         ]))
       try FileManager.default.createDirectory(
         at: lease.deletingLastPathComponent(), withIntermediateDirectories: true)

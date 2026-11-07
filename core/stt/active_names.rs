@@ -229,10 +229,29 @@ fn canonical_name(value: &str) -> Option<String> {
     )
 }
 
+/// The provider id of every lease identity, or `None` when the helper would
+/// refuse it. The rule is stated once, at `provider_token` in
+/// `scripts/bus-demux.py`, and pinned by
+/// `scripts/tests/fixtures/lease-identity-vectors.json`: ASCII whitespace
+/// trimmed, `[A-Za-z0-9][A-Za-z0-9-]{0,63}`, ASCII lower-case, never a Unicode
+/// case mapping.
+pub fn provider_token(provider: &str) -> Option<String> {
+    let value = provider.trim_matches(|c: char| c.is_ascii_whitespace());
+    let valid = value.len() <= 64
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphanumeric())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    valid.then(|| value.to_ascii_lowercase())
+}
+
 /// Canonical lease identity shared with channel admission.
 pub fn follower_lease_id(provider: &str, session: &str) -> Option<String> {
-    let provider = provider.trim().to_lowercase();
-    if provider.is_empty() || session.trim().is_empty() {
+    let provider = provider_token(provider)?;
+    if session.trim().is_empty() {
         return None;
     }
     let identity = format!("{provider}\0{session}");
@@ -295,7 +314,10 @@ static FOLLOWER_LEASES: OnceLock<Mutex<HashMap<PathBuf, CachedFollowerLease>>> =
 /// is never used as a liveness claim. Unknown covers unreadable or invalid data.
 pub fn follower_observation_at(root: &Path, provider: &str, session: &str) -> FollowerObservation {
     let unknown = FollowerObservation::default();
-    let Some(lease_id) = follower_lease_id(provider, session) else {
+    let (Some(provider_id), Some(lease_id)) = (
+        provider_token(provider),
+        follower_lease_id(provider, session),
+    ) else {
         return unknown;
     };
     let directory = root.join("leases");
@@ -358,11 +380,7 @@ pub fn follower_observation_at(root: &Path, provider: &str, session: &str) -> Fo
         return unknown;
     };
     if lease.schema != LEASE_SCHEMA
-        || lease
-            .provider
-            .as_deref()
-            .map(|value| value.trim().to_lowercase())
-            != Some(provider.trim().to_lowercase())
+        || lease.provider.as_deref().and_then(provider_token) != provider_token(provider)
         || lease.provider_session_id.as_deref() != Some(session)
         || lease.lease_id.as_deref() != Some(lease_id.as_str())
     {
@@ -395,7 +413,7 @@ pub fn follower_observation_at(root: &Path, provider: &str, session: &str) -> Fo
         }
     }
     let facts = FollowerLeaseFacts {
-        provider: provider.trim().to_lowercase(),
+        provider: provider_id,
         session: session.to_string(),
         lease_id: lease_id.clone(),
         active: lease.active,
@@ -428,7 +446,7 @@ fn observe_follower_facts(
     facts: &FollowerLeaseFacts,
 ) -> FollowerObservation {
     let unknown = FollowerObservation::default();
-    if facts.provider != provider.trim().to_lowercase()
+    if provider_token(provider).as_deref() != Some(facts.provider.as_str())
         || facts.session != session
         || facts.lease_id != lease_id
     {
@@ -465,7 +483,8 @@ fn observe_follower_facts(
 /// Provider sessions whose follower is live right now: lease schema, `active`,
 /// and a heartbeat no older than the shared TTL — the same convention the
 /// helper's `--status` reports. Pairs are `(provider, provider_session_id)`
-/// with the provider casefolded, matching what the lease writer stores.
+/// with the provider as [`provider_token`] gives it, matching what the lease
+/// writer stores.
 pub fn live_follower_sessions_at(
     root: &Path,
     now: f64,
@@ -488,14 +507,11 @@ pub fn live_follower_hosts_at(
     let mut sessions: HashMap<(String, String), FollowerHosts> = HashMap::new();
     for_each_fresh_lease(root, now, ttl_seconds, |lease| {
         if let (Some(provider), Some(session)) = (
-            lease.provider.as_deref().map(str::trim),
+            lease.provider.as_deref().and_then(provider_token),
             lease.provider_session_id.as_deref().map(str::trim),
-        ) && !provider.is_empty()
-            && !session.is_empty()
+        ) && !session.is_empty()
         {
-            let hosts = sessions
-                .entry((provider.to_lowercase(), session.to_string()))
-                .or_default();
+            let hosts = sessions.entry((provider, session.to_string())).or_default();
             hosts.frame_pane |= lease.has_frame_pane();
             hosts.terminal_tab |= lease.has_terminal_host();
         }
@@ -542,18 +558,18 @@ pub fn unread_backlog_since_at(
     let mut oldest = HashMap::new();
     for_each_fresh_lease(root, now, ttl_seconds, |lease| {
         let (Some(provider), Some(session), Some(lease_id)) = (
-            lease.provider.as_deref().map(str::trim),
+            lease.provider.as_deref().and_then(provider_token),
             lease.provider_session_id.as_deref().map(str::trim),
             lease.lease_id.as_deref().map(str::trim),
         ) else {
             return;
         };
-        if provider.is_empty() || session.is_empty() || lease_id.is_empty() {
+        if session.is_empty() || lease_id.is_empty() {
             return;
         }
         let since = oldest_unread(root, lease_id, lease);
         if let Some(since) = since {
-            oldest.insert((provider.to_lowercase(), session.to_string()), since);
+            oldest.insert((provider, session.to_string()), since);
         }
     });
     oldest
@@ -664,13 +680,13 @@ fn for_each_lease_summary(root: &Path, mut visit: impl FnMut(&LeaseSummary)) {
             .is_some_and(|cached| cached.len == len && cached.modified == modified);
         if !current {
             let summary = read_lease(&path).and_then(|lease| {
-                let provider = lease.provider.as_deref()?.trim();
+                let provider = provider_token(lease.provider.as_deref()?)?;
                 let session = lease.provider_session_id.as_deref()?.trim();
-                if provider.is_empty() || session.is_empty() || !lease.heartbeat_unix.is_finite() {
+                if session.is_empty() || !lease.heartbeat_unix.is_finite() {
                     return None;
                 }
                 Some(LeaseSummary {
-                    session: (provider.to_lowercase(), session.to_string()),
+                    session: (provider, session.to_string()),
                     heartbeat_unix: lease.heartbeat_unix,
                     codex_thread: lease.codex_thread(),
                 })
@@ -746,7 +762,7 @@ mod tests {
     use super::*;
 
     /// The lease rule shared with Python and Swift: every vector of the
-    /// common fixture gives the same id here.
+    /// common fixture gives the same token and id here, or the same refusal.
     #[test]
     fn follower_lease_id_matches_the_shared_vectors() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -755,9 +771,16 @@ mod tests {
         .unwrap();
         let vectors = fixture["vectors"].as_array().unwrap();
         assert!(!vectors.is_empty());
+        assert!(vectors.iter().any(|vector| vector["lease_id"].is_null()));
         for vector in vectors {
             let provider = vector["provider"].as_str().unwrap();
             let session = vector["provider_session_id"].as_str().unwrap();
+            assert_eq!(
+                provider_token(provider).as_deref(),
+                vector["normalized_provider"].as_str(),
+                "{}",
+                vector["case"]
+            );
             assert_eq!(
                 follower_lease_id(provider, session).as_deref(),
                 vector["lease_id"].as_str(),

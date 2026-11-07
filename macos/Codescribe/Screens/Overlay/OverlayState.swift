@@ -1691,11 +1691,12 @@ final class OverlayState {
       let hud = channelHudStates[channel],
       let provider = hud.provider, !provider.isEmpty,
       let session = hud.providerSessionID, !session.isEmpty,
-      let name = channelRosterNames[channel]
+      let name = channelRosterNames[channel],
+      let leaseID = AgentPlaybackIdentity.leaseIdentifier(provider: provider, session: session)
     else { return nil }
     let owner = OverlayConversationOwner(row: [
       "provider": provider, "provider_session_id": session, "channel": channel, "name": name,
-      "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: provider, session: session),
+      "lease_id": leaseID,
     ])
     guard let owner, !archivedAgentOwners.contains(owner) else { return nil }
     return owner

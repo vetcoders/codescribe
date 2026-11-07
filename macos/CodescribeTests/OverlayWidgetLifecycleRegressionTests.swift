@@ -13,7 +13,7 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     return try XCTUnwrap(
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": session,
-        "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
+        "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)!,
         "channel": "2", "name": "Fixture agent",
       ]))
   }

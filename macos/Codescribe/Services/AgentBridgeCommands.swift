@@ -150,13 +150,35 @@ struct AgentPlaybackIdentity: Hashable, Sendable {
     self.bus = URL(fileURLWithPath: bus).resolvingSymlinksInPath().path
   }
 
-  var leaseID: String { Self.leaseIdentifier(provider: provider, session: session) }
-  /// The lease rule shared with Python and Rust
-  /// (`scripts/tests/fixtures/lease-identity-vectors.json`): the provider
-  /// trimmed and lower-cased, the session byte for byte, never trimmed.
-  static func leaseIdentifier(provider: String, session: String) -> String {
-    Self.digest(
-      [provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), session], bytes: 16)
+  /// Empty when the helper would refuse the provider, so it matches no lease.
+  var leaseID: String { Self.leaseIdentifier(provider: provider, session: session) ?? "" }
+  /// The provider id of every lease identity, or `nil` when the helper would
+  /// refuse it. The rule is stated once, at `provider_token` in
+  /// `scripts/bus-demux.py`, and pinned by
+  /// `scripts/tests/fixtures/lease-identity-vectors.json`: ASCII whitespace
+  /// trimmed, `[A-Za-z0-9][A-Za-z0-9-]{0,63}`, ASCII lower-case, never a
+  /// Unicode case mapping.
+  static func providerToken(_ provider: String) -> String? {
+    let whitespace: Set<UInt8> = [0x20, 0x09, 0x0A, 0x0D, 0x0C]
+    let bytes = Array(provider.utf8)
+    guard let start = bytes.firstIndex(where: { !whitespace.contains($0) }),
+      let end = bytes.lastIndex(where: { !whitespace.contains($0) })
+    else { return nil }
+    let token = bytes[start...end]
+    func alphanumeric(_ byte: UInt8) -> Bool {
+      (0x30...0x39).contains(byte) || (0x41...0x5A).contains(byte) || (0x61...0x7A).contains(byte)
+    }
+    guard token.count <= 64, let first = token.first, alphanumeric(first),
+      token.allSatisfy({ alphanumeric($0) || $0 == 0x2D })
+    else { return nil }
+    return String(
+      decoding: token.map { (0x41...0x5A).contains($0) ? $0 + 0x20 : $0 }, as: UTF8.self)
+  }
+  /// The lease id: the provider as `providerToken` gives it, the session byte
+  /// for byte, never trimmed.
+  static func leaseIdentifier(provider: String, session: String) -> String? {
+    guard let provider = providerToken(provider) else { return nil }
+    return Self.digest([provider, session], bytes: 16)
   }
   var storageKey: String { Self.digest([provider, session, bus], bytes: 12) }
 

@@ -1,6 +1,6 @@
 {
   "schema": "codescribe.lease-identity-vectors.v1",
-  "rule": "lease_id = first 32 hex digits of SHA-256(normalize(provider) + NUL + provider_session_id); normalize = trim surrounding whitespace, then Unicode default lower-case; the session is taken byte for byte, never trimmed",
+  "rule": "lease_id = first 32 hex digits of SHA-256(provider_token(provider) + NUL + provider_session_id); provider_token = trim ASCII whitespace (space, tab, LF, CR, FF), require [A-Za-z0-9][A-Za-z0-9-]{0,63}, then ASCII lower-case; any other provider, any non-ASCII character included, is refused (normalized_provider and lease_id null); the session is taken byte for byte, never trimmed. Stated once at provider_token in scripts/bus-demux.py",
   "vectors": [
     {
       "case": "plain",
@@ -31,6 +31,13 @@
       "lease_id": "0423e63b3976eb1898935bac51db2b25"
     },
     {
+      "case": "mixed-case provider",
+      "provider": "Claude-Code",
+      "provider_session_id": "S-1",
+      "normalized_provider": "claude-code",
+      "lease_id": "0423e63b3976eb1898935bac51db2b25"
+    },
+    {
       "case": "session keeps its own whitespace byte for byte",
       "provider": "codex",
       "provider_session_id": " abc ",
@@ -38,18 +45,46 @@
       "lease_id": "71edcbe380dba5a66618b0e976e95b8f"
     },
     {
-      "case": "sharp s: lower-case keeps it (casefold would give ss)",
-      "provider": "Straße",
+      "case": "sharp s is refused, not folded to ss",
+      "provider": "straße",
       "provider_session_id": "x",
-      "normalized_provider": "straße",
-      "lease_id": "ad199d90a8ddf9cb3202d58fc6db7f24"
+      "normalized_provider": null,
+      "lease_id": null
     },
     {
-      "case": "dotted capital I lower-cases to i with a combining dot",
+      "case": "Greek capital sigma is refused, not lower-cased to σ or ς",
+      "provider": "ΟΣ",
+      "provider_session_id": "x",
+      "normalized_provider": null,
+      "lease_id": null
+    },
+    {
+      "case": "dotted capital I is refused",
       "provider": "İnci",
       "provider_session_id": "x",
-      "normalized_provider": "i̇nci",
-      "lease_id": "3a60df0bbef7295a60c2d927732064cf"
+      "normalized_provider": null,
+      "lease_id": null
+    },
+    {
+      "case": "Kelvin sign is refused although casefold gives ASCII k",
+      "provider": "\u212aodex",
+      "provider_session_id": "x",
+      "normalized_provider": null,
+      "lease_id": null
+    },
+    {
+      "case": "no-break space is not trimmed and is refused",
+      "provider": "\u00a0codex",
+      "provider_session_id": "x",
+      "normalized_provider": null,
+      "lease_id": null
+    },
+    {
+      "case": "underscore is refused",
+      "provider": "claude_code",
+      "provider_session_id": "x",
+      "normalized_provider": null,
+      "lease_id": null
     }
   ]
 }

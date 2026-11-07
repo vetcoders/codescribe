@@ -131,7 +131,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": "menu-session", "name": "james", "channel": "1",
         "lease_id": AgentPlaybackIdentity.leaseIdentifier(
-          provider: "codex", session: "menu-session"),
+          provider: "codex", session: "menu-session")!,
       ]))
     let state = OverlayState()
     state.applyChannelRoster([

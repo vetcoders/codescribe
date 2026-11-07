@@ -57,7 +57,8 @@ impl LogicalOwner {
             self.provider, self.provider_session_id
         )));
         if !label(&self.provider, 64)
-            || self.provider != self.provider.to_lowercase()
+            || crate::stt::active_names::provider_token(&self.provider).as_deref()
+                != Some(self.provider.as_str())
             || !label(&self.provider_session_id, 512)
             || self.lease_id != digest[..32]
         {

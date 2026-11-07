@@ -33,7 +33,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     -> OverlayConversationOwner
   {
     let leaseID = AgentPlaybackIdentity.leaseIdentifier(
-      provider: provider, session: "session-\(channel)")
+      provider: provider, session: "session-\(channel)")!
     return OverlayConversationOwner(row: [
       "provider": provider,
       "provider_session_id": "session-\(channel)",

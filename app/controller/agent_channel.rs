@@ -356,9 +356,11 @@ fn frozen_channel_recipients(
         {
             continue;
         }
-        let provider = entry.provider.trim().to_lowercase();
+        let Some(provider) = active_names::provider_token(&entry.provider) else {
+            continue;
+        };
         let session = entry.provider_session_id.trim();
-        if provider.is_empty() || session.is_empty() {
+        if session.is_empty() {
             continue;
         }
         let Some(lease_id) = active_names::follower_lease_id(&provider, session) else {
@@ -2523,8 +2525,11 @@ impl RecordingController {
             if ambiguous_open_channels.contains(&state.channel) {
                 continue;
             }
-            let key = (provider.trim().to_lowercase(), session.to_string());
-            if key.0.is_empty() || key.1.trim().is_empty() {
+            let Some(provider) = active_names::provider_token(provider) else {
+                continue;
+            };
+            let key = (provider, session.to_string());
+            if key.1.trim().is_empty() {
                 continue;
             }
             let observation = observations.entry(key.clone()).or_insert_with(|| {

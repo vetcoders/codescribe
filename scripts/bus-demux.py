@@ -2167,16 +2167,38 @@ def read_json(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+#: The provider id: an ASCII client token such as `codex` or `claude-code`.
+PROVIDER_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")
+#: The ASCII whitespace Rust's `is_ascii_whitespace` names; nothing else is trimmed.
+PROVIDER_TRIM = " \t\n\r\f"
+PROVIDER_REFUSAL = ("--provider must be an ASCII client id such as codex or claude-code "
+                    "(letters, digits and '-', at most 64)")
+
+
+def provider_token(provider: str) -> str:
+    """The one provider rule of every lease identity, in Python, Rust and Swift.
+
+    Canonical statement (scripts/tests/fixtures/lease-identity-vectors.json
+    pins it; `core::stt::active_names::provider_token` and
+    `AgentPlaybackIdentity.providerToken` follow it): trim ASCII whitespace
+    (space, tab, LF, CR, FF), require `[A-Za-z0-9][A-Za-z0-9-]{0,63}`, then
+    lower-case ASCII letters. Anything else, any non-ASCII character
+    included, is refused with PROVIDER_REFUSAL rather than folded, so no
+    Unicode case mapping (`casefold`, `lower`, `to_lowercase`,
+    `lowercased`) can give two languages two ids for one provider.
+    """
+    value = provider.strip(PROVIDER_TRIM)
+    if not PROVIDER_TOKEN_PATTERN.fullmatch(value):
+        raise ValueError(PROVIDER_REFUSAL)
+    return value.lower()
+
+
 def lease_identifier(provider: str, provider_session_id: str) -> str:
     # The provider session owns the cursor. Name is mutable during --become and
     # therefore cannot participate in the key: binding a name must not fork the
-    # greeting follower onto a fresh cursor.
-    # One rule in Python, Rust and Swift (scripts/tests/fixtures/
-    # lease-identity-vectors.json): the provider trimmed and lower-cased
-    # (str.lower, which Rust's to_lowercase and Swift's lowercased() match;
-    # casefold would turn "ß" into "ss" and part ways with them), the session
-    # byte for byte, never trimmed.
-    identity = "\0".join((provider.strip().lower(), provider_session_id))
+    # greeting follower onto a fresh cursor. The provider follows
+    # provider_token; the session is taken byte for byte, never trimmed.
+    identity = "\0".join((provider_token(provider), provider_session_id))
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
 
 
@@ -2503,7 +2525,7 @@ def remote_codex_watch(host: str, args: list[str], session: str, root: Path, env
 
 def provider_session_from_env(provider: str) -> str | None:
     """The provider's own session id from its environment, when it sets one."""
-    key = PROVIDER_SESSION_ENV.get(provider.casefold())
+    key = PROVIDER_SESSION_ENV.get(provider_token(provider))
     value = os.environ.get(key, "").strip() if key else ""
     return value or None
 
@@ -2528,7 +2550,7 @@ class NativeProviderModelReader:
         self, provider: str, provider_session_id: str, *,
         home: Path | None = None, previous: dict[str, Any] | None = None,
     ) -> None:
-        self.provider = provider.casefold()
+        self.provider = provider_token(provider)
         self.session = provider_session_id
         self.home = (home if home is not None else Path.home()).resolve(strict=False)
         self.path: Path | None = None
@@ -3671,7 +3693,7 @@ class SessionLease:
         display_name: str | None = None,
     ) -> None:
         self.root = root
-        self.provider = provider.casefold()
+        self.provider = provider_token(provider)
         self.provider_session_id = provider_session_id
         self.name = name.casefold() if name else None
         # The spelling for people; `name` stays the casefolded identity.
@@ -4629,7 +4651,7 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
         not state
         or state.get("schema") != LEASE_SCHEMA
         or state.get("lease_id") != lease_id
-        or state.get("provider") != args.provider.casefold()
+        or state.get("provider") != args.provider
         or state.get("provider_session_id") != args.session
         or (
             getattr(args, "bus_overridden", True)
@@ -4661,7 +4683,7 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
                         and item.get("delivery_id") == delivery_id), None)
         if (delivery_id not in pending_ids or not payload
                 or payload.get("lease_id") != lease_id
-                or payload.get("provider") != args.provider.casefold()
+                or payload.get("provider") != args.provider
                 or payload.get("provider_session_id") != args.session
                 or payload.get("bus", state["bus"]) != state["bus"]):
             raise ValueError(
@@ -4678,7 +4700,7 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
         atomic_json(
             args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
             {"lease_id": lease_id, "delivery_id": delivery_id,
-             "provider": args.provider.casefold(), "provider_session_id": args.session,
+             "provider": args.provider, "provider_session_id": args.session,
              "read_at": utc_now(),
              "bus": state["bus"],
              # The message this delivery is a copy of, so the marker and the
@@ -7346,12 +7368,12 @@ def reply_channels(root: Path, control: ReplyPlaybackControl | None) -> frozense
     bindings = state.get("bindings") if state and state.get("schema") == AUDIENCE_BINDING_SCHEMA else None
     if not isinstance(bindings, dict):
         return frozenset()
-    provider = str(control.reply["provider"]).casefold()
+    provider = control.reply["provider"]
     session = control.reply["provider_session_id"]
     return frozenset(
         channel for channel, binding in bindings.items()
         if isinstance(binding, dict)
-        and str(binding.get("provider", "")).casefold() == provider
+        and binding.get("provider") == provider
         and binding.get("provider_session_id") == session
     )
 
@@ -7786,7 +7808,7 @@ def lease_name(root: Path, provider: str, session: str) -> str | None:
     if (
         not state
         or state.get("schema") != LEASE_SCHEMA
-        or state.get("provider") != provider.casefold()
+        or state.get("provider") != provider_token(provider)
         or state.get("provider_session_id") != session
     ):
         return None
@@ -7891,7 +7913,7 @@ def reply_delivery_envelope(args: argparse.Namespace) -> tuple[Path, dict[str, A
     state = read_reply_json(lease_path) if lease_path.exists() else {}
     if state and (state.get("schema") != LEASE_SCHEMA
                   or state.get("lease_id") != lease_id
-                  or state.get("provider") != args.provider.casefold()
+                  or state.get("provider") != args.provider
                   or state.get("provider_session_id") != args.session):
         raise ValueError("reply lease does not belong to this provider session")
     if state and (not isinstance(state.get("bus"), str) or not state["bus"].strip()):
@@ -7911,21 +7933,21 @@ def reply_delivery_envelope(args: argparse.Namespace) -> tuple[Path, dict[str, A
         marker = args.bridge_home / "acknowledgments" / lease_id / f"{identity}.json"
         receipt = read_reply_json(marker) if marker.exists() else {}
         if (receipt.get("lease_id") != lease_id or receipt.get("delivery_id") != identity
-                or receipt.get("provider") != args.provider.casefold()
+                or receipt.get("provider") != args.provider
                 or receipt.get("provider_session_id") != args.session
                 or receipt.get("bus") != str(bus)):
             raise ValueError("reply delivery has no owned envelope")
         envelope = receipt.get("envelope")
     if (not isinstance(envelope, dict) or envelope.get("delivery_id") != identity
             or envelope.get("lease_id") != lease_id
-            or envelope.get("provider") != args.provider.casefold()
+            or envelope.get("provider") != args.provider
             or envelope.get("provider_session_id") != args.session
             or envelope.get("bus", state.get("bus")) != str(bus)):
         raise ValueError("reply delivery does not belong to this provider session and bus")
     frozen = envelope.get("recipients")
     if frozen is not None and (not isinstance(frozen, list)
             or any(not isinstance(owner, dict) for owner in frozen) or not any(
-            owner.get("provider") == args.provider.casefold()
+            owner.get("provider") == args.provider
             and owner.get("provider_session_id") == args.session
             and owner.get("lease_id") == lease_id and owner.get("bus") == str(bus)
             for owner in frozen)):
@@ -7961,7 +7983,7 @@ def remember_published_reply(root: Path, bus: Path, reply: dict[str, Any],
 def normalize_playable_reply(args: argparse.Namespace, identity: str,
                              event: dict[str, Any]) -> dict[str, Any] | None:
     """Only an agent author can supply playback identity; typed rows name recipients."""
-    owner = {"provider": args.provider.casefold(), "provider_session_id": args.session,
+    owner = {"provider": args.provider, "provider_session_id": args.session,
              "lease_id": lease_identifier(args.provider, args.session)}
     if event.get("schema") == AGENT_REPLY_SCHEMA and event.get("kind") == "agent_reply":
         if event.get("reply_id") != identity or any(event.get(key) != value for key, value in owner.items()):
@@ -8049,7 +8071,7 @@ def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path,
     lease_id = lease_identifier(args.provider, args.session)
     if (source.get("schema") != REPLY_SOURCE_SCHEMA or source.get("reply_id") != identity
             or source.get("lease_id") != lease_id
-            or source.get("provider") != args.provider.casefold()
+            or source.get("provider") != args.provider
             or source.get("provider_session_id") != args.session or not bus.is_absolute()
             or (args.bus_overridden and bus != args.bus.expanduser().resolve(strict=False))):
         raise ValueError("reply source does not belong to this provider session and bus")
@@ -8084,13 +8106,13 @@ def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path,
 
 
 def playback_mute_path(root: Path, provider: str, session: str, bus: Path) -> Path:
-    identity = "\0".join((provider.casefold(), session, str(bus.resolve(strict=False))))
+    identity = "\0".join((provider_token(provider), session, str(bus.resolve(strict=False))))
     key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
     return root / "runtime" / "playback-mutes" / f"{key}.json"
 
 
 def broadcast_policy_path(root: Path, provider: str, session: str, bus: Path) -> Path:
-    identity = "\0".join((provider.casefold(), session, str(bus.resolve(strict=False))))
+    identity = "\0".join((provider_token(provider), session, str(bus.resolve(strict=False))))
     key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
     return root / "runtime" / "broadcast-policy" / f"{key}.json"
 
@@ -8109,7 +8131,7 @@ def agent_bus_policy(root: Path, provider: str, session: str, bus: Path) -> tupl
     try:
         row = read_reply_json(broadcast_policy_path(root, provider, session, bus), 65536)
         if (row.get("schema") != BROADCAST_POLICY_SCHEMA
-                or row.get("provider") != provider.casefold()
+                or row.get("provider") != provider_token(provider)
                 or row.get("provider_session_id") != session
                 or row.get("lease_id") != lease_identifier(provider, session)
                 or row.get("bus") != str(bus.resolve(strict=False))
@@ -8553,7 +8575,7 @@ def receipts_authorized(root: Path, args: argparse.Namespace, message_id: str) -
     name and channel on the frozen `sent_to` list. Authorship is proven by
     the private `runtime/reply-sources/<message_id>.json` owner.
     """
-    provider, session = args.provider.casefold(), args.session
+    provider, session = args.provider, args.session
     lease_id = lease_identifier(provider, session)
     source = read_json(root / "runtime" / "reply-sources" / f"{message_id}.json") or {}
     if (source.get("schema") == REPLY_SOURCE_SCHEMA and source.get("reply_id") == message_id
@@ -8880,7 +8902,7 @@ def reader_copies_in_bus(bus: Path, *, provider: str, provider_session_id: str, 
     except (OSError, ValueError):
         return found
     normalizer = EvidenceNormalizer()
-    coordinates = {"provider": provider.casefold(), "provider_session_id": provider_session_id,
+    coordinates = {"provider": provider_token(provider), "provider_session_id": provider_session_id,
                    "lease_id": lease_id, "bus": str(bus)}
     try:
         for raw in replay(bus):
@@ -8962,7 +8984,7 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
     bus = (args.bus if args.bus_overridden else Path(str(lease.get("bus") or ""))).expanduser().resolve(strict=False)
     moon = getattr(args, "quiet", None)
     if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
-            or lease.get("provider") != args.provider.casefold()
+            or lease.get("provider") != args.provider
             or lease.get("provider_session_id") != args.session
             or lease.get("bus") != str(bus)
             or args.broadcast not in (None, "on", "quiet", "off") or moon not in (None, "on", "off")
@@ -8979,7 +9001,7 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
         quiet = moon == "on"
         if args.broadcast is not None:
             membership = "on" if args.broadcast == "quiet" else args.broadcast
-    row = {"schema": BROADCAST_POLICY_SCHEMA, "provider": args.provider.casefold(),
+    row = {"schema": BROADCAST_POLICY_SCHEMA, "provider": args.provider,
            "provider_session_id": args.session, "lease_id": lease_id, "bus": str(bus),
            "policy": membership, "quiet": quiet, "emitted_at": utc_now()}
     atomic_json(broadcast_policy_path(args.bridge_home, args.provider, args.session, bus), row)
@@ -8988,7 +9010,7 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
     # policy themselves. A concurrent reattach must not lend us another bus.
     lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json")
     if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
-            or lease.get("provider") != args.provider.casefold()
+            or lease.get("provider") != args.provider
             or lease.get("provider_session_id") != args.session or lease.get("bus") != str(bus)):
         raise ValueError("mailbox changed during broadcast policy transition")
     # Releasing quiet makes eligible pending rows visible to the existing
@@ -9019,7 +9041,7 @@ def agent_playback_muted(root: Path, provider: str, session: str, bus: Path) -> 
     try:
         row = read_reply_json(path, 65536)
         if (row.get("schema") != PLAYBACK_MUTE_SCHEMA
-                or row.get("provider") != provider.casefold()
+                or row.get("provider") != provider_token(provider)
                 or row.get("provider_session_id") != session
                 or row.get("lease_id") != lease_identifier(provider, session)
                 or row.get("bus") != str(bus.resolve(strict=False))
@@ -9073,11 +9095,11 @@ def set_agent_muted(args: argparse.Namespace) -> int:
     lease_id = lease_identifier(args.provider, args.session)
     lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json")
     if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
-            or lease.get("provider") != args.provider.casefold()
+            or lease.get("provider") != args.provider
             or lease.get("provider_session_id") != args.session
             or lease.get("bus") != str(bus)):
         raise ValueError("playback mute does not belong to this provider session and bus")
-    row = {"schema": PLAYBACK_MUTE_SCHEMA, "provider": args.provider.casefold(),
+    row = {"schema": PLAYBACK_MUTE_SCHEMA, "provider": args.provider,
            "provider_session_id": args.session, "lease_id": lease_id,
            "bus": str(bus), "muted": args.mute_agent, "emitted_at": utc_now()}
     atomic_json(playback_mute_path(args.bridge_home, args.provider, args.session, bus), row)
@@ -9233,7 +9255,7 @@ def stop_reply_command(args: argparse.Namespace) -> int:
     identity, ticket = args.stop_reply, args.playback_ticket
     path = args.bridge_home / "runtime" / "reply-playback" / f"{identity}.{ticket}.json"
     control = read_reply_json(path, 65536)
-    owner = {"reply_id": identity, "provider": args.provider.casefold(),
+    owner = {"reply_id": identity, "provider": args.provider,
              "provider_session_id": args.session,
              "lease_id": lease_identifier(args.provider, args.session)}
     bus = Path(control.get("bus", ""))
@@ -9307,7 +9329,7 @@ def say_reply(args: argparse.Namespace) -> int:
     bus, envelope = reply_delivery_envelope(args)
     lease_id = lease_identifier(args.provider, args.session)
     owner = next((item for item in envelope.get("recipients", [])
-                  if item.get("provider") == args.provider.casefold()
+                  if item.get("provider") == args.provider
                   and item.get("provider_session_id") == args.session
                   and item.get("lease_id") == lease_id
                   and item.get("bus") == str(bus)), None) if envelope else None
@@ -9323,7 +9345,7 @@ def say_reply(args: argparse.Namespace) -> int:
     reply: dict[str, Any] = {
         "schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply", "emitted_at": utc_now(),
         "reply_id": os.urandom(12).hex(), "name": name,
-        "provider": args.provider.casefold(), "provider_session_id": args.session,
+        "provider": args.provider, "provider_session_id": args.session,
         "lease_id": lease_identifier(args.provider, args.session),
         "text": typographic_quotes(args.say),
         "voice": voice, "speed": speed, "tts_vendor": vendor, "spoken": False,
@@ -9637,7 +9659,7 @@ def sync_selection_owners(raw: str | None, bindings: dict[str, Any], root: Path,
             raise ValueError("invalid Sync co-address")
         owner, refusal = binding_identity(member["channel"], bindings.get(member["channel"]))
         if (refusal is not None
-                or owner["provider"] != member["provider"].casefold()
+                or owner["provider"] != provider_token(member["provider"])
                 or owner["provider_session_id"] != member["provider_session_id"]
                 or owner["lease_id"] != member["lease_id"]):
             continue
@@ -9681,7 +9703,7 @@ def send_text_command(args: argparse.Namespace) -> int:
                     "invalid_binding": "invalid channel binding; draft retained",
                     "incomplete_binding": "incomplete channel binding; draft retained",
                 }.get(refusal, "channel was rebound or its agent is not listening; draft retained"))
-            if not broadcast and (args.lease != owner["lease_id"] or args.provider.casefold() != owner["provider"]
+            if not broadcast and (args.lease != owner["lease_id"] or args.provider != owner["provider"]
                     or args.session != owner["provider_session_id"]
                     or str(args.bus.expanduser().resolve(strict=False)) != owner["bus"]):
                 raise ValueError("selected conversation owner no longer matches")
@@ -9853,7 +9875,7 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                 raise ValueError("invalid channel binding" if refusal == "invalid_binding"
                                  else "incomplete channel binding")
             owner = {key: value for key, value in bound.items() if key != "name"}
-            if not broadcast and (owner["provider"] != args.provider.casefold()
+            if not broadcast and (owner["provider"] != args.provider
                     or owner["provider_session_id"] != args.session
                     or owner["bus"] != str(args.bus.expanduser().resolve(strict=False))
                     or args.channel is not None and args.channel != channel):
@@ -10000,7 +10022,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
     lease_id = lease_identifier(args.provider, args.session)
     lease = read_json(root / "leases" / f"{lease_id}.json") or {}
     if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
-            or lease.get("provider") != args.provider.casefold()
+            or lease.get("provider") != args.provider
             or lease.get("provider_session_id") != args.session):
         raise ValueError("sender has no lease here; attach before sending")
     sender_name = lease.get("name")
@@ -10035,7 +10057,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
                 sender_display = sender_display or binding_display_name(binding) or None
             rows.append((str(channel), binding, owner_lease))
         identity = os.urandom(12).hex()
-        sender = {"name": sender_name, "provider": args.provider.casefold(),
+        sender = {"name": sender_name, "provider": args.provider,
                   "provider_session_id": args.session, "lease_id": lease_id,
                   "channel": sender_channel,
                   "display_name": sender_display or lease_display or sender_name}
@@ -10047,7 +10069,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
                      "emitted_at": utc_now(), "reply_id": identity,
                      "message_id": identity, "source_event_id": identity,
                      "name": sender_name,
-                     "provider": args.provider.casefold(),
+                     "provider": args.provider,
                      "provider_session_id": args.session, "lease_id": lease_id,
                      "text": text, "spoken": False, "association": "unsolicited",
                      "delivery_id": None, "peer_to": "founder",
@@ -10088,7 +10110,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
         audience_at_send = []
         for channel, binding in selected:
             if target == "0" and agent_broadcast_policy(
-                    root, str(binding.get("provider") or "").casefold(),
+                    root, provider_token(str(binding.get("provider") or "")),
                     str(binding.get("provider_session_id") or ""),
                     Path(str(binding.get("bus") or "")).expanduser()) == "off":
                 continue  # Channel 0 unticked: this agent never receives broadcasts.
@@ -10106,7 +10128,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
             if not isinstance(audience, str) or not audience:
                 raise ValueError(f"channel {channel} has no audience")
             bus = Path(str(binding.get("bus") or "")).expanduser().resolve(strict=False)
-            owner = {"provider": str(binding.get("provider") or "").casefold(),
+            owner = {"provider": provider_token(str(binding.get("provider") or "")),
                      "provider_session_id": binding.get("provider_session_id"),
                      "lease_id": owner_lease, "channel": channel,
                      "audience": audience, "name": audience, "bus": str(bus)}
@@ -10116,7 +10138,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
                      # peer messages never collapse into one delivery identity.
                      "message_id": identity, "source_event_id": identity,
                      "name": sender_name,
-                     "provider": args.provider.casefold(),
+                     "provider": args.provider,
                      "provider_session_id": args.session, "lease_id": lease_id,
                      "text": text, "spoken": False, "association": "unsolicited",
                      "delivery_id": None, "peer_to": audience,
@@ -10308,7 +10330,7 @@ def recover_follower(root: Path, provider: str, session: str) -> dict[str, Any]:
     without it is revived. The replacement resumes the same lease, cursor and
     unread mailbox; nothing is acknowledged, resubmitted or replayed here.
     """
-    provider = provider.casefold()
+    provider = provider_token(provider)
     lease_id = lease_identifier(provider, session)
     report: dict[str, Any] = {"schema": LIFECYCLE_NOTICE_SCHEMA, "kind": "listener_lifecycle",
                               "lease_id": lease_id, "provider": provider,
@@ -10449,7 +10471,7 @@ class ListenerSupervisor:
     def __init__(self, root: Path, provider: str, session: str,
                  interval: float = LISTENER_CHECK_SECONDS):
         self.root = root
-        self.provider = provider.casefold()
+        self.provider = provider_token(provider)
         self.session = session
         self.lease_id = lease_identifier(provider, session)
         self.interval = interval
@@ -10605,7 +10627,7 @@ def archive_agent(args: argparse.Namespace) -> dict[str, Any]:
     the bus stay on disk either way.
     """
     root: Path = args.bridge_home
-    provider = args.provider.casefold()
+    provider = args.provider
     lease_id = lease_identifier(provider, args.session)
     if args.lease != lease_id:
         raise ValueError("archive lease does not belong to this provider session")
@@ -10713,7 +10735,7 @@ def write_channel_binding(
     with channel_bindings(root) as bindings:
         requested = {
             "audience": name.casefold(),
-            "provider": provider.casefold(),
+            "provider": provider_token(provider),
             "provider_session_id": provider_session_id,
         }
         entry = dict(requested)
@@ -11015,7 +11037,7 @@ def detach_command(args: argparse.Namespace) -> int:
                 original_entries = {
                     slot: entry for slot, entry in bindings.items()
                     if isinstance(entry, dict)
-                    and entry.get("provider") == args.provider.casefold()
+                    and entry.get("provider") == args.provider
                     and entry.get("provider_session_id") == args.session
                 }
                 pid, follower_state = retirements.enter_context(
@@ -11043,7 +11065,7 @@ def detach_command(args: argparse.Namespace) -> int:
                if item.get("kind") in TERMINAL_KINDS]
     emit({
         "schema": DETACH_RECEIPT_SCHEMA, "kind": "detach_receipt",
-        "provider": args.provider.casefold(), "provider_session_id": args.session,
+        "provider": args.provider, "provider_session_id": args.session,
         "lease_id": lease_id, "released_channels": released,
         "follower_pid": pid, "follower_state": follower_state,
         "binding_changed": binding_changed,
@@ -11082,7 +11104,7 @@ def read_inherited_delivery(args: argparse.Namespace) -> int:
     bindings = (read_json(root / AUDIENCE_BINDING_FILENAME) or {}).get("bindings")
     if not isinstance(bindings, dict) or not any(
         isinstance(entry, dict)
-        and entry.get("provider") == args.provider.casefold()
+        and entry.get("provider") == args.provider
         and entry.get("provider_session_id") == args.session
         and entry.get("audience") == name.casefold()
         for entry in bindings.values()
@@ -11142,7 +11164,7 @@ def attach_command(args: argparse.Namespace) -> int:
         args.bus = channel_bus
     resolved_bus = str(Path(args.bus).expanduser().resolve(strict=False))
     binding_path = root / AUDIENCE_BINDING_FILENAME
-    requested = {"audience": name, "provider": args.provider.casefold(),
+    requested = {"audience": name, "provider": args.provider,
                  "provider_session_id": args.session}
     claimed = {**requested, "bus": resolved_bus, "display_name": display_name}
     previous: dict[str, Any] | None = None
@@ -11243,7 +11265,7 @@ def attach_command(args: argparse.Namespace) -> int:
         if previous is not None:
             emit({"schema": TAKEOVER_RECEIPT_SCHEMA, "kind": "takeover_receipt",
                   "channel": str(args.channel), "audience": name, "display_name": display_name,
-                  "provider": args.provider.casefold(),
+                  "provider": args.provider,
                   "provider_session_id": args.session,
                   "binding_changed": False if unchanged else None,
                   "binding_state": "unchanged" if unchanged else "uncertain",
@@ -11258,7 +11280,7 @@ def attach_command(args: argparse.Namespace) -> int:
     emit({
         "schema": ATTACH_RECEIPT_SCHEMA, "kind": "attach_receipt",
         "channel": str(args.channel), "audience": name, "display_name": display_name,
-        "provider": args.provider.casefold(),
+        "provider": args.provider,
         "provider_session_id": args.session, "lease_id": lease_id,
         "cursor": state.get("cursor"), "resumed": resumed, "follower_pid": pid,
         "follower_spawned": child is not None, "follower_log": str(log_path),
@@ -11316,7 +11338,7 @@ def status_command(args: argparse.Namespace) -> int:
             if (
                 isinstance(entry, dict)
                 and str(slot) in "123456789" and len(str(slot)) == 1
-                and entry.get("provider") == args.provider.casefold()
+                and entry.get("provider") == args.provider
                 and entry.get("provider_session_id") == args.session
                 and lease_identifier(entry["provider"], entry["provider_session_id"]) == lease_id
                 and isinstance(state, dict) and entry.get("bus") == state.get("bus")
@@ -11587,7 +11609,7 @@ def watch_command(args: argparse.Namespace) -> int:
         for slot, binding in bindings.items():
             if (
                 isinstance(binding, dict)
-                and binding.get("provider") == (args.provider or "").casefold()
+                and binding.get("provider") == args.provider
                 and binding.get("provider_session_id") == args.session
             ):
                 channel = str(slot)
@@ -12006,6 +12028,12 @@ def main() -> int:
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.provider is not None:
+        # The one entry point of a provider id: everything below sees the token.
+        try:
+            args.provider = provider_token(args.provider)
+        except ValueError as error:
+            parser.error(str(error))
     if args.stage_capture_attachment:
         allowed = {"stage_capture_attachment", "capture_session", "capture_epoch",
                    "capture_source_sequence", "attach_file", "bus", "bridge_home", "entrypoint"}

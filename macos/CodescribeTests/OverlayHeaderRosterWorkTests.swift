@@ -14,7 +14,7 @@ final class OverlayHeaderRosterWorkTests: XCTestCase {
       let owner = try XCTUnwrap(
         OverlayConversationOwner(row: [
           "provider": "codex", "provider_session_id": session,
-          "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
+          "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)!,
           "channel": String(digit), "name": "Agent \(digit)",
         ]))
       let messages = (0..<repliesPerAgent).map { index in
