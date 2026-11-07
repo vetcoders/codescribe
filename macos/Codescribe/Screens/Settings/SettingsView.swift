@@ -42,18 +42,12 @@ struct SettingsView: View {
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
-        .modifier(CSDetailHeaderGlass())
         .background(CSColor.sheet)
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
-    .toolbar {
-      if #available(macOS 26.0, *) {
-        brandToolbar.sharedBackgroundVisibility(.hidden)
-      } else {
-        brandToolbar
-      }
-    }
+    .toolbarVisibility(.visible, for: .windowToolbar)
     .modifier(CSWindowHeaderChrome())
+    .background { CSWindowTopHeader { headerContent } }
     .csFocusPolicy()
     .controlSize(.regular)
     .frame(maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
@@ -128,20 +122,19 @@ struct SettingsView: View {
     DockPresence.adopt(window)
   }
 
-  /// The bar carries only the wordmark: the selected sidebar row and the
-  /// pane's own headline already name the pane, so the bar does not repeat it.
-  private var brandToolbar: some ToolbarContent {
-    ToolbarItem(placement: .navigation) {
-      CSWindowHeaderItem {
-        HStack(spacing: 16) {
-          Wordmark(size: 16)
-            .fixedSize(horizontal: true, vertical: false)
-          Text(verbatim: "v\(model.appVersion)")
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.secondaryInk)
-        }
-      }
+  /// Real Settings identity inside the shared full-width detail glass.
+  /// The selected row and page heading already identify the current pane.
+  private var headerContent: some View {
+    HStack(spacing: 16) {
+      Wordmark(size: 16)
+        .fixedSize(horizontal: true, vertical: false)
+      Text(verbatim: "v\(model.appVersion)")
+        .font(CSFont.mono(10, .medium))
+        .foregroundStyle(CSColor.secondaryInk)
+      Spacer(minLength: 0)
     }
+    .padding(.horizontal, 12)
+    .frame(height: 52)
   }
 
   /// The window's own rows inside the shared sidebar column: grouped

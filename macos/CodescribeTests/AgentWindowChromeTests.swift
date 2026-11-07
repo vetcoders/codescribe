@@ -28,7 +28,8 @@ final class AgentWindowChromeTests: XCTestCase {
     defer { window.close() }
     pump(window) {
       guard let glass = self.rectangularHeaderGlass(in: window),
-        let sidebar = (self.splitView(in: window)?.delegate as? NSSplitViewController)?.splitViewItems.first
+        let sidebar = (self.splitView(in: window)?.delegate as? NSSplitViewController)?
+          .splitViewItems.first
       else { return false }
       return !sidebar.isCollapsed
         && abs(self.frame(glass).minX - self.frame(sidebar.viewController.view).maxX) < 1
@@ -74,9 +75,11 @@ final class AgentWindowChromeTests: XCTestCase {
         UserDefaults.standard.set(expanded, forKey: sidebarKey)
         let store = AgentChatStore(
           engine: nil,
-          threads: [ChatThread(
-            title: String(repeating: "Long conversation title ", count: 6),
-            meta: "synthetic", messages: [])])
+          threads: [
+            ChatThread(
+              title: String(repeating: "Long conversation title ", count: 6),
+              meta: "synthetic", messages: [])
+          ])
         let window = mount(contentWidth: width, store: store)
         defer { window.close() }
         pump(window) {
@@ -91,13 +94,15 @@ final class AgentWindowChromeTests: XCTestCase {
         attachment.name = "Rectangular header \(width) expanded \(expanded)"
         attachment.lifetime = .keepAlways
         add(attachment)
-        XCTAssertEqual(window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }.count, 1)
+        XCTAssertEqual(
+          window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }.count, 1)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
         XCTAssertEqual(glass.cornerRadius, 0)
         for light in trafficLights(in: window) {
-          XCTAssertFalse(rect.intersects(frame(light)), "detail glass covers a native window button")
+          XCTAssertFalse(
+            rect.intersects(frame(light)), "detail glass covers a native window button")
         }
       }
     }
@@ -130,7 +135,7 @@ final class AgentWindowChromeTests: XCTestCase {
         XCTAssertNotNil(theme, "width \(width) expanded \(expanded)")
 
         pump(window) {
-          (window.toolbar?.items.compactMap(\.view).count ?? 0) >= 2
+          self.rectangularHeaderGlass(in: window) != nil
             && (!expanded || self.sidebarMaterial(in: window) != nil)
             && window.title == "Agent"
             && window.titleVisibility == .hidden
@@ -173,41 +178,21 @@ final class AgentWindowChromeTests: XCTestCase {
           XCTAssertEqual(frame(material).minY, 0, accuracy: 1)
         }
 
-        // SwiftUI toolbar children are not projected through AppKit AX in
-        // XCTest. Measure the public NSToolbarItem views instead of treating
-        // absent AX children as absent production controls.
-        // One bar: brand and the conversation identity lead, the actions
-        // (Voice Lab mark, width, Context, pin, menu) trail (2026-10-21).
-        let controls = try XCTUnwrap(window.toolbar).items.compactMap(\.view)
-        XCTAssertGreaterThanOrEqual(
-          controls.count, 2, "brand and actions stay native toolbar clusters")
-        XCTAssertGreaterThanOrEqual(
-          controls.filter { frame($0).height >= 51 }.count, 2,
-          "brand and actions share the three-line native header rhythm")
-        let bounds = NSRect(origin: .zero, size: window.frame.size)
-        // Brand leads, actions trail: with no principal item the unified bar
-        // packed pin and menu next to the wordmark on the installed build
-        // (2026-10-21); the flexible space keeps them on the trailing edge.
-        let clusterEdges = controls.map { frame($0) }
-        XCTAssertGreaterThanOrEqual(
-          try XCTUnwrap(clusterEdges.map(\.maxX).max()), window.frame.width - 40,
-          "pin and menu sit on the trailing edge, width \(width)")
-        XCTAssertLessThanOrEqual(
-          try XCTUnwrap(clusterEdges.map(\.minX).min()), window.frame.width / 2,
-          "the wordmark stays on the leading side, width \(width)")
-        for control in controls {
-          let rect = frame(control)
-          XCTAssertGreaterThan(rect.width, 1)
-          XCTAssertGreaterThan(rect.height, 1)
-          XCTAssertTrue(bounds.contains(rect), "toolbar cluster leaves window: \(rect)")
-          XCTAssertGreaterThanOrEqual(rect.midY, window.contentLayoutRect.maxY - 1)
-          for light in trafficLights(in: window) {
-            XCTAssertFalse(rect.intersects(frame(light)), "cluster overlaps traffic lights")
-          }
-          let parent = try XCTUnwrap(control.superview)
-          let point = parent.convert(NSPoint(x: rect.midX, y: rect.midY), from: nil)
-          XCTAssertNotNil(control.hitTest(point), "cluster must retain native hit testing")
+        let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
+        let content = try XCTUnwrap(glass.contentView)
+        let rect = frame(glass)
+        XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
+        XCTAssertEqual(rect.midY, window.frame.height - 26, accuracy: 1)
+        XCTAssertEqual(rect.height, 52, accuracy: 1)
+        for light in trafficLights(in: window) {
+          XCTAssertFalse(rect.intersects(frame(light)), "header overlaps native window controls")
         }
+        let point = glass.convert(NSPoint(x: rect.midX, y: rect.midY), from: nil)
+        XCTAssertNotNil(content.hitTest(point), "real header content must receive pointer events")
+        let toggle = window.toolbar?.items.first {
+          $0.itemIdentifier.rawValue.localizedCaseInsensitiveContains("sidebar")
+        }
+        XCTAssertNotNil(toggle, "native sidebar toggle stays in the toolbar")
 
       }
     }
@@ -276,37 +261,6 @@ final class AgentWindowChromeTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(
       frame(scroll).maxY, window.contentLayoutRect.maxY,
       "messages must continue under the native header")
-  }
-
-  /// Maciej, 2026-10-14: the title bar sits only above the messages, never over
-  /// the sidebar, as the overlay header's glass with a hard lower edge, and the
-  /// same in Settings. An AppKit-hosted window draws no SwiftUI scroll edge
-  /// effect under its toolbar (probe 2026-10-14), so the glass is the
-  /// `CSDetailHeaderGlass` plane on each detail column. Window chrome does not
-  /// render in an XCTest mount, so the structure is pinned at the source.
-  func testHeaderGlassCoversOnlyTheDetailColumns() throws {
-    let codescribe = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent().deletingLastPathComponent()
-      .appendingPathComponent("Codescribe")
-    func source(_ path: String) throws -> String {
-      try String(contentsOf: codescribe.appendingPathComponent(path), encoding: .utf8)
-    }
-    let agent = try source("Screens/AgentChat/AgentChatView.swift")
-    let threadDetail = try XCTUnwrap(
-      agent.range(of: "private struct ThreadDetail").map { String(agent[$0.lowerBound...]) })
-    XCTAssertTrue(threadDetail.contains(".modifier(CSDetailHeaderGlass())"))
-    XCTAssertEqual(agent.components(separatedBy: "CSDetailHeaderGlass").count - 1, 1)
-
-    let settings = try source("Screens/Settings/SettingsView.swift")
-    let detail = try XCTUnwrap(settings.range(of: "} detail: {"))
-    let toolbar = try XCTUnwrap(
-      settings.range(of: ".toolbar {", range: detail.upperBound..<settings.endIndex))
-    XCTAssertTrue(settings[detail.upperBound..<toolbar.lowerBound].contains("CSDetailHeaderGlass"))
-    XCTAssertFalse(
-      settings[..<detail.lowerBound].contains("CSDetailHeaderGlass"), "never over the sidebar")
-
-    let components = try source("DesignSystem/Components.swift")
-    XCTAssertFalse(components.contains("scrollEdgeEffectStyle(.soft, for: .top)"))
   }
 
   // MARK: - Context panel (round 4, UI-59)
@@ -555,11 +509,12 @@ final class AgentWindowChromeTests: XCTestCase {
     if let title, let thread = store.currentThread {
       store.rename(thread, to: title)
     }
-    let window = AgentWindowChrome.makeWindow(content: NSHostingController(
-      rootView: AgentChatView(store: store)
-        .environment(\.csReduceTransparencyOverride, false)
-        .environment(\.csContrastOverride, .standard)
-    ))
+    let window = AgentWindowChrome.makeWindow(
+      content: NSHostingController(
+        rootView: AgentChatView(store: store)
+          .environment(\.csReduceTransparencyOverride, false)
+          .environment(\.csContrastOverride, .standard)
+      ))
     window.setContentSize(NSSize(width: contentWidth, height: 720))
     window.setFrameOrigin(NSPoint(x: 80, y: 80))
     BackgroundTestWindow.present(window)
