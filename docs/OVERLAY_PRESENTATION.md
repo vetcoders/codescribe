@@ -56,7 +56,12 @@ latest) in the shared `OverlayHintPanel`. Original
 paragraphs, rich formatting and attachments use `OverlayConversationMessageContent`.
 The card is narrow (`260 × textScale`), fits short messages to their content
 height, and scrolls only when a message exceeds its `180 × textScale` ceiling;
-pagination controls appear only when more than one message is loaded. An already
+pagination controls appear only when more than one message is loaded. The
+card's header names an agent as its rows do, the digit, the presence dot
+(`presenceDotKind`, `OverlayAgentStatusDot`) and the name (Tola IV.10a,
+2026-11-07; `OverlayRosterMessagePreview.headerDot`); channel 0, the inbox
+and a saved conversation without a live roster row keep the plain
+`N · name` title. The open conversation's own header is unchanged. An already
 selected conversation has no duplicate hover preview. Clicking an unselected
 preview's header or body uses that row's existing conversation-navigation
 command; hovering or stepping the carousel never selects it. Its pointer target

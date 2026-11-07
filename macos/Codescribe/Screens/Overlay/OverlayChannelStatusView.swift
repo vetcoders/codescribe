@@ -1664,7 +1664,8 @@ struct OverlayChannelStatusView: View {
       OverlayRosterMessageHint(
         conversation: conversation, palette: palette, textScale: textScale,
         isOpen: conversation.map { $0.id == selectedConversationID } ?? false,
-        onOpen: { if let conversation { onSelectConversation?(conversation.id) } })
+        onOpen: { if let conversation { onSelectConversation?(conversation.id) } },
+        dot: channel.map { presenceDotKind(for: $0) })
     )
     .accessibilityHint(Text(verbatim: hint))
     .modifier(
@@ -2241,7 +2242,7 @@ struct OverlayChannelStatusView: View {
             OverlayRosterMessageHint(
               conversation: conversation, palette: palette, textScale: textScale,
               isOpen: conversation.map { $0.id == selectedConversationID } ?? false,
-              onOpen: { viewConversation(channel) }))
+              onOpen: { viewConversation(channel) }, dot: presenceDotKind(for: channel)))
           // The agent's "…" sits beside the clock, outside the row's button,
           // so the name gets the line and the pair the right.
           EmptyView().modifier(
@@ -2274,7 +2275,7 @@ struct OverlayChannelStatusView: View {
                   OverlayRosterMessageHint(
                     conversation: conversation, palette: palette, textScale: textScale,
                     isOpen: conversation.id == selectedConversationID,
-                    onOpen: { viewConversation(channel) }))
+                    onOpen: { viewConversation(channel) }, dot: presenceDotKind(for: channel)))
               } else {
                 rosterRowLabel(
                   title: channel.agent, statusChannel: channel, conversation: conversation,
@@ -3365,6 +3366,10 @@ struct OverlayRosterMessageHint: ViewModifier {
   var emptyHint = ""
   var isOpen = false
   var onOpen: (() -> Void)? = nil
+  /// The agent's presence dot for the card's header
+  /// (`OverlayChannelStatusView.presenceDotKind(for:)`); nil for channel 0,
+  /// the inbox and a conversation without a live roster row.
+  var dot: OverlayAgentDotKind? = nil
   @StateObject private var session = OverlayRosterPreviewSession()
 
   static func fullText(in conversation: OverlayConversation) -> String? {
@@ -3383,7 +3388,7 @@ struct OverlayRosterMessageHint: ViewModifier {
     let preview: AnyView? = conversation.flatMap { _ in
       guard !session.ids.isEmpty else { return nil }
       return AnyView(
-        OverlayRosterMessagePreview(session: session, palette: palette, onOpen: onOpen)
+        OverlayRosterMessagePreview(session: session, palette: palette, dot: dot, onOpen: onOpen)
           .environment(\.csTextScale, textScale)
           .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light))
     }
@@ -3423,15 +3428,20 @@ struct OverlayRosterMessagePreview: View {
   @Environment(\.csTextScale) private var textScale
   @ObservedObject var session: OverlayRosterPreviewSession
   let palette: OverlayAppearancePalette
+  /// The agent's presence dot, drawn between the digit and the name as in
+  /// the list under ✦ and the roster's rows (`headerDot`).
+  var dot: OverlayAgentDotKind? = nil
   var onOpen: (() -> Void)? = nil
 
   init(
     session: OverlayRosterPreviewSession,
     palette: OverlayAppearancePalette,
+    dot: OverlayAgentDotKind? = nil,
     onOpen: (() -> Void)? = nil
   ) {
     self.session = session
     self.palette = palette
+    self.dot = dot
     self.onOpen = onOpen
   }
 
@@ -3439,6 +3449,7 @@ struct OverlayRosterMessagePreview: View {
     name: String,
     message: OverlayConversationMessage,
     palette: OverlayAppearancePalette,
+    dot: OverlayAgentDotKind? = nil,
     onOpen: (() -> Void)? = nil
   ) {
     let conversation = OverlayConversation(
@@ -3450,7 +3461,19 @@ struct OverlayRosterMessagePreview: View {
     )
     self.session = OverlayRosterPreviewSession(conversation: conversation)
     self.palette = palette
+    self.dot = dot
     self.onOpen = onOpen
+  }
+
+  /// The header's dot: an agent's (channels 1–9) only. Channel 0 and the
+  /// inbox have no presence, as in the list under ✦.
+  static func headerDot(
+    _ dot: OverlayAgentDotKind?, for conversation: OverlayConversation?
+  ) -> OverlayAgentDotKind? {
+    guard let dot, let conversation, !conversation.isHumanInbox,
+      let digit = Int(conversation.channel), (1...9).contains(digit)
+    else { return nil }
+    return dot
   }
 
   private var selectedID: String? {
@@ -3499,7 +3522,7 @@ struct OverlayRosterMessagePreview: View {
 
   private func header(id: String?) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 6) {
-      Text(verbatim: session.conversation?.displayTitle ?? "")
+      title
         .font(.system(size: 12 * textScale, weight: .semibold))
         .foregroundStyle(palette.primaryText.color)
         .lineLimit(1)
@@ -3509,6 +3532,27 @@ struct OverlayRosterMessagePreview: View {
           .font(.system(size: 10 * textScale))
           .foregroundStyle(palette.roster.secondaryText.color)
       }
+    }
+  }
+
+  /// `N · name`, or for an agent with its presence the digit, the dot and
+  /// the name (`nr · dot · name`, Tola IV.10a, 2026-11-07).
+  @ViewBuilder
+  private var title: some View {
+    if let conversation = session.conversation,
+      let dot = Self.headerDot(dot, for: conversation)
+    {
+      HStack(spacing: 4 * textScale) {
+        Text(verbatim: conversation.channel)
+        OverlayAgentStatusDot(kind: dot, palette: palette)
+          .fixedSize()
+          .accessibilityHidden(true)
+          .accessibilityIdentifier("overlay-roster-preview-dot")
+        Text(verbatim: conversation.name)
+      }
+      .accessibilityElement(children: .combine)
+    } else {
+      Text(verbatim: session.conversation?.displayTitle ?? "")
     }
   }
 

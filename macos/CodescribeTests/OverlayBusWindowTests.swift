@@ -732,6 +732,42 @@ final class OverlayBusWindowTests: XCTestCase {
     add(attachment)
   }
 
+  /// Tola IV.10a: the card's header carries the agent's presence dot between
+  /// the digit and the name, as the list under ✦ and the roster's rows do.
+  /// Channel 0 and the inbox have no presence and no dot.
+  func testPreviewHeaderCarriesTheAgentsPresenceDot() throws {
+    let target = try conversation("2")
+    let message = previewReply(in: target, text: "Zrobione. Nowy build działa.")
+    typealias Preview = OverlayRosterMessagePreview
+    XCTAssertEqual(Preview.headerDot(.present, for: target), .present)
+    XCTAssertEqual(Preview.headerDot(.stalled, for: target), .stalled)
+    XCTAssertNil(Preview.headerDot(nil, for: target))
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    XCTAssertNil(Preview.headerDot(.broadcast, for: all), "channel 0 has no presence")
+    XCTAssertNil(Preview.headerDot(.present, for: .humanInbox()), "the inbox has no presence")
+
+    func render(_ dot: OverlayAgentDotKind?) throws -> NSBitmapImageRep {
+      let host = NSHostingView(
+        rootView: Preview(name: target.name, message: message, palette: .dark, dot: dot)
+          .frame(width: 260, height: 120)
+          .environment(\.colorScheme, .dark))
+      host.frame = NSRect(x: 0, y: 0, width: 260, height: 120)
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      return bitmap
+    }
+    let plain = try render(nil)
+    let dotted = try render(.present)
+    XCTAssertNotEqual(plain.tiffRepresentation, dotted.tiffRepresentation, "the dot is drawn")
+    let image = NSImage(size: NSSize(width: 260, height: 120))
+    image.addRepresentation(dotted)
+    let attachment = XCTAttachment(image: image)
+    attachment.name = "Bus-preview-header-presence-dot"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
   func testRosterHoverFitsCompactContentSuppressesOpenConversationAndRemeasuresOnStep()
     async throws
   {
