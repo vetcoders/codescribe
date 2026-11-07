@@ -945,9 +945,11 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   // MARK: - 15. The hover card from the roster
 
   /// Each agent chip's hover card as the roster builds it, so the card
-  /// carries every fact the chip knows: 1 online on channel 0, 3 speaking,
-  /// 4 gone and off channel 0, 5 online under the moon, 6 without a
-  /// liveness claim, off channel 0 and under the moon, 8 stalled. Run with
+  /// carries every fact the chip knows: 1 online on channel 0 with its
+  /// microphone open and your message read, 3 speaking, 4 gone and off
+  /// channel 0, last heard in a played reply, 5 online under the moon with
+  /// a played reply and 2 unread, 6 without a liveness claim, off channel 0,
+  /// under the moon and muted, 8 stalled. Run with
   /// `-testLanguage pl` for channel 0's Polish name.
   func testRenderChipHoverCardsFromTheRoster() throws {
     let agents = [
@@ -958,14 +960,49 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     let owned = try agents.enumerated().map { index, agent in
       let conversation = try ownerConversation(
         agent.1, channel: agent.0, lease: String(index, radix: 16))
-      return agent.0 == "3" ? playingReply(in: conversation) : conversation
+      func with(_ messages: [OverlayConversationMessage]) -> OverlayConversation {
+        OverlayConversation(
+          id: conversation.id, channel: conversation.channel, name: conversation.name,
+          owner: conversation.owner, messages: messages)
+      }
+      switch agent.0 {
+      case "3": return playingReply(in: conversation)
+      case "4", "5":
+        // 4 and 5 were last heard in a reply already played aloud.
+        let played = playingReply(in: conversation).messages[0]
+        return with([
+          OverlayConversationMessage(
+            id: played.id, kind: .reply, text: played.text, order: 1,
+            emittedAt: "2026-11-06T19:36:00Z", owner: played.owner, recipients: [],
+            deliveryID: nil, replyTo: nil, unsolicited: true,
+            playback: OverlayReplyPlayback(
+              replyID: "spoken-\(agent.0)", ticket: "t-\(agent.0)", state: "spoken",
+              reason: nil, spoken: true, emittedAt: "2026-11-06T19:36:05Z"),
+            busPath: "/dev/null")
+        ])
+      case "1":
+        // 1 read your newest message.
+        let owner = try XCTUnwrap(conversation.owner)
+        return with([
+          OverlayConversationMessage(
+            id: "user:review-1", kind: .user, text: "Sprawdź belkę.", order: 1,
+            emittedAt: "2026-11-06T20:12:00Z", owner: nil,
+            recipients: [
+              OverlayConversationRecipient(
+                owner: owner, deliveryID: "review-1", queued: true, accepted: true,
+                acknowledged: true)
+            ], deliveryID: "review-1", replyTo: nil, unsolicited: false, playback: nil,
+            busPath: "")
+        ])
+      default: return conversation
+      }
     }
     let stale = Date().addingTimeInterval(-OverlayState.followerStallHorizon - 60)
     var hudStates: [String: OverlayChannelHudProjection] = [:]
     var channels: [OverlayChannelDelivery] = []
     for (digit, name) in agents {
       hudStates[digit] = OverlayChannelHudProjection(
-        open: false, loud: false, autosealDeadline: nil,
+        open: digit == "1", loud: false, autosealDeadline: nil,
         followerAlive: digit == "4" ? false : (digit == "6" ? nil : true),
         provider: "codex", providerSessionID: "review-\(digit)",
         unreadSince: digit == "8" ? stale : nil)
@@ -977,9 +1014,11 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     for look in Look.allCases {
       var roster = OverlayChannelStatusView(
         channels: channels, unavailable: false, palette: look.palette, animates: false,
-        hudStates: hudStates, conversations: [all] + owned, unreadCounts: [:],
+        hudStates: hudStates, conversations: [all] + owned,
+        unreadCounts: [owned[3].id: 2],
         onSelectConversation: { _ in })
       roster.sharedChannelStoredName = ""
+      roster.mutedChannels = ["6": true]
       let chips = roster.channelMapModel.agents
       XCTAssertEqual(chips.map(\.digit), agents.map(\.0))
       XCTAssertEqual(chips.first { $0.digit == "3" }?.speaking, true, "3 is speaking")
