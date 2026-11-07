@@ -772,11 +772,12 @@ final class OverlayState {
     }
   }
 
-  /// The place the header menu's Place submenu checks: the remembered
-  /// anchor, also while Free motion is on (L17, 2026-11-06), so the user
-  /// sees where Fixed position returns.
-  func placementRemembered(_ anchor: OverlayAnchor) -> Bool {
-    placementAnchor == anchor
+  /// The place the header menu checks: the chosen anchor while Free motion
+  /// is off, none while it is on, so the menu's seven placement items carry
+  /// exactly one checkmark (Monika, 2026-11-07). The anchor itself stays
+  /// remembered under Free motion; turning Free motion off returns there.
+  func placementChecked(_ anchor: OverlayAnchor) -> Bool {
+    !freeMotion && placementAnchor == anchor
   }
 
   /// The window already reached this point through a user drag. Save its origin
