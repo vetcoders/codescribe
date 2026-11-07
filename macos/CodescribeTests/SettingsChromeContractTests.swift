@@ -180,9 +180,9 @@ final class SettingsChromeContractTests: XCTestCase {
     let view = try XCTUnwrap(settingsSources()["SettingsView.swift"])
     let detail = try XCTUnwrap(view.range(of: "} detail: {"))
     let minimum = try XCTUnwrap(view.range(of: ".frame(minWidth: Self.detailMinWidth)"))
-    let toolbar = try XCTUnwrap(view.range(of: ".toolbar {"))
+    let splitModifiers = try XCTUnwrap(view.range(of: ".csSidebarToggle(expanded:"))
     XCTAssertLessThan(detail.lowerBound, minimum.lowerBound)
-    XCTAssertLessThan(minimum.lowerBound, toolbar.lowerBound)
+    XCTAssertLessThan(minimum.lowerBound, splitModifiers.lowerBound)
     XCTAssertTrue(
       view.contains(".frame(maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)"))
     XCTAssertFalse(view.contains("minWidth: 880"))
