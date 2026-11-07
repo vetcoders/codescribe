@@ -1425,10 +1425,9 @@ final class OverlayChannelMapTests: XCTestCase {
   // MARK: - A gone follower on the bar (L12)
 
   /// A gone agent keeps its name on the bar, so the bar is as wide as with
-  /// the agent alive, and wears the empty ring the agents list gives it
-  /// before its digit; a live agent wears no dot on the bar, a speaking one
-  /// the violet dot, and a gone one the ring even while a reply plays.
-  func testGoneFollowerKeepsItsNameAndWearsTheRostersRing() {
+  /// the agent alive; the bar only dims it (no ring, point 7 of the
+  /// 2026-11-06 review), while the agents list keeps the empty ring.
+  func testGoneFollowerKeepsItsNameOnTheBarAndTheRingStaysInTheList() {
     let channels = [delivery("1", "Lena"), delivery("3", "Roman"), delivery("5", "Bruno")]
     func map(dead: Set<String>) -> OverlayChannelMapModel {
       OverlayChannelMapModel(
@@ -1454,17 +1453,9 @@ final class OverlayChannelMapTests: XCTestCase {
     let view = OverlayChannelStatusView(
       channels: [channels[1]], unavailable: false, palette: .dark, animates: false,
       hudStates: ["3": hud(alive: false)])
-    let rosterDot = view.presenceDotKind(for: channels[1])
-    XCTAssertEqual(rosterDot, .sleeping, "the agents list's mark for a gone follower")
-    typealias Display = OverlayChannelPill.Display
-    XCTAssertEqual(Display(figure: "3", name: "Roman", disconnected: true).barDot, rosterDot)
     XCTAssertEqual(
-      Display(figure: "3", name: "Roman", disconnected: true, speaking: true).barDot, rosterDot)
-    XCTAssertNil(Display(figure: "1", name: "Lena").barDot, "a live agent wears no dot")
-    XCTAssertEqual(Display(figure: "1", name: "Lena", speaking: true).barDot, .speaking)
-    XCTAssertNil(
-      Display(figure: "3", name: "Roman", dot: .sleeping, disconnected: true).barDot,
-      "a list row draws its own dot before the name")
+      view.presenceDotKind(for: channels[1]), .sleeping,
+      "the agents list still marks a gone follower with the empty ring")
   }
 
   // MARK: - An agent speaking (L1)

@@ -73,19 +73,6 @@ struct OverlayChannelPill: View {
     /// False while the panel is hidden or occluded. Nothing in the pill
     /// pulses any more; the map keeps passing it for its own visibility.
     var animates = false
-
-    /// The status dot before the circled digit, in the roster's vocabulary
-    /// (`OverlayAgentStatusDot`): the empty ring of a gone follower (L12,
-    /// 2026-11-06), as the agents list and the Bus window mark it, else the
-    /// violet blinking dot while the agent speaks (L1). A live agent carries
-    /// none on the bar. The roster's order: gone before speaking. A pill that
-    /// draws its own presence dot (`dot`, the agents list's rows) has none.
-    var barDot: OverlayAgentDotKind? {
-      guard dot == nil else { return nil }
-      if disconnected { return .sleeping }
-      if speaking { return .speaking }
-      return nil
-    }
   }
 
   let form: Form
@@ -385,10 +372,10 @@ struct OverlayChannelPill: View {
           .accessibilityHidden(true)
       }
       .overlay(alignment: .leading) {
-        if let dot = display.barDot, form == .chip || form == .stacked {
-          OverlayAgentStatusDot(kind: dot, palette: palette)
-            .scaleEffect(Self.statusDotScale, anchor: .trailing)
-            .offset(x: -(OverlayAgentStatusDot.diameter * textScale + Self.statusDotGap))
+        if display.speaking && (form == .chip || form == .stacked) {
+          OverlayAgentStatusDot(kind: .speaking, palette: palette)
+            .scaleEffect(Self.speakingDotScale, anchor: .trailing)
+            .offset(x: -(OverlayAgentStatusDot.diameter * textScale + Self.speakingDotGap))
             .accessibilityHidden(true)
         }
       }
@@ -420,11 +407,10 @@ extension OverlayChannelPill {
   /// holds its circled digit. The bar's stacked row grows with it up to here.
   static let headerScaleCeiling: CGFloat = 1.25
   static let chipPadding: CGFloat = 6
-  /// The status dot in the bar (speaking, gone): 6 pt, 1 pt clear of the
-  /// circle, inside the chip's 6 pt margin and the stacked row's 8 pt between
-  /// circles, so it never changes the bar's widths.
-  static let statusDotScale: CGFloat = 0.75
-  static let statusDotGap: CGFloat = 1
+  /// The speaking dot in the bar: 6 pt, 1 pt clear of the circle, inside the
+  /// chip's 6 pt margin and the stacked row's 8 pt between circles.
+  static let speakingDotScale: CGFloat = 0.75
+  static let speakingDotGap: CGFloat = 1
   static let chipGap: CGFloat = 4
   /// A stacked pill's side margin: with the map's 4 pt chip spacing two
   /// captions stand at least 8 pt apart, and a caption never overlaps.
