@@ -32,6 +32,13 @@ struct CSColumnHeaderAccessory<Header: View>: NSViewRepresentable {
     override func viewDidMoveToWindow() {
       super.viewDidMoveToWindow()
       onWindow?(window)
+      // SwiftUI can insert the marker before it finishes mounting the split
+      // view. One layout-boundary retry is sufficient; there is no polling.
+      guard window != nil else { return }
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        onWindow?(window)
+      }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -54,7 +61,7 @@ struct CSColumnHeaderAccessory<Header: View>: NSViewRepresentable {
         detach()
         return
       }
-      guard let root = window.contentViewController,
+      guard let root = window.contentView,
         let split = Self.navigationSplit(in: root),
         let detail = split.splitViewItems.last
       else { return }
@@ -69,12 +76,13 @@ struct CSColumnHeaderAccessory<Header: View>: NSViewRepresentable {
       item = nil
     }
 
-    private static func navigationSplit(in controller: NSViewController) -> NSSplitViewController? {
-      if let split = controller as? NSSplitViewController,
+    private static func navigationSplit(in view: NSView) -> NSSplitViewController? {
+      if let splitView = view as? NSSplitView,
+        let split = splitView.delegate as? NSSplitViewController,
         split.splitViewItems.count == 2,
         split.splitViewItems.first?.behavior == .sidebar
       { return split }
-      for child in controller.children {
+      for child in view.subviews {
         if let split = navigationSplit(in: child) { return split }
       }
       return nil

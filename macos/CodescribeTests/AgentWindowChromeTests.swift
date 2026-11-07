@@ -16,7 +16,10 @@ final class AgentWindowChromeTests: XCTestCase {
   /// T1 admission: a column accessory must replace the identity's toolbar
   /// footprint, rather than adding a second 52-point row beneath the actions.
   func testColumnAccessoryOccupiesTheExistingHeaderBand() throws {
-    let window = mount(contentWidth: 1120)
+    let store = AgentChatStore(
+      engine: nil,
+      threads: [ChatThread(title: "Column accessory admission", meta: "synthetic", messages: [])])
+    let window = mount(contentWidth: 1120, store: store)
     defer { window.close() }
     pump(window) {
       guard let split = self.splitView(in: window)?.delegate as? NSSplitViewController else {
@@ -43,7 +46,7 @@ final class AgentWindowChromeTests: XCTestCase {
       rect.minY, window.contentLayoutRect.maxY - 1,
       "T1 STOP: accessory adds a row below the existing toolbar")
     XCTAssertTrue(
-      rect.intersects(actionRect),
+      rect.minY < actionRect.maxY && rect.maxY > actionRect.minY,
       "identity and actions must occupy the same vertical band")
   }
 
