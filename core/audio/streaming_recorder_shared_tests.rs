@@ -387,10 +387,10 @@ fn settings(root: &std::path::Path) -> Arc<RuntimeSettingsSnapshot> {
     ))
 }
 
-/// Bind and start a normal document the way a Raw hold or toggle does:
-/// `bind_dictation_authority` then the same `start_event_session`. The
-/// physical recorder is flagged active so no microphone opens.
-async fn start_document(
+/// Bind a normal document the way a Raw hold or toggle does, up to the
+/// `start_event_session` call. The physical recorder is flagged active so
+/// no microphone opens.
+fn bind_document(
     recorder: &mut StreamingRecorder,
     root: &std::path::Path,
     document: &str,
@@ -401,6 +401,17 @@ async fn start_document(
     })));
     recorder.bind_dictation_authority(document.to_string(), settings(root));
     recorder.recorder.set_active_for_test(true);
+    formatter_pending
+}
+
+/// Bind and start a normal document: `bind_dictation_authority` then the
+/// same `start_event_session` a hold or toggle runs.
+async fn start_document(
+    recorder: &mut StreamingRecorder,
+    root: &std::path::Path,
+    document: &str,
+) -> Arc<AtomicBool> {
+    let formatter_pending = bind_document(recorder, root, document);
     recorder
         .start_event_session(None)
         .await
@@ -553,6 +564,95 @@ async fn agent_first_document_joins_once_and_its_last_stop_hands_the_wav_to_the_
     assert_eq!(fake.receipts.load(Ordering::SeqCst), 1);
     assert!(recorder.shared_channel_view().is_none());
     std::fs::remove_file(path).unwrap();
+}
+
+/// HANDOFF §5: a join without an open shared capture is refused before any
+/// seat exists; a first-source admission that fails after the device is
+/// running stops only a device nobody else holds, and leaves the recorder
+/// able to admit the next document.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_unadmitted_join_leaves_no_seat_and_a_failed_first_admission_stops_only_an_unowned_device()
+ {
+    let root = tempfile::tempdir().unwrap();
+    let mut recorder = StreamingRecorder::new().unwrap();
+    let mut fake = fake(&mut recorder, false);
+
+    // No shared capture: the join is refused and nothing is left behind.
+    let refused = recorder.join_channel_session(agent_seat()).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("no shared channel capture is open to join"),
+        "{refused:#}"
+    );
+    assert_eq!(recorder.channel_participant_count(), 0);
+    assert_eq!(recorder.capture_subscriber_count(), 0);
+    assert!(recorder.shared_channel_view().is_none());
+    assert!(!recorder.recorder.is_active());
+
+    // The takes directory cannot be created under a regular file, so the
+    // first source's PCM archive admission fails after the device started.
+    bind_document(&mut recorder, root.path(), "doc-refused");
+    let blocker = root.path().join("not-a-directory");
+    std::fs::write(&blocker, b"takes cannot live under a file").unwrap();
+    let data_dir = crate::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", &blocker);
+
+    // Nobody else holds the device: the failed admission stops it.
+    let error = recorder.start_event_session(None).await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Cannot admit dictation without its capture PCM archive"),
+        "{error:#}"
+    );
+    assert!(
+        !recorder.recorder.is_active(),
+        "an unowned device is stopped by the failed admission"
+    );
+    assert!(recorder.shared_channel_view().is_none());
+    assert_eq!(recorder.channel_participant_count(), 0);
+    assert_eq!(recorder.capture_subscriber_count(), 0);
+    assert!(!recorder.has_take_subscriber());
+
+    // A peer holds the device through an attached-only channel feed: the
+    // same failure leaves the device and the peer's subscription alone.
+    let peer = recorder.register_channel_feed();
+    recorder.recorder.set_active_for_test(true);
+    let error = recorder.start_event_session(None).await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Cannot admit dictation without its capture PCM archive"),
+        "{error:#}"
+    );
+    assert!(
+        recorder.recorder.is_active(),
+        "a refused admission never stops a device a peer holds"
+    );
+    assert_eq!(recorder.capture_subscriber_count(), 1);
+    assert!(recorder.shared_channel_view().is_none());
+    assert_eq!(recorder.channel_participant_count(), 0);
+    assert!(!recorder.has_take_subscriber());
+    assert_eq!(fake.starts.load(Ordering::SeqCst), 0, "no recognizer ran");
+    assert!(recorder.release_capture_subscriber(peer.id));
+    recorder.recorder.set_active_for_test(false);
+
+    // With the archive admissible again the same binding admits the document:
+    // the failures retained nothing.
+    drop(data_dir);
+    recorder.recorder.set_active_for_test(true);
+    recorder
+        .start_event_session(None)
+        .await
+        .expect("the document is admitted once its archive can open");
+    fake.started.recv().await.unwrap();
+    feed(&recorder, &mut fake, 30, 30).await;
+    let (last, mut take) = stop_document(&mut recorder).await;
+    assert!(last);
+    let (_, wav) = take.finish().await.unwrap();
+    let wav = wav.expect("one interval: the document's exact WAV");
+    assert_eq!(hound::WavReader::open(&wav).unwrap().duration(), 30);
+    assert_eq!(fake.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.receipts.load(Ordering::SeqCst), 1);
+    assert!(recorder.shared_channel_view().is_none());
+    std::fs::remove_file(wav).unwrap();
 }
 
 /// A document alone on its capture keeps the exact WAV alias it always had.
