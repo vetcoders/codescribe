@@ -2119,6 +2119,21 @@ final class OverlayState {
     return descriptors
   }
 
+  /// The project (repository) each bound agent works in, from the same
+  /// verified lease as its descriptor (L16, 2026-11-06: "Agy · Codescribe"
+  /// on the chip's hover card).
+  var channelAgentProjects: [String: String] {
+    var projects: [String: String] = [:]
+    for (channel, binding) in channelPlaybackAgents where playbackIdentity(for: channel) != nil {
+      if let project = binding.repositoryName?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !project.isEmpty
+      {
+        projects[channel] = project
+      }
+    }
+    return projects
+  }
+
   /// The existing lease reader supplies this projection. Equality avoids an
   /// Observation invalidation for every unchanged poll.
   func applyBoundAgents(_ bindings: [String: AgentPlaybackBinding]) {

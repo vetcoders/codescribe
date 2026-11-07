@@ -6,7 +6,7 @@ import SwiftUI
 /// the agent is there, whether a message to it makes sense and whether it
 /// hears channel 0, from `OverlayChannelChipStatus`, three facts kept apart:
 ///
-/// 1. `5 · Kuba` and the provider;
+/// 1. `5 · Kuba`, the provider and the project (L16);
 /// 2. presence: Online, Not active or No data, with "Not reading" when the
 ///    live follower stalls, behind the presence dot of the agents list
 ///    under ✦ and the Bus window's roster (`OverlayAgentStatusDot`, L2
@@ -156,7 +156,7 @@ struct OverlayChannelChipHoverCard: View {
     var lines = [
       Line(
         kind: .title, text: chip.name.isEmpty ? chip.digit : chip.digit + " · " + chip.name,
-        tone: .primary, trailing: status.provider.map(providerName)),
+        tone: .primary, trailing: titleTrailing(status)),
       Line(
         kind: .presence, text: presenceText(status),
         tone: status.stalled ? .muted : (status.presence == .online ? .success : .muted),
@@ -202,7 +202,7 @@ struct OverlayChannelChipHoverCard: View {
   /// The facts alone, for the pill's accessibility value.
   static func spokenStatus(_ status: OverlayChannelChipStatus) -> [String] {
     var parts: [String] = []
-    if let provider = status.provider { parts.append(providerName(provider)) }
+    if let trailing = titleTrailing(status) { parts.append(trailing) }
     parts.append(presenceText(status))
     parts.append(spokenReception(status))
     if let message = status.lastMessage, let text = lastMessageText(message) {
@@ -219,6 +219,14 @@ struct OverlayChannelChipHoverCard: View {
     if let audio = audioText(status) { parts.append(audio) }
     if status.unread > 0 { parts.append(unreadText(status.unread)) }
     return parts
+  }
+
+  /// The title's trailing words: the provider and the project the agent
+  /// works in (L16: "Agy · Codescribe"), either alone when the other is
+  /// unknown.
+  static func titleTrailing(_ status: OverlayChannelChipStatus) -> String? {
+    let parts = [status.provider.map(providerName), status.project].compactMap { $0 }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
   }
 
   /// `codex` → `Codex`: the provider as the card names it.

@@ -323,11 +323,13 @@ the projection the roster row reads (`channelChipStatus`, carried as
 `unread_since_unix_ms`), a gone agent "last heard 20:36", the time of its
 newest reply. The roster snapshot carries no time of a presence change, so
 "Not active for 3 h" is not drawn; it would need a field such as a
-follower-state-since timestamp on `CsChannelRosterState`. The agent's
-project ("Agy · Codescribe") is not drawn either: neither the lease owner
-(`OverlayConversationOwner`) nor the roster row carries one.
+follower-state-since timestamp on `CsChannelRosterState`.
 
-The first line names the digit, the whole name and the provider; the chord
+The first line names the digit, the whole name, the provider and the project
+the agent works in ("Agy · Codescribe", L16), the project from the same
+verified lease as the roster's descriptor (`AgentPlaybackBinding.repositoryName`,
+`OverlayState.channelAgentProjects`), either alone when the other is unknown;
+the chord
 (`Ctrl+5`) is the last, small line: at most seven short lines, the card's
 width bounds unchanged. The card is one accessibility element whose label
 reads every line, and the chip's accessibility value carries the same

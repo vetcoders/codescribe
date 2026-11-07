@@ -97,6 +97,8 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
   /// carries no time of a presence change, so the card says this instead
   /// of "inactive since".
   var lastHeard: Date? = nil
+  /// The project (repository) the agent works in, from its lease.
+  var project: String? = nil
   /// Whole minutes the live follower has not read its backlog, while it is
   /// stalled (`unreadSince`).
   var stalledMinutes: Int? = nil

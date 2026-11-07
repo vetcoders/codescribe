@@ -1060,6 +1060,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         onSelectConversation: { _ in })
       roster.sharedChannelStoredName = ""
       roster.mutedChannels = ["6": true]
+      roster.agentProjects = ["1": "Codescribe", "4": "Vibecrafted", "5": "Codescribe"]
       let chips = roster.channelMapModel.agents
       XCTAssertEqual(chips.map(\.digit), agents.map(\.0))
       XCTAssertEqual(chips.first { $0.digit == "3" }?.speaking, true, "3 is speaking")

@@ -231,10 +231,12 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     status.lastMessage = .init(outgoing: true, at: at, fate: "Read")
     status.microphoneOpen = true
     status.voiceMuted = true
+    status.project = "Codescribe"
     let card = lines(status)
     XCTAssertEqual(
       card.map(\.kind),
       [.title, .presence, .reception, .lastMessage, .audio, .unread, .shortcut])
+    XCTAssertEqual(card[0].trailing, "Codex · Codescribe", "the provider and the project")
     let message = try XCTUnwrap(card.first { $0.kind == .lastMessage })
     XCTAssertEqual(message.text, OverlayChannelChipHoverCard.clock(at) + " · Read")
     XCTAssertEqual(message.symbol, "arrow.up.right")
@@ -284,6 +286,7 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
         ],
         conversations: [conversation], onSelectConversation: { _ in })
       view.mutedChannels = ["5": muted]
+      view.agentProjects = ["5": "Codescribe"]
       return view
     }
     let heard = try XCTUnwrap(MessageTimestamp.date(fromISO8601: "2026-11-06T19:36:00Z"))
@@ -293,6 +296,7 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     XCTAssertEqual(gone.lastHeard, heard)
     XCTAssertEqual(gone.lastMessage, .init(outgoing: false, at: heard, fate: "Spoken"))
     XCTAssertTrue(gone.voiceMuted)
+    XCTAssertEqual(gone.project, "Codescribe")
     XCTAssertFalse(gone.microphoneOpen)
     let live = try XCTUnwrap(
       roster(alive: true, open: true, muted: false).channelMapModel.chips

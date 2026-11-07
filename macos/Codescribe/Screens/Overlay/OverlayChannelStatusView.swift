@@ -1190,6 +1190,8 @@ struct OverlayChannelStatusView: View {
   /// agent speaks (L15, 2026-11-06). The expanded bar leaves it off; its
   /// chips carry the speaking dot.
   var signalsSpeaking = false
+  /// The project each bound agent works in (`OverlayState.channelAgentProjects`).
+  var agentProjects: [String: String] = [:]
   /// The stored display name of the shared channel 0, empty for the default
   /// (`OverlaySharedChannelName`).
   var sharedChannelStoredName = ""
@@ -1305,6 +1307,7 @@ struct OverlayChannelStatusView: View {
       rosterReady: state.hasLoadedChannelRoster
     )
     view.mutedChannels = state.channelPlaybackMuted
+    view.agentProjects = state.channelAgentProjects
     view.headerSelected =
       !state.isCollapsed && state.windowContentSurface == .agents
     view.sharedChannelStoredName = state.sharedChannelStoredName
@@ -1736,8 +1739,10 @@ struct OverlayChannelStatusView: View {
       provider: conversation?.owner?.provider ?? hudStates[channel.channel]?.provider,
       speaking: speakingDigits.contains(channel.channel), channelZeroName: sharedChannelName)
     // L16 (2026-11-06): the card's full state, each fact from the roster's
-    // own projection: the conversation's messages, the receipt line's
-    // reading, the stall's minutes, the HUD's microphone and the speaker.
+    // own projection: the lease's project, the conversation's messages, the
+    // receipt line's reading, the stall's minutes, the HUD's microphone and
+    // the speaker.
+    status.project = agentProjects[channel.channel]
     status.stalledMinutes = stalledMinutes(channel)
     status.microphoneOpen = hudStates[channel.channel]?.open == true
     status.voiceMuted = mutedChannels[channel.channel] == true
