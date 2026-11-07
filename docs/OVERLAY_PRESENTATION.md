@@ -239,8 +239,10 @@ row, cut by the same name rules and never widening the row past them
 launch and after every Settings write); with none stored it is the
 interface's default, "Shared" ("Wspólny"), whose short form ("Wsp.") a cut
 width shows instead of an ellipsis (`OverlaySharedChannelName`). Settings ›
-Hotkeys › Fn and Agent channels edits it, one line, with **Restore default**;
-the bar does not. The same name heads channel 0's conversation (`0 · <name>`),
+Hotkeys › Fn and Agent channels edits it, one line of at most 24 characters
+(grapheme clusters; `SettingsViewModel.sharedChannelNameLimit`, and
+`shared_channel_name_line` in the loader cuts a hand-edited settings.json
+the same way), with **Restore default**; the bar does not. The same name heads channel 0's conversation (`0 · <name>`),
 its row in the agents list under ✦ and in the Bus window (`0 · <name> (n of
 m)`), the chip's hint and its message card; action wording such as the
 bubble route `You → All` stays. Only the name is personal: the digit, the

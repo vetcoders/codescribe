@@ -2930,8 +2930,15 @@ final class SettingsViewModel: ObservableObject {
 
   /// Channel 0's display name on the Bus (`SHARED_CHANNEL_NAME`). An empty
   /// name stores nothing and shows the default; the core keeps one line.
+  /// The longest channel 0 name, in characters (grapheme clusters); the
+  /// runtime loader applies the same limit to a hand-edited settings.json
+  /// (`SHARED_CHANNEL_NAME_LIMIT` in core/config/loader.rs).
+  static let sharedChannelNameLimit = 24
+
   func setSharedChannelName(_ name: String) {
-    let line = name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    let words = name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    var line = String(words.prefix(Self.sharedChannelNameLimit))
+    while line.last == " " { line.removeLast() }
     guard line != settings.sharedChannelName else { return }
     settings.sharedChannelName = line
     persist("SHARED_CHANNEL_NAME", line)

@@ -1706,6 +1706,22 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.settings.sharedChannelName, "")
   }
 
+  /// Channel 0's name keeps at most 24 characters after the whitespace is
+  /// folded, as the runtime loader does with a hand-edited settings.json.
+  func testSharedChannelNameStopsAtItsLimit() {
+    var stored = CsSettings.sample
+    var engine = MockSettingsEngine(updateConfigObserver: { key, value in
+      if key == "SHARED_CHANNEL_NAME" { stored.sharedChannelName = value }
+    })
+    engine.settingsLoader = { stored }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    model.setSharedChannelName("  Zespół\n  Codescribe   i przyjaciele z daleka ")
+    XCTAssertEqual(model.settings.sharedChannelName, "Zespół Codescribe i przy")
+    XCTAssertEqual(SettingsViewModel.sharedChannelNameLimit, 24)
+    model.setSharedChannelName(String(repeating: "👩‍👩‍👧", count: 30))
+    XCTAssertEqual(model.settings.sharedChannelName.count, 24, "characters, not scalars")
+  }
+
   func testResetPreviewMapsLiveCountsIntoConcreteConfirmationCopy() {
     let preview = CsResetPreview(
       audioFiles: 5_000,
