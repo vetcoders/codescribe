@@ -30,24 +30,27 @@ final class AgentWindowChromeTests: XCTestCase {
     let headers = try XCTUnwrap(window.toolbar).items.compactMap(\.view).filter {
       frame($0).minX >= boundary - 1 && frame($0).height >= 51
     }
-    XCTAssertEqual(headers.count, 1, "one group owns identity and actions")
-    let header = try XCTUnwrap(headers.first)
-    let rect = frame(header)
+    XCTAssertEqual(headers.count, 2, "one native group contains information and actions")
+    let rects = headers.map { frame($0) }
     let theme = try XCTUnwrap(window.contentView?.superview)
-    let glass = first(in: theme) {
-      $0 is NSGlassEffectView && self.frame($0).minX >= boundary - 1
-        && self.frame($0).maxY > window.contentLayoutRect.maxY
+    func glassViews(_ view: NSView) -> [NSGlassEffectView] {
+      (view as? NSGlassEffectView).map { [$0] } ?? view.subviews.flatMap { glassViews($0) }
+    }
+    let glass = glassViews(theme).map { frame($0) }.filter {
+      $0.minX >= boundary - 1 && $0.maxY > window.contentLayoutRect.maxY
     }
     let attachment = XCTAttachment(
       string: "window=\(window.frame) contentLayout=\(window.contentLayoutRect) "
-        + "header=\(rect) nativeGlass=\(String(describing: glass.map { frame($0) })) "
+        + "headerItems=\(rects) nativeGlass=\(glass) "
         + "detailSafeArea=\(detail.viewController.view.safeAreaInsets)")
     attachment.name = "Unified native header geometry"
     attachment.lifetime = .keepAlways
     add(attachment)
-    XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY - 1)
-    XCTAssertLessThanOrEqual(rect.maxX, window.frame.width + 1)
-    XCTAssertNotNil(glass, "the real header must retain native glass")
+    for rect in rects {
+      XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY - 1)
+      XCTAssertLessThanOrEqual(rect.maxX, window.frame.width + 1)
+      XCTAssertTrue(glass.contains { $0.intersects(rect) }, "each real item retains native glass")
+    }
     XCTAssertEqual(window.titleVisibility, .hidden)
   }
 
@@ -73,25 +76,27 @@ final class AgentWindowChromeTests: XCTestCase {
           (window.toolbar?.items.compactMap(\.view) ?? []).filter { frame($0).height >= 51 }
         }
         pump(window) {
-          headers().count == 1
-            && self.frame(headers()[0]).maxX >= window.frame.width - CSSpace.lg
+          headers().count == 2
+            && (headers().map { self.frame($0).maxX }.max() ?? 0)
+              >= window.frame.width - CSSpace.lg
         }
-        let header = try XCTUnwrap(headers().first)
-        let rect = frame(header)
+        let rects = headers().map { frame($0) }
         let attachment = XCTAttachment(
           string: "requestedWidth=\(width) expanded=\(expanded) window=\(window.frame) "
-            + "layout=\(window.contentLayoutRect) header=\(rect)")
+            + "layout=\(window.contentLayoutRect) headerItems=\(rects)")
         attachment.name = "Header width \(width) expanded \(expanded)"
         attachment.lifetime = .keepAlways
         add(attachment)
-        XCTAssertEqual(headers().count, 1)
+        XCTAssertEqual(rects.count, 2)
         XCTAssertGreaterThanOrEqual(
-          rect.maxX, window.frame.width - CSSpace.lg,
+          try XCTUnwrap(rects.map(\.maxX).max()), window.frame.width - CSSpace.lg,
           "actions reach the trailing edge at \(width), expanded \(expanded)")
-        XCTAssertLessThanOrEqual(rect.maxX, window.frame.width + 1)
-        XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY - 1)
-        for light in trafficLights(in: window) {
-          XCTAssertFalse(rect.intersects(frame(light)), "header covers a traffic light")
+        for rect in rects {
+          XCTAssertLessThanOrEqual(rect.maxX, window.frame.width + 1)
+          XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY - 1)
+          for light in trafficLights(in: window) {
+            XCTAssertFalse(rect.intersects(frame(light)), "header covers a traffic light")
+          }
         }
       }
     }

@@ -6,98 +6,13 @@ import SwiftUI
 /// One continuous native window bar. A line above and below the information
 /// row gives Agent and Settings the same rhythm without individual title pills.
 struct CSWindowHeaderItem<Content: View>: View {
-  var fillsAvailableWidth = false
-  var maximumWidth: CGFloat?
   @ViewBuilder let content: Content
-  @State private var availableWidth: CGFloat?
-
-  private var fittedWidth: CGFloat? {
-    guard fillsAvailableWidth else { return nil }
-    return [availableWidth, maximumWidth].compactMap { $0 }.min()
-  }
 
   var body: some View {
     content
       .frame(height: 18)
       .padding(.vertical, 17)
       .padding(.horizontal, 12)
-      .frame(
-        idealWidth: fittedWidth,
-        maxWidth: fillsAvailableWidth ? (fittedWidth ?? .infinity) : nil
-      )
-      .background {
-        if fillsAvailableWidth {
-          CSWindowHeaderWidthReader { width in
-            if availableWidth == nil || abs((availableWidth ?? 0) - width) > 0.5 {
-              availableWidth = width
-            }
-          }
-        }
-      }
-  }
-}
-
-/// Measures the native toolbar slot after AppKit has placed it beside the
-/// sidebar or traffic lights. Layout and resize events drive updates; there
-/// is no timer or traversal of private toolbar views.
-private struct CSWindowHeaderWidthReader: NSViewRepresentable {
-  let report: (CGFloat) -> Void
-
-  func makeNSView(context: Context) -> WidthView {
-    let view = WidthView()
-    view.report = report
-    return view
-  }
-
-  func updateNSView(_ view: WidthView, context: Context) {
-    view.report = report
-    view.measure()
-  }
-
-  static func dismantleNSView(_ view: WidthView, coordinator: ()) {
-    NotificationCenter.default.removeObserver(view)
-    view.report = nil
-  }
-
-  final class WidthView: NSView {
-    var report: ((CGFloat) -> Void)?
-
-    override func viewDidMoveToWindow() {
-      super.viewDidMoveToWindow()
-      NotificationCenter.default.removeObserver(self)
-      guard let window else { return }
-      NotificationCenter.default.addObserver(
-        self, selector: #selector(measure), name: NSWindow.didResizeNotification, object: window)
-      measure()
-    }
-
-    override func layout() {
-      super.layout()
-      measure()
-    }
-
-    @objc func measure() {
-      DispatchQueue.main.async { [weak self] in
-        guard let self, let window else { return }
-        let rect = convert(bounds, to: nil)
-        let lightsRight = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
-          .compactMap { window.standardWindowButton($0) }
-          .map { $0.convert($0.bounds, to: nil).maxX }.max() ?? 0
-        // An attached hosting view can still have its pre-layout origin.
-        // Measuring that zero origin would request the entire window width
-        // and push the real toolbar item into overflow before it is placed.
-        guard rect.width > 1, rect.minY >= window.contentLayoutRect.maxY - 1,
-          rect.minX >= lightsRight
-        else { return }
-        let left = rect.minX
-        // The native toolbar's outer breathing room matches the shared
-        // 8-point spacing rung. This is layout space, not a covering mask.
-        let width = max(0, window.contentLayoutRect.width - left - CSSpace.sm)
-        report?(width)
-      }
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
   }
 }
 

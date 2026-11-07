@@ -12,7 +12,6 @@ struct AgentChatView: View {
   /// column geometry inside the bounds `CSSidebarColumn` carries.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
-  @State private var detailWidth = AgentWindowMetrics.detailMinWidth
   /// View state only: opening the context panel never touches the thread,
   /// draft, model, recording or any agent call.
   @AppStorage(AgentContextPanelPreference.defaultsKey) private var contextPanelOpen =
@@ -34,13 +33,10 @@ struct AgentChatView: View {
       // floor itself belongs to the window. A minimum on the whole split
       // view makes an opening sidebar slide to half its width and jump.
       .frame(minWidth: AgentWindowMetrics.detailFloorWidth(contextPanelOpen: contextPanelOpen))
-      .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { detailWidth = $0 }
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
     .modifier(
-      AgentIntegratedChrome(
-        store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen,
-        detailWidth: detailWidth))
+      AgentIntegratedChrome(store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen))
     .csFocusPolicy()
     .background(
       AgentWindowCapabilities(isPinned: isPinned, contextPanelOpen: contextPanelOpen)
@@ -245,7 +241,6 @@ private struct AgentIntegratedChrome: ViewModifier {
   @ObservedObject var store: AgentChatStore
   @Binding var isPinned: Bool
   @Binding var isContextOpen: Bool
-  let detailWidth: CGFloat
   @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
   @State private var renameText = ""
@@ -295,23 +290,19 @@ private struct AgentIntegratedChrome: ViewModifier {
   /// capsules. The bar stays visible as the turns scroll beneath it.
   @ToolbarContentBuilder
   private var agentToolbar: some ToolbarContent {
-    // One system glass group owns both information and actions. Its backing
-    // contains the real controls, rather than an empty plane behind a second
-    // toolbar owner. AppKit allocates the group's width alongside the sidebar.
+    // AppKit owns allocation of the two real content items and the flexible
+    // space between them. Neither item measures or imposes a toolbar width.
     ToolbarItemGroup(placement: .navigation) {
-      CSWindowHeaderItem(
-        fillsAvailableWidth: true, maximumWidth: max(0, detailWidth - 2 * CSSpace.sm)
-      ) {
+      CSWindowHeaderItem {
         HStack(spacing: 12) {
           wordmark
           identity
-          Spacer(minLength: 12)
-          trailingCluster
         }
-        .frame(maxWidth: .infinity)
       }
+      Spacer()
+      CSWindowHeaderItem { trailingCluster }
     }
-    .sharedBackgroundVisibility(.automatic)
+    .sharedBackgroundVisibility(.visible)
   }
 
   private var wordmark: some View {
