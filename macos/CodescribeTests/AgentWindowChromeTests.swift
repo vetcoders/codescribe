@@ -13,6 +13,39 @@ final class AgentWindowChromeTests: XCTestCase {
   private let sidebarKey = "AgentChat.sidebarExpanded.v1"
   private let panelKey = AgentContextPanelPreference.defaultsKey
 
+  /// Public `.top` titlebar accessories replace the titlebar instead of
+  /// adding a row beneath the split. Prove geometry and native window buttons
+  /// on the real Agent host before moving the whole header into this owner.
+  func testTopTitlebarOwnerKeepsOneBandAndNativeWindowButtons() throws {
+    let window = mount(contentWidth: 1120)
+    defer { window.close() }
+    pump(window) { window.toolbar != nil }
+    window.toolbar?.isVisible = false
+    let accessory = NSTitlebarAccessoryViewController()
+    accessory.layoutAttribute = .top
+    accessory.view = NSHostingView(
+      rootView: HStack {
+        CSWindowHeaderItem { Wordmark(size: 16) }
+        Spacer()
+      }.frame(width: 1120, height: 52))
+    window.addTitlebarAccessoryViewController(accessory)
+    pump(window) { self.frame(accessory.view).height == 52 }
+    let rect = frame(accessory.view)
+    let lights = trafficLights(in: window)
+    let attachment = XCTAttachment(
+      string: "window=\(window.frame) layout=\(window.contentLayoutRect) top=\(rect) "
+        + "lights=\(lights.map { frame($0) }) "
+        + "lightsHidden=\(lights.map { $0.isHiddenOrHasHiddenAncestor })")
+    attachment.name = "Public top titlebar admission"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+    XCTAssertEqual(rect.height, 52, accuracy: 1)
+    XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
+    XCTAssertEqual(window.contentLayoutRect.maxY, window.frame.height - 52, accuracy: 1)
+    XCTAssertEqual(lights.count, 3)
+    XCTAssertTrue(lights.allSatisfy { !$0.isHiddenOrHasHiddenAncestor })
+  }
+
   /// The whole header belongs to one native toolbar glass group. It must
   /// remain in the window bar instead of adding split-item accessory rows.
   func testNativeToolbarOwnsInformationAndActions() throws {
