@@ -1547,7 +1547,7 @@ struct DictationOverlayView: View {
           // any channel records, a press is that capture's stop, never
           // channel 0 or the monitor.
           recordingControls(compact: false, showsPreview: false)
-          roster
+          miniAgentsButton(roster)
           recordingControls(compact: false, showsMicrophone: false)
         } else {
           if let error = state.expansionPreferenceError {
@@ -1571,6 +1571,14 @@ struct DictationOverlayView: View {
     // The bar's layout answers its own one- or two-row height.
     .frame(height: horizontalMap ? nil : OverlayHeaderDensity.rowHeight)
     .accessibilityIdentifier(mini ? "overlay-mini-widget" : "")
+  }
+
+  /// Mini's Agents button: the roster's button, which in mini also says an
+  /// agent speaks (L15), since mini has no chips to carry the dot.
+  private func miniAgentsButton(_ roster: OverlayChannelStatusView) -> OverlayChannelStatusView {
+    var button = roster
+    button.signalsSpeaking = true
+    return button
   }
 
   private var transcriptionPreviewButton: some View {

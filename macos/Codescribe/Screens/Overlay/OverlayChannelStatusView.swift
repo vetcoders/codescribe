@@ -1185,6 +1185,10 @@ struct OverlayChannelStatusView: View {
   /// mini's auto-hide and the auto-collapse held while the list is in use.
   var onAgentsListHover: ((Bool) -> Void)? = nil
   var headerSelected = false
+  /// Mini sets this: it has no chips, so the Agents button itself says an
+  /// agent speaks (L15, 2026-11-06). The expanded bar leaves it off; its
+  /// chips carry the speaking dot.
+  var signalsSpeaking = false
   /// The stored display name of the shared channel 0, empty for the default
   /// (`OverlaySharedChannelName`).
   var sharedChannelStoredName = ""
@@ -1437,6 +1441,24 @@ struct OverlayChannelStatusView: View {
         tint: OverlayRecordingLight.agent.color, mirrored: broadcasting
       )
       .symbolEffect(.pulse, isActive: animates && !reduceMotion)
+    } else if agentsButtonSpeaking {
+      // Mini while an agent's reply plays aloud (L15): the star wears the
+      // speaking dot's violet and blinks gently on its beat; Reduce Motion
+      // and a hidden panel hold it steady, the colour alone.
+      TimelineView(
+        .animation(
+          minimumInterval: OverlayAgentStatusDot.speakingBeat,
+          paused: reduceMotion || !animates)
+      ) { context in
+        OverlayMicrophoneGlyph(
+          character: OverlayHeaderGlyph.agents, tint: palette.agentAccent.color,
+          plateOpacity: headerSelected ? 0 : 0.12
+        )
+        .opacity(
+          Self.speakingStarOpacity(
+            at: context.date.timeIntervalSinceReferenceDate,
+            steady: reduceMotion || !animates))
+      }
     } else {
       // The chrome owns the selected wash; the glyph drops its own plate.
       OverlayMicrophoneGlyph(
@@ -1446,6 +1468,24 @@ struct OverlayChannelStatusView: View {
         plateOpacity: headerSelected ? 0 : 0.12
       )
     }
+  }
+
+  /// Mini's Agents button signals a speaking agent: one of the agents'
+  /// replies plays aloud (`speakingDigits`, the chips' and the list's own
+  /// source) and no agent capture owns the button.
+  var agentsButtonSpeaking: Bool {
+    signalsSpeaking && !agentCaptureOpen && !speakingDigits.isEmpty
+  }
+
+  /// The speaking star's faint beat is gentler than the dot's: the star is
+  /// a control, not a small mark.
+  static let speakingStarFaintOpacity = 0.6
+
+  /// The star's opacity at `time`: full and faint on the speaking dot's
+  /// beat, or full when held steady.
+  static func speakingStarOpacity(at time: TimeInterval, steady: Bool) -> Double {
+    guard !steady else { return 1 }
+    return Int(time / OverlayAgentStatusDot.speakingBeat) % 2 == 0 ? 1 : speakingStarFaintOpacity
   }
 
   var body: some View {

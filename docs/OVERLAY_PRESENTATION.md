@@ -307,6 +307,16 @@ channel the controller opens in mini or the bar keeps that form
 channel, and the Agents canvas unfolds for it only with the map off or when
 the overlay is already expanded.
 
+In mini, which has no chips, the Agents button itself says an agent is
+speaking (L15, 2026-11-06): while any agent's reply plays aloud
+(`OverlayChannelStatusView.speakingDigits`, the source of the chips' and the
+list's speaking dot) the star wears the speaking violet (`agentAccent`) and
+blinks gently on the speaking dot's beat, full and 60 %
+(`speakingStarOpacity`); Reduce Motion and a hidden panel hold it steady, in
+the colour alone. An open agent capture keeps its own glyph. The expanded
+bar's button does not change: its chips carry the dot
+(`signalsSpeaking`, set only by mini).
+
 Hovering the Agents button (✦), in mini and in the expanded bar, opens a
 small list of the mailboxes and the bound agents after a short pause
 (`OverlayAgentsHoverListChrome`, `OverlayChannelMapHoverView.swift`). It

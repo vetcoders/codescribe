@@ -1552,6 +1552,51 @@ final class OverlayChannelMapTests: XCTestCase {
     }
   }
 
+  /// Mini's Agents button turns violet and blinks while an agent's reply
+  /// plays aloud (L15), from the chips' own source; the expanded bar's
+  /// button (not signalling) stays as it was, and an agent capture keeps
+  /// its own glyph. The blink holds full when steady (Reduce Motion, a
+  /// hidden panel).
+  func testMiniAgentsButtonSignalsASpeakingAgent() throws {
+    let kuba = try owner("Kuba", channel: "5")
+    func roster(playback: String?, mini: Bool, capture: Bool = false) -> OverlayChannelStatusView {
+      let messages = playback.map { [reply($0, owner: kuba)] } ?? []
+      let conversation = OverlayConversation(
+        id: kuba.id, channel: "5", name: "Kuba", owner: kuba, messages: messages)
+      var view = OverlayChannelStatusView(
+        channels: [delivery("5", "Kuba")], unavailable: false, palette: .light,
+        animates: true, hudStates: ["5": hud(open: capture, session: "s5")],
+        conversations: [conversation], unreadCounts: [:], onSelectConversation: { _ in })
+      view.signalsSpeaking = mini
+      return view
+    }
+    for (playback, speaking) in [
+      ("playing", true), ("waiting", false), ("finished", false), (nil, false),
+    ] as [(String?, Bool)] {
+      XCTAssertEqual(
+        roster(playback: playback, mini: true).agentsButtonSpeaking, speaking,
+        "\(playback ?? "none")")
+      XCTAssertFalse(
+        roster(playback: playback, mini: false).agentsButtonSpeaking,
+        "\(playback ?? "none"): the expanded bar's button is unchanged")
+    }
+    XCTAssertFalse(
+      roster(playback: "playing", mini: true, capture: true).agentsButtonSpeaking,
+      "an agent capture owns the button")
+
+    let beat = OverlayAgentStatusDot.speakingBeat
+    typealias Status = OverlayChannelStatusView
+    XCTAssertEqual(Status.speakingStarOpacity(at: beat * 0.5, steady: false), 1)
+    XCTAssertEqual(
+      Status.speakingStarOpacity(at: beat * 1.5, steady: false), Status.speakingStarFaintOpacity)
+    XCTAssertGreaterThan(
+      Status.speakingStarFaintOpacity, OverlayAgentStatusDot.speakingFaintOpacity,
+      "the star blinks more gently than the dot")
+    for step in 0..<8 {
+      XCTAssertEqual(Status.speakingStarOpacity(at: beat * Double(step) + 0.1, steady: true), 1)
+    }
+  }
+
   // MARK: - Channel 0's name (shared channel)
 
   /// Channel 0 carries its display name like an agent: the stored name, or
