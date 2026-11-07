@@ -16464,24 +16464,6 @@
         }
       }
     },
-    "Reset" : {
-      "comment" : "Developer Lab glass tuning control",
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Reset"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Resetuj"
-          }
-        }
-      }
-    },
     "Reset %@ model" : {
       "localizations" : {
         "pl" : {
@@ -16571,6 +16553,24 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Resetowanie danych"
+          }
+        }
+      }
+    },
+    "Reset glass" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset glass"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Resetuj szkło"
           }
         }
       }

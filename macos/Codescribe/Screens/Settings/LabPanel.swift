@@ -108,7 +108,7 @@ struct LabPanel: View {
         .accessibilityIdentifier("lab-glass-amount")
         Text(verbatim: "\(Int(glassPreferences.amount(for: glassSurface) * 100))%")
           .monospacedDigit()
-        Button("Reset") {
+        Button("Reset glass") {
           glassPreferences.binding(for: glassSurface).wrappedValue = ChromeGlassTuning.defaultAmount
         }
         .accessibilityIdentifier("lab-glass-reset")
