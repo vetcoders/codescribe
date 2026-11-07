@@ -74,7 +74,17 @@ private struct CSWindowHeaderWidthReader: NSViewRepresentable {
     @objc func measure() {
       DispatchQueue.main.async { [weak self] in
         guard let self, let window else { return }
-        let left = convert(bounds, to: nil).minX
+        let rect = convert(bounds, to: nil)
+        let lightsRight = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+          .compactMap { window.standardWindowButton($0) }
+          .map { $0.convert($0.bounds, to: nil).maxX }.max() ?? 0
+        // An attached hosting view can still have its pre-layout origin.
+        // Measuring that zero origin would request the entire window width
+        // and push the real toolbar item into overflow before it is placed.
+        guard rect.width > 1, rect.minY >= window.contentLayoutRect.maxY - 1,
+          rect.minX >= lightsRight
+        else { return }
+        let left = rect.minX
         // The native toolbar's outer breathing room matches the shared
         // 8-point spacing rung. This is layout space, not a covering mask.
         let width = max(0, window.contentLayoutRect.width - left - CSSpace.sm)
