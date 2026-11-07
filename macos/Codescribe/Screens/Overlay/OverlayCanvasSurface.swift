@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// Reading surfaces retain their quiet canvas; window chrome exposes the
+/// native optical material without an additional opaque backing.
+enum OverlayGlassRole {
+  case readingCanvas
+  case chrome
+}
+
 /// Appearance-aware physical sheet. Window interaction is owned by explicit
 /// inert regions in `DictationOverlayView`, not by a full-sheet AppKit layer.
 struct OverlayCanvasSurface<Content: View>: View {
@@ -9,6 +16,7 @@ struct OverlayCanvasSurface<Content: View>: View {
   @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
   @Environment(\.csContrastOverride) private var contrastOverride
   let palette: OverlayAppearancePalette
+  var glassRole: OverlayGlassRole = .readingCanvas
   @ViewBuilder let content: Content
 
   var body: some View {
@@ -17,13 +25,16 @@ struct OverlayCanvasSurface<Content: View>: View {
         OverlayCanvasBackdrop(
           palette: palette,
           reduceTransparency: reduceTransparencyOverride ?? reduceTransparency,
-          increasedContrast: (contrastOverride ?? contrast) == .increased)
+          increasedContrast: (contrastOverride ?? contrast) == .increased,
+          role: glassRole)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
       .overlay {
-        RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
-          .strokeBorder(palette.border.color, lineWidth: 1)
-          .allowsHitTesting(false)
+        if glassRole == .readingCanvas {
+          RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
+            .strokeBorder(palette.border.color, lineWidth: 1)
+            .allowsHitTesting(false)
+        }
       }
       .shadow(
         color: .black.opacity(palette.shadowOpacity),
@@ -43,6 +54,7 @@ struct OverlayCanvasBackdrop: View {
   let reduceTransparency: Bool
   var increasedContrast = false
   var cornerRadius: CGFloat = CSRadius.window
+  var role: OverlayGlassRole = .readingCanvas
 
   var body: some View {
     ZStack {
@@ -52,10 +64,12 @@ struct OverlayCanvasBackdrop: View {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
         OverlayDesktopMaterial(palette: palette, cornerRadius: cornerRadius)
-        Rectangle()
-          .fill(Color(nsColor: Self.glassVeil(palette)))
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
+        if role == .readingCanvas {
+          Rectangle()
+            .fill(Color(nsColor: Self.glassVeil(palette)))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
       }
     }
   }
@@ -146,6 +160,7 @@ struct OverlayControlGlass: ViewModifier {
   @Environment(\.colorScheme) private var colorScheme
   var cornerRadius: CGFloat = CSRadius.window
   var isEnabled = true
+  var role: OverlayGlassRole = .readingCanvas
 
   @ViewBuilder
   func body(content: Content) -> some View {
@@ -161,7 +176,7 @@ struct OverlayControlGlass: ViewModifier {
         // than colliding line-for-line with the foreground labels.
         content
           .background {
-            if isEnabled { shape.fill(veilColor) }
+            if isEnabled && role == .readingCanvas { shape.fill(veilColor) }
           }
           .glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
           .environment(\.controlActiveState, .key)
@@ -172,7 +187,7 @@ struct OverlayControlGlass: ViewModifier {
       }
     }
     .overlay {
-      if isEnabled {
+      if isEnabled && role == .readingCanvas {
         // A short, soft contour separates glass from passing letters without
         // shadowing the panel's text or spreading across the clear gaps.
         shape.strokeBorder(
@@ -195,6 +210,7 @@ struct OverlayControlGlass: ViewModifier {
 /// as a view, so an environment read on it would see the default.
 struct OverlayComposerSurface: ViewModifier {
   let palette: OverlayAppearancePalette
+  var role: OverlayGlassRole = .readingCanvas
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
 
@@ -209,6 +225,6 @@ struct OverlayComposerSurface: ViewModifier {
         }
       }
       .modifier(
-        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !opaque))
+        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !opaque, role: role))
   }
 }

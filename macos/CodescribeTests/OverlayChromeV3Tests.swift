@@ -181,4 +181,27 @@ final class OverlayChromeV3Tests: XCTestCase {
       XCTAssertNil(descendant(OverlayDesktopGlassView.self, in: root))
     }
   }
+
+  func testChromeKeepsOneNativeMaterialAndHonoursAccessibility() throws {
+    for scheme in [ColorScheme.light, .dark] {
+      for reduced in [false, true] {
+        let root = NSHostingView(
+          rootView: OverlayCanvasBackdrop(
+            palette: .resolve(scheme), reduceTransparency: reduced, role: .chrome)
+            .environment(\.colorScheme, scheme)
+        )
+        root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
+        root.layoutSubtreeIfNeeded()
+        let glass = descendant(OverlayDesktopGlassView.self, in: root)
+        if reduced {
+          XCTAssertNil(glass, "the optical chrome must respect Reduce Transparency")
+        } else {
+          let glass = try XCTUnwrap(glass)
+          XCTAssertEqual(glass.style, .regular)
+          XCTAssertNil(glass.tintColor, "the native material supplies the chrome tone")
+          XCTAssertNil(glass.hitTest(NSPoint(x: 100, y: 100)))
+        }
+      }
+    }
+  }
 }

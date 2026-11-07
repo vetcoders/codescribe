@@ -707,7 +707,10 @@ struct DictationOverlayView: View {
   }
 
   @ViewBuilder private var overlayBody: some View {
-    OverlayCanvasSurface(palette: palette) {
+    OverlayCanvasSurface(
+      palette: palette,
+      glassRole: state.presentationMode == .expanded ? .readingCanvas : .chrome
+    ) {
       // The rail reads the live transcript (intents, versions, history
       // refusal). Scoped, a capture tick re-renders the rail, not the root.
       overlayGlassContainer(
@@ -1352,7 +1355,8 @@ struct DictationOverlayView: View {
       // Keep one header identity through morphs; only its material changes.
       .modifier(
         OverlayControlGlass(
-          cornerRadius: CSRadius.window, isEnabled: state.presentationMode == .expanded)
+          cornerRadius: CSRadius.window, isEnabled: state.presentationMode == .expanded,
+          role: .chrome)
       )
       // The cached panel survives orderOut. Observe its window beside the header
       // row so the visibility probe is installed exactly once.
