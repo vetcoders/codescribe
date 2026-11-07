@@ -7035,6 +7035,17 @@ impl RecordingController {
                     return self
                         .process_terminal_stop_error(err, |text| async move {
                             deliver_terminal_unless_settled(settled, || async {
+                                // Coverage describes the capture, not whether its
+                                // owned terminal document may be formatted. Keep
+                                // the same one-turn pass as the ordinary Stop.
+                                let text = self
+                                    .format_composer_turn_once(
+                                        session_id_snapshot.as_deref(),
+                                        runtime_settings.as_ref(),
+                                        capture_turn,
+                                        text,
+                                    )
+                                    .await;
                                 self.deliver_stop_transcript(
                                     session_id_snapshot.as_deref(),
                                     &text,
@@ -7574,6 +7585,11 @@ impl RecordingController {
                     receipt = %commit.provenance_receipt,
                     "Composer turn formatted once at terminal processing"
                 );
+                // Refused takes are archived before their retained words are
+                // delivered. Persist the accepted formatter step there too;
+                // ordinary Stop links its archive after this pass.
+                self.sync_live_archive(&presentation, &commit.session_id)
+                    .await;
                 presentation
                     .delivery_projection(runtime_settings.formatting_policy(), &source_text)
                     .map(|projection| projection.rendered_text)
