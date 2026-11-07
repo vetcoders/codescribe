@@ -3233,7 +3233,8 @@ impl RecordingController {
     /// The write guard is released before the broadcast, and the event fires
     /// only on a real change. Any arrival at `Idle` tears down the cursor badge,
     /// which is what makes finalize, cancel, error and no-speech all end with a
-    /// clean cursor instead of each path remembering to hide it.
+    /// clean cursor instead of each path remembering to hide it. The one badge
+    /// that stays is the deferred-insert capsule holding an armed transcript.
     async fn set_state_with_broadcast(
         state: &Arc<RwLock<State>>,
         event_broadcast: &broadcast::Sender<IpcEvent>,
@@ -3247,10 +3248,11 @@ impl RecordingController {
         };
 
         if old_state != new_state {
-            // Recording ended → always tear down the cursor badge (covers finalize,
-            // cancel, error, no-speech — any path back to Idle).
+            // Recording ended → tear down the cursor badge (covers finalize,
+            // cancel, error, no-speech — any path back to Idle). An armed
+            // deferred-insert capsule outlives the recording that armed it.
             if new_state == State::Idle {
-                crate::os::hold_badge::hide_hold_badge();
+                crate::os::hold_badge::end_recording_badge();
             }
             let _ = event_broadcast.send(IpcEvent {
                 timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
@@ -4600,8 +4602,13 @@ impl RecordingController {
         shortcut_label: &mut Option<String>,
         registration_failure: &mut Option<String>,
     ) -> Result<OverlayPasteDelivery> {
-        if !clipboard::arm_deferred_insert(payload) {
+        if !clipboard::arm_deferred_insert(payload.clone()) {
             return Ok(OverlayPasteDelivery::Noop);
+        }
+        // The armed text gets a draggable capsule at the caret; the overlay
+        // keeps its own copy for editing either way.
+        if config.hold_indicator && !cfg!(test) {
+            crate::os::hold_badge::show_deferred_blob(&payload);
         }
         let collision =
             shortcut_registry::deferred_insert_shortcut_conflict(config.deferred_insert_shortcut);

@@ -1,8 +1,17 @@
-//! Cursor-following "hold badge" recording indicator.
+//! Caret-anchored "hold badge" recording indicator and deferred-insert capsule.
 //!
-//! A small colored dot that floats near the text caret (via the Accessibility
-//! API) and falls back to the mouse cursor when no caret is available. Used to
-//! signal recording / processing / assistive states during dictation.
+//! A small colored dot that opens at the mouse cursor and moves once to the
+//! text caret (one off-main Accessibility lookup per take). It never chases
+//! the pointer and never polls AX afterwards: the old per-tick caret/cursor
+//! probe burned CPU and starved capture. Used to signal recording /
+//! processing / assistive states during dictation, with the live preview
+//! words in a dark capsule beside the dot.
+//!
+//! When a take's text cannot be pasted and is armed for Deferred Paste, the
+//! same panel becomes the draggable capsule ("Blobek"): it outlives the
+//! recording, pastes on click into the focused field, pastes where it is
+//! dropped after a drag, and dismisses on `×`. The armed slot itself lives in
+//! `crate::os::clipboard`; the capsule only projects it.
 //!
 //! ## K3 contract (W10-E)
 //! Size / visibility (`HOLD_BADGE_SIZE`, `HOLD_INDICATOR`) persist immediately
@@ -23,6 +32,35 @@
 #[cfg(any(target_os = "macos", test))]
 fn ax_caret_to_appkit(x: f64, y: f64, height: f64, primary_height: f64) -> (f64, f64) {
     (x, primary_height - y - height)
+}
+
+/// Bottom-left AppKit screen point → top-left CoreGraphics global point (the
+/// space `CGEvent` and `AXUIElementCopyElementAtPosition` use).
+#[cfg(any(target_os = "macos", test))]
+fn appkit_to_cg_point(x: f64, y: f64, primary_height: f64) -> (f64, f64) {
+    (x, primary_height - y)
+}
+
+/// Longest label the deferred-insert capsule paints, ellipsis included.
+const BLOB_PREVIEW_CHARS: usize = 42;
+
+/// One-line preview of an armed transcript for the draggable capsule: runs of
+/// whitespace collapse to one space and the label is capped at
+/// [`BLOB_PREVIEW_CHARS`] characters, ending in `…` when cut. The armed slot
+/// keeps the full text; this is paint only.
+pub fn blob_preview_text(text: &str) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= BLOB_PREVIEW_CHARS {
+        return normalized;
+    }
+    let mut capped = normalized
+        .chars()
+        .take(BLOB_PREVIEW_CHARS - 1)
+        .collect::<String>()
+        .trim_end()
+        .to_string();
+    capped.push('…');
+    capped
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -477,6 +515,40 @@ mod tests {
     }
 
     #[test]
+    fn blob_preview_collapses_whitespace_and_caps_at_42_characters() {
+        assert_eq!(
+            super::blob_preview_text("  krótka\n\tnotatka  "),
+            "krótka notatka"
+        );
+        assert_eq!(super::blob_preview_text(" \n\t "), "");
+        let exact = "ż".repeat(42);
+        assert_eq!(super::blob_preview_text(&exact), exact);
+        let long = super::blob_preview_text("To jest odłożona transkrypcja do przeciągnięcia");
+        assert!(long.starts_with("To jest odłożona transkrypcja"));
+        assert!(long.ends_with('…'));
+        assert!(long.chars().count() <= 42, "{long}");
+        let unicode = super::blob_preview_text(&"ź".repeat(80));
+        assert_eq!(unicode, format!("{}…", "ź".repeat(41)));
+    }
+
+    #[test]
+    fn appkit_and_cg_points_round_trip_with_the_caret_conversion() {
+        assert_eq!(
+            super::appkit_to_cg_point(100.0, 860.0, 1080.0),
+            (100.0, 220.0)
+        );
+        assert_eq!(
+            super::appkit_to_cg_point(-900.0, 1560.0, 1080.0),
+            (-900.0, -480.0)
+        );
+        // A zero-height caret lands on the same top-left point it came from.
+        for (x, y) in [(100.0, 200.0), (-900.0, -500.0), (100.0, 1300.0)] {
+            let (ax, ay) = super::ax_caret_to_appkit(x, y, 0.0, 1080.0);
+            assert_eq!(super::appkit_to_cg_point(ax, ay, 1080.0), (x, y));
+        }
+    }
+
+    #[test]
     fn cursor_widget_stays_inside_small_or_negative_screen() {
         assert_eq!(super::fit_origin(-10.0, 200.0, -1000.0, 1000.0), -200.0);
         assert_eq!(super::fit_origin(90.0, 200.0, 0.0, 100.0), 0.0);
@@ -599,24 +671,27 @@ mod tests {
 /// keeps a queued show from resurrecting a badge the user already dismissed.
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{BadgeMode, CursorVoice, FocusedInputField, HoldBadgeConfig};
+    use super::{BadgeMode, CursorVoice, FocusedInputField, HoldBadgeConfig, IndicatorState};
 
     use core_foundation::base::{CFType, CFTypeRef, TCFType};
     use core_foundation::boolean::CFBoolean;
     use core_foundation::string::CFString;
+    use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     use dispatch::Queue;
-    use objc::runtime::Class;
+    use objc::declare::ClassDecl;
+    use objc::runtime::{BOOL, Class, Object, Sel, YES};
     use objc::{msg_send, sel, sel_impl};
     use objc2_app_kit::{
         NSBackingStoreType, NSColor, NSEvent, NSWindowCollectionBehavior, NSWindowStyleMask,
     };
     use std::ptr;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::thread;
     use std::time::{Duration, Instant};
-    use tracing::{debug, warn};
+    use tracing::{debug, info, warn};
 
     use crate::os::Id;
     use crate::os::ax_ffi::{AXUIElementCopyAttributeValue, AXUIElementIsAttributeSettable};
@@ -649,6 +724,14 @@ mod imp {
         /// Bound every later AX request on `element` (never on the
         /// system-wide element: that would set the process-global timeout).
         fn AXUIElementSetMessagingTimeout(element: AXId, seconds: f32) -> i32;
+        /// Hit-test the accessibility tree at a top-left global point. Returns
+        /// a `+1` element in `element` on success.
+        fn AXUIElementCopyElementAtPosition(
+            application: AXId,
+            x: f32,
+            y: f32,
+            element: *mut AXId,
+        ) -> i32;
         /// Release a `+1` CoreFoundation handle.
         fn CFRelease(cf: *const std::ffi::c_void);
     }
@@ -731,9 +814,25 @@ mod imp {
         window: Option<usize>, // Stores the NSPanel pointer as usize to make it Send.
         timer_running: bool,
         config: HoldBadgeConfig,
-        last_position: (f64, f64),
         voice: CursorVoice,
         preview_updated_at: Option<Instant>,
+        /// Only the updater thread spawned with this epoch may keep running;
+        /// a take that restarts the updater retires the previous one.
+        updater_epoch: u64,
+        /// The panel is (or is about to become) the draggable deferred-insert
+        /// capsule. Set at request time so `end_recording_badge` keeps it even
+        /// when the paint is still queued on the main thread.
+        deferred_blob_active: bool,
+        /// The capsule paint has run on the main thread. Only a painted
+        /// capsule turns into a new take on the next show; a show queued
+        /// before the capsule request stays a mode transition.
+        deferred_blob_painted: bool,
+        /// Bumped per capsule request; TTL expiry and drop results act only
+        /// on the capsule they belong to.
+        blob_epoch: u64,
+        drag_start_mouse: (f64, f64),
+        drag_start_origin: (f64, f64),
+        is_dragging: bool,
     }
 
     lazy_static::lazy_static! {
@@ -748,9 +847,15 @@ mod imp {
             window: None,
             timer_running: false,
             config: HoldBadgeConfig::default(),
-            last_position: (f64::NAN, f64::NAN),
             voice: CursorVoice::Unobserved,
             preview_updated_at: None,
+            updater_epoch: 0,
+            deferred_blob_active: false,
+            deferred_blob_painted: false,
+            blob_epoch: 0,
+            drag_start_mouse: (0.0, 0.0),
+            drag_start_origin: (0.0, 0.0),
+            is_dragging: false,
         }));
     }
 
@@ -779,6 +884,11 @@ mod imp {
                 let Some(panel) = state.window else {
                     return;
                 };
+                // A late projection of the ended take never repaints the
+                // armed capsule's label.
+                if state.deferred_blob_active {
+                    return;
+                }
                 state.preview_updated_at = (!text.is_empty()).then_some(received_at);
                 (
                     panel as Id,
@@ -794,7 +904,7 @@ mod imp {
                 } else {
                     &text
                 };
-                paint_preview(panel, diameter, mode, base_color, fresh, voice);
+                paint_preview(panel, diameter, mode, base_color, fresh, voice, false);
             }
         });
     }
@@ -810,7 +920,7 @@ mod imp {
                 let Some(panel) = state.window else {
                     return;
                 };
-                if state.voice == voice {
+                if state.voice == voice || state.deferred_blob_active {
                     return;
                 }
                 state.voice = voice;
@@ -827,6 +937,7 @@ mod imp {
                 let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 if !super::token_is_current(token, take_token())
                     || state.window != Some(window_ptr)
+                    || state.deferred_blob_active
                     || !super::preview_expired(state.preview_updated_at, Instant::now())
                 {
                     return;
@@ -839,11 +950,59 @@ mod imp {
                     state.voice,
                 )
             };
-            unsafe { paint_preview(window_ptr as Id, paint.0, paint.1, paint.2, "", paint.3) };
+            unsafe {
+                paint_preview(
+                    window_ptr as Id,
+                    paint.0,
+                    paint.1,
+                    paint.2,
+                    "",
+                    paint.3,
+                    false,
+                )
+            };
         });
     }
 
-    /// Main-thread painting shared by text updates and mode changes.
+    /// Light label foreground on the dark capsule.
+    const LABEL_RGBA: (f64, f64, f64, f64) = (0.96, 0.96, 0.98, 1.0);
+    /// Dark glass capsule fill.
+    const CAPSULE_FILL: (f64, f64, f64, f64) = (0.09, 0.09, 0.11, 0.94);
+    /// Hairline rim during a live preview.
+    const CAPSULE_RIM_LIVE: (f64, f64, f64, f64) = (1.0, 1.0, 1.0, 0.14);
+    /// Amber rim while an armed transcript waits in the capsule.
+    const CAPSULE_RIM_DEFERRED: (f64, f64, f64, f64) = (1.0, 0.62, 0.0, 0.45);
+    const CAPSULE_PAD_X: f64 = 10.0;
+    const CAPSULE_PAD_Y: f64 = 5.0;
+    const CAPSULE_DOT_GAP: f64 = 7.0;
+    const CAPSULE_LABEL_MAX_WIDTH: f64 = 360.0;
+    const DISMISS_GAP: f64 = 4.0;
+    const DISMISS_WIDTH: f64 = 16.0;
+    /// Right-edge hit zone of the `×` glyph: its box plus the trailing pad.
+    const DISMISS_HIT_WIDTH: f64 = DISMISS_WIDTH + CAPSULE_PAD_X;
+    /// Pointer travel (points) before a press on the capsule becomes a drag.
+    const DRAG_THRESHOLD: f64 = 3.0;
+
+    /// Set a `CALayer` color property from RGBA without leaking the CGColor.
+    ///
+    /// # Safety
+    /// `layer` must be a live `CALayer`; main thread only.
+    unsafe fn set_layer_color(layer: Id, background: bool, rgba: (f64, f64, f64, f64)) {
+        unsafe {
+            let cg = create_cg_color(rgba.0, rgba.1, rgba.2, rgba.3);
+            if background {
+                let _: () = msg_send![layer, setBackgroundColor: cg];
+            } else {
+                let _: () = msg_send![layer, setBorderColor: cg];
+            }
+            CGColorRelease(cg);
+        }
+    }
+
+    /// Main-thread painting shared by text updates, mode changes and the
+    /// deferred-insert capsule. Subview order is a contract: `[0]` the dot,
+    /// `[1]` the preview label (its `stringValue` is the exact preview), `[2]`
+    /// the `×` dismiss glyph shown only on the armed capsule.
     unsafe fn paint_preview(
         panel: Id,
         diameter: f64,
@@ -851,6 +1010,7 @@ mod imp {
         base_color: (f64, f64, f64, f64),
         text: &str,
         voice: CursorVoice,
+        deferred: bool,
     ) {
         unsafe {
             let content: Id = msg_send![panel, contentView];
@@ -859,35 +1019,111 @@ mod imp {
             if count < 2 {
                 return;
             }
+            let dot: Id = msg_send![children, objectAtIndex: 0usize];
             let label: Id = msg_send![children, objectAtIndex: 1usize];
+            let dismiss: Option<Id> =
+                (count > 2).then(|| msg_send![children, objectAtIndex: 2usize]);
             let value = CFString::new(text);
             let _: () = msg_send![label, setStringValue: value.as_concrete_TypeRef() as Id];
             let _: () = msg_send![label, setHidden: text.is_empty()];
-            let _: () = msg_send![label, sizeToFit];
-            let label_frame: CGRect = msg_send![label, frame];
-            let width = label_frame.size.width.min(360.0);
-            let height = label_frame.size.height.max(diameter);
-            let frame = CGRect {
-                origin: CGPoint {
-                    x: diameter + 6.0,
-                    y: 0.0,
-                },
-                size: CGSize { width, height },
-            };
-            let _: () = msg_send![label, setFrame: frame];
-            let size = CGSize {
-                width: if text.is_empty() {
-                    diameter
+            if let Some(dismiss) = dismiss {
+                let _: () = msg_send![dismiss, setHidden: !deferred];
+            }
+            let content_layer: Id = msg_send![content, layer];
+            let size = if text.is_empty() && !deferred {
+                let _: () = msg_send![dot, setFrameOrigin: CGPoint { x: 0.0, y: 0.0 }];
+                if !content_layer.is_null() {
+                    set_layer_color(content_layer, true, (0.0, 0.0, 0.0, 0.0));
+                    let _: () = msg_send![content_layer, setBorderWidth: 0.0f64];
+                    let _: () = msg_send![content_layer, setCornerRadius: 0.0f64];
+                }
+                CGSize {
+                    width: diameter,
+                    height: diameter,
+                }
+            } else {
+                let _: () = msg_send![label, sizeToFit];
+                let label_frame: CGRect = msg_send![label, frame];
+                let label_width = if text.is_empty() {
+                    0.0
                 } else {
-                    diameter + 6.0 + width
-                },
-                height,
+                    label_frame.size.width.min(CAPSULE_LABEL_MAX_WIDTH)
+                };
+                let label_height = label_frame.size.height;
+                let pill_height = (label_height + CAPSULE_PAD_Y * 2.0).max(diameter + 10.0);
+                let mut x = CAPSULE_PAD_X;
+                let dot_origin = CGPoint {
+                    x,
+                    y: (pill_height - diameter) / 2.0,
+                };
+                let _: () = msg_send![dot, setFrameOrigin: dot_origin];
+                x += diameter;
+                if !text.is_empty() {
+                    x += CAPSULE_DOT_GAP;
+                    let frame = CGRect {
+                        origin: CGPoint {
+                            x,
+                            y: (pill_height - label_height) / 2.0,
+                        },
+                        size: CGSize {
+                            width: label_width,
+                            height: label_height,
+                        },
+                    };
+                    let _: () = msg_send![label, setFrame: frame];
+                    x += label_width;
+                }
+                if deferred && let Some(dismiss) = dismiss {
+                    x += DISMISS_GAP;
+                    let _: () = msg_send![dismiss, sizeToFit];
+                    let glyph: CGRect = msg_send![dismiss, frame];
+                    let glyph_width = glyph.size.width.min(DISMISS_WIDTH);
+                    let frame = CGRect {
+                        origin: CGPoint {
+                            x: x + (DISMISS_WIDTH - glyph_width) / 2.0,
+                            y: (pill_height - glyph.size.height) / 2.0,
+                        },
+                        size: CGSize {
+                            width: glyph_width,
+                            height: glyph.size.height,
+                        },
+                    };
+                    let _: () = msg_send![dismiss, setFrame: frame];
+                    x += DISMISS_WIDTH;
+                }
+                x += CAPSULE_PAD_X;
+                if !content_layer.is_null() {
+                    set_layer_color(content_layer, true, CAPSULE_FILL);
+                    let _: () = msg_send![content_layer, setCornerRadius: pill_height / 2.0];
+                    let _: () = msg_send![content_layer, setMasksToBounds: true];
+                    let _: () = msg_send![content_layer, setBorderWidth: 1.0f64];
+                    let rim = if deferred {
+                        CAPSULE_RIM_DEFERRED
+                    } else {
+                        CAPSULE_RIM_LIVE
+                    };
+                    set_layer_color(content_layer, false, rim);
+                }
+                CGSize {
+                    width: x,
+                    height: pill_height,
+                }
             };
             let _: () = msg_send![panel, setContentSize: size];
             let panel_frame: CGRect = msg_send![panel, frame];
             let origin = fit_panel_origin(panel, panel_frame.origin.x, panel_frame.origin.y);
             let _: () = msg_send![panel, setFrameOrigin: origin];
-            paint_voice_state(panel, mode, base_color, voice);
+            if deferred {
+                // The armed capsule wears the owed-words amber, steady.
+                let layer: Id = msg_send![dot, layer];
+                if !layer.is_null() {
+                    set_layer_color(layer, true, IndicatorState::WordsOwed.color());
+                    let _: () = msg_send![layer, setBorderWidth: 0.0f64];
+                    let _: () = msg_send![layer, setOpacity: 1.0f32];
+                }
+            } else {
+                paint_voice_state(panel, mode, base_color, voice);
+            }
         }
     }
 
@@ -1058,6 +1294,9 @@ mod imp {
                 CFRelease(focused);
                 return None;
             }
+            // One slow host must not stall the anchor thread for the default
+            // AX timeout while the selection and its bounds are read.
+            AXUIElementSetMessagingTimeout(focused, 0.05);
             let mut range: AXId = ptr::null_mut();
             let attr = CFString::new(AX_SELECTED_TEXT_RANGE_ATTRIBUTE);
             let result = AXUIElementCopyAttributeValue(
@@ -1110,9 +1349,53 @@ mod imp {
         (mouse_location.x, mouse_location.y)
     }
 
-    /// Get the best available position for the badge (caret or cursor)
-    fn get_badge_position() -> (f64, f64) {
-        get_caret_position().unwrap_or_else(get_cursor_position)
+    /// Anchor the panel once at the caret, off the main thread.
+    ///
+    /// The panel already sits at the cursor; this single AX lookup moves it to
+    /// the caret when the focused host exposes one, and never runs again for
+    /// the take. Nothing polls the mouse or the AX server afterwards, so the
+    /// badge stays where the words are going instead of chasing the pointer.
+    fn spawn_caret_anchor(generation: u64, window_ptr: usize, offset: (f64, f64)) {
+        let spawned = thread::Builder::new()
+            .name("hold-badge-caret".into())
+            .spawn(move || {
+                let Some((caret_x, caret_y)) = get_caret_position() else {
+                    return;
+                };
+                if !super::token_is_current(generation, take_token()) {
+                    return;
+                }
+                Queue::main().exec_async(move || {
+                    {
+                        let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                        if !super::token_is_current(generation, take_token())
+                            || state.window != Some(window_ptr)
+                            || state.is_dragging
+                        {
+                            return;
+                        }
+                    }
+                    let panel = window_ptr as Id;
+                    unsafe {
+                        let origin =
+                            fit_panel_origin(panel, caret_x + offset.0, caret_y + offset.1);
+                        let _: () = msg_send![panel, setFrameOrigin: origin];
+                    }
+                });
+            });
+        if let Err(error) = spawned {
+            debug!("hold-badge caret anchor unavailable: {error}");
+        }
+    }
+
+    /// Place `panel` at the cursor plus the configured offset, fitted to the
+    /// screen under it. Main thread only.
+    unsafe fn place_at_cursor(panel: Id, offset: (f64, f64)) {
+        unsafe {
+            let (x, y) = get_cursor_position();
+            let origin = fit_panel_origin(panel, x + offset.0, y + offset.1);
+            let _: () = msg_send![panel, setFrameOrigin: origin];
+        }
     }
 
     /// Called only on the main queue, where AppKit owns screen and panel geometry.
@@ -1272,8 +1555,18 @@ mod imp {
                 | NSWindowCollectionBehavior::IgnoresCycle;
             let _: () = msg_send![panel, setCollectionBehavior: collection_behavior];
 
+            // The draggable capsule's mouse handling lives on the content view;
+            // the panel stays non-activating, so a press never steals focus.
+            let view_class = badge_view_class();
+            let content_view: Id = msg_send![view_class, alloc];
+            let content_frame = CGRect {
+                origin: CGPoint { x: 0.0, y: 0.0 },
+                size: panel_frame.size,
+            };
+            let content_view: Id = msg_send![content_view, initWithFrame: content_frame];
+            let _: () = msg_send![panel, setContentView: content_view];
+            let _: () = msg_send![content_view, release];
             // Enable layer-backed views for better transparency/compositing
-            let content_view: Id = msg_send![panel, contentView];
             let _: () = msg_send![content_view, setWantsLayer: true];
 
             // Create badge view (circular colored indicator)
@@ -1288,10 +1581,49 @@ mod imp {
             let label_class = Class::get("NSTextField").unwrap();
             let label: Id =
                 msg_send![label_class, labelWithString: empty.as_concrete_TypeRef() as Id];
+            style_capsule_text(label, 12.5, LABEL_RGBA);
+            // NSLineBreakByTruncatingTail: one line, cut at the capsule edge.
+            let _: () = msg_send![label, setLineBreakMode: 4usize];
+            let _: () = msg_send![label, setMaximumNumberOfLines: 1isize];
             let _: () = msg_send![label, setHidden: true];
             add_subview(content_view, label);
 
+            let glyph = CFString::new("×");
+            let dismiss: Id =
+                msg_send![label_class, labelWithString: glyph.as_concrete_TypeRef() as Id];
+            style_capsule_text(dismiss, 13.0, (1.0, 1.0, 1.0, 0.65));
+            let _: () = msg_send![dismiss, setHidden: true];
+            add_subview(content_view, dismiss);
+
             panel
+        }
+    }
+
+    /// Medium system font and an sRGB foreground for a capsule label.
+    ///
+    /// # Safety
+    /// `label` must be a live `NSTextField`; main thread only.
+    unsafe fn style_capsule_text(label: Id, size: f64, rgba: (f64, f64, f64, f64)) {
+        unsafe {
+            // NSFontWeightMedium.
+            let font: Id = msg_send![
+                Class::get("NSFont").unwrap(),
+                systemFontOfSize: size
+                weight: 0.23f64
+            ];
+            if !font.is_null() {
+                let _: () = msg_send![label, setFont: font];
+            }
+            let color: Id = msg_send![
+                Class::get("NSColor").unwrap(),
+                colorWithSRGBRed: rgba.0
+                green: rgba.1
+                blue: rgba.2
+                alpha: rgba.3
+            ];
+            if !color.is_null() {
+                let _: () = msg_send![label, setTextColor: color];
+            }
         }
     }
 
@@ -1315,25 +1647,43 @@ mod imp {
         debug!("Showing hold badge (diameter={})", config.diameter);
         // A mode transition belongs to the same take. Keep its existing label
         // and window; recreating the panel loses the last projection at Stop.
+        // A painted deferred-insert capsule is different: the next show is a
+        // new take, which reclaims the same panel as a live badge.
         let existing = {
             let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
             if generation != BADGE_GENERATION.load(Ordering::SeqCst) {
                 return;
             }
+            let reclaim = state.deferred_blob_painted;
             state.window.map(|panel| {
                 state.config = config.clone();
-                state.last_position = (f64::NAN, f64::NAN);
-                (panel as Id, state.voice)
+                let updater_epoch = reclaim.then(|| {
+                    state.deferred_blob_active = false;
+                    state.deferred_blob_painted = false;
+                    state.is_dragging = false;
+                    state.voice = CursorVoice::Unobserved;
+                    state.preview_updated_at = None;
+                    state.timer_running = true;
+                    state.updater_epoch += 1;
+                    state.updater_epoch
+                });
+                (panel, state.voice, updater_epoch)
             })
         };
-        if let Some((panel, voice)) = existing {
+        if let Some((panel_ptr, voice, reclaimed)) = existing {
+            let panel = panel_ptr as Id;
             unsafe {
                 let content: Id = msg_send![panel, contentView];
                 let children: Id = msg_send![content, subviews];
                 let dot: Id = msg_send![children, objectAtIndex: 0usize];
-                let label: Id = msg_send![children, objectAtIndex: 1usize];
-                let value: Id = msg_send![label, stringValue];
-                let text = CFString::wrap_under_get_rule(value.cast()).to_string();
+                let text = if reclaimed.is_some() {
+                    // The armed transcript is not this take's preview.
+                    String::new()
+                } else {
+                    let label: Id = msg_send![children, objectAtIndex: 1usize];
+                    let value: Id = msg_send![label, stringValue];
+                    CFString::wrap_under_get_rule(value.cast()).to_string()
+                };
                 let size = CGSize {
                     width: config.diameter,
                     height: config.diameter,
@@ -1342,6 +1692,9 @@ mod imp {
                 let layer: Id = msg_send![dot, layer];
                 let _: () = msg_send![layer, setCornerRadius: config.diameter / 2.0];
                 let _: () = msg_send![layer, setOpacity: 1.0f32];
+                if reclaimed.is_some() {
+                    let _: () = msg_send![panel, setIgnoresMouseEvents: true];
+                }
                 paint_preview(
                     panel,
                     config.diameter,
@@ -1349,13 +1702,24 @@ mod imp {
                     config.color,
                     &text,
                     voice,
+                    false,
                 );
+                if reclaimed.is_some() {
+                    place_at_cursor(panel, config.offset);
+                    // A drop in flight may have ordered the capsule out.
+                    panel_show(panel);
+                }
+            }
+            if let Some(updater_epoch) = reclaimed {
+                spawn_caret_anchor(generation, panel_ptr, config.offset);
+                spawn_updater(generation, updater_epoch, config.update_interval_ms);
             }
             return;
         }
         unsafe {
             // Create new badge panel (MUST be on main thread)
             let panel = create_badge_panel(&config);
+            place_at_cursor(panel, config.offset);
 
             // Make panel visible without activating the app.
             panel_show(panel);
@@ -1364,9 +1728,8 @@ mod imp {
             let content_view: Id = msg_send![panel, contentView];
             let _: () = msg_send![content_view, setNeedsDisplay: true];
 
-            // Update shared state and determine whether we need to start the updater thread.
-            let update_interval = config.update_interval_ms;
-            let start_updater;
+            // Update shared state; every new panel gets its own updater epoch.
+            let updater_epoch;
             {
                 let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 // Re-check under the lock: a hide that landed between the top-of-fn
@@ -1379,132 +1742,122 @@ mod imp {
                     debug!("Aborting hold-badge show; hide raced in during panel creation");
                     return;
                 }
-                let was_running = state.timer_running;
                 state.window = Some(panel as usize);
                 state.config = config.clone();
                 state.timer_running = true;
-                state.last_position = (f64::NAN, f64::NAN);
                 state.voice = CursorVoice::Unobserved;
                 state.preview_updated_at = None;
-                start_updater = !was_running;
+                // A capsule requested after this show was queued keeps its
+                // claim: its paint runs next and takes over this panel.
+                state.is_dragging = false;
+                state.updater_epoch += 1;
+                updater_epoch = state.updater_epoch;
             }
+            spawn_caret_anchor(generation, panel as usize, config.offset);
+            spawn_updater(generation, updater_epoch, config.update_interval_ms);
+        }
+    }
 
-            // Start a SINGLE position updater thread. Subsequent calls to `show_*` just update state.
-            if start_updater {
-                thread::spawn(move || {
-                    let mut pulse_phase: f64 = 0.0;
-                    let pulse_speed = 0.15; // Radians per update cycle
+    /// The take's pulse and preview-expiry clock.
+    ///
+    /// It never reads the caret or the cursor: the panel was anchored once at
+    /// show time. A tick dispatches to the main thread only when the dot
+    /// pulses or a preview label is due to expire; a solid Hold dot with no
+    /// preview costs no main-thread work at all.
+    fn spawn_updater(generation: u64, epoch: u64, update_interval_ms: u64) {
+        let spawned = thread::Builder::new()
+            .name("hold-badge-updater".into())
+            .spawn(move || {
+                let mut pulse_phase: f64 = 0.0;
+                let pulse_speed = 0.15; // Radians per update cycle
 
-                    loop {
-                        thread::sleep(Duration::from_millis(update_interval));
+                loop {
+                    thread::sleep(Duration::from_millis(update_interval_ms));
 
-                        // Snapshot state without blocking the main thread. Never hold the lock
-                        // during AX queries (get_badge_position), which can be slow or stall.
-                        let (window_ptr, config, should_pulse, last_position, preview_due) = {
+                    // Snapshot state without blocking the main thread.
+                    let (window_ptr, mode, should_pulse, preview_due) = {
+                        use std::sync::TryLockError;
+                        let state = match BADGE_STATE.try_lock() {
+                            Ok(state) => state,
+                            Err(TryLockError::Poisoned(err)) => err.into_inner(),
+                            Err(TryLockError::WouldBlock) => {
+                                // Skip this tick if the state is busy; avoid blocking UI.
+                                continue;
+                            }
+                        };
+                        if !state.timer_running
+                            || state.updater_epoch != epoch
+                            || !super::token_is_current(generation, take_token())
+                        {
+                            break;
+                        }
+                        (
+                            state.window,
+                            state.config.mode,
+                            state.config.mode.voice_pulses(state.voice),
+                            super::preview_expired(state.preview_updated_at, Instant::now()),
+                        )
+                    };
+
+                    let Some(window_ptr) = window_ptr else {
+                        continue;
+                    };
+
+                    if preview_due {
+                        expire_transcript(generation, window_ptr);
+                    }
+                    if !should_pulse {
+                        continue;
+                    }
+
+                    // Pulse opacity: sine wave from 0.4 to 1.0.
+                    pulse_phase += pulse_speed;
+                    let pulse_opacity = 0.7 + 0.3 * pulse_phase.sin();
+
+                    Queue::main().exec_async(move || {
+                        // Ensure state is still valid; do not block UI if busy.
+                        {
                             use std::sync::TryLockError;
                             let state = match BADGE_STATE.try_lock() {
                                 Ok(state) => state,
                                 Err(TryLockError::Poisoned(err)) => err.into_inner(),
-                                Err(TryLockError::WouldBlock) => {
-                                    // Skip this tick if the state is busy; avoid blocking UI.
-                                    continue;
-                                }
+                                Err(TryLockError::WouldBlock) => return,
                             };
+                            // A steady voice painted since the snapshot owns opacity.
                             if !state.timer_running
+                                || state.updater_epoch != epoch
+                                || state.window != Some(window_ptr)
+                                || state.config.mode != mode
+                                || state.deferred_blob_active
                                 || !super::token_is_current(generation, take_token())
+                                || !state.config.mode.voice_pulses(state.voice)
                             {
-                                break;
+                                return;
                             }
-                            (
-                                state.window,
-                                state.config.clone(),
-                                state.config.mode.voice_pulses(state.voice),
-                                state.last_position,
-                                super::preview_expired(state.preview_updated_at, Instant::now()),
-                            )
-                        };
-
-                        let Some(window_ptr) = window_ptr else {
-                            continue;
-                        };
-
-                        if preview_due {
-                            expire_transcript(generation, window_ptr);
                         }
 
-                        // Calculate pulse opacity (sine wave from 0.4 to 1.0)
-                        let pulse_opacity = if should_pulse {
-                            pulse_phase += pulse_speed;
-                            0.7 + 0.3 * pulse_phase.sin() // Range: 0.4 to 1.0
-                        } else {
-                            1.0
-                        };
-
-                        // Check if cursor actually moved (hysteresis: skip if < 2px)
-                        let (new_x, new_y) = get_badge_position();
-                        let (lx, ly) = last_position;
-                        let first_sample = lx.is_nan();
-                        let moved_x = (new_x - lx).abs() > 2.0;
-                        let moved_y = (new_y - ly).abs() > 2.0;
-                        let position_changed = first_sample || moved_x || moved_y;
-
-                        // Skip main-thread dispatch entirely when nothing visual changed
-                        if !position_changed && !should_pulse {
-                            continue;
+                        let window = window_ptr as Id;
+                        unsafe {
+                            let content_view: Id = msg_send![window, contentView];
+                            if content_view.is_null() {
+                                return;
+                            }
+                            let subviews: Id = msg_send![content_view, subviews];
+                            let count: usize = msg_send![subviews, count];
+                            if count == 0 {
+                                return;
+                            }
+                            let badge_view: Id = msg_send![subviews, objectAtIndex: 0usize];
+                            let layer: Id = msg_send![badge_view, layer];
+                            if !layer.is_null() {
+                                let _: () = msg_send![layer, setOpacity: pulse_opacity as f32];
+                            }
                         }
-
-                        let adjusted_x = new_x + config.offset.0;
-                        let adjusted_y = new_y + config.offset.1;
-
-                        // Position and opacity updates need main thread
-                        Queue::main().exec_async(move || {
-                            let still_pulsing;
-                            // Ensure state is still valid; do not block UI if busy.
-                            {
-                                use std::sync::TryLockError;
-                                let mut state = match BADGE_STATE.try_lock() {
-                                    Ok(state) => state,
-                                    Err(TryLockError::Poisoned(err)) => err.into_inner(),
-                                    Err(TryLockError::WouldBlock) => return,
-                                };
-                                if !state.timer_running
-                                    || state.window != Some(window_ptr)
-                                    || state.config.mode != config.mode
-                                    || !super::token_is_current(generation, take_token())
-                                {
-                                    return;
-                                }
-                                state.last_position = (new_x, new_y);
-                                // A steady voice painted since the snapshot owns opacity.
-                                still_pulsing = state.config.mode.voice_pulses(state.voice);
-                            }
-
-                            let window = window_ptr as Id;
-                            if position_changed {
-                                let new_origin = fit_panel_origin(window, adjusted_x, adjusted_y);
-                                let _: () = msg_send![window, setFrameOrigin: new_origin];
-                            }
-
-                            if should_pulse && still_pulsing {
-                                let content_view: Id = msg_send![window, contentView];
-                                if !content_view.is_null() {
-                                    let subviews: Id = msg_send![content_view, subviews];
-                                    let count: usize = msg_send![subviews, count];
-                                    if count > 0 {
-                                        let badge_view: Id =
-                                            msg_send![subviews, objectAtIndex: 0usize];
-                                        let layer: Id = msg_send![badge_view, layer];
-                                        if !layer.is_null() {
-                                            let _: () =
-                                                msg_send![layer, setOpacity: pulse_opacity as f32];
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                });
-            }
+                    });
+                }
+            });
+        if let Err(error) = spawned {
+            debug!("hold-badge updater unavailable: {error}");
         }
     }
 
@@ -1537,6 +1890,9 @@ mod imp {
             let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.timer_running = false;
             state.voice = CursorVoice::Unobserved;
+            state.deferred_blob_active = false;
+            state.deferred_blob_painted = false;
+            state.is_dragging = false;
             state.window.take()
         };
 
@@ -1546,6 +1902,434 @@ mod imp {
                 unsafe {
                     panel_close(panel_ptr as Id);
                 }
+            }
+        });
+    }
+
+    /// End-of-recording teardown (`State::Idle`). An armed deferred-insert
+    /// capsule outlives the recording that armed it; any other badge goes.
+    pub fn end_recording_badge() {
+        if is_deferred_blob_active() {
+            debug!("Recording ended; the deferred-insert capsule stays armed");
+            return;
+        }
+        hide_hold_badge();
+    }
+
+    /// Dismiss the deferred-insert capsule, and only the capsule: a live take
+    /// badge is left alone.
+    pub fn hide_deferred_blob() {
+        if is_deferred_blob_active() {
+            hide_hold_badge();
+        }
+    }
+
+    /// Whether the panel is (or is about to be painted as) the armed capsule.
+    pub fn is_deferred_blob_active() -> bool {
+        BADGE_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .deferred_blob_active
+    }
+
+    /// Hide the capsule only if it is still the one requested as `epoch`.
+    fn hide_blob_epoch(epoch: u64) {
+        let current = {
+            let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.deferred_blob_active && state.blob_epoch == epoch
+        };
+        if current {
+            hide_hold_badge();
+        }
+    }
+
+    /// Turn the badge into the draggable deferred-insert capsule ("Blobek").
+    ///
+    /// The armed transcript stays in the clipboard module's slot; the capsule
+    /// is its projection. It survives the end of the recording, accepts mouse
+    /// input without activating Codescribe, pastes into the focused field on
+    /// a click, pastes where it is dropped after a drag, and dismisses on `×`.
+    /// It expires with the slot after [`crate::os::clipboard::DEFERRED_INSERT_TTL`].
+    pub fn show_deferred_blob(text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let preview = super::blob_preview_text(text);
+        // Claimed at request time: `end_recording_badge` may run before the
+        // main thread paints, and must already see an armed capsule.
+        let epoch = {
+            let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.deferred_blob_active = true;
+            state.timer_running = false;
+            state.preview_updated_at = None;
+            state.is_dragging = false;
+            state.blob_epoch += 1;
+            state.blob_epoch
+        };
+        Queue::main().exec_async(move || show_deferred_blob_impl(&preview, epoch));
+        let ttl = crate::os::clipboard::DEFERRED_INSERT_TTL;
+        let spawned = thread::Builder::new()
+            .name("hold-badge-blob-ttl".into())
+            .spawn(move || {
+                thread::sleep(ttl);
+                hide_blob_epoch(epoch);
+            });
+        if let Err(error) = spawned {
+            debug!("deferred capsule TTL thread unavailable: {error}");
+        }
+    }
+
+    /// Main-thread half of [`show_deferred_blob`].
+    fn show_deferred_blob_impl(preview: &str, epoch: u64) {
+        let (existing, config) = {
+            let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            if !state.deferred_blob_active || state.blob_epoch != epoch {
+                return;
+            }
+            (state.window, state.config.clone())
+        };
+        let panel_ptr = match existing {
+            Some(panel) => panel,
+            None => unsafe {
+                let panel = create_badge_panel(&config);
+                place_at_cursor(panel, config.offset);
+                {
+                    let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                    if !state.deferred_blob_active
+                        || state.blob_epoch != epoch
+                        || state.window.is_some()
+                    {
+                        drop(state);
+                        panel_close(panel);
+                        return;
+                    }
+                    state.window = Some(panel as usize);
+                }
+                spawn_caret_anchor(take_token(), panel as usize, config.offset);
+                panel as usize
+            },
+        };
+        {
+            let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.deferred_blob_painted = true;
+            // A show queued before this request may have restarted the clock.
+            state.timer_running = false;
+            state.preview_updated_at = None;
+        }
+        let panel = panel_ptr as Id;
+        unsafe {
+            let _: () = msg_send![panel, setIgnoresMouseEvents: false];
+            let _: () = msg_send![panel, setHasShadow: true];
+            let content: Id = msg_send![panel, contentView];
+            let children: Id = msg_send![content, subviews];
+            let dot: Id = msg_send![children, objectAtIndex: 0usize];
+            let size = CGSize {
+                width: config.diameter,
+                height: config.diameter,
+            };
+            let _: () = msg_send![dot, setFrameSize: size];
+            let layer: Id = msg_send![dot, layer];
+            if !layer.is_null() {
+                let _: () = msg_send![layer, setCornerRadius: config.diameter / 2.0];
+            }
+            paint_preview(
+                panel,
+                config.diameter,
+                config.mode,
+                config.color,
+                preview,
+                CursorVoice::Unobserved,
+                true,
+            );
+            panel_show(panel);
+        }
+    }
+
+    /// Lazily register `CodescribeHoldBadgeView`, the badge panel's content
+    /// view. It carries the capsule's press / drag / release handling; the
+    /// live take badge ignores mouse events at the panel level and never
+    /// reaches these methods.
+    fn badge_view_class() -> &'static Class {
+        static CLASS: OnceLock<usize> = OnceLock::new();
+        let class = *CLASS.get_or_init(|| {
+            let superclass = Class::get("NSView").expect("NSView class missing");
+            let mut decl =
+                ClassDecl::new("CodescribeHoldBadgeView", superclass).expect("class decl");
+            unsafe {
+                decl.add_method(
+                    sel!(acceptsFirstMouse:),
+                    badge_accepts_first_mouse as extern "C" fn(&Object, Sel, Id) -> BOOL,
+                );
+                decl.add_method(
+                    sel!(mouseDown:),
+                    badge_mouse_down as extern "C" fn(&Object, Sel, Id),
+                );
+                decl.add_method(
+                    sel!(mouseDragged:),
+                    badge_mouse_dragged as extern "C" fn(&Object, Sel, Id),
+                );
+                decl.add_method(
+                    sel!(mouseUp:),
+                    badge_mouse_up as extern "C" fn(&Object, Sel, Id),
+                );
+            }
+            decl.register() as *const Class as usize
+        });
+        // SAFETY: registered classes live for the whole process.
+        unsafe { &*(class as *const Class) }
+    }
+
+    /// The first press drags the capsule without activating Codescribe.
+    extern "C" fn badge_accepts_first_mouse(_this: &Object, _sel: Sel, _event: Id) -> BOOL {
+        YES
+    }
+
+    extern "C" fn badge_mouse_down(this: &Object, _sel: Sel, _event: Id) {
+        let window: Id = unsafe { msg_send![this, window] };
+        if window.is_null() {
+            return;
+        }
+        let frame: CGRect = unsafe { msg_send![window, frame] };
+        let mouse = NSEvent::mouseLocation();
+        let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.deferred_blob_active {
+            return;
+        }
+        state.drag_start_mouse = (mouse.x, mouse.y);
+        state.drag_start_origin = (frame.origin.x, frame.origin.y);
+        state.is_dragging = false;
+    }
+
+    extern "C" fn badge_mouse_dragged(this: &Object, _sel: Sel, _event: Id) {
+        let mouse = NSEvent::mouseLocation();
+        let origin = {
+            let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            if !state.deferred_blob_active {
+                return;
+            }
+            let dx = mouse.x - state.drag_start_mouse.0;
+            let dy = mouse.y - state.drag_start_mouse.1;
+            if !state.is_dragging && dx.hypot(dy) > DRAG_THRESHOLD {
+                state.is_dragging = true;
+            }
+            if !state.is_dragging {
+                return;
+            }
+            CGPoint {
+                x: state.drag_start_origin.0 + dx,
+                y: state.drag_start_origin.1 + dy,
+            }
+        };
+        let window: Id = unsafe { msg_send![this, window] };
+        if !window.is_null() {
+            let _: () = unsafe { msg_send![window, setFrameOrigin: origin] };
+        }
+    }
+
+    extern "C" fn badge_mouse_up(this: &Object, _sel: Sel, event: Id) {
+        let (active, dragged, epoch) = {
+            let mut state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let dragged = state.is_dragging;
+            state.is_dragging = false;
+            (state.deferred_blob_active, dragged, state.blob_epoch)
+        };
+        if !active {
+            return;
+        }
+        if dragged {
+            let drop_mouse = NSEvent::mouseLocation();
+            complete_blob_drop(drop_mouse.x, drop_mouse.y);
+            return;
+        }
+        let window: Id = unsafe { msg_send![this, window] };
+        if window.is_null() || event.is_null() {
+            return;
+        }
+        let location: CGPoint = unsafe { msg_send![event, locationInWindow] };
+        let frame: CGRect = unsafe { msg_send![window, frame] };
+        if location.x >= frame.size.width - DISMISS_HIT_WIDTH {
+            info!("Deferred-insert capsule dismissed");
+            crate::os::clipboard::clear_deferred_insert();
+            hide_hold_badge();
+            return;
+        }
+        // A click on the body pastes into the field that still has focus:
+        // the non-activating panel never took it.
+        let spawned = thread::Builder::new()
+            .name("hold-badge-click".into())
+            .spawn(
+                move || match crate::os::clipboard::deliver_deferred_insert_with_runtime_defaults()
+                {
+                    Ok(outcome) => {
+                        debug!(?outcome, "Deferred-insert capsule click settled");
+                        hide_blob_epoch(epoch);
+                    }
+                    Err(error) => warn!(%error, "Deferred-insert capsule click kept the text"),
+                },
+            );
+        if let Err(error) = spawned {
+            warn!("deferred capsule click thread unavailable: {error}");
+        }
+    }
+
+    /// Frontmost application's pid, read through NSWorkspace.
+    fn frontmost_pid() -> Option<i32> {
+        unsafe {
+            let class = Class::get("NSWorkspace")?;
+            let workspace: Id = msg_send![class, sharedWorkspace];
+            if workspace.is_null() {
+                return None;
+            }
+            let app: Id = msg_send![workspace, frontmostApplication];
+            if app.is_null() {
+                return None;
+            }
+            let pid: i32 = msg_send![app, processIdentifier];
+            (pid > 0).then_some(pid)
+        }
+    }
+
+    /// Owning process of the accessibility element under a top-left global
+    /// point, or `None` when nothing answers there.
+    fn pid_at_point(cg_x: f64, cg_y: f64) -> Option<i32> {
+        unsafe {
+            let system_wide = AXUIElementCreateSystemWide();
+            if system_wide.is_null() {
+                return None;
+            }
+            let mut element: AXId = ptr::null_mut();
+            let result = AXUIElementCopyElementAtPosition(
+                system_wide,
+                cg_x as f32,
+                cg_y as f32,
+                &mut element,
+            );
+            CFRelease(system_wide);
+            if result != AX_ERROR_SUCCESS || element.is_null() {
+                return None;
+            }
+            let mut pid: i32 = 0;
+            let ok = AXUIElementGetPid(element, &mut pid) == AX_ERROR_SUCCESS;
+            CFRelease(element);
+            (ok && pid > 0).then_some(pid)
+        }
+    }
+
+    /// Bring the app under the drop point to the front and wait briefly for
+    /// the window server to agree.
+    fn activate_app_at(cg_x: f64, cg_y: f64) {
+        let Some(target_pid) = pid_at_point(cg_x, cg_y) else {
+            return;
+        };
+        if target_pid == std::process::id() as i32 {
+            return;
+        }
+        unsafe {
+            let Some(class) = Class::get("NSRunningApplication") else {
+                return;
+            };
+            let app: Id = msg_send![class, runningApplicationWithProcessIdentifier: target_pid];
+            if app.is_null() {
+                return;
+            }
+            // NSApplicationActivateIgnoringOtherApps.
+            let _: BOOL = msg_send![app, activateWithOptions: 1usize << 1];
+        }
+        for _ in 0..15 {
+            if frontmost_pid() == Some(target_pid) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// One synthetic left click at a top-left global point: it focuses the
+    /// window and text field under the drop and places the caret there.
+    fn post_click(cg_x: f64, cg_y: f64) {
+        let point = CGPoint::new(cg_x, cg_y);
+        for (kind, pause) in [
+            (CGEventType::LeftMouseDown, Duration::from_millis(15)),
+            (CGEventType::LeftMouseUp, Duration::ZERO),
+        ] {
+            let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
+                warn!("Deferred-insert drop: no CGEventSource for the click");
+                return;
+            };
+            let Ok(event) = CGEvent::new_mouse_event(source, kind, point, CGMouseButton::Left)
+            else {
+                warn!("Deferred-insert drop: could not create the click");
+                return;
+            };
+            event.post(CGEventTapLocation::HID);
+            if !pause.is_zero() {
+                thread::sleep(pause);
+            }
+        }
+    }
+
+    /// Paste the armed transcript where the capsule was dropped.
+    ///
+    /// The capsule leaves the screen first so the probe and the click reach
+    /// the window under it. A refused paste (a password field, Codescribe's
+    /// own read-only canvas, an unreadable recipient) brings the capsule back
+    /// with the transcript still armed for another drop.
+    fn complete_blob_drop(ns_x: f64, ns_y: f64) {
+        let (panel_ptr, epoch) = {
+            let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+            (state.window, state.blob_epoch)
+        };
+        let Some(panel_ptr) = panel_ptr else {
+            return;
+        };
+        unsafe {
+            let panel = panel_ptr as Id;
+            let _: () = msg_send![panel, orderOut: ptr::null::<Object>()];
+            let _: () = msg_send![panel, setIgnoresMouseEvents: true];
+        }
+        let primary_height = unsafe { CGDisplayBounds(CGMainDisplayID()).size.height };
+        let (cg_x, cg_y) = super::appkit_to_cg_point(ns_x, ns_y, primary_height);
+        let spawned = thread::Builder::new()
+            .name("hold-badge-drop".into())
+            .spawn(move || {
+                objc::rc::autoreleasepool(|| {
+                    activate_app_at(cg_x, cg_y);
+                    post_click(cg_x, cg_y);
+                    thread::sleep(Duration::from_millis(55));
+                    match crate::os::clipboard::deliver_deferred_insert_after_drop() {
+                        Ok(outcome) => {
+                            info!(?outcome, "Deferred-insert capsule drop settled");
+                            hide_blob_epoch(epoch);
+                        }
+                        Err(error) => {
+                            warn!(%error, "Deferred-insert capsule drop refused; capsule kept");
+                            reshow_blob(panel_ptr, epoch);
+                        }
+                    }
+                });
+            });
+        if let Err(error) = spawned {
+            warn!("deferred capsule drop thread unavailable: {error}");
+            reshow_blob(panel_ptr, epoch);
+        }
+    }
+
+    /// Bring a still-armed capsule back after a refused drop.
+    fn reshow_blob(panel_ptr: usize, epoch: u64) {
+        Queue::main().exec_async(move || {
+            {
+                let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                if !state.deferred_blob_active
+                    || state.blob_epoch != epoch
+                    || state.window != Some(panel_ptr)
+                {
+                    return;
+                }
+            }
+            unsafe {
+                let panel = panel_ptr as Id;
+                panel_show(panel);
+                let _: () = msg_send![panel, setIgnoresMouseEvents: false];
             }
         });
     }
@@ -1592,9 +2376,10 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    flash_hold_badge, focused_input_field, get_caret_position, get_cursor_position,
-    hide_hold_badge, show_hold_badge, show_hold_badge_with_config, take_token, update_transcript,
-    update_voice_state,
+    end_recording_badge, flash_hold_badge, focused_input_field, get_caret_position,
+    get_cursor_position, hide_deferred_blob, hide_hold_badge, is_deferred_blob_active,
+    show_deferred_blob, show_hold_badge, show_hold_badge_with_config, take_token,
+    update_transcript, update_voice_state,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -1647,6 +2432,20 @@ mod stubs {
     pub fn hide_hold_badge() {}
 
     /// No-op on non-macOS platforms.
+    pub fn end_recording_badge() {}
+
+    /// No-op: the deferred-insert capsule is macOS-only.
+    pub fn show_deferred_blob(_text: &str) {}
+
+    /// No-op on non-macOS platforms.
+    pub fn hide_deferred_blob() {}
+
+    /// The capsule never exists off macOS.
+    pub fn is_deferred_blob_active() -> bool {
+        false
+    }
+
+    /// No-op on non-macOS platforms.
     pub fn flash_hold_badge(
         _config: HoldBadgeConfig,
         _label: &str,
@@ -1657,9 +2456,10 @@ mod stubs {
 
 #[cfg(not(target_os = "macos"))]
 pub use stubs::{
-    flash_hold_badge, focused_input_field, get_caret_position, get_cursor_position,
-    hide_hold_badge, show_hold_badge, show_hold_badge_with_config, take_token, update_transcript,
-    update_voice_state,
+    end_recording_badge, flash_hold_badge, focused_input_field, get_caret_position,
+    get_cursor_position, hide_deferred_blob, hide_hold_badge, is_deferred_blob_active,
+    show_deferred_blob, show_hold_badge, show_hold_badge_with_config, take_token,
+    update_transcript, update_voice_state,
 };
 
 #[cfg(target_os = "macos")]

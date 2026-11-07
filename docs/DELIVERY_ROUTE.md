@@ -67,6 +67,41 @@ not require the user to replace it with Copy first.
   next save. `true` → `safe` is Claude's assumption (2026-09-29): no Founder
   decision records whether "on" meant terminals too.
 
+### Caret mini-overlay and the deferred-insert capsule ("Blobek")
+
+The hold badge (`app/os/hold_badge.rs`, gated by `HOLD_INDICATOR`) is the
+ultralight indicator for Hold Fn. It opens at the mouse cursor and moves once
+to the text caret through a single off-main AX lookup (50 ms messaging
+timeout). It does not chase the pointer or poll AX afterwards; its clock only
+pulses the dot and expires the preview words, and a solid Hold dot does no
+main-thread work.
+
+When a delivery verdict arms Deferred Paste (`ClipboardHold`, `DeferredInsert`,
+or a paste that could not land — every path through
+`arm_or_copy_deferred_payload`), the controller also calls
+`hold_badge::show_deferred_blob`. The badge panel becomes a dark capsule with an
+amber dot, a 42-character preview of the armed text and a `×`:
+
+- It survives the `Idle` transition (`end_recording_badge`) and expires with the
+  slot after `DEFERRED_INSERT_TTL`.
+- It is a non-activating panel that accepts the first click, so pressing or
+  dragging it never takes focus from the target app.
+- **Click** on the body: `deliver_deferred_insert_with_runtime_defaults` pastes
+  into the field that still has focus. This uses the same rules as ⌥⌘V.
+- **Drag and release**: the capsule orders out, the app under the drop point is
+  activated, one synthetic left click focuses the field there, and
+  `deliver_deferred_insert_after_drop` pastes with Comfort rules. A password
+  field, an unreadable recipient or Codescribe's own read-only canvas refuses,
+  and the capsule comes back with the transcript still armed.
+- **`×`** clears the slot (`clear_deferred_insert`) and closes the capsule.
+- ⌥⌘V and every settled delivery (delivered, expired, nothing armed) close the
+  capsule too. Starting a new take takes the panel back as the live badge; the
+  slot stays armed for ⌥⌘V.
+
+The capsule is a projection of the slot and does not replace the overlay. The
+overlay still receives the transcript, where it can be edited, re-transcribed
+and formatted.
+
 ## Intent → route
 
 | Intent            | Typical gesture                                 | Route                                                                                                                |

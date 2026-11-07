@@ -177,10 +177,69 @@ fn main() {
             runtime.block_on(async { delivery.lock().await.is_empty() }),
             "Ephemeral preview must never become delivery text"
         );
+
+        // Deferred-insert capsule ("Blobek"): it outlives the recording that
+        // armed it, takes the mouse, and a new take reclaims it.
+        hold_badge::show_hold_badge_with_config(config(BadgeMode::Hold));
+        drain();
+        hold_badge::show_deferred_blob("To jest odłożona transkrypcja do przeciągnięcia");
+        drain();
+        assert!(hold_badge::is_deferred_blob_active());
+        hold_badge::end_recording_badge();
+        drain();
+        let blob = visible_panel(app);
+        let ignores: bool = msg_send![blob, ignoresMouseEvents];
+        assert!(!ignores, "The armed capsule must accept drag and click");
+        assert_eq!(
+            dot_color(blob),
+            [1.0, 0.62, 0.0, 1.0],
+            "The armed capsule wears the owed-words amber"
+        );
+        assert_eq!(dot_color(blob), {
+            let (r, g, b, a) = hold_badge::IndicatorState::WordsOwed.color();
+            [r, g, b, a]
+        });
+        assert!(
+            text(blob).contains("To jest odłożona transkrypcja"),
+            "{}",
+            text(blob)
+        );
+        let content: Id = msg_send![blob, contentView];
+        let children: Id = msg_send![content, subviews];
+        let dismiss: Id = msg_send![children, objectAtIndex: 2usize];
+        let dismiss_hidden: bool = msg_send![dismiss, isHidden];
+        assert!(!dismiss_hidden, "The armed capsule shows its dismiss glyph");
+        hold_badge::update_transcript(hold_badge::take_token(), "late live words");
+        drain();
+        assert!(
+            text(visible_panel(app)).contains("To jest odłożona transkrypcja"),
+            "A late projection cannot repaint the armed capsule"
+        );
+
+        hold_badge::show_hold_badge_with_config(config(BadgeMode::Hold));
+        drain();
+        assert!(!hold_badge::is_deferred_blob_active());
+        let live = visible_panel(app);
+        let ignores: bool = msg_send![live, ignoresMouseEvents];
+        assert!(ignores, "A live take badge never takes the mouse");
+        assert_eq!(
+            text(live),
+            "",
+            "The armed text is not the new take's preview"
+        );
+        let content: Id = msg_send![live, contentView];
+        let children: Id = msg_send![content, subviews];
+        let dismiss: Id = msg_send![children, objectAtIndex: 2usize];
+        let dismiss_hidden: bool = msg_send![dismiss, isHidden];
+        assert!(dismiss_hidden);
+        hold_badge::hide_hold_badge();
+        drain();
         drop(emitter);
         let _: () = msg_send![pool, drain];
     }
-    println!("PASS: native processing preview retention and stale-take rejection");
+    println!(
+        "PASS: native processing preview retention, stale-take rejection and deferred capsule"
+    );
 }
 
 #[cfg(not(target_os = "macos"))]

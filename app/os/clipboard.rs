@@ -111,6 +111,14 @@ pub fn arm_deferred_insert(text: String) -> bool {
     arm_deferred_insert_at(text, Instant::now())
 }
 
+/// Drop the armed transcript without pasting it (the capsule's `×`).
+pub fn clear_deferred_insert() {
+    let mut slot = DEFERRED_INSERT_SLOT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *slot = None;
+}
+
 /// Consume the armed slot, or report why there is nothing to paste.
 ///
 /// An expired slot is taken and dropped rather than left behind, so a stale
@@ -156,6 +164,9 @@ where
 /// Consume the armed transcript and run the classic snapshot → set → Cmd+V →
 /// restore path at the moment the user presses the global command. The restore
 /// step follows the same resolved clipboard settings as the controller's paste.
+///
+/// A settled slot (delivered, expired or already empty) also retires the
+/// on-screen deferred-insert capsule, so ⌥⌘V never leaves a stale one behind.
 pub fn deliver_deferred_insert(
     restore_clipboard: bool,
     restore_clipboard_delay_ms: u64,
@@ -166,10 +177,21 @@ pub fn deliver_deferred_insert(
             "Select a non-password recipient before inserting. The transcript remains available."
         );
     }
+    let outcome = paste_deferred_into(&target, restore_clipboard, restore_clipboard_delay_ms)?;
+    crate::os::hold_badge::hide_deferred_blob();
+    Ok(outcome)
+}
+
+/// Deliver the armed slot into `target` through the retained-identity paste.
+fn paste_deferred_into(
+    target: &StopPasteTarget,
+    restore_clipboard: bool,
+    restore_clipboard_delay_ms: u64,
+) -> Result<DeferredInsertDelivery> {
     deliver_deferred_insert_at(Instant::now(), |text| {
         let receipt = paste_to_stop_target(
             text,
-            &target,
+            target,
             PasteMode::Comfort,
             restore_clipboard,
             restore_clipboard_delay_ms,
@@ -179,6 +201,59 @@ pub fn deliver_deferred_insert(
         }
         Ok(())
     })
+}
+
+/// Clipboard restore settings from the sealed runtime snapshot, for callers
+/// that hold no controller (the capsule's click and drop).
+fn runtime_restore_settings() -> (bool, u64) {
+    match codescribe_core::config::Config::load_runtime_snapshot_without_keychain() {
+        Ok(settings) => (
+            settings.values().restore_clipboard,
+            settings.values().restore_clipboard_delay_ms,
+        ),
+        Err(error) => {
+            warn!(%error, "Runtime settings snapshot refused; deferred insert restores with defaults");
+            (true, DEFAULT_RESTORE_DELAY_MS)
+        }
+    }
+}
+
+/// [`deliver_deferred_insert`] with the runtime snapshot's restore settings.
+/// A click on the capsule pastes into the field that still has focus.
+pub fn deliver_deferred_insert_with_runtime_defaults() -> Result<DeferredInsertDelivery> {
+    let (restore_clipboard, restore_clipboard_delay_ms) = runtime_restore_settings();
+    deliver_deferred_insert(restore_clipboard, restore_clipboard_delay_ms)
+}
+
+/// Deliver the armed slot after the capsule was dropped and its synthetic
+/// click moved focus to the drop target.
+///
+/// A password field, an unreadable recipient, and Codescribe's own read-only
+/// canvas refuse with the transcript still armed; Codescribe's real editable
+/// fields and foreign apps (terminals and editors included) follow the
+/// Comfort rules of the explicit insert.
+pub fn deliver_deferred_insert_after_drop() -> Result<DeferredInsertDelivery> {
+    use crate::os::hold_badge::FocusedInputField;
+    if !synthetic_paste_preflight().can_post_events() {
+        anyhow::bail!(
+            "Codescribe may not post the paste keystroke. The transcript remains available."
+        );
+    }
+    let target = StopPasteTarget::capture();
+    if target.field == FocusedInputField::Secure || !target.readable() {
+        anyhow::bail!(
+            "The drop target is not a readable non-password field. The transcript remains available."
+        );
+    }
+    if target.is_codescribe() && target.field != FocusedInputField::Text {
+        anyhow::bail!(
+            "Codescribe's own canvas is not a recipient. The transcript remains available."
+        );
+    }
+    let (restore_clipboard, restore_clipboard_delay_ms) = runtime_restore_settings();
+    let outcome = paste_deferred_into(&target, restore_clipboard, restore_clipboard_delay_ms)?;
+    crate::os::hold_badge::hide_deferred_blob();
+    Ok(outcome)
 }
 
 /// Permission truth required before posting a synthetic Cmd+V.
@@ -282,6 +357,20 @@ impl StopPasteTarget {
         }
     }
 
+    /// Whether the retained process is Codescribe itself.
+    pub(crate) fn is_codescribe(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.pid
+                .and_then(stop_target_identity::app_name)
+                .is_some_and(|name| crate::os::selection::is_codescribe_app(&name))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
     /// Whether a focused element was readable in this capture.
     pub(crate) fn readable(&self) -> bool {
         #[cfg(target_os = "macos")]
@@ -307,11 +396,7 @@ impl StopPasteTarget {
             );
             // The read-only Codescribe canvas is never a recipient. Its real
             // editable Agent fields remain available for explicit insertion.
-            let mode = if self
-                .pid
-                .and_then(stop_target_identity::app_name)
-                .is_some_and(|name| crate::os::selection::is_codescribe_app(&name))
-            {
+            let mode = if self.is_codescribe() {
                 PasteMode::Safe
             } else {
                 mode
