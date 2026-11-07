@@ -170,8 +170,21 @@ final class OverlayBarReviewRenderTests: XCTestCase {
 
   // MARK: - Rendering
 
-  private func image(of view: NSView) throws -> NSImage {
-    let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+  private func image(of view: NSView, scale: CGFloat = 1) throws -> NSImage {
+    let bitmap: NSBitmapImageRep
+    if scale == 1 {
+      bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+    } else {
+      // A Retina render off screen: the bitmap holds `scale` pixels per
+      // point and keeps the view's size in points.
+      bitmap = try XCTUnwrap(
+        NSBitmapImageRep(
+          bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width * scale),
+          pixelsHigh: Int(view.bounds.height * scale), bitsPerSample: 8, samplesPerPixel: 4,
+          hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0,
+          bitsPerPixel: 0))
+      bitmap.size = view.bounds.size
+    }
     view.cacheDisplay(in: view.bounds, to: bitmap)
     let image = NSImage(size: view.bounds.size)
     image.addRepresentation(bitmap)
@@ -223,7 +236,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
 
   /// A SwiftUI view alone on the palette's sheet colour.
   private func renderAlone(
-    _ content: some View, size: CGSize, look: Look, name: String
+    _ content: some View, size: CGSize, look: Look, name: String, scale: CGFloat = 1
   ) throws {
     let host = NSHostingView(
       rootView:
@@ -243,7 +256,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.12))
     host.layoutSubtreeIfNeeded()
-    try save(try image(of: host), name: "\(name)-\(look.rawValue)")
+    try save(try image(of: host, scale: scale), name: "\(name)-\(look.rawValue)")
   }
 
   /// Mini at the panel's own `miniSize`, in both looks; returns that size.
@@ -967,6 +980,43 @@ final class OverlayBarReviewRenderTests: XCTestCase {
             chip: chip, status: status, modifier: .control, palette: look.palette),
           size: OverlayChannelChipHoverCard.size(chip: chip, status: status, modifier: .control),
           look: look, name: "bar-card-\(chip.digit)")
+      }
+    }
+  }
+
+  // MARK: - 17. The unread mark on a pill (L14)
+
+  /// A bar chip and a stacked pill, each without and with unread replies
+  /// (the chip also selected), at 1× and 2×: the small dot set on the
+  /// outline with its knockout in the bar's colour.
+  func testRenderPillUnreadMark() throws {
+    for look in Look.allCases {
+      func pill(
+        _ form: OverlayChannelPill.Form, unread: Bool, selected: Bool = false
+      ) -> OverlayChannelPill {
+        OverlayChannelPill(
+          form: form,
+          display: .init(figure: "5", name: "Bruno", unread: unread, selected: selected),
+          hint: "", accessibilityText: "5", identifier: "review-pill", palette: look.palette,
+          textScale: 1, showsHint: false, action: {})
+      }
+      let content = VStack(alignment: .leading, spacing: 12) {
+        HStack(spacing: 14) {
+          pill(.chip, unread: false)
+          pill(.chip, unread: true)
+          pill(.chip, unread: true, selected: true)
+        }
+        HStack(spacing: 14) {
+          pill(.stacked, unread: false)
+          pill(.stacked, unread: true)
+          pill(.stacked, unread: true, selected: true)
+        }
+      }
+      .padding(12)
+      for scale in [CGFloat(1), 2] {
+        try renderAlone(
+          content, size: CGSize(width: 240, height: 100), look: look,
+          name: "bar-pill-unread-\(Int(scale))x", scale: scale)
       }
     }
   }
