@@ -919,6 +919,27 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     try renderMini(state, scene: "mini-speaking")
   }
 
+  /// A take being finalized (L13): the bar with four agents, its folded
+  /// form and mini, where a processing caption used to stand under the
+  /// header or at the folded bar's bottom.
+  func testRenderBarWhileTheTakeIsFinalized() throws {
+    for (mode, scene) in [
+      (OverlayPresentationMode.midi, "bar-4-finalizing"),
+      (.mini, "mini-finalizing"),
+    ] {
+      let (state, _) = try barState(four, mode: mode)
+      state.handleRecordingStarted()
+      state.handleRecordingFinalising()
+      XCTAssertEqual(state.mode, .finalizing)
+      if mode == .mini {
+        try renderMini(state, scene: scene)
+      } else {
+        try renderBar(state, scene: scene)
+      }
+      state.finishControllerRecording()
+    }
+  }
+
   // MARK: - 14. Channel 0's name
 
   /// Channel 0 named by default, with a short name of the user's and with a
