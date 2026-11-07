@@ -215,6 +215,16 @@ export CODESCRIBE_DEVELOPER_SURFACE="$CS_DEVELOPER_SURFACE"
 # An install or developer-surface lane must never compile with the dev license
 # fallback or stamp an empty Sparkle public key when invoked outside Makefile.
 if [[ "$CS_DEVELOPER_SURFACE" == "1" || "${CODESCRIBE_INSTALL_LANE:-0}" == "1" ]]; then
+  # The documented file-path overrides (Makefile, developer-surface-gate.sh)
+  # are read first; the default key directories are the fallback.
+  if [[ -z "${SPARKLE_ED_PUBLIC_KEY:-}" && -n "${CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE:-}" \
+     && -f "$CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE" ]]; then
+    SPARKLE_ED_PUBLIC_KEY="$(tr -d '[:space:]' <"$CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE" || true)"
+  fi
+  if [[ -z "${CODESCRIBE_LICENSE_PUBLIC_KEY_HEX:-}" && -n "${CODESCRIBE_LICENSE_PUBLIC_KEY_FILE:-}" \
+     && -f "$CODESCRIBE_LICENSE_PUBLIC_KEY_FILE" ]]; then
+    CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(tr -d '[:space:]' <"$CODESCRIBE_LICENSE_PUBLIC_KEY_FILE" || true)"
+  fi
   for key_dir in "$HOME/.codescribe/config/dev/keys" "$HOME/.vibecrafted/secrets/codescribe"; do
     if [[ -z "${SPARKLE_ED_PUBLIC_KEY:-}" && -f "$key_dir/sparkle-public.b64" ]]; then
       SPARKLE_ED_PUBLIC_KEY="$(tr -d '[:space:]' <"$key_dir/sparkle-public.b64" || true)"
@@ -228,11 +238,11 @@ if [[ "$CS_DEVELOPER_SURFACE" == "1" || "${CODESCRIBE_INSTALL_LANE:-0}" == "1" ]
   sparkle_key="${SPARKLE_ED_PUBLIC_KEY:-}"
   license_key="${CODESCRIBE_LICENSE_PUBLIC_KEY_HEX:-}"
   if [[ ${#sparkle_key} -lt 32 || ! "$sparkle_key" =~ ^[A-Za-z0-9+/=]+$ ]]; then
-    echo "error: install/developer build requires SPARKLE_ED_PUBLIC_KEY (or sparkle-public.b64)" >&2
+    echo "error: install/developer build requires SPARKLE_ED_PUBLIC_KEY (or CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE / sparkle-public.b64)" >&2
     exit 1
   fi
   if [[ ${#license_key} -ne 64 || ! "$license_key" =~ ^[0-9A-Fa-f]+$ ]]; then
-    echo "error: install/developer build requires 64-hex CODESCRIBE_LICENSE_PUBLIC_KEY_HEX (or license-public.hex)" >&2
+    echo "error: install/developer build requires 64-hex CODESCRIBE_LICENSE_PUBLIC_KEY_HEX (or CODESCRIBE_LICENSE_PUBLIC_KEY_FILE / license-public.hex)" >&2
     exit 1
   fi
   export SPARKLE_ED_PUBLIC_KEY CODESCRIBE_LICENSE_PUBLIC_KEY_HEX
