@@ -16,9 +16,24 @@ final class AgentWindowChromeTests: XCTestCase {
   /// The approved shape is one rectangular real-content glass view across
   /// the entire upper detail region, with the native window controls intact.
   func testTopTitlebarOwnerKeepsOneBandAndNativeWindowButtons() throws {
+    let previousSidebar = UserDefaults.standard.object(forKey: sidebarKey)
+    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
+    UserDefaults.standard.set(true, forKey: sidebarKey)
+    UserDefaults.standard.set(false, forKey: panelKey)
+    defer {
+      restoreSidebarDefault(previousSidebar)
+      restore(previousPanel, forKey: panelKey)
+    }
     let window = mount(contentWidth: 1120)
     defer { window.close() }
-    pump(window) { self.rectangularHeaderGlass(in: window) != nil }
+    pump(window) {
+      guard let glass = self.rectangularHeaderGlass(in: window),
+        let sidebar = (self.splitView(in: window)?.delegate as? NSSplitViewController)?.splitViewItems.first
+      else { return false }
+      return !sidebar.isCollapsed
+        && abs(self.frame(glass).minX - self.frame(sidebar.viewController.view).maxX) < 1
+        && abs(self.frame(glass).maxX - window.frame.width) < 1
+    }
     let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }
     XCTAssertEqual(owners.count, 1)
     let owner = try XCTUnwrap(owners.first)
@@ -540,18 +555,11 @@ final class AgentWindowChromeTests: XCTestCase {
     if let title, let thread = store.currentThread {
       store.rename(thread, to: title)
     }
-    let window = NSWindow(
-      contentRect: NSRect(x: 80, y: 80, width: contentWidth, height: 720),
-      styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-      backing: .buffered,
-      defer: false
-    )
-    window.isReleasedWhenClosed = false
-    window.contentViewController = NSHostingController(
+    let window = AgentWindowChrome.makeWindow(content: NSHostingController(
       rootView: AgentChatView(store: store)
         .environment(\.csReduceTransparencyOverride, false)
         .environment(\.csContrastOverride, .standard)
-    )
+    ))
     window.setContentSize(NSSize(width: contentWidth, height: 720))
     window.setFrameOrigin(NSPoint(x: 80, y: 80))
     BackgroundTestWindow.present(window)

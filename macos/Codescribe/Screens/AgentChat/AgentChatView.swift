@@ -12,7 +12,6 @@ struct AgentChatView: View {
   /// column geometry inside the bounds `CSSidebarColumn` carries.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
-  @State private var sidebarWidth = CSSidebarWidth.navigation.ideal
   /// View state only: opening the context panel never touches the thread,
   /// draft, model, recording or any agent call.
   @AppStorage(AgentContextPanelPreference.defaultsKey) private var contextPanelOpen =
@@ -26,12 +25,6 @@ struct AgentChatView: View {
   var body: some View {
     NavigationSplitView(columnVisibility: sidebarVisibility) {
       ThreadRail(store: store)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-          let limits = CSSidebarWidth.navigation
-          if sidebarExpanded, width >= limits.minimum, width <= limits.maximum {
-            sidebarWidth = width
-          }
-        }
     } detail: {
       ThreadDetail(
         store: store, maxPermissions: maxPermissions, isContextOpen: $contextPanelOpen
@@ -43,9 +36,7 @@ struct AgentChatView: View {
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
     .modifier(
-      AgentIntegratedChrome(
-        store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen,
-        sidebarExpanded: sidebarExpanded, sidebarWidth: sidebarWidth))
+      AgentIntegratedChrome(store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen))
     .csFocusPolicy()
     .background(
       AgentWindowCapabilities(isPinned: isPinned, contextPanelOpen: contextPanelOpen)
@@ -249,8 +240,6 @@ private struct AgentIntegratedChrome: ViewModifier {
   @ObservedObject var store: AgentChatStore
   @Binding var isPinned: Bool
   @Binding var isContextOpen: Bool
-  let sidebarExpanded: Bool
-  let sidebarWidth: CGFloat
   @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
   @State private var renameText = ""
@@ -266,7 +255,7 @@ private struct AgentIntegratedChrome: ViewModifier {
       .toolbarVisibility(.visible, for: .windowToolbar)
       .modifier(CSWindowHeaderChrome())
       .background {
-        CSWindowTopHeader(leadingWidth: sidebarExpanded ? sidebarWidth : 0) {
+        CSWindowTopHeader {
           headerContent
         }
       }
