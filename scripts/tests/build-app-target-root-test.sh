@@ -182,6 +182,17 @@ elif name == "codesign":
         assert publisher.read_bytes() == b"fresh:codescribe:signed"
         assert entry["bytes"] == publisher.stat().st_size
         assert entry["sha256"] == hashlib.sha256(publisher.read_bytes()).hexdigest()
+elif name == "security":
+    # build-app probes the default keychain before any identity lookup; the
+    # fixture answers with a disposable path and never reaches a real keychain.
+    if args[:1] == ["default-keychain"]:
+        print('    "' + str(Path(os.environ["HOME"]) / "Library/Keychains/login.keychain-db") + '"')
+    elif args[:1] == ["show-keychain-info"]:
+        pass
+    elif args[:1] == ["find-identity"]:
+        record(identity_query=True)
+    else:
+        raise AssertionError("unexpected security subcommand: " + " ".join(args))
 else:
     raise AssertionError("forbidden external boundary: " + name)
 '''
@@ -235,6 +246,23 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
     elif mode == "cross-config":
         (repo / ".cargo").mkdir(exist_ok=True)
         (repo / ".cargo/config.toml").write_text('[build]\ntarget = "aarch64-unknown-linux-gnu"\n')
+    if mode in ("missing-sparkle-key", "missing-license-key"):
+        # An install lane without its keys must stop with its own message;
+        # under set -u an unset key used to die on "unbound variable".
+        env["CODESCRIBE_INSTALL_LANE"] = "1"
+        if mode == "missing-license-key":
+            env["SPARKLE_ED_PUBLIC_KEY"] = "A" * 43 + "="
+    if mode == "custom-key-files":
+        # An install lane whose keys live only behind the documented
+        # CODESCRIBE_*_PUBLIC_KEY_FILE paths must pass the key gate; HOME holds
+        # neither default key directory.
+        env["CODESCRIBE_INSTALL_LANE"] = "1"
+        keys = case / "custom keys"
+        keys.mkdir()
+        (keys / "sparkle.b64").write_text("A" * 43 + "=\n")
+        (keys / "license.hex").write_text("ab" * 32 + "\n")
+        env["CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE"] = str(keys / "sparkle.b64")
+        env["CODESCRIBE_LICENSE_PUBLIC_KEY_FILE"] = str(keys / "license.hex")
     if skip:
         env["SKIP_XCODEBUILD"] = "1"
     args = ["/bin/bash", str(repo / "scripts/build-app.sh"), profile]
@@ -247,10 +275,17 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
         if mode == "stage":
             assert result.returncode == 0 and set(names) <= {"git"}, (result.returncode, names)
             assert (case / "staged/manifest.json").is_file()
-        elif mode in ("success", "fresh-receipt"):
-            assert result.returncode == 0, f"script exit {result.returncode}"
+        elif mode in ("missing-sparkle-key", "missing-license-key"):
+            assert result.returncode == 1, (result.returncode, result.stdout)
+            assert "unbound variable" not in result.stdout, result.stdout
+            key = "SPARKLE_ED_PUBLIC_KEY" if mode == "missing-sparkle-key" else "CODESCRIBE_LICENSE_PUBLIC_KEY_HEX"
+            assert f"install/developer build requires" in result.stdout and key in result.stdout, result.stdout
+            assert not set(names) & {"install_name_tool", "uniffi-bindgen", "xcodegen", "xcodebuild", "swiftc", "codesign"}, names
+        elif mode in ("success", "fresh-receipt", "custom-key-files"):
+            assert result.returncode == 0, f"script exit {result.returncode}: {result.stdout}"
+            assert "install/developer build requires" not in result.stdout, result.stdout
             if signing_identity == "-":
-                assert "security" not in names, "Explicit ad-hoc signing must not query identities"
+                assert not any(c["tool"] == "security" and c["argv"][:1] == ["find-identity"] for c in calls), "Explicit ad-hoc signing must not query identities"
             for name in ["install_name_tool", "uniffi-bindgen"] + ([] if skip else ["xcodebuild"]):
                 assert any(c["tool"] == name and "sha256" in c for c in calls), name
             assert sum(c["tool"] == "codesign" and "copy" in c for c in calls) == (0 if skip else 6)
@@ -288,7 +323,8 @@ with tempfile.TemporaryDirectory(prefix="build-app-target-root-") as tmp:
             run_case(base, profile, layout)
         run_case(base, profile, "spaces", skip=True)
         run_case(base, profile, "spaces", signing_identity="-")
-    for mode in ("metadata-error", "metadata-malformed", "metadata-relative", "ffi-error", "sidecar-error", "missing-receipt", "missing-file", "malformed-receipt", "unfinished", "cross-env", "cross-config", "fresh-receipt", "stage", "publisher-library-only"):
+    run_case(base, "debug", "spaces", "custom-key-files", skip=True)
+    for mode in ("metadata-error", "metadata-malformed", "metadata-relative", "ffi-error", "sidecar-error", "missing-receipt", "missing-file", "malformed-receipt", "unfinished", "cross-env", "cross-config", "fresh-receipt", "stage", "publisher-library-only", "missing-sparkle-key", "missing-license-key"):
         run_case(base, "debug", "spaces", mode)
 print(f"build-app-target-root: scenarios={passed + failed} passed={passed} failed={failed}")
 sys.exit(1 if failed or not passed else 0)

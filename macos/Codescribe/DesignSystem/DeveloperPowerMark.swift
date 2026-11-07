@@ -12,8 +12,9 @@ struct DeveloperPowerMark: View {
       Text(DeveloperSurface.powerModeCaption)
         .font(CSFont.mono(10, .medium))
         .tracking(0.2)
-        .foregroundStyle(CSColor.terracottaLight)
-        .opacity(0.72)
+        // A mode label, not a listening signal: secondary ink, no extra veil
+        // (the system rung is already translucent).
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(1)
         .allowsHitTesting(false)
         .accessibilityIdentifier("developer-power-mark")

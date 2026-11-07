@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// `CSSidebarColumn` owns the column itself — list style, search field,
 /// material, width and the toggle; the Settings sidebar is its reference
-/// (Monika, 2026-10-18). What stays here is what belongs to the Agent
+/// (Founder, 2026-10-18). What stays here is what belongs to the Agent
 /// window's function: the thread rows and the New conversation action
 /// above them.
 struct ThreadRail: View {
@@ -100,7 +100,7 @@ struct ThreadRail: View {
   /// conversations. Quiet by design: a create
   /// glyph and its label on a plain row, no capsule and nothing to hover
   /// for — it is visible the moment the window opens, and the reference
-  /// sidebar has no bottom pill to put it in (Monika, 2026-10-18). Same
+  /// sidebar has no bottom pill to put it in (Founder, 2026-10-18). Same
   /// action and same label as the bar it replaces.
   private var newThreadButton: some View {
     Button(action: { store.newThread() }) {
@@ -269,7 +269,7 @@ enum ThreadRowSecondaryInk: Equatable {
 /// System selection, hover and focus are owned by the enclosing List, and so
 /// is the row's ink: the title takes the list's own text style, so it dims
 /// with the window like every other sidebar row instead of staying bright in
-/// a background window (Monika, 2026-10-18). A single-line title over its
+/// a background window (Founder, 2026-10-18). A single-line title over its
 /// quieter time and model line.
 private struct ThreadRow: View {
   let thread: ChatThread

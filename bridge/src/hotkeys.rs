@@ -1877,6 +1877,11 @@ pub struct CsChannelRosterState {
     /// overlay's "alive but not reading" layer: a process heartbeat proves
     /// the reader, not the conversation behind it.
     pub unread_since_unix_ms: Option<i64>,
+    /// Milliseconds since the Unix epoch of the last heartbeat of a
+    /// follower that is no longer alive: when the agent was last there.
+    /// `None` = a live follower, no lease, or no claim.
+    #[uniffi(default = None)]
+    pub last_heartbeat_unix_ms: Option<i64>,
 }
 
 /// Frozen owner and verified helper paths supplied by the app's archive action.
@@ -1978,6 +1983,11 @@ impl CodescribeHotkeys {
                     unread_since_unix_ms: state.unread_since.and_then(|since| {
                         since
                             .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|epoch| epoch.as_millis() as i64)
+                    }),
+                    last_heartbeat_unix_ms: state.last_heartbeat.and_then(|beat| {
+                        beat.duration_since(std::time::UNIX_EPOCH)
                             .ok()
                             .map(|epoch| epoch.as_millis() as i64)
                     }),

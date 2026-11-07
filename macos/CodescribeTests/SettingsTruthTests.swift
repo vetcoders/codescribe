@@ -1495,14 +1495,14 @@ final class SettingsTruthTests: XCTestCase {
   func testCreatorLanguagePresentationKeepsTruthfulIdentity() {
     let choices = LanguageIdentityPresentation.choices
 
-    XCTAssertEqual(choices.map(\.title), ["Multilingual", "Polish", "English"])
+    XCTAssertEqual(choices.map(\.title), ["Auto", "Polish", "English"])
     XCTAssertEqual(choices.map(\.isFineTuned), [false, true, true])
     // The row sentence explains only the one non-obvious choice; the
     // fine-tuned-models detail left the base view (Founder brief, round 4,
     // 2026-10-10), and the Dictionary footnote moved off this row earlier.
     XCTAssertEqual(
       LanguageIdentityPresentation.supportingCopy,
-      "Multilingual detects the language automatically."
+      "Automatically detects the transcription language."
     )
     XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
     XCTAssertFalse(
@@ -1680,6 +1680,46 @@ final class SettingsTruthTests: XCTestCase {
 
     XCTAssertEqual(writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE"])
     XCTAssertEqual(writes.map(\.value), [defaultTranscriptTagTemplate])
+  }
+
+  /// Channel 0's name is one line under `SHARED_CHANNEL_NAME`; an unchanged
+  /// name writes nothing, and Restore default writes the empty name that
+  /// shows the interface's default.
+  func testSharedChannelNameWritesOneLineAndRestoresTheDefault() {
+    var writes: [(key: String, value: String)] = []
+    var stored = CsSettings.sample
+    var engine = MockSettingsEngine(updateConfigObserver: { key, value in
+      writes.append((key, value))
+      if key == "SHARED_CHANNEL_NAME" { stored.sharedChannelName = value }
+    })
+    engine.settingsLoader = { stored }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.settings.sharedChannelName, "")
+
+    model.setSharedChannelName("  Ekipa\n Codescribe ")
+    XCTAssertEqual(model.settings.sharedChannelName, "Ekipa Codescribe")
+    model.setSharedChannelName("Ekipa Codescribe")
+    model.restoreDefaultSharedChannelName()
+
+    XCTAssertEqual(writes.map(\.key), ["SHARED_CHANNEL_NAME", "SHARED_CHANNEL_NAME"])
+    XCTAssertEqual(writes.map(\.value), ["Ekipa Codescribe", ""])
+    XCTAssertEqual(model.settings.sharedChannelName, "")
+  }
+
+  /// Channel 0's name keeps at most 24 characters after the whitespace is
+  /// folded, as the runtime loader does with a hand-edited settings.json.
+  func testSharedChannelNameStopsAtItsLimit() {
+    var stored = CsSettings.sample
+    var engine = MockSettingsEngine(updateConfigObserver: { key, value in
+      if key == "SHARED_CHANNEL_NAME" { stored.sharedChannelName = value }
+    })
+    engine.settingsLoader = { stored }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    model.setSharedChannelName("  Zespół\n  Codescribe   i przyjaciele z daleka ")
+    XCTAssertEqual(model.settings.sharedChannelName, "Zespół Codescribe i przy")
+    XCTAssertEqual(SettingsViewModel.sharedChannelNameLimit, 24)
+    model.setSharedChannelName(String(repeating: "👩‍👩‍👧", count: 30))
+    XCTAssertEqual(model.settings.sharedChannelName.count, 24, "characters, not scalars")
   }
 
   func testResetPreviewMapsLiveCountsIntoConcreteConfirmationCopy() {

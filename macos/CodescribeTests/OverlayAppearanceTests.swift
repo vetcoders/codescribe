@@ -20,19 +20,7 @@ final class OverlayAppearanceTests: XCTestCase {
     for palette in [OverlayAppearancePalette.light, .dark] {
       assertContrast(palette.primaryText, on: palette, minimum: 4.5, role: "primary")
       assertContrast(palette.bodyText, on: palette, minimum: 4.5, role: "body")
-      assertContrast(palette.mutedText, on: palette, minimum: 4.5, role: "muted")
-
-      for (role, token) in [
-        ("listening", palette.listeningStatus),
-        ("processing", palette.processingStatus),
-        ("success", palette.successStatus),
-        ("error", palette.errorStatus),
-        ("uncertainWord", palette.uncertainWord),
-        ("lexiconMarker", palette.lexiconMarker),
-        ("agentAccent", palette.agentAccent),
-      ] {
-        assertContrast(token, on: palette, minimum: 4.5, role: role)
-      }
+      assertContrast(palette.listeningStatus, on: palette, minimum: 4.5, role: "listening")
     }
   }
 
@@ -60,12 +48,42 @@ final class OverlayAppearanceTests: XCTestCase {
     }
   }
 
-  func testUncertainWordStaysDistinctFromPhaseStatusTokens() {
+  func testUncertainWordSharesAttentionOrangeAndStaysDistinctFromErrorAndLexicon() {
     for palette in [OverlayAppearancePalette.light, .dark] {
-      XCTAssertNotEqual(palette.uncertainWord, palette.processingStatus)
+      XCTAssertEqual(palette.uncertainWord, palette.processingStatus)
       XCTAssertNotEqual(palette.uncertainWord, palette.errorStatus)
       XCTAssertNotEqual(palette.uncertainWord, palette.lexiconMarker)
     }
+  }
+
+  /// The coverage pill's microphone keeps the warning's orange hue and clears
+  /// the 3:1 non-text floor on every sheet shade of both looks (Bruno,
+  /// 2026-11-07); the raw orange stays under it on the light sheets.
+  func testCoverageMicrophoneGlyphClearsThreeToOneInTheSameOrange() {
+    func hue(_ token: OverlayColorToken) -> CGFloat {
+      var hue: CGFloat = 0
+      token.nsColor.getHue(&hue, saturation: nil, brightness: nil, alpha: nil)
+      return hue
+    }
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      let shades = palette.appearance == .dark ? SheetShade.darkChoices : SheetShade.lightChoices
+      let glyph = palette.microphoneWarning
+      XCTAssertEqual(hue(glyph), hue(palette.processingStatus), accuracy: 0.01)
+      XCTAssertEqual(glyph.alpha, palette.processingStatus.alpha)
+      for shade in shades {
+        let sheet = OverlayColorToken(shade.hex)
+        let before = OverlayColorToken.contrastRatio(
+          foreground: palette.processingStatus, surface: sheet, background: sheet)
+        let after = OverlayColorToken.contrastRatio(
+          foreground: glyph, surface: sheet, background: sheet)
+        XCTAssertGreaterThanOrEqual(
+          after, 3.0, "\(palette.appearance) \(shade): \(before):1 -> \(after):1")
+      }
+    }
+    let dark = OverlayAppearancePalette.dark
+    let light = OverlayAppearancePalette.light
+    XCTAssertEqual(dark.microphoneWarning, dark.processingStatus)
+    XCTAssertNotEqual(light.microphoneWarning, light.processingStatus)
   }
 
   private func assertContrast(

@@ -1006,6 +1006,11 @@ pub struct Config {
     #[serde(default = "default_transcript_tag_template")]
     pub transcript_tag_template: String,
 
+    /// Display name of the shared channel 0 (`SHARED_CHANNEL_NAME` in
+    /// settings.json). Empty shows the interface's default name.
+    #[serde(default)]
+    pub shared_channel_name: String,
+
     /// Maximum tokens for regular AI completions
     #[serde(default = "default_ai_max_tokens")]
     pub ai_max_tokens: i32,
@@ -1195,6 +1200,7 @@ impl std::fmt::Debug for Config {
             .field("ledger_sensitivity", &self.ledger_sensitivity)
             .field("deferred_insert_shortcut", &self.deferred_insert_shortcut)
             .field("channel_modifier", &self.channel_modifier)
+            .field("shared_channel_name", &self.shared_channel_name)
             .field("widget_shortcut", &self.widget_shortcut)
             .field("fn_tap_toggles_dictation", &self.fn_tap_toggles_dictation)
             .field("middle_mouse_acts_as_fn", &self.middle_mouse_acts_as_fn)
@@ -1293,6 +1299,7 @@ impl Default for Config {
             transcript_send_mode: TranscriptSendMode::default(),
             transcript_tagging_enabled: false,
             transcript_tag_template: default_transcript_tag_template(),
+            shared_channel_name: String::new(),
             ai_max_tokens: default_ai_max_tokens(),
             ai_assistive_max_tokens: default_ai_assistive_max_tokens(),
             show_tray_glyph: default_show_tray_glyph(),

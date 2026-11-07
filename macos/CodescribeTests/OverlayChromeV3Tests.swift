@@ -14,7 +14,7 @@ final class OverlayChromeV3Tests: XCTestCase {
         .appendingPathComponent("Codescribe/Screens/Overlay/DictationOverlayView.swift"),
       encoding: .utf8)
     XCTAssertTrue(
-      source.contains("OverlayCloseButton(palette: palette) { state.relayIntent(.close) }"))
+      source.contains("OverlayCloseButton(palette: palette, takeTint: state.liveTakeMode?.color)"))
     let start = try XCTUnwrap(source.range(of: "private struct OverlayCloseButton: View"))
     let end = try XCTUnwrap(source.range(of: "struct DictationOverlayView: View"))
     let close = String(source[start.lowerBound..<end.lowerBound])

@@ -345,4 +345,12 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
       XCTAssertLessThanOrEqual(row.width, width)
     }
   }
+
+  /// An unread conversation's preview is semibold until opened (round 5
+  /// decision (b)), from the same unread count as its badge.
+  func testUnreadPreviewIsBoldUntilOpened() {
+    XCTAssertEqual(OverlayAgentRosterLabel.previewWeight(unreadCount: 0), .regular)
+    XCTAssertEqual(OverlayAgentRosterLabel.previewWeight(unreadCount: 1), .semibold)
+    XCTAssertEqual(OverlayAgentRosterLabel.previewWeight(unreadCount: 12), .semibold)
+  }
 }

@@ -35,6 +35,7 @@ enum CSIcon: CaseIterable {
   case edit
   case notes
   case notesMode
+  case transcription
   case history
   case search
   case send
@@ -90,6 +91,7 @@ enum CSIcon: CaseIterable {
     case .edit: "pencil"
     case .notes: "square.and.pencil"
     case .notesMode: "note.text"
+    case .transcription: "text.quote"
     case .history: "clock.arrow.circlepath"
     case .search: "magnifyingglass"
     case .send: "arrow.up.circle.fill"

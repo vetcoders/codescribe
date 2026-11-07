@@ -1709,6 +1709,12 @@ impl Config {
         {
             self.channel_modifier = modifier;
         }
+        // A display name only: settings.json alone owns it, no env override.
+        // A hand-edited file gets the same one-line, 24-character name as
+        // Settings writes, so the bar never receives a longer one.
+        if let Some(ref name) = settings.shared_channel_name {
+            self.shared_channel_name = shared_channel_name_line(name);
+        }
         apply_copy!(
             "FN_TAP_TOGGLES_DICTATION",
             self.fn_tap_toggles_dictation,
@@ -2419,6 +2425,22 @@ fn canonical_existing_file(path: &Path) -> anyhow::Result<PathBuf> {
         anyhow::bail!("Config env path is not a file: {}", path.display());
     }
     Ok(path)
+}
+
+/// The longest channel 0 name, in grapheme clusters (`SHARED_CHANNEL_NAME`):
+/// the same limit `SettingsViewModel.setSharedChannelName` applies.
+pub const SHARED_CHANNEL_NAME_LIMIT: usize = 24;
+
+/// Channel 0's name as stored: one line, runs of whitespace as one space,
+/// at most `SHARED_CHANNEL_NAME_LIMIT` grapheme clusters, no trailing space.
+pub fn shared_channel_name_line(name: &str) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    let line = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cut: String = line
+        .graphemes(true)
+        .take(SHARED_CHANNEL_NAME_LIMIT)
+        .collect();
+    cut.trim_end().to_string()
 }
 
 /// Guards for the three-tier precedence this module implements: explicit
@@ -4265,6 +4287,43 @@ mod tests {
         assert!(
             !Config::env_path().exists(),
             "a fully promoted settings batch must not create a legacy .env"
+        );
+    }
+
+    /// The runtime snapshot carries the shared channel's stored display name,
+    /// and an unset name stays empty (the interface shows its default).
+    #[test]
+    fn test_shared_channel_name_reaches_the_snapshot() {
+        let mut config = Config::default();
+        config.apply_user_settings(&super::super::settings::UserSettings::default());
+        assert_eq!(config.shared_channel_name, "");
+
+        let settings = super::super::settings::UserSettings {
+            shared_channel_name: Some("Ekipa".into()),
+            ..Default::default()
+        };
+        config.apply_user_settings(&settings);
+        assert_eq!(config.shared_channel_name, "Ekipa");
+    }
+
+    /// A hand-edited settings.json name reaches the bar as one line of at
+    /// most 24 grapheme clusters, the limit Settings applies.
+    #[test]
+    fn test_shared_channel_name_is_one_line_within_its_limit() {
+        let mut config = Config::default();
+        let settings = super::super::settings::UserSettings {
+            shared_channel_name: Some("  Zespół\n  Codescribe   i przyjaciele z daleka ".into()),
+            ..Default::default()
+        };
+        config.apply_user_settings(&settings);
+        assert_eq!(config.shared_channel_name, "Zespół Codescribe i przy");
+        assert_eq!(super::shared_channel_name_line("Ekipa"), "Ekipa");
+        assert_eq!(
+            super::shared_channel_name_line(&"👩‍👩‍👧".repeat(30))
+                .chars()
+                .filter(|c| *c == '👧')
+                .count(),
+            super::SHARED_CHANNEL_NAME_LIMIT
         );
     }
 

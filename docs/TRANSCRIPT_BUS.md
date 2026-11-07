@@ -153,7 +153,7 @@ and these required fields:
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pair_id`                        | Shared opaque 24-lowercase-hex pairing identity.                                                                                                                                                                |
 | `home_host_id`                   | One of the two host IDs; identifies the existing native thread's home.                                                                                                                                          |
-| `owner`                          | Exactly `provider`, `provider_session_id`, `lease_id`. Provider is lowercase, native session is exact, lease is the first 32 hex digits of SHA-256 of `provider + NUL + session`.                               |
+| `owner`                          | Exactly `provider`, `provider_session_id`, `lease_id`. Provider is an ASCII client token: ASCII whitespace trimmed, `[A-Za-z0-9][A-Za-z0-9-]{0,63}`, ASCII lower-cased; any other provider, any non-ASCII character included, is refused at `cs-bus --provider` and by every reader, never folded (`provider_token` in `scripts/bus-demux.py` states the rule), native session is exact and never trimmed, lease is the first 32 hex digits of SHA-256 of `provider + NUL + session`; `scripts/tests/fixtures/lease-identity-vectors.json` pins the rule in all three languages. |
 | `bridge_root`, `local_bus`       | Canonical absolute local paths, chosen by local admission.                                                                                                                                                      |
 | `local`, `peer`                  | Each has `host_id` (32 lowercase hex), `generation_id` (canonical nonnil UUID stream ID), `channel` (`1`–`9`).                                                                                                  |
 | `transitions`                    | At most 64 records with `host_id`, `from`, `to`, `receipt_id`. Each names a canonical old-to-new stream receipt for one paired host; chains must reach that host's current generation, without cycles or forks. |
@@ -1499,6 +1499,42 @@ Each digit `1`–`9` names one agent session (`audience`, `provider`,
 in that file. A missing or malformed file refuses the channel instead of
 opening the microphone.
 
+`audience` is the casefolded identity: `cs-bus --attach --name Kaja` binds
+`kaja`, and every comparison (occupancy, `--takeover` of the same name, `--to`
+addressing, the follower's audience gate, voice profiles) casefolds both
+sides. The spelling the agent gave is kept beside it as `display_name` on the
+binding entry, the lease (`codescribe.agent-bridge.lease.v1`), the attach
+receipt and `--status`, and it travels with messages for people to read: the
+peer sender block (`sender.display_name`) and the published target
+(`target.recipients[].name` as that spelling), the typed message's owner
+block and `sent_to`, and the controller's frozen channel recipients carry the
+spelling next to the unchanged `audience`. A peer message's frozen
+`recipients[]` entries carry no `display_name`: their `name` is the
+casefolded `audience` (`scripts/bus-demux.py`, the peer publication). Readers
+that match (seals, acks, receipts, routing) keep using `audience`; surfaces
+that show a name prefer `display_name` and fall back to `audience` for
+bindings written before it existed (Founder, 2026-11-04: the Bus window
+showed every agent in lowercase). A re-attach of the same session with
+`--takeover` refreshes the spelling without changing the identity.
+
+The field `name` is therefore a label in some records and the identity in
+others:
+
+| Record | `name` carries | Spelling beside it |
+| --- | --- | --- |
+| Lease (`codescribe.agent-bridge.lease.v1`) | identity (casefolded) | `display_name` |
+| Per-copy receipts (`<delivery_id>.delivered.json`, `.read.json`; `receipt_recipient`) | identity (casefolded; `audience` wins) | `display_name` when it casefolds to `name` |
+| `--status` | identity (casefolded) | `display_name` |
+| Peer message frozen `recipients[]` | identity (`audience`) | none |
+| `binding_identity` | spelling | `audience` beside it is the identity |
+| `sent_to`, `message_published` `target.recipients[]` | spelling | `audience` where present |
+| Rust `frozen_channel_recipients` | spelling | `display_name`; `audience` is the identity |
+
+Rule for consumers: compare identities by `audience` or by a casefolded key
+(`name` casefolded together with the channel, as `--receipts` does), never
+by `name` with `==`; `Bruno` in `sent_to` and `bruno` in a lease are one
+agent.
+
 ### Broadcast policy
 
 Each provider/session/leased bus has one runtime policy receipt under
@@ -2036,14 +2072,14 @@ user heard it. Every such fact is one private file under
 `runtime/receipts/<message_id>/`, written once by the process that produces
 the fact and never rewritten, replaced or removed by any other process:
 
-| File                           | Writer                                                                                                              | Content                                                                                                                                                                                |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` (the backfill, for history)                                            | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet` (`null` only from the backfill), `at`, `sent_to` when the copy carries the publisher's list |
-| `<delivery_id>.read.json`      | `cs-bus --ack`                                                                                                      | the same identity fields and `read_at`                                                                                                                                                 |
-| `<delivery_id>.skipped.json`   | the follower, instead of `delivered`, when channel zero is `off`                                                    | the same identity fields, `policy: off`, `at`                                                                                                                                          |
-| `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy                                                                | `control_id`, `at`                                                                                                                                                                     |
-| `playback.<ticket>.json`       | the reply player, at the ticket's first terminal state                                                              | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at`                                                                                                                   |
-| `sent.json`                    | the helper publisher of a channel-zero text (typed `--send-text --channel 0`, peer `--send --to 0`), at publication | `sent_to` as admitted at sending, `bus` (the sender's bus for a peer text, null for typed text), `at`                                                                                  |
+| File                           | Writer                                                                                                              | Content                                                                                                                                                                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` (the backfill, for history)                                            | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet` (`null` only from the backfill), `at`, `sent_to` when the copy carries the publisher's list, `display_name` when the frozen entry or the binding spells the name |
+| `<delivery_id>.read.json`      | `cs-bus --ack`                                                                                                      | the same identity fields and `read_at`                                                                                                                                                                                                                      |
+| `<delivery_id>.skipped.json`   | the follower, instead of `delivered`, when channel zero is `off`                                                    | the same identity fields, `policy: off`, `at`                                                                                                                                                                                                               |
+| `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy                                                                | `control_id`, `at`                                                                                                                                                                                                                                          |
+| `playback.<ticket>.json`       | the reply player, at the ticket's first terminal state                                                              | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at`                                                                                                                                                                                        |
+| `sent.json`                    | the helper publisher of a channel-zero text (typed `--send-text --channel 0`, peer `--send --to 0`), at publication | `sent_to` as admitted at sending, `bus` (the sender's bus for a peer text, null for typed text), `at`                                                                                                                                                       |
 
 Every file carries `schema: codescribe.message-receipt.v1`, `kind` and
 `message_id`; none carries message text or WAV paths. The identity fields
@@ -2095,7 +2131,11 @@ did. Every member of `sent_to` without any file is listed as
 recorded it yet, or the reader predates this generation. `denominator` is
 the number of agents on `sent_to` plus every agent delivered to or read
 outside that list, minus every agent whose copy was skipped (one agent by
-name and channel, however many deliveries reached it); `no_receipt` counts,
+casefolded name and channel, however many deliveries reached it, and however
+the name was spelt: `sent.json` carries the sender's spelling of each name
+(the binding's `display_name`), the readers' files the lease's casefolded
+name, and `recipients[].name` shows the spelling the file's `display_name`
+or the list carries); `no_receipt` counts,
 `skipped` is shown but never counted. The list is frozen at publication
 and a skip is recorded at delivery, so a member of `sent_to` can turn out
 skipped: the skip wins, the entry stays `skipped`, and the count does not

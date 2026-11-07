@@ -536,7 +536,10 @@ final class OverlayStateTests: XCTestCase {
       text: "Edited", attachments: [attachment])
     state.conversationDrafts[other.id] = "Other draft"
     var sends = 0
-    state.publishConversationText = { _, _, _, _ in sends += 1 }
+    state.publishConversationText = { _, _, _, _ in
+      sends += 1
+      return .empty
+    }
     await state.toggleDraftMicrophone(in: origin)
     state.openConversation(for: other.owner!)
     projectText(
@@ -728,11 +731,15 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertEqual(reference, first)
       state.conversationDrafts[origin.id] = "Newer draft"
       state.conversationReplies[origin.id] = newer
+      return .empty
     }
     await state.sendConversationText(origin)
     XCTAssertEqual(state.conversationDrafts[origin.id], "Newer draft")
     XCTAssertEqual(state.conversationReplies[origin.id], newer)
-    state.publishConversationText = { _, _, reference, _ in XCTAssertEqual(reference, newer) }
+    state.publishConversationText = { _, _, reference, _ in
+      XCTAssertEqual(reference, newer)
+      return .empty
+    }
     await state.sendConversationText(origin)
     XCTAssertEqual(state.conversationDrafts[origin.id], "")
     XCTAssertNil(state.conversationReplies[origin.id])
@@ -1072,6 +1079,35 @@ final class OverlayStateTests: XCTestCase {
       .init(
         deliveries: [], conversations: [replyFocusConversation(lena, id: "reply:second"), astra]))
     XCTAssertEqual(state.selectedConversationID, lena.id)
+  }
+
+  /// A reply heard to the end counts as read (L14b, 2026-11-07): the
+  /// playback state its bubble reads as "Spoken". Waiting, playing,
+  /// stopped, failed and refused replies and a reply with no playback stay
+  /// unread until viewed.
+  func testSpokenReplyCountsAsRead() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let owner = try XCTUnwrap(lena.owner)
+    func reply(_ id: String, _ playback: String?) -> OverlayConversationMessage {
+      OverlayConversationMessage(
+        id: id, kind: .reply, text: "Gotowe.", order: 1, emittedAt: "2026-11-06T19:36:00Z",
+        owner: owner, recipients: [], deliveryID: nil, replyTo: nil, unsolicited: true,
+        playback: playback.map {
+          OverlayReplyPlayback(
+            replyID: id, ticket: "t-\(id)", state: $0, reason: nil, spoken: $0 == "spoken",
+            emittedAt: "2026-11-06T19:36:01Z")
+        }, busPath: "/dev/null")
+    }
+    for (playback, unread) in [
+      ("spoken", 0), ("playing", 1), ("waiting", 1), ("stopped", 1), ("failed", 1),
+      ("refused", 1), (nil, 1),
+    ] as [(String?, Int)] {
+      let conversation = OverlayConversation(
+        id: lena.id, channel: lena.channel, name: lena.name, owner: owner,
+        messages: [reply("reply:\(playback ?? "none")", playback)])
+      XCTAssertEqual(state.unreadReplies(in: conversation), unread, playback ?? "none")
+    }
   }
 
   func testReplyAdmissionAmbiguousOwnersPreserveManualViewAndUnread() throws {
@@ -2171,11 +2207,12 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertTrue(peers.isEmpty, "An ordinary send has no sync co-addressing")
       XCTAssertEqual(text, "Pierwszy szkic")
       state.conversationDrafts[owner.id] = "Nowszy szkic"
+      return .empty
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "Nowszy szkic")
     XCTAssertNil(state.textMessageErrors[owner.id])
-    state.publishConversationText = { _, _, _, _ in }
+    state.publishConversationText = { _, _, _, _ in .empty }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "")
     let focus = state.conversationFocusRevision
@@ -2205,14 +2242,105 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertTrue(peers.isEmpty, "Broadcast must not inherit a sync cohort")
       XCTAssertEqual(text, "Do wszystkich")
       state.conversationDrafts["0"] = "Nowy szkic"
+      return .empty
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "Nowy szkic")
     XCTAssertNil(state.textMessageErrors["0"])
-    state.publishConversationText = { _, _, _, _ in }
+    state.publishConversationText = { _, _, _, _ in .empty }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "")
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
+  }
+
+  func testDecodeBusTextPublicationExtractsRecipientsAndSkippedFromMessagePublishedJSON() throws {
+    let payload = """
+      {"kind":"other_diagnostic","ignored":true}
+      {"kind":"message_published","hold_until":"2026-11-04T02:00:05.000000+00:00","message_id":"0123456789abcdef01234567","recipients":[{"channel":"1","audience":"as","name":"as","provider":"claude","provider_session_id":"sess-as","lease_id":"11111111111111111111111111111111","bus":"/tmp/bus.jsonl","broadcast":"on"}],"skipped":[{"channel":"2","reason":"not_listening","audience":"beta","name":"beta","provider":"codex","provider_session_id":"sess-beta","lease_id":"22222222222222222222222222222222","bus":"/tmp/bus.jsonl"}]}
+
+      """
+    let publication = RealAgentBridgeInstaller.decodeBusTextPublication(
+      from: Data(payload.utf8))
+    XCTAssertEqual(publication.messageID, "0123456789abcdef01234567")
+    XCTAssertEqual(publication.holdUntil, "2026-11-04T02:00:05.000000+00:00")
+    XCTAssertEqual(publication.recipients.count, 1)
+    XCTAssertEqual(publication.recipients.first?.name, "as")
+    XCTAssertEqual(publication.recipients.first?.channel, "1")
+    XCTAssertEqual(publication.recipients.first?.provider, "claude")
+    XCTAssertEqual(publication.recipients.first?.providerSessionID, "sess-as")
+    XCTAssertEqual(
+      publication.recipients.first?.leaseID, "11111111111111111111111111111111")
+    XCTAssertEqual(publication.skipped.count, 1)
+    let skipped = try XCTUnwrap(publication.skipped.first)
+    XCTAssertEqual(skipped.channel, "2")
+    XCTAssertEqual(skipped.reason, "not_listening")
+    XCTAssertEqual(skipped.reasonText, String(localized: "not listening"))
+    XCTAssertEqual(skipped.displayName, "beta")
+    XCTAssertEqual(skipped.owner?.name, "beta")
+    XCTAssertEqual(skipped.owner?.channel, "2")
+    XCTAssertEqual(skipped.owner?.leaseID, "22222222222222222222222222222222")
+    XCTAssertEqual(
+      RealAgentBridgeInstaller.decodeBusTextPublication(from: Data()),
+      .empty)
+  }
+
+  @MainActor
+  func testBroadcastSendConversationTextClearsDraftAndSurfacesSkippedRecipients() async throws {
+    let state = OverlayState()
+    let conversation = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.applyConversationSnapshot(
+      OverlayChannelDeliverySnapshot(deliveries: [], conversations: [conversation]))
+    state.conversationDrafts["0"] = "Broadcast with skipped recipient"
+    let skippedBeta = AgentBusSkippedRecipient(
+      channel: "2",
+      reason: "not_listening",
+      audience: "beta",
+      name: "beta",
+      provider: "codex",
+      providerSessionID: "sess-beta",
+      leaseID: String(repeating: "b", count: 32),
+      bus: "/tmp/bus.jsonl")
+    let skippedGamma = AgentBusSkippedRecipient(
+      channel: "4",
+      reason: "stale_lease",
+      audience: "gamma",
+      name: nil)
+    let messageID = "abcdef0123456789abcdef01"
+    state.publishConversationText = { owner, text, _, peers in
+      XCTAssertNil(owner)
+      XCTAssertEqual(text, "Broadcast with skipped recipient")
+      XCTAssertTrue(peers.isEmpty)
+      return AgentBusTextPublication(
+        messageID: messageID,
+        holdUntil: nil,
+        recipients: [],
+        skipped: [skippedBeta, skippedGamma])
+    }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDraft(for: "0"), "")
+    XCTAssertEqual(state.publishedMessageSkips[messageID], [skippedBeta, skippedGamma])
+    let beta = String(
+      localized: "Skipped \("beta") (channel \("2")): \(String(localized: "not listening"))")
+    let gamma = String(
+      localized:
+        "Skipped \("gamma") (channel \("4")): \(String(localized: "connection out of date"))")
+    XCTAssertEqual(state.textMessageErrors["0"], "\(beta); \(gamma)")
+    // The helper's raw code never reaches the screen.
+    XCTAssertFalse(try XCTUnwrap(state.textMessageErrors["0"]).contains("stale_lease"))
+    XCTAssertFalse(try XCTUnwrap(state.textMessageErrors["0"]).contains("not_listening"))
+  }
+
+  func testSkippedRecipientWithoutNameFallsBackToLocalizedChannelAndUnknownReasonIsSkipped() {
+    let nameless = AgentBusSkippedRecipient(channel: "7", reason: "some_new_code")
+    XCTAssertEqual(nameless.displayName, String(localized: "channel \("7")"))
+    XCTAssertEqual(nameless.reasonText, String(localized: "skipped"))
+    XCTAssertEqual(
+      OverlayState.formatSkippedRecipientsNotice([nameless]),
+      String(
+        localized:
+          "Skipped \(String(localized: "channel \("7")")) (channel \("7")): \(String(localized: "skipped"))"
+      ))
   }
 
   func testSelectingConversationExpandsTheCanvasWithoutChangingCapture() {

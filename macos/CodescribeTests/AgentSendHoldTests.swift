@@ -146,6 +146,7 @@ final class AgentSendHoldTests: XCTestCase {
         XCTAssertEqual(text, "Never paint two copies")
         await gate.wait(entered: entered)
         if refuses { throw CocoaError(.fileWriteNoPermission) }
+        return .empty
       }
       let host = NSHostingView(rootView: SendingHarness(state: state, conversation: conversation))
       let window = backgroundWindow(host)

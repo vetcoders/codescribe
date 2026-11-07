@@ -11,7 +11,10 @@ struct OverlayAgentRosterLabel: View {
   let preview: String?
   let timestamp: Date?
   let unreadCount: Int
-  let dot: OverlayAgentDotKind
+  /// Nil for a mailbox: your inbox has no presence to show.
+  let dot: OverlayAgentDotKind?
+  /// A mailbox's glyph where an agent's digit and dot stand (the envelope).
+  var symbol: String? = nil
   let statusLabel: String
   let statusDetail: String
   /// Rendered right after the name: the caller's own control, such as the
@@ -37,15 +40,26 @@ struct OverlayAgentRosterLabel: View {
             if let channel {
               Text(verbatim: channel)
                 .font(.system(size: 11 * textScale, weight: .medium, design: .monospaced))
-                .foregroundStyle(palette.mutedText.color)
+                .foregroundStyle(palette.roster.secondaryText.color)
+                .fixedSize()
                 .accessibilityIdentifier("overlay-agent-digit-\(channel)")
             }
-            OverlayAgentStatusDot(kind: dot, palette: palette)
-              .accessibilityLabel(Text(verbatim: statusLabel))
-              .accessibilityValue(Text(verbatim: statusDetail))
-              .accessibilityIdentifier(
-                channel.map { "overlay-channel-delivery-\($0)" } ?? "overlay-channel-delivery"
-              )
+            if let symbol {
+              Image(systemName: symbol)
+                .font(.system(size: 12 * textScale))
+                .foregroundStyle(palette.mutedText.color)
+                .frame(width: 16 * textScale)
+                .accessibilityHidden(true)
+            }
+            if let dot {
+              OverlayAgentStatusDot(kind: dot, palette: palette)
+                .fixedSize()
+                .accessibilityLabel(Text(verbatim: statusLabel))
+                .accessibilityValue(Text(verbatim: statusDetail))
+                .accessibilityIdentifier(
+                  channel.map { "overlay-channel-delivery-\($0)" } ?? "overlay-channel-delivery"
+                )
+            }
             Text(verbatim: title)
               .font(.system(size: 14 * textScale, weight: .semibold))
               .lineLimit(1)
@@ -55,12 +69,15 @@ struct OverlayAgentRosterLabel: View {
               .accessibilityIdentifier("overlay-agent-title-\(channel ?? "0")")
             if let titleAccessory {
               titleAccessory
+                .fixedSize()
             }
             if let receipt {
               OverlayRosterReceiptMark(receipt: receipt, palette: palette, textScale: textScale)
+                .fixedSize()
             }
             if let trailingMarks {
               trailingMarks
+                .fixedSize()
             }
             Spacer(minLength: 4)
             if unreadCount > 0, let conversationID {
@@ -71,8 +88,9 @@ struct OverlayAgentRosterLabel: View {
             if let timestamp {
               MessageTimestampLabel(date: timestamp, compact: true)
                 .font(.system(size: 11 * textScale))
-                .foregroundStyle(palette.mutedText.color)
+                .foregroundStyle(palette.roster.secondaryText.color)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .accessibilityIdentifier(
                   "overlay-agent-timestamp-\(conversationID ?? channel ?? "0")")
             }
@@ -82,7 +100,7 @@ struct OverlayAgentRosterLabel: View {
         if !headerOnly, let descriptor, let channel {
           Text(verbatim: descriptor)
             .font(.system(size: 11 * textScale))
-            .foregroundStyle(palette.mutedText.color)
+            .foregroundStyle(palette.roster.secondaryText.color)
             .lineLimit(1)
             .truncationMode(.middle)
             .help(Text(verbatim: descriptor))
@@ -91,8 +109,11 @@ struct OverlayAgentRosterLabel: View {
         }
         if !headerOnly, let preview {
           Text(verbatim: preview)
-            .font(.system(size: 13 * textScale))
-            .foregroundStyle(unreadCount > 0 ? palette.bodyText.color : palette.mutedText.color)
+            .font(
+              .system(size: 13 * textScale, weight: Self.previewWeight(unreadCount: unreadCount)))
+            .foregroundStyle(
+              unreadCount > 0 ? palette.bodyText.color : palette.roster.secondaryText.color
+            )
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -102,6 +123,13 @@ struct OverlayAgentRosterLabel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .contentShape(Rectangle())
   }
+
+  /// The preview of an unread conversation is semibold until it is opened
+  /// (round 5 decision (b), 2026-11-07), from the same unread count as the
+  /// badge beside it; opening clears the count and the weight returns.
+  static func previewWeight(unreadCount: Int) -> Font.Weight {
+    unreadCount > 0 ? .semibold : .regular
+  }
 }
 
 /// One badge for both the current roster and saved conversations.
@@ -110,7 +138,11 @@ struct OverlayAgentUnreadBadge: View {
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
 
-  private var badgeDiameter: CGFloat {
+  private var badgeDiameter: CGFloat { Self.diameter(count: count, textScale: textScale) }
+
+  /// The badge's side for `count` at `textScale`; the chip's hover card
+  /// measures its header with it.
+  static func diameter(count: Int, textScale: CGFloat) -> CGFloat {
     max(20, CGFloat(String(count).count) * 8 + 8) * textScale
   }
 
@@ -118,9 +150,10 @@ struct OverlayAgentUnreadBadge: View {
     Text(verbatim: String(count))
       .font(.system(size: 11 * textScale, weight: .semibold))
       .monospacedDigit()
-      .foregroundStyle(palette.processingStatus.color)
+      // New replies in the text tone: amber means warning, violet your voice.
+      .foregroundStyle(palette.primaryText.color)
       .frame(width: badgeDiameter, height: badgeDiameter)
-      .background(palette.processingStatus.color.opacity(0.12), in: Circle())
+      .background(palette.primaryText.color.opacity(0.12), in: Circle())
       .fixedSize()
       .accessibilityLabel("\(count) unread replies")
   }
@@ -144,15 +177,21 @@ struct OverlayRosterSyncMark: View {
 
 /// Compact projection of a frozen recipient's delivery evidence: the words
 /// the conversation bubble uses for the same receipt, and the glyph that
-/// stands for them in the name row. One glyph per state, so the row reads
-/// the whole vocabulary: `pause.circle` held, `clock` queued or addressed
-/// with no receipt yet, `checkmark` accepted or delivered, `double-check`
-/// read, `forward.end` skipped off channel 0, `circle.dotted` no receipt.
+/// stands for them in the name row: `clock` queued or addressed with no
+/// receipt yet, `checkmark` accepted (`✓` grey), `double-check` delivered
+/// (`✓✓` muted, thin) or read (`✓✓` in label ink, heavier, via `isRead`;
+/// Founder, 2026-11-05: read and delivered differ by weight and ink, not by
+/// a colour), `circle.dotted` no receipt. An empty symbol draws no mark: a message still held for
+/// withdrawal has words under the preview and nothing beside the name
+/// (Founder, 2026-11-04).
 struct OverlayRosterReceipt {
   let symbol: String
   let text: String
   let helpText: String
   var isRead = false
+  /// The message this receipt reads, so the chip's hover card puts the
+  /// reading beside that message's time and no other.
+  var messageID: String? = nil
 }
 
 private struct OverlayRosterReceiptMark: View {
@@ -163,9 +202,14 @@ private struct OverlayRosterReceiptMark: View {
   var body: some View {
     Group {
       switch receipt.symbol {
+      case "":
+        EmptyView()
       case "double-check":
         OverlayRosterCheckmarks(count: 2)
-          .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+          .stroke(
+            style: StrokeStyle(
+              lineWidth: receipt.isRead ? 2.25 : 1.5, lineCap: .round, lineJoin: .round)
+          )
           .frame(width: 16 * textScale, height: 10 * textScale)
       case "checkmark":
         OverlayRosterCheckmarks(count: 1)
@@ -176,15 +220,18 @@ private struct OverlayRosterReceiptMark: View {
           .font(.system(size: 11 * textScale, weight: .medium))
       }
     }
-    .foregroundStyle(receipt.isRead ? palette.bodyText.color : palette.mutedText.color)
+    // Every receipt is read like text (L8): the label ink; the heavier stroke says read.
+    .foregroundStyle(palette.roster.receipt.color)
     .help(Text(verbatim: receipt.helpText))
     .accessibilityLabel(Text(verbatim: receipt.helpText))
     .accessibilityIdentifier("overlay-agent-receipt-\(receipt.symbol)")
   }
 }
 
-/// One check for a copy that reached the agent's side, two for one it read;
-/// the second check sits a third of the width behind the first.
+/// One check for queue acceptance, two for delivery or explicit read/ACK.
+/// Delivered and Read share the shape; their stroke and ink are set by the
+/// receipt mark.
+/// The second check sits a third of the width behind the first.
 private struct OverlayRosterCheckmarks: Shape {
   let count: Int
 

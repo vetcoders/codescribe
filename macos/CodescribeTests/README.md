@@ -335,8 +335,14 @@ windows visible and permits activation in that isolated session. It must never
 be used to run over the Founder's working desktop.
 
 The ordinary runner never starts the independent AX client or checks AX trust.
-The explicit isolated GUI runner checks existing trust without prompting, and
-fails on zero executed tests, any skipped test, or zero verified AX actions.
+The explicit isolated GUI runner checks existing trust without prompting. It
+retains a private per-run `.xcresult` beside the test log and reads its
+structured summary and test tree: zero tests, any skipped or failed test,
+expected failures, inconsistent summary and test-case counts or results,
+missing results, or a missing, duplicate
+or nonpassing sentinel fail the gate. A build warning containing the word
+"skipped" is not a test skip. The caller cannot override the result bundle path.
+The separate verified AX action receipt remains required.
 Choose a supported interaction selection, for example
 `CODESCRIBE_TEST_ISOLATED_GUI=1 make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayConversationAcceptanceTests/testVoicelessReplyAndAgentTextRenderEnabledPlay'`.
 Selecting only state/layout tests in GUI mode cannot satisfy the interaction gate.
@@ -379,6 +385,22 @@ The standalone fold case also fails on the exact older `0adb8214` source (one
 test, five assertions), even though that version previously passed it in a
 full run. That aggregate pass is not independent native acceptance. The exact
 ordering or fixture dependency remains undiagnosed.
+
+### Header projection work
+
+`OverlayHeaderRosterWorkTests` evaluates the production overlay body without
+presenting a window or starting capture. Its fixed eight-agent, 2,000-reply input
+and 40 measured iterations support a matched baseline/candidate comparison.
+Run `testLargeHistoryHeaderWork` with Xcode code coverage enabled and retain the
+result bundle and `HEADER_ROSTER_WORK` timing line. Verify that the header was
+actually evaluated before interpreting roster entry counts. The same fixture
+must be used on both source generations; the timing line alone is not a gate.
+
+The companion unread case checks fresh roster projections after reads and new
+deliveries. Existing channel-map and preference tests exercise navigation and
+microphone separation; native header/morph cases retain geometry acceptance.
+These test-host checks do not establish installed-app latency, GPU cost or the
+cause of a thermal incident.
 
 ### Shared-desktop boundary
 

@@ -486,7 +486,7 @@ struct OverlayIntercomCardIdentity: Hashable {
     self.digit = digit
     conversationID = conversation?.id
     ownerID = conversation?.owner?.id
-    self.name = name ?? conversation.map { OverlayChannelMapChip.displayName($0.name) } ?? digit
+    self.name = name ?? conversation?.name ?? digit
   }
 
   var isHumanInbox: Bool {

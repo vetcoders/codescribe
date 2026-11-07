@@ -186,7 +186,7 @@ struct MCPServerRow: View {
   private var accent: Color {
     guard server.enabled else { return CSColor.secondaryInk }
     if pending { return CSColor.amberLight }
-    if let result { return result.ok ? CSColor.olive : CSColor.dangerLight }
+    if let result { return result.ok ? CSColor.secondaryInk : CSColor.dangerLight }
     return CSColor.secondaryInk
   }
 
@@ -287,7 +287,7 @@ struct MCPServerRow: View {
       if result.ok {
         resultLine(
           text: String(localized: "Last test: passed · \(Int(result.toolCount)) tools"),
-          color: CSColor.oliveLight
+          color: CSColor.secondaryInk
         )
       } else {
         resultLine(text: String(localized: "Last test: failed"), color: CSColor.dangerLight)

@@ -4,13 +4,16 @@ import XCTest
 
 @testable import Codescribe
 
-/// Falsifiers for the collapsed overlay's channel map (bus intercom spec §5.1,
-/// §5.5, §13, decision D1): one chip per bound agent, channel 0 only while it
-/// broadcasts, named chips, then digit-only chips, then a counter as the room
-/// shrinks, the violet dot on an open channel's digit, capitalised names, hints
-/// that follow the Agent channel modifier, a counter whose click changes the
-/// form or the width and nothing else, and one pill view shared with the
-/// Agents rail.
+/// Falsifiers for the overlay's channel map (bus intercom spec §5.1, §5.5, §13,
+/// decision D1; bus brief 2026-11-04 §4, §5, §11C): one pill per bound agent,
+/// led by channel 0's nameless chip (lit while it broadcasts), each agent's
+/// hover card from the roster's projections, names measured in the pill's font
+/// (whole up to six letters, else five and an ellipsis, four at the floor) and
+/// cut longest first, stacked pills in the bar's single row for 1–5 agents and
+/// chips in its second row for 6–9, the violet dot on an open channel's digit,
+/// capitalised names, hints that follow the Agent channel modifier, a counter
+/// whose click changes the form or the width and nothing else, and one pill
+/// view shared with the Agents rail.
 @MainActor
 final class OverlayChannelMapTests: XCTestCase {
 
@@ -53,19 +56,6 @@ final class OverlayChannelMapTests: XCTestCase {
         "3": hud(open: open.contains("3"), alive: !dead.contains("3"), session: "s3"),
         "5": hud(open: open.contains("5"), alive: !dead.contains("5"), session: "s5"),
       ], selected: selected)
-  }
-
-  /// Nine agents, every chord digit bound.
-  private func fullRoster(selected: String? = nil) -> OverlayChannelMapModel {
-    let names = ["Miksa", "Nora", "Igor", "Hania", "Kuba", "Konfig", "Klara", "Leon", "Zofia"]
-    var hudStates: [String: OverlayChannelHudProjection] = ["0": hud(alive: nil)]
-    var channels: [OverlayChannelDelivery] = []
-    for (index, name) in names.enumerated() {
-      let digit = String(index + 1)
-      hudStates[digit] = hud(session: "s\(digit)")
-      channels.append(delivery(digit, name))
-    }
-    return model(channels: channels, hudStates: hudStates, selected: selected)
   }
 
   private func ownerConversation(
@@ -126,9 +116,39 @@ final class OverlayChannelMapTests: XCTestCase {
     return String(source[start.lowerBound..<end.lowerBound])
   }
 
+  /// The first `count` agents of the nine-agent roster, on digits 1…count.
+  private func agents(_ count: Int) -> OverlayChannelMapModel {
+    let names = ["Miksa", "Nora", "Igor", "Hania", "Kuba", "Konfig", "Klara", "Leon", "Zofia"]
+    return named(Array(names.prefix(count)))
+  }
+
+  /// Agents with the given (already capitalised) names on digits 1, 2, ….
+  private func named(_ names: [String]) -> OverlayChannelMapModel {
+    var hudStates: [String: OverlayChannelHudProjection] = ["0": hud(alive: nil)]
+    var channels: [OverlayChannelDelivery] = []
+    for (index, name) in names.enumerated() {
+      let digit = String(index + 1)
+      hudStates[digit] = hud(session: "s\(digit)")
+      channels.append(delivery(digit, name))
+    }
+    return model(channels: channels, hudStates: hudStates)
+  }
+
+  /// The agents' name widths, without channel 0's nameless chip.
+  private func nameWidths(_ names: [String]) -> OverlayChannelMapNameWidths {
+    OverlayChannelMapNameWidths(chips: named(names).agents, scale: 1)
+  }
+
+  /// A row of the map's pills at the given name widths, as the window and the
+  /// map both measure it.
+  private func row(_ nameWidths: [CGFloat], _ form: OverlayChannelPill.Form) -> CGFloat {
+    OverlayChannelMapModel.rowWidth(
+      nameWidths: nameWidths, form: form, scale: 1, spacing: OverlayChannelMapView.chipSpacing)
+  }
+
   // MARK: - Projection (§13.2)
 
-  func testOnlyBoundAgentDigitsFollowInOrderWithoutChannelZero() {
+  func testChannelZeroLeadsTheBoundAgentDigitsInOrder() {
     let map = model(
       channels: [
         delivery("5", "Kuba"), delivery("3", "Igor"),
@@ -141,9 +161,14 @@ final class OverlayChannelMapTests: XCTestCase {
         "0": hud(alive: nil), "3": hud(session: "s3"), "5": hud(session: "s5"),
         "10": hud(session: "s10"),
       ])
-    XCTAssertEqual(map.chips.map(\.digit), ["3", "5"], "no 0 All on the map")
-    XCTAssertEqual(map.chips.map(\.name), ["Igor", "Kuba"])
-    XCTAssertFalse(map.chips.contains(where: \.isBroadcast))
+    XCTAssertEqual(map.chips.map(\.digit), ["0", "3", "5"], "(0) leads at rest")
+    XCTAssertEqual(
+      map.chips.map(\.name), [OverlaySharedChannelName.defaultName, "Igor", "Kuba"],
+      "channel 0 carries the shared channel's default name")
+    XCTAssertTrue(map.chips[0].isBroadcast)
+    XCTAssertFalse(map.chips[0].microphoneOpen, "at rest channel 0 carries no open dot")
+    XCTAssertNil(map.chips[0].status, "channel 0's hover is its carousel, not a card")
+    XCTAssertEqual(map.agents.map(\.digit), ["3", "5"])
     XCTAssertEqual(map.count, 2, "the counter counts agents")
     XCTAssertEqual(map.counterFigure, "2")
   }
@@ -152,9 +177,8 @@ final class OverlayChannelMapTests: XCTestCase {
     let map = model(channels: [delivery("2", "Miksa")], hudStates: [:])
     XCTAssertTrue(map.chips.isEmpty)
     XCTAssertEqual(
-      OverlayChannelMapModel.presentation(
-        availableWidth: 400, namedWidth: 0, digitsWidth: 0, counterWidth: 30),
-      .hidden)
+      DictationOverlayWindow.midiBarGeometry(map: map, textScale: 1), .classic,
+      "no map: the classic 410 × 46 bar")
   }
 
   func testChannelZeroAloneIsNoMap() {
@@ -162,24 +186,42 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(map.chips.isEmpty, "channel 0 is not an agent")
   }
 
-  func testChannelZeroAppearsOnlyWhileTheMicrophoneBroadcasts() {
+  func testBroadcastLightsChannelZeroWithoutResizingTheMap() {
     let map = scenario(open: ["0"])
     XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3", "5"])
     let zero = map.chips[0]
     XCTAssertTrue(zero.isBroadcast)
     XCTAssertTrue(zero.microphoneOpen)
-    XCTAssertEqual(zero.name, "", "no All label")
-    for presentation in [OverlayChannelMapPresentation.chips, .digits] {
-      XCTAssertFalse(zero.showsName(in: presentation), "channel 0 is a digit with its badge")
-    }
+    XCTAssertEqual(zero.name, OverlaySharedChannelName.defaultName)
+    // Channel 0's name is measured by the agents' rules, at most its whole
+    // width and never below its shortest cut.
+    let names = OverlayChannelMapNameWidths(chips: map.chips, scale: 1)
+    XCTAssertEqual(
+      names.full[0], OverlayChannelPill.nameWidth(OverlaySharedChannelName.defaultName, scale: 1))
+    XCTAssertLessThanOrEqual(names.preferred[0], names.full[0])
+    XCTAssertLessThanOrEqual(names.shortest[0], names.preferred[0])
+    XCTAssertGreaterThan(names.shortest[0], 0)
     XCTAssertEqual(map.count, 3, "channel 0 is not counted")
     XCTAssertEqual(map.agents.map(\.digit), ["2", "3", "5"])
     XCTAssertEqual(map.openDigits, ["0"])
     XCTAssertEqual(map.counterFigure, "0", "the counter shows 0 with the badge")
     XCTAssertEqual(map.counterHint, "2 Miksa · 3 Igor · 5 Kuba", "the hint lists agents only")
-    XCTAssertEqual(zero.hint(modifier: .control), "0 · Ctrl+0")
+    XCTAssertEqual(
+      zero.hint(modifier: .control), "0 · " + OverlaySharedChannelName.defaultName + " · Ctrl+0")
     XCTAssertEqual(
       zero.accessibilityLabel(modifier: .control), "Channel 0, shortcut Ctrl 0, microphone open")
+    // At rest the same chip leads, without the dot, and the bar keeps its
+    // width: (0) is always there, so a broadcast only lights it.
+    let rest = scenario()
+    XCTAssertEqual(rest.chips.map(\.digit), ["0", "2", "3", "5"])
+    XCTAssertFalse(rest.chips[0].microphoneOpen)
+    XCTAssertEqual(
+      rest.chips[0].accessibilityLabel(modifier: .control), "Channel 0, shortcut Ctrl 0")
+    XCTAssertEqual(rest.chips[0].accessibilityLabel(modifier: .unbound), "Channel 0")
+    XCTAssertEqual(
+      DictationOverlayWindow.midiBarGeometry(map: map, textScale: 1),
+      DictationOverlayWindow.midiBarGeometry(map: rest, textScale: 1),
+      "a broadcast resizes nothing")
     // Broadcasting with no agent bound still shows the open channel.
     let alone = model(channels: [], hudStates: ["0": hud(open: true, alive: nil)])
     XCTAssertEqual(alone.chips.map(\.digit), ["0"])
@@ -189,8 +231,8 @@ final class OverlayChannelMapTests: XCTestCase {
 
   func testDeadFollowerDimsItsChipAndKeepsItsDigit() {
     let map = scenario(dead: ["3"])
-    XCTAssertEqual(map.chips.map(\.digit), ["2", "3", "5"])
-    XCTAssertEqual(map.chips.map(\.disconnected), [false, true, false])
+    XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3", "5"])
+    XCTAssertEqual(map.chips.map(\.disconnected), [false, false, true, false])
   }
 
   func testUnreadSelectableAndSelectedComeFromTheRoster() {
@@ -198,60 +240,214 @@ final class OverlayChannelMapTests: XCTestCase {
       channels: [delivery("2", "Miksa"), delivery("3", "Igor")],
       hudStates: ["0": hud(alive: nil), "2": hud(session: "s2"), "3": hud(session: "s3")],
       selected: "3", selectable: ["0", "2"], unread: ["3"])
-    XCTAssertEqual(map.chips.map(\.selectable), [true, false])
-    XCTAssertEqual(map.chips.map(\.unread), [false, true])
-    XCTAssertEqual(map.chips.map(\.selected), [false, true])
+    XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3"])
+    XCTAssertEqual(map.chips.map(\.selectable), [true, true, false])
+    XCTAssertEqual(map.chips.map(\.unread), [false, false, true])
+    XCTAssertEqual(map.chips.map(\.selected), [false, false, true])
     XCTAssertTrue(map.anyUnread)
+  }
+
+  // MARK: - Hover card status (Founder, 2026-11-04)
+
+  /// Three separate facts: presence from `followerAlive` (false is only
+  /// "not active", nil no data), the stall as its own flag, reception and
+  /// the moon from the channel 0 policy as painted (two states, no
+  /// unconfirmed third: Founder, 2026-11-04).
+  func testChipStatusKeepsPresenceReceptionAndUnreadApart() {
+    func status(
+      alive: Bool?, stalled: Bool = false, policy: AgentBroadcastPolicy = .on,
+      unread: Int = 0, provider: String? = "codex"
+    ) -> OverlayChannelChipStatus {
+      OverlayChannelChipStatus(
+        followerAlive: alive, stalled: stalled, policy: policy, unread: unread,
+        provider: provider)
+    }
+    XCTAssertEqual(status(alive: true).presence, .online)
+    XCTAssertEqual(status(alive: false).presence, .inactive, "false is not a sure offline")
+    XCTAssertEqual(status(alive: nil).presence, .unknown)
+    XCTAssertTrue(status(alive: true, stalled: true).stalled)
+    XCTAssertEqual(status(alive: true, stalled: true).presence, .online, "a stall is separate")
+    XCTAssertEqual(status(alive: true, policy: .on).reception, .member)
+    XCTAssertEqual(status(alive: true, policy: .off).reception, .off)
+    XCTAssertTrue(status(alive: true, policy: .quiet).quiet)
+    XCTAssertTrue(status(alive: true, policy: .offQuiet).quiet)
+    XCTAssertEqual(status(alive: true, policy: .offQuiet).reception, .off)
+    XCTAssertEqual(
+      status(alive: nil, policy: .on).reception, .member,
+      "reception never decides presence, presence never decides reception")
+    XCTAssertEqual(status(alive: true, unread: 3).unread, 3)
+    XCTAssertEqual(status(alive: true, unread: -1).unread, 0)
+    XCTAssertNil(status(alive: true, provider: "").provider)
+  }
+
+  /// The model hands each agent its status by digit; channel 0 has none.
+  func testModelCarriesEachAgentsStatus() {
+    let online = OverlayChannelChipStatus(presence: .online, reception: .member, unread: 1)
+    let map = OverlayChannelMapModel(
+      channels: [delivery("2", "Miksa"), delivery("3", "Igor")],
+      hudStates: ["2": hud(session: "s2"), "3": hud(session: "s3")],
+      selectableDigits: [], unreadDigits: [], statuses: ["2": online])
+    XCTAssertEqual(map.chips.map(\.status), [nil, online, nil])
+    XCTAssertEqual(map.count, 2, "statuses add no agent")
+  }
+
+  /// The roster fills the card from the projections its rows read: a green
+  /// delivery dot beside a dead follower stays "not active", a policy without
+  /// a receipt stays unconfirmed, a stalled follower is flagged, and unread
+  /// Founder, 2026-11-04: the dot before the name sleeps ("zzz") under the
+  /// moon as the bus paints it, receipt or not (the same two states as the
+  /// roster's moon and the context menu). The microphone wins over the moon;
+  /// a gone follower is a ring either way; without a liveness claim the moon
+  /// proves nothing (Olek's QC).
+  func testPresenceDotSleepsUnderAReceiptedMoon() throws {
+    func identity(_ digit: String) -> AgentPlaybackIdentity {
+      AgentPlaybackIdentity(provider: "codex", session: "dot-moon-\(digit)", bus: "/dev/null")
+    }
+    var channels: [OverlayChannelDelivery] = []
+    for (digit, open) in [("2", false), ("3", false), ("4", true), ("5", false), ("6", false)] {
+      var channel = OverlayChannelDelivery(
+        channel: digit, agent: "agent-\(digit)", deliveryID: "moon-\(digit)",
+        stage: .sent, isOpen: open)
+      channel.broadcastIdentity = identity(digit)
+      channel.broadcastPolicy = .quiet
+      channels.append(channel)
+    }
+    let ledger = OverlayBroadcastPolicyLedger.shared
+    let previousReceipts = ledger.receipted
+    defer { ledger.noteReceipts(previousReceipts) }
+    // 3 has no receipt: the painted moon counts all the same.
+    ledger.noteReceipts([identity("2"), identity("4"), identity("5"), identity("6")])
+    let roster = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "2": hud(alive: true, session: "s2"), "3": hud(alive: true, session: "s3"),
+        "4": hud(open: true, alive: true, session: "s4"), "5": hud(alive: false, session: "s5"),
+        // 6: a receipted moon with no liveness claim is no sleeper.
+        "6": hud(alive: nil, session: "s6"),
+      ])
+    let dots = Dictionary(
+      uniqueKeysWithValues: channels.map { ($0.channel, roster.presenceDotKind(for: $0)) })
+    XCTAssertEqual(dots["2"], .asleep, "a receipted moon: zzz")
+    XCTAssertEqual(dots["3"], .asleep, "a polled moon without a receipt sleeps too")
+    XCTAssertEqual(dots["4"], .listening, "the open microphone wins over the moon")
+    XCTAssertEqual(dots["5"], .sleeping, "a gone follower is a ring under the moon too")
+    XCTAssertEqual(dots["6"], .idle, "no liveness claim: a faint ring, not zzz")
+  }
+
+  /// is the conversation's count.
+  func testRosterFillsTheCardFromItsRowProjections() throws {
+    func identity(_ digit: String) -> AgentPlaybackIdentity {
+      AgentPlaybackIdentity(provider: "codex", session: "chip-status-\(digit)", bus: "/dev/null")
+    }
+    let names = ["2": "miksa", "3": "igor", "4": "hania", "5": "kuba"]
+    let policies: [String: AgentBroadcastPolicy] = [
+      "2": .on, "3": .off, "4": .off, "5": .quiet,
+    ]
+    let digits = ["2", "3", "4", "5"]
+    var channels: [OverlayChannelDelivery] = []
+    for digit in digits {
+      var channel = OverlayChannelDelivery(
+        channel: digit, agent: names[digit] ?? "", deliveryID: "chip-\(digit)",
+        stage: .received, isOpen: false)
+      channel.broadcastIdentity = identity(digit)
+      channel.broadcastPolicy = policies[digit] ?? .on
+      channels.append(channel)
+    }
+    var stalled = hud(alive: true, session: "s5")
+    stalled.unreadSince = .distantPast
+    let hudStates: [String: OverlayChannelHudProjection] = [
+      "2": hud(alive: true, session: "s2"), "3": hud(alive: false, session: "s3"),
+      "4": hud(alive: nil, session: "s4"), "5": stalled,
+    ]
+    let leases = ["a", "b", "c", "d"]
+    let conversations = try digits.enumerated().map { index, digit in
+      try ownerConversation(
+        names[digit] ?? "", channel: digit, session: "s\(digit)", lease: leases[index])
+    }
+    let ledger = OverlayBroadcastPolicyLedger.shared
+    let previousReceipts = ledger.receipted
+    defer { ledger.noteReceipts(previousReceipts) }
+    ledger.noteReceipts([identity("2"), identity("3"), identity("5")])
+
+    let roster = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: hudStates, conversations: conversations,
+      unreadCounts: [conversations[0].id: 3], onSelectConversation: { _ in })
+    let statuses = Dictionary(
+      uniqueKeysWithValues: roster.channelMapModel.agents.map { ($0.digit, $0.status) })
+    XCTAssertEqual(statuses["2"]??.presence, .online)
+    XCTAssertEqual(statuses["2"]??.reception, .member)
+    XCTAssertEqual(statuses["2"]??.unread, 3)
+    XCTAssertEqual(statuses["2"]??.provider, "codex")
+    XCTAssertEqual(
+      statuses["3"]??.presence, .inactive, "the received dot is a delivery, not presence")
+    XCTAssertEqual(statuses["3"]??.reception, .off)
+    XCTAssertEqual(statuses["4"]??.presence, .unknown)
+    XCTAssertEqual(statuses["4"]??.reception, .off, "the painted policy, receipt or not")
+    XCTAssertEqual(statuses["5"]??.presence, .online)
+    XCTAssertEqual(statuses["5"]??.stalled, true)
+    XCTAssertEqual(statuses["5"]??.quiet, true)
+    XCTAssertEqual(statuses["5"]??.unread, 0)
+    XCTAssertNil(roster.channelMapModel.chips.first?.status, "(0) has no card")
   }
 
   // MARK: - Names (§13.5)
 
-  func testLeaseNamesAreCapitalisedOnTheMapOnly() {
+  func testLeaseNamesPreserveEnteredSpellingOnTheMap() {
     let map = model(
-      channels: [delivery("3", "igor"), delivery("4", "hania"), delivery("6", "konfig")],
+      channels: [
+        delivery("3", "div0"), delivery("4", "iOS"), delivery("6", "Łucja"),
+        delivery("7", "McKay"),
+      ],
       hudStates: [
         "0": hud(alive: nil), "3": hud(session: "s3"), "4": hud(session: "s4"),
-        "6": hud(session: "s6"),
+        "6": hud(session: "s6"), "7": hud(session: "s7"),
       ])
-    XCTAssertEqual(map.chips.map(\.name), ["Igor", "Hania", "Konfig"])
-    XCTAssertEqual(map.chips.map(\.digit), ["3", "4", "6"], "identity stays the digit")
-    XCTAssertEqual(map.counterHint, "3 Igor · 4 Hania · 6 Konfig")
-    XCTAssertEqual(map.chips[1].hint(modifier: .control), "4 · Hania · Ctrl+4")
+    XCTAssertEqual(map.agents.map(\.name), ["div0", "iOS", "Łucja", "McKay"])
+    XCTAssertEqual(map.agents.map(\.digit), ["3", "4", "6", "7"], "identity stays the digit")
+    XCTAssertEqual(map.counterHint, "3 div0 · 4 iOS · 6 Łucja · 7 McKay")
+    XCTAssertEqual(map.agents[1].hint(modifier: .control), "4 · iOS · Ctrl+4")
+    XCTAssertEqual(OverlayChannelMapChip.displayName("codex"), "Codex", "provider label formatting")
     XCTAssertEqual(OverlayChannelMapChip.displayName("ąbc"), "Ąbc", "the first grapheme only")
-    XCTAssertEqual(OverlayChannelMapChip.displayName("miksa-igor"), "Miksa-igor")
     XCTAssertEqual(OverlayChannelMapChip.displayName("Kuba"), "Kuba")
     XCTAssertEqual(OverlayChannelMapChip.displayName(""), "")
   }
 
-  func testCapitalisationLeavesTheRosterLeaseNamesAlone() {
+  func testMapAndRosterKeepTheSuppliedLeaseNameSpelling() {
     let state = OverlayState.previewFormatted()
     state.applyChannelRoster([
       CsChannelRosterState(
-        channel: "3", audience: "igor", provider: "codex", providerSessionId: "igor-session",
+        channel: "3", audience: "div0", provider: "codex", providerSessionId: "div0-session",
         open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
         unreadSinceUnixMs: nil)
     ])
-    XCTAssertEqual(state.channelMapLayoutModel.chips.map(\.name), ["Igor"])
-    XCTAssertEqual(state.channelRosterNames["3"], "igor", "the lease keeps its name")
+    XCTAssertEqual(state.channelMapLayoutModel.agents.map(\.name), ["div0"])
+    XCTAssertEqual(state.channelRosterNames["3"], "div0", "the lease keeps its name")
   }
 
   // MARK: - Open-channel dot (§13.3, §14)
 
   func testOpenChannelCarriesTheDotInPlace() {
     let map = scenario(open: ["5"])
-    XCTAssertEqual(map.chips.map(\.digit), ["2", "3", "5"], "no second row, no reorder")
-    XCTAssertEqual(map.chips.map(\.microphoneOpen), [false, false, true])
+    XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3", "5"], "no second row, no reorder")
+    XCTAssertEqual(map.chips.map(\.microphoneOpen), [false, false, false, true])
     XCTAssertEqual(map.openDigits, ["5"])
     XCTAssertEqual(map.counterFigure, "5", "the collapsed counter shows the open digit")
     XCTAssertEqual(map.count, 3, "the agent count returns when the channel closes")
     XCTAssertEqual(
-      map.chips[2].accessibilityLabel(modifier: .control),
+      map.agents[2].accessibilityLabel(modifier: .control),
       "Channel 5, Kuba, shortcut Ctrl 5, microphone open")
     XCTAssertTrue(map.counterAccessibilityValue.hasPrefix("Microphone open on channel 5"))
+    for form in [OverlayChannelPill.Form.stacked, .chip] {
+      XCTAssertEqual(
+        row(OverlayChannelMapNameWidths(chips: map.chips, scale: 1).full, form),
+        row(OverlayChannelMapNameWidths(chips: scenario().chips, scale: 1).full, form),
+        "\(form): the dot overlaps the circle and adds no width")
+    }
     XCTAssertEqual(
-      map.rowWidth(for: .chips, scale: 1, spacing: OverlayChannelMapView.chipSpacing),
-      scenario().rowWidth(for: .chips, scale: 1, spacing: OverlayChannelMapView.chipSpacing),
-      "the dot overlaps the circle and adds no width")
+      DictationOverlayWindow.midiBarGeometry(map: map, textScale: 1),
+      DictationOverlayWindow.midiBarGeometry(map: scenario(), textScale: 1),
+      "an open channel resizes nothing")
   }
 
   func testClosedChannelReturnsThePlainChipAndCounter() {
@@ -259,7 +455,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertFalse(map.microphoneOpen)
     XCTAssertEqual(map.counterFigure, "3", "the counter counts agents")
     XCTAssertEqual(
-      map.chips[2].accessibilityLabel(modifier: .control), "Channel 5, Kuba, shortcut Ctrl 5")
+      map.agents[2].accessibilityLabel(modifier: .control), "Channel 5, Kuba, shortcut Ctrl 5")
   }
 
   func testRecordingCounterHugsItsCircledDigit() {
@@ -274,162 +470,426 @@ final class OverlayChannelMapTests: XCTestCase {
       "the open digit is narrower than 3 ▾")
   }
 
-  // MARK: - Mini width (§13.4)
+  // MARK: - Mini width (bus brief 2026-11-04 §3)
 
-  /// Mini is as wide as its content: no fixed 200 or 164 pt. The floor is its
-  /// controls; the counter adds its brand gap and its own measured width.
-  func testMiniWidthIsItsControlsPlusTheCounterAsDrawn() {
+  /// Mini is as wide and as tall as its content and carries no channel
+  /// counter: 7 pt insets, a 9 pt close dot, the closed centre and four 22 pt
+  /// controls 4 pt apart. With the map enabled that is 127 × 36; without it
+  /// the brand word adds its gap and its measured width.
+  func testMiniIsItsControlsWithoutACounter() {
     let floor = DictationOverlayWindow.miniFloorWidth
+    XCTAssertEqual(DictationOverlayWindow.miniInset, 7)
+    XCTAssertEqual(DictationOverlayWindow.miniControl, 22)
+    XCTAssertEqual(DictationOverlayWindow.miniControlSpacing, 4)
+    XCTAssertEqual(DictationOverlayWindow.miniOuterPadding, 2 * DictationOverlayWindow.miniInset)
+    XCTAssertEqual(
+      DictationOverlayWindow.miniTrailingControls, 100, "4 × 22 controls + 3 × 4 gaps")
+    XCTAssertEqual(
+      2 * DictationOverlayWindow.miniRowSpacing, DictationOverlayWindow.miniControlSpacing,
+      "across the closed centre, the gap the controls keep")
     XCTAssertEqual(
       floor,
       DictationOverlayWindow.miniOuterPadding + DictationOverlayWindow.miniBrandDot
         + 2 * DictationOverlayWindow.miniRowSpacing + DictationOverlayWindow.miniTrailingControls)
-    XCTAssertEqual(floor, 130, "32 padding + 9 dot + 2 × 4 gaps + 81 trailing controls")
+    XCTAssertEqual(floor, 127, "14 padding + 9 dot + 2 × 2 gaps + 100 controls")
+    XCTAssertEqual(DictationOverlayWindow.miniHeight, 36, "22 pt control + 2 × 7 pt insets")
     XCTAssertEqual(
-      2 * DictationOverlayWindow.miniRowSpacing, 8,
-      "across the closed centre, the gap the trailing controls keep")
+      DictationOverlayWindow.miniBrandWidth,
+      ceil(floor + DictationOverlayWindow.miniBrandGap + DictationOverlayWindow.brandWordWidth),
+      "without the map mini keeps the word after its 6 pt gap")
     XCTAssertEqual(
-      DictationOverlayWindow.miniNaturalWidth(
-        map: model(channels: [], hudStates: [:]), textScale: 1),
-      floor, "no channel: mini is its controls")
-
-    let resting = scenario()
-    XCTAssertEqual(
-      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1),
-      ceil(
-        floor + DictationOverlayWindow.miniBrandGap
-          + OverlayChannelPill.counterWidth(figure: "3", openDigitCount: 0, scale: 1)))
-    let recording = scenario(open: ["5"])
-    XCTAssertEqual(
-      DictationOverlayWindow.miniNaturalWidth(map: recording, textScale: 1),
-      ceil(
-        floor + DictationOverlayWindow.miniBrandGap
-          + OverlayChannelPill.counterWidth(figure: "3", openDigitCount: 1, scale: 1)),
-      "the recording variant is the same rule with the recording counter")
-    XCTAssertLessThan(
-      DictationOverlayWindow.miniNaturalWidth(map: recording, textScale: 1),
-      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1))
-    XCTAssertGreaterThan(
-      DictationOverlayWindow.miniNaturalWidth(map: scenario(open: ["2", "5"]), textScale: 1),
-      DictationOverlayWindow.miniNaturalWidth(map: recording, textScale: 1),
-      "two open digits widen the capsule instead of clipping it")
-    // Broadcasting with no agent bound still shows the open 0.
-    XCTAssertGreaterThan(
-      DictationOverlayWindow.miniNaturalWidth(
-        map: model(channels: [], hudStates: ["0": hud(open: true, alive: nil)]), textScale: 1),
-      floor)
-    // Larger text grows the counter, and the capsule with it, up to the
-    // strip's scale ceiling.
-    XCTAssertGreaterThan(
-      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1.2),
-      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1))
-    XCTAssertEqual(
-      DictationOverlayWindow.minimumSize(for: .mini).width, floor,
+      DictationOverlayWindow.minimumSize(for: .mini), NSSize(width: floor, height: 36),
       "mini's floor is its controls")
   }
 
-  // MARK: - Tiers (§13.1)
+  /// A live take grows mini (bus brief 2026-11-04 §6, §11D): zero at rest;
+  /// a dictation adds the 82 pt waveform and the clock with their 4 pt gaps;
+  /// an agent take adds one 19 pt circled digit per open channel, 4 pt apart;
+  /// channel 0 adds no row: the Agents button already wears its megaphone.
+  func testMiniTakeWidthIsWaveformClockAndAddressees() {
+    typealias W = DictationOverlayWindow
+    XCTAssertEqual(W.miniTakeWidth(live: false, openDigits: []), 0, "at rest mini adds nothing")
+    XCTAssertEqual(W.miniTakeWidth(live: false, openDigits: ["3"]), 0)
+    let dictation = W.miniTakeWidth(live: true, openDigits: [])
+    XCTAssertEqual(
+      dictation,
+      ceil(OverlayBarMetrics.miniWaveformWidth + 2 * W.miniControlSpacing + W.midiTimerWidth),
+      "a dictation alone: waveform and clock, no addressees")
+    XCTAssertEqual(OverlayBarMetrics.miniWaveformWidth, 82, "mini keeps its 24-bar strip")
+    XCTAssertEqual(W.miniAddresseesWidth(openDigits: []), 0)
 
-  func testTiersFollowTheMeasuredRowsNotConstants() {
-    func presentation(_ available: CGFloat?) -> OverlayChannelMapPresentation {
-      OverlayChannelMapModel.presentation(
-        availableWidth: available, namedWidth: 300, digitsWidth: 120, counterWidth: 30)
-    }
-    XCTAssertEqual(presentation(nil), .chips, "the ideal size is the named row")
-    XCTAssertEqual(presentation(300), .chips)
-    XCTAssertEqual(presentation(299.6), .chips, "fractional rounding does not drop names")
-    XCTAssertEqual(presentation(299), .digits, "names go before the chips do")
-    XCTAssertEqual(presentation(120), .digits)
-    XCTAssertEqual(presentation(119), .counter, "the counter only when digits do not fit")
-    XCTAssertEqual(presentation(30), .counter)
-    XCTAssertEqual(presentation(29), .hidden, "the map yields before the actions do")
-    XCTAssertEqual(OverlayChannelMapModel.rowWidth(chipWidths: [48, 62, 51], spacing: 4), 169)
+    let circle = OverlayChannelPill.counterWidth(figure: "", openDigitCount: 1, scale: 1)
+    XCTAssertEqual(circle, 19, "15 pt circle with its 2 pt padding")
+    XCTAssertEqual(W.miniAddresseesWidth(openDigits: ["3"]), circle)
+    XCTAssertEqual(
+      W.miniAddresseesWidth(openDigits: ["2", "3", "5"]), 3 * circle + 2 * W.miniControlSpacing)
+    XCTAssertEqual(
+      W.miniTakeWidth(live: true, openDigits: ["2", "5"]),
+      ceil(
+        OverlayBarMetrics.miniWaveformWidth + 2 * W.miniControlSpacing + W.midiTimerWidth
+          + W.miniControlSpacing + 2 * circle + W.miniControlSpacing))
+    XCTAssertGreaterThan(
+      W.miniTakeWidth(live: true, openDigits: ["2", "5"]),
+      W.miniTakeWidth(live: true, openDigits: ["5"]), "each open channel adds its digit")
+
+    XCTAssertEqual(
+      W.miniAddresseesWidth(openDigits: ["0"]), 0,
+      "channel 0 adds nothing: the Agents button already wears the megaphone")
+    XCTAssertEqual(
+      W.miniAddresseesWidth(openDigits: ["0", "3"]), 0,
+      "a broadcast shows no addressee row at all")
+    XCTAssertEqual(W.miniTakeWidth(live: true, openDigits: ["0"]), dictation)
   }
 
-  func testDigitsTierKeepsOnlyTheSelectedConversationsName() {
+  /// `miniTakeLive` is a dictation or any open channel, channel 0 included.
+  func testMiniTakeLiveFollowsDictationAndOpenChannels() throws {
+    let (state, broadcast, lena, astra) = try armedState()
+    XCTAssertFalse(state.miniTakeLive, "at rest")
+    let conversations = [broadcast, lena, astra]
+    state.applyChannelRoster(chordRoster(conversations, open: ["3"]))
+    XCTAssertTrue(state.miniTakeLive, "an open agent channel")
+    state.applyChannelRoster(chordRoster(conversations, open: ["0"]))
+    XCTAssertTrue(state.miniTakeLive, "a broadcast on 0")
+    state.applyChannelRoster(chordRoster(conversations, open: []))
+    XCTAssertFalse(state.miniTakeLive, "the take ended")
+    state.handleRecordingStarted()
+    XCTAssertTrue(state.recording)
+    XCTAssertTrue(state.miniTakeLive, "a dictation")
+    state.finishControllerRecording()
+    XCTAssertFalse(state.miniTakeLive, "the controller's stop ends it")
+  }
+
+  // MARK: - Names (bus brief 2026-11-04 §5, §11C)
+
+  /// Every width is the string measured in the pill's own font: whole up to
+  /// six letters by default, else five letters and an ellipsis; whole when
+  /// widened; four letters and an ellipsis at the floor.
+  func testNameWidthsAreMeasuredStringsInThePillFont() {
+    let names = ["Igor", "Konfig", "Konstanty"]
+    let widths = nameWidths(names)
+    let full = names.map { OverlayChannelPill.nameWidth($0, scale: 1) }
+    func measured(_ text: String) -> CGFloat {
+      OverlayChannelPill.textWidth(text, size: OverlayChannelPill.nameSize)
+    }
+    XCTAssertEqual(OverlayChannelPill.preferredNameLength, 6)
+    XCTAssertEqual(OverlayChannelPill.preferredNamePrefix, 5)
+    XCTAssertEqual(OverlayChannelPill.shortestNamePrefix, 4)
+    XCTAssertEqual(widths.full, full, "widened: every name whole")
+    XCTAssertEqual(widths.preferred[0], full[0], "four letters stay whole")
+    XCTAssertEqual(widths.preferred[1], full[1], "six letters stay whole by default")
+    XCTAssertEqual(
+      widths.preferred[2], min(full[2], measured("Konst" + OverlayChannelPill.ellipsis)),
+      "seven or more letters: five and an ellipsis")
+    XCTAssertLessThan(widths.preferred[2], full[2])
+    XCTAssertEqual(
+      widths.shortest[2], min(full[2], measured("Kons" + OverlayChannelPill.ellipsis)),
+      "the floor: four letters and an ellipsis")
+    XCTAssertLessThan(widths.shortest[2], widths.preferred[2])
+    XCTAssertEqual(widths.shortest[0], full[0], "four letters never lose one")
+    for index in names.indices {
+      XCTAssertLessThanOrEqual(widths.shortest[index], widths.preferred[index], names[index])
+      XCTAssertLessThanOrEqual(widths.preferred[index], widths.full[index], names[index])
+    }
+    // Larger text measures wider names; a runaway name stops at the cap.
+    XCTAssertGreaterThan(
+      OverlayChannelMapNameWidths(chips: named(names).agents, scale: 1.2).full[0], full[0])
+    XCTAssertEqual(
+      OverlayChannelPill.nameWidth(String(repeating: "W", count: 80), scale: 1),
+      OverlayChannelPill.maxNameWidth)
+  }
+
+  /// `Lena` and `Lena2` must still read differently at the floor: the four
+  /// letters stay whole, the five become `Lena…`.
+  func testLenaAndLena2StayDistinctAtTheFloor() {
+    let widths = nameWidths(["Lena", "Lena2"])
+    XCTAssertEqual(widths.shortest[0], widths.full[0], "Lena keeps every letter")
+    XCTAssertNotEqual(widths.shortest[0], widths.shortest[1], "Lena and Lena… differ")
+    XCTAssertGreaterThan(widths.shortest[1], widths.shortest[0])
+    XCTAssertEqual(widths.preferred, widths.full, "both are whole by default")
+  }
+
+  /// One common cap cuts the longest names first; short names keep every
+  /// letter; nothing goes below its shortest width; channel 0 stays nameless.
+  func testFittedCutsTheLongestNamesFirstAndNeverBelowTheFloor() {
+    let widths = OverlayChannelMapNameWidths(
+      full: [0, 20, 80, 40], preferred: [0, 20, 40, 40], shortest: [0, 10, 30, 20])
+    let sum: ([CGFloat]) -> CGFloat = { $0.reduce(0, +) }
+    XCTAssertEqual(widths.capped(at: 25), [0, 20, 30, 25])
+    XCTAssertEqual(
+      widths.fitted(available: nil, rowWidth: sum), widths.full,
+      "the ideal-size probe is every name whole")
+    XCTAssertEqual(widths.fitted(available: .infinity, rowWidth: sum), widths.full)
+    XCTAssertEqual(widths.fitted(available: 140, rowWidth: sum), widths.full)
+    XCTAssertEqual(
+      widths.fitted(available: 139.6, rowWidth: sum), widths.full,
+      "fractional rounding does not cut a name")
+
+    let cut = widths.fitted(available: 100, rowWidth: sum)
+    XCTAssertEqual(cut[0], 0, "channel 0 never gains a name")
+    XCTAssertEqual(cut[1], 20, "a short name keeps every letter")
+    XCTAssertEqual(cut[2], cut[3], "one cap for every name")
+    XCTAssertGreaterThan(cut[2], 39)
+    XCTAssertLessThanOrEqual(cut[2], 40)
+    XCTAssertLessThanOrEqual(sum(cut), 100.5, "the row fits what it was given")
+    XCTAssertGreaterThan(
+      widths.full[2] - cut[2], widths.full[3] - cut[3], "the longest gives way first")
+
+    XCTAssertEqual(
+      widths.fitted(available: 50, rowWidth: sum), widths.shortest,
+      "below the floor the shortest names stay; the window never proposes less")
+  }
+
+  // MARK: - Rows (bus brief 2026-11-04 §4)
+
+  /// The pill's form follows the height the bar proposes: a stacked pill's
+  /// height is the single row, a chip's the second row. The width stays
+  /// between the shortest names and every name whole.
+  func testSlotChoosesTheFormFromTheProposedHeight() {
+    let stackedHeight = OverlayChannelPill.stackedHeight(scale: 1)
+    let chipHeight = OverlayChannelPill.headerHeight
+    XCTAssertGreaterThan(stackedHeight, chipHeight, "the caption line is under the circle")
+    XCTAssertGreaterThanOrEqual(
+      stackedHeight,
+      OverlayChannelPill.digitCircle + OverlayChannelPill.captionLineHeight(scale: 1))
+    let slot = OverlayChannelMapSlot(
+      stackedHeight: stackedHeight, chipHeight: chipHeight, stackedWidths: 80...120,
+      chipWidths: 100...160)
+    XCTAssertTrue(slot.stacks(.unspecified), "the ideal probe is the single row")
+    XCTAssertTrue(slot.stacks(ProposedViewSize(width: 90, height: stackedHeight)))
+    XCTAssertTrue(slot.stacks(ProposedViewSize(width: 90, height: stackedHeight - 0.4)))
+    XCTAssertFalse(slot.stacks(ProposedViewSize(width: 90, height: chipHeight)))
+    XCTAssertEqual(slot.width(proposed: nil, range: 80...120), 120)
+    XCTAssertEqual(slot.width(proposed: 500, range: 80...120), 120, "no hole beside the pills")
+    XCTAssertEqual(slot.width(proposed: 100, range: 80...120), 100)
+    XCTAssertEqual(slot.width(proposed: 10, range: 80...120), 80, "never below the floor")
+  }
+
+  /// 1–5 agents: one row of stacked pills, two rows only when the user
+  /// narrows it below its shortest names. 6–9 agents: always two rows.
+  func testAgentCountAndWidthChooseOneOrTwoRows() {
+    XCTAssertEqual(OverlayChannelMapModel.singleRowAgentLimit, 5)
+    for count in 1...5 {
+      let bar = DictationOverlayWindow.midiBarGeometry(map: agents(count), textScale: 1)
+      XCTAssertTrue(bar.singleRowMinimumWidth.isFinite, "\(count)")
+      XCTAssertEqual(bar.height(forWidth: bar.naturalWidth), bar.singleRowHeight, "\(count)")
+      XCTAssertEqual(bar.height(forWidth: bar.maximumWidth), bar.singleRowHeight, "\(count)")
+      XCTAssertLessThanOrEqual(bar.minimumWidth, bar.singleRowMinimumWidth, "\(count)")
+      XCTAssertEqual(
+        bar.height(forWidth: bar.singleRowMinimumWidth - 1), bar.twoRowHeight,
+        "\(count): narrowed below its shortest names, one row becomes two")
+    }
+    for count in 6...9 {
+      let bar = DictationOverlayWindow.midiBarGeometry(map: agents(count), textScale: 1)
+      XCTAssertEqual(bar.singleRowMinimumWidth, .infinity, "\(count)")
+      for width in [bar.minimumWidth, bar.naturalWidth, bar.maximumWidth] {
+        XCTAssertEqual(bar.height(forWidth: width), bar.twoRowHeight, "\(count) at \(width)")
+      }
+    }
+    let one = DictationOverlayWindow.midiBarGeometry(map: agents(1), textScale: 1)
+    XCTAssertGreaterThan(one.twoRowHeight, one.singleRowHeight)
+    XCTAssertGreaterThanOrEqual(
+      one.singleRowHeight, ceil(OverlayChannelPill.stackedHeight(scale: 1)),
+      "the single row holds a stacked pill")
+  }
+
+  /// The bar is as wide as its content: no 410 pt floor, no 820 pt budget.
+  /// Its fixed parts are one constant and the map's measured row is the rest,
+  /// so a new agent adds exactly its pill.
+  func testBarWidthIsItsMeasuredContent() {
+    typealias W = DictationOverlayWindow
+    let fixed = ceil(
+      W.midiOuterPadding + W.midiBrandWidth + 2 * OverlayBarMetrics.itemSpacing
+        + OverlayBarMetrics.waveformWidth + W.midiTimerWidth + OverlayChannelMapView.leadingGap
+        + OverlayBarMetrics.itemSpacing + W.midiTrailingControls)
+    XCTAssertEqual(OverlayBarMetrics.itemSpacing, 10)
+    XCTAssertEqual(OverlayBarMetrics.waveformWidth, 110, "32 bars of 1.5 pt with 31 gaps of 2 pt")
+    XCTAssertEqual(OverlayBarMetrics.waveformMaximumWidth, 170)
+    XCTAssertEqual(OverlayBarMetrics.rowGap, 2)
+    for names in [["Miksa", "Igor", "Kuba"], ["Miksa", "Igor", "Kuba", "Konstanty"], ["Lena"]] {
+      let map = named(names)
+      let bar = W.midiBarGeometry(map: map, textScale: 1)
+      let widths = OverlayChannelMapNameWidths(chips: map.chips, scale: 1)
+      XCTAssertEqual(
+        bar.naturalWidth, fixed + row(widths.preferred, .stacked), accuracy: 1,
+        "\(names): the default bar is its parts with the preferred names")
+      XCTAssertEqual(
+        bar.maximumWidth, fixed + row(widths.full, .stacked), accuracy: 1,
+        "\(names): widening stops at every name whole")
+      XCTAssertEqual(
+        bar.singleRowMinimumWidth, fixed + row(widths.shortest, .stacked), accuracy: 1,
+        "\(names): one row's floor is the shortest names")
+      XCTAssertLessThanOrEqual(bar.minimumWidth, bar.naturalWidth)
+      XCTAssertLessThanOrEqual(bar.naturalWidth, bar.maximumWidth)
+    }
+    let short = W.midiBarGeometry(map: named(["Miksa", "Igor", "Kuba"]), textScale: 1)
+    XCTAssertEqual(
+      short.naturalWidth, short.maximumWidth,
+      "names up to six letters are whole by default, so widening opens no hole")
+    let long = W.midiBarGeometry(map: named(["Konstanty"]), textScale: 1)
+    XCTAssertLessThan(long.naturalWidth, long.maximumWidth, "a long name widens when asked")
+    // Nine agents: two rows, the wider of the first row and the chips.
+    let nine = agents(9)
+    let nineBar = W.midiBarGeometry(map: nine, textScale: 1)
+    let nineNames = OverlayChannelMapNameWidths(chips: nine.chips, scale: 1)
+    XCTAssertEqual(
+      nineBar.naturalWidth,
+      ceil(
+        max(
+          fixed - OverlayChannelMapView.leadingGap,
+          W.midiOuterPadding + row(nineNames.preferred, .chip))), accuracy: 1)
+    // The screen bounds every width.
+    let bounded = W.midiBarGeometry(map: nine, textScale: 1, visibleWidth: 300)
+    XCTAssertLessThanOrEqual(bounded.naturalWidth, 300)
+    XCTAssertLessThanOrEqual(bounded.maximumWidth, 300)
+    XCTAssertLessThanOrEqual(bounded.minimumWidth, bounded.maximumWidth)
+  }
+
+  /// Pills keep the map's spacing and their circles never overlap, in the
+  /// stacked form and in the chip form, at every width the names can take.
+  func testPillCirclesNeverOverlapInEitherForm() {
+    let widths = nameWidths(["Miksa", "Konstanty", "Igor", "Lena2", "Bo"])
     let spacing = OverlayChannelMapView.chipSpacing
-    let digit = OverlayChannelPill.chipWidth(name: nil, scale: 1)
-    let plain = scenario()
-    XCTAssertEqual(plain.chips.map { $0.showsName(in: .digits) }, [false, false, false])
-    XCTAssertEqual(plain.chips.map { $0.showsName(in: .chips) }, [true, true, true])
-    XCTAssertEqual(
-      plain.rowWidth(for: .digits, scale: 1, spacing: spacing), 3 * digit + 2 * spacing)
-    let selected = scenario(selected: "3")
-    XCTAssertEqual(selected.chips.map { $0.showsName(in: .digits) }, [false, true, false])
-    XCTAssertEqual(
-      selected.rowWidth(for: .digits, scale: 1, spacing: spacing),
-      2 * digit + OverlayChannelPill.chipWidth(name: "Igor", scale: 1) + 2 * spacing)
-    XCTAssertLessThan(
-      selected.rowWidth(for: .digits, scale: 1, spacing: spacing),
-      selected.rowWidth(for: .chips, scale: 1, spacing: spacing))
-    // Unread, dimming and the badge stay on a digit-only chip.
+    let circle = OverlayChannelPill.digitCircle
+    XCTAssertGreaterThan(spacing, 0)
+    for form in [OverlayChannelPill.Form.stacked, .chip] {
+      for names in [widths.full, widths.preferred, widths.shortest] {
+        var x: CGFloat = 0
+        var circles: [ClosedRange<CGFloat>] = []
+        for name in names {
+          let width = OverlayChannelPill.chipWidth(nameWidth: name, form: form, scale: 1)
+          switch form {
+          case .stacked:
+            // The circle and the caption under it share the pill's width.
+            XCTAssertGreaterThanOrEqual(width, circle + 2 * OverlayChannelPill.stackedPadding)
+            XCTAssertGreaterThanOrEqual(width, name + 2 * OverlayChannelPill.stackedPadding)
+            circles.append((x + (width - circle) / 2)...(x + (width + circle) / 2))
+          default:
+            XCTAssertGreaterThanOrEqual(width, 2 * OverlayChannelPill.chipPadding + circle + name)
+            let start = x + OverlayChannelPill.chipPadding
+            circles.append(start...(start + circle))
+          }
+          x += width + spacing
+        }
+        XCTAssertEqual(x - spacing, row(names, form), accuracy: 0.01, "\(form): one row width")
+        for (left, right) in zip(circles, circles.dropFirst()) {
+          XCTAssertGreaterThanOrEqual(
+            right.lowerBound - left.upperBound, spacing, "\(form): circles overlap")
+        }
+      }
+    }
+    XCTAssertGreaterThan(
+      OverlayChannelPill.chipWidth(nameWidth: 30, form: .chip, scale: 1.2),
+      OverlayChannelPill.chipWidth(nameWidth: 30, form: .chip, scale: 1))
+  }
+
+  /// The folded rail's unread count is its own capsule outside the pill, at
+  /// its top-right shoulder: no point of it lies inside the pill's capsule,
+  /// so the channel digit stays whole; it grows with its digits; and the
+  /// rail keeps room for two digits beside its widest pill.
+  func testRailUnreadCapsuleSitsBesideThePillAndGrowsWithItsDigits() throws {
+    func inCapsule(_ rect: CGRect, _ point: CGPoint) -> Bool {
+      let radius = min(rect.width, rect.height) / 2
+      let x = min(max(point.x, rect.minX + radius), rect.maxX - radius)
+      let y = min(max(point.y, rect.minY + radius), rect.maxY - radius)
+      return hypot(point.x - x, point.y - y) < radius
+    }
+    for scale: CGFloat in [1, 1.2, 1.5, 2] {
+      let widest = OverlayAgentDrawerLayout.railPillWidth(textScale: scale)
+      // The antenna's pill and an agent's (dot 8 instead of glyph 12).
+      for pillWidth in [widest, widest - 4 * scale] {
+        let pill = CGRect(x: 0, y: 0, width: pillWidth, height: 24 * scale)
+        for count in [1, 9, 10, 99, 100, 250] {
+          let badge = OverlayChannelPill.railBadgeFrame(
+            count: count, pillSize: pill.size, scale: scale)
+          XCTAssertEqual(badge.height, OverlayChannelPill.railBadgeHeight * scale)
+          XCTAssertGreaterThan(badge.maxX, pill.maxX, "\(count) @\(scale): beside the pill")
+          XCTAssertLessThan(badge.minY, pill.minY, "\(count) @\(scale): at its top shoulder")
+          XCTAssertLessThan(badge.midY, pill.midY, "\(count) @\(scale): not below its middle")
+          var y = badge.minY
+          while y <= badge.maxY {
+            var x = badge.minX
+            while x <= badge.maxX {
+              let point = CGPoint(x: x, y: y)
+              if inCapsule(badge, point) {
+                XCTAssertFalse(
+                  inCapsule(pill, point), "\(count) @\(scale): the capsule overlaps the pill")
+                if inCapsule(pill, point) { return }
+              }
+              x += 0.25
+            }
+            y += 0.25
+          }
+        }
+      }
+      let width = { OverlayChannelPill.railBadgeWidth(count: $0, scale: scale) }
+      XCTAssertEqual(width(1), OverlayChannelPill.railBadgeHeight * scale, accuracy: 1)
+      XCTAssertEqual(width(9), width(1), "one digit is a circle")
+      XCTAssertGreaterThan(width(10), width(9), "10 is wider than 9")
+      XCTAssertEqual(width(99), width(10))
+      XCTAssertEqual(width(100), width(99), "99+ keeps the two digits' width")
+      XCTAssertEqual(width(250), width(99))
+      XCTAssertEqual(OverlayChannelPill.railBadgeLabel(count: 99), "99")
+      XCTAssertEqual(OverlayChannelPill.railBadgeLabel(count: 100), "99+")
+      XCTAssertEqual(OverlayChannelPill.railBadgeLabel(count: 250), "99+")
+      // `99+` (8 pt digits, 6 pt plus, each measured with a point of
+      // slack) fits the two digits' width.
+      let figure =
+        OverlayChannelPill.textWidth(
+          "99", size: OverlayChannelPill.railBadgeCappedDigitSize * scale, monospacedDigits: true)
+        + OverlayChannelPill.textWidth(
+          "+", size: OverlayChannelPill.railBadgeCappedPlusSize * scale)
+      XCTAssertLessThanOrEqual(figure, width(250), "@\(scale): 99+ is not clipped")
+      // The widest pill starts a band in from the divider; its two-digit
+      // capsule ends inside the rail, in the trailing inset. Monika,
+      // 2026-11-07: narrower rail.
+      let rail = OverlayAgentDrawerLayout.railWidth(textScale: scale)
+      let reserved = OverlayChannelPill.railBadgeFrame(
+        count: 99, pillSize: CGSize(width: widest, height: 24 * scale), scale: scale)
+      XCTAssertLessThanOrEqual(
+        OverlayResizeHit.band + reserved.maxX, rail + 0.001, "@\(scale): 99 is not clipped")
+    }
+    let pillSource = try overlaySource("OverlayChannelPill.swift")
+    let badge = try section(
+      of: pillSource, from: "private var railUnreadBadge: some View {",
+      to: "private var spokenValue: String {")
+    XCTAssertTrue(
+      badge.contains(
+        "Self.railBadgeFrame(count: display.unreadCount, pillSize: .zero, scale: textScale)"),
+      "the capsule is drawn from the frame these assertions measure")
+    XCTAssertTrue(badge.contains(".offset(x: frame.maxX, y: frame.minY)"))
+    XCTAssertFalse(pillSource.contains("OverlayAgentUnreadBadge("), "the rail draws its own count")
+  }
+
+  /// The bar's pills keep their hint on: an agent's chip shows its hover
+  /// card, built from the chip's status, with the plain `5 · Kuba · Ctrl+5`
+  /// as the fallback; only channel 0 gives its hover to the carousel.
+  func testBarPillsShowTheirHint() throws {
+    let kuba = scenario().agents[2]
+    let pill = OverlayChannelPill(
+      form: .chip, display: OverlayChannelPill.Display(figure: kuba.digit, name: kuba.name),
+      hint: kuba.hint(modifier: .control), accessibilityText: "", identifier: "hint-probe",
+      palette: .dark, textScale: 1
+    ) {}
+    XCTAssertTrue(pill.showsHint)
+    XCTAssertEqual(pill.hint, "5 · Kuba · Ctrl+5")
+    let mapView = try overlaySource("OverlayChannelMapView.swift")
+    XCTAssertTrue(
+      mapView.contains("showsHint: !(chip.isBroadcast && channelZeroHint != nil)"),
+      "only channel 0 with its carousel turns the pill's own hint off")
+    XCTAssertTrue(mapView.contains("hint: chip.hint(modifier: modifier)"))
+    XCTAssertTrue(mapView.contains("hintCard: hintCard(chip)"), "agents show their card")
+  }
+
+  /// Unread, dimming and the badge stay on every pill whatever its name width.
+  func testUnreadDimmingAndBadgeComeFromTheRoster() {
     let marked = model(
       channels: [delivery("2", "Miksa"), delivery("3", "Igor")],
       hudStates: [
         "2": hud(open: true, session: "s2"), "3": hud(alive: false, session: "s3"),
       ], unread: ["3"])
-    XCTAssertEqual(marked.chips.map(\.microphoneOpen), [true, false])
-    XCTAssertEqual(marked.chips.map(\.disconnected), [false, true])
-    XCTAssertEqual(marked.chips.map(\.unread), [false, true])
-  }
-
-  func testNineAgentsDropToDigitsWithinTheBudget() throws {
-    XCTAssertEqual(DictationOverlayWindow.midiChannelMapBudget, 820)
-    XCTAssertEqual(
-      DictationOverlayWindow.midiChannelMapBudget, 2 * DictationOverlayWindow.midiSize.width)
-    let map = fullRoster()
-    let spacing = OverlayChannelMapView.chipSpacing
-    let digit = OverlayChannelPill.chipWidth(name: nil, scale: 1)
-    let base =
-      DictationOverlayWindow.midiSize.width + OverlayChannelMapView.leadingGap + digit + spacing
-    XCTAssertGreaterThan(
-      base + map.rowWidth(for: .chips, scale: 1, spacing: spacing),
-      DictationOverlayWindow.midiChannelMapBudget, "nine named chips overflow the budget")
-    let natural = DictationOverlayWindow.midiNaturalWidth(map: map, textScale: 1)
-    XCTAssertLessThanOrEqual(natural, DictationOverlayWindow.midiChannelMapBudget)
-    let longest = try XCTUnwrap(
-      map.chips.map { OverlayChannelPill.chipWidth(name: $0.name, scale: 1) }.max())
-    XCTAssertEqual(
-      natural,
-      ceil(base + 9 * digit + 8 * spacing + longest - digit),
-      "the digits row, with room for the selected chip's name")
-    // Whatever conversation is selected, its named chip fits that room.
-    for selected in map.chips.map(\.digit) {
-      XCTAssertLessThanOrEqual(
-        base + fullRoster(selected: selected).rowWidth(for: .digits, scale: 1, spacing: spacing),
-        natural + 0.5)
-    }
-  }
-
-  func testSlotClaimsOnlyWhatItShows() {
-    let slot = OverlayChannelMapSlot(
-      namedWidth: 230, digitsWidth: 100, counterWidth: 30,
-      leadingGap: OverlayChannelMapView.leadingGap, height: OverlayChannelPill.headerHeight)
-    let gap = OverlayChannelMapView.leadingGap
-    XCTAssertEqual(slot.width(proposed: nil), 230 + gap)
-    XCTAssertEqual(slot.width(proposed: 500), 230 + gap, "the leftover stays with the waveform")
-    XCTAssertEqual(slot.width(proposed: 200), 100 + gap, "digits hand the rest back")
-    XCTAssertEqual(slot.width(proposed: 60), 30 + gap, "the counter hands the rest back")
-    XCTAssertEqual(slot.width(proposed: 30 + gap - 1), 0, "no width when nothing fits")
-    XCTAssertEqual(slot.width(proposed: 0), 0)
-  }
-
-  func testChipWidthsAreMeasuredFromTheirText() {
-    let short = OverlayChannelPill.chipWidth(name: "Igor", scale: 1)
-    let long = OverlayChannelPill.chipWidth(name: "Miksa-Igor", scale: 1)
-    XCTAssertGreaterThan(long, short)
-    let digit = OverlayChannelPill.chipWidth(name: nil, scale: 1)
-    XCTAssertEqual(
-      digit, ceil(2 * OverlayChannelPill.chipPadding + OverlayChannelPill.digitCircle))
-    XCTAssertLessThan(digit, short)
-    let huge = OverlayChannelPill.chipWidth(name: String(repeating: "W", count: 80), scale: 1)
-    XCTAssertLessThanOrEqual(
-      huge,
-      ceil(
-        2 * OverlayChannelPill.chipPadding + OverlayChannelPill.digitCircle
-          + OverlayChannelPill.chipGap + OverlayChannelPill.maxNameWidth),
-      "a long name truncates instead of collapsing the map")
-    XCTAssertGreaterThan(OverlayChannelPill.chipWidth(name: "Igor", scale: 1.2), short)
+    XCTAssertEqual(marked.agents.map(\.microphoneOpen), [true, false])
+    XCTAssertEqual(marked.agents.map(\.disconnected), [false, true])
+    XCTAssertEqual(marked.agents.map(\.unread), [false, true])
   }
 
   func testStripPillsStopScalingWhereTheRowWouldGrow() {
@@ -453,7 +913,7 @@ final class OverlayChannelMapTests: XCTestCase {
   }
 
   func testChipHintNamesTheChordFromTheSetting() {
-    let kuba = scenario().chips[2]
+    let kuba = scenario().agents[2]
     XCTAssertEqual(kuba.hint(modifier: .control), "5 · Kuba · Ctrl+5")
     XCTAssertEqual(kuba.hint(modifier: .function), "5 · Kuba · Fn+5")
     XCTAssertEqual(
@@ -464,7 +924,7 @@ final class OverlayChannelMapTests: XCTestCase {
   /// and no hint names a chord that does not exist.
   func testNoChordWhenBothKeysRecord() {
     XCTAssertEqual(OverlayChannelChordModifier(setting: "off"), .unbound)
-    let kuba = scenario().chips[2]
+    let kuba = scenario().agents[2]
     XCTAssertEqual(kuba.hint(modifier: .unbound), "5 · Kuba")
     XCTAssertEqual(kuba.accessibilityLabel(modifier: .unbound), "Channel 5, Kuba")
     XCTAssertFalse(kuba.accessibilityLabel(modifier: .unbound).contains("shortcut"))
@@ -496,10 +956,11 @@ final class OverlayChannelMapTests: XCTestCase {
     let view = DictationOverlayView(state: state)
     let roster = view.channelStatusView
     let map = roster.channelMapModel
-    XCTAssertEqual(map.chips.map(\.digit), ["2", "3"])
-    XCTAssertEqual(map.chips.map(\.name), ["Lena", "Astra"])
-    XCTAssertEqual(map.chips.map(\.selectable), [true, true])
-    XCTAssertEqual(map.chips.map(\.selected), [false, false])
+    XCTAssertEqual(map.chips.map(\.digit), ["0", "2", "3"])
+    XCTAssertEqual(map.chips.map(\.name), [OverlaySharedChannelName.defaultName, "lena", "astra"])
+    XCTAssertEqual(
+      map.chips.map(\.selectable), [true, true, true], "(0) selects the All conversation")
+    XCTAssertEqual(map.chips.map(\.selected), [false, false, false])
 
     roster.selectChannelConversation("3")
     XCTAssertEqual(state.selectedConversationID, astra.id, "the exact owner's conversation")
@@ -510,37 +971,50 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertFalse(state.channelHudStates.values.contains(where: \.open))
     XCTAssertEqual(
       DictationOverlayView(state: state).channelStatusView.channelMapModel.chips.map(\.selected),
-      [false, true], "the selected conversation's chip keeps its name in the digits tier")
+      [false, false, true], "the selected conversation's pill wears the selection fill")
 
+    // (0)'s click is the same path: the All conversation, no microphone.
     roster.selectChannelConversation("0")
     XCTAssertEqual(state.selectedConversationID, broadcast.id)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertTrue(state.pendingChannelToggles.isEmpty, "(0) is not a microphone")
+    XCTAssertFalse(state.channelHudStates.values.contains(where: \.open))
+    XCTAssertEqual(
+      DictationOverlayView(state: state).channelStatusView.channelMapModel.chips.map(\.selected),
+      [true, false, false])
     // A digit with no current conversation is not an identity.
     roster.selectChannelConversation("7")
     XCTAssertEqual(state.selectedConversationID, broadcast.id)
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  func testMiniCounterSwitchesToCompactAndNothingElse() throws {
+  /// The horizontal mini carries no channel map (Founder, 2026-11-04: the
+  /// Agents list replaces its counter), and a stray counter call there
+  /// changes nothing.
+  func testHorizontalMiniHasNoChannelMapAndTheCounterCallIsANoOp() throws {
     let (state, _, _, _) = try armedState()
+    state.channelMapPreference.selectLayout(.horizontal)
     state.setPresentationMode(.mini)
+    XCTAssertTrue(state.channelMapInMini, "the map setting still shapes mini")
     let surface = state.windowContentSurface
     let generation = state.captureGeneration
     var restored = 0
     state.onRestoreMidiNaturalWidth = { restored += 1 }
-    let map = try XCTUnwrap(DictationOverlayView(state: state).channelMap)
-    XCTAssertEqual(map.placement, .mini, "mini shows the counter, never the chips")
-    XCTAssertEqual(map.model.counterFigure, "2")
-    XCTAssertEqual(map.model.counterHint, "2 Lena · 3 Astra")
-    map.onCounter()
-    XCTAssertEqual(state.presentationMode, .midi, "the counter opens compact, as the toggle does")
+    let view = DictationOverlayView(state: state)
+    XCTAssertNil(view.channelMap(roster: view.channelStatusView), "mini shows no counter")
+    state.activateChannelMapCounter()
+    XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
     XCTAssertEqual(restored, 0)
     XCTAssertNil(state.selectedConversationID, "no conversation is chosen")
     XCTAssertEqual(state.windowContentSurface, surface)
     XCTAssertEqual(state.captureGeneration, generation)
-    XCTAssertTrue(state.pendingChannelToggles.isEmpty, "the counter is not a microphone")
+    XCTAssertTrue(state.pendingChannelToggles.isEmpty, "nothing touches the microphone")
   }
 
-  func testVerticalMiniCounterOpensTheIntercomAndNothingElse() throws {
+  /// The vertical layout keeps its stacked counter in mini and in the bar
+  /// (Maciej, 2026-10-23: the way to the Intercom group stays in every
+  /// form); the counter leads to the Intercom group and keeps the form.
+  func testVerticalCounterLivesInMiniAndTheBarAndOpensTheIntercomAndNothingElse() throws {
     let (state, _, _, _) = try armedState()
     state.channelMapPreference.selectLayout(.vertical)
     state.setPresentationMode(.mini)
@@ -550,13 +1024,22 @@ final class OverlayChannelMapTests: XCTestCase {
     var restored = 0
     state.onRevealIntercom = { revealed += 1 }
     state.onRestoreMidiNaturalWidth = { restored += 1 }
-    let map = try XCTUnwrap(DictationOverlayView(state: state).channelMap)
-    XCTAssertEqual(map.placement, .mini)
+    let view = DictationOverlayView(state: state)
+    let miniCounter = try XCTUnwrap(
+      view.channelMap(roster: view.channelStatusView), "the vertical mini keeps its counter")
+    XCTAssertEqual(miniCounter.placement, .counter)
+    XCTAssertTrue(miniCounter.stacked)
+    miniCounter.onCounter()
+    XCTAssertEqual(revealed, 1, "mini's counter leads to the Intercom group")
+    XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
+    state.setPresentationMode(.midi)
+    let map = try XCTUnwrap(view.channelMap(roster: view.channelStatusView))
+    XCTAssertEqual(map.placement, .counter)
     XCTAssertTrue(map.stacked)
     XCTAssertEqual(map.model.counterFigure, "2", "the badge carries the same agent count")
     map.onCounter()
-    XCTAssertEqual(revealed, 1, "the counter leads to the Intercom group")
-    XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
+    XCTAssertEqual(revealed, 2, "the counter leads to the Intercom group")
+    XCTAssertEqual(state.presentationMode, .midi, "the bar stays the bar")
     XCTAssertEqual(restored, 0)
     XCTAssertNil(state.selectedConversationID)
     XCTAssertEqual(state.windowContentSurface, surface)
@@ -564,18 +1047,42 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  @MainActor
-  func testMiniIsAsWideInBothLayoutsUpToTheCounter() throws {
+  /// With the map enabled the horizontal mini is the 127 × 36 capsule of
+  /// its controls; the vertical mini is wider by its stacked counter and the
+  /// 6 pt gap after the dot, as the counter is drawn.
+  func testVerticalMiniIsWiderByItsStackedCounter() throws {
     let (state, _, _, _) = try armedState()
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 100, y: 100, width: 200, height: 46),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    func fit() -> CGFloat {
+      let counter = DictationOverlayWindow.miniStackedCounterWidth(
+        map: state.channelMapLayoutModel, stacked: state.channelMapCounterStacked, textScale: 1)
+      panel.setChannelMapPresentation(
+        enabled: state.channelMapInMini, stackedCounterWidth: counter)
+      return counter
+    }
+    state.channelMapPreference.selectLayout(.horizontal)
+    XCTAssertTrue(state.channelMapInMini)
+    XCTAssertEqual(fit(), 0, "the horizontal mini has no counter")
+    XCTAssertEqual(panel.miniSize, NSSize(width: 127, height: 36))
+
+    state.channelMapPreference.selectLayout(.vertical)
     let map = state.channelMapLayoutModel
-    let strip = DictationOverlayWindow.miniNaturalWidth(map: map, textScale: 1)
-    let stacked = DictationOverlayWindow.miniNaturalWidth(map: map, textScale: 1, stacked: true)
+    let expected = ceil(
+      DictationOverlayWindow.miniBrandGap
+        + OverlayChannelPill.counterWidth(
+          figure: String(map.count), openDigitCount: map.openDigits.count,
+          scale: OverlayChannelPill.headerScale(1), stacked: true))
+    XCTAssertEqual(fit(), expected)
+    XCTAssertGreaterThan(expected, 0)
+    XCTAssertEqual(panel.miniSize, NSSize(width: 127 + expected, height: 36))
+
+    panel.setChannelMapPresentation(enabled: false, stackedCounterWidth: expected)
     XCTAssertEqual(
-      stacked,
-      ceil(
-        DictationOverlayWindow.miniFloorWidth + DictationOverlayWindow.miniStackedBrandGap
-          + OverlayChannelPill.headerHeight))
-    XCTAssertLessThanOrEqual(abs(stacked - strip), 12, "one mini, one counter slot")
+      panel.miniSize,
+      NSSize(width: DictationOverlayWindow.miniBrandWidth, height: 36),
+      "without the map mini keeps the brand word")
   }
 
   func testCompactCounterRestoresTheNaturalWidthAndNothingElse() throws {
@@ -584,7 +1091,8 @@ final class OverlayChannelMapTests: XCTestCase {
     let generation = state.captureGeneration
     var restored = 0
     state.onRestoreMidiNaturalWidth = { restored += 1 }
-    let map = try XCTUnwrap(DictationOverlayView(state: state).channelMap)
+    let view = DictationOverlayView(state: state)
+    let map = try XCTUnwrap(view.channelMap(roster: view.channelStatusView))
     XCTAssertEqual(map.placement, .strip)
     map.onCounter()
     XCTAssertEqual(restored, 1, "the window owner forgets the user's width")
@@ -602,7 +1110,8 @@ final class OverlayChannelMapTests: XCTestCase {
   func testNoMapBeforeTheRosterNamesAChannel() {
     let state = OverlayState.previewFormatted()
     optIntoChannelMap(state)
-    XCTAssertNil(DictationOverlayView(state: state).channelMap)
+    let view = DictationOverlayView(state: state)
+    XCTAssertNil(view.channelMap(roster: view.channelStatusView))
   }
 
   // MARK: - The chord keeps the collapsed form (§1, §14 W3)
@@ -620,9 +1129,9 @@ final class OverlayChannelMapTests: XCTestCase {
     }
   }
 
-  /// With the map on, a chord in mini or compact keeps the form: the strip's
-  /// chip or counter shows the open digit, so the chord is readable without
-  /// unfolding. The selection follows the open channel as before.
+  /// With the map on, a chord in mini or compact keeps the form: the bar's
+  /// chip shows the open digit and mini's Agents button the capture, so the
+  /// chord is readable without unfolding. The selection follows the open channel as before.
   func testChordKeepsMiniAndCompactWhileTheMapIsOn() throws {
     for form in [OverlayPresentationMode.mini, .midi] {
       let (state, broadcast, lena, astra) = try armedState()
@@ -674,20 +1183,24 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(state.selectedConversationID, astra.id)
   }
 
-  // MARK: - Hosted compact strip
+  // MARK: - Hosted expanded bar
 
-  func testWideCompactStripShowsChipsAndAChipClickSelects() throws {
+  /// Two agents after `(0)`: one row of stacked pills, at the bar's measured
+  /// size.
+  func testExpandedBarShowsStackedPillsAndAPillClickSelects() throws {
     let (state, _, _, astra) = try armedState()
     state.setPresentationMode(.midi)
+    let bar = DictationOverlayWindow.midiBarGeometry(
+      map: state.channelMapLayoutModel, textScale: 1)
     let host = NSHostingView(
       rootView: DictationOverlayView(state: state)
         .defaultAppStorage(try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))))
     host.sizingOptions = []
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(
-        x: 100, y: 100, width: 900, height: DictationOverlayWindow.midiSize.height),
-      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
-      defer: false)
+        x: 100, y: 100, width: bar.naturalWidth,
+        height: bar.height(forWidth: bar.naturalWidth)),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = OverlayContentContainer(hosting: host)
     BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
@@ -701,14 +1214,15 @@ final class OverlayChannelMapTests: XCTestCase {
       ).elements
       let chip = try XCTUnwrap(elements.first, "chip \(digit)")
       XCTAssertEqual(chip.role, "AXButton")
-      XCTAssertLessThanOrEqual(chip.height, OverlayChannelPill.headerHeight + 0.5)
+      XCTAssertLessThanOrEqual(chip.height, OverlayChannelPill.stackedHeight(scale: 1) + 0.5)
+      XCTAssertGreaterThan(
+        chip.height, OverlayChannelPill.headerHeight, "the name sits under the circle")
     }
-    XCTAssertTrue(
-      try NativeAccessibilityProbe.query("overlay-channel-chip-0").elements.isEmpty,
-      "no 0 All chip while channel 0 is closed")
+    let zero = try NativeAccessibilityProbe.waitForElements("overlay-channel-chip-0").elements
+    XCTAssertEqual(zero.first?.role, "AXButton", "(0) leads the row while channel 0 is closed")
     XCTAssertTrue(
       try NativeAccessibilityProbe.query("overlay-channel-map-toggle").elements.isEmpty,
-      "a wide strip shows the chips, not the counter")
+      "the bar shows its pills, not the counter")
     _ = try NativeAccessibilityProbe.query("overlay-channel-chip-3", press: true)
     XCTAssertEqual(state.selectedConversationID, astra.id)
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
@@ -841,21 +1355,23 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(rail.contains("form: .rail"))
     XCTAssertFalse(rail.contains("Text(verbatim: digit)"), "the rail does not draw its own digit")
     let mapView = try overlaySource("OverlayChannelMapView.swift")
-    XCTAssertTrue(mapView.contains("form: .chip"))
+    XCTAssertTrue(
+      mapView.contains("proxy.size.height + 0.5 >= stackedHeight ? .stacked : .chip"),
+      "the bar's row picks stacked pills or chips by the height it gives the map")
+    XCTAssertTrue(mapView.contains("form: form"))
     XCTAssertTrue(mapView.contains("form: .counter"))
     XCTAssertFalse(mapView.contains("Text(verbatim:"), "the map does not draw a digit itself")
     let pill = try overlaySource("OverlayChannelPill.swift")
     XCTAssertEqual(
       pill.components(separatedBy: "Text(verbatim: text)").count - 1, 1,
       "one drawing of the digit")
-    // Spec §14: the open channel's digit carries one violet dot, drawn once,
-    // and no symbol; the microphone and megaphone signs live on the Agents
-    // button only.
-    XCTAssertEqual(
-      pill.components(separatedBy: "Circle()\n      .fill(palette.agentAccent.color)").count - 1, 1,
-      "one drawing of the open-channel dot")
+    // Founder, 2026-11-04 (decision 3): the open channel's violet circle and
+    // waveform are enough; no pulsing open-channel dot on the chip's circle.
     let pillView = try section(
       of: pill, from: "struct OverlayChannelPill: View", to: "// MARK: Header metrics")
+    XCTAssertFalse(
+      pillView.contains("openChannelDot"),
+      "the pulsing open-channel dot on the chip circle is gone")
     // Symbols replace a figure: the stacked counter and the numberless human
     // mailbox. Neither adds a glyph to a numbered agent's digit.
     XCTAssertEqual(
@@ -866,9 +1382,6 @@ final class OverlayChannelMapTests: XCTestCase {
       "the stacked counter uses the shared header glyph exactly once")
     XCTAssertFalse(pillView.contains("mic.fill"), "the microphone glyph left the digit")
     XCTAssertFalse(pillView.contains("megaphone"), "the megaphone stays on the Agents button")
-    XCTAssertTrue(
-      pillView.contains("if display.animates && !reduceMotion"),
-      "the dot pulses only while the pill animates and Reduce Motion is off")
     for forbidden in [
       "OverlayState", "onToggleChannel", "toggleAgentChannel", "OverlayConversation",
       "onSelectConversation",
@@ -888,35 +1401,267 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertFalse(label.contains("OverlayState"))
   }
 
-  func testMapSelectionStaysSeparateFromExplicitMicrophoneControls() throws {
-    let overlay = try overlaySource("DictationOverlayView.swift")
-    let header = try section(
-      of: overlay, from: "private func justifiedHeader(density: OverlayHeaderDensity)",
-      to: "private var transcriptionPreviewButton")
-    XCTAssertTrue(
-      header.contains("if density == .midi, state.channelMapInHeader, let map = channelMap {"),
-      "only the horizontal strip carries the chips between the clock and the actions")
-    XCTAssertTrue(
-      header.contains("let leadingCounter = mini || state.channelMapCounterStacked"),
-      "mini and every vertical form keep the counter beside the brand")
-    XCTAssertTrue(
-      header.contains("if leadingCounter, let map = channelMap {"),
-      "the leading counter is the way to the Intercom group, not a microphone")
-    XCTAssertTrue(header.contains("showsWord: !mini"), "mini drops cs")
-    XCTAssertTrue(header.contains(".frame(height: OverlayHeaderDensity.rowHeight)"))
-    let map = try section(
-      of: overlay, from: "var channelMap: OverlayChannelMapView?",
-      to: "var channelStatusView: OverlayChannelStatusView")
-    XCTAssertTrue(map.contains("roster.selectChannelConversation($0)"))
-    XCTAssertTrue(map.contains("state.activateChannelMapCounter()"))
-    XCTAssertFalse(map.contains("showAgentMonitor"), "the W1 seam is gone")
-    XCTAssertFalse(map.contains("toggleAgentChannel"))
-    let selection = try section(of: map, from: "onSelectChannel:", to: "controls: controls")
-    XCTAssertFalse(selection.contains("toggle"), "name and counter do not change capture")
-    XCTAssertTrue(map.contains("onToggleMicrophone:"))
-    XCTAssertTrue(
-      map.contains("roster.toggle(channel)"), "only the dedicated microphone owns this action")
-    // The intent rail stays as it is.
-    XCTAssertFalse(header.contains("OverlayIntentRail("))
+  func testMapSelectionStaysSeparateFromExplicitMicrophoneControls() async throws {
+    for stacked in [false, true] {
+      let (state, broadcast, lena, astra) = try armedState()
+      state.channelMapPreference.selectLayout(stacked ? .vertical : .horizontal)
+      state.setPresentationMode(.midi)
+      let generation = state.captureGeneration
+      let hudBefore = state.channelHudStates
+      let view = DictationOverlayView(state: state)
+      let map = try XCTUnwrap(view.channelMap(roster: view.channelStatusView))
+      XCTAssertEqual(map.stacked, stacked)
+
+      for conversation in [lena, astra, broadcast] {
+        map.onSelectChannel(conversation.channel)
+        await Task.yield()
+        XCTAssertEqual(state.selectedConversationID, conversation.id)
+        XCTAssertEqual(state.captureGeneration, generation)
+        XCTAssertEqual(state.channelHudStates, hudBefore)
+        XCTAssertTrue(state.pendingChannelToggles.isEmpty)
+      }
+    }
+  }
+
+  // MARK: - The unread mark (L14)
+
+  /// The unread mark's centre stands on the rounded outline it marks (the
+  /// chip's capsule, the stacked pill's circle) at every text scale, so it
+  /// sits on the edge like a system badge, and it is smaller than the 6 pt
+  /// dot it replaces, with its knockout around it.
+  func testUnreadMarkSitsOnTheOutlineItMarks() {
+    for scale in [CGFloat(1), 1.25] {
+      let radii = [
+        OverlayChannelPill.headerHeight / 2, OverlayChannelPill.digitCircle * scale / 2,
+      ]
+      for radius in radii {
+        let offset = OverlayChannelPill.unreadMarkOffset(outlineRadius: radius, scale: scale)
+        let half = OverlayChannelPill.unreadMarkOuterDiameter(scale: scale) / 2
+        // From the frame's top-trailing corner: the aligned mark's centre
+        // moved by the offset, and the outline's arc centre.
+        let centre = CGPoint(x: -half + offset.width, y: half + offset.height)
+        let arc = CGPoint(x: -radius, y: radius)
+        XCTAssertEqual(
+          hypot(centre.x - arc.x, centre.y - arc.y), radius, accuracy: 0.001,
+          "scale \(scale), radius \(radius)")
+      }
+      XCTAssertLessThan(OverlayChannelPill.unreadMarkDiameter * scale, 6 * scale)
+      XCTAssertGreaterThan(OverlayChannelPill.unreadMarkKnockout, 0)
+    }
+  }
+
+  // MARK: - A gone follower on the bar (L12)
+
+  /// A gone agent keeps its name on the bar, so the bar is as wide as with
+  /// the agent alive; the bar only dims it (no ring, point 7 of the
+  /// 2026-11-06 review), while the agents list keeps the empty ring.
+  func testGoneFollowerKeepsItsNameOnTheBarAndTheRingStaysInTheList() {
+    let channels = [delivery("1", "Lena"), delivery("3", "Roman"), delivery("5", "Bruno")]
+    func map(dead: Set<String>) -> OverlayChannelMapModel {
+      OverlayChannelMapModel(
+        channels: channels,
+        hudStates: Dictionary(
+          uniqueKeysWithValues: ["1", "3", "5"].map { ($0, hud(alive: !dead.contains($0))) }),
+        selectableDigits: ["1", "3", "5"], unreadDigits: [])
+    }
+    let alive = map(dead: [])
+    let gone = map(dead: ["3"])
+    let roman = gone.chips.first { $0.digit == "3" }
+    XCTAssertEqual(roman?.disconnected, true)
+    XCTAssertEqual(roman?.selectable, true, "the click is unchanged")
+    let index = gone.chips.firstIndex { $0.digit == "3" }!
+    XCTAssertEqual(
+      OverlayChannelMapNameWidths(chips: gone.chips, scale: 1).full[index],
+      OverlayChannelMapNameWidths(chips: alive.chips, scale: 1).full[index],
+      "the name keeps its room")
+    XCTAssertEqual(
+      DictationOverlayWindow.midiBarGeometry(map: gone, textScale: 1).naturalWidth,
+      DictationOverlayWindow.midiBarGeometry(map: alive, textScale: 1).naturalWidth)
+
+    let view = OverlayChannelStatusView(
+      channels: [channels[1]], unavailable: false, palette: .dark, animates: false,
+      hudStates: ["3": hud(alive: false)])
+    XCTAssertEqual(
+      view.presenceDotKind(for: channels[1]), .sleeping,
+      "the agents list still marks a gone follower with the empty ring")
+  }
+
+  // MARK: - An agent speaking (L1)
+
+  private func owner(_ name: String, channel: String) throws -> OverlayConversationOwner {
+    try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "s\(channel)",
+        "lease_id": String(repeating: channel, count: 32), "channel": channel, "name": name,
+      ]))
+  }
+
+  private func reply(_ state: String, owner: OverlayConversationOwner) -> OverlayConversationMessage {
+    OverlayConversationMessage(
+      id: "reply:\(state)", kind: .reply, text: "Gotowe.", order: 1,
+      emittedAt: "2026-11-06T03:00:00Z", owner: owner, recipients: [], deliveryID: nil,
+      replyTo: nil, unsolicited: true,
+      playback: OverlayReplyPlayback(
+        replyID: state, ticket: "t-\(state)", state: state, reason: nil, spoken: false,
+        emittedAt: "2026-11-06T03:00:01Z"),
+      busPath: "/dev/null")
+  }
+
+  /// While an agent's reply plays aloud its presence dot is the violet
+  /// speaking dot, in the agents list and on its bar chip; synthesis still
+  /// waiting and a finished playback leave the presence dot as it was.
+  func testAgentSpeakingTurnsItsDotVioletOnlyWhilePlaying() throws {
+    let kuba = try owner("Kuba", channel: "5")
+    func roster(playback: String?) -> OverlayChannelStatusView {
+      let messages = playback.map { [reply($0, owner: kuba)] } ?? []
+      let conversation = OverlayConversation(
+        id: kuba.id, channel: "5", name: "Kuba", owner: kuba, messages: messages)
+      return OverlayChannelStatusView(
+        channels: [delivery("5", "Kuba")], unavailable: false, palette: .light,
+        animates: false, hudStates: ["5": hud(session: "s5")],
+        conversations: [conversation], unreadCounts: [:], onSelectConversation: { _ in })
+    }
+    for (playback, speaking) in [
+      ("playing", true), ("waiting", false), ("finished", false), (nil, false),
+    ] as [(String?, Bool)] {
+      let view = roster(playback: playback)
+      let channel = try XCTUnwrap(view.channels.first)
+      XCTAssertEqual(
+        view.presenceDotKind(for: channel), speaking ? .speaking : .present, "\(playback ?? "none")")
+      let chip = view.channelMapModel.chips.first { $0.digit == "5" }
+      XCTAssertEqual(chip?.speaking, speaking, "\(playback ?? "none")")
+      // The chip's hover card hears it from the same source (L2).
+      let status = try XCTUnwrap(chip?.status)
+      XCTAssertEqual(status.speaking, speaking, "\(playback ?? "none"): the card's status")
+      XCTAssertEqual(
+        OverlayChannelChipHoverCard.presenceDot(status), speaking ? .speaking : .present,
+        "\(playback ?? "none"): the card's presence dot")
+    }
+  }
+
+  /// The speaking dot blinks on the listening caret's beat; with Reduce
+  /// Motion it stays full.
+  func testSpeakingDotBlinksUnlessMotionIsReduced() {
+    let beat = OverlayAgentStatusDot.speakingBeat
+    XCTAssertEqual(OverlayAgentStatusDot.speakingOpacity(at: beat * 0.5, reduceMotion: false), 1)
+    XCTAssertEqual(
+      OverlayAgentStatusDot.speakingOpacity(at: beat * 1.5, reduceMotion: false),
+      OverlayAgentStatusDot.speakingFaintOpacity)
+    for step in 0..<8 {
+      XCTAssertEqual(
+        OverlayAgentStatusDot.speakingOpacity(at: beat * Double(step) + 0.1, reduceMotion: true), 1)
+    }
+  }
+
+  /// Mini's Agents button turns violet and blinks while an agent's reply
+  /// plays aloud (L15), from the chips' own source; the expanded bar's
+  /// button (not signalling) stays as it was, and an agent capture keeps
+  /// its own glyph. The blink holds full when steady (Reduce Motion, a
+  /// hidden panel).
+  func testMiniAgentsButtonSignalsASpeakingAgent() throws {
+    let kuba = try owner("Kuba", channel: "5")
+    func roster(playback: String?, mini: Bool, capture: Bool = false) -> OverlayChannelStatusView {
+      let messages = playback.map { [reply($0, owner: kuba)] } ?? []
+      let conversation = OverlayConversation(
+        id: kuba.id, channel: "5", name: "Kuba", owner: kuba, messages: messages)
+      var view = OverlayChannelStatusView(
+        channels: [delivery("5", "Kuba")], unavailable: false, palette: .light,
+        animates: true, hudStates: ["5": hud(open: capture, session: "s5")],
+        conversations: [conversation], unreadCounts: [:], onSelectConversation: { _ in })
+      view.signalsSpeaking = mini
+      return view
+    }
+    for (playback, speaking) in [
+      ("playing", true), ("waiting", false), ("finished", false), (nil, false),
+    ] as [(String?, Bool)] {
+      XCTAssertEqual(
+        roster(playback: playback, mini: true).agentsButtonSpeaking, speaking,
+        "\(playback ?? "none")")
+      XCTAssertFalse(
+        roster(playback: playback, mini: false).agentsButtonSpeaking,
+        "\(playback ?? "none"): the expanded bar's button is unchanged")
+    }
+    XCTAssertFalse(
+      roster(playback: "playing", mini: true, capture: true).agentsButtonSpeaking,
+      "an agent capture owns the button")
+
+    let beat = OverlayAgentStatusDot.speakingBeat
+    typealias Status = OverlayChannelStatusView
+    XCTAssertEqual(Status.speakingStarOpacity(at: beat * 0.5, steady: false), 1)
+    XCTAssertEqual(
+      Status.speakingStarOpacity(at: beat * 1.5, steady: false), Status.speakingStarFaintOpacity)
+    XCTAssertGreaterThan(
+      Status.speakingStarFaintOpacity, OverlayAgentStatusDot.speakingFaintOpacity,
+      "the star blinks more gently than the dot")
+    for step in 0..<8 {
+      XCTAssertEqual(Status.speakingStarOpacity(at: beat * Double(step) + 0.1, steady: true), 1)
+    }
+  }
+
+  // MARK: - Channel 0's name (shared channel)
+
+  /// Channel 0 carries its display name like an agent: the stored name, or
+  /// the default when none is stored, on the bar's chip, its hint, the
+  /// roster's header and the overlay's map that sizes the bar (the agents
+  /// list has no channel 0 row since 2026-11-07). Only the name changes; the digit stays 0.
+  func testChannelZeroCarriesItsDisplayNameEverywhere() throws {
+    let state = OverlayState(micAccessProvider: { true })
+    var stored = ""
+    state.sharedChannelNameSetting = { stored }
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [delivery("3", "Lena")],
+        conversations: [
+          OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+        ]))
+    state.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "3", audience: "Lena", provider: "codex", providerSessionId: "s3", open: false,
+        loud: false, autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    for (value, shown) in [
+      ("", OverlaySharedChannelName.defaultName), ("Ekipa", "Ekipa"),
+      ("  ", OverlaySharedChannelName.defaultName),
+    ] {
+      stored = value
+      state.refreshSharedChannelName()
+      XCTAssertEqual(state.sharedChannelName, shown)
+      let zero = try XCTUnwrap(state.channelMapLayoutModel.chips.first)
+      XCTAssertEqual(zero.digit, "0")
+      XCTAssertEqual(zero.name, shown)
+      let roster = DictationOverlayView(state: state).channelStatusView
+      XCTAssertEqual(roster.channelMapModel.chips.first?.name, shown)
+      XCTAssertTrue(roster.broadcastHeader.hasPrefix("0 · " + shown), roster.broadcastHeader)
+      XCTAssertTrue(
+        zero.hint(modifier: .control).hasPrefix("0 · " + shown), zero.hint(modifier: .control))
+    }
+  }
+
+  /// A cut name shows its short form when it has one and it fits (channel
+  /// 0's default name), else the name with an ellipsis; a name the width
+  /// holds is shown whole.
+  func testChannelZeroDefaultNameShowsItsShortFormWhenCut() {
+    func pill(_ name: String, short: String?, width: CGFloat) -> OverlayChannelPill {
+      OverlayChannelPill(
+        form: .stacked,
+        display: OverlayChannelPill.Display(
+          figure: "0", name: name, nameWidth: width, shortName: short),
+        hint: "", accessibilityText: "", identifier: "t", palette: .light, textScale: 1
+      ) {}
+    }
+    let whole = OverlayChannelPill.nameWidth("Wspólny", scale: 1)
+    let short = OverlayChannelPill.nameWidth("Wsp.", scale: 1)
+    XCTAssertEqual(pill("Wspólny", short: "Wsp.", width: whole).shownName("Wspólny"), "Wspólny")
+    XCTAssertEqual(pill("Wspólny", short: "Wsp.", width: short).shownName("Wspólny"), "Wsp.")
+    XCTAssertEqual(pill("Wspólny", short: "Wsp.", width: short - 4).shownName("Wspólny"), "Wspólny")
+    XCTAssertEqual(pill("Wspólny", short: nil, width: short).shownName("Wspólny"), "Wspólny")
+    let widths = OverlayChannelMapNameWidths(
+      chips: [
+        OverlayChannelMapChip(
+          digit: "0", name: "Wspólny", disconnected: false, microphoneOpen: false, unread: false,
+          selectable: true, selected: false, shortName: "Wsp.")
+      ], scale: 1)
+    XCTAssertEqual(widths.preferred, [short], "the default bar gives the short form's width")
+    XCTAssertEqual(widths.full, [whole])
   }
 }

@@ -8,24 +8,32 @@ import XCTest
 @MainActor
 final class OverlayBroadcastPolicyTests: XCTestCase {
   func testHeaderCountsOnlyOnAmongBoundAgents() {
+    let name = OverlaySharedChannelName.defaultName
     let view = drawer([channel("1", policy: .on), channel("2", policy: .quiet)])
-    XCTAssertEqual(view.broadcastHeader, "0 · All (1 of 2)")
+    XCTAssertEqual(view.broadcastHeader, "0 · \(name) (1 of 2)")
     XCTAssertEqual(view.broadcastMembers.map(\.channel), ["1", "2"])
     XCTAssertEqual(
       drawer([channel("1", policy: .off), channel("2", policy: .quiet)]).broadcastHeader,
-      "0 · All (0 of 2)")
-    XCTAssertEqual(drawer([]).broadcastHeader, "0 · All (0 of 0)")
+      "0 · \(name) (0 of 2)")
+    XCTAssertEqual(drawer([]).broadcastHeader, "0 · \(name) (0 of 0)")
     XCTAssertEqual(
       drawer([channel("0", policy: .on), channel("1", policy: .on)]).broadcastHeader,
-      "0 · All (1 of 1)")
+      "0 · \(name) (1 of 1)")
+    var named = drawer([channel("1", policy: .on)])
+    named.sharedChannelStoredName = "Ekipa"
+    XCTAssertEqual(named.broadcastHeader, "0 · Ekipa (1 of 1)", "the stored name heads the row")
   }
 
   func testPolishHeaderUsesBothCounts() throws {
     let polish = try XCTUnwrap(Bundle.main.path(forResource: "pl", ofType: "lproj"))
     let bundle = try XCTUnwrap(Bundle(path: polish))
     let format = bundle.localizedString(
-      forKey: "0 · All (%lld of %lld)", value: nil, table: nil)
-    XCTAssertEqual(String(format: format, Int64(1), Int64(2)), "0 · Wszyscy (1 z 2)")
+      forKey: "0 · %@ (%lld of %lld)", value: nil, table: nil)
+    let name = bundle.localizedString(
+      forKey: "overlay.sharedChannel.defaultName", value: nil, table: nil)
+    XCTAssertEqual(name, "Wspólny")
+    XCTAssertEqual(
+      String(format: format, name, Int64(1), Int64(2)), "0 · Wspólny (1 z 2)")
   }
 
   func testMembershipAndTheMoonEachWearTheirOwnMark() {

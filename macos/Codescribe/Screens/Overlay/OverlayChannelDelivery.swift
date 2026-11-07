@@ -9,6 +9,15 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
   let channel: String
   let agent: String
+
+  /// The name a person reads for a binding: the spelling the agent gave at
+  /// attach (`display_name`), else the casefolded `audience` the helper
+  /// routes, seals and acks by (Founder, 2026-11-04: the Bus window showed
+  /// every agent in lowercase).
+  static func displayName(of binding: [String: Any]) -> String {
+    if let display = binding["display_name"] as? String, !display.isEmpty { return display }
+    return binding["audience"] as? String ?? ""
+  }
   let deliveryID: String?
   let stage: Stage?
   let isOpen: Bool
@@ -191,7 +200,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     func project(channel: String, binding: [String: Any], lease: [String: Any])
       -> OverlayChannelDelivery?
     {
-      guard let agent = binding["audience"] as? String, !agent.isEmpty,
+      guard let audience = binding["audience"] as? String, !audience.isEmpty,
         let provider = binding["provider"] as? String,
         let providerSession = binding["provider_session_id"] as? String, !providerSession.isEmpty,
         lease["schema"] as? String == "codescribe.agent-bridge.lease.v1",
@@ -199,6 +208,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         lease["provider_session_id"] as? String == providerSession,
         let leaseID = lease["lease_id"] as? String
       else { return nil }
+      // Seals, receipts and acks name the agent by its casefolded audience;
+      // the row people read carries the spelling the agent gave at attach.
+      let agent = audience
       let session = sessions[channel]
       let isOpen =
         session.map {
@@ -254,7 +266,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         }
       }
       var delivery = OverlayChannelDelivery(
-        channel: channel, agent: agent, deliveryID: deliveryID, stage: stage, isOpen: isOpen)
+        channel: channel, agent: OverlayChannelDelivery.displayName(of: binding),
+        deliveryID: deliveryID, stage: stage, isOpen: isOpen)
       delivery.broadcastSkipped = skipped
       return delivery
     }
@@ -263,7 +276,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       guard
         let owner = OverlayConversationOwner(
           lease: lease, channel: channel,
-          name: binding["audience"] as? String ?? ""),
+          name: OverlayChannelDelivery.displayName(of: binding)),
         lease["schema"] as? String == "codescribe.agent-bridge.lease.v1",
         owner.provider == binding["provider"] as? String,
         owner.providerSessionID == binding["provider_session_id"] as? String
@@ -1617,8 +1630,12 @@ struct OverlayConversationOwner: Codable, Equatable, Hashable, Sendable {
     self.provider = provider
     providerSessionID = session
     leaseID = lease
+    // The spelling the agent gave at attach (`display_name`), else the
+    // casefolded identity the helper routes by (Founder, 2026-11-04).
     name =
-      row["name"] as? String ?? row["agent"] as? String ?? row["audience"] as? String ?? provider
+      (row["display_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+      ?? row["name"] as? String ?? row["agent"] as? String ?? row["audience"] as? String
+      ?? provider
     channel = row["channel"] as? String ?? ""
   }
 
@@ -1852,12 +1869,15 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var readReceipt: OverlayReadReceipt {
     let summary = (receipt ?? OverlayMessageReceipt(messageID: "")).summary(
       listed: sentTo ?? recipients.map(\.reach))
-    let present = Set(recipients.map(\.reach))
+    let present = Set(
+      recipients.map { OverlayReceiptState.identity(name: $0.reach.name, channel: $0.reach.channel) })
     return OverlayReadReceipt(
       read: summary.read, denominator: summary.denominator,
       unreceipted: summary.recipients.compactMap { recipient -> OverlayConversationReach? in
         recipient.state == .noReceipt ? recipient.reach : nil
-      }.filter { !present.contains($0) })
+      }.filter {
+        !present.contains(OverlayReceiptState.identity(name: $0.name, channel: $0.channel))
+      })
   }
   /// An agent-authored row can resolve a voice when Play is requested.
   var supportsSpeechPlayback = false
@@ -1989,6 +2009,22 @@ struct OverlayMessageAttachment: Codable, Equatable, Hashable, Sendable {
         })
     }
     return pointers.isEmpty ? nil : pointers
+  }
+}
+
+extension OverlayConversation {
+  /// The agent's reply is playing aloud now (`OverlayReplyPlayback.state`
+  /// "playing"). Synthesis still waiting is not speech yet.
+  var agentSpeaking: Bool {
+    messages.contains { $0.kind == .reply && $0.playback?.state == "playing" }
+  }
+
+  /// The same conversation under another display name (channel 0's name).
+  func renamed(_ name: String) -> OverlayConversation {
+    var copy = OverlayConversation(
+      id: id, channel: channel, name: name, owner: owner, messages: messages)
+    copy.historyLoaded = historyLoaded
+    return copy
   }
 }
 
@@ -2146,9 +2182,13 @@ struct OverlayReceiptRecipient: Codable, Equatable, Sendable {
   }
 
   /// One agent by name and channel, however many deliveries reached it; a
-  /// nameless file counts by its delivery.
+  /// nameless file counts by its delivery. The name folds its case, as
+  /// `--to` and `audience` do: `sent.json` carries the sender's spelling
+  /// (`display_name`) and the readers' files the lease's casefolded name,
+  /// and both name one agent (Founder, 2026-11-05: a read count of 0/6 over
+  /// four recipients).
   var identity: String {
-    if let name { return name + "\u{0}" + (channel ?? "") }
+    if let name { return OverlayReceiptState.identity(name: name, channel: channel ?? "") }
     return (deliveryID ?? "") + "\u{0}\u{0}"
   }
 }
@@ -2198,7 +2238,7 @@ struct OverlayMessageReceipt: Codable, Equatable, Sendable {
   /// entry and counts; a skipped one is shown, never counted.
   func summary(listed fallback: [OverlayConversationReach]) -> OverlayReceiptSummary {
     func identity(_ reach: OverlayConversationReach) -> String {
-      reach.name + "\u{0}" + reach.channel
+      OverlayReceiptState.identity(name: reach.name, channel: reach.channel)
     }
     let listed = (sentTo ?? fallback).map(identity)
     let reached = deliveries.filter { $0.state == .delivered || $0.state == .read }
@@ -2270,6 +2310,13 @@ struct OverlayMessageReceipt: Codable, Equatable, Sendable {
 /// of its own.
 enum OverlayReceiptState {
   static let schema = "codescribe.message-receipt.v1"
+
+  /// The one key of an agent across the receipt files and the admitted list:
+  /// the name folded as the helper folds an audience, then the channel.
+  static func identity(name: String, channel: String) -> String {
+    name.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX")) + "\u{0}"
+      + channel
+  }
 
   enum State: String, Codable, Equatable, Sendable {
     case delivered, read, skipped
@@ -2362,12 +2409,28 @@ enum OverlayReceiptState {
       // a reader that acknowledged under a lease bound later may not have
       // known its digit when it wrote `read`.
       let others = [State.delivered, .read, .skipped].compactMap { kinds[$0] }
+      let name = row["name"] as? String ?? others.compactMap({ $0["name"] as? String }).first
+      let channel =
+        row["channel"] as? String ?? others.compactMap({ $0["channel"] as? String }).first
+      // The label is the spelling: the file's `display_name` when it names
+      // the same agent, else the admitted list's spelling, else the file's.
+      let spelled = (row["display_name"] as? String)
+        ?? others.compactMap({ $0["display_name"] as? String }).first
+      let label: String? = {
+        guard let name else { return nil }
+        if let spelled, !spelled.isEmpty,
+          Self.identity(name: spelled, channel: "") == Self.identity(name: name, channel: "")
+        {
+          return spelled
+        }
+        let key = Self.identity(name: name, channel: channel ?? "")
+        return (published ?? stamped)?.first {
+          Self.identity(name: $0.name, channel: $0.channel) == key
+        }?.name ?? name
+      }()
       result.deliveries.append(
         OverlayReceiptRecipient(
-          deliveryID: delivery,
-          name: row["name"] as? String ?? others.compactMap({ $0["name"] as? String }).first,
-          channel: row["channel"] as? String
-            ?? others.compactMap({ $0["channel"] as? String }).first,
+          deliveryID: delivery, name: label, channel: channel,
           state: state, wake: delivered?["wake"] as? String,
           deliveredAt: delivered?["at"] as? String,
           at: (state == .read ? row["read_at"] : row["at"]) as? String))

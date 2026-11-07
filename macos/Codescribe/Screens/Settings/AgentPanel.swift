@@ -106,7 +106,7 @@ private struct LLMLaneEditor: View {
 
   private var discoveryDotColor: Color {
     switch laneModel.discovery.status {
-    case "fresh": return CSColor.olive
+    case "fresh": return CSColor.secondaryInk
     case "cached": return CSColor.amberLight
     case "no_key", "loading": return CSColor.secondaryInk
     default: return CSColor.dangerLight

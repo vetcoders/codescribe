@@ -6,7 +6,7 @@ import SwiftUI
 /// The column keeps the system's glass so it follows the transparency the
 /// user chose in macOS. A flat palette tone replaced it for one candidate and
 /// lost that effect; its tint and the seam beside the content are separate
-/// questions from whether the glass is there (Monika, 2026-10-18).
+/// questions from whether the glass is there (Founder, 2026-10-18).
 ///
 /// `CSSidebarColumn` and the transcript actions column share this material.
 /// A window never reaches for it on its own.

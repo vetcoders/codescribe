@@ -58,7 +58,7 @@ enum OverlayConversationPresentation: Equatable, Sendable {
 /// The same rich body and attachment chips on a conversation bubble or a
 /// larger Intercom preview. Document and capture state stay in their owners.
 struct OverlayConversationMessageContent: View {
-  nonisolated static let bodyFontSize: CGFloat = 10
+  nonisolated static let bodyFontSize: CGFloat = 13
   @Environment(\.csTextScale) private var textScale
   let message: OverlayConversationMessage
   let palette: OverlayAppearancePalette
@@ -110,6 +110,8 @@ struct OverlayConversationMessageContent: View {
 
 /// Paints the passive observer's immutable conversation projection.
 struct OverlayConversationView: View {
+  /// Channel 0's display name for its "0 · <name>" header.
+  @Environment(\.overlaySharedChannelName) private var sharedChannelName
   @Environment(\.displayScale) private var displayScale
   @Environment(\.csTextScale) private var textScale
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -224,9 +226,32 @@ struct OverlayConversationView: View {
           owner: owner, busPath: message.busPath, text: text)
       }
 
+  static func isSkippedBroadcast(
+    _ message: OverlayConversationMessage, for owner: OverlayConversationOwner
+  ) -> Bool {
+    guard message.kind == .user,
+      let recipient = message.recipients.first(where: {
+        $0.owner.provider == owner.provider
+          && $0.owner.providerSessionID == owner.providerSessionID
+          && $0.owner.leaseID == owner.leaseID
+      })
+    else { return false }
+    if recipient.broadcastSkipped == true { return true }
+    guard let deliveryID = recipient.deliveryID,
+      let state = message.receipt?.deliveries.first(where: { $0.deliveryID == deliveryID })?.state
+    else { return false }
+    return state == .skipped
+  }
+
+  static func visibleMessages(in conversation: OverlayConversation) -> [OverlayConversationMessage] {
+    guard let owner = conversation.owner else { return conversation.messages }
+    return conversation.messages.filter { !isSkippedBroadcast($0, for: owner) }
+  }
+
   var orderedMessages: [OverlayConversationMessage] {
-    guard let messageWindowLimit else { return conversation.messages }
-    return Array(conversation.messages.suffix(max(0, messageWindowLimit)))
+    let visible = Self.visibleMessages(in: conversation)
+    guard let messageWindowLimit else { return visible }
+    return Array(visible.suffix(max(0, messageWindowLimit)))
   }
   private var followsLatest: Bool { scrollFollow.followingLive }
   private var contentInset: CGFloat { presentation == .intercom ? 12 : 20 }
@@ -253,7 +278,9 @@ struct OverlayConversationView: View {
     GeometryReader { geometry in
       ScrollViewReader { proxy in
         trackedMessages(
-          maxBubbleWidth: Self.bubbleCap(contentWidth: geometry.size.width, textScale: textScale)
+          maxBubbleWidth: Self.bubbleCap(
+            contentWidth: max(0, geometry.size.width - OverlayResizeHit.scrollbarInset),
+            textScale: textScale)
         )
         .onChange(of: replyNavigationID) { _, id in
           guard let id else { return }
@@ -296,12 +323,21 @@ struct OverlayConversationView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
           if showsComposer && presentation == .standard {
-            composer
-              .onGeometryChange(for: CGFloat.self) {
-                $0.size.height
-              } action: {
-                composerHeight = $0
-              }
+            if isCovered {
+              // The composer's glass would show through the covering cell, as
+              // the header's does; the measured height keeps the inset, so the
+              // rows do not reflow.
+              Color.clear.frame(height: composerHeight)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            } else {
+              composer
+                .onGeometryChange(for: CGFloat.self) {
+                  $0.size.height
+                } action: {
+                  composerHeight = $0
+                }
+            }
           }
         }
         .overlay(alignment: .bottom) {
@@ -340,6 +376,14 @@ struct OverlayConversationView: View {
               // The content margin follows: no phantom gap under the header.
               Color.clear.frame(height: 0)
                 .onAppear { navigationHeight = 0 }
+            } else if isCovered {
+              // The glass header ignores the covering cell's opacity and clip
+              // (Founder, 2026-11-05: the sticky bar with the agent's name over
+              // the full-width list, at the split width). Off the tree while
+              // covered; the measured height keeps the content margin.
+              Color.clear.frame(height: navigationHeight)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
             } else {
               navigation
                 .padding(.horizontal, 20)
@@ -576,7 +620,7 @@ struct OverlayConversationView: View {
           HStack(spacing: 6) {
             Group {
               if conversation.channel == "0" {
-                Text("0 · All")
+                Text(verbatim: "0 · " + sharedChannelName)
               } else {
                 Text(verbatim: conversation.displayTitle)
               }
@@ -682,7 +726,7 @@ struct OverlayConversationView: View {
   private var namePillLabel: some View {
     VStack(alignment: .leading, spacing: 1) {
       if conversation.channel == "0" {
-        Text("0 · All")
+        Text(verbatim: "0 · " + sharedChannelName)
       } else {
         Text(verbatim: conversation.displayTitle)
 
@@ -1016,7 +1060,8 @@ struct OverlayConversationView: View {
         ForEach(message.recipients, id: \.owner.id) { recipient in
           Text(Self.receiptStatusText(for: recipient))
             .font(.system(size: 10 * textScale))
-            .foregroundStyle(palette.mutedText.color)
+            .foregroundStyle(
+              recipient.acknowledged ? palette.primaryText.color : palette.mutedText.color)
             .lineLimit(1)
             .truncationMode(.tail)
             .help(Text(verbatim: Self.receiptStatusText(for: recipient)))
@@ -1044,9 +1089,14 @@ struct OverlayConversationView: View {
           Text(verbatim: " → \(audience)").font(font)
         }
       }
+      .lineLimit(1)
+      .minimumScaleFactor(0.85)
     } else {
       let fallback = message.owner?.name ?? conversation.name
-      Text(verbatim: route.label.isEmpty ? fallback : route.label).font(font)
+      Text(verbatim: route.label.isEmpty ? fallback : route.label)
+        .font(font)
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
     }
   }
 
@@ -1056,9 +1106,7 @@ struct OverlayConversationView: View {
     HStack(alignment: .top, spacing: 0) {
       if message.kind == .user { Spacer(minLength: 0) }
       messageBubble(message)
-        .frame(
-          maxWidth: maxBubbleWidth,
-          alignment: message.kind == .user ? .trailing : .leading)
+        .frame(maxWidth: maxBubbleWidth, alignment: .leading)
       if message.kind == .reply { Spacer(minLength: 0) }
     }
     .frame(maxWidth: .infinity)
@@ -1107,24 +1155,9 @@ struct OverlayConversationView: View {
       if allowsLiveActions, let remaining = message.holdSecondsRemaining {
         heldMessageControls(message, seconds: remaining)
       } else {
-        HStack {
-          messageFooter(message)
-          if allowsLiveActions, !conversation.isHumanInbox, let onReply,
-            message.captureState != .receiving, message.withdrawn != true
-          {
-            Spacer(minLength: 8)
-            Button("Reply", systemImage: "arrowshape.turn.up.left") {
-              onReply(message)
-              revisionFocus &+= 1
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 10 * textScale, weight: .semibold))
-            .conversationActionHover(
-              restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-            )
-            .accessibilityHint(Text("Reply to this message"))
-            .accessibilityIdentifier("overlay-message-reply-\(message.id)")
-          }
+        ViewThatFits(in: .horizontal) {
+          messageActions(message, stacked: false)
+          messageActions(message, stacked: true)
         }
         .background { OverlayMenuCursorRegion() }
       }
@@ -1138,10 +1171,55 @@ struct OverlayConversationView: View {
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(
           message.kind == .user
-            ? CSColor.terracottaDeep.opacity(CSAlpha.selectionStroke) : palette.border.color,
+            ? CSColor.secondaryInk.opacity(CSAlpha.selectionStroke) : palette.border.color,
           lineWidth: 1 / max(displayScale, 1)
         )
         .allowsHitTesting(false)
+    }
+  }
+
+  @ViewBuilder
+  private func messageActions(_ message: OverlayConversationMessage, stacked: Bool) -> some View {
+    if stacked {
+      VStack(alignment: .leading, spacing: 6) {
+        messageFooter(message, adaptsToWidth: true)
+        if hasReplyButton(message) {
+          replyButton(message)
+        }
+      }
+    } else {
+      HStack {
+        messageFooter(message, adaptsToWidth: !hasReplyButton(message))
+        if hasReplyButton(message) {
+          Spacer(minLength: 8)
+          replyButton(message)
+            .fixedSize()
+        }
+      }
+    }
+  }
+
+  private func hasReplyButton(_ message: OverlayConversationMessage) -> Bool {
+    allowsLiveActions && !conversation.isHumanInbox && onReply != nil
+      && message.captureState != .receiving && message.withdrawn != true
+  }
+
+  @ViewBuilder
+  private func replyButton(_ message: OverlayConversationMessage) -> some View {
+    if allowsLiveActions, !conversation.isHumanInbox, let onReply,
+      message.captureState != .receiving, message.withdrawn != true
+    {
+      Button("Reply", systemImage: "arrowshape.turn.up.left") {
+        onReply(message)
+        revisionFocus &+= 1
+      }
+      .buttonStyle(.plain)
+      .font(.system(size: 10 * textScale, weight: .semibold))
+      .conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+      )
+      .accessibilityHint(Text("Reply to this message"))
+      .accessibilityIdentifier("overlay-message-reply-\(message.id)")
     }
   }
 
@@ -1186,12 +1264,20 @@ struct OverlayConversationView: View {
   }
 
   /// Shared production footer, also mounted by the native compactness test.
-  func messageFooter(_ message: OverlayConversationMessage) -> some View {
-    OverlayConversationMessageFooter(
+  func messageFooter(_ message: OverlayConversationMessage, adaptsToWidth: Bool = false)
+    -> some View
+  {
+    let hasExpandableReceipts =
+      message.holdSecondsRemaining != nil
+      || message.recipients.count > 1
+      || message.readReceipt.denominator > 1
+      || !message.readReceipt.unreceipted.isEmpty
+    return OverlayConversationMessageFooter(
       message: message, palette: palette,
       pending: pendingControls.contains(message.id), error: controlErrors[message.id],
       onControl: { stop in onControl(message, stop) },
-      receipts: messageReceipts(message), allowsPlayback: allowsLiveActions)
+      receipts: messageReceipts(message), allowsPlayback: allowsLiveActions,
+      adaptsToWidth: adaptsToWidth, hasExpandableReceipts: hasExpandableReceipts)
   }
 
   private func addressedQuestion(
@@ -1236,6 +1322,8 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
   let onControl: (Bool) -> Void
   let receipts: Receipts
   var allowsPlayback = true
+  var adaptsToWidth = false
+  var hasExpandableReceipts = false
 
   private var supportsPlayback: Bool {
     allowsPlayback && message.kind == .reply && message.supportsSpeechPlayback
@@ -1253,44 +1341,23 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
-      HStack(spacing: 4) {
-        if supportsPlayback {
-          Button {
-            onControl(active)
-          } label: {
-            Image(systemName: active ? "stop.fill" : "play.fill")
-              .font(.system(size: 10 * textScale))
-              .frame(width: 24, alignment: .trailing)
-              .contentShape(Rectangle())
+      Group {
+        if adaptsToWidth {
+          ViewThatFits(in: .horizontal) {
+            footerRow
+            VStack(alignment: .leading, spacing: 5) {
+              if supportsPlayback {
+                HStack(spacing: 4) {
+                  playbackControls
+                }
+              }
+              receipts
+              copyControl
+            }
           }
-          .buttonStyle(.plain)
-          .conversationActionHover(
-            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-          )
-          .disabled(!active && pending)
-          .accessibilityLabel(Text(verbatim: playHint))
-          .accessibilityHint(Text(verbatim: playHint))
-          .accessibilityIdentifier("overlay-reply-\(active ? "stop" : "play")-\(message.id)")
-          if let playback = message.playback {
-            let label = ReplyPlaybackCopy.label(state: playback.state, reason: playback.reason)
-            Text(verbatim: label)
-              .lineLimit(1)
-              .accessibilityHint(Text(verbatim: label))
-              .accessibilityIdentifier("overlay-playback-status-\(message.id)")
-          } else if pending {
-            Text("Requesting playback").lineLimit(1)
-          }
+        } else {
+          footerRow
         }
-        receipts
-        Spacer(minLength: 8)
-        CopyMessageButton(
-          text: message.text,
-          labelFont: .system(size: 10 * textScale, weight: .semibold),
-          restingColor: palette.mutedText.color,
-          palette: palette
-        )
-        .fixedSize()
-        .accessibilityIdentifier("overlay-message-copy-\(message.id)")
       }
       // Play, receipts and Copy are controls: the arrow, never the I-beam.
       .background { OverlayMenuCursorRegion() }
@@ -1304,6 +1371,91 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
           .font(.system(size: 10 * textScale)).foregroundStyle(palette.mutedText.color)
       }
     }
+  }
+
+  private var footerRow: some View {
+    HStack(spacing: 4) {
+      if supportsPlayback {
+        playbackControls
+      }
+      if hasExpandableReceipts {
+        receipts
+      } else {
+        OverlayTruncatableFooterTextLayout(minWidth: 24) {
+          receipts
+        }
+      }
+      Spacer(minLength: 8)
+      copyControl
+    }
+  }
+
+  @ViewBuilder
+  private var playbackControls: some View {
+    Button {
+      onControl(active)
+    } label: {
+      Image(systemName: active ? "stop.fill" : "play.fill")
+        .font(.system(size: 10 * textScale))
+        .frame(width: 24, alignment: .trailing)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .conversationActionHover(
+      restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+    )
+    .disabled(!active && pending)
+    .accessibilityLabel(Text(verbatim: playHint))
+    .accessibilityHint(Text(verbatim: playHint))
+    .accessibilityIdentifier("overlay-reply-\(active ? "stop" : "play")-\(message.id)")
+    if let playback = message.playback {
+      let label = ReplyPlaybackCopy.label(state: playback.state, reason: playback.reason)
+      OverlayTruncatableFooterTextLayout(minWidth: 24) {
+        Text(verbatim: label)
+          .lineLimit(1)
+          .accessibilityHint(Text(verbatim: label))
+          .accessibilityIdentifier("overlay-playback-status-\(message.id)")
+      }
+    } else if pending {
+      OverlayTruncatableFooterTextLayout(minWidth: 24) {
+        Text("Requesting playback").lineLimit(1)
+      }
+    }
+  }
+
+  private var copyControl: some View {
+    CopyMessageButton(
+      text: message.text,
+      labelFont: .system(size: 10 * textScale, weight: .semibold),
+      restingColor: palette.mutedText.color,
+      palette: palette
+    )
+    .fixedSize()
+    .accessibilityIdentifier("overlay-message-copy-\(message.id)")
+  }
+}
+
+private struct OverlayTruncatableFooterTextLayout: Layout {
+  var minWidth: CGFloat
+
+  func sizeThatFits(
+    proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) -> CGSize {
+    guard let subview = subviews.first else { return .zero }
+    if proposal.width == nil {
+      let ideal = subview.sizeThatFits(.unspecified)
+      return CGSize(width: min(ideal.width, minWidth), height: ideal.height)
+    }
+    return subview.sizeThatFits(proposal)
+  }
+
+  func placeSubviews(
+    in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) {
+    guard let subview = subviews.first else { return }
+    subview.place(
+      at: bounds.origin,
+      proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
   }
 }
 

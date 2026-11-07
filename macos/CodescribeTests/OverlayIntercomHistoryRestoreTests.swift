@@ -20,20 +20,25 @@ final class OverlayIntercomHistoryRestoreTests: XCTestCase {
       defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
       store = OverlayIntercomDesktopStore(defaults: defaults)
       let session = "history-restore-fixture"
-      owner = try XCTUnwrap(OverlayConversationOwner(row: [
-        "provider": "codex", "provider_session_id": session,
-        "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
-        "channel": "2", "name": "Retained owner",
-      ]))
+      owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": session,
+          "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)!,
+          "channel": "2", "name": "Retained owner",
+        ]))
       conversation = .init(id: owner.id, channel: "2", name: owner.name, owner: owner, messages: [])
       state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
       state.applyChannelRoster([
-        .init(channel: "2", audience: owner.name, provider: owner.provider,
+        .init(
+          channel: "2", audience: owner.name, provider: owner.provider,
           providerSessionId: owner.providerSessionID, open: false, loud: false,
           autosealDeadlineUnixMs: nil, followerAlive: false, unreadSinceUnixMs: nil)
       ])
       state.archiveAgentCommand = { _, _ in }
-      state.publishConversationText = { _, _, _, _ in XCTFail("Window restoration must not send") }
+      state.publishConversationText = { _, _, _, _ in
+        XCTFail("Window restoration must not send")
+        return .empty
+      }
       state.conversationDrafts[conversation.id] = "History draft stays with its exact owner"
       let identity = OverlayIntercomCardIdentity(digit: "2", conversation: conversation)
       let instance = OverlayIntercomInstance(
@@ -68,7 +73,8 @@ final class OverlayIntercomHistoryRestoreTests: XCTestCase {
       XCTAssertTrue(controller.presentsConversation(conversation.id))
       XCTAssertTrue(state.visibleChannelRows.isEmpty)
       XCTAssertFalse(state.canToggleConversationMicrophone(conversation))
-      XCTAssertEqual(state.conversationDrafts[conversation.id], "History draft stays with its exact owner")
+      XCTAssertEqual(
+        state.conversationDrafts[conversation.id], "History draft stays with its exact owner")
       XCTAssertTrue(state.pendingTextMessages.isEmpty)
     }
 

@@ -377,9 +377,11 @@ A panel reads the role, never a bare number.
   only the strip's own 8 pt band above the page.
 - **Header pattern.** Titles of peer sections sit _above_ the cards, setting
   names sit _inside_ them, and a header is never smaller or lighter than what
-  it introduces: `pageTitle` (16 semibold) > `sectionTitle` (13.5 semibold) ≥
-  `settingName` (12.5 semibold) > `helper` (11.5), all at primary strength
-  except the helper rung. `SettingsSectionLabel` and `SettingsSectionHeaderRow`
+  it introduces: `pageTitle` (16 semibold) > `sectionTitle` (14 semibold) ≥
+  `settingName` and `settingValue` (13 semibold). `pageBlurb` and `helper`
+  are 12 regular, `controlLabel` is 12 semibold, `metaKey` is mono 11 medium,
+  and `statusBadge` is 10 semibold; `monoValue` is 12 semibold. The helper
+  uses secondary strength. `SettingsSectionLabel` and `SettingsSectionHeaderRow`
   in `SettingsView.swift` are the only header owners, and they have no rung
   above `sectionTitle`: the sections of a page are peers, so none outranks
   another. Sections are 20 pt apart and a title sits
@@ -416,47 +418,50 @@ A panel reads the role, never a bare number.
   status word's own 12 % tint. Secondary text is `CSColor.secondaryInk`, the
   label ink at 60 %; the system
   `secondaryLabelColor` reads 3.8:1 on a light card. A status hue drawn as a
-  word or an essential glyph takes its label rung — `terracottaText`,
-  `amberLight`, `dangerLight`, `oliveLight` — while dots, fills and borders
-  keep the base hue. Native sidebar List rows retain semantic `.secondary`
+  word or an essential glyph and the same hue as a dot, fill or border are
+  one system colour since 2026-11-05 (the label rungs are kept as names). Native sidebar List rows retain semantic `.secondary`
   styling so the system can resolve selected and inactive text.
   `DesignSystemAdaptiveTests` holds these pairs in standard and high-contrast
   appearances; light text rungs account for travertine's darkest tinted card.
-  The terracotta rungs are the brand hue with only its lightness moved in
-  OKLCH (C 0.13, H 39°), brick rather than a blend with black.
-- **Brand accent for state, chrome accent for controls.** `CSColor.brandAccent`
-  (`#BA5C3C` on paper, `#D97757` on ink; 3:1 as a mark on every sheet shade)
-  colours what reports state: the setup progress bar, the mark of a selected
-  choice and the icon of a wizard step — except the final summary's
-  not-ready verdict heading, which stays neutral `CSColor.secondaryInk`
-  rather than terracotta or red: the concrete blocking rows below it already
-  carry the warning in `dangerLight` (Founder, 2026-10-29). A selected choice
-  row is drawn by
-  `csChoice(selected:)` (the wash at `CSAlpha.selectionWash`, the one-point
-  edge at `CSAlpha.selectionStroke`), never by the prominent action surface.
-  `CSColor.chromeAccent` stays the macOS accent for focus, switches, sliders,
-  bordered and prominent buttons and the dictionary pins; actions read as
-  clickable through their shape, not through a hue, and their ink never
-  follows the system accent (Founder, 2026-10-24 and 2026-10-26). A link in
-  prose is the brand text rung (`terracottaText`, the brick), underlined, with
-  the pointing-hand pointer on hover, one style in the whole app (Founder,
-  2026-10-26): `csLink()` draws it, and
-  neither the chrome accent nor the system `.link` style draws a link. A determinate progress bar is `CSProgressBar`: the native
-  linear `ProgressView` on macOS paints the system accent and ignores
-  `.tint`, so a brand-coloured bar must draw its own track. Indeterminate
-  progress keeps the native spinner. A status word that is verified
-  ("Granted", "Ready") is `CSStatusBadge(mark: .verified)` — a thin check on
-  an olive capsule — and stored identity that nothing has tested ("Saved") is
-  the same capsule with the empty circle; `StatusPill` remains the dotted
-  live-activity pill. Audio's healthy recording summary and Whisper's ready
-  model status use the verified badge; saved provider keys and accounts use
-  the saved badge without claiming service liveness. Audio's committing
-  fragments row spells out "Enabled"/"Disabled" ("Włączone"/"Wyłączone" in
-  Polish). Blocked audio and missing or pending model states keep their
-  existing warning or neutral presentation. A problem is never terracotta:
-  `CSStatusBadge(mark: .blocked)` and the wizard's `OnboardingProblemText`
-  draw an error or a blocker in `dangerLight` behind the warning sign, and a
-  missing optional setting stays `secondaryInk` without one.
+  The one remaining terracotta rung (`terracottaLight`) is the brand hue
+  with only its lightness moved in OKLCH (C 0.13, H 39°).
+- **System colours, one meaning each; the brand only where it must.**
+  Founder, 2026-11-05 (canon:
+  `AI_notes/10_projects/codescribe/specs/2026-11-05_lista-rol-kolorow.md`):
+  every custom colour goes. Controls, selection, focus, progress and the
+  sidebar's icons follow the user's macOS accent (`CSColor.chromeAccent`);
+  `csChoice(selected:)` washes and edges the selected choice with that accent
+  and `CSProgressBar` fills with it. Text is the system label rungs
+  (`textHigh`/`textBody` = `labelColor`, `textMuted`/`secondaryInk` =
+  `secondaryLabelColor`, `textFaint` = `tertiaryLabelColor`); edges and
+  hairlines are `separatorColor`. A meaning that needs a colour takes one
+  system colour: `systemRed` for errors and destruction (`danger`,
+  `dangerLight`), `systemOrange` for a warning that needs an action, work in
+  progress and an uncertain word (`amber`, `amberLight`, `modeProcessing`),
+  `systemIndigo` for voice routed to an agent (`assistive`), `systemGreen`
+  only for the one "connected" presence dot of the agents list (the
+  Intercom widget, Maciej's file, still draws its success glyph through
+  that palette value until its owner moves it),
+  `systemYellow` for the silence lamp, `linkColor` for a link in prose
+  (`csLink()`). A correct state wears no colour: `CSStatusBadge(mark: .verified)` and `.saved` are secondary ink with a thin check or an empty
+  circle on a neutral capsule; `.blocked` keeps the system red behind the
+  warning sign. The brand terracotta (`CSColor.terracotta`,
+  `terracottaLight` as its label rung) stays for the dictation / listening
+  state only — the lamp, the waveform, the tray icon while dictating — and
+  the lockup `Wordmark` is the word alone, without a brand dot. The roles
+  this rule retired (`brandAccent`, `olive*`, `eyebrowOlive`,
+  `terracottaText`, `terracottaDeep`, `terracottaTintBars`, `lexicon`,
+  `ink`, `textFaintAlt`) are gone from `Tokens.swift`; no alias keeps their
+  names, so a use site that reaches for one does not compile. Settings
+  follows the same rule: a correct or ready state and an active licence
+  are secondary ink on a neutral capsule, the Save / Sign in
+  labels are primary ink on a neutral surface (readable under any accent),
+  the accent stays on selected controls and on the outline
+  of a shortcut being recorded, a low-confidence word is the warning
+  orange, and the three navigation rows of the user panel (Privacy, Terms,
+  Docs) are a neutral row with a secondary arrow, not a coloured link. The
+  earlier rules (brand accent for state, brick links, olive capsules —
+  2026-10-24/26) are superseded.
 
 ### Agent window header
 
@@ -476,7 +481,8 @@ the app's Minimize command, and any other miniaturise is undone into a hide.
   The toggle belongs to the shared sidebar column (see "The sidebar" above),
   so it stays reachable while the column is collapsed and behaves exactly as
   it does in Settings.
-- **Right:** exactly two controls. The pin (always on top) shows its state
+- **Right:** the Voice Lab mark, conversation width, Context, pin and menu.
+  The pin (always on top) shows its state
   rather than hinting at it — pinned is the filled glyph on an accent plate
   with the `selected` trait and an "On" Accessibility value, unpinned is the
   outline glyph with no plate. It writes only `AgentChat.alwaysOnTop.v1`;
@@ -487,8 +493,8 @@ the app's Minimize command, and any other miniaturise is undone into a hide.
   width with the system check mark on the active mode; the conversation
   column's density, not the window size), "Open
   settings", and the destructive "Delete Conversation" last, behind the shared
-  confirmation. There is no separate width selector or Settings gear in the
-  chrome.
+  confirmation. The width selector also has its own control in the chrome;
+  there is no separate Settings gear.
 
 An empty conversation does not scroll: `ChatLayoutPolicy.emptyStateHeight` sizes the
 no-turns block to the viewport minus everything else the scroll document
@@ -775,6 +781,13 @@ controller start; final-pass work remains processing. The shared view action and
 consumer are internal seams for integrator tests, not another recording path.
 Unresolved credential status uses semantic secondary ink in Settings, preserving
 the native light/dark appearance contract until availability is established.
+
+The overlay header creates one fresh channel roster for each header evaluation.
+Its channel map, Agents control and mini addressees consume that same projection,
+so counting unread replies and resolving archive candidates is not repeated for
+each control. The value is local to the evaluation: later conversation, receipt,
+lease and policy changes are read again on the next pass. This is neither a
+persistent cache nor another owner of conversation or delivery state.
 
 ## Related Documentation
 

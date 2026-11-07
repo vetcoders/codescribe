@@ -67,12 +67,12 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
         return Err(invalid());
     }
     {
-        use sha2::{Digest, Sha256};
+        use crate::stt::active_names::{follower_lease_id, provider_token};
         let provider = text_field("provider").ok_or_else(invalid)?;
         let session = text_field("provider_session_id").ok_or_else(invalid)?;
-        let owner = format!("{}\0{session}", provider.to_lowercase());
-        let lease = hex::encode(Sha256::digest(owner.as_bytes()));
-        if provider != provider.to_lowercase() || event["lease_id"] != lease[..32] {
+        if provider_token(provider).as_deref() != Some(provider)
+            || event["lease_id"].as_str() != follower_lease_id(provider, session).as_deref()
+        {
             return Err(invalid());
         }
     }

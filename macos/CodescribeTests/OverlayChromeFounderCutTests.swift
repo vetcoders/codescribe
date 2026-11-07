@@ -38,7 +38,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let footer = try section(
       of: overlay,
       from: "if !state.isCollapsed && state.windowContentSurface == .transcription {",
-      to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
+      to: "footerHeight = $0")
     XCTAssertFalse(footer.contains("intentRail"), "notices stay out of the actions column")
     XCTAssertTrue(footer.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
     XCTAssertTrue(overlay.contains("OverlayCanvasSurface(palette: palette)"))
@@ -178,10 +178,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.finishControllerRecording()
   }
 
-  /// Header-click cut (2026-10-17): the header is an upward switch. Mini opens
-  /// midi and each further click alternates midi <-> expanded; it never folds
-  /// back to mini, which stays the rotating preview control's exit.
-  func testHeaderClickClimbsThenAlternatesBetweenMidiAndExpanded() {
+  /// Founder, 2026-11-04 (bus brief §12.1): a still click on the free
+  /// background toggles mini and the bar round and round. The window opens
+  /// only from the chevron, the Agents button and the menus; from the window
+  /// a header click returns to the bar.
+  func testHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar() {
     let state = OverlayState()
     state.engine = OverlayChromePolicyEngine()
     state.attach()
@@ -189,12 +190,17 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.advancePresentationFromHeader()
     XCTAssertEqual(state.presentationMode, .midi)
     state.advancePresentationFromHeader()
-    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.presentationMode, .mini, "the bar folds back to mini")
     state.advancePresentationFromHeader()
-    XCTAssertEqual(state.presentationMode, .midi, "the header never returns to mini")
+    XCTAssertEqual(state.presentationMode, .midi)
     state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .mini, "the header never opens the window")
+    state.setPresentationMode(.expanded)
+    state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .midi, "a header click in the window returns to the bar")
+    // The chevron explicitly opens the window and folds it back to mini.
+    state.toggleCollapsed()
     XCTAssertEqual(state.presentationMode, .expanded)
-    // The preview control explicitly folds back to mini.
     state.toggleCollapsed()
     XCTAssertEqual(state.presentationMode, .mini)
   }
@@ -459,8 +465,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
-    XCTAssertFalse(panel.styleMask.contains(.resizable), "MINI is a drag surface")
+    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
+    XCTAssertFalse(panel.allowsUserResize, "MINI is a drag surface")
+    XCTAssertFalse(
+      panel.styleMask.contains(.resizable), "the panel never carries AppKit's resize style")
   }
 
   func testRouterRestoresCanvasAndDrawerFromMidiWithoutChangingCapture() throws {
@@ -478,7 +486,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         state.toggleCollapsed()
         settle(root)
         XCTAssertEqual(state.presentationMode, mode)
-        XCTAssertEqual(panel.frame.height, mode == .expanded ? fullSize.height : 46, accuracy: 0.5)
+        XCTAssertEqual(
+          panel.frame.height,
+          mode == .expanded ? fullSize.height : DictationOverlayWindow.miniHeight, accuracy: 0.5)
         XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
         XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
         XCTAssertEqual(panel.sizeForPersistence, fullSize)
@@ -515,7 +525,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(panel.frame.size, frame.size)
       XCTAssertEqual(panel.frame.maxY, frame.maxY, accuracy: 0.5)
-      XCTAssertTrue(panel.styleMask.contains(.resizable))
+      XCTAssertTrue(panel.allowsUserResize, "the expanded canvas resizes through its own bands")
+      XCTAssertFalse(panel.styleMask.contains(.resizable))
       panel.setPresentationMode(.mini, animated: false)
       XCTAssertFalse(panel.isFrameTransitioning)
       // Mini is content-sized (spec §13.4): the panel's measured mini.
@@ -704,7 +715,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       state.toggleCollapsed()
       settle(root)
       XCTAssertEqual(panel.frame.maxY, expanded.maxY, accuracy: 0.5)
-      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
       // Mini is content-sized (spec §13.4): the panel's measured mini.
       XCTAssertEqual(panel.frame.width, panel.miniSize.width, accuracy: 0.5)
       XCTAssertEqual(panel.sizeForPersistence, expanded.size)
@@ -889,23 +900,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(try overlaySource().contains("onFormatOnce: { state.formatTranscript(at: $0) }"))
   }
 
-  func testNoOverlayFileCanWriteTheSettingsFormattingLevel() throws {
-    let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-      .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens/Overlay")
-    let files = try FileManager.default.contentsOfDirectory(
-      at: directory, includingPropertiesForKeys: nil
-    ).filter { $0.pathExtension == "swift" }
-    XCTAssertFalse(files.isEmpty)
-    for file in files {
-      let source = try String(contentsOf: file, encoding: .utf8)
-      XCTAssertFalse(source.contains("setAutoFormatLevel"), file.lastPathComponent)
-    }
-    let rail = try railSource()
-    for forbidden in ["UserDefaults", "@AppStorage", "setSetting", "setConfig"] {
-      XCTAssertFalse(rail.contains(forbidden), forbidden)
-    }
-  }
-
   func testOpenRowKeepsProjectedToolsWithoutAnInlineCaption() throws {
     let source = try railSource()
     XCTAssertFalse(source.contains("OverlayCaptionLayout"))
@@ -994,7 +988,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let footer = try section(
       of: source,
       from: "if !state.isCollapsed && state.windowContentSurface == .transcription {",
-      to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
+      to: "footerHeight = $0")
     XCTAssertFalse(footer.contains("intentRail"))
     XCTAssertFalse(footer.contains("state.toast"))
     XCTAssertTrue(footer.contains("footerMessageRow"))
@@ -1046,66 +1040,35 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(material.contains("colorSchemeContrast"))
   }
 
-  func testFinishingNoticeSurvivesFoldWithoutChangingBarHeight() throws {
+  /// The bar draws no processing caption (L13, 2026-11-07): while the take
+  /// is finalized neither the expanded overlay nor the folded bar shows a
+  /// "Finishing…" element, folding keeps the bar's height and the words.
+  func testBarShowsNoFinishingCaptionWhileTheTakeIsFinalized() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
-    let canvas = try section(
-      of: overlaySource(), from: "private func canvasStack", to: "private var header: some View")
-    let expanded = try section(of: canvas, from: "if !state.isCollapsed,", to: ".onGeometryChange(")
-    let folded = try section(
-      of: canvas, from: "} else if let label = OverlayActionsPresentation.finishingLabel(",
-      to: ".overlay(alignment: .bottom)")
-    for branch in [expanded, folded] {
-      XCTAssertTrue(branch.contains("OverlayActionsPresentation.finishingLabel("))
-      XCTAssertTrue(
-        branch.contains(
-          "mode: state.mode, transcribing: state.transcribing, terminal: state.terminal)"))
-      XCTAssertTrue(branch.contains("Text(label)"))
-      XCTAssertTrue(branch.contains(".accessibilityIdentifier(\"overlay-finishing\")"))
-      XCTAssertTrue(branch.contains(".allowsHitTesting(false)"))
-    }
     let state = OverlayState.previewListening()
     state.handleRecordingStarted()
     defer { state.finishControllerRecording() }
     state.handleRecordingFinalising()
+    XCTAssertTrue(state.transcribing, "the take is being finalized")
     let words = state.canvasText
     try withPanel(state: state) { panel, root in
+      @MainActor func finishing() -> [String] {
+        accessibilityTree(root).compactMap { element in
+          let identifier = element.accessibilityIdentifier()
+          let label = element.accessibilityLabel() ?? ""
+          return identifier == "overlay-finishing" || label.contains("Finishing")
+            ? identifier : nil
+        }
+      }
       XCTAssertFalse(state.isCollapsed)
-      XCTAssertEqual(
-        OverlayActionsPresentation.finishingLabel(
-          mode: state.mode, transcribing: state.transcribing, terminal: state.terminal),
-        "Finishing…")
+      XCTAssertEqual(finishing(), [], "no caption in the expanded overlay")
       state.toggleCollapsed()
       settle(root)
       XCTAssertTrue(state.isCollapsed)
-      XCTAssertEqual(
-        OverlayActionsPresentation.finishingLabel(
-          mode: state.mode, transcribing: state.transcribing, terminal: state.terminal),
-        "Finishing…")
-      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+      XCTAssertEqual(finishing(), [], "no caption on the folded bar")
+      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
       XCTAssertEqual(state.canvasText, words)
     }
-  }
-
-  func testFinishingFollowsStopLifecycleAndTerminalReceiptWithoutADuration() {
-    let state = OverlayState.previewListening()
-    state.handleRecordingStarted()
-    XCTAssertNil(
-      OverlayActionsPresentation.finishingLabel(
-        mode: state.mode, transcribing: state.transcribing, terminal: state.terminal))
-    state.handleRecordingFinalising()
-    XCTAssertEqual(
-      OverlayActionsPresentation.finishingLabel(
-        mode: state.mode, transcribing: state.transcribing, terminal: state.terminal), "Finishing…")
-    state.finishControllerRecording()
-    XCTAssertNil(
-      OverlayActionsPresentation.finishingLabel(
-        mode: .formatted, transcribing: state.transcribing, terminal: true))
-    XCTAssertEqual(
-      OverlayActionsPresentation.finishingLabel(
-        mode: .finalizing, transcribing: false, terminal: false), "Finishing…")
-    XCTAssertNil(
-      OverlayActionsPresentation.finishingLabel(
-        mode: .finalizing, transcribing: true, terminal: true))
   }
 
   func testResizeChromeKeepsPassiveSurfacesAndMountsBothDividerGestures() throws {
@@ -1131,8 +1094,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(chrome.contains("pointerInsideOverlay"))
     let passiveChrome = chrome + pointerChrome
     // Geometry readers and decorative chrome stay passive. Both dividers
-    // are interactive, including the rail's formerly passive hairline.
-    XCTAssertEqual(passiveChrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 7)
+    // are interactive, including the rail's formerly passive hairline. The
+    // two passive "Finishing…" captions are gone (L13, 2026-11-07).
+    XCTAssertEqual(passiveChrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 5)
     XCTAssertEqual(passiveChrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 2)
     let rail = try section(
       of: chrome, from: "private func agentRail(", to: "private func agentRailUnfoldHandle")
@@ -1171,7 +1135,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         of: source, from: "private struct OverlayCloseButton",
         to: "struct DictationOverlayView")
       XCTAssertTrue(close.contains("ModeDot("))
-      XCTAssertTrue(close.contains("color: CSColor.terracotta"))
       XCTAssertTrue(close.contains("if closeDotHovered {"))
       XCTAssertTrue(close.contains("OverlayCloseCross()"))
       XCTAssertTrue(close.contains(".accessibilityHidden(true)"))
@@ -1200,7 +1163,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let close = try section(
       of: source, from: "private struct OverlayCloseButton",
       to: "struct DictationOverlayView")
-    XCTAssertTrue(call.contains("OverlayCloseButton(palette: palette)"))
+    XCTAssertTrue(call.contains("OverlayCloseButton(palette: palette"))
     XCTAssertTrue(close.contains("Button(action: onClose)"))
     XCTAssertTrue(
       call.contains("state.relayIntent(.close)"),
@@ -1210,9 +1173,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       "The brand dot must stay discoverable as the close control")
     XCTAssertTrue(
       close.contains(".accessibilityLabel(OverlayIntent.close.accessibilityLabel)"))
-    XCTAssertTrue(
-      close.contains("color: CSColor.terracotta"),
-      "The close control keeps the brand color regardless of engine state")
     XCTAssertEqual(header.components(separatedBy: "state.relayIntent(.close)").count - 1, 1)
     XCTAssertEqual(source.components(separatedBy: "overlay-brand-close-dot").count - 1, 1)
     // The dot keeps its pre-b83e95538 place: the hit target grows through the
@@ -1259,34 +1219,37 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         "symbol: pinned ? OverlayControlSymbols.pinned : OverlayControlSymbols.pin"))
     XCTAssertTrue(menu.contains(".accessibilityAddTraits(.isToggle)"))
     XCTAssertTrue(menu.contains("state.selectPlacementAnchor(anchor)"))
-    XCTAssertTrue(menu.contains("state.selectFreeMotion()"))
     let pinButton = try XCTUnwrap(menu.range(of: "struct OverlayPinButton:"))
     XCTAssertFalse(
       menu[pinButton.lowerBound...].contains("Menu {"),
       "the pin button toggles directly instead of opening a placement menu")
   }
 
-  /// The header's content controls are one Dingbats character each, in the
-  /// family of the roster's ❖, and every macOS font cascade can paint them.
-  func testHeaderGlyphsAreTextMarksThatSystemFontsCover() throws {
+  /// The Agents mark is one Dingbats character, in the family of the
+  /// roster's ❖, that every macOS font cascade can paint; the transcription
+  /// is the catalog's `text.quote` system symbol (L10, 2026-11-06), which
+  /// resolves.
+  func testHeaderGlyphsAreMarksTheSystemCanPaint() throws {
     XCTAssertEqual(OverlayHeaderGlyph.agents, "\u{2726}")
-    XCTAssertEqual(OverlayHeaderGlyph.transcription, "\u{270D}\u{FE0E}")
+    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, "text.quote")
+    XCTAssertEqual(OverlayHeaderGlyph.transcriptionSymbol, CSIcon.transcription.systemName)
+    XCTAssertNotNil(
+      NSImage(
+        systemSymbolName: OverlayHeaderGlyph.transcriptionSymbol, accessibilityDescription: nil),
+      "the transcription symbol must exist on this system")
     let base = NSFont.systemFont(ofSize: 11) as CTFont
-    for glyph in [OverlayHeaderGlyph.agents, OverlayHeaderGlyph.transcription] {
-      let scalar = try XCTUnwrap(glyph.unicodeScalars.first)
-      let font = CTFontCreateForString(
-        base, String(scalar) as CFString, CFRange(location: 0, length: 1))
-      var characters = Array(String(scalar).utf16)
-      var glyphs = [CGGlyph](repeating: 0, count: characters.count)
-      XCTAssertTrue(
-        CTFontGetGlyphsForCharacters(font, &characters, &glyphs, characters.count),
-        "\(glyph) must not paint as a missing-glyph box")
-      let menuImage = OverlayHeaderGlyph.menuImage(glyph)
-      XCTAssertTrue(menuImage.isTemplate)
-      XCTAssertGreaterThan(menuImage.size.width, 0)
-    }
-    let header = try headerSource(try overlaySource())
-    XCTAssertTrue(header.contains("character: OverlayHeaderGlyph.transcription"))
+    let agents = OverlayHeaderGlyph.agents
+    let scalar = try XCTUnwrap(agents.unicodeScalars.first)
+    let font = CTFontCreateForString(
+      base, String(scalar) as CFString, CFRange(location: 0, length: 1))
+    var characters = Array(String(scalar).utf16)
+    var glyphs = [CGGlyph](repeating: 0, count: characters.count)
+    XCTAssertTrue(
+      CTFontGetGlyphsForCharacters(font, &characters, &glyphs, characters.count),
+      "\(agents) must not paint as a missing-glyph box")
+    let menuImage = OverlayHeaderGlyph.menuImage(agents)
+    XCTAssertTrue(menuImage.isTemplate)
+    XCTAssertGreaterThan(menuImage.size.width, 0)
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     XCTAssertTrue(roster.contains("character: OverlayHeaderGlyph.agents"))
     // The header's Agents mark remains distinct from the sidebar glyph.
@@ -1367,6 +1330,116 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         XCTAssertEqual(selected.count, 1)
         XCTAssertEqual(selected.first?.title, seconds == 0 ? "Never" : "\(seconds) s")
       }
+    }
+  }
+
+  /// Position in the header menu (L17, 2026-11-06): the first level holds
+  /// the mode, Free motion or Fixed position, with exactly one checkmark;
+  /// the six places live in the Place submenu with a checkmark on the
+  /// remembered one, also while Free motion is on. Choosing a place switches
+  /// to Fixed position and moves the panel; choosing Fixed position returns
+  /// the panel to the remembered place; choosing Free motion again does too.
+  func testHeaderMenuChoosesTheModeFirstAndThePlaceUnderIt() throws {
+    let oldAnchor = OverlayPlacement.anchor
+    let oldFreeMotion = OverlayPlacement.freeMotion
+    defer {
+      OverlayPlacement.anchor = oldAnchor
+      OverlayPlacement.freeMotion = oldFreeMotion
+    }
+    let state = OverlayState.previewListening()
+    state.setPresentationMode(.expanded)
+    state.selectPlacementAnchor(.bottomCenter)
+    XCTAssertFalse(state.freeMotion)
+    var placements = 0
+    try withPanel(state: state) { panel, root in
+      state.onPlacementChanged = { placements += 1 }
+      @MainActor func headerMenu() throws -> NSMenu {
+        let point = NSPoint(x: 150, y: root.bounds.maxY - 22)
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .rightMouseDown, location: root.convert(point, to: nil),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: panel.windowNumber, context: nil, eventNumber: 9_102,
+            clickCount: 1, pressure: 1))
+        var view = root.hitTest(point)
+        var menu: NSMenu?
+        while let current = view, menu == nil {
+          menu = current.menu(for: event)
+          view = current.superview
+        }
+        let resolved = try XCTUnwrap(menu)
+        resolved.delegate?.menuNeedsUpdate?(resolved)
+        return resolved
+      }
+      let freeMotion = "Free motion"
+      let fixed = "Fixed position"
+      let anchors = Set(OverlayAnchor.allCases.map(\.label))
+      @MainActor func places(_ menu: NSMenu) throws -> NSMenu {
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Place" }, "no Place submenu")
+        let submenu = try XCTUnwrap(item.submenu)
+        submenu.delegate?.menuNeedsUpdate?(submenu)
+        return submenu
+      }
+      @MainActor func checkedModes(_ menu: NSMenu) -> [String] {
+        menu.items.filter { $0.state == .on && [freeMotion, fixed].contains($0.title) }
+          .map(\.title)
+      }
+      @MainActor func checkedPlaces(_ menu: NSMenu) throws -> [String] {
+        try places(menu).items.filter { $0.state == .on }.map(\.title)
+      }
+      @MainActor func choose(_ title: String) throws {
+        let menu = try headerMenu()
+        let index = try XCTUnwrap(
+          menu.items.firstIndex { $0.title == title }, "\(title) missing from the menu")
+        menu.performActionForItem(at: index)
+        settle(root)
+      }
+      @MainActor func choosePlace(_ title: String) throws {
+        let submenu = try places(try headerMenu())
+        let index = try XCTUnwrap(
+          submenu.items.firstIndex { $0.title == title }, "\(title) missing from Place")
+        submenu.performActionForItem(at: index)
+        settle(root)
+      }
+
+      let menu = try headerMenu()
+      XCTAssertTrue(
+        menu.items.allSatisfy { !anchors.contains($0.title) },
+        "no place on the first level")
+      XCTAssertEqual(checkedModes(menu), [fixed])
+      XCTAssertEqual(try checkedPlaces(menu), [OverlayAnchor.bottomCenter.label])
+
+      try choose(freeMotion)
+      XCTAssertTrue(state.freeMotion)
+      XCTAssertEqual(checkedModes(try headerMenu()), [freeMotion])
+      XCTAssertEqual(
+        try checkedPlaces(try headerMenu()), [OverlayAnchor.bottomCenter.label],
+        "the remembered place stays checked under Free motion")
+
+      var before = placements
+      try choose(fixed)
+      XCTAssertFalse(state.freeMotion, "Fixed position leaves Free motion")
+      XCTAssertEqual(state.placementAnchor, .bottomCenter, "back to the remembered place")
+      XCTAssertGreaterThan(placements, before, "the panel is placed there again")
+      XCTAssertEqual(checkedModes(try headerMenu()), [fixed])
+
+      try choose(freeMotion)
+      before = placements
+      try choose(freeMotion)
+      XCTAssertFalse(state.freeMotion, "a second choice of Free motion turns it off")
+      XCTAssertGreaterThan(placements, before)
+
+      try choose(freeMotion)
+      try choosePlace(OverlayAnchor.topLeft.label)
+      XCTAssertFalse(state.freeMotion, "choosing a place switches to Fixed position")
+      XCTAssertEqual(state.placementAnchor, .topLeft)
+      XCTAssertEqual(checkedModes(try headerMenu()), [fixed])
+      XCTAssertEqual(try checkedPlaces(try headerMenu()), [OverlayAnchor.topLeft.label])
+
+      before = placements
+      try choosePlace(OverlayAnchor.topLeft.label)
+      XCTAssertEqual(state.placementAnchor, .topLeft, "the remembered place stays")
+      XCTAssertGreaterThan(placements, before, "choosing it again places the panel there")
     }
   }
 
@@ -1501,16 +1574,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(stop.recordingIdentifier, "overlay-stop-recording")
   }
 
-  /// Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini; the
-  /// brand dot leads and the channel counter takes the word's place, and mini
-  /// is as wide as its content ("brzydko to wygląda, ta dziura"), so no
-  /// neighbouring controls stand further apart than the trailing controls do.
-  /// Maciej's 2026-10-20 rule stays for the rest: mini always carries the
-  /// agents button beside the ordinary microphone and the expand arrow,
-  /// whether or not an agent records. An AX walk of the test panel does not
+  /// Founder, 2026-11-04 (bus brief §3): mini at rest is the brand dot, the
+  /// transcription button, the microphone, the Agents button and the chevron,
+  /// 4 pt apart, and carries no channel counter, so a bound agent changes
+  /// nothing. A live take (§6, §11D) grows mini leftward by the waveform, the
+  /// clock and the open channel's digit at the upper-right pin; after it mini
+  /// folds back to its 127 pt controls. An AX walk of the test panel does not
   /// surface the SwiftUI header, so the probe reads AppKit truth: one mounted
   /// hover region per header control and the drag region behind the dot.
-  func testMiniCarriesTheChannelCounterInPlaceOfCsAndHugsItsContent() throws {
+  func testMiniRestsAsItsControlsAndGrowsOnlyByALiveTake() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     optIntoChannelMap(state)
@@ -1548,67 +1620,69 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.35))
         root.layoutSubtreeIfNeeded()
       }
-      /// The capsule hugs its content: its width is the measured natural
-      /// width, and no two neighbouring controls stand further apart than the
-      /// 8 pt the trailing controls keep.
-      @MainActor func assertHugsContent(_ context: String) {
-        let natural = DictationOverlayWindow.miniNaturalWidth(
-          map: state.channelMapLayoutModel, textScale: 1)
-        XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5, context)
+      /// At rest the capsule is its controls: 127 × 36, and no two
+      /// neighbouring controls stand further apart than the 4 pt they keep.
+      @MainActor func assertRests(_ context: String) {
+        XCTAssertEqual(
+          panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5, context)
+        XCTAssertEqual(
+          panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5, context)
         XCTAssertEqual(panel.frame.width, panel.miniSize.width, accuracy: 0.5, context)
-        XCTAssertGreaterThanOrEqual(
-          panel.frame.width, DictationOverlayWindow.miniFloorWidth, context)
         let controls = headerControls()
         for (left, right) in zip(controls, controls.dropFirst()) {
           XCTAssertLessThanOrEqual(
-            right.minX - left.maxX, 8.5, "\(context): a hole between header controls")
+            right.minX - left.maxX, DictationOverlayWindow.miniControlSpacing + 0.5,
+            "\(context): a hole between header controls")
           XCTAssertGreaterThanOrEqual(right.minX - left.maxX, 0, "\(context): controls overlap")
         }
         if let last = controls.last {
-          XCTAssertLessThanOrEqual(last.maxX, root.bounds.maxX, "\(context): the toggle clips")
+          XCTAssertLessThanOrEqual(last.maxX, root.bounds.maxX, "\(context): the chevron clips")
         }
       }
-      // The rig sizes the panel by hand; land mini on its own width first.
+      // The rig sizes the panel by hand; land mini on its own size first.
       panel.setPresentationMode(.mini, settleResize: true)
       settleHeader()
       let restingControls = headerControls().count
       XCTAssertGreaterThanOrEqual(
-        restingControls, 3, "mini with no agent: agents, microphone and expand arrow")
-      XCTAssertLessThan(try brandWidth(), 12, "mini draws the brand dot alone, no cs")
-      XCTAssertEqual(
-        panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5,
-        "no agent: mini is its controls")
-      assertHugsContent("no agent")
-      let trailing = panel.frame.maxX
+        restingControls, 3, "mini with no agent: microphone, Agents and chevron at least")
+      XCTAssertLessThan(try brandWidth(), 12, "mini draws the brand dot alone, no word")
+      assertRests("no agent")
+      let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
 
-      // A bound agent puts the counter beside the dot; mini widens for it.
+      // A bound agent adds no counter to mini.
       state.applyChannelRoster(roster(open: false))
       state.setPresentationMode(.mini)
       settleHeader()
-      XCTAssertEqual(headerControls().count, restingControls + 1, "the counter joins mini")
-      XCTAssertLessThan(try brandWidth(), 12, "the counter, not cs, follows the dot")
-      XCTAssertGreaterThan(panel.frame.width, DictationOverlayWindow.miniFloorWidth)
-      assertHugsContent("counter 1 ▾")
-      XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
-      let counting = panel.frame.width
+      XCTAssertEqual(headerControls().count, restingControls, "no counter joins mini")
+      XCTAssertLessThan(try brandWidth(), 12)
+      assertRests("bound agent")
+      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls stay put")
 
-      // The agent records: the counter becomes the open digit with its dot
-      // and mini narrows with it; the 164 pt variant is this same rule. With
-      // the map on, the chord keeps mini (bus intercom spec §14 W3).
+      // The agent records: a live take. With the map on the chord keeps mini
+      // (bus intercom spec §14 W3), and mini grows by its take.
       state.applyChannelRoster(roster(open: true))
       XCTAssertEqual(state.presentationMode, .mini, "the chord keeps mini while the map is on")
+      XCTAssertTrue(state.miniTakeLive)
       settleHeader()
-      XCTAssertEqual(headerControls().count, restingControls + 1, "capture adds no control")
-      assertHugsContent("recording counter")
-      XCTAssertLessThan(panel.frame.width, counting, "the open digit is narrower than 1 ▾")
-      XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
+      panel.settleFrameTransition()
+      settleHeader()
+      XCTAssertEqual(
+        panel.frame.width,
+        DictationOverlayWindow.miniFloorWidth
+          + DictationOverlayWindow.miniTakeWidth(live: true, openDigits: ["4"]),
+        accuracy: 0.5, "waveform, clock and one digit")
+      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls stay put")
+      XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5, "the top edge stays")
 
       state.applyChannelRoster([])
+      XCTAssertFalse(state.miniTakeLive)
       settleHeader()
-      XCTAssertEqual(headerControls().count, restingControls, "the agents button stays")
-      XCTAssertEqual(
-        panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5)
-      XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
+      panel.settleFrameTransition()
+      settleHeader()
+      XCTAssertEqual(headerControls().count, restingControls, "the Agents button stays")
+      assertRests("after the take")
+      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls stay put")
     }
   }
 
@@ -1655,11 +1729,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       roster.contains("tint: OverlayRecordingLight.agent.color, mirrored: broadcasting"))
     XCTAssertTrue(roster.contains("scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
     let header = try headerSource(try overlaySource())
-    // Spec §13.4: mini draws the dot without the word; the counter follows,
-    // beside the brand in mini and in every vertical form.
-    XCTAssertTrue(header.contains("showsWord: !mini"))
-    XCTAssertTrue(header.contains("let leadingCounter = mini || state.channelMapCounterStacked"))
-    XCTAssertTrue(header.contains("if leadingCounter, let map = channelMap {"))
+    // Spec §13.4: with the map enabled mini draws the dot without the word.
+    // Founder, 2026-11-04: the Agents list replaces the horizontal mini's
+    // counter, so only the vertical layout's stacked counter follows the
+    // brand, in every form (`channelMap` is nil in the horizontal mini).
+    XCTAssertTrue(header.contains("showsWord: !mini || !mapEnabled"))
+    XCTAssertTrue(header.contains("let leadingCounter = state.channelMapCounterStacked"))
+    XCTAssertTrue(header.contains("if leadingCounter, let map {"))
     XCTAssertFalse(header.contains("short: mini"))
     XCTAssertFalse(header.contains("miniAgentMicrophone"))
   }

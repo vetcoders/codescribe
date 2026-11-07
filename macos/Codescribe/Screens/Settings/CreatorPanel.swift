@@ -105,11 +105,16 @@ struct CreatorPanel: View {
       // The checklist shows live status; the header link opens the privacy
       // pane itself so a granted scope can still be reviewed or revoked.
       SettingsSectionHeaderRow(String(localized: "Permissions")) {
-        Button(
-          String(
-            localized: "System Settings…",
-            comment: "Permissions header action: opens the Privacy & Security pane")
-        ) { PermissionKind.openPrivacySettings() }
+        SettingsChipButton(action: { PermissionKind.openPrivacySettings() }) {
+          Text(
+            String(
+              localized: "System Settings…",
+              comment: "Permissions header action: opens the Privacy & Security pane")
+          )
+          .font(SettingsScale.controlLabel)
+          .foregroundStyle(Color.primary)
+        }
+        .controlSize(.regular)
         .accessibilityIdentifier("settings-permissions-system-settings")
       }
       .padding(.top, SettingsScale.sectionGap)
@@ -194,24 +199,22 @@ struct CreatorPanel: View {
     .task { await model.refreshMaxToolApprovals() }
   }
 
-  /// A neutral action chip with its glyph before the label, like the other
+  /// A neutral text-only action chip, like the other
   /// Settings actions (D2: actions read through their shape, not a hue).
   /// No explanation beside it: each step opens on the current value, but
   /// Continue on the shortcuts step writes that step's preset, so "your
   /// settings stay" would not be true.
   private var openWizardButton: some View {
     SettingsChipButton(action: { model.onOpenSetupWizard() }) {
-      HStack(spacing: 5) {
-        CSIconView(icon: .setupWizard, size: 10, weight: .semibold)
-        Text(
-          String(
-            localized: "Open Setup Wizard…",
-            comment: "General page title row: reopens the setup wizard window")
-        )
-        .font(SettingsScale.controlLabel)
-      }
+      Text(
+        String(
+          localized: "Open Setup Wizard…",
+          comment: "General page title row: reopens the setup wizard window")
+      )
+      .font(SettingsScale.controlLabel)
       .foregroundStyle(Color.primary)
     }
+    .controlSize(.regular)
     .accessibilityIdentifier("settings-creator-open-wizard")
   }
 
@@ -636,12 +639,12 @@ struct LanguageIdentityPresentation: Identifiable, Equatable {
   /// fine-tuned-models detail moved out of the base view (Founder brief,
   /// round 4, 2026-10-10).
   static let supportingCopy = String(
-    localized: "Multilingual detects the language automatically.",
+    localized: "Automatically detects the transcription language.",
     comment: "Transcription language row explanation"
   )
 
   static let choices: [LanguageIdentityPresentation] = [
-    .init(language: .auto, title: String(localized: "Multilingual"), isFineTuned: false),
+    .init(language: .auto, title: CsLanguage.auto.displayName, isFineTuned: false),
     .init(language: .polish, title: String(localized: "Polish"), isFineTuned: true),
     .init(language: .english, title: String(localized: "English"), isFineTuned: true),
   ]
@@ -669,6 +672,7 @@ private struct RecognitionLanguageRow: View {
             guard LanguageIdentityPresentation.choices.indices.contains(index) else { return }
             $selection.wrappedValue = LanguageIdentityPresentation.choices[index].language
           }),
+        matchingTitles: AppAppearanceChoice.allCases.map(\.title),
         accessibilityLabel: String(
           localized: "Transcription language",
           comment: "Settings row: the language the speech is transcribed in"),
@@ -783,6 +787,7 @@ private struct AppearanceRow: View {
             guard AppAppearanceChoice.allCases.indices.contains(index) else { return }
             model.selectAppearance(AppAppearanceChoice.allCases[index])
           }),
+        matchingTitles: LanguageIdentityPresentation.choices.map(\.title),
         accessibilityLabel: String(
           localized: "Appearance", comment: "Settings row: light, dark or system"),
         accessibilityIdentifier: "settings-appearance"

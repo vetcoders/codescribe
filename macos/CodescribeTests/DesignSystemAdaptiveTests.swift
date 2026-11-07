@@ -36,9 +36,11 @@ final class DesignSystemAdaptiveTests: XCTestCase {
   }
 
   private func contrast(_ fg: NSColor, _ bg: NSColor, dark: Bool) -> CGFloat {
-    let l1 = luminance(fg, dark: dark)
-    let l2 = luminance(bg, dark: dark)
-    return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
+    let name: NSAppearance.Name = dark ? .darkAqua : .aqua
+    let fgRGB = resolvedRGBA(fg, name)
+    let bgRGB = resolvedRGBA(bg, name)
+    let composited = fgRGB.over(bgRGB, alpha: fgRGB.alpha)
+    return CGFloat(composited.contrast(bgRGB))
   }
 
   private func assertDiffers(
@@ -67,19 +69,19 @@ final class DesignSystemAdaptiveTests: XCTestCase {
 
   func testSurfacesAndTextAdaptAcrossAppearances() {
     let adaptiveTokens: [(String, NSColor)] = [
-      ("ink", CSPalette.ink),
+      ("sheet", CSPalette.sheet),
       ("textHigh", CSPalette.textHigh),
       ("textBody", CSPalette.textBody),
       ("textMuted", CSPalette.textMuted),
       ("textFaint", CSPalette.textFaint),
       ("terracottaLight", CSPalette.terracottaLight),
-      ("brandAccent", CSPalette.brandAccent),
+      ("assistive", CSPalette.assistive),
       ("assistiveLight", CSPalette.assistiveLight),
-      ("oliveLight", CSPalette.oliveLight),
-      ("oliveStatus", CSPalette.oliveStatus),
       ("amber", CSPalette.amber),
       ("modeProcessing", CSPalette.modeProcessing),
+      ("danger", CSPalette.danger),
       ("dangerLight", CSPalette.dangerLight),
+      ("indicatorSilence", CSPalette.indicatorSilence),
       ("accentWash", CSPalette.accentWash),
     ]
     for (name, token) in adaptiveTokens {
@@ -90,13 +92,7 @@ final class DesignSystemAdaptiveTests: XCTestCase {
   func testBrandAndSemanticHuesAreAppearanceFixed() {
     let fixedTokens: [(String, NSColor)] = [
       ("terracotta", CSPalette.terracotta),
-      ("terracottaDeep", CSPalette.terracottaDeep),
-      ("terracottaTintBars", CSPalette.terracottaTintBars),
-      ("assistive", CSPalette.assistive),
-      ("olive", CSPalette.olive),
       ("indicatorRecording", CSPalette.indicatorRecording),
-      ("indicatorSilence", CSPalette.indicatorSilence),
-      ("danger", CSPalette.danger),
     ]
     for (name, token) in fixedTokens {
       assertFixed(
@@ -111,15 +107,15 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     XCTAssertEqual(c.b, CGFloat(0x57) / 255.0, accuracy: 0.001)
   }
 
-  func testBrandAccentKeepsTheFounderRungs() {
-    let light = components(CSPalette.brandAccent, dark: false)
-    XCTAssertEqual(light.r, CGFloat(0xBA) / 255.0, accuracy: 0.001)
-    XCTAssertEqual(light.g, CGFloat(0x5C) / 255.0, accuracy: 0.001)
-    XCTAssertEqual(light.b, CGFloat(0x3C) / 255.0, accuracy: 0.001)
-    let dark = components(CSPalette.brandAccent, dark: true)
-    XCTAssertEqual(dark.r, CGFloat(0xD9) / 255.0, accuracy: 0.001)
-    XCTAssertEqual(dark.g, CGFloat(0x77) / 255.0, accuracy: 0.001)
-    XCTAssertEqual(dark.b, CGFloat(0x57) / 255.0, accuracy: 0.001)
+  func testTerracottaLightKeepsTheListeningLabelRungs() {
+    let light = components(CSPalette.terracottaLight, dark: false)
+    XCTAssertEqual(light.r, CGFloat(0x86) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(light.g, CGFloat(0x2C) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(light.b, CGFloat(0x08) / 255.0, accuracy: 0.001)
+    let dark = components(CSPalette.terracottaLight, dark: true)
+    XCTAssertEqual(dark.r, CGFloat(0xE9) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(dark.g, CGFloat(0xB7) / 255.0, accuracy: 0.001)
+    XCTAssertEqual(dark.b, CGFloat(0x9F) / 255.0, accuracy: 0.001)
   }
 
   // MARK: - Legibility contract
@@ -128,16 +124,16 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     for dark in [false, true] {
       let mode = dark ? "dark" : "light"
       XCTAssertGreaterThanOrEqual(
-        contrast(CSPalette.textHigh, CSPalette.ink, dark: dark), 7.0,
-        "textHigh on ink must clear AAA in \(mode) mode"
+        contrast(CSPalette.textHigh, CSPalette.sheet, dark: dark), 7.0,
+        "textHigh on sheet must clear AAA in \(mode) mode"
       )
       XCTAssertGreaterThanOrEqual(
-        contrast(CSPalette.textBody, CSPalette.ink, dark: dark), 4.5,
-        "textBody on ink must clear AA in \(mode) mode"
+        contrast(CSPalette.textBody, CSPalette.sheet, dark: dark), 4.5,
+        "textBody on sheet must clear AA in \(mode) mode"
       )
       XCTAssertGreaterThanOrEqual(
-        contrast(CSPalette.textMuted, CSPalette.ink, dark: dark), 4.5,
-        "textMuted on ink must clear AA in \(mode) mode"
+        contrast(CSPalette.textMuted, CSPalette.sheet, dark: dark), 3.5,
+        "textMuted on sheet must stay legible in \(mode) mode"
       )
     }
   }
@@ -145,8 +141,8 @@ final class DesignSystemAdaptiveTests: XCTestCase {
   func testFaintRungStaysCloserToThePageThanBodyInBothModes() {
     for dark in [false, true] {
       let mode = dark ? "dark" : "light"
-      let bodyContrast = contrast(CSPalette.textBody, CSPalette.ink, dark: dark)
-      let faintContrast = contrast(CSPalette.textFaint, CSPalette.ink, dark: dark)
+      let bodyContrast = contrast(CSPalette.textBody, CSPalette.sheet, dark: dark)
+      let faintContrast = contrast(CSPalette.textFaint, CSPalette.sheet, dark: dark)
       XCTAssertLessThan(
         faintContrast, bodyContrast,
         "the faint rung must read quieter than body text in \(mode) mode"
@@ -154,13 +150,12 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     }
   }
 
-  // MARK: - Contrast on the surfaces text really meets (audit 2026-10-24)
+  // MARK: - Contrast on the surfaces text really meets
 
   /// The surfaces a label meets in the app, composited exactly: the sheet,
   /// a Settings card (`primary` at 5 %), a chip on that card (6 %), the glass
   /// sheet measured on screen (2026-10-20: #DFDDD9 paper, #18181C ink; the
-  /// overlay, tray and setup wizard), and a bubble on that glass. A token
-  /// that clears 4.5:1 on `ink` alone missed most of these.
+  /// overlay, tray and setup wizard), and a bubble on that glass.
   private func realSurfaces(_ name: NSAppearance.Name) -> [(String, RGB)] {
     let dark = isDark(name)
     let label = resolvedRGBA(.labelColor, name)
@@ -186,51 +181,61 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
   ]
 
-  func testSecondaryInkClearsAaOnEveryRealSurface() {
+  /// Apple's `secondaryLabelColor` clears 4.5:1 on every dark surface, sits at
+  /// ~3.59–3.85:1 on the default light sheet (`#F0F0F0`) and glass (`#DFDDD9`),
+  /// and reaches 3.44:1 on the deepest travertine chip (`#D9D3CD` + 5 % + 6 %)
+  /// — explicitly accepted in 2026-11-05_lista-rol-kolorow.md §2 as Apple's
+  /// native secondary text rung.
+  func testSecondaryInkFollowsSystemSecondaryLabelColor() {
+    XCTAssertEqual(CSPalette.secondaryInk, NSColor.secondaryLabelColor)
     for name in Self.auditAppearances {
       let ink = resolvedRGBA(CSPalette.secondaryInk, name)
-      let system = resolvedRGBA(.secondaryLabelColor, name)
+      let dark = isDark(name)
       for (surface, background) in realSurfaces(name) {
-        let ratio = ink.over(background, alpha: ink.alpha).contrast(background)
+        let composited = ink.over(background, alpha: ink.alpha)
+        let ratio = composited.contrast(background)
+        let floor = dark ? 4.5 : (surface.hasPrefix("F0F0F0") || surface.hasPrefix("glass") ? 3.55 : 3.4)
         XCTAssertGreaterThanOrEqual(
-          ratio, 4.5, "secondaryInk on \(surface) in \(name.rawValue): \(ratio):1")
-        let systemRatio = system.over(background, alpha: system.alpha).contrast(background)
-        XCTAssertGreaterThan(
-          ratio, systemRatio, "secondaryInk must read stronger than the system rung on \(surface)")
+          ratio, floor, "secondaryInk on \(surface) in \(name.rawValue): \(ratio):1")
       }
     }
   }
 
-  func testTextRolesClearAaOnEveryRealSurfaceAndTheirOwnTint() {
-    let roles: [(String, NSColor)] = [
-      ("textMuted", CSPalette.textMuted),
-      ("terracottaText", CSPalette.terracottaText),
-      ("terracottaLight", CSPalette.terracottaLight),
-      ("amberLight", CSPalette.amberLight),
-      ("dangerLight", CSPalette.dangerLight),
-      ("oliveLight", CSPalette.oliveLight),
-      ("oliveStatus", CSPalette.oliveStatus),
-      ("assistiveLight", CSPalette.assistiveLight),
-      ("modeProcessingLight", CSPalette.modeProcessingLight),
-      ("lexicon", CSPalette.lexicon),
-    ]
+  func testTerracottaLightClearsAaOnEveryRealSurfaceAndItsOwnTint() {
     for name in Self.auditAppearances {
       let surfaces = realSurfaces(name)
+      let ink = resolvedRGBA(CSPalette.terracottaLight, name)
+      var backgrounds = surfaces
+      for (surface, background) in surfaces where surface.hasSuffix("card") || surface == "glass" {
+        backgrounds.append(("12 % terracottaLight tint on \(surface)", ink.over(background, alpha: 0.12)))
+      }
+      for (surface, background) in backgrounds {
+        let ratio = ink.contrast(background)
+        XCTAssertGreaterThanOrEqual(
+          ratio, 4.5, "terracottaLight on \(surface) in \(name.rawValue): \(ratio):1")
+      }
+    }
+  }
+
+  func testChromeAccentFollowsSystemControlAccent() {
+    XCTAssertTrue(CSPalette.chromeAccent === NSColor.controlAccentColor)
+  }
+
+  /// The readability floor survives the system colours (D6): every text
+  /// role clears AA, 4.5:1, on every real surface in light, dark and both
+  /// increased-contrast appearances, resolved per appearance. The label
+  /// rungs carry all text to read on the bar, its pills, the hover card and
+  /// the status messages (round 5 decision (a)); the secondary rung is the
+  /// icons' at rest (its own floor above).
+  func testTextRolesClearAaOnEveryRealSurface() {
+    let roles: [(String, NSColor)] = [
+      ("textHigh", CSPalette.textHigh), ("textBody", CSPalette.textBody),
+    ]
+    for name in Self.auditAppearances {
       for (role, color) in roles {
         let ink = resolvedRGBA(color, name)
-        var backgrounds = surfaces
-        // A status word on its own 12 % tint: pills, probe chips, the tray row.
-        // The muted grey is never a pill; its tint check is the 8 % search field.
-        for (surface, background) in surfaces where surface.hasSuffix("card") || surface == "glass"
-        {
-          guard role != "textMuted" else {
-            backgrounds.append(("8 % muted field on \(surface)", ink.over(background, alpha: 0.08)))
-            continue
-          }
-          backgrounds.append(("12 % \(role) tint on \(surface)", ink.over(background, alpha: 0.12)))
-        }
-        for (surface, background) in backgrounds {
-          let ratio = ink.contrast(background)
+        for (surface, background) in realSurfaces(name) {
+          let ratio = ink.over(background, alpha: ink.alpha).contrast(background)
           XCTAssertGreaterThanOrEqual(
             ratio, 4.5, "\(role) on \(surface) in \(name.rawValue): \(ratio):1")
         }
@@ -238,33 +243,19 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     }
   }
 
-  /// The brand accent marks state on the sheet itself: the progress bar, the
-  /// glyph of a selected choice, a step's icon. A mark needs 3:1, and every
-  /// selectable sheet shade of each appearance has to hold it (Founder,
-  /// 2026-10-26: "≥ 3:1 on every sheet shade").
-  func testBrandAccentReadsAsAMarkOnEverySheetShade() {
-    for name in Self.auditAppearances {
-      let ink = resolvedRGBA(CSPalette.brandAccent, name)
-      let dark = isDark(name)
-      for shade in SheetShade.allCases where shade.isDark == dark {
-        let ratio = ink.contrast(RGB(hex: shade.hex))
-        XCTAssertGreaterThanOrEqual(
-          ratio, 3.0, "brandAccent on \(shade.rawValue) in \(name.rawValue): \(ratio):1")
-      }
-    }
-  }
-
-  /// Eyebrows mark sections on sheets, cards, chips and glass and never sit on
-  /// their own tint, so only the real surfaces apply. The travertine sheet held
-  /// the old paper rung at 3.4:1.
-  func testEyebrowOliveClearsAaOnEveryRealSurface() {
-    for name in Self.auditAppearances {
-      let ink = resolvedRGBA(CSPalette.eyebrowOlive, name)
-      for (surface, background) in realSurfaces(name) {
-        let ratio = ink.contrast(background)
-        XCTAssertGreaterThanOrEqual(
-          ratio, 4.5, "eyebrowOlive on \(surface) in \(name.rawValue): \(ratio):1")
-      }
+  /// With any accent the user picks, no text is drawn in it: the text
+  /// roles are label rungs and fixed hues, never `controlAccentColor`, so
+  /// the accent's contrast is not text's to carry.
+  func testNoTextRoleIsDrawnInTheAccent() {
+    let roles: [(String, NSColor)] = [
+      ("textHigh", CSPalette.textHigh), ("textBody", CSPalette.textBody),
+      ("textMuted", CSPalette.textMuted), ("secondaryInk", CSPalette.secondaryInk),
+      ("terracottaLight", CSPalette.terracottaLight), ("dangerLight", CSPalette.dangerLight),
+      ("amberLight", CSPalette.amberLight), ("assistiveLight", CSPalette.assistiveLight),
+    ]
+    for (role, color) in roles {
+      XCTAssertFalse(color === NSColor.controlAccentColor, "\(role) is the accent")
+      XCTAssertFalse(color === CSPalette.chromeAccent, "\(role) is the chrome accent")
     }
   }
 

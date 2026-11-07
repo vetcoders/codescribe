@@ -82,6 +82,8 @@ final class AppModel: ObservableObject {
         guard edge == .settingsWritten else { return }
         overlay.state.canonicalConfigurationDidChange()
       }
+    // Channel 0's display name, read once here and after every Settings write.
+    overlay.state.refreshSharedChannelName()
     overlay.startIntercomPresentation()
     AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
   }
@@ -619,12 +621,13 @@ final class OverlayController: ObservableObject {
     // Anchors and the saved origin describe the resting mini strip; mini is
     // drawn at its natural width at that strip's trailing edge (below).
     case .mini: size = DictationOverlayWindow.miniPlacementSize
+    // The bar is as wide and as tall as its measured content (bus brief
+    // 2026-11-04 §8): the window owner's size, never a fixed 410 × 46.
     case .midi:
+      let measured = (panel as? FloatingOverlayPanel)?.midiSize ?? DictationOverlayWindow.midiSize
       size = NSSize(
-        width: min(
-          DictationOverlayWindow.midiSize.width,
-          screen?.visibleFrame.width ?? .greatestFiniteMagnitude),
-        height: DictationOverlayWindow.collapsedHeight)
+        width: min(measured.width, screen?.visibleFrame.width ?? .greatestFiniteMagnitude),
+        height: measured.height)
     case .expanded:
       size = NSSize(
         width: clamped.width, height: max(clamped.height, DictationOverlayWindow.minSize.height))
@@ -635,7 +638,7 @@ final class OverlayController: ObservableObject {
     } else {
       origin = OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
     }
-    // Mini is as wide as its content (bus intercom spec §13.4).
+    // Mini is as wide and as tall as its content (bus brief 2026-11-04 §3).
     let drawn =
       state.presentationMode == .mini
       ? (panel as? FloatingOverlayPanel)?.miniSize ?? size : size
@@ -646,10 +649,10 @@ final class OverlayController: ObservableObject {
       panel.setContentSize(drawn)
       return
     }
-    // The placement strip's trailing edge is the shared upper-right pin.
+    // The placement strip's upper-right corner is the shared pin.
     let frame = NSRect(
-      x: origin.x + size.width - drawn.width, y: origin.y, width: drawn.width,
-      height: drawn.height)
+      x: origin.x + size.width - drawn.width, y: origin.y + size.height - drawn.height,
+      width: drawn.width, height: drawn.height)
     OverlayPresentationTrace.shared.record(
       .placementApplied, mode: state.presentationMode, frame: panel.frame, target: frame,
       note: state.freeMotion ? "free_motion" : "anchor=\(state.placementAnchor)")
@@ -796,8 +799,8 @@ final class OverlayController: ObservableObject {
   /// The human Close intent (brand dot). An open channel keeps the panel up
   /// against every automatic hide, never against this click. Build 1502
   /// swallowed it behind a channel-session `open` row that no `sealed` row or
-  /// `session_ended` ever closed (Founder, 2026-09-29: "Przycisk zamykania NIE
-  /// reaguje"). New channel evidence may show the panel again.
+  /// `session_ended` ever closed (Founder, 2026-09-29: the close button did
+  /// not react). New channel evidence may show the panel again.
   func dismiss() {
     orderOut()
   }

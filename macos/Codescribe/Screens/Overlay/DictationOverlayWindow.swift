@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import QuartzCore
 import SwiftUI
 
@@ -144,37 +145,73 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     set { expandedSizes[contentSurface] = newValue }
   }
   private var miniFrame: NSRect?
-  /// Mini's natural width (`DictationOverlayWindow.miniNaturalWidth`): its
-  /// controls and, with an agent bound, the channel counter. The controller
-  /// reports it whenever the counter changes (bus intercom spec §13.4).
-  private(set) var miniNaturalWidth = DictationOverlayWindow.miniFloorWidth
+  /// With the channel map enabled mini shows the brand dot alone; without it
+  /// the word as well. The horizontal mini carries no channel counter
+  /// (Founder, 2026-11-04).
   private var channelMapEnabled = false
-  private var channelCapturing = false
+  /// The vertical layout's stacked counter in mini with its gap after the
+  /// dot (`DictationOverlayWindow.miniStackedCounterWidth`); zero while mini
+  /// shows no counter.
+  private(set) var miniStackedCounterWidth: CGFloat = 0
+  /// What a live take adds to mini (`DictationOverlayWindow.miniTakeWidth`):
+  /// the waveform, the clock and the addressees; zero at rest. Nothing
+  /// remembers it, so mini folds back to its resting width when the take ends.
+  private(set) var miniTakeWidth: CGFloat = 0
+  /// Mini is as wide and as tall as its content (bus brief 2026-11-04 §3,
+  /// §6): at rest, with the vertical layout's stacked counter, or grown by a
+  /// live take.
   var miniSize: NSSize {
-    NSSize(
-      width: channelMapEnabled ? miniNaturalWidth : DictationOverlayWindow.miniBrandWidth,
-      height: DictationOverlayWindow.collapsedHeight)
+    let rest =
+      channelMapEnabled
+      ? DictationOverlayWindow.miniFloorWidth + miniStackedCounterWidth
+      : DictationOverlayWindow.miniBrandWidth
+    return NSSize(width: rest + miniTakeWidth, height: DictationOverlayWindow.miniHeight)
   }
 
-  /// Compact's natural width: the 410 pt floor plus the channel map
-  /// (`DictationOverlayWindow.midiNaturalWidth`). The controller reports it
-  /// whenever the map's channels change.
-  private(set) var midiNaturalWidth = DictationOverlayWindow.midiSize.width
-  /// The width the user gave the compact strip with its edge in this session,
-  /// and whether that was narrower than the natural width at the time. A
-  /// narrowed strip keeps the user's width: roster changes no longer resize it
-  /// and the map drops the chips' names, or collapses to its counter, whose
-  /// click gives the natural width back (`restoreMidiNaturalWidth`). A strip
-  /// the user widened grows when the map outgrows it and never shrinks below
-  /// the user's width.
+  /// The expanded bar's measured geometry (`DictationOverlayWindow.midiBarGeometry`):
+  /// its natural width, resize limits and one- or two-row height. The
+  /// controller reports it whenever the map's channels change; without the
+  /// horizontal map it is the classic 410 × 46 bar.
+  private(set) var midiBar = OverlayMidiBarGeometry.classic
+  /// The bar's default width: its content with the preferred names.
+  var midiNaturalWidth: CGFloat { midiBar.naturalWidth }
+  /// The width the user gave the bar with its edge in this session, and
+  /// whether that was narrower than the natural width at the time. A narrowed
+  /// bar keeps the user's width: roster changes no longer resize it and the
+  /// map cuts its names instead (`restoreMidiNaturalWidth` gives the natural
+  /// width back). A bar the user widened grows when the map outgrows it and
+  /// never shrinks below the user's width. The bar's measured limits hold
+  /// either width, but only a real edge drag writes it: an agent leaving for
+  /// a moment narrows the bar and gives the width back when it returns.
   private var midiUserWidth: CGFloat?
   private(set) var midiShrunkByUser = false
-  /// The width compact settles to: the user's after a manual shrink, else the
-  /// natural width, raised to a width the user chose.
+  /// The width the bar settles to: the user's after a manual shrink, else the
+  /// natural width, raised to a width the user chose; within the measured
+  /// minimum and maximum.
   var midiPresentationWidth: CGFloat {
-    if midiShrunkByUser, let midiUserWidth { return midiUserWidth }
-    return max(midiNaturalWidth, midiUserWidth ?? 0)
+    let width =
+      if midiShrunkByUser, let midiUserWidth {
+        midiUserWidth
+      } else {
+        max(midiNaturalWidth, midiUserWidth ?? 0)
+      }
+    return midiBar.clampedWidth(width)
   }
+  /// The bar's frame size: its width and the height of the rows that width
+  /// holds, rounded once here, by the window's owner.
+  var midiSize: NSSize {
+    let width = midiPresentationWidth
+    return NSSize(width: width, height: midiBar.height(forWidth: width))
+  }
+  /// Whether the panel answers its own edge drags. The panel never carries
+  /// AppKit's `.resizable` style: on a borderless panel that style keeps a
+  /// native ~12 pt resize corner that swallowed the close dot's first points
+  /// (Founder, build 24; `OverlayResizeHitTests` with and without the style).
+  /// Every resize gesture goes through `OverlayResizeHit` instead. A panel
+  /// starts expanded, which resizes; mini turns it off.
+  private(set) var allowsUserResize = true
+  /// Refits mini and the bar when the overlay's text scale changes (`make`).
+  var textScaleSink: AnyCancellable?
   fileprivate var presentationMode: OverlayPresentationMode = .expanded
   /// Duration of the morph most recently started; the SwiftUI cross-fade
   /// reads it so content and frame land together.
@@ -224,12 +261,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var originForPersistence: NSPoint {
     let positionedFrame = frameTransitionTarget ?? frame
     guard presentationMode == .midi else {
-      // Mini is the placement strip drawn at its natural width, anchored at
-      // the same trailing edge.
+      // Mini is the placement strip drawn at its natural size, anchored at
+      // the same upper-right corner.
       guard presentationMode == .mini else { return positionedFrame.origin }
       return NSPoint(
         x: positionedFrame.maxX - DictationOverlayWindow.miniPlacementSize.width,
-        y: positionedFrame.minY)
+        y: positionedFrame.maxY - DictationOverlayWindow.miniPlacementSize.height)
     }
     if let miniFrame {
       guard let dragStart, let parked = dragStart.miniFrame else { return miniFrame.origin }
@@ -257,13 +294,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     guard mode != presentationMode || settleResize else { return }
     let previous = presentationMode
     if previous == .mini && !settleResize {
-      // Persist the placement strip, not the wider natural brand capsule.
-      // Both share the trailing edge; retaining the capsule's physical left
-      // edge here shifted the next restored mini by that width difference.
+      // Persist the placement strip, not the natural capsule. Both share the
+      // upper-right corner; retaining the capsule's physical left edge here
+      // shifted the next restored mini by that width difference.
       let parked = frameTransitionTarget ?? frame
       miniFrame = NSRect(
         x: parked.maxX - DictationOverlayWindow.miniPlacementSize.width,
-        y: parked.minY,
+        y: parked.maxY - DictationOverlayWindow.miniPlacementSize.height,
         width: DictationOverlayWindow.miniPlacementSize.width,
         height: DictationOverlayWindow.miniPlacementSize.height)
     }
@@ -286,16 +323,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       makeFirstResponder(nil)
       releaseKeyAfterTranscript()
       if previous == .expanded && expandedSize == nil { expandedSize = frame.size }
-      size =
-        mode == .mini
-        ? miniSize
-        : NSSize(width: midiPresentationWidth, height: DictationOverlayWindow.collapsedHeight)
+      size = mode == .mini ? miniSize : midiSize
     } else {
       size = expandedPresentationSize()
     }
     // Intermediate frames may be smaller than the expanded window's floor.
     minSize = miniSize
     contentMinSize = minSize
+    allowsUserResize = false
     styleMask.remove(.resizable)
     let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
     let proposed = NSRect(
@@ -325,9 +360,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     // the unroll already holds: the layout on screen never changes size
     // mid-flight, whichever way the morph is travelling.
     let container = contentView as? OverlayContentContainer
+    // Bar-to-bar morphs (mini <-> bar) contain no visible document to freeze.
+    // Their canvas follows the native bounds: pinning the old bar size instead
+    // clips the newly selected, leading-aligned mini row from the left.
+    let barMorph = previous != .expanded && mode != .expanded
     let unrolls = animated && mode == .expanded && previous != .expanded
     let folds =
-      animated && !unrolls && mode != .expanded
+      animated && !barMorph && !unrolls && mode != .expanded
       && (restored.width < frame.width - 0.5 || restored.height < frame.height - 0.5)
     if unrolls {
       container?.pinnedContentSize = restored.size
@@ -421,11 +460,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     // element that was visible mid-morph changes its screen position.
     (contentView as? OverlayContentContainer)?.pinnedContentSize = nil
     // Mini is a drag surface; MIDI exposes only horizontal resize handles.
-    minSize =
-      presentationMode == .mini
-      ? miniSize : DictationOverlayWindow.minimumSize(for: presentationMode)
+    minSize = presentationMinimumSize
     contentMinSize = minSize
-    if presentationMode != .mini { styleMask.insert(.resizable) }
+    if presentationMode != .mini { allowsUserResize = true }
     if let contentView {
       invalidateCursorRects(for: contentView)
       (contentView as? OverlayContentContainer)?.refreshGrabPad()
@@ -440,20 +477,42 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     onFrameTransitionCompleted?()
   }
 
-  /// The map's channels changed. In compact the strip follows at once, with
-  /// its upper-right corner, and so its fold button, where they are; display
+  /// The map's channels or names changed. The bar follows at once, with its
+  /// upper-right corner, and so its fold button, where they are; display
   /// containment still applies. A morph, drag or resize in flight settles
   /// first, and its completion lands here again.
-  func setMidiNaturalWidth(_ width: CGFloat) {
-    let natural = max(width, DictationOverlayWindow.midiSize.width)
-    guard abs(natural - midiNaturalWidth) > 0.5 else { return }
-    midiNaturalWidth = natural
+  func setMidiBarGeometry(_ geometry: OverlayMidiBarGeometry) {
+    guard geometry != midiBar else { return }
+    // Back from 6–9 agents to 1–5 the bar changes form: the width the user
+    // gave the two-row bar is forgotten, so the single row settles at its
+    // natural width instead of two rows kept by a stale width (Founder,
+    // 2026-11-04, 8.52–8.53 PM screenshots).
+    if !midiBar.singleRowMinimumWidth.isFinite, geometry.singleRowMinimumWidth.isFinite {
+      midiUserWidth = nil
+      midiShrunkByUser = false
+    }
+    midiBar = geometry
+    if presentationMode == .midi, !isFrameTransitioning, !isUserResizing {
+      minSize = presentationMinimumSize
+      contentMinSize = minSize
+    }
     settleMidiWidth()
   }
 
-  /// The channel counter's click in compact (spec §13.4): the width the user
-  /// gave the strip is forgotten, so it settles to its natural width at its
-  /// upper-right pin and the chips return. A morph, drag or resize in flight
+  /// The settled form's floor: mini's content, the bar's measured minimum
+  /// with the height of the rows it holds, the expanded readability floor.
+  var presentationMinimumSize: NSSize {
+    switch presentationMode {
+    case .mini: miniSize
+    case .midi:
+      NSSize(
+        width: midiBar.minimumWidth, height: midiBar.height(forWidth: midiBar.minimumWidth))
+    case .expanded: DictationOverlayWindow.minimumSize(for: .expanded)
+    }
+  }
+
+  /// The width the user gave the bar is forgotten, so it settles to its
+  /// natural width at its upper-right pin. A morph, drag or resize in flight
   /// settles first, and its completion lands on the natural width.
   func restoreMidiNaturalWidth() {
     midiUserWidth = nil
@@ -461,7 +520,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     settleMidiWidth()
   }
 
-  /// The end of a manual resize in compact: the user's width is kept for the
+  /// The end of a manual resize of the bar: the user's width is kept for the
   /// session, and a width below the natural one stops the roster resizing it.
   private func noteUserMidiWidth(_ width: CGFloat) {
     midiUserWidth = width
@@ -471,56 +530,94 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private func settleMidiWidth() {
     guard presentationMode == .midi, !isFrameTransitioning, !isUserDragging, !isUserResizing
     else { return }
-    let width = midiPresentationWidth
-    guard abs(frame.width - width) > 0.5 else { return }
+    let size = midiSize
+    guard abs(frame.width - size.width) > 0.5 || abs(frame.height - size.height) > 0.5 else {
+      return
+    }
     let wasApplyingFrame = OverlayController.isApplyingFrame
     OverlayController.isApplyingFrame = true
     defer { OverlayController.isApplyingFrame = wasApplyingFrame }
     let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
-    // One step, no morph, as mini's width settles: the strip's content is
-    // already laid out for the new map and the trailing controls stay put.
+    // One step, no morph, as mini's width settles: the bar's content is
+    // already laid out for the new map, and its upper-right corner, with the
+    // trailing controls, stays put while a second row grows downward.
     let target = DictationOverlayWindow.visibleExpansionFrame(
-      NSRect(x: frame.maxX - width, y: frame.minY, width: width, height: frame.height),
+      NSRect(
+        x: frame.maxX - size.width, y: frame.maxY - size.height, width: size.width,
+        height: size.height),
       in: visible)
     setFrame(target, display: true)
   }
 
-  /// Maciej, 2026-10-19 09:36: a gap beside the brand is "simply brzydka";
-  /// Monika, 2026-10-22, of the 200 pt mini beside its counter: "brzydko to
-  /// wygląda, ta dziura". Mini is as wide as its content, so the counter
-  /// changing between the agent count and the open digits resizes it. The
-  /// trailing edge stays, so the microphones keep their screen position. A
-  /// morph in flight lands on the size it started with; its completion
-  /// settles here.
-  func setChannelMapPresentation(enabled: Bool, capturing: Bool, naturalWidth: CGFloat) {
-    let natural = max(naturalWidth, DictationOverlayWindow.miniFloorWidth)
-    guard
-      enabled != channelMapEnabled || capturing != channelCapturing
-        || abs(natural - miniNaturalWidth) > 0.5
-    else { return }
+  /// Mini is as wide as its content (Maciej, 2026-10-19: a gap beside the
+  /// brand is "simply brzydka"; bus brief 2026-11-04 §3): enabling the map
+  /// drops the brand word and narrows it; the vertical layout's stacked
+  /// counter widens it by `stackedCounterWidth`. The upper-right corner
+  /// stays, so the controls keep their screen position. A morph in flight
+  /// lands on the size it started with; its completion settles here.
+  func setChannelMapPresentation(enabled: Bool, stackedCounterWidth: CGFloat = 0) {
+    let counter = enabled ? stackedCounterWidth : 0
+    guard enabled != channelMapEnabled || abs(counter - miniStackedCounterWidth) > 0.5 else {
+      return
+    }
     channelMapEnabled = enabled
-    channelCapturing = capturing
-    miniNaturalWidth = natural
+    miniStackedCounterWidth = counter
     settleMiniWidth()
   }
 
-  private func settleMiniWidth() {
+  /// A take started or ended, or its open channels changed (Founder,
+  /// 2026-11-04, bus brief §6, §11D): mini grows leftward by the waveform,
+  /// the clock and the addressees, and folds back after the take. The
+  /// upper-right corner stays, so the tools keep their screen position. The
+  /// change glides on a visible panel unless Reduce Motion is on; a morph,
+  /// drag or resize in flight settles first, and its completion lands here.
+  func setMiniTake(width: CGFloat) {
+    guard abs(width - miniTakeWidth) > 0.5 else { return }
+    miniTakeWidth = width
+    settleMiniWidth(
+      animated: isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+  }
+
+  private func settleMiniWidth(animated: Bool = false) {
     guard presentationMode == .mini, !isFrameTransitioning, !isUserDragging, !isUserResizing,
-      abs(frame.width - miniSize.width) > 0.5
+      abs(frame.width - miniSize.width) > 0.5 || abs(frame.height - miniSize.height) > 0.5
     else { return }
     let wasApplyingFrame = OverlayController.isApplyingFrame
     OverlayController.isApplyingFrame = true
     defer { OverlayController.isApplyingFrame = wasApplyingFrame }
     minSize = miniSize
     contentMinSize = minSize
-    // One step, no morph: the header swaps the counter's content in the same
-    // pass, so an animated width would clip the trailing controls while the
-    // strip widens.
-    setFrame(
+    let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+    let target = DictationOverlayWindow.visibleExpansionFrame(
       NSRect(
-        x: frame.maxX - miniSize.width, y: frame.minY, width: miniSize.width,
-        height: frame.height),
-      display: true)
+        x: frame.maxX - miniSize.width, y: frame.maxY - miniSize.height, width: miniSize.width,
+        height: miniSize.height),
+      in: visible)
+    guard animated else {
+      // One step, no morph: the header swaps the brand word in the same
+      // pass, so an animated width would clip the trailing controls while
+      // the strip widens.
+      setFrame(target, display: true)
+      return
+    }
+    // A take's glide holds one layout at the window's upper-right corner, as
+    // a morph does: growing, the take's row, which the widening window
+    // reveals; folding, the departing row, which the narrowing window
+    // covers. The header never lays out at an intermediate width, so the
+    // tools are never clipped and never move.
+    frameTransitionGeneration &+= 1
+    let generation = frameTransitionGeneration
+    frameTransitionTarget = target
+    transitionTop = frame.maxY
+    transitionRight = frame.maxX
+    isFrameTransitioning = true
+    let container = contentView as? OverlayContentContainer
+    container?.pinnedContentSize = target.width > frame.width ? target.size : frame.size
+    lastMorphDuration = DictationOverlayWindow.presentationDuration(from: frame, to: target)
+    OverlayPresentationTrace.shared.record(
+      .frameTransitionBegan, from: .mini, mode: .mini, animated: true, frame: frame,
+      target: target, generation: generation, note: "mini_take")
+    animateFrame(to: target, generation: generation)
   }
 
   func settleFrameTransition() {
@@ -614,12 +711,25 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     if event.type == .leftMouseDown, level == .normal {
       orderFrontRegardless()
     }
+    // Mouse-moved events reach the key window, not the window under the
+    // pointer, so motion over the interactive preview card hanging as a child
+    // arrives here in this window's coordinates. Without this check the row
+    // or button under the card took the hover, the card jumped to it and the
+    // click went to the background (Founder, 2026-11-05: the popover fled the
+    // pointer, as if the click went to what lay behind it).
+    let pointerOverHintCard =
+      (event.type == .mouseMoved || event.type == .cursorUpdate || event.type == .mouseEntered)
+      && OverlayHintPanel.shared.coversPointer(
+        at: convertPoint(toScreen: event.locationInWindow), under: self)
+    // A tracking area under the card would take the hint (the All row's
+    // speaker tooltip replaced the agents list in the 06:13 recording).
+    if event.type == .mouseEntered, pointerOverHintCard { return }
     if event.type == .mouseMoved {
       for case let region as OverlayMenuCursorRegionView in menuCursorRegions.allObjects {
-        region.updateHover(at: event.locationInWindow)
+        region.updateHover(at: pointerOverHintCard ? nil : event.locationInWindow)
       }
     }
-    if event.type == .mouseMoved || event.type == .cursorUpdate {
+    if event.type == .mouseMoved || event.type == .cursorUpdate, !pointerOverHintCard {
       // Resolve once. Owned zones consume motion before overlapping text
       // tracking can set an I-beam. Leaving resize restores the arrow before
       // native dispatch; ordinary interior motion never writes a cursor.
@@ -631,7 +741,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       if isUserResizing { endUserResize() }
       dragStart = nil
       dragMoved = false
-      if styleMask.contains(.resizable), let contentView,
+      if allowsUserResize, let contentView,
         contentView.bounds.contains(event.locationInWindow),
         let edge = OverlayResizeHit.edge(
           at: event.locationInWindow, in: contentView.bounds, mode: presentationMode)
@@ -743,7 +853,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   @discardableResult
   func beginUserResize(edge: OverlayResizeHit.Edge, at point: NSPoint) -> Bool {
-    guard styleMask.contains(.resizable), !isFrameTransitioning, !isUserResizing,
+    guard allowsUserResize, !isFrameTransitioning, !isUserResizing,
       presentationMode != .mini,
       presentationMode != .midi || edge == .left || edge == .right
     else {
@@ -769,10 +879,20 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     requestedResizeSize = requested.size
     // The grabbed edge follows the pointer; its opposite edge stays fixed.
     // Upper-right anchoring belongs to presentation-mode morphs, not gestures.
-    let target = OverlayResizeHit.apply(
+    var target = OverlayResizeHit.apply(
       edge: resizeStart.edge, start: resizeStart.frame,
       dx: point.x - resizeStart.mouse.x, dy: point.y - resizeStart.mouse.y,
-      minSize: DictationOverlayWindow.minimumSize(for: presentationMode))
+      minSize: presentationMinimumSize)
+    if presentationMode == .midi {
+      // The bar's measured limits stop the edge: narrowing ends at the
+      // shortest names, widening at every name whole. The height follows the
+      // rows that width holds; the top edge stays where it is.
+      let width = midiBar.clampedWidth(target.width)
+      let height = midiBar.height(forWidth: width)
+      target = NSRect(
+        x: resizeStart.edge == .left ? resizeStart.frame.maxX - width : resizeStart.frame.minX,
+        y: resizeStart.frame.maxY - height, width: width, height: height)
+    }
     guard target != resizeGestureFrame else { return false }
     if presentationMode == .expanded {
       showResizePreview(target)
@@ -837,7 +957,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       onResizePresentationSelected?(mode)
       if pendingResizePresentation == nil { pendingResizePresentation = (mode, false) }
     }
-    if changed, pendingResizePresentation == nil, presentationMode == .midi {
+    // Only a width the edge really moved is the user's. A press that does
+    // not move the frame, a push against the bar's limit included, keeps the
+    // remembered width (an agent away for a moment must not shrink it).
+    if pendingResizePresentation == nil, presentationMode == .midi,
+      abs(frame.width - resizeStart.frame.width) > 0.5
+    {
       noteUserMidiWidth(frame.width)
     }
     if changed {
@@ -906,7 +1031,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     var menu: OverlayMenuCursorRegionView?
     let zone = OverlayPointerZone.resolve(
       at: contentView.convert(point, from: nil), in: contentView.bounds, mode: presentationMode,
-      resizable: styleMask.contains(.resizable),
+      resizable: allowsUserResize,
       menuContains: {
         menu = self.menuCursorRegion(at: point)
         return menu != nil
@@ -1204,7 +1329,7 @@ final class OverlayContentContainer: NSView {
 
   /// The pad follows the frame and the mode; a mini panel has no resize zone.
   func refreshGrabPad() {
-    let resizable = window?.styleMask.contains(.resizable) == true
+    let resizable = (window as? FloatingOverlayPanel)?.allowsUserResize == true
     let mode = (window as? FloatingOverlayPanel)?.presentationMode ?? .expanded
     grabPad.update(bounds: bounds, mode: resizable ? mode : .mini)
   }
@@ -1212,7 +1337,7 @@ final class OverlayContentContainer: NSView {
   /// AppKit's borderless resize strip is ~1–2 px. Claim the 16 pt band first,
   /// including the bottom capsule and its margin, so SwiftUI cannot steal it.
   override func hitTest(_ point: NSPoint) -> NSView? {
-    if window?.styleMask.contains(.resizable) == true,
+    if (window as? FloatingOverlayPanel)?.allowsUserResize == true,
       OverlayResizeHit.edge(
         at: point, in: bounds,
         mode: (window as? FloatingOverlayPanel)?.presentationMode ?? .expanded) != nil
@@ -1255,7 +1380,7 @@ final class OverlayContentContainer: NSView {
     // No whole-window arrow rectangle: it overlaps every native text/link
     // rectangle and makes AppKit alternate cursor owners on entry. Interior
     // views own their cursors; this container owns only the resize band.
-    guard window?.styleMask.contains(.resizable) == true else { return }
+    guard (window as? FloatingOverlayPanel)?.allowsUserResize == true else { return }
     for (rect, cursor) in OverlayResizeHit.cursorRects(
       in: bounds, mode: (window as? FloatingOverlayPanel)?.presentationMode ?? .expanded)
     {
@@ -1330,113 +1455,203 @@ enum DictationOverlayWindow {
   /// reason in: screen anchors and the saved origin describe a 200 × 46 strip,
   /// a resize gesture never requests less, and release-to-fold selects mini
   /// below the midpoint between it and compact's floor (305 pt). Mini itself
-  /// is drawn at `miniNaturalWidth`, at this strip's trailing edge (the shared
-  /// upper-right pin), so positions saved before content-sized mini land
-  /// where they did.
+  /// is drawn at its natural size (`miniSize`), at this strip's upper-right
+  /// corner (the shared pin), so positions saved before content-sized mini
+  /// land where they did. Mini does not scale with the text size; at rest its
+  /// widest form, with the brand word, is 133 pt plus the word
+  /// (`miniBrandWidth`; about 65 pt by estimate, not yet measured on screen),
+  /// within the strip. A live take grows mini past the strip's left edge
+  /// (`miniTakeWidth`); the upper-right pin keeps the strip's right edge, so
+  /// placement draws the measured width and never clips it.
   static let miniPlacementSize = NSSize(width: 200, height: collapsedHeight)
-  /// The mini row's measured parts at text scale 1 (spec §13.4). The header
-  /// pads 16 pt per side (`16 - clipInset` + `clipInset`); the 9 pt close dot
-  /// leads; the empty centre between the brand and the trailing controls has
-  /// no minimum in mini and a 4 pt row gap on either side, so it closes to
-  /// the 8 pt the trailing controls keep between them; the trailing group is
-  /// 81 pt (the 22 pt agents control, 8, and the 51 pt recording pair). The
-  /// counter stands 6 pt after the dot, as "cs" did. A SwiftUI fitting-size
-  /// probe of the former row measured these parts at 159 pt with "cs".
-  static let miniOuterPadding: CGFloat = 32
+  /// Mini at rest (Founder, 2026-11-04, bus brief §3), measured at text
+  /// scale 1: the 9 pt close dot, then transcription, microphone, Agents and
+  /// the chevron, 22 pt each (`OverlayRecordingControls.controlDiameter`)
+  /// with 4 pt between them. 7 pt separate a control from the capsule's edge
+  /// on every side. The empty centre between the brand and the controls has
+  /// no minimum in mini and a 2 pt row gap on either side, so it closes to
+  /// the 4 pt the controls keep between them. Nothing is reserved for hidden
+  /// elements at rest: no counter, waveform or timer; a live take adds them
+  /// (`miniTakeWidth`).
+  static let miniInset: CGFloat = 7
+  static let miniControl: CGFloat = 22
+  static let miniControlCount: CGFloat = 4
+  static let miniControlSpacing: CGFloat = 4
+  static let miniOuterPadding: CGFloat = 2 * miniInset
   static let miniBrandDot: CGFloat = 9
-  static let miniRowSpacing: CGFloat = 4
+  static let miniRowSpacing: CGFloat = miniControlSpacing / 2
+  /// The word stands 6 pt after the close dot (`Wordmark` spacing in mini).
   static let miniBrandGap: CGFloat = 6
-  /// The vertical counter uses the same eight-point rhythm as trailing controls.
-  static let miniStackedBrandGap: CGFloat = 8
-  static let miniTrailingControls: CGFloat = 81
-  /// Mini with no counter: padding, the close dot, the two row gaps around the
-  /// empty centre and the trailing controls = 130. The capsule never gets
-  /// narrower than its controls.
+  /// Transcription, microphone, Agents and chevron with their three gaps:
+  /// 4 × 22 + 3 × 4 = 100.
+  static let miniTrailingControls: CGFloat =
+    miniControlCount * miniControl + (miniControlCount - 1) * miniControlSpacing
+  /// Mini's own height: a control and its insets, 22 + 2 × 7 = 36. The bar
+  /// measures its own (`midiBarGeometry`); mini no longer borrows its 46.
+  static let miniHeight: CGFloat = miniControl + 2 * miniInset
+  /// The header's vertical padding around its 26 pt row in mini, so the
+  /// 22 pt controls sit `miniInset` from the capsule's edge.
+  static let miniVerticalPadding: CGFloat = (miniHeight - OverlayHeaderDensity.rowHeight) / 2
+  /// Mini with the channel map enabled, the close dot alone: padding, the
+  /// dot, the two row gaps around the closed centre and the controls
+  /// = 14 + 9 + 4 + 100 = 127. The capsule never gets narrower than its
+  /// controls.
   static let miniFloorWidth =
     miniOuterPadding + miniBrandDot + 2 * miniRowSpacing + miniTrailingControls
 
-  /// Mini with the brand word, while the channel map stays out of mini: the
-  /// padding, the close dot, the word after its gap, the 6 pt row gaps either
-  /// side of the 4 pt closed centre and the trailing controls. Measured the
-  /// way the counter form is. The former fixed 200 pt (164 while capturing)
-  /// was narrower than this row, so the header's clip cut the fold control
-  /// at the capsule's edge (Maciej, 2026-10-30 14:24: "w pigułce mini jest
-  /// bug rozmieszczenia"). The capsule never gets narrower than its controls.
-  static let miniWordRowSpacing: CGFloat = 6
-  static let miniWordClosedCentre: CGFloat = 4
+  /// Mini while a take is live (Founder, 2026-11-04, bus brief §6, §11D):
+  /// between the brand and the tools the bar's 82 pt waveform, the `00:00`
+  /// clock and, for an agent take, one circled digit per open channel
+  /// (`OverlayChannelPill` in its counter form, 19 pt) or, for channel 0,
+  /// the 22 pt megaphone; a dictation alone has no addressees. The row's gaps
+  /// open from 2 pt to the 4 pt the controls keep, so the take adds the
+  /// waveform, the clock, the addressees and one 4 pt gap per new item; zero
+  /// at rest. Like the rest of mini it does not scale with the text size.
+  @MainActor
+  static func miniTakeWidth(live: Bool, openDigits: [String]) -> CGFloat {
+    guard live else { return 0 }
+    var width = OverlayBarMetrics.miniWaveformWidth + 2 * miniControlSpacing + midiTimerWidth
+    let addressees = miniAddresseesWidth(openDigits: openDigits)
+    if addressees > 0 { width += miniControlSpacing + addressees }
+    return ceil(width)
+  }
+
+  /// The vertical layout's stacked counter in mini (Maciej, 2026-10-23: the
+  /// way to the Intercom group stays in every form): the counter as it is
+  /// drawn, the stacked cards or the open digits, after the word's 6 pt gap
+  /// beside the dot. Zero in the horizontal layout and while the map holds
+  /// no channel, where mini shows no counter.
+  @MainActor
+  static func miniStackedCounterWidth(
+    map: OverlayChannelMapModel, stacked: Bool, textScale: CGFloat
+  ) -> CGFloat {
+    guard stacked, !map.chips.isEmpty else { return 0 }
+    let counter = OverlayChannelPill.counterWidth(
+      figure: String(map.count), openDigitCount: map.openDigits.count,
+      scale: OverlayChannelPill.headerScale(textScale), stacked: true)
+    return ceil(miniBrandGap + counter)
+  }
+
+  /// The take's addressees in mini: the open channels' circled digits 4 pt
+  /// apart; zero without an open channel. A broadcast on channel 0 adds
+  /// nothing: the Agents button already wears the megaphone for it, and a
+  /// second one beside the clock repeated the sign (render review, 2026-11-04).
+  @MainActor
+  static func miniAddresseesWidth(openDigits: [String]) -> CGFloat {
+    if openDigits.contains("0") { return 0 }
+    guard !openDigits.isEmpty else { return 0 }
+    let count = CGFloat(openDigits.count)
+    let circle = OverlayChannelPill.counterWidth(figure: "", openDigitCount: 1, scale: 1)
+    return count * circle + (count - 1) * miniControlSpacing
+  }
+
+  /// Mini with the brand word, while the channel map is disabled: the floor
+  /// plus the word after its gap. Measured the way the floor is, so the
+  /// header's clip never cuts the chevron at the capsule's edge (Maciej,
+  /// 2026-10-30 14:24: "w pigułce mini jest bug rozmieszczenia").
   static let miniWordSize: CGFloat = 13
   static let miniWordTracking: CGFloat = -0.3
   @MainActor
-  static let miniBrandWidth: CGFloat = {
+  static let miniBrandWidth: CGFloat = ceil(miniFloorWidth + miniBrandGap + brandWordWidth)
+
+  /// The `codescribe` word at the 13 pt brand size of mini and the bar, with
+  /// its −0.3 tracking (`Wordmark`), rounded up with a point of slack.
+  @MainActor
+  static let brandWordWidth: CGFloat = {
     let font = NSFont.systemFont(ofSize: miniWordSize, weight: .bold)
-    let word =
-      ceil(
-        ("codescribe" as NSString).size(withAttributes: [.font: font, .kern: miniWordTracking])
-          .width) + 1
     return ceil(
-      miniOuterPadding + miniBrandDot + miniBrandGap + word + 2 * miniWordRowSpacing
-        + miniWordClosedCentre + miniTrailingControls)
+      ("codescribe" as NSString).size(withAttributes: [.font: font, .kern: miniWordTracking])
+        .width) + 1
   }()
 
-  /// Mini's natural width (spec §13.4): its floor plus, while the map holds a
-  /// channel, the brand gap and the channel counter as it is drawn, the agent
-  /// count with `▾` or the open digits with the open-channel dot. No fixed
-  /// width and no hole: the capsule hugs its content, and the recording form
-  /// is the same rule with the recording counter, measured.
+  /// The classic bar, while the horizontal channel map is off or empty: its
+  /// floor and its resting size, with a flexible waveform.
+  static let midiSize = NSSize(width: 410, height: collapsedHeight)
+
+  /// The bar's measured parts at text scale 1, the way mini's are. The header
+  /// pads 16 pt per side and 10 pt above and below (`16 - clipInset` +
+  /// `clipInset`, `10 - clipInset` + `clipInset`). The brand is the 9 pt
+  /// close dot, 5 pt and the word. The clock is `00:00` in the 11 pt mono
+  /// face. The trailing tools are 141 pt: transcription, Agents and Pin
+  /// (22 pt each), the 51 pt recording pair (22, 7, 22) and three 8 pt gaps.
+  static let midiOuterPadding: CGFloat = 32
+  static let midiVerticalPadding: CGFloat = 20
+  static let midiBrandGap: CGFloat = 5
+  static let midiTrailingControls: CGFloat = 141
   @MainActor
-  static func miniNaturalWidth(
-    map: OverlayChannelMapModel, textScale: CGFloat, stacked: Bool = false
-  ) -> CGFloat {
-    guard !map.chips.isEmpty else { return miniFloorWidth }
-    let counter = OverlayChannelPill.counterWidth(
-      figure: String(map.count), openDigitCount: map.openDigits.count,
-      scale: OverlayChannelPill.headerScale(textScale), stacked: stacked)
-    return ceil(miniFloorWidth + (stacked ? miniStackedBrandGap : miniBrandGap) + counter)
+  static var midiBrandWidth: CGFloat { miniBrandDot + midiBrandGap + brandWordWidth }
+  /// Measured on each call: the mono face registers when the overlay first
+  /// appears, and an hour's `h:mm:ss` takes its extra digits from the names.
+  @MainActor
+  static var midiTimerWidth: CGFloat {
+    ceil(("00:00" as NSString).size(withAttributes: [.font: CSFont.nsMono(11)]).width) + 1
   }
 
-  /// Compact's floor, and its whole width while no channel is mapped.
-  static let midiSize = NSSize(width: 410, height: collapsedHeight)
-  /// The most compact grows to for its channel chips: two floors (bus
-  /// intercom spec §13.1). Past it the chips drop their names.
-  static let midiChannelMapBudget = 2 * midiSize.width
-
-  /// Compact's natural width (spec §13.1): the floor, the map's leading gap,
-  /// room for channel 0's digit chip, which leads the row while the
-  /// microphone broadcasts, so the chord changes neither the width nor the
-  /// tier, and the row of the first tier that fits the 820 pt budget: the
-  /// named chips, else the digit-only chips with room for the longest name,
-  /// which the selected conversation's chip keeps. The open-channel dot adds
-  /// no width. With no agent it is the floor; it never exceeds the budget or
-  /// the screen's visible width, and never goes below the floor.
+  /// The bar's geometry with its channel map (bus brief 2026-11-04 §4, §5,
+  /// §11C). The width is the content, nothing stretched: padding, brand,
+  /// waveform, clock, the map and the tools. With 1–5 agents the map is one
+  /// row of stacked pills after the clock: the natural width gives the names
+  /// their preferred widths, the maximum every name whole, and a width below
+  /// the single row's shortest names takes two rows, so the minimum is the
+  /// narrower of the two. With 6–9 agents the bar always has two rows: the
+  /// first row's items over the chips, as wide as the wider of them. Channel
+  /// 0's circle leads either row and is measured like any pill with a
+  /// nameless caption; it is not an agent, so it never moves the 1–5 / 6–9
+  /// split. No agent and no broadcast is the classic bar. Every width is
+  /// bounded by the screen.
   @MainActor
-  static func midiNaturalWidth(
+  static func midiBarGeometry(
     map: OverlayChannelMapModel, textScale: CGFloat, visibleWidth: CGFloat? = nil
-  ) -> CGFloat {
-    let agents = map.agents
-    guard !agents.isEmpty else { return midiSize.width }
+  ) -> OverlayMidiBarGeometry {
+    guard !map.chips.isEmpty else { return .classic }
     let scale = OverlayChannelPill.headerScale(textScale)
-    let spacing = OverlayChannelMapView.chipSpacing
-    let digit = OverlayChannelPill.chipWidth(name: nil, scale: scale)
-    let named = agents.map { OverlayChannelPill.chipWidth(name: $0.name, scale: scale) }
-    let base = midiSize.width + OverlayChannelMapView.leadingGap + digit + spacing
-    let namedWidth = ceil(
-      base + OverlayChannelMapModel.rowWidth(chipWidths: named, spacing: spacing))
-    let natural: CGFloat
-    if namedWidth <= midiChannelMapBudget {
-      natural = namedWidth
-    } else {
-      let digits = OverlayChannelMapModel.rowWidth(
-        chipWidths: Array(repeating: digit, count: agents.count), spacing: spacing)
-      let longestName = (named.max() ?? digit) - digit
-      natural = min(ceil(base + digits + longestName), midiChannelMapBudget)
+    let names = OverlayChannelMapNameWidths(chips: map.chips, scale: scale)
+    let spacing = OverlayBarMetrics.itemSpacing
+    let leading =
+      midiOuterPadding + midiBrandWidth + spacing + OverlayBarMetrics.waveformWidth + spacing
+      + midiTimerWidth
+    let trailing = spacing + midiTrailingControls
+    func row(_ widths: [CGFloat], _ form: OverlayChannelPill.Form) -> CGFloat {
+      OverlayChannelMapModel.rowWidth(
+        nameWidths: widths, form: form, scale: scale, spacing: OverlayChannelMapView.chipSpacing)
     }
-    guard let visibleWidth else { return natural }
-    return max(midiSize.width, min(natural, visibleWidth))
+    func singleRow(_ widths: [CGFloat]) -> CGFloat {
+      ceil(leading + OverlayChannelMapView.leadingGap + row(widths, .stacked) + trailing)
+    }
+    func twoRows(_ widths: [CGFloat]) -> CGFloat {
+      ceil(max(leading + trailing, midiOuterPadding + row(widths, .chip)))
+    }
+    let singleRowHeight = ceil(
+      midiVerticalPadding + OverlayBarMetrics.singleRowHeight(textScale: textScale))
+    let twoRowHeight = ceil(midiVerticalPadding + OverlayBarMetrics.twoRowHeight)
+    var geometry: OverlayMidiBarGeometry
+    if map.count <= OverlayChannelMapModel.singleRowAgentLimit {
+      let singleRowMinimum = singleRow(names.shortest)
+      geometry = OverlayMidiBarGeometry(
+        naturalWidth: singleRow(names.preferred),
+        minimumWidth: min(singleRowMinimum, twoRows(names.shortest)),
+        maximumWidth: singleRow(names.full), singleRowMinimumWidth: singleRowMinimum,
+        singleRowHeight: singleRowHeight, twoRowHeight: twoRowHeight,
+        twoRowMaximumWidth: twoRows(names.full))
+    } else {
+      geometry = OverlayMidiBarGeometry(
+        naturalWidth: twoRows(names.preferred), minimumWidth: twoRows(names.shortest),
+        maximumWidth: twoRows(names.full), singleRowMinimumWidth: .infinity,
+        singleRowHeight: singleRowHeight, twoRowHeight: twoRowHeight,
+        twoRowMaximumWidth: twoRows(names.full))
+    }
+    if let visibleWidth, visibleWidth.isFinite {
+      geometry.naturalWidth = min(geometry.naturalWidth, visibleWidth)
+      geometry.minimumWidth = min(geometry.minimumWidth, visibleWidth)
+      geometry.maximumWidth = max(
+        geometry.minimumWidth, min(geometry.maximumWidth, visibleWidth))
+    }
+    return geometry
   }
 
   static func minimumSize(for mode: OverlayPresentationMode) -> NSSize {
     switch mode {
-    case .mini: NSSize(width: miniFloorWidth, height: collapsedHeight)
+    case .mini: NSSize(width: miniFloorWidth, height: miniHeight)
     case .midi: midiSize
     case .expanded: minSize
     }
@@ -1535,7 +1750,7 @@ enum DictationOverlayWindow {
       contentRect: NSRect(
         origin: .zero,
         size: restoredContentSize(surface: state.windowContentSurface, defaults: sizeDefaults)),
-      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      styleMask: [.borderless, .nonactivatingPanel],
       backing: .buffered,
       defer: false
     )
@@ -1553,23 +1768,35 @@ enum DictationOverlayWindow {
     panel.onResizePresentationSelected = { [weak state] mode in
       state?.setPresentationMode(mode)
     }
-    // Mini's and compact's widths follow the channel map (bus intercom spec
-    // 5.1, 13.1, 13.4): one projection, one hook, both natural widths.
-    let fitToChannelMap = { [weak panel, weak state] in
+    // Mini's brand word, mini's take and the bar's geometry follow the
+    // channel map (bus intercom spec 5.1; bus brief 2026-11-04 §3, §4, §6):
+    // one projection, one hook, both forms.
+    let fitToChannelMap = { [weak panel, weak state] (scale: CGFloat) in
       guard let panel, let state else { return }
       let map = state.channelMapLayoutModel
       panel.setChannelMapPresentation(
-        enabled: state.channelMapInMini, capturing: state.channelAudioCaptureActive,
-        naturalWidth: miniNaturalWidth(
-          map: map, textScale: textScale.scale, stacked: state.channelMapCounterStacked))
-      panel.setMidiNaturalWidth(
+        enabled: state.channelMapInMini,
+        stackedCounterWidth: miniStackedCounterWidth(
+          map: map, stacked: state.channelMapCounterStacked, textScale: scale))
+      // The vertical layout's stacked counter already circles the open digits
+      // in mini, so its take adds no addressee row (integrator, 2026-11-04).
+      panel.setMiniTake(
+        width: miniTakeWidth(
+          live: state.miniTakeLive,
+          openDigits: state.channelMapCounterStacked ? [] : map.openDigits))
+      panel.setMidiBarGeometry(
         state.channelMapInHeader
-          ? midiNaturalWidth(
-            map: map, textScale: textScale.scale,
-            visibleWidth: (panel.screen ?? NSScreen.main)?.visibleFrame.width) : midiSize.width)
+          ? midiBarGeometry(
+            map: map, textScale: scale,
+            visibleWidth: (panel.screen ?? NSScreen.main)?.visibleFrame.width) : .classic)
     }
-    fitToChannelMap()
-    state.onChannelMapLayoutChanged = fitToChannelMap
+    fitToChannelMap(textScale.scale)
+    state.onChannelMapLayoutChanged = { fitToChannelMap(textScale.scale) }
+    // The bar's rows and names grow with the text scale (⌘+/−), which no
+    // roster event reports. `@Published` delivers the new value before the
+    // property holds it, so the fit takes the value it is handed.
+    panel.textScaleSink = textScale.$scale.removeDuplicates().dropFirst()
+      .sink { fitToChannelMap($0) }
     state.onRestoreMidiNaturalWidth = { [weak panel] in panel?.restoreMidiNaturalWidth() }
     state.onAgentSidebarPresented = { [weak panel, weak state] in
       guard let panel else { return }
@@ -1598,8 +1825,9 @@ enum DictationOverlayWindow {
 
     panel.contentView = OverlayContentContainer(hosting: hosting)
 
-    // User-resizable: borderless windows still honour edge-drag resize when
-    // `.resizable` is set. Floor keeps the glass chrome + action row readable.
+    // User-resizable through the panel's own edge bands (`allowsUserResize`),
+    // never AppKit's `.resizable` style. Floor keeps the glass chrome + action
+    // row readable.
     panel.minSize = minSize
     panel.contentMinSize = minSize
     // Size is persisted manually (see `persist`/`restoredContentSize`), NOT via
@@ -1834,12 +2062,62 @@ final class OverlayPresence {
     if panel.level != policy.windowLevel {
       panel.level = policy.windowLevel
     }
+    OverlayHintPanel.shared.synchronizeLevel(with: panel)
     // Unpinning keeps a visible overlay at the front of the normal band once.
     // Later app activations leave its order alone; screenshot lifting is unchanged.
     // Neither transition brings an ordered-out panel back on screen.
     if policy.shouldOrderFront(after: previousPolicy, isVisible: panel.isVisible) {
       panel.orderFrontRegardless()
     }
+  }
+}
+
+/// The expanded bar's measured geometry, owned by the window
+/// (`DictationOverlayWindow.midiBarGeometry`, bus brief 2026-11-04 §11C). The
+/// frame's width stays between the minimum and the maximum, and its height is
+/// the rows that width holds, rounded once here.
+struct OverlayMidiBarGeometry: Equatable, Sendable {
+  /// The default width: the content with the preferred names.
+  var naturalWidth: CGFloat
+  /// The narrowest readable bar: the shortest names, in two rows where one
+  /// row cannot hold them. Narrowing stops here.
+  var minimumWidth: CGFloat
+  /// Every name whole: widening stops here, so a wider bar never opens a hole.
+  var maximumWidth: CGFloat
+  /// Below this width the single row takes two rows; infinite for 6–9 agents,
+  /// zero for the classic bar.
+  var singleRowMinimumWidth: CGFloat
+  var singleRowHeight: CGFloat
+  var twoRowHeight: CGFloat
+  /// Every name whole in two rows. With 1–5 agents the widths between this
+  /// and `singleRowMinimumWidth` are a dead band: two rows with a hole after
+  /// the chips. `clampedWidth` snaps across it. Zero, or any width below the
+  /// minimum, is no two-row form to snap to: no band (the classic bar).
+  var twoRowMaximumWidth: CGFloat = 0
+
+  /// No horizontal map: the 410 × 46 floor, widened freely.
+  static let classic = OverlayMidiBarGeometry(
+    naturalWidth: DictationOverlayWindow.midiSize.width,
+    minimumWidth: DictationOverlayWindow.midiSize.width, maximumWidth: .greatestFiniteMagnitude,
+    singleRowMinimumWidth: 0, singleRowHeight: DictationOverlayWindow.collapsedHeight,
+    twoRowHeight: DictationOverlayWindow.collapsedHeight)
+
+  func clampedWidth(_ width: CGFloat) -> CGFloat {
+    let width = min(max(width, minimumWidth), maximumWidth)
+    // The dead band: wider than every name in two rows, narrower than one
+    // row of the shortest names. The bar is either form, never the hole
+    // between them (Founder, 2026-11-04): the nearer edge wins. Both edges
+    // are widths the bar can take, so the two-row edge is never below the
+    // minimum; an unset two-row width (zero) opens no band.
+    guard twoRowMaximumWidth >= minimumWidth, twoRowMaximumWidth < singleRowMinimumWidth,
+      width > twoRowMaximumWidth, width < singleRowMinimumWidth
+    else { return width }
+    return width - twoRowMaximumWidth < singleRowMinimumWidth - width
+      ? twoRowMaximumWidth : singleRowMinimumWidth
+  }
+
+  func height(forWidth width: CGFloat) -> CGFloat {
+    width + 0.5 >= singleRowMinimumWidth ? singleRowHeight : twoRowHeight
   }
 }
 
@@ -1857,6 +2135,14 @@ enum OverlayResizeHit: Sendable {
   /// start 10 pt below the top edge (its vertical padding), so a 16 pt band
   /// took their upper third, cursor and click alike. The band ends above them.
   static let topBand: CGFloat = 8
+  /// The bar's side bands. The close dot's hit circle reaches 7.5 pt past
+  /// its 9 pt dot, which sits 16 pt in, so it starts 8.5 pt from the left
+  /// edge; an 8 pt band leaves every point of it to the dot.
+  static let midiBand: CGFloat = 8
+
+  static func band(for mode: OverlayPresentationMode) -> CGFloat {
+    mode == .midi ? midiBand : band
+  }
 
   enum Edge: Sendable, Hashable {
     case left, right, top, bottom
@@ -1867,9 +2153,10 @@ enum OverlayResizeHit: Sendable {
     at point: NSPoint, in bounds: NSRect, mode: OverlayPresentationMode = .expanded
   ) -> Edge? {
     guard mode != .mini else { return nil }
-    guard bounds.width > band * 2, bounds.height > band * 2 else { return nil }
-    let left = point.x <= bounds.minX + band
-    let right = point.x >= bounds.maxX - band
+    let side = band(for: mode)
+    guard bounds.width > side * 2, bounds.height > side * 2 else { return nil }
+    let left = point.x <= bounds.minX + side
+    let right = point.x >= bounds.maxX - side
     if mode == .midi { return left ? .left : right ? .right : nil }
     let corner = bottomCornerSide(in: bounds)
     if point.y <= bounds.minY + corner {
@@ -1930,11 +2217,11 @@ enum OverlayResizeHit: Sendable {
     if mode == .midi {
       return [
         (
-          NSRect(x: bounds.minX, y: bounds.minY, width: band, height: bounds.height),
+          NSRect(x: bounds.minX, y: bounds.minY, width: midiBand, height: bounds.height),
           cursor(for: .left)
         ),
         (
-          NSRect(x: bounds.maxX - band, y: bounds.minY, width: band, height: bounds.height),
+          NSRect(x: bounds.maxX - midiBand, y: bounds.minY, width: midiBand, height: bounds.height),
           cursor(for: .right)
         ),
       ]
@@ -1965,14 +2252,15 @@ enum OverlayResizeHit: Sendable {
   /// pixels transparent: the rounded corners. Every rect lies inside a resize
   /// zone, so the pad never takes a click that the content receives today.
   static func grabPadRects(in bounds: NSRect, mode: OverlayPresentationMode) -> [NSRect] {
-    guard mode != .mini, bounds.width > band * 2, bounds.height > band * 2 else { return [] }
+    let side = band(for: mode)
+    guard mode != .mini, bounds.width > side * 2, bounds.height > side * 2 else { return [] }
     let b = band
     let w = bounds.width
     let h = bounds.height
     if mode == .midi {
       return [
-        NSRect(x: 0, y: 0, width: b, height: h),
-        NSRect(x: w - b, y: 0, width: b, height: h),
+        NSRect(x: 0, y: 0, width: midiBand, height: h),
+        NSRect(x: w - midiBand, y: 0, width: midiBand, height: h),
       ]
     }
     let t = topBand
@@ -2052,6 +2340,14 @@ extension NSPanel {
       // selection must not swallow the bubble's copy chord.
       if textView.isSelectable, textView.selectedRange().length > 0 {
         textView.copy(nil)
+        return true
+      }
+      let before = NSPasteboard.general.changeCount
+      _ = textView.nextResponder?.tryToPerform(#selector(NSText.copy(_:)), with: nil)
+      if NSPasteboard.general.changeCount == before {
+        _ = NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
+      }
+      if NSPasteboard.general.changeCount != before {
         return true
       }
     } else if let responder = firstResponder,

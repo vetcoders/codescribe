@@ -10028,6 +10028,12 @@ public struct CsChannelRosterState: Equatable, Hashable {
      * the reader, not the conversation behind it.
      */
     public var unreadSinceUnixMs: Int64?
+    /**
+     * Milliseconds since the Unix epoch of the last heartbeat of a
+     * follower that is no longer alive: when the agent was last there.
+     * `None` = a live follower, no lease, or no claim.
+     */
+    public var lastHeartbeatUnixMs: Int64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -10064,7 +10070,12 @@ public struct CsChannelRosterState: Equatable, Hashable {
          * unacknowledged delivery; `None` = no backlog or no follower. The
          * overlay's "alive but not reading" layer: a process heartbeat proves
          * the reader, not the conversation behind it.
-         */unreadSinceUnixMs: Int64?) {
+         */unreadSinceUnixMs: Int64?,
+        /**
+         * Milliseconds since the Unix epoch of the last heartbeat of a
+         * follower that is no longer alive: when the agent was last there.
+         * `None` = a live follower, no lease, or no claim.
+         */lastHeartbeatUnixMs: Int64? = nil) {
         self.channel = channel
         self.audience = audience
         self.provider = provider
@@ -10078,6 +10089,7 @@ public struct CsChannelRosterState: Equatable, Hashable {
         self.codexThreadUrl = codexThreadUrl
         self.codexThreadLocal = codexThreadLocal
         self.unreadSinceUnixMs = unreadSinceUnixMs
+        self.lastHeartbeatUnixMs = lastHeartbeatUnixMs
     }
 
 
@@ -10106,7 +10118,8 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
                 terminalDetected: FfiConverterOptionBool.read(from: &buf),
                 codexThreadUrl: FfiConverterOptionString.read(from: &buf),
                 codexThreadLocal: FfiConverterOptionBool.read(from: &buf),
-                unreadSinceUnixMs: FfiConverterOptionInt64.read(from: &buf)
+                unreadSinceUnixMs: FfiConverterOptionInt64.read(from: &buf),
+                lastHeartbeatUnixMs: FfiConverterOptionInt64.read(from: &buf)
         )
     }
 
@@ -10124,6 +10137,7 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.codexThreadUrl, into: &buf)
         FfiConverterOptionBool.write(value.codexThreadLocal, into: &buf)
         FfiConverterOptionInt64.write(value.unreadSinceUnixMs, into: &buf)
+        FfiConverterOptionInt64.write(value.lastHeartbeatUnixMs, into: &buf)
     }
 }
 
@@ -14379,6 +14393,11 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var channelModifier: String
     /**
+     * Display name of the shared channel 0 (`SHARED_CHANNEL_NAME`); empty
+     * means the interface's default name ("Shared" / "Wspólny").
+     */
+    public var sharedChannelName: String
+    /**
      * Fn records dictation (Hold Fn/Globe or the Fn tap), so Settings offers
      * no Fn channel modifier.
      */
@@ -14608,6 +14627,10 @@ public struct CsSettings: Equatable, Hashable {
          * differ from the stored choice. Command is not a value.
          */channelModifier: String,
         /**
+         * Display name of the shared channel 0 (`SHARED_CHANNEL_NAME`); empty
+         * means the interface's default name ("Shared" / "Wspólny").
+         */sharedChannelName: String,
+        /**
          * Fn records dictation (Hold Fn/Globe or the Fn tap), so Settings offers
          * no Fn channel modifier.
          */fnRecordsDictation: Bool,
@@ -14740,6 +14763,7 @@ public struct CsSettings: Equatable, Hashable {
         self.ledgerSensitivity = ledgerSensitivity
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
+        self.sharedChannelName = sharedChannelName
         self.fnRecordsDictation = fnRecordsDictation
         self.fnBindingRecordsDictation = fnBindingRecordsDictation
         self.ctrlRecordsDictation = ctrlRecordsDictation
@@ -14845,6 +14869,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 ledgerSensitivity: FfiConverterInt32.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
+                sharedChannelName: FfiConverterString.read(from: &buf),
                 fnRecordsDictation: FfiConverterBool.read(from: &buf),
                 fnBindingRecordsDictation: FfiConverterBool.read(from: &buf),
                 ctrlRecordsDictation: FfiConverterBool.read(from: &buf),
@@ -14938,6 +14963,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterInt32.write(value.ledgerSensitivity, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)
+        FfiConverterString.write(value.sharedChannelName, into: &buf)
         FfiConverterBool.write(value.fnRecordsDictation, into: &buf)
         FfiConverterBool.write(value.fnBindingRecordsDictation, into: &buf)
         FfiConverterBool.write(value.ctrlRecordsDictation, into: &buf)

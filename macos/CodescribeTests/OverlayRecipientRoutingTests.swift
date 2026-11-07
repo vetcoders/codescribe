@@ -39,10 +39,11 @@ final class OverlayRecipientRoutingTests: XCTestCase {
       seven = try Self.agent("7", session: "routing-seven")
       apply([all, inbox, four, six, seven])
       state.publishConversationText = { [weak self] owner, text, _, peers in
-        guard let self else { return }
+        guard let self else { return .empty }
         publications.append(
           Publication(owner: owner?.id, text: text, alsoSentTo: peers.map(\.id).sorted()))
         if let id = owner?.id, refusing.contains(id) { throw CocoaError(.fileWriteNoPermission) }
+        return .empty
       }
     }
 
@@ -50,7 +51,7 @@ final class OverlayRecipientRoutingTests: XCTestCase {
       let owner = try XCTUnwrap(
         OverlayConversationOwner(row: [
           "provider": "codex", "provider_session_id": session,
-          "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
+          "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)!,
           "channel": digit, "name": "Agent \(digit)",
         ]))
       return .init(id: owner.id, channel: digit, name: owner.name, owner: owner, messages: [])

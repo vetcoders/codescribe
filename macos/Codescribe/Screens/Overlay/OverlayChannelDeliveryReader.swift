@@ -227,10 +227,9 @@ actor OverlayChannelDeliveryReader {
         guard let provider = binding["provider"] as? String,
           let session = binding["provider_session_id"] as? String
         else { continue }
-        let identity = SHA256.hash(
-          data: Data([provider.lowercased(), session].joined(separator: "\0").utf8)
-        )
-        .prefix(16).map { String(format: "%02x", $0) }.joined()
+        guard
+          let identity = AgentPlaybackIdentity.leaseIdentifier(provider: provider, session: session)
+        else { continue }
         let file = leasesURL.appendingPathComponent(identity + ".json")
         if !selected.contains(file) { selected.append(file) }
       }
@@ -359,7 +358,7 @@ actor OverlayChannelDeliveryReader {
       guard owners.count == 1, let lease = owners.first,
         let path = lease["bus"] as? String,
         let owner = OverlayConversationOwner(
-          lease: lease, channel: channel, name: binding["audience"] as? String ?? "")
+          lease: lease, channel: channel, name: OverlayChannelDelivery.displayName(of: binding))
       else { continue }
       rosterOwners.append(owner)
       let bus = URL(fileURLWithPath: path).standardizedFileURL

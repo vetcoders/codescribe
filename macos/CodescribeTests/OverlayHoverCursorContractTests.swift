@@ -35,10 +35,13 @@ final class OverlayHoverCursorContractTests: XCTestCase {
   /// admissible rest luminance is 0.24…0.58 (dark) and 0.04…0.11 (light);
   /// muted (0.36 and 0.07) sits inside both.
   static let restToHoverMinimum = 1.5
-  /// The text floor Tokens.swift proves for its ink rungs. eb71d5617 gave the
-  /// available controls a readable idle ink; a dimmer rest must keep that on
-  /// every sheet shade, including warm carbon and travertine.
-  static let restToSheetMinimum = 4.5
+  /// The non-text floor (WCAG 1.4.11) for an icon at rest on every sheet
+  /// shade, including warm carbon and travertine. These are icons, not text
+  /// (L8, 2026-11-06): they rest in the system's secondary label, 3.6–3.9:1 on
+  /// the light sheets. The text floor of 4.5 is not reachable for them with a
+  /// system rung: the only one above it is the label ink, which is the
+  /// hover ink, and rest must stay 1.5:1 apart from hover.
+  static let restToSheetMinimum = 3.0
   /// An available control must not be read as a disabled one (muted at 35 %).
   /// Muted against disabled measures 3.3–4.4:1 across all shades.
   static let restToDisabledMinimum = 2.0
@@ -156,8 +159,11 @@ final class OverlayHoverCursorContractTests: XCTestCase {
 
       let disabled = AudioControlsFixture(palette: palette, sheet: shade.hex, state: .disabled)
       defer { disabled.close() }
+      // Muted ink is the system secondary label, translucent by itself; the
+      // disabled control draws it at 35 % of its own alpha.
       let expected = token(
-        OverlayColorToken(palette.mutedText.rgb, alpha: 0.35).composited(over: sheet))
+        OverlayColorToken(palette.mutedText.rgb, alpha: palette.mutedText.alpha * 0.35)
+          .composited(over: sheet))
       let disabledSquares = try disabled.squares()
       let disabledRest = try disabled.render()
       for (name, square) in zip(Self.audioNames, disabledSquares) {

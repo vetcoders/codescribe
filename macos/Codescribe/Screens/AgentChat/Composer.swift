@@ -280,7 +280,7 @@ struct Composer: View {
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(CSColor.amber.opacity(0.28), lineWidth: 1)
+          .strokeBorder(CSColor.hairline(CSAlpha.line), lineWidth: 1)
       )
     }
   }

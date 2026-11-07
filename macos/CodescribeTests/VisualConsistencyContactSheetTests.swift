@@ -760,10 +760,20 @@ private final class SheetRun {
       expect(abs(scale - scaleY) < 0.05, "\(id) pixel scale x \(scale) != y \(scaleY)")
 
       let stats = scanPixels(bitmap)
-      expect(
-        stats.inkRatio > inkRatioFloor,
-        "\(id) ink ratio \(stats.inkRatio) over \(stats.sampleCount) samples looks blank (\(stats.alphaSource))"
-      )
+      if surface == "tray" {
+        // The tray is a translucent menu: since the system materials its
+        // capture is mostly transparent, so pixel coverage measures the
+        // glass, not the menu (decision (c) of the gate repair round,
+        // 2026-11-06). The tray is judged by its content: the separate
+        // bands of ink its rows draw down the capture.
+        let bands = inkBands(bitmap)
+        expect(bands >= 3, "\(id) tray draws \(bands) bands of ink (\(stats.alphaSource))")
+      } else {
+        expect(
+          stats.inkRatio > inkRatioFloor,
+          "\(id) ink ratio \(stats.inkRatio) over \(stats.sampleCount) samples looks blank (\(stats.alphaSource))"
+        )
+      }
       if surface == "overlay" {
         expect(
           stats.maxCornerAlpha < 0.2,
@@ -1068,6 +1078,29 @@ private struct PixelScan {
   var luminance: Double?
   var maxCornerAlpha: Double
   var alphaSource: String
+}
+
+/// The separate horizontal bands of ink down a capture: each band is a run
+/// of scan lines holding at least one opaque sample. A row of a menu draws
+/// one band whatever material sits behind it; a blank capture draws none.
+private func inkBands(_ bitmap: NSBitmapImageRep) -> Int {
+  let width = bitmap.pixelsWide
+  let height = bitmap.pixelsHigh
+  let strideX = max(1, width / 160)
+  var bands = 0
+  var inBand = false
+  for y in stride(from: 0, to: height, by: 2) {
+    var inked = false
+    for x in stride(from: 0, to: width, by: strideX) {
+      if let alpha = bitmap.colorAt(x: x, y: y)?.alphaComponent, Double(alpha) > inkAlphaFloor {
+        inked = true
+        break
+      }
+    }
+    if inked, !inBand { bands += 1 }
+    inBand = inked
+  }
+  return bands
 }
 
 private func scanPixels(_ bitmap: NSBitmapImageRep) -> PixelScan {

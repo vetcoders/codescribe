@@ -487,11 +487,8 @@ private struct ThreadDetail: View {
       conversationColumn
       if isContextOpen {
         HStack(spacing: 0) {
-          // Runs up through the titlebar like the sidebar edge: the header
-          // glass covers the conversation, not the panel.
           Divider()
             .frame(width: AgentWindowMetrics.contextPanelDividerWidth)
-            .ignoresSafeArea(.container, edges: .top)
           AgentContextPanel(
             thread: store.currentThread,
             close: { isContextOpen = false },
@@ -501,6 +498,7 @@ private struct ThreadDetail: View {
         .transition(.move(edge: .trailing).combined(with: .opacity))
       }
     }
+    .modifier(CSDetailHeaderGlass())
     .animation(.easeOut(duration: CSMotion.Tempo.hover), value: isContextOpen)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(CSColor.sheet)
@@ -517,11 +515,10 @@ private struct ThreadDetail: View {
     }
   }
 
-  /// The header glass is measured on the turns, so one plane covers the
-  /// window bar above the conversation and the turns scroll beneath it.
+  /// The header glass covers the detail area above both the conversation and
+  /// the optional context column, while the turns scroll beneath it.
   private var conversationColumn: some View {
     conversation
-      .modifier(CSDetailHeaderGlass())
       .modifier(AgentScrollBottomBar { composerDock })
       .frame(
         minWidth: AgentWindowMetrics.detailMinWidth,
@@ -660,7 +657,7 @@ private struct QueuedTurnRow: View {
         Button("Save") { commitEdit() }
           .csFocusRing()
           .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(CSColor.oliveLight)
+          .foregroundStyle(CSColor.chromeAccent)
         Button("Cancel") { isEditing = false }
           .csFocusRing()
           .font(CSFont.mono(10, .medium))
@@ -746,7 +743,7 @@ struct ToolApprovalCard: View {
       if let command = request.command {
         Text(verbatim: "$ \(command)")
           .font(CSFont.mono(11, .medium))
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.secondaryInk)
           .textSelection(.enabled)
       }
       if let cwd = request.cwd {
@@ -798,7 +795,7 @@ struct ToolApprovalCard: View {
     .background(Color.primary.opacity(CSAlpha.subtle))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(CSColor.amber.opacity(0.35), lineWidth: 1)
+        .strokeBorder(CSColor.hairline(CSAlpha.line), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }

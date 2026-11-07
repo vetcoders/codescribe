@@ -13,7 +13,7 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     return try XCTUnwrap(
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": session,
-        "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
+        "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)!,
         "channel": "2", "name": "Fixture agent",
       ]))
   }
@@ -37,7 +37,10 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     let controller = OverlayIntercomWidgetController(
       state: state, textScale: TextScaleController(key: suite), desktopStore: store)
     defer { controller.invalidate() }
-    state.publishConversationText = { _, _, _, _ in XCTFail("Presentation must not send") }
+    state.publishConversationText = { _, _, _, _ in
+      XCTFail("Presentation must not send")
+      return .empty
+    }
     var archiveCalls = 0
     state.archiveAgentCommand = { actual, release in
       XCTAssertEqual(actual, owner)
@@ -88,7 +91,10 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     let controller = OverlayIntercomWidgetController(
       state: state, textScale: TextScaleController(key: suite), desktopStore: store)
     defer { controller.invalidate() }
-    state.publishConversationText = { _, _, _, _ in XCTFail("Docking must not send") }
+    state.publishConversationText = { _, _, _, _ in
+      XCTFail("Docking must not send")
+      return .empty
+    }
     XCTAssertTrue(controller.detach(.init(digit: owner.channel, conversation: conversation)))
     let instance = try XCTUnwrap(store.load().instances.first)
     controller.closeInstance(instance.id)
@@ -180,7 +186,10 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     defer { defaults.removePersistentDomain(forName: suite) }
     let state = OverlayState()
     let generation = state.captureGeneration
-    state.publishConversationText = { _, _, _, _ in XCTFail("Header gestures must not send") }
+    state.publishConversationText = { _, _, _, _ in
+      XCTFail("Header gestures must not send")
+      return .empty
+    }
     let panel = IntercomGestureWitnessPanel()
     let controller = OverlayIntercomWidgetController(
       state: state, textScale: TextScaleController(key: suite),

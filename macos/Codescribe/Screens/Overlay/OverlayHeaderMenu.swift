@@ -1,23 +1,21 @@
 import AppKit
 import SwiftUI
 
-/// Text marks of the header's two content controls, one character each, from
-/// the Dingbats family of the roster's ❖ so the header reads as one set.
-/// Fonts every macOS ships cover both (Zapf Dingbats, Menlo). The Legacy
-/// Computing robots (U+1CC5A…, U+1CDF6) are covered by neither the system nor
-/// the bundled fonts and would paint as missing-glyph boxes.
+/// Marks of the header's two content controls. The agent roster is one
+/// Dingbats character, the ✦ of the roster's ❖ family, which every macOS font
+/// cascade covers (Zapf Dingbats, Menlo). The transcription is the system
+/// `text.quote` symbol from the icon catalog (`CSIcon.transcription`), one
+/// mark in every form of the bar; the hand and the pen it replaces were one
+/// function, and `note.text` read as a calendar at 11 pt.
 enum OverlayHeaderGlyph {
   /// ✦ the agent roster.
   static let agents = "\u{2726}"
-  /// ✍︎ the transcription; U+FE0E pins the monochrome text presentation.
-  static let transcription = "\u{270D}\u{FE0E}"
+  /// The transcription's system symbol.
+  static let transcriptionSymbol = CSIcon.transcription.systemName
 
-  /// Size inside the 22 pt header circle at which each mark carries the
-  /// visual weight of the 9 pt semibold symbols beside it. The hand is a wide,
-  /// thin outline and needs two points more than the solid star.
-  static func pointSize(_ glyph: String) -> CGFloat {
-    glyph == transcription ? 13 : 11
-  }
+  /// Size inside the 22 pt header circle at which the ✦ carries the visual
+  /// weight of the 9 pt semibold symbols beside it.
+  static let pointSize: CGFloat = 11
 
   /// Menus take images, not text runs: the same mark as a template image, so
   /// the secondary-click menu shows what the header button shows.
@@ -33,6 +31,22 @@ enum OverlayHeaderGlyph {
     }
     image.isTemplate = true
     return image
+  }
+}
+
+/// The transcription control's mark. Chosen, it is a window state like the
+/// pin: primary ink on the chrome's neutral wash (`OverlayHeaderAccent.state`),
+/// never the listening terracotta; at rest the muted ink on its plate.
+struct OverlayTranscriptionGlyph: View {
+  let selected: Bool
+  let palette: OverlayAppearancePalette
+
+  var body: some View {
+    OverlayMicrophoneGlyph(
+      symbol: OverlayHeaderGlyph.transcriptionSymbol,
+      tint: selected
+        ? OverlayHeaderAccent.state.selectionTint(in: palette) : palette.mutedText.color,
+      plateOpacity: selected ? 0 : 0.12)
   }
 }
 
@@ -62,37 +76,59 @@ struct OverlayHeaderMenu: View {
       Label {
         Text("Transcription")
       } icon: {
-        Image(nsImage: OverlayHeaderGlyph.menuImage(OverlayHeaderGlyph.transcription))
+        Image(systemName: OverlayHeaderGlyph.transcriptionSymbol)
       }
     }
 
     Divider()
 
+    // Position: the mode first, the place under it (L17, 2026-11-06). The
+    // first level is two native toggles with exactly one checkmark, Free
+    // motion or Fixed position; the six places live in their own submenu,
+    // the remembered one checked even while Free motion is on. Choosing a
+    // place switches to Fixed position and moves the panel there; choosing
+    // Fixed position returns the panel to the remembered place. A native
+    // menu item that opens a submenu carries neither a checkmark nor an
+    // action, so the mode and the places are separate items.
     Section {
-      ForEach(OverlayAnchor.allCases) { anchor in
-        Button {
-          state.selectPlacementAnchor(anchor)
-        } label: {
-          Label(anchor.label, systemImage: menuImage(for: anchor))
+      Toggle(
+        isOn: Binding(
+          get: { state.freeMotion },
+          set: { state.setFreeMotion($0) })
+      ) {
+        Label("Free motion", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+      }
+      .accessibilityIdentifier("overlay-free-motion")
+      Toggle(
+        isOn: Binding(
+          get: { !state.freeMotion },
+          set: { _ in state.setFreeMotion(false) })
+      ) {
+        Text(
+          "Fixed position",
+          comment: "Overlay placement menu: the overlay stays on its remembered place")
+      }
+      .accessibilityIdentifier("overlay-fixed-position")
+      Menu {
+        ForEach(OverlayAnchor.allCases) { anchor in
+          Toggle(
+            isOn: Binding(
+              get: { state.placementRemembered(anchor) },
+              set: { _ in state.selectPlacementAnchor(anchor) })
+          ) {
+            Label(anchor.label, systemImage: anchor.systemImage)
+          }
+          .accessibilityIdentifier("overlay-anchor-\(anchor.rawValue)")
         }
+      } label: {
+        Text(
+          "Place",
+          comment: "Overlay placement menu: submenu of the six places the overlay snaps to")
       }
     } header: {
       Text(
         "Anchor",
         comment: "Overlay placement menu: header above the screen positions the overlay snaps to")
-    }
-
-    Divider()
-
-    Button {
-      state.selectFreeMotion()
-    } label: {
-      Label(
-        "Free motion",
-        systemImage: state.freeMotion
-          ? "checkmark"
-          : "arrow.up.and.down.and.arrow.left.and.right"
-      )
     }
     Divider()
     Toggle(
@@ -136,12 +172,6 @@ struct OverlayHeaderMenu: View {
       : Text("Auto-fold: \(Int(state.autoFoldSeconds)) s of inactivity")
   }
 
-  private func menuImage(for anchor: OverlayAnchor) -> String {
-    guard !state.freeMotion, state.placementAnchor == anchor else {
-      return anchor.systemImage
-    }
-    return "checkmark"
-  }
 }
 
 /// The header's one window control: an explicit Pin / Unpin. Pinned is the
@@ -162,7 +192,9 @@ struct OverlayPinButton: View {
     } label: {
       OverlayMicrophoneGlyph(
         symbol: pinned ? OverlayControlSymbols.pinned : OverlayControlSymbols.pin,
-        tint: pinned ? CSColor.chromeAccent : palette.mutedText.color,
+        // A window state wears no colour (Founder, 2026-11-05): the pinned
+        // glyph is primary ink on the neutral wash of its chrome.
+        tint: pinned ? palette.primaryText.color : palette.mutedText.color,
         plateOpacity: 0
       )
       .contentShape(Circle())

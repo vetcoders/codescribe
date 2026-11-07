@@ -97,6 +97,16 @@ Historia zostaje.”) and `Check requests` („Sprawdź prośby”) — all thre
 `translated`, the wording is the Founder's own — plus the busy form
 `Checking…` („Sprawdzanie…”, `needs_review`).
 
+The 2026-11-05 General-page review shortens the automatic transcription-language
+choice to `Auto` in both English and Polish, reusing `CsLanguage.displayName`
+without changing the stored `auto` value or recognition behavior. Its helper
+now reads `Automatically detects the transcription language.`
+(„Automatycznie wykrywa język transkrypcji.”). Both revised Polish strings are
+agent drafts marked `needs_review` for the visual review. The transcription-language and
+appearance controls share the larger of their native localized fitting widths;
+the interface-language control keeps its own width. Setup and System Settings
+actions use the existing text-only `SettingsChipButton`, as Save changes does.
+
 The Founder's rounds 5–8 (Shortcuts & control, the microphone card, Providers
 and AI models, plus the one Settings-wide Refresh chip) retire twenty-two keys
 whose rows were shortened or whose headings were deduplicated, and add
@@ -325,6 +335,13 @@ Swift-side notes:
   key-verification failure separately from failure to save the verified key
   on this Mac; checking and saving use separate catches. No bridge error
   prose is parsed to determine the summary.
+- The Details line itself was English in the Polish interface (Founder,
+  2026-11-04: "license signature verification failed"). `LicenseReasonCopy`
+  (`Core/CsErrorPresentation.swift`) now recognises the six stable `LicenseError`
+  reasons and says them in the interface language; an unknown reason stays
+  verbatim. This is the one place Swift matches bridge prose, kept because the
+  Rust side documents those strings as stable; the contract change remains
+  B3's: `CsError::License` should carry the reason as a code.
 - `OnboardingViewModel.lastError` receives bridge text at five sites and is read
   by no view. Those messages never reach a person today.
 
