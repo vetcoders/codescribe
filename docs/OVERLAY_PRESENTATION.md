@@ -371,7 +371,11 @@ the chips, the roster badge, the card), wear the text tone: not the amber
 that means warning and waiting, not the violet that means your voice. The
 dot on the Agents button itself (`attentionUnread`) says a message waits on
 channel 0 or in your inbox (10), the mailboxes mini has no other sign for;
-an agent's own unread replies stay on its chip and row. The chip opens the channel's conversation
+an agent's own unread replies stay on its chip and row. On a bar chip (and
+on a stacked pill's circle) the unread dot is a 5 pt badge set on the
+outline, its centre on the rounded edge at 45°, with a 1.5 pt knockout in
+the bar's sheet colour between it and the outline (`OverlayChannelUnreadMark`,
+L14, 2026-11-06); the folded rail keeps its count capsule. The chip opens the channel's conversation
 through `onSelectConversation`, the path `selectChannelConversation` uses.
 The antenna and the moon are sibling buttons with their own hit targets;
 they change reception through `OverlayBroadcastPolicyLedger.change`, never

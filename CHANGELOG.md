@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Overlay bar: the unread dot on an agent's pill is smaller and sits on the pill's edge with a narrow gap in the bar's colour around it, like the system's badges, instead of a large dot stuck to the corner. Its colour is unchanged.
 - Overlay bar and agents roster: secondary text (times, descriptions, message previews, row states, hints, the take timer and the take's detail lines) is in the regular text colour instead of the system grey, which was hard to read on the light sheets; the delivered and read marks beside an agent's name are in the text colour too, the heavier stroke still meaning read. Icons at rest stay grey.
 - Overlay bar: the right-click menu shows a checkmark on the chosen position, and **Free motion** is a switch with its own checkmark. Turning Free motion off puts the overlay back on the last chosen position; choosing a position still turns Free motion off. Before, no position showed a checkmark and Free motion looked as if it did nothing.
 - Overlay bar: an agent that has stopped reading its messages shows the green dot with the bold "!" on its hover card, as in the agents list and the Bus window, instead of the "zzz" that means Do not disturb.

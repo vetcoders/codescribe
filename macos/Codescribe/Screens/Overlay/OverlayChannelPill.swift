@@ -123,11 +123,8 @@ struct OverlayChannelPill: View {
           } else if form == .rail && display.unreadCount > 0 {
             railUnreadBadge
           } else if display.unread && form != .stacked {
-            Circle()
-              .fill(palette.primaryText.color)
-              .frame(width: 6 * textScale, height: 6 * textScale)
-              .offset(x: 1, y: -1)
-              .accessibilityHidden(true)
+            OverlayChannelUnreadMark(palette: palette, scale: textScale)
+              .offset(Self.unreadMarkOffset(outlineRadius: height / 2, scale: textScale))
           }
         }
         // A stacked pill's caption belongs to its button, so the hover and
@@ -383,11 +380,9 @@ struct OverlayChannelPill: View {
         // On a stacked pill the unread dot marks the circle, where the chip
         // form draws it at the capsule's corner.
         if form == .stacked && display.unread {
-          Circle()
-            .fill(palette.primaryText.color)
-            .frame(width: 6 * textScale, height: 6 * textScale)
-            .offset(x: 1, y: -1)
-            .accessibilityHidden(true)
+          OverlayChannelUnreadMark(palette: palette, scale: textScale)
+            .offset(
+              Self.unreadMarkOffset(outlineRadius: Self.digitCircle * textScale / 2, scale: textScale))
         }
       }
   }
@@ -412,6 +407,25 @@ extension OverlayChannelPill {
   static let speakingDotScale: CGFloat = 0.75
   static let speakingDotGap: CGFloat = 1
   static let chipGap: CGFloat = 4
+  /// The unread mark (L14, 2026-11-06): a 5 pt dot in the text ink set on
+  /// the outline it marks, as the system's badges sit, with a 1.5 pt
+  /// knockout in the bar's sheet colour between the dot and the outline.
+  static let unreadMarkDiameter: CGFloat = 5
+  static let unreadMarkKnockout: CGFloat = 1.5
+
+  /// The mark's whole width, knockout included.
+  static func unreadMarkOuterDiameter(scale: CGFloat) -> CGFloat {
+    (unreadMarkDiameter + 2 * unreadMarkKnockout) * scale
+  }
+
+  /// Where a top-trailing aligned mark moves so its centre stands on the
+  /// rounded outline at 45°, the point of a capsule or a circle with
+  /// `outlineRadius` nearest its frame's top-trailing corner.
+  static func unreadMarkOffset(outlineRadius: CGFloat, scale: CGFloat) -> CGSize {
+    let inset = outlineRadius * (1 - 1 / 2.0.squareRoot())
+    let half = unreadMarkOuterDiameter(scale: scale) / 2
+    return CGSize(width: half - inset, height: inset - half)
+  }
   /// A stacked pill's side margin: with the map's 4 pt chip spacing two
   /// captions stand at least 8 pt apart, and a caption never overlaps.
   static let stackedPadding: CGFloat = 2
@@ -606,5 +620,26 @@ private struct OverlayChannelPillHint: ViewModifier {
     } else {
       content
     }
+  }
+}
+
+/// The pill's unread mark (L14): a small dot in the text ink with a narrow
+/// knockout ring in the bar's sheet colour, so it reads as a badge set on
+/// the pill's outline instead of a blot stuck to it. The colour is the 4.11
+/// canon's; only the shape changed.
+struct OverlayChannelUnreadMark: View {
+  let palette: OverlayAppearancePalette
+  let scale: CGFloat
+
+  var body: some View {
+    Circle()
+      .fill(palette.primaryText.color)
+      .frame(
+        width: OverlayChannelPill.unreadMarkDiameter * scale,
+        height: OverlayChannelPill.unreadMarkDiameter * scale
+      )
+      .padding(OverlayChannelPill.unreadMarkKnockout * scale)
+      .background(palette.desktopBackground.color, in: Circle())
+      .accessibilityHidden(true)
   }
 }

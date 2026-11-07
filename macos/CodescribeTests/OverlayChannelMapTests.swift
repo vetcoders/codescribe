@@ -1422,6 +1422,33 @@ final class OverlayChannelMapTests: XCTestCase {
     }
   }
 
+  // MARK: - The unread mark (L14)
+
+  /// The unread mark's centre stands on the rounded outline it marks (the
+  /// chip's capsule, the stacked pill's circle) at every text scale, so it
+  /// sits on the edge like a system badge, and it is smaller than the 6 pt
+  /// dot it replaces, with its knockout around it.
+  func testUnreadMarkSitsOnTheOutlineItMarks() {
+    for scale in [CGFloat(1), 1.25] {
+      let radii = [
+        OverlayChannelPill.headerHeight / 2, OverlayChannelPill.digitCircle * scale / 2,
+      ]
+      for radius in radii {
+        let offset = OverlayChannelPill.unreadMarkOffset(outlineRadius: radius, scale: scale)
+        let half = OverlayChannelPill.unreadMarkOuterDiameter(scale: scale) / 2
+        // From the frame's top-trailing corner: the aligned mark's centre
+        // moved by the offset, and the outline's arc centre.
+        let centre = CGPoint(x: -half + offset.width, y: half + offset.height)
+        let arc = CGPoint(x: -radius, y: radius)
+        XCTAssertEqual(
+          hypot(centre.x - arc.x, centre.y - arc.y), radius, accuracy: 0.001,
+          "scale \(scale), radius \(radius)")
+      }
+      XCTAssertLessThan(OverlayChannelPill.unreadMarkDiameter * scale, 6 * scale)
+      XCTAssertGreaterThan(OverlayChannelPill.unreadMarkKnockout, 0)
+    }
+  }
+
   // MARK: - A gone follower on the bar (L12)
 
   /// A gone agent keeps its name on the bar, so the bar is as wide as with
