@@ -31,6 +31,12 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
     override func viewDidMoveToWindow() {
       super.viewDidMoveToWindow()
       updateWindow?(window)
+      // Settings adopts its scene window through HostingWindowReader on the
+      // same turn. Retry after that owner has established full-size content.
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        updateWindow?(window)
+      }
     }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
   }
@@ -93,6 +99,7 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
         detach()
         return
       }
+      guard target.styleMask.contains(.fullSizeContentView) else { return }
       if window !== target {
         detach()
         guard
