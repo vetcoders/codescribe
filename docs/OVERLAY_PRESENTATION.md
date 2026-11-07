@@ -137,7 +137,11 @@ carries the meaning's colour (`OverlayStatusNotice`): an error's
 `exclamationmark.triangle.fill` on the orange, each with a dark "!"
 (`markInk`) as macOS draws its warnings, since the red and the orange alone
 stay under the 3:1 icon floor on the light sheets (red 2.4:1 on
-travertine); the dark mark on its fill clears it in both looks. A row's pending state ("connecting…") reads in the ink beside its
+travertine); the dark mark on its fill clears it in both looks. The coverage
+pill's microphone (`OverlayCoverageStatus`, a quiet input) keeps the warning's
+orange hue with only its brightness lowered (`microphoneWarning`) until it
+reads at 3:1 on every light sheet shade; the dark sheets take the orange
+as it is. A row's pending state ("connecting…") reads in the ink beside its
 spinner. Queue admission and provider acceptance are not delivered/read evidence.
 Skipped and unreceipted deliveries keep distinct marks and explanations; a
 message still held for withdrawal says "Held" under the preview and wears no

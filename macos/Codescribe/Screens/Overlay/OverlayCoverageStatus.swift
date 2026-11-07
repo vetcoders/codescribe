@@ -187,14 +187,16 @@ struct OverlayCoverageStatus: View {
       presented: $presented
     ) {
       // The words in the text ink, the warning's orange only on its icon
-      // (round 5 decision (a), 2026-11-07).
+      // (round 5 decision (a), 2026-11-07); the microphone in the orange's
+      // 3:1 rung (`microphoneWarning`).
       Label {
         Text(warning.chip)
           .foregroundStyle(palette.primaryText.color)
       } icon: {
         Image(systemName: warning.owner == .microphone ? "mic" : "info.circle")
           .foregroundStyle(
-            warning.owner == .microphone ? palette.processingStatus.color : palette.mutedText.color)
+            warning.owner == .microphone
+              ? palette.microphoneWarning.color : palette.mutedText.color)
       }
       .font(CSFont.ui(11, .medium))
       .lineLimit(1)

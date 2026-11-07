@@ -15,6 +15,11 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   let mutedText: OverlayColorToken
   let listeningStatus: OverlayColorToken
   let processingStatus: OverlayColorToken
+  /// The coverage pill's microphone glyph: `processingStatus`'s orange with
+  /// only its brightness lowered until it reads at the 3:1 non-text floor on
+  /// every sheet shade of this appearance (Bruno, 2026-11-07). The dark
+  /// sheets already clear it, so there it is `processingStatus` itself.
+  let microphoneWarning: OverlayColorToken
   /// `CSPalette.success`: the presence dot of a connected agent and a
   /// succeeded focus action; every other correct state is ink and a glyph.
   let successStatus: OverlayColorToken
@@ -42,6 +47,10 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     mutedText = OverlayColorToken(CSPalette.textMuted, in: appearance)
     listeningStatus = OverlayColorToken(CSPalette.terracottaLight, in: appearance)
     processingStatus = OverlayColorToken(CSPalette.amberLight, in: appearance)
+    microphoneWarning = processingStatus.darkened(
+      toContrast: 3.0,
+      on: (appearance == .dark ? SheetShade.darkChoices : SheetShade.lightChoices)
+        .map { OverlayColorToken($0.hex) })
     successStatus = OverlayColorToken(CSPalette.success, in: appearance)
     errorStatus = OverlayColorToken(CSPalette.dangerLight, in: appearance)
     agentAccent = OverlayColorToken(CSPalette.assistiveLight, in: appearance)
