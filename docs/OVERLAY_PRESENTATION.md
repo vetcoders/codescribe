@@ -397,14 +397,19 @@ shared hint panel is the list itself.
 One quick-access row leads the list (Founder, 2026-11-04): your inbox (10)
 as the envelope with its name, a chip that opens that conversation through
 `onSelectConversation` without touching the microphone, with the unread dot
-in the text tone and nothing else (no presence dot, no antenna or moon; the
-marks' width stays empty so the unread dots stand in one column). Channel 0
+in the text tone and nothing else (no presence dot, no antenna or moon, and
+no width kept for them: its unread dot stands at the right edge one gap
+after the chip, in the same column as the agents' unread dots). Channel 0
 has no row in any mode (Founder, 2026-11-07: channel 0 lives on the bar; the
 list keeps only the inbox); mini has no shortcut to it.
 An inbox without a current conversation has no row, as it has no rail pill
 (`hoverListRows`). Under it one low row per agent 1–9 in ascending order
 (`agentsHoverRows`), no header or cards, sized to its rows so the inbox and
-nine agents fit without scrolling. Columns: the
+nine agents fit without scrolling. The width is the widest row's own need
+(`OverlayAgentsHoverList.rowWidth`; Monika, 2026-11-07): an agent row is its
+chip, the antenna, the moon and the unread dot, the inbox row its chip and
+the unread dot, never less than 140 pt. A long inbox name above short agent
+names no longer widens the list by the marks it does not draw. Columns: the
 numbered `OverlayChannelPill` chip carrying the presence dot
 (`presenceDotKind`) between the digit and the agent's name (`nr · dot · name`, as the Bus window's roster rows; Founder, 2026-11-04), the antenna
 (channel-0 membership), the moon (do not disturb) and the unread dot in the

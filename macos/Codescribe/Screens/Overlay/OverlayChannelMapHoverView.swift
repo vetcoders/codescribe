@@ -162,22 +162,29 @@ struct OverlayAgentsHoverList: View {
   static let unreadDiameter: CGFloat = 6
   static let minimumWidth: CGFloat = 140
 
-  /// Sized to its rows: nine agents fit without a scroll view.
+  /// Sized to its rows: nine agents fit without a scroll view. The width is
+  /// the widest row's own need: an agent row is its chip, the antenna and
+  /// moon and the unread dot; the inbox row is its chip and the unread dot
+  /// only, so a long inbox name no longer pays for marks it does not draw.
   @MainActor
   static func size(rows: [OverlayAgentsHoverRow]) -> CGSize {
-    // Full names: the list is sized to its content, never truncated.
-    let chip =
-      rows.map {
-        OverlayChannelPill.chipWidth(
-          nameWidth: OverlayChannelPill.nameWidth($0.name, scale: 1), form: .chip, scale: 1,
-          presenceDot: !$0.mailbox)
-      }.max() ?? 0
-    let width =
-      2 * horizontalPadding + chip + 3 * columnGap + 2 * markSize + markGap + unreadDiameter
+    let content = rows.map(rowWidth).max() ?? 0
+    let width = 2 * horizontalPadding + content
     let count = CGFloat(rows.count)
     return CGSize(
       width: max(minimumWidth, ceil(width)),
       height: 2 * verticalPadding + count * rowHeight + max(0, count - 1) * rowSpacing)
+  }
+
+  /// One row without the list's padding. Full names: the list is sized to
+  /// its content, never truncated.
+  @MainActor
+  static func rowWidth(_ row: OverlayAgentsHoverRow) -> CGFloat {
+    let chip = OverlayChannelPill.chipWidth(
+      nameWidth: OverlayChannelPill.nameWidth(row.name, scale: 1), form: .chip, scale: 1,
+      presenceDot: !row.mailbox)
+    guard !row.mailbox else { return chip + columnGap + unreadDiameter }
+    return chip + 3 * columnGap + 2 * markSize + markGap + unreadDiameter
   }
 
   var body: some View {
@@ -248,33 +255,19 @@ private struct OverlayAgentsHoverListRow: View {
 
   var body: some View {
     HStack(spacing: OverlayAgentsHoverList.columnGap) {
-      // The presence dot sits between the digit and the name, as on the
-      // Bus window's roster rows (Founder, 2026-11-04): `nr · dot · name`.
-      // The inbox row has no presence: the envelope with its name, as the
-      // sidebar's card.
-      OverlayChannelPill(
-        form: .chip,
-        display: OverlayChannelPill.Display(
-          figure: row.kind == .inbox ? "" : row.digit,
-          symbol: row.kind == .inbox ? "envelope" : nil, name: row.name,
-          dot: row.mailbox ? nil : row.dot, disconnected: row.disconnected,
-          microphoneOpen: row.microphoneOpen, enabled: row.conversationID != nil),
-        hint: "", accessibilityText: String(localized: "Open conversation"),
-        identifier: "overlay-agents-hover-open-\(row.digit)", palette: palette,
-        textScale: 1, showsHint: false,
-        action: { if let id = row.conversationID { onOpen(id) } })
-      Spacer(minLength: 0)
-      // Two states each, as the roster's marks and the context menu's
-      // checkmark (Founder, 2026-11-04): lit or not. No third, greyed state
-      // for a policy the helper has not receipted; a receipt only confirms
-      // this app's own click. A mailbox has no reception: its row keeps the
-      // marks' width empty so the unread dots stand in one column.
-      HStack(spacing: OverlayAgentsHoverList.markGap) {
-        if row.mailbox {
-          Color.clear.frame(
-            width: 2 * OverlayAgentsHoverList.markSize + OverlayAgentsHoverList.markGap,
-            height: OverlayAgentsHoverList.markSize)
-        } else {
+      pill
+      if row.mailbox {
+        // No reception, so no marks and no reserved width: the pill takes the
+        // row and the unread dot stands at the right edge, in the agents'
+        // unread column (`rowWidth`).
+        unreadDot
+      } else {
+        Spacer(minLength: 0)
+        // Two states each, as the roster's marks and the context menu's
+        // checkmark (Founder, 2026-11-04): lit or not. No third, greyed
+        // state for a policy the helper has not receipted; a receipt only
+        // confirms this app's own click.
+        HStack(spacing: OverlayAgentsHoverList.markGap) {
           mark(
             symbol: policy.statusSymbol, lit: policy.member,
             litColor: OverlayReceptionMarks.antennaInk(palette).color,
@@ -287,21 +280,46 @@ private struct OverlayAgentsHoverListRow: View {
             identifier: "overlay-agents-hover-moon-\(row.digit)"
           ) { $0.moon.toggle() }
         }
+        unreadDot
       }
-      // New replies in the text tone: amber means warning, violet your voice.
-      Circle()
-        .fill(palette.primaryText.color)
-        .frame(
-          width: OverlayAgentsHoverList.unreadDiameter,
-          height: OverlayAgentsHoverList.unreadDiameter
-        )
-        .opacity(row.unread > 0 ? 1 : 0)
-        .accessibilityHidden(true)
     }
     .frame(height: OverlayAgentsHoverList.rowHeight)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(Text(verbatim: accessibilitySummary))
     .accessibilityIdentifier("overlay-agents-hover-row-\(row.digit)")
+  }
+
+  private var pill: some View {
+    // The presence dot sits between the digit and the name, as on the Bus
+    // window's roster rows (Founder, 2026-11-04): `nr · dot · name`. The
+    // inbox row has no presence: the envelope with its name, as the
+    // sidebar's card. It fills its row, so its unread dot reaches the right
+    // edge one gap after the pill.
+    OverlayChannelPill(
+      form: .chip,
+      display: OverlayChannelPill.Display(
+        figure: row.kind == .inbox ? "" : row.digit,
+        symbol: row.kind == .inbox ? "envelope" : nil, name: row.name,
+        dot: row.mailbox ? nil : row.dot, disconnected: row.disconnected,
+        microphoneOpen: row.microphoneOpen, enabled: row.conversationID != nil),
+      hint: "", accessibilityText: String(localized: "Open conversation"),
+      identifier: "overlay-agents-hover-open-\(row.digit)", palette: palette,
+      textScale: 1, showsHint: false,
+      action: { if let id = row.conversationID { onOpen(id) } }
+    )
+    .frame(maxWidth: row.mailbox ? .infinity : nil, alignment: .leading)
+  }
+
+  /// New replies in the text tone: amber means warning, violet your voice.
+  private var unreadDot: some View {
+    Circle()
+      .fill(palette.primaryText.color)
+      .frame(
+        width: OverlayAgentsHoverList.unreadDiameter,
+        height: OverlayAgentsHoverList.unreadDiameter
+      )
+      .opacity(row.unread > 0 ? 1 : 0)
+      .accessibilityHidden(true)
   }
 
   /// One sentence with every state the dots and marks show; a mailbox row

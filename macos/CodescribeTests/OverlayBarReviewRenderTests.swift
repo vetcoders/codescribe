@@ -520,6 +520,35 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     }
   }
 
+  /// The inbox under its Polish name above three agents with short names
+  /// (Monika, 2026-11-07): the list is as wide as its widest row's own need,
+  /// so the inbox's long name no longer leaves empty room right of the short
+  /// agent rows. The unread dots of the inbox and of agent 3 stand in one
+  /// column at the right edge. Drawn at 2× for review.
+  func testRenderAgentsHoverListWithInboxAndShortNames() throws {
+    func agent(_ digit: String, _ name: String, unread: Int) -> OverlayAgentsHoverRow {
+      OverlayAgentsHoverRow(
+        digit: digit, name: name, conversationID: "review-\(digit)", dot: .present,
+        status: "", microphoneOpen: false, disconnected: false, identity: nil, policy: .on,
+        unread: unread)
+    }
+    let rows = [
+      OverlayAgentsHoverRow(
+        kind: .inbox, digit: "10", name: "Twoja skrzynka", conversationID: "review-inbox",
+        dot: .idle, status: "", microphoneOpen: false, disconnected: false, identity: nil,
+        policy: .on, unread: 1),
+      agent("1", "As", unread: 0), agent("3", "Bo", unread: 2), agent("6", "Ola", unread: 0),
+    ]
+    for look in Look.allCases {
+      let model = OverlayAgentsHoverListModel()
+      model.rows = rows
+      try renderAlone(
+        OverlayAgentsHoverList(model: model, palette: look.palette),
+        size: OverlayAgentsHoverList.size(rows: rows), look: look,
+        name: "bar-hover-list-inbox-short", scale: 2)
+    }
+  }
+
   // MARK: - 9. An agent chip's hover card
 
   /// The card under a chip, alone: online with an unread reply and the

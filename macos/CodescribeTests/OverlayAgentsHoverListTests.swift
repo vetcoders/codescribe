@@ -369,16 +369,57 @@ final class OverlayAgentsHoverListTests: XCTestCase {
       nameWidth: 40, form: .chip, scale: 1, presenceDot: true)
     XCTAssertEqual(
       dotted - bare, OverlayAgentStatusDot.diameter + OverlayChannelPill.chipGap, accuracy: 0.001)
-    // A mailbox row has no presence dot, so its chip width omits the dot slot.
-    let mailboxLong = OverlayAgentsHoverRow(
-      kind: .inbox, digit: "10", name: "Konstantynopolitańczyk", conversationID: "10",
-      dot: .idle, status: "", microphoneOpen: false, disconnected: false, identity: nil,
-      policy: .on, unread: 0)
+    // A mailbox row has no presence dot and no marks: its chip omits the dot
+    // slot, and the row reserves no antenna or moon width, only one gap
+    // before the unread dot.
+    let mailboxLong = inboxRow("Konstantynopolitańczyk")
     let mailboxSize = OverlayAgentsHoverList.size(rows: [mailboxLong])
+    let list = OverlayAgentsHoverList.self
     XCTAssertEqual(
       long.width - mailboxSize.width,
-      OverlayAgentStatusDot.diameter + OverlayChannelPill.chipGap, accuracy: 0.001,
-      "a mailbox chip omits the presence dot width")
+      OverlayAgentStatusDot.diameter + OverlayChannelPill.chipGap + 2 * list.columnGap
+        + 2 * list.markSize + list.markGap, accuracy: 1,
+      "a mailbox row omits the presence dot and the marks")
+  }
+
+  /// Monika, 2026-11-07: the inbox's long name set the width of every agent
+  /// row, which reserved the antenna and moon beside it and left empty room
+  /// on the right of short agent rows. The list is now as wide as its widest
+  /// row's own need: narrower than the former formula (the widest chip plus
+  /// the marks) by at least the marks' width, and never narrower than an
+  /// agent row needs.
+  func testListIsAsWideAsItsWidestRowNotTheInboxPlusMarks() {
+    let list = OverlayAgentsHoverList.self
+    let rows = [
+      inboxRow("Twoja skrzynka"), row("1", name: "As"), row("3", name: "Bo"),
+      row("6", name: "Ola"),
+    ]
+    func chip(_ row: OverlayAgentsHoverRow) -> CGFloat {
+      OverlayChannelPill.chipWidth(
+        nameWidth: OverlayChannelPill.nameWidth(row.name, scale: 1), form: .chip, scale: 1,
+        presenceDot: !row.mailbox)
+    }
+    let marks = 2 * list.markSize + list.markGap
+    let former = max(
+      list.minimumWidth,
+      ceil(
+        2 * list.horizontalPadding + (rows.map(chip).max() ?? 0) + 3 * list.columnGap + marks
+          + list.unreadDiameter))
+    let width = list.size(rows: rows).width
+    XCTAssertLessThanOrEqual(width, former - marks, "former \(former), now \(width)")
+    let agentNeeds = rows.filter { !$0.mailbox }.map {
+      chip($0) + 3 * list.columnGap + marks + list.unreadDiameter
+    }
+    let widestAgent = agentNeeds.max() ?? 0
+    XCTAssertGreaterThanOrEqual(width, 2 * list.horizontalPadding + widestAgent)
+    XCTAssertGreaterThanOrEqual(width, 2 * list.horizontalPadding + list.rowWidth(rows[0]))
+    XCTAssertGreaterThanOrEqual(width, list.minimumWidth)
+  }
+
+  private func inboxRow(_ name: String) -> OverlayAgentsHoverRow {
+    OverlayAgentsHoverRow(
+      kind: .inbox, digit: "10", name: name, conversationID: "10", dot: .idle, status: "",
+      microphoneOpen: false, disconnected: false, identity: nil, policy: .on, unread: 1)
   }
 
   /// A scratch home with a managed copy of the real helper, the same
