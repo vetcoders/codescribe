@@ -83,30 +83,30 @@ struct OverlayChannelChipStatus: Equatable, Sendable {
   /// the reception line shows in the nominative, never declined.
   let channelZeroName: String
 
-  /// The newest message of the agent's conversation (L16, 2026-11-06): its
-  /// direction, its time and its fate in the roster's own words (Read,
-  /// Delivered, Held, … for a message to the agent; Spoken for a reply
-  /// played aloud; nil when there is none to say).
-  struct LastMessage: Equatable, Sendable {
-    let outgoing: Bool
+  /// Your last message in the agent's conversation: its time and the
+  /// roster's receipt reading for that message (`deliveryReceiptDisplay`:
+  /// Read, Delivered, Held, …; nil when it has none).
+  struct Sent: Equatable, Sendable {
     let at: Date?
-    let fate: String?
+    let status: String?
   }
 
-  /// When the agent was last heard: its newest reply's time. The roster
-  /// carries no time of a presence change, so the card says this instead
-  /// of "inactive since".
-  var lastHeard: Date? = nil
+  /// The agent's last reply: its time and the roster's preview of it
+  /// (`OverlayChannelStatusView.drawerPreview`).
+  struct Reply: Equatable, Sendable {
+    let at: Date?
+    let preview: String
+  }
+
+  /// When the agent was last there, for a follower that is no longer
+  /// alive: its lease's last heartbeat (`CsChannelRosterState`
+  /// `last_heartbeat_unix_ms`), never its newest message. Nil while alive,
+  /// without a lease or without a claim.
+  var lastHeartbeat: Date? = nil
   /// The project (repository) the agent works in, from its lease.
   var project: String? = nil
-  /// Whole minutes the live follower has not read its backlog, while it is
-  /// stalled (`unreadSince`).
-  var stalledMinutes: Int? = nil
-  var lastMessage: LastMessage? = nil
-  /// The microphone feeds this agent's channel now.
-  var microphoneOpen = false
-  /// The agent's replies are not played aloud (the roster's speaker).
-  var voiceMuted = false
+  var lastSent: Sent? = nil
+  var lastReply: Reply? = nil
 
   init(
     presence: Presence, stalled: Bool = false, reception: Reception, quiet: Bool = false,
@@ -183,7 +183,8 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
   /// The plain hint: `5 · Kuba · Ctrl+5`, or `0 · Ctrl+0`; without a chord
   /// `5 · Kuba` or `0`. It names the agent in full whatever the bar cuts its
   /// caption to. An agent's chip with a status shows its hover card instead
-  /// (`OverlayChannelChipHoverCard`), whose last line is the chord.
+  /// (`OverlayChannelChipHoverCard`), which leaves the chord to the pill's
+  /// context menu.
   func hint(modifier: OverlayChannelChordModifier) -> String {
     var parts = name.isEmpty ? [digit] : [digit, name]
     if let shortcut = modifier.shortcut(digit: digit) { parts.append(shortcut) }

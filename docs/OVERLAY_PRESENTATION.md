@@ -289,91 +289,96 @@ Hovering an agent's chip opens its card (`OverlayChannelChipHoverCard`), not
 the old `5 · Kuba · Ctrl+5`, which only repeated the button (Founder,
 2026-11-04). The card is a tight, non-interactive panel in the header's
 hint window (`OverlayHeaderControlChrome` with `hintContent`, sized from its
-measured lines, 200–240 pt) and states the agent's facts kept apart, each from
-the projection the roster row reads (`channelChipStatus`, carried as
-`OverlayChannelMapChip.status`):
+measured lines) and holds variant D of the mockup (Monika, 2026-11-07), four
+lines and nothing else, each fact from the projection the roster row reads
+(`channelChipStatus`, carried as `OverlayChannelMapChip.status`):
 
-1. **Presence** from the roster snapshot's `followerAlive`: `true` reads
-   "Online" for the current sample, `false` only "Not active" (a capped
-   discovery can report false for a live agent, so never a sure "Offline"),
-   `nil` "No data". A stalled follower (`hasStalledFollower`) adds "Not
-   reading". The dot before the name (`presenceDotKind`) shows this same
-   presence; neither it nor the channel 0 policy carries a delivery stage.
-   The card's line wears the same dot as the agents list and the Bus
-   window's roster (`OverlayAgentStatusDot`, one owner of its colour; L2,
-   2026-11-06): olive online, violet and blinking while the agent's reply
-   plays aloud (still violet under Reduce Motion), a muted ring for a gone
-   follower and a muted "?" without data. The speaking fact reaches the
-   card's status (`OverlayChannelChipStatus.speaking`) from the roster's
-   `speakingDigits`, the same set that gives the chip its speaking dot. A
-   stall is the same dot's `stalled` kind, olive with its bold "!", beside
-   "Not reading" (L6, 2026-11-06): a stall is not sleep, and "zzz" is the
-   moon's alone. **Rule (Founder, 2026-11-06):** "zzz" means only an agent
-   asleep under the moon (Do not disturb). A stall is something else, a live
-   agent without the moon that has not acknowledged reading for 10 minutes,
-   and everywhere it looks like the presence dot: green with "!". The
-   card's "Not reading" text stays. `OverlayChannelStatusView.statusSymbol(for:)` names no
-   stall glyph either; the Intercom's status mark draws the presence dot for
-   a stalled reader and an explicit glyph only for a gone one. The "!"
-   comes at the horizon itself, not with the next change on the bus:
-   `isStalled(now:)` reads the clock when a view draws and an unchanged
-   roster poll draws nothing, so `OverlayState` plans one wake for the
-   oldest backlog of a live follower plus the horizon
-   (`nextFollowerStall`, `followerStallDeadline`). The wake announces the
-   same `channelHudStates` again, so the bar, the list under ✦, the roster
-   and the Bus window draw the "!", and plans the next follower's wake; no
-   poll, and an unchanged roster keeps the wake it has (Tola IV.6,
-   2026-11-07).
-2. **Channel 0** from the policy as `OverlayBroadcastPolicyLedger` paints it,
-   two states like the roster's antenna and the context menu's checkmark,
-   with no unconfirmed third (Founder, 2026-11-04). The line is channel 0's
-   display name (`OverlaySharedChannelName`, carried as
-   `OverlayChannelChipStatus.channelZeroName`) in the nominative, never
-   declined and without "in channel" wording (L3, 2026-11-06): behind the
-   antenna in the ink (`primary`, not the agent violet) while the agent
-   hears it, behind the crossed antenna in the muted tone while it does not.
-   The moon takes the symbol's place and adds "Do not disturb", muted; off
-   channel 0 under the moon the crossed antenna stays and the moon stands
-   beside it, so the line shows what VoiceOver reads (Founder, 2026-11-06).
-   VoiceOver, which hears no antenna, reads "Hears: Shared (channel 0)" or
-   "Does not hear: Shared (channel 0)" (PL "Słyszy: Wspólny (kanał 0)"),
-   the name after a colon so it is never declined.
-3. **The newest message** (L16, 2026-11-06) from the conversation's
-   visible messages: an arrow for its direction (`arrow.up.right` yours,
-   `arrow.down.left` the agent's), its time and its fate in the roster's
-   own words: for yours the receipt line's reading
-   (`deliveryReceiptDisplay`: Read, Delivered, Held, …), for a reply
-   "Spoken" once its playback finished. No line without a message.
-4. **Audio** (L16): "Microphone open" while the HUD feeds the channel,
-   "Voice muted" while the roster's speaker mutes the agent's replies
-   (`mutedChannels`); one line when either is so, else none.
-5. **Unread** from `unreadCounts`: "N unread", or no line.
+```
+○ 4 · Tola · 5 min ago          ((·)) ☾
+Agy · Codescribe
+↗ 9:02 · Delivered
+↙ 8:51  Tola → You: Header cut checked: the bar holds…
+```
 
-**Since when** (L16) rides the presence line: a stalled reader says
-"Not reading for N min" (`stalledMinutes`, from the roster's
-`unread_since_unix_ms`), a gone agent "last heard 20:36", the time of its
-newest reply. The roster snapshot carries no time of a presence change, so
-"Not active for 3 h" is not drawn; it would need a field such as a
-follower-state-since timestamp on `CsChannelRosterState`.
+1. **The header.** The presence dot of the agents list and the Bus window's
+   roster (`OverlayAgentStatusDot`, one owner of its colour; L2,
+   2026-11-06; `OverlayChannelChipHoverCard.presenceDot`): olive while the
+   roster snapshot's `followerAlive` is `true`, violet and blinking while
+   the agent's reply plays aloud (still violet under Reduce Motion; the
+   speaking fact comes from the roster's `speakingDigits`, the set that
+   gives the chip its speaking dot), the muted ring for a gone follower,
+   a muted "?" without data, and for a stall (`hasStalledFollower`) the
+   olive dot with its bold "!" (L6, 2026-11-06). **Rule (Founder,
+   2026-11-06):** "zzz" means only an agent asleep under the moon (Do not
+   disturb); a stall, a live agent without the moon that has not
+   acknowledged reading for 10 minutes, looks like the presence dot, green
+   with "!". The "!" comes at the horizon itself, not with the next change
+   on the bus: `OverlayState` plans one wake for the oldest backlog of a
+   live follower plus the horizon (`nextFollowerStall`,
+   `followerStallDeadline`) and announces the same `channelHudStates`
+   again (Tola IV.6, 2026-11-07). Then the digit and the whole name
+   (semibold), then, muted, when the agent was last there
+   (`activityText`): "now" while its follower is alive, else the time
+   since its **lease's last heartbeat**, never its newest message
+   (`MessageTimestamp.ago`: "now" under a minute, "5 min ago" under an
+   hour, "2 h ago" under a day, "yesterday 23:19", else the date and
+   clock of the bubbles' `MessageTimestamp.label`; PL "teraz", "5 min
+   temu", "2 godz. temu", "wczoraj 23:19"; the interface language owns the
+   words, the system locale the clock). The heartbeat travels as
+   `CsChannelRosterState.last_heartbeat_unix_ms`, from the follower
+   observation that also gives `followerAlive`
+   (`active_names::FollowerObservation.last_heartbeat`, the lease file's
+   `heartbeat_unix`, which the helper keeps on detach), only for a
+   follower that is no longer alive: a live one's heartbeat moves with
+   every beat and would redraw the roster each time. No heartbeat (no
+   lease, or no liveness claim) leaves the time out. After the name the
+   glyphs of the list under ✦: the antenna (`AgentBroadcastPolicy.statusSymbol`,
+   in the ink while the agent hears channel 0, crossed and muted while it
+   does not; `OverlayReceptionMarks.antennaInk`), the moon only under Do
+   not disturb, and the roster's unread badge (`OverlayAgentUnreadBadge` at
+   0.8×) with the count from `unreadCounts`. The policy is the one
+   `OverlayBroadcastPolicyLedger` paints, two states like the context
+   menu's checkmarks (Founder, 2026-11-04).
+2. **The runtime**, muted: the provider and the project the agent works in
+   ("Agy · Codescribe", L16), the project from the same verified lease as
+   the roster's descriptor (`AgentPlaybackBinding.repositoryName`,
+   `OverlayState.channelAgentProjects`), either alone when the other is
+   unknown; no line without both.
+3. **Your last message** from the conversation's visible messages: the
+   `arrow.up.right`, its time as the bubbles give it, and the receipt line's
+   reading for that message (`deliveryReceiptDisplay`, the roster row's own
+   words: Read, Delivered, Held, Queued, …); the reading stands only when
+   the receipt is that message's (`OverlayRosterReceipt.messageID`). No
+   text of the message, and no line without one.
+4. **The agent's last reply**: the `arrow.down.left`, its time and one line
+   of the roster's preview (`OverlayChannelStatusView.drawerPreview`, "Tola
+   → You: …"), cut with an ellipsis at the card's edge as the roster row cuts
+   it. It lives in its own view, `OverlayChipHoverCardPreviewLine`, so the
+   line can leave the card alone after Monika has tried it. No line without
+   a reply.
 
-The first line names the digit, the whole name, the provider and the project
-the agent works in ("Agy · Codescribe", L16), the project from the same
-verified lease as the roster's descriptor (`AgentPlaybackBinding.repositoryName`,
-`OverlayState.channelAgentProjects`), either alone when the other is unknown;
-the chord
-(`Ctrl+5`) is the last, small line: at most seven short lines. Nothing on
-the card is ever cut (Monika, 2026-11-07): the card is as wide as its widest
-line drawn whole, between 200 and 320 pt, measured in the fonts it draws
-them in (`OverlayChannelChipHoverCard.size(lines:)`), and a line still wider
-than 320 pt wraps to the next line instead of ending in an ellipsis; the
-height counts every wrapped line, since the hint panel draws the card at
-exactly that size. The provider and project stay whole beside the name when
-the title fits within 320 pt, else they stand under the name. The panel
-stays centred under the chip and inside the screen, so a wider card grows
-to both sides. The card's fonts do not follow the bar's text scale, so the
-ceiling does not either. The card is one accessibility element whose label
-reads every line, and the chip's accessibility value carries the same
-facts. The card stays non-interactive. Mini
+Gone from the card (Monika, 2026-11-07): the presence row ("Not active ·
+last heard …"), the channel 0 row, the separate message, audio and unread
+rows, and the chord (decision 4: `Ctrl+5` stays in the pill's context
+menu). No label on the card is ever cut (Monika, 2026-11-07): the card is
+as wide as its widest line drawn whole, between 200 and 320 pt, measured in
+the fonts it draws them in (`OverlayChannelChipHoverCard.size(lines:)`: the
+header's name semibold and its time regular, 12 pt; the other lines 11 pt;
+monospaced digits), and a label still wider than 320 pt wraps to the next
+line instead of ending in an ellipsis; the height counts every wrapped line
+and the header's badge, since the hint panel draws the card at exactly that
+size. Only the reply's preview is cut: it widens the card up to the ceiling
+and no further. The panel stays centred under the chip and inside the
+screen, so a wider card grows to both sides. The card's fonts do not follow
+the bar's text scale, so the ceiling does not either. The card is one
+accessibility element whose label reads the chip's own label and every
+fact, the presence in words (VoiceOver sees no dot: "Online", "Not active ·
+5 min ago", "No data", "Not reading"), "Hears: Shared (channel 0)" or
+"Does not hear: Shared (channel 0)" with the name after a colon so it is
+never declined, the last sent message, the last reply with its preview and
+the unread count; the chip's accessibility value, the agents list's rows
+and the roster's presence dot read the same facts without the preview
+(`spokenStatus`). The card stays non-interactive. Mini
 carries no map and no counter (Founder, 2026-11-04): the interactive list of
 agents under the Agents button (✦), described below, replaces the counter
 that stood there since 2026-10-22. The vertical layout's stacked counter

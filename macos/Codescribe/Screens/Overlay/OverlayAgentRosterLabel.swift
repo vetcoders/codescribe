@@ -138,7 +138,11 @@ struct OverlayAgentUnreadBadge: View {
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
 
-  private var badgeDiameter: CGFloat {
+  private var badgeDiameter: CGFloat { Self.diameter(count: count, textScale: textScale) }
+
+  /// The badge's side for `count` at `textScale`; the chip's hover card
+  /// measures its header with it.
+  static func diameter(count: Int, textScale: CGFloat) -> CGFloat {
     max(20, CGFloat(String(count).count) * 8 + 8) * textScale
   }
 
@@ -185,6 +189,9 @@ struct OverlayRosterReceipt {
   let text: String
   let helpText: String
   var isRead = false
+  /// The message this receipt reads, so the chip's hover card puts the
+  /// reading beside that message's time and no other.
+  var messageID: String? = nil
 }
 
 private struct OverlayRosterReceiptMark: View {

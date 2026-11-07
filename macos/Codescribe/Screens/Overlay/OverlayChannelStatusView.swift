@@ -1770,7 +1770,8 @@ struct OverlayChannelStatusView: View {
   /// roster's antenna and the context menu; unread from the same
   /// counts as the chip's dot; the provider from the conversation's owner,
   /// else the roster snapshot; speaking from the chip's own `speakingDigits`;
-  /// channel 0 by the display name its own chip shows.
+  /// channel 0 by the display name its own chip shows; when a gone agent
+  /// was last there from its lease's heartbeat (`lastHeartbeat`).
   func channelChipStatus(
     for channel: OverlayChannelDelivery, current: [OverlayConversation]
   ) -> OverlayChannelChipStatus {
@@ -1785,32 +1786,25 @@ struct OverlayChannelStatusView: View {
       unread: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
       provider: conversation?.owner?.provider ?? hudStates[channel.channel]?.provider,
       speaking: speakingDigits.contains(channel.channel), channelZeroName: sharedChannelName)
-    // L16 (2026-11-06): the card's full state, each fact from the roster's
-    // own projection: the lease's project, the conversation's messages, the
-    // receipt line's reading, the stall's minutes, the HUD's microphone and
-    // the speaker.
+    // Variant D (Monika, 2026-11-07): each fact from the roster's own
+    // projection: the lease's project and last heartbeat, your last message
+    // with the receipt line's reading for that message, the agent's last
+    // reply with the row's preview.
     status.project = agentProjects[channel.channel]
-    status.stalledMinutes = stalledMinutes(channel)
-    status.microphoneOpen = hudStates[channel.channel]?.open == true
-    status.voiceMuted = mutedChannels[channel.channel] == true
+    status.lastHeartbeat = hudStates[channel.channel]?.lastHeartbeat
     if let conversation {
       let visible = OverlayConversationView.visibleMessages(in: conversation)
-      status.lastHeard =
-        visible.last { $0.kind == .reply }
-        .flatMap { MessageTimestamp.date(fromISO8601: $0.emittedAt) }
-      if let newest = visible.last {
-        let outgoing = newest.kind == .user
-        let fate: String?
-        if outgoing {
-          fate =
-            newest.showsDeliveryReceipts
-            ? deliveryReceiptDisplay(for: channel, conversation: conversation)?.text : nil
-        } else {
-          fate = newest.playback?.state == "spoken" ? String(localized: "Spoken") : nil
-        }
-        status.lastMessage = .init(
-          outgoing: outgoing, at: MessageTimestamp.date(fromISO8601: newest.emittedAt),
-          fate: fate.flatMap { $0.isEmpty ? nil : $0 })
+      if let sent = visible.last(where: { $0.kind == .user }) {
+        let receipt = deliveryReceiptDisplay(for: channel, conversation: conversation)
+        let reading = receipt?.messageID == sent.id ? receipt?.text : nil
+        status.lastSent = .init(
+          at: MessageTimestamp.date(fromISO8601: sent.emittedAt),
+          status: reading.flatMap { $0.isEmpty ? nil : $0 })
+      }
+      if let reply = visible.last(where: { $0.kind == .reply }) {
+        status.lastReply = .init(
+          at: MessageTimestamp.date(fromISO8601: reply.emittedAt),
+          preview: Self.drawerPreview(message: reply))
       }
     }
     return status
@@ -2629,7 +2623,8 @@ struct OverlayChannelStatusView: View {
           } else {
             detail = String(localized: "Last sent message: \(text)")
           }
-          return OverlayRosterReceipt(symbol: symbol, text: text, helpText: detail, isRead: isRead)
+          return OverlayRosterReceipt(
+            symbol: symbol, text: text, helpText: detail, isRead: isRead, messageID: message.id)
         }
         if message.holdSecondsRemaining != nil {
           // The hold is yours, not the recipient's: the row says "Held" under

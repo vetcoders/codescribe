@@ -1149,6 +1149,17 @@
         }
       }
     },
+    "%lld h ago" : {
+      "comment" : "Agent hover card: whole hours since a gone agent's last heartbeat, under a day",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%lld godz. temu"
+          }
+        }
+      }
+    },
     "%lld integrations await their first run" : {
       "comment" : "Plural: optional integrations configured but not yet discovered",
       "localizations" : {
@@ -1226,6 +1237,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld min"
+          }
+        }
+      }
+    },
+    "%lld min ago" : {
+      "comment" : "Agent hover card: whole minutes since a gone agent's last heartbeat, under an hour",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%lld min temu"
           }
         }
       }
@@ -13089,17 +13111,6 @@
         }
       }
     },
-    "Not reading for %lld min" : {
-      "comment" : "Channel chip hover card: the live follower has not read its backlog for this many minutes",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Nie odczytuje od %lld min"
-          }
-        }
-      }
-    },
     "Not ready" : {
       "comment" : "Diagnostics summary headline: the gate fails",
       "localizations" : {
@@ -22047,17 +22058,6 @@
         }
       }
     },
-    "Voice muted" : {
-      "comment" : "Channel chip hover card: the agent's replies are not played aloud",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Głos wyciszony"
-          }
-        }
-      }
-    },
     "Volume" : {
       "localizations" : {
         "pl" : {
@@ -24471,17 +24471,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zachowano do odzyskania w edytorze."
-          }
-        }
-      }
-    },
-    "last heard %@" : {
-      "comment" : "Channel chip hover card: the time of the gone agent's newest reply",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "ostatnio słyszany %@"
           }
         }
       }
@@ -27898,6 +27887,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "wczoraj"
+          }
+        }
+      }
+    },
+    "yesterday %@" : {
+      "comment" : "Agent hover card: a gone agent's last heartbeat yesterday; the placeholder is a time",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "wczoraj %@"
           }
         }
       }

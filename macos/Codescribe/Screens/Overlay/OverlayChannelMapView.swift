@@ -149,11 +149,13 @@ struct OverlayChannelMapView: View {
   /// An agent's hover card, measured from its own lines.
   private func hintCard(_ chip: OverlayChannelMapChip) -> OverlayChannelPill.HintCard? {
     guard !chip.isBroadcast, let status = chip.status else { return nil }
+    // One instant for the words and the measure, so "5 min ago" is sized as drawn.
+    let now = Date()
     let card = OverlayChannelChipHoverCard(
-      chip: chip, status: status, modifier: modifier, palette: palette)
+      chip: chip, status: status, modifier: modifier, palette: palette, now: now)
     return OverlayChannelPill.HintCard(
       title: card.accessibilityText, content: AnyView(card),
-      size: OverlayChannelChipHoverCard.size(chip: chip, status: status, modifier: modifier))
+      size: OverlayChannelChipHoverCard.size(lines: card.lines))
   }
 
   /// VoiceOver hears the card's facts on the chip itself; without a status

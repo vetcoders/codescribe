@@ -3,11 +3,12 @@ import XCTest
 
 @testable import Codescribe
 
-/// Falsifiers for the bar chip's hover card (Founder, 2026-11-04): it states
-/// presence, channel 0 reception and unread replies as separate lines, names
-/// the agent and its provider, keeps the chord as its last line, and reads
-/// every line to VoiceOver as one label. It no longer repeats the button
-/// (`5 · Kuba · Ctrl+5`) and nothing else.
+/// Falsifiers for the bar chip's hover card, variant D of the mockup (Monika,
+/// 2026-11-07): a header (presence dot, `4 · Tola`, when the agent was last
+/// there, the antenna, the moon and the unread badge), the runtime label,
+/// your last message with its receipt and the agent's last reply with one
+/// line of its preview, and nothing else: no presence row, no channel 0 row,
+/// no chord.
 @MainActor
 final class OverlayChannelChipHoverCardTests: XCTestCase {
 
@@ -20,11 +21,10 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
       selected: false, status: status)
   }
 
-  private func lines(
-    _ status: OverlayChannelChipStatus, modifier: OverlayChannelChordModifier = .control
-  ) -> [OverlayChannelChipHoverCard.Line] {
-    OverlayChannelChipHoverCard.lines(
-      chip: chip(status: status), status: status, modifier: modifier)
+  private let now = MessageTimestamp.date(fromISO8601: "2026-11-07T08:10:00Z")!
+
+  private func lines(_ status: OverlayChannelChipStatus) -> [OverlayChannelChipHoverCard.Line] {
+    OverlayChannelChipHoverCard.lines(chip: chip(status: status), status: status, now: now)
   }
 
   private func line(
@@ -33,31 +33,17 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     lines(status).first { $0.kind == kind }
   }
 
-  // MARK: - Presence
-
-  func testPresenceReadsOnlineNotActiveAndNoData() {
-    let online = OverlayChannelChipStatus(presence: .online, reception: .member)
-    let inactive = OverlayChannelChipStatus(presence: .inactive, reception: .member)
-    let unknown = OverlayChannelChipStatus(presence: .unknown, reception: .member)
-    XCTAssertEqual(line(.presence, in: online)?.text, "Online")
-    XCTAssertEqual(line(.presence, in: online)?.tone, .success)
-    XCTAssertEqual(line(.presence, in: inactive)?.text, "Not active", "never a sure Offline")
-    XCTAssertEqual(line(.presence, in: inactive)?.tone, .muted)
-    XCTAssertEqual(line(.presence, in: unknown)?.text, "No data")
-    XCTAssertEqual(line(.presence, in: unknown)?.tone, .muted)
-    for status in [online, inactive, unknown] {
-      XCTAssertFalse(
-        line(.presence, in: status)?.text.contains("Offline") ?? true, "no Offline claim")
-    }
+  private func header(_ status: OverlayChannelChipStatus) -> OverlayChannelChipHoverCard.Line? {
+    line(.header, in: status)
   }
 
-  /// The presence line wears the agents list's own dot (L2): olive online,
+  // MARK: - Header
+
+  /// The header wears the agents list's own dot (L2): olive online,
   /// violet and blinking while the reply plays, a muted ring for a gone
   /// follower, "?" without data, the stall's olive "!" (L6: not sleep).
-  func testPresenceLineWearsTheRosterPresenceDot() {
-    func dot(_ status: OverlayChannelChipStatus) -> OverlayAgentDotKind? {
-      line(.presence, in: status)?.dot
-    }
+  func testHeaderWearsTheRosterPresenceDot() {
+    func dot(_ status: OverlayChannelChipStatus) -> OverlayAgentDotKind? { header(status)?.dot }
     XCTAssertEqual(dot(.init(presence: .online, reception: .member)), .present)
     XCTAssertEqual(dot(.init(presence: .online, reception: .member, speaking: true)), .speaking)
     XCTAssertEqual(dot(.init(presence: .inactive, reception: .member)), .sleeping)
@@ -65,257 +51,250 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
       dot(.init(presence: .inactive, reception: .member, speaking: true)), .sleeping,
       "a gone follower is not speaking")
     XCTAssertEqual(dot(.init(presence: .unknown, reception: .member)), .idle)
-    let stalled = OverlayChannelChipStatus(presence: .online, stalled: true, reception: .member)
-    XCTAssertEqual(dot(stalled), .stalled, "a stall is the olive dot with its \"!\"")
-    XCTAssertNil(line(.presence, in: stalled)?.symbol, "never the moon's zzz")
+    XCTAssertEqual(
+      dot(.init(presence: .online, stalled: true, reception: .member)), .stalled,
+      "a stall is the olive dot with its \"!\"")
     XCTAssertEqual(
       dot(.init(presence: .online, stalled: true, reception: .member, speaking: true)), .speaking,
       "a reply playing aloud wins over the stall, as in the agents list")
-    for status in [
-      OverlayChannelChipStatus(presence: .online, reception: .member),
-      OverlayChannelChipStatus(presence: .unknown, reception: .member),
-      stalled,
-    ] {
-      XCTAssertNil(line(.presence, in: status)?.symbol, "the dot stands in the symbol's place")
-    }
   }
 
-  func testStallIsFlaggedBesidePresence() {
-    let stalled = OverlayChannelChipStatus(presence: .online, stalled: true, reception: .member)
-    XCTAssertEqual(line(.presence, in: stalled)?.text, "Online · Not reading")
-    // No amber in the bus (Founder, 2026-11-04): a stall reads in the muted tone.
-    XCTAssertEqual(line(.presence, in: stalled)?.tone, .muted)
-    XCTAssertEqual(line(.presence, in: stalled)?.dot, .stalled, "the stall is not sleep")
+  /// `5 · Kuba`, then when the agent was last there: now while its follower
+  /// is alive, else the time since its lease's last heartbeat; nothing
+  /// without a heartbeat.
+  func testHeaderSaysWhenTheAgentWasLastThere() {
+    let online = OverlayChannelChipStatus(presence: .online, reception: .member)
+    XCTAssertEqual(header(online)?.text, "5 · Kuba")
+    XCTAssertEqual(header(online)?.detail, MessageTimestamp.ago(now, now: now))
+    var gone = OverlayChannelChipStatus(presence: .inactive, reception: .member)
+    XCTAssertNil(header(gone)?.detail, "no heartbeat, no time")
+    let heartbeat = now.addingTimeInterval(-5 * 60)
+    gone.lastHeartbeat = heartbeat
+    XCTAssertEqual(header(gone)?.detail, MessageTimestamp.ago(heartbeat, now: now))
+    XCTAssertEqual(
+      OverlayChannelChipHoverCard.activityText(gone, now: now),
+      MessageTimestamp.ago(heartbeat, now: now))
+    let unknown = OverlayChannelChipStatus(presence: .unknown, reception: .member)
+    XCTAssertNil(header(unknown)?.detail, "no liveness claim, no time")
   }
 
-  // MARK: - Channel 0
-
-  /// Channel 0 by its name (L3): the antenna and the name in the ink while
-  /// the agent hears it, the crossed antenna and the name muted while it
-  /// does not, the moon with Do not disturb. No "in channel", no violet,
-  /// and a name of the user's own stays as written.
-  func testReceptionNamesChannelZeroUnderTheAntenna() {
-    func reception(
-      _ value: OverlayChannelChipStatus.Reception, quiet: Bool = false, name: String = "Shared"
-    ) -> OverlayChannelChipHoverCard.Line? {
-      line(
-        .reception,
-        in: OverlayChannelChipStatus(
-          presence: .online, reception: value, quiet: quiet, channelZeroName: name))
+  /// The antenna and the moon of the list under ✦ (`AgentBroadcastPolicy`'s
+  /// own symbols), the moon only under Do not disturb, and the unread count.
+  func testHeaderCarriesTheListsMarksAndTheUnreadCount() throws {
+    func marks(
+      _ reception: OverlayChannelChipStatus.Reception, quiet: Bool = false, unread: Int = 0
+    ) throws -> OverlayChannelChipHoverCard.Marks {
+      try XCTUnwrap(
+        header(.init(presence: .online, reception: reception, quiet: quiet, unread: unread))?
+          .marks)
     }
-    XCTAssertEqual(reception(.member)?.text, "Shared")
-    XCTAssertEqual(reception(.member)?.tone, .primary, "the ink, not the agent violet")
-    XCTAssertEqual(reception(.member)?.symbol, "antenna.radiowaves.left.and.right")
-    XCTAssertEqual(reception(.off)?.text, "Shared")
-    XCTAssertEqual(reception(.off)?.tone, .muted)
-    XCTAssertEqual(reception(.off)?.symbol, "antenna.radiowaves.left.and.right.slash")
-    XCTAssertEqual(reception(.member, quiet: true)?.text, "Shared · Do not disturb")
-    XCTAssertEqual(reception(.member, quiet: true)?.symbol, "moon.fill")
-    XCTAssertEqual(reception(.member, quiet: true)?.tone, .muted)
-    XCTAssertEqual(reception(.off, quiet: true)?.text, "Shared · Do not disturb")
-    // Off channel 0 under the moon: the crossed antenna and the moon beside
-    // it, so the line shows what VoiceOver reads (Founder, 2026-11-06).
-    XCTAssertEqual(
-      reception(.off, quiet: true)?.symbol, "antenna.radiowaves.left.and.right.slash")
-    XCTAssertEqual(reception(.off, quiet: true)?.secondSymbol, "moon.fill")
-    XCTAssertNil(reception(.member, quiet: true)?.secondSymbol, "the moon alone while it hears")
-    XCTAssertNil(reception(.off)?.secondSymbol)
-    XCTAssertEqual(reception(.member, name: "Zespół Ekipa")?.text, "Zespół Ekipa")
-    XCTAssertEqual(
-      OverlayChannelChipStatus(presence: .online, reception: .member).channelZeroName,
-      OverlaySharedChannelName.defaultName, "no stored name: the default")
+    XCTAssertEqual(try marks(.member).antenna, AgentBroadcastPolicy.on.statusSymbol)
+    XCTAssertTrue(try marks(.member).hears)
+    XCTAssertNil(try marks(.member).moon, "no moon without Do not disturb")
+    XCTAssertEqual(try marks(.off).antenna, AgentBroadcastPolicy.off.statusSymbol)
+    XCTAssertEqual(try marks(.off).antenna, "antenna.radiowaves.left.and.right.slash")
+    XCTAssertFalse(try marks(.off).hears)
+    XCTAssertEqual(try marks(.member, quiet: true).moon, AgentBroadcastPolicy.quiet.quietSymbol)
+    XCTAssertEqual(try marks(.off, quiet: true).moon, "moon.fill")
+    XCTAssertEqual(try marks(.member).unread, 0)
+    XCTAssertEqual(try marks(.member, unread: 3).unread, 3)
   }
 
   /// The antenna's ink has one owner for the agents list, the roster's marks
-  /// and the fiszki (L7): the regular ink the card's reception line wears,
-  /// never the voice violet.
+  /// and the fiszki (L7): the regular ink, never the voice violet.
   func testAntennaWearsTheInkNotTheVoiceViolet() {
     for palette in [OverlayAppearancePalette.light, .dark] {
       XCTAssertEqual(OverlayReceptionMarks.antennaInk(palette), palette.primaryText)
       XCTAssertNotEqual(OverlayReceptionMarks.antennaInk(palette), palette.agentAccent)
     }
-    let hears = OverlayChannelChipStatus(presence: .online, reception: .member)
-    XCTAssertEqual(line(.reception, in: hears)?.tone, .primary, "the card's same ink")
   }
 
-  /// The roster hands the card the name its own channel 0 chip shows.
-  func testRosterCardsCarryChannelZerosDisplayName() throws {
-    let owner = try XCTUnwrap(
+  // MARK: - Lines
+
+  /// Four kinds of line at most, in this order, and none of the rows the
+  /// card had before: presence, channel 0, the chord.
+  func testCardIsTheHeaderRuntimeSentAndReplyAndNothingElse() {
+    var status = OverlayChannelChipStatus(
+      presence: .online, reception: .member, unread: 2, provider: "codex")
+    status.project = "Codescribe"
+    status.lastSent = .init(at: now.addingTimeInterval(-600), status: "Read")
+    status.lastReply = .init(at: now.addingTimeInterval(-300), preview: "Kuba → You: Done.")
+    let card = lines(status)
+    XCTAssertEqual(card.map(\.kind), [.header, .runtime, .sent, .reply])
+    XCTAssertEqual(card[1].text, "Codex · Codescribe", "the provider and the project")
+    XCTAssertEqual(card[1].tone, .muted)
+    for text in card.map(\.text) + card.compactMap(\.detail) {
+      XCTAssertFalse(text.contains("Ctrl+5"), "the chord left the card: \(text)")
+      XCTAssertFalse(text.contains("Online"), "no presence row: \(text)")
+      XCTAssertFalse(text.contains(status.channelZeroName), "no channel 0 row: \(text)")
+    }
+    let bare = OverlayChannelChipStatus(presence: .online, reception: .member)
+    XCTAssertEqual(lines(bare).map(\.kind), [.header], "no runtime, no messages: the header")
+  }
+
+  /// Your last message: its time and its receipt, no text; no line
+  /// without one.
+  func testSentLineIsTheTimeAndTheReceipt() {
+    var status = OverlayChannelChipStatus(presence: .online, reception: .member)
+    let at = now.addingTimeInterval(-8 * 60)
+    status.lastSent = .init(at: at, status: "Delivered")
+    let sent = line(.sent, in: status)
+    XCTAssertEqual(sent?.text, OverlayChannelChipHoverCard.time(at, now: now) + " · Delivered")
+    XCTAssertEqual(sent?.symbol, "arrow.up.right")
+    XCTAssertNil(sent?.detail, "no snippet on your line")
+    status.lastSent = .init(at: at, status: nil)
+    XCTAssertEqual(line(.sent, in: status)?.text, OverlayChannelChipHoverCard.time(at, now: now))
+    status.lastSent = nil
+    XCTAssertNil(line(.sent, in: status))
+  }
+
+  /// The agent's last reply: its time, then its preview as the roster row
+  /// gives it; no line without one.
+  func testReplyLineIsTheTimeAndThePreview() {
+    var status = OverlayChannelChipStatus(presence: .online, reception: .member)
+    let at = now.addingTimeInterval(-19 * 60)
+    status.lastReply = .init(at: at, preview: "Kuba → You: Header cut checked.")
+    let reply = line(.reply, in: status)
+    XCTAssertEqual(reply?.text, OverlayChannelChipHoverCard.time(at, now: now))
+    XCTAssertEqual(reply?.detail, "Kuba → You: Header cut checked.")
+    XCTAssertEqual(reply?.symbol, "arrow.down.left")
+    status.lastReply = nil
+    XCTAssertNil(line(.reply, in: status))
+  }
+
+  // MARK: - The roster's facts
+
+  private func owner() throws -> OverlayConversationOwner {
+    try XCTUnwrap(
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": "s5",
         "lease_id": String(repeating: "5", count: 32), "channel": "5", "name": "Kuba",
       ]))
+  }
+
+  private func roster(
+    messages: [OverlayConversationMessage], alive: Bool?, heartbeat: Date? = nil
+  ) throws -> OverlayChannelStatusView {
+    let owner = try owner()
     let conversation = OverlayConversation(
-      id: owner.id, channel: "5", name: "Kuba", owner: owner, messages: [])
-    var roster = OverlayChannelStatusView(
+      id: owner.id, channel: "5", name: "Kuba", owner: owner, messages: messages)
+    var view = OverlayChannelStatusView(
       channels: [
         OverlayChannelDelivery(
           channel: "5", agent: "Kuba", deliveryID: nil, stage: nil, isOpen: false)
       ], unavailable: false, palette: .light, animates: false,
       hudStates: [
         "5": OverlayChannelHudProjection(
-          open: false, loud: false, autosealDeadline: nil, followerAlive: true)
+          open: false, loud: false, autosealDeadline: nil, followerAlive: alive,
+          provider: "codex", providerSessionID: "s5", lastHeartbeat: heartbeat)
       ],
       conversations: [conversation], onSelectConversation: { _ in })
-    roster.sharedChannelStoredName = "Ekipa"
-    let chips = roster.channelMapModel.chips
+    view.agentProjects = ["5": "Codescribe"]
+    return view
+  }
+
+  private func status(of view: OverlayChannelStatusView) throws -> OverlayChannelChipStatus {
+    try XCTUnwrap(view.channelMapModel.chips.first { $0.digit == "5" }?.status)
+  }
+
+  private func reply(at: String, text: String = "Gotowe.") throws -> OverlayConversationMessage {
+    OverlayConversationMessage(
+      id: "reply:\(at)", kind: .reply, text: text, order: 2, emittedAt: at, owner: try owner(),
+      recipients: [], deliveryID: nil, replyTo: nil, unsolicited: true, playback: nil,
+      busPath: "/dev/null")
+  }
+
+  /// Your message to Kuba, delivered to his mailbox and not read yet.
+  private func delivered(at: String) throws -> OverlayConversationMessage {
+    OverlayConversationMessage(
+      id: "typed:0123456789abcdef00000201", kind: .user, text: "Sprawdź belkę.", order: 3,
+      emittedAt: at, owner: nil,
+      recipients: [
+        OverlayConversationRecipient(
+          owner: try owner(), deliveryID: "d-kuba-1", queued: true, accepted: true,
+          acknowledged: false)
+      ], deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "",
+      sourceChannel: "5",
+      receipt: OverlayMessageReceipt(
+        messageID: "0123456789abcdef00000201",
+        deliveries: [
+          .init(
+            deliveryID: "d-kuba-1", name: "kuba", channel: "5", state: .delivered, wake: "on",
+            deliveredAt: at, at: at)
+        ]))
+  }
+
+  /// A gone agent's header says when its lease last heartbeat, not when it
+  /// last wrote: the reply is two hours old, the heartbeat five minutes.
+  func testInactiveHeaderShowsTheLeaseHeartbeatNotTheLastMessage() throws {
+    let at = Date()
+    let replyAt = at.addingTimeInterval(-2 * 3_600)
+    let heartbeat = at.addingTimeInterval(-5 * 60)
+    let view = try roster(
+      messages: [try reply(at: replyAt.ISO8601Format())], alive: false, heartbeat: heartbeat)
+    let gone = try status(of: view)
+    XCTAssertEqual(gone.lastHeartbeat, heartbeat, "the roster's lease heartbeat")
+    let card = OverlayChannelChipHoverCard.lines(chip: chip(status: gone), status: gone, now: at)
+    XCTAssertEqual(card.first?.detail, MessageTimestamp.ago(heartbeat, now: at))
+    XCTAssertNotEqual(
+      card.first?.detail, MessageTimestamp.ago(replyAt, now: at), "never the reply's time")
+    let live = try status(of: try roster(messages: [], alive: true, heartbeat: nil))
+    XCTAssertNil(live.lastHeartbeat, "a live follower is now, not a time")
+    XCTAssertEqual(
+      OverlayChannelChipHoverCard.lines(chip: chip(status: live), status: live, now: at)
+        .first?.detail,
+      MessageTimestamp.ago(at, now: at))
+  }
+
+  /// Your line reads the same receipt as the roster row for that message
+  /// (`deliveryReceiptDisplay`), the one owner of the reading: delivered
+  /// and not read is the row's "Delivered", word for word.
+  func testSentStatusIsTheRosterReceiptReadingForThatMessage() throws {
+    let sentAt = "2026-11-07T08:02:00Z"
+    let view = try roster(
+      messages: [try reply(at: "2026-11-07T07:51:00Z"), try delivered(at: sentAt)], alive: true)
+    let conversation = try XCTUnwrap(view.currentConversations.first { $0.channel == "5" })
+    let channel = try XCTUnwrap(view.channels.first)
+    let receipt = try XCTUnwrap(
+      view.deliveryReceiptDisplay(for: channel, conversation: conversation))
+    let facts = try status(of: view)
+    XCTAssertEqual(facts.lastSent?.status, receipt.text, "the row's own words")
+    XCTAssertEqual(facts.lastSent?.status, String(localized: "Delivered"))
+    XCTAssertEqual(facts.lastSent?.at, MessageTimestamp.date(fromISO8601: sentAt))
+    let sent = OverlayChannelChipHoverCard.lines(chip: chip(status: facts), status: facts)
+      .first { $0.kind == .sent }
+    XCTAssertEqual(sent?.text.hasSuffix(" · " + receipt.text), true)
+  }
+
+  /// The reply's preview is the roster row's (`drawerPreview`), and the
+  /// reply line comes from the agent's last reply, not your newer message.
+  func testReplyComesFromTheLastReplyWithTheRowsPreview() throws {
+    let answer = try reply(at: "2026-11-07T07:51:00Z", text: "Wycinek sprawdzony.\nBelka trzyma.")
+    let view = try roster(
+      messages: [answer, try delivered(at: "2026-11-07T08:02:00Z")], alive: true)
+    let facts = try status(of: view)
+    XCTAssertEqual(
+      facts.lastReply?.preview, OverlayChannelStatusView.drawerPreview(message: answer))
+    XCTAssertEqual(facts.lastReply?.at, MessageTimestamp.date(fromISO8601: answer.emittedAt))
+    XCTAssertEqual(facts.project, "Codescribe")
+  }
+
+  /// The roster hands the card the name its own channel 0 chip shows.
+  func testRosterCardsCarryChannelZerosDisplayName() throws {
+    var view = try roster(messages: [], alive: true)
+    view.sharedChannelStoredName = "Ekipa"
+    let chips = view.channelMapModel.chips
     XCTAssertEqual(chips.first?.name, "Ekipa")
     XCTAssertEqual(chips.first { $0.digit == "5" }?.status?.channelZeroName, "Ekipa")
   }
 
-  // MARK: - Lines
-
-  func testCardOrdersTitlePresenceReceptionUnreadAndTheChordLast() {
-    let status = OverlayChannelChipStatus(
-      presence: .online, reception: .member, unread: 2, provider: "codex")
-    let card = lines(status)
-    XCTAssertEqual(card.map(\.kind), [.title, .presence, .reception, .unread, .shortcut])
-    XCTAssertEqual(card[0].text, "5 · Kuba")
-    XCTAssertEqual(card[0].trailing, "Codex")
-    XCTAssertEqual(card[3].text, "2 unread")
-    // New replies in the text tone: not the warning amber, not the voice violet.
-    XCTAssertEqual(card[3].tone, .primary)
-    XCTAssertEqual(card.last?.text, "Ctrl+5")
-    XCTAssertEqual(card.last?.tone, .muted)
-    XCTAssertLessThan(
-      OverlayChannelChipHoverCard.shortcutSize, OverlayChannelChipHoverCard.lineSize,
-      "the chord is the small last line")
-  }
-
-  func testNoUnreadLineWithoutRepliesAndNoChordLineWithoutAChord() {
-    let quiet = OverlayChannelChipStatus(presence: .online, reception: .member)
-    XCTAssertEqual(lines(quiet).map(\.kind), [.title, .presence, .reception, .shortcut])
-    XCTAssertEqual(lines(quiet, modifier: .function).last?.text, "Fn+5")
-    XCTAssertEqual(lines(quiet, modifier: .unbound).map(\.kind), [.title, .presence, .reception])
-    XCTAssertNil(lines(quiet).first?.trailing, "no provider, no trailing name")
-  }
-
-  /// The old hint was the button again; the card carries the facts and
-  /// keeps the chord only as one of its lines.
-  func testHintIsNoLongerTheButtonRepeated() {
-    let status = OverlayChannelChipStatus(presence: .online, reception: .member)
-    let kuba = chip(status: status)
-    let texts = lines(status).map(\.text)
-    XCTAssertFalse(texts.contains(kuba.hint(modifier: .control)), "not `5 · Kuba · Ctrl+5`")
-    XCTAssertGreaterThanOrEqual(texts.count, 3)
-    XCTAssertEqual(texts.filter { $0.contains("Ctrl+5") }, ["Ctrl+5"])
-  }
-
-  // MARK: - The full state (L16)
-
-  /// Since when (L16): a stalled reader's minutes, a gone agent's last-heard
-  /// time; an online agent's line stays short.
-  func testPresenceSaysSinceWhen() throws {
-    var stalled = OverlayChannelChipStatus(presence: .online, stalled: true, reception: .member)
-    stalled.stalledMinutes = 12
-    XCTAssertEqual(line(.presence, in: stalled)?.text, "Online · Not reading for 12 min")
-    let heard = try XCTUnwrap(MessageTimestamp.date(fromISO8601: "2026-11-06T19:36:00Z"))
-    var gone = OverlayChannelChipStatus(presence: .inactive, reception: .member)
-    gone.lastHeard = heard
-    XCTAssertEqual(
-      line(.presence, in: gone)?.text,
-      "Not active · last heard " + OverlayChannelChipHoverCard.clock(heard))
-    var online = OverlayChannelChipStatus(presence: .online, reception: .member)
-    online.lastHeard = heard
-    XCTAssertEqual(line(.presence, in: online)?.text, "Online")
-  }
-
-  /// The newest message, one line with its direction, time and fate; the
-  /// microphone and the muted voice, one line when either is so; at most
-  /// seven lines in the order title, presence, reception, message, audio,
-  /// unread, chord.
-  func testCardCarriesTheNewestMessageAndTheAudioState() throws {
-    let at = try XCTUnwrap(MessageTimestamp.date(fromISO8601: "2026-11-06T19:36:00Z"))
-    var status = OverlayChannelChipStatus(
-      presence: .online, reception: .member, unread: 2, provider: "codex")
-    status.lastMessage = .init(outgoing: true, at: at, fate: "Read")
-    status.microphoneOpen = true
-    status.voiceMuted = true
-    status.project = "Codescribe"
-    let card = lines(status)
-    XCTAssertEqual(
-      card.map(\.kind),
-      [.title, .presence, .reception, .lastMessage, .audio, .unread, .shortcut])
-    XCTAssertEqual(card[0].trailing, "Codex · Codescribe", "the provider and the project")
-    let message = try XCTUnwrap(card.first { $0.kind == .lastMessage })
-    XCTAssertEqual(message.text, OverlayChannelChipHoverCard.clock(at) + " · Read")
-    XCTAssertEqual(message.symbol, "arrow.up.right")
-    XCTAssertEqual(card.first { $0.kind == .audio }?.text, "Microphone open · Voice muted")
-
-    status.lastMessage = .init(outgoing: false, at: at, fate: nil)
-    status.microphoneOpen = false
-    XCTAssertEqual(line(.lastMessage, in: status)?.symbol, "arrow.down.left")
-    XCTAssertEqual(line(.lastMessage, in: status)?.text, OverlayChannelChipHoverCard.clock(at))
-    XCTAssertEqual(line(.audio, in: status)?.symbol, "speaker.slash.fill")
-    status.voiceMuted = false
-    XCTAssertNil(line(.audio, in: status), "no audio line when nothing is so")
-    XCTAssertTrue(
-      OverlayChannelChipHoverCard.spokenStatus(status).contains(
-        "Last reply: " + OverlayChannelChipHoverCard.clock(at)))
-  }
-
-  /// The roster fills the facts from its own projections: the newest
-  /// reply's time and its spoken playback, the HUD's open microphone and
-  /// the speaker's mute.
-  func testRosterFillsTheFullStateFromItsProjections() throws {
-    let owner = try XCTUnwrap(
-      OverlayConversationOwner(row: [
-        "provider": "codex", "provider_session_id": "s5",
-        "lease_id": String(repeating: "5", count: 32), "channel": "5", "name": "Kuba",
-      ]))
-    let reply = OverlayConversationMessage(
-      id: "reply:1", kind: .reply, text: "Gotowe.", order: 1,
-      emittedAt: "2026-11-06T19:36:00Z", owner: owner, recipients: [], deliveryID: nil,
-      replyTo: nil, unsolicited: true,
-      playback: OverlayReplyPlayback(
-        replyID: "1", ticket: "t-1", state: "spoken", reason: nil, spoken: true,
-        emittedAt: "2026-11-06T19:36:01Z"),
-      busPath: "/dev/null")
-    let conversation = OverlayConversation(
-      id: owner.id, channel: "5", name: "Kuba", owner: owner, messages: [reply])
-    func roster(alive: Bool, open: Bool, muted: Bool) -> OverlayChannelStatusView {
-      var view = OverlayChannelStatusView(
-        channels: [
-          OverlayChannelDelivery(
-            channel: "5", agent: "Kuba", deliveryID: nil, stage: nil, isOpen: open)
-        ], unavailable: false, palette: .light, animates: false,
-        hudStates: [
-          "5": OverlayChannelHudProjection(
-            open: open, loud: false, autosealDeadline: nil, followerAlive: alive,
-            provider: "codex", providerSessionID: "s5")
-        ],
-        conversations: [conversation], onSelectConversation: { _ in })
-      view.mutedChannels = ["5": muted]
-      view.agentProjects = ["5": "Codescribe"]
-      return view
-    }
-    let heard = try XCTUnwrap(MessageTimestamp.date(fromISO8601: "2026-11-06T19:36:00Z"))
-    let gone = try XCTUnwrap(
-      roster(alive: false, open: false, muted: true).channelMapModel.chips
-        .first { $0.digit == "5" }?.status)
-    XCTAssertEqual(gone.lastHeard, heard)
-    XCTAssertEqual(gone.lastMessage, .init(outgoing: false, at: heard, fate: "Spoken"))
-    XCTAssertTrue(gone.voiceMuted)
-    XCTAssertEqual(gone.project, "Codescribe")
-    XCTAssertFalse(gone.microphoneOpen)
-    let live = try XCTUnwrap(
-      roster(alive: true, open: true, muted: false).channelMapModel.chips
-        .first { $0.digit == "5" }?.status)
-    XCTAssertTrue(live.microphoneOpen)
-    XCTAssertFalse(live.voiceMuted)
-  }
-
-  /// The card's text reads on the bar's sheet in both looks: its title
-  /// and its facts in the ink at AA (4.5:1); the muted lines (channel 0 not
-  /// heard, Do not disturb), whose tone is the state (L3, 2026-11-06), at
-  /// least the 3:1 of the secondary rung.
+  /// The card's text reads on the bar's sheet in both looks: the name and
+  /// the messages in the ink at AA (4.5:1); the muted activity and runtime
+  /// at least the 3:1 of the secondary rung.
   func testCardTextClearsItsFloorOnTheSheet() {
     for palette in [OverlayAppearancePalette.light, .dark] {
-      for (tone, floor) in [
-        (OverlayChannelChipHoverCard.Tone.primary, 4.5), (.success, 4.5), (.muted, 3.0),
-      ] {
-        let ink =
-          tone == .muted ? palette.mutedText : palette.primaryText
+      for (tone, floor) in [(OverlayChannelChipHoverCard.Tone.primary, 4.5), (.muted, 3.0)] {
+        let ink = tone == .muted ? palette.mutedText : palette.primaryText
         XCTAssertEqual(tone.color(in: palette), ink.color, "\(tone)")
         let ratio = OverlayColorToken.contrastRatio(
           foreground: ink, surface: palette.desktopBackground,
@@ -328,74 +307,77 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
   // MARK: - VoiceOver
 
   func testCardIsOneAccessibilityLabelReadingEveryFact() {
-    let status = OverlayChannelChipStatus(
+    var status = OverlayChannelChipStatus(
       presence: .online, reception: .member, unread: 2, provider: "codex")
+    let at = now.addingTimeInterval(-60)
+    status.lastReply = .init(at: at, preview: "Kuba → You: Done.")
     let kuba = chip(status: status)
+    let time = OverlayChannelChipHoverCard.time(at, now: now)
     XCTAssertEqual(
-      OverlayChannelChipHoverCard.accessibilityText(chip: kuba, status: status, modifier: .control),
-      "Channel 5, Kuba, shortcut Ctrl 5. Codex. Online. Hears: Shared (channel 0). 2 unread")
-    let inactive = OverlayChannelChipStatus(presence: .inactive, reception: .off)
+      OverlayChannelChipHoverCard.accessibilityText(
+        chip: kuba, status: status, modifier: .control, now: now),
+      "Channel 5, Kuba, shortcut Ctrl 5. Codex. Online. Hears: Shared (channel 0). "
+        + "Last reply: \(time) · Kuba → You: Done.. 2 unread")
     XCTAssertEqual(
-      OverlayChannelChipHoverCard.spokenStatus(inactive),
-      ["Not active", "Does not hear: Shared (channel 0)"])
+      OverlayChannelChipHoverCard.spokenStatus(status, now: now),
+      ["Codex", "Online", "Hears: Shared (channel 0)", "Last reply: \(time)", "2 unread"],
+      "the rows that show the preview themselves hear no preview")
+    var inactive = OverlayChannelChipStatus(presence: .inactive, reception: .off)
+    let heartbeat = now.addingTimeInterval(-5 * 60)
+    inactive.lastHeartbeat = heartbeat
+    XCTAssertEqual(
+      OverlayChannelChipHoverCard.spokenStatus(inactive, now: now),
+      [
+        "Not active · " + MessageTimestamp.ago(heartbeat, now: now),
+        "Does not hear: Shared (channel 0)",
+      ])
     let unknown = OverlayChannelChipStatus(presence: .unknown, reception: .off, quiet: true)
     XCTAssertEqual(
-      OverlayChannelChipHoverCard.spokenStatus(unknown),
+      OverlayChannelChipHoverCard.spokenStatus(unknown, now: now),
       ["No data", "Does not hear: Shared (channel 0) · Do not disturb"])
-  }
-
-  // MARK: - Size
-
-  func testSizeIsMeasuredFromTheLinesWithinTheCardBounds() {
-    let short = OverlayChannelChipStatus(presence: .online, reception: .member)
-    let full = OverlayChannelChipStatus(
-      presence: .online, stalled: true, reception: .off, quiet: true, unread: 12,
-      provider: "claude")
-    let small = OverlayChannelChipHoverCard.size(
-      chip: chip(status: short), status: short, modifier: .control)
-    let large = OverlayChannelChipHoverCard.size(
-      chip: chip("7", "Maksymilian", status: full), status: full, modifier: .control)
-    for size in [small, large] {
-      XCTAssertGreaterThanOrEqual(size.width, OverlayChannelChipHoverCard.minWidth)
-      XCTAssertLessThanOrEqual(size.width, OverlayChannelChipHoverCard.maxWidth)
-    }
-    XCTAssertGreaterThan(large.height, small.height, "the unread line adds its height")
-    XCTAssertGreaterThanOrEqual(large.width, small.width)
-    let fiveLines =
-      5 * OverlayChannelChipHoverCard.lineHeight(size: OverlayChannelChipHoverCard.shortcutSize)
-      + 2 * OverlayChannelChipHoverCard.padding
-    XCTAssertGreaterThan(large.height, fiveLines, "every line has room")
+    let stalled = OverlayChannelChipStatus(presence: .online, stalled: true, reception: .member)
+    XCTAssertEqual(
+      OverlayChannelChipHoverCard.spokenStatus(stalled, now: now).first, "Online · Not reading")
   }
 
   // MARK: - Nothing is cut (Monika, 2026-11-07)
 
-  /// The two cards of Monika's screenshots in their Polish length: Tola,
-  /// not active with the time she was last heard, and Bruno with a long
-  /// runtime label beside his name. Fixture strings, not product copy.
+  /// Variant D's three cards in their Polish length (fixture strings, not
+  /// product copy): Tola gone five minutes under the moon, Bruno online
+  /// with an unread reply, Test-A gone since yesterday with twelve unread.
   static let tolaLines: [OverlayChannelChipHoverCard.Line] = [
-    .init(kind: .title, text: "4 · Tola", tone: .primary, trailing: "Agy · Codescribe"),
     .init(
-      kind: .presence, text: "Nieaktywny · ostatnio słyszany 8:51 PM", tone: .muted,
-      dot: .sleeping),
+      kind: .header, text: "4 · Tola", tone: .primary, detail: "5 min temu", dot: .sleeping,
+      marks: .init(
+        antenna: "antenna.radiowaves.left.and.right", hears: true, moon: "moon.fill", unread: 0)),
+    .init(kind: .runtime, text: "Agy · Codescribe", tone: .muted),
+    .init(kind: .sent, text: "9:02 · Doręczono", tone: .primary, symbol: "arrow.up.right"),
     .init(
-      kind: .reception, text: "All", tone: .primary,
-      symbol: "antenna.radiowaves.left.and.right"),
-    .init(kind: .lastMessage, text: "8:51 PM", tone: .primary, symbol: "arrow.down.left"),
-    .init(kind: .shortcut, text: "Ctrl+4", tone: .muted, symbol: "keyboard"),
+      kind: .reply, text: "8:51", tone: .primary,
+      detail: "Tola → Ty: Wycinek headerUI74d sprawdzony: belka trzyma rozmiar w obu motywach",
+      symbol: "arrow.down.left"),
   ]
 
   static let brunoLines: [OverlayChannelChipHoverCard.Line] = [
     .init(
-      kind: .title, text: "5 · Bruno", tone: .primary,
-      trailing: "Claude Code · gpt-6.1-sol · Codescribe"),
-    .init(kind: .presence, text: "Aktywny", tone: .success, dot: .present),
+      kind: .header, text: "5 · Bruno", tone: .primary, detail: "teraz", dot: .present,
+      marks: .init(
+        antenna: "antenna.radiowaves.left.and.right", hears: true, moon: nil, unread: 1)),
+    .init(kind: .runtime, text: "Claude Code · gpt-6.1-sol · Codescribe", tone: .muted),
+    .init(kind: .sent, text: "8:40 · Przeczytano", tone: .primary, symbol: "arrow.up.right"),
     .init(
-      kind: .reception, text: "All", tone: .primary,
-      symbol: "antenna.radiowaves.left.and.right"),
+      kind: .reply, text: "8:58", tone: .primary, detail: "Bruno → Ty: Gotowe.",
+      symbol: "arrow.down.left"),
+  ]
+
+  static let testALines: [OverlayChannelChipHoverCard.Line] = [
     .init(
-      kind: .lastMessage, text: "8:51 PM · Przeczytane", tone: .primary,
-      symbol: "arrow.up.right"),
-    .init(kind: .shortcut, text: "Ctrl+5", tone: .muted, symbol: "keyboard"),
+      kind: .header, text: "7 · Test-A", tone: .primary, detail: "wczoraj 23:19", dot: .sleeping,
+      marks: .init(
+        antenna: "antenna.radiowaves.left.and.right.slash", hears: false, moon: nil, unread: 12)),
+    .init(kind: .runtime, text: "Codex · Vibecrafted", tone: .muted),
+    .init(
+      kind: .sent, text: "Wczoraj 22:47 · W kolejce", tone: .primary, symbol: "arrow.up.right"),
   ]
 
   /// The card's width the requirement allows at text scale 1.
@@ -418,19 +400,21 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     return (unwrapped, wrapped)
   }
 
-  /// The card is as wide as its widest line drawn whole, up to the ceiling,
-  /// and as tall as its lines wrapped at that width: the hint panel draws
-  /// it at exactly this size, so a narrower or shorter card cuts a line.
+  /// The card is as wide as its widest label drawn whole, up to the
+  /// ceiling, and as tall as its lines wrapped at that width: the hint
+  /// panel draws it at exactly this size, so a narrower or shorter card
+  /// cuts a line. The reply's preview is a preview, measured apart.
   private func assertNothingCut(
     _ lines: [OverlayChannelChipHoverCard.Line], _ name: String,
     file: StaticString = #filePath, line: UInt = #line
   ) {
     let size = OverlayChannelChipHoverCard.size(lines: lines)
-    let needs = swiftUINeeds(lines, width: size.width)
+    let labels = lines.filter { $0.kind != .reply }
+    let needs = swiftUINeeds(labels, width: size.width)
     if needs.unwrapped <= ceiling {
       XCTAssertGreaterThanOrEqual(
         size.width, needs.unwrapped,
-        "\(name): every line fits whole on one line, so the card is that wide", file: file,
+        "\(name): every label fits whole on one line, so the card is that wide", file: file,
         line: line)
     } else {
       XCTAssertEqual(
@@ -440,36 +424,69 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     XCTAssertLessThanOrEqual(
       size.width, ceiling, "\(name): within the ceiling", file: file, line: line)
     XCTAssertGreaterThanOrEqual(
-      size.height, needs.height, "\(name): room for every wrapped line", file: file, line: line)
+      size.height, swiftUINeeds(lines, width: size.width).height,
+      "\(name): room for every wrapped line", file: file, line: line)
   }
 
-  func testTheInactivePresenceLineIsNeverCut() {
+  func testTolasCardIsNeverCut() {
     assertNothingCut(Self.tolaLines, "Tola")
   }
 
-  func testALongRuntimeLabelStaysWholeBesideTheName() {
+  func testBrunosLongRuntimeLabelStaysWhole() {
     assertNothingCut(Self.brunoLines, "Bruno")
   }
 
-  /// A line longer than the ceiling wraps to a second line instead of an
-  /// ellipsis, and a runtime label that cannot stand beside the name goes
-  /// under it, whole.
-  func testLinesOverTheCeilingWrapInsteadOfBeingCut() {
+  func testTheUnreadBadgeAndAYesterdayHeaderStayWhole() {
+    assertNothingCut(Self.testALines, "Test-A")
+  }
+
+  /// A label longer than the ceiling wraps to a second line instead of an
+  /// ellipsis; a reply's long preview stays one line, cut, and never
+  /// widens the card past the ceiling.
+  func testLabelsOverTheCeilingWrapAndThePreviewStaysOneLine() {
     var lines = Self.tolaLines
-    lines[0] = .init(
-      kind: .title, text: "4 · Tola", tone: .primary,
-      trailing: "Claude Code · gpt-6.1-sol · Codescribe-wt · bar-polish-clean-20261106")
     lines[1] = .init(
-      kind: .presence,
-      text: "Nieaktywny · ostatnio słyszany 8:51 PM · nie czyta od 125 min · głos wyciszony",
-      tone: .muted, dot: .sleeping)
+      kind: .runtime,
+      text: "Claude Code · gpt-6.1-sol · Codescribe-wt · bar-polish-clean-20261106 · worktree",
+      tone: .muted)
     assertNothingCut(lines, "over the ceiling")
     let oneLine = OverlayChannelChipHoverCard.size(lines: Self.tolaLines)
     let wrapped = OverlayChannelChipHoverCard.size(lines: lines)
     XCTAssertGreaterThanOrEqual(
       wrapped.height,
-      oneLine.height + 2
-        * OverlayChannelChipHoverCard.lineHeight(size: OverlayChannelChipHoverCard.lineSize),
-      "the presence line wraps to two lines and the label stands under the name")
+      oneLine.height
+        + OverlayChannelChipHoverCard.lineHeight(size: OverlayChannelChipHoverCard.lineSize),
+      "the runtime label wraps to a second line")
+    var long = Self.brunoLines
+    long[3] = .init(
+      kind: .reply, text: "8:58", tone: .primary,
+      detail: String(repeating: "Bardzo długa odpowiedź agenta, ", count: 12),
+      symbol: "arrow.down.left")
+    let size = OverlayChannelChipHoverCard.size(lines: long)
+    XCTAssertEqual(size.width, ceiling, "a long preview takes the card to the ceiling, no further")
+    XCTAssertEqual(
+      size.height, OverlayChannelChipHoverCard.size(lines: Self.brunoLines).height,
+      "and stays one line")
+    XCTAssertEqual(
+      OverlayChannelChipHoverCard.height(long[3], within: size.width - 20),
+      OverlayChannelChipHoverCard.oneLine(OverlayChannelChipHoverCard.font(long[3])))
+  }
+
+  func testSizeStaysWithinTheCardBounds() {
+    let short = OverlayChannelChipStatus(presence: .online, reception: .member)
+    var full = OverlayChannelChipStatus(
+      presence: .inactive, reception: .off, quiet: true, unread: 12, provider: "claude")
+    full.lastHeartbeat = now.addingTimeInterval(-3 * 86_400)
+    full.lastSent = .init(at: now.addingTimeInterval(-3 * 86_400), status: "Queued")
+    let small = OverlayChannelChipHoverCard.size(
+      chip: chip(status: short), status: short, now: now)
+    let large = OverlayChannelChipHoverCard.size(
+      chip: chip("7", "Maksymilian", status: full), status: full, now: now)
+    for size in [small, large] {
+      XCTAssertGreaterThanOrEqual(size.width, OverlayChannelChipHoverCard.minWidth)
+      XCTAssertLessThanOrEqual(size.width, OverlayChannelChipHoverCard.maxWidth)
+    }
+    XCTAssertGreaterThan(large.height, small.height, "the runtime and sent lines add height")
+    XCTAssertGreaterThanOrEqual(large.width, small.width)
   }
 }

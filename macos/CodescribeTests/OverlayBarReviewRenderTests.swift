@@ -551,9 +551,9 @@ final class OverlayBarReviewRenderTests: XCTestCase {
 
   // MARK: - 9. An agent chip's hover card
 
-  /// The card under a chip, alone: online with an unread reply and the
-  /// chord; not active without a confirmed channel 0 policy; no data, off
-  /// channel 0 under the moon, with a stalled-follower flag.
+  /// The card under a chip, alone: online with an unread reply; not active
+  /// off channel 0; no data, off channel 0 under the moon, with a
+  /// stalled-follower flag.
   func testRenderChipHoverCards() throws {
     let cards: [(String, String, String, OverlayChannelChipStatus)] = [
       (
@@ -576,9 +576,11 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         digit: digit, name: agent, disconnected: status.presence == .inactive,
         microphoneOpen: false, unread: status.unread > 0, selectable: true, selected: false,
         status: status)
-      let size = OverlayChannelChipHoverCard.size(chip: chip, status: status, modifier: .control)
-      let lines = OverlayChannelChipHoverCard.lines(chip: chip, status: status, modifier: .control)
-      XCTAssertEqual(lines.last?.text, "Ctrl+" + digit, "\(name): the chord is the last line")
+      let size = OverlayChannelChipHoverCard.size(chip: chip, status: status)
+      let lines = OverlayChannelChipHoverCard.lines(chip: chip, status: status)
+      XCTAssertEqual(lines.first?.kind, .header, "\(name): the header leads")
+      XCTAssertFalse(
+        lines.contains { $0.text.contains("Ctrl+") }, "\(name): the chord left the card")
       for look in Look.allCases {
         try renderAlone(
           OverlayChannelChipHoverCard(
@@ -588,23 +590,142 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     }
   }
 
-  /// Monika's two cards (2026-11-07) in their Polish length, whole: Tola
-  /// not active with the time she was last heard, Bruno with a long
-  /// runtime label beside his name; at 1× and 2×.
-  func testRenderChipHoverCardsWithLongLines() throws {
-    let cards = [
-      ("bar-9-hover-card-tola-long", OverlayChannelChipHoverCardTests.tolaLines),
-      ("bar-9-hover-card-bruno-long", OverlayChannelChipHoverCardTests.brunoLines),
+  /// Variant D of the card (Monika, 2026-11-07), each through the roster's
+  /// own facts (`channelChipStatus`) at one instant, 09:10 local: Tola gone
+  /// five minutes under the moon with your message delivered and not read;
+  /// Bruno online with one unread reply after your read message; Test-A
+  /// gone since yesterday's heartbeat with a queued message and a reply
+  /// that played aloud. Light and dark, at 1× and 2×. Run with
+  /// `-testLanguage pl` for the Polish words.
+  func testRenderChipHoverCardsVariantD() throws {
+    let calendar = Calendar.autoupdatingCurrent
+    let today = calendar.startOfDay(for: Date())
+    func at(_ hour: Int, _ minute: Int, daysAgo: Int = 0) throws -> Date {
+      let day = try XCTUnwrap(calendar.date(byAdding: .day, value: -daysAgo, to: today))
+      return try XCTUnwrap(
+        calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day))
+    }
+    let now = try at(9, 10)
+    func iso(_ date: Date) -> String { date.ISO8601Format() }
+    func owner(_ name: String, _ digit: String, provider: String) throws
+      -> OverlayConversationOwner
+    {
+      try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": provider, "provider_session_id": "variant-d-\(digit)",
+          "lease_id": String(repeating: digit, count: 32), "channel": digit, "name": name,
+        ]))
+    }
+    func sent(
+      _ owner: OverlayConversationOwner, at date: Date, order: UInt64, text: String,
+      read: Bool = false, delivered: Bool = false, accepted: Bool = true
+    ) -> OverlayConversationMessage {
+      let id = String(format: "0123456789abcdef%08d", Int(order) + 300 * Int(owner.channel)!)
+      let delivery = "d-\(owner.channel)-\(order)"
+      return OverlayConversationMessage(
+        id: "typed:\(id)", kind: .user, text: text, order: order, emittedAt: iso(date),
+        owner: nil,
+        recipients: [
+          OverlayConversationRecipient(
+            owner: owner, deliveryID: delivery, queued: true, accepted: accepted,
+            acknowledged: read)
+        ], deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "",
+        sourceChannel: owner.channel,
+        receipt: delivered
+          ? OverlayMessageReceipt(
+            messageID: id,
+            deliveries: [
+              .init(
+                deliveryID: delivery, name: owner.name, channel: owner.channel,
+                state: .delivered, wake: "on", deliveredAt: iso(date), at: iso(date))
+            ]) : nil)
+    }
+    func reply(
+      _ owner: OverlayConversationOwner, at date: Date, order: UInt64, text: String,
+      spoken: Bool = false
+    ) -> OverlayConversationMessage {
+      // A reply without a destination answered you: "Tola → You".
+      OverlayConversationMessage(
+        id: "reply:variant-d-\(owner.channel)-\(order)", kind: .reply, text: text, order: order,
+        emittedAt: iso(date), owner: owner, recipients: [], deliveryID: nil, replyTo: nil,
+        unsolicited: true,
+        playback: spoken
+          ? OverlayReplyPlayback(
+            replyID: "variant-d-\(owner.channel)", ticket: "t-\(owner.channel)", state: "spoken",
+            reason: nil, spoken: true, emittedAt: iso(date.addingTimeInterval(5))) : nil,
+        busPath: "/dev/null")
+    }
+    let tola = try owner("Tola", "4", provider: "agy")
+    let bruno = try owner("Bruno", "5", provider: "claude")
+    let testA = try owner("Test-A", "7", provider: "codex")
+    let conversations = [
+      OverlayConversation(
+        id: "variant-d-all", channel: "0", name: "All", owner: nil, messages: []),
+      OverlayConversation(
+        id: tola.id, channel: "4", name: "Tola", owner: tola,
+        messages: [
+          reply(
+            tola, at: try at(8, 51), order: 1,
+            text: "Wycinek headerUI74d sprawdzony: belka trzyma rozmiar w obu motywach."),
+          sent(
+            tola, at: try at(9, 2), order: 2, text: "Dzięki, zostaw tak.", delivered: true),
+        ]),
+      OverlayConversation(
+        id: bruno.id, channel: "5", name: "Bruno", owner: bruno,
+        messages: [
+          sent(bruno, at: try at(8, 40), order: 1, text: "Zrób rendery karty.", read: true),
+          reply(
+            bruno, at: try at(8, 58), order: 2, text: "Rendery gotowe, trzy karty w obu motywach."),
+        ]),
+      OverlayConversation(
+        id: testA.id, channel: "7", name: "Test-A", owner: testA,
+        messages: [
+          reply(
+            testA, at: try at(22, 30, daysAgo: 1), order: 1, text: "Kończę na dziś.", spoken: true),
+          sent(
+            testA, at: try at(22, 47, daysAgo: 1), order: 2, text: "Jutro sprawdź bramki.",
+            accepted: false),
+        ]),
     ]
-    for (name, lines) in cards {
-      let size = OverlayChannelChipHoverCard.size(lines: lines)
-      for look in Look.allCases {
+    let hudStates: [String: OverlayChannelHudProjection] = [
+      "4": .init(
+        open: false, loud: false, autosealDeadline: nil, followerAlive: false, provider: "agy",
+        providerSessionID: "variant-d-4", lastHeartbeat: now.addingTimeInterval(-5 * 60)),
+      "5": .init(
+        open: false, loud: false, autosealDeadline: nil, followerAlive: true, provider: "claude",
+        providerSessionID: "variant-d-5"),
+      "7": .init(
+        open: false, loud: false, autosealDeadline: nil, followerAlive: false, provider: "codex",
+        providerSessionID: "variant-d-7", lastHeartbeat: try at(8, 15, daysAgo: 1)),
+    ]
+    var channels: [OverlayChannelDelivery] = []
+    for (digit, name, policy) in [
+      ("4", "Tola", AgentBroadcastPolicy.quiet), ("5", "Bruno", .on), ("7", "Test-A", .off),
+    ] {
+      var delivery = OverlayChannelDelivery(
+        channel: digit, agent: name, deliveryID: nil, stage: nil, isOpen: false)
+      delivery.broadcastPolicy = policy
+      channels.append(delivery)
+    }
+    for look in Look.allCases {
+      var roster = OverlayChannelStatusView(
+        channels: channels, unavailable: false, palette: look.palette, animates: false,
+        hudStates: hudStates, conversations: conversations,
+        unreadCounts: [bruno.id: 1], onSelectConversation: { _ in })
+      roster.agentProjects = ["4": "Codescribe", "5": "Codescribe", "7": "Vibecrafted"]
+      let chips = roster.channelMapModel.agents
+      XCTAssertEqual(chips.map(\.digit), ["4", "5", "7"])
+      for (chip, name) in zip(chips, ["tola", "bruno", "test-a"]) {
+        let status = try XCTUnwrap(chip.status, "\(chip.digit): an agent chip has a card")
+        let card = OverlayChannelChipHoverCard(
+          chip: chip, status: status, modifier: .control, palette: look.palette, now: now)
+        XCTAssertEqual(card.lines.first?.kind, .header, name)
+        XCTAssertNotNil(card.lines.first { $0.kind == .sent }, "\(name): your last message")
+        let size = OverlayChannelChipHoverCard.size(lines: card.lines)
         for scale: CGFloat in [1, 2] {
           try renderAlone(
-            OverlayChannelChipHoverCard(
-              digit: "4", lines: lines, accessibilityText: "", palette: look.palette),
-            size: size, look: look, name: "\(name)-\(Int(size.width))pt-\(Int(scale))x",
-            scale: scale)
+            card, size: size, look: look,
+            name: "bar-9-hover-card-d-\(name)-\(Int(size.width))pt-\(Int(scale))x", scale: scale)
         }
       }
     }
@@ -1120,7 +1241,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         try renderAlone(
           OverlayChannelChipHoverCard(
             chip: chip, status: status, modifier: .control, palette: look.palette),
-          size: OverlayChannelChipHoverCard.size(chip: chip, status: status, modifier: .control),
+          size: OverlayChannelChipHoverCard.size(chip: chip, status: status),
           look: look, name: "bar-card-\(chip.digit)")
       }
     }
