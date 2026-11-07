@@ -909,6 +909,16 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     }
   }
 
+  /// Mini while agent 4 plays its reply aloud, beside mini at rest with the
+  /// same roster (L15): mini has no chips, so its Agents button carries the
+  /// sign. A render is one still frame of the blink.
+  func testRenderMiniWhileAnAgentSpeaks() throws {
+    let (state, _) = try barState(four, mode: .mini, speaking: "4")
+    XCTAssertEqual(
+      DictationOverlayView(state: state).channelStatusView.speakingDigits, ["4"])
+    try renderMini(state, scene: "mini-speaking")
+  }
+
   // MARK: - 14. Channel 0's name
 
   /// Channel 0 named by default, with a short name of the user's and with a
