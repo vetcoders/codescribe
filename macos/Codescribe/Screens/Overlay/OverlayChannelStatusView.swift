@@ -268,7 +268,8 @@ struct OverlayDisconnectedRowDim: ViewModifier {
 /// The list's one fold button (Monika, 2026-11-05: "jeden po prawej stronie
 /// to był dokładnie taki układ, jaki chciałam"): a muted glyph blended into
 /// the background with the rows' hover wash (Maciej, 2026-10-19: "wtopione w
-/// tło"). The same button heads the list and the folded rail.
+/// tło"). The same button ends the list's first line and sits under the
+/// folded rail's pills.
 struct OverlaySidebarToggleButton: View {
   let symbol: String
   let title: String
@@ -1242,8 +1243,8 @@ struct OverlayChannelStatusView: View {
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?
   var onGestureHover: ((String) -> Void)?
-  /// The list's fold and the rail's unfold: one `sidebar.right` at the top
-  /// right of either column. Nil leaves the column without the button.
+  /// The list's fold, on the trailing end of its first line, and the rail's
+  /// unfold, under its pills. Nil leaves the column without the button.
   var onFoldList: (() -> Void)?
   var onUnfoldList: (() -> Void)?
   var searchModel: OverlayConversationSearchModel?
@@ -1604,7 +1605,7 @@ struct OverlayChannelStatusView: View {
   }
 
   /// The folded list (Maciej, 2026-10-19: "zostawia pigułki"): one pill per
-  /// row of the list, channel 0 first, under the `sidebar.right` that unfolds
+  /// row of the list, channel 0 first, above the `sidebar.right` that unfolds
   /// it; the divider unfolds it too. A pill switches the conversation and the
   /// list stays folded.
   func railBody(maximumHeight: CGFloat) -> some View {
@@ -1636,14 +1637,6 @@ struct OverlayChannelStatusView: View {
           (viewportHeight - CGFloat(rowCount) * 24 * textScale - 2 * badgeRise)
             / CGFloat(gapCount)))
     return VStack(spacing: 8) {
-      // The button lands where `sidebar.right` folded the list: the same
-      // inset, above the first row.
-      if let onUnfoldList {
-        OverlaySidebarToggleButton(
-          symbol: "sidebar.right", title: String(localized: "Show agents list"),
-          identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
-          action: onUnfoldList)
-      }
       ScrollView(.vertical, showsIndicators: false) {
         VStack(spacing: rowSpacing) {
           if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
@@ -1665,6 +1658,15 @@ struct OverlayChannelStatusView: View {
       }
       .csRailOverflowHints(color: palette.mutedText.color)
       .frame(maxHeight: viewportHeight)
+      // Under the pills, at the foot of the rail: the rail's top margin is
+      // shorter than the button, and above the pills it pushed them down
+      // (Monika, 2026-11-07). The pills keep their places.
+      if let onUnfoldList {
+        OverlaySidebarToggleButton(
+          symbol: "sidebar.right", title: String(localized: "Show agents list"),
+          identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
+          action: onUnfoldList)
+      }
     }
     // The pills start where the list's first row starts.
     .padding(.top, 8)
@@ -2005,24 +2007,48 @@ struct OverlayChannelStatusView: View {
     return String(localized: "Sync draft")
   }
 
+  /// The fold button's slot at the trailing end of the list's first line:
+  /// the button and the gap before it.
+  static func listFoldSlotWidth(textScale: CGFloat) -> CGFloat { 22 * textScale + 4 }
+
+  private func listFoldButton(_ action: @escaping () -> Void) -> some View {
+    OverlaySidebarToggleButton(
+      symbol: "sidebar.right", title: String(localized: "Hide agents list"),
+      identifier: "overlay-agent-sidebar-fold", palette: palette, textScale: textScale,
+      action: action)
+  }
+
+  /// The list's fold shares the first line of channel 0's row, centred on
+  /// its title, in a slot the line leaves free at its trailing end: no row of
+  /// its own, so the rows keep their places (Monika, 2026-11-07: "to
+  /// spychanie nie jest akceptowalne"). The pair under the title keeps the
+  /// right of the second line.
+  @ViewBuilder
+  private func withListFold<Line: View>(_ line: Line) -> some View {
+    if let onFoldList {
+      line
+        .padding(.trailing, Self.listFoldSlotWidth(textScale: textScale))
+        .overlay(alignment: .trailing) { listFoldButton(onFoldList) }
+    } else {
+      line
+    }
+  }
+
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
-    OverlayAgentMonitorBody(
+    let showsBroadcastRow =
+      onSelectConversation != nil && currentConversations.contains(where: { $0.channel == "0" })
+    // Without channel 0's row (before the first snapshot) the list's content
+    // leaves the slot's column free at its right and the fold heads it.
+    let foldsBesideContent = onFoldList != nil && !showsBroadcastRow
+    return OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
       focusRevision: focusRevision, focusedRowID: selectedConversationID,
       scrollTargetID: gestureFocusID,
-      // No "Agents" title (Maciej, 2026-11-01): the list says what it is. The
-      // row keeps only the fold at its right (Monika, 2026-11-05).
-      showsHeader: onFoldList != nil
+      // No header row: no "Agents" title (Maciej, 2026-11-01), and the fold
+      // rides on the first row's line instead of pushing the rows down.
+      showsHeader: false
     ) {
-      HStack(spacing: 0) {
-        Spacer(minLength: 0)
-        if let onFoldList {
-          OverlaySidebarToggleButton(
-            symbol: "sidebar.right", title: String(localized: "Hide agents list"),
-            identifier: "overlay-agent-sidebar-fold", palette: palette, textScale: textScale,
-            action: onFoldList)
-        }
-      }
+      EmptyView()
     } pinned: {
       // Nothing floats over the list: the mailboxes are its first rows
       // (Founder, 2026-11-04: one sidebar, no separate card on top).
@@ -2037,7 +2063,7 @@ struct OverlayChannelStatusView: View {
           if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
             rowGlassContainer(
               VStack(alignment: .leading, spacing: 2) {
-                broadcastRow(broadcast, rowFocus: rowFocus)
+                withListFold(broadcastRow(broadcast, rowFocus: rowFocus))
                 // The pair sits beside the preview, not in the Agents header
                 // and not in the agent-row footer. Three lines belong to All.
                 HStack(alignment: .center, spacing: 8) {
@@ -2120,6 +2146,12 @@ struct OverlayChannelStatusView: View {
         detailsContent(rowFocus: rowFocus)
           .font(.system(size: 13 * textScale, weight: .medium))
           .foregroundStyle(palette.primaryText.color)
+      }
+      .padding(
+        .trailing, foldsBesideContent ? Self.listFoldSlotWidth(textScale: textScale) : 0
+      )
+      .overlay(alignment: .topTrailing) {
+        if foldsBesideContent, let onFoldList { listFoldButton(onFoldList) }
       }
     }
     .font(.system(size: 13 * textScale))

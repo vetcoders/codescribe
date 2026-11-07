@@ -1034,13 +1034,25 @@ scroll-to-selected reach both rows like any other.
 
 ### One fold button
 
-The column's header row holds one `sidebar.right` at its right
-(`overlay-agent-sidebar-fold`, "Hide agents list") and nothing else: no
-"Agents" title (Maciej, 2026-11-01). It calls `foldAgentList`, which keeps
-the selection and drafts and leaves the rail of pills. The rail shows the
-same button above its pills (`overlay-agent-rail-unfold`, "Show agents
-list"), calling `unfoldAgentList`, so the glyph stays where the click folded
-the list. There is no second button on the left and none on the
-conversation's edge (Monika, 2026-11-05: "jeden po prawej stronie to był
-dokładnie taki układ, jaki chciałam"). The divider still folds and unfolds
-the list; the button is the visible way, the divider the dragged one.
+The list has no header row: no "Agents" title (Maciej, 2026-11-01) and no
+row for the fold. One `sidebar.right` (`overlay-agent-sidebar-fold`, "Hide
+agents list") stands at the trailing end of the list's first line, the line
+of channel 0's title, centred on it, in a slot that line leaves free
+(`withListFold`, `listFoldSlotWidth`: the 22 pt button and a 4 pt gap,
+scaled with the text). The audio pair under the title keeps the right of
+the second line. Before channel 0's row exists (before the first snapshot)
+the list's content leaves the same column free at its right and the button
+heads it. A row of its own pushed every row down by 30 pt and was rejected
+(Monika, 2026-11-07: "to spychanie nie jest akceptowalne, na pewno nie");
+the rows stand where they stand without the button
+(`testFoldButtonsLeaveTheRowsAndPillsWhereTheyStand`).
+
+The button calls `foldAgentList`, which keeps the selection and drafts and
+leaves the rail of pills. The rail shows the same button under its pills, at
+its foot (`overlay-agent-rail-unfold`, "Show agents list"), calling
+`unfoldAgentList`: the rail's top margin is shorter than the button, and
+above the pills it pushed them down. There is no second button on the left
+and none on the conversation's edge (Monika, 2026-11-05: "jeden po prawej
+stronie to był dokładnie taki układ, jaki chciałam"). The divider still
+folds and unfolds the list; the button is the visible way, the divider the
+dragged one.

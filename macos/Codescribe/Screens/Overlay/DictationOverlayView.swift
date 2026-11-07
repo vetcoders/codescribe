@@ -1137,7 +1137,7 @@ struct DictationOverlayView: View {
 
   /// The roster is always a side column, sized by the user and capped to
   /// leave the conversation readable. Its divider and the `sidebar.right` at
-  /// its top right fold it.
+  /// the end of its first line fold it.
   private func agentDrawerColumn(
     maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
   ) -> some View {

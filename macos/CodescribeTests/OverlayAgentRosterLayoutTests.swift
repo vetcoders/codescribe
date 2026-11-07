@@ -493,6 +493,136 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     }
   }
 
+  /// Monika, 2026-11-07 ("to spychanie nie jest akceptowalne"): the list's
+  /// fold rides on channel 0's first line, centred on its title, and the
+  /// rail's unfold sits under its pills, so neither button moves a row or a
+  /// pill. Ink bands are the pixel rows that carry text or glyphs.
+  func testFoldButtonsLeaveTheRowsAndPillsWhereTheyStand() throws {
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let inbox = OverlayConversation(
+      id: "10", channel: "10", name: "Your Inbox", owner: nil, messages: [])
+    let lena = OverlayChannelDelivery(
+      channel: "3", agent: "Lena", deliveryID: nil, stage: nil, isOpen: false)
+    func roster(folds: Bool) -> OverlayChannelStatusView {
+      var view = OverlayChannelStatusView(
+        channels: [lena], unavailable: false, palette: .light, animates: false,
+        onToggleChannel: { _ in }, conversations: [all, inbox], onSelectConversation: { _ in })
+      if folds {
+        view.onFoldList = {}
+        view.onUnfoldList = {}
+      }
+      return view
+    }
+    for scale in [CGFloat(1), 1.5, 2] {
+      let width = 360 * scale
+      let height = 300 * scale
+      let plain = try renderBitmap(
+        roster(folds: false).monitorBody(maximumHeight: height), width: width, height: height,
+        scale: scale)
+      let folded = try renderBitmap(
+        roster(folds: true).monitorBody(maximumHeight: height), width: width, height: height,
+        scale: scale)
+      let strip = 40 * scale
+      let left = 0..<(width - strip)
+      let titleBand = try XCTUnwrap(inkBands(plain, width: width, columns: left).first)
+      XCTAssertEqual(
+        inkBands(folded, width: width, columns: left), inkBands(plain, width: width, columns: left),
+        "the rows keep their places beside the fold button at scale \(scale)")
+      let plainStrip = inkBands(plain, width: width, columns: (width - strip)..<width)
+      let foldedStrip = inkBands(folded, width: width, columns: (width - strip)..<width)
+      XCTAssertEqual(
+        Array(foldedStrip.dropFirst()), plainStrip,
+        "the button is a band of its own above the row controls at scale \(scale)")
+      let button = try XCTUnwrap(foldedStrip.first)
+      let pixels = CGFloat(plain.pixelsWide) / width
+      XCTAssertEqual(
+        CGFloat(button.lowerBound + button.upperBound) / 2,
+        CGFloat(titleBand.lowerBound + titleBand.upperBound) / 2, accuracy: 3 * scale * pixels,
+        "the button is centred on channel 0's title line at scale \(scale)")
+
+      let railWidth = 88 * scale
+      let plainRail = try renderBitmap(
+        roster(folds: false).railBody(maximumHeight: height), width: railWidth, height: height,
+        scale: scale)
+      let foldedRail = try renderBitmap(
+        roster(folds: true).railBody(maximumHeight: height), width: railWidth, height: height,
+        scale: scale)
+      let plainPills = inkBands(plainRail, width: railWidth, columns: 0..<railWidth)
+      let foldedPills = inkBands(foldedRail, width: railWidth, columns: 0..<railWidth)
+      XCTAssertFalse(plainPills.isEmpty)
+      XCTAssertEqual(
+        Array(foldedPills.dropLast()), plainPills,
+        "the pills keep their places above the unfold button at scale \(scale)")
+      let unfold = try XCTUnwrap(foldedPills.last)
+      XCTAssertGreaterThan(unfold.lowerBound, try XCTUnwrap(plainPills.last).upperBound)
+    }
+  }
+
+  private func renderBitmap<Content: View>(
+    _ view: Content, width: CGFloat, height: CGFloat, scale: CGFloat
+  ) throws -> NSBitmapImageRep {
+    let host = NSHostingView(
+      rootView:
+        view
+        .frame(width: width, height: height, alignment: .top)
+        .background(Color.white)
+        .environment(\.csTextScale, scale)
+        .environment(\.colorScheme, .light)
+        .transaction { $0.disablesAnimations = true })
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+    let panel = NSPanel(
+      contentRect: host.frame, styleMask: [.borderless, .nonactivatingPanel],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.appearance = NSAppearance(named: .aqua)
+    panel.contentView = host
+    defer {
+      panel.contentView = nil
+      panel.close()
+    }
+    settle(host)
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    XCTAssertFalse(panel.isVisible, "the fixture does not claim the user's desktop")
+    return bitmap
+  }
+
+  /// Runs of pixel rows (top down) holding dark ink within `columns` (points).
+  private func inkBands(
+    _ bitmap: NSBitmapImageRep, width: CGFloat, columns: Range<CGFloat>
+  ) -> [ClosedRange<Int>] {
+    guard bitmap.bitsPerSample == 8, bitmap.samplesPerPixel >= 3, let data = bitmap.bitmapData
+    else {
+      XCTFail("unexpected bitmap layout")
+      return []
+    }
+    let pixels = CGFloat(bitmap.pixelsWide) / width
+    let first = Int((columns.lowerBound * pixels).rounded(.down))
+    let last = min(bitmap.pixelsWide, Int((columns.upperBound * pixels).rounded(.down)))
+    let offset = bitmap.bitmapFormat.contains(.alphaFirst) ? 1 : 0
+    var bands: [ClosedRange<Int>] = []
+    var start: Int?
+    for y in 0..<bitmap.pixelsHigh {
+      var ink = false
+      for x in first..<last {
+        let base = y * bitmap.bytesPerRow + x * bitmap.samplesPerPixel + offset
+        let sum = Int(data[base]) + Int(data[base + 1]) + Int(data[base + 2])
+        if sum < 3 * 180 {
+          ink = true
+          break
+        }
+      }
+      if ink, start == nil { start = y }
+      if !ink, let open = start {
+        bands.append(open...(y - 1))
+        start = nil
+      }
+    }
+    if let open = start { bands.append(open...(bitmap.pixelsHigh - 1)) }
+    return bands
+  }
+
   private func overlaySource(_ file: String) throws -> String {
     let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens/Overlay/\(file)")
