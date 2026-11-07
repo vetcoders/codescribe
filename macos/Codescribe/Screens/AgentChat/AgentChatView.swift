@@ -137,7 +137,7 @@ enum AgentWindowMetrics {
 
 /// One native titlebar for the Agent window. The title string stays "Agent"
 /// for Mission Control, Exposé, and the Window menu. It is not painted, so the
-/// toolbar is the only header plane.
+/// replacement top accessory is the detail header's only owner.
 enum AgentWindowChrome {
   static func title() -> String {
     String(localized: "Agent", comment: "Agent window title")
@@ -240,12 +240,11 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
 
 // MARK: - Integrated titlebar
 
-/// The window's native bar, the only bar the window has. The split view
-/// supplies the sidebar toggle; the leading group holds the wordmark and the
-/// conversation's identity (`AgentConversationHeader`: title, live status,
-/// "Agent · model"), the trailing cluster the Voice Lab mark, width, Context,
-/// pin and menu. No principal item. Rename, delete, and export alerts stay on
-/// this modifier: alerts attached to a toolbar item do not present.
+/// Owns the actual detail header in a top titlebar accessory. The native bar
+/// retains the split view's sidebar toggle and standard window controls. The
+/// rectangular glass contains wordmark, conversation identity and all actions.
+/// Alerts stay on the root modifier so the separate header hosting view does
+/// not become a competing owner of rename, delete or export presentation.
 private struct AgentIntegratedChrome: ViewModifier {
   @ObservedObject var store: AgentChatStore
   @Binding var isPinned: Bool

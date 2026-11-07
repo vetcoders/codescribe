@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+final class CSWindowTopHeaderLayout: ObservableObject {
+  @Published var leadingWidth: CGFloat = 0
+}
+
 /// One replacement header in the existing unified titlebar band. The native
 /// toolbar retains sidebar/window controls; the detail's real content lives
 /// inside one rectangular glass view, not in a second row or an empty plane.
@@ -57,13 +62,8 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
   }
 
-  @MainActor
-  final class Layout: ObservableObject {
-    @Published var leadingWidth: CGFloat = 0
-  }
-
   struct HeaderRoot: View {
-    @ObservedObject var layout: Layout
+    @ObservedObject var layout: CSWindowTopHeaderLayout
     let header: Header
 
     var body: some View {
@@ -87,7 +87,7 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
 
   @MainActor
   final class Coordinator {
-    let layout = Layout()
+    let layout = CSWindowTopHeaderLayout()
     let accessory = NSTitlebarAccessoryViewController()
     let host: HeaderHost
     var requestedLeadingWidth: CGFloat = 0

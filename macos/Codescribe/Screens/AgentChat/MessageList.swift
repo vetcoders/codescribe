@@ -331,7 +331,6 @@ struct MessageList: View {
           .csAutohidingScrollers()
         }
         .scrollContentBackground(.hidden)
-        .scrollEdgeEffectStyle(.soft, for: .top)
         // The document height is exact (see `emptyStateHeight`), so this only
         // absorbs sub-point layout rounding: a content height that fits never
         // rubber-bands. It is not the fix for the empty-thread scrollbar.
