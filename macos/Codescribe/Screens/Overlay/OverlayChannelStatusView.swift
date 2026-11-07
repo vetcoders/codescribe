@@ -3900,11 +3900,11 @@ enum OverlayAgentMonitorLayout {
 
 /// A status message on the bar and in the agents roster (round 5 decision
 /// (a), 2026-11-07): the words in the text ink like every other text, the
-/// meaning's colour only on the icon before them. An error's icon is the
-/// error red (`errorStatus`, at least 3:1 on the sheets); a warning's is the
-/// system triangle with a dark "!" on the orange fill (`processingStatus`),
-/// as macOS draws warnings, because the orange alone does not reach 3:1 on
-/// the light sheets.
+/// meaning's colour only on the icon before them. The icon is a filled
+/// system symbol in the error red or the warning orange with its mark ("!")
+/// in a dark ink, as macOS draws its warnings: the red and the orange alone
+/// stay under the 3:1 icon floor on the light sheets (red 2.4:1 on
+/// travertine), the dark mark on its fill clears it in both looks.
 struct OverlayStatusNotice: View {
   enum Severity: Equatable {
     case error
@@ -3929,11 +3929,16 @@ struct OverlayStatusNotice: View {
     palette.primaryText
   }
 
-  /// The warning triangle's "!": the dark one of the palette's inks in both
+  /// The icon's mark ("!"): the dark one of the palette's inks in both
   /// looks (the text ink in light, the sheet in dark), as the system's
   /// warning draws a dark mark on its bright fill.
-  static func warningMarkInk(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
+  static func markInk(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
     palette.appearance == .dark ? palette.desktopBackground : palette.primaryText
+  }
+
+  /// The icon's fill: the meaning's colour.
+  static func fill(_ severity: Severity, _ palette: OverlayAppearancePalette) -> OverlayColorToken {
+    severity == .error ? palette.errorStatus : palette.processingStatus
   }
 
   var body: some View {
@@ -3948,16 +3953,9 @@ struct OverlayStatusNotice: View {
     .accessibilityElement(children: .combine)
   }
 
-  @ViewBuilder
   private var icon: some View {
-    switch severity {
-    case .error:
-      Image(systemName: severity.symbol)
-        .foregroundStyle(palette.errorStatus.color)
-    case .warning:
-      Image(systemName: severity.symbol)
-        .symbolRenderingMode(.palette)
-        .foregroundStyle(Self.warningMarkInk(palette).color, palette.processingStatus.color)
-    }
+    Image(systemName: severity.symbol)
+      .symbolRenderingMode(.palette)
+      .foregroundStyle(Self.markInk(palette).color, Self.fill(severity, palette).color)
   }
 }

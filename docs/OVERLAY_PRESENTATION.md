@@ -124,10 +124,11 @@ light sheets and meets the 3:1 non-text floor. The hover card's muted channel
 Error and warning messages follow the same rule (round 5 decision (a),
 2026-11-07): their words wear the label ink and only the icon before them
 carries the meaning's colour (`OverlayStatusNotice`): an error's
-`exclamationmark.circle.fill` in the error red, at least 3:1 on the sheets,
-a warning's `exclamationmark.triangle.fill` with a dark "!" on the orange
-fill (`warningMarkInk`), since the orange alone stays under 3:1 on the light
-sheets. A row's pending state ("connecting…") reads in the ink beside its
+`exclamationmark.circle.fill` on the error red, a warning's
+`exclamationmark.triangle.fill` on the orange, each with a dark "!"
+(`markInk`) as macOS draws its warnings, since the red and the orange alone
+stay under the 3:1 icon floor on the light sheets (red 2.4:1 on
+travertine); the dark mark on its fill clears it in both looks. A row's pending state ("connecting…") reads in the ink beside its
 spinner. Queue admission and provider acceptance are not delivered/read evidence.
 Skipped and unreceipted deliveries keep distinct marks and explanations; a
 message still held for withdrawal says "Held" under the preview and wears no
