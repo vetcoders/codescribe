@@ -497,9 +497,11 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
   /// her screenshot, the empty band above the rows): the list's fold stands
   /// in the pane's top corner, in the band between the window header and the
   /// first row, so the button moves no row. The rail's unfold stands in the
-  /// same band, centred on the pills' column, and the pills start just below
-  /// it, each lower by the same drop. The list renders under the column's
-  /// gap, as in the Bus window. Ink bands are the pixel rows that carry text or glyphs.
+  /// same band, in the top-right corner on the pills' trailing edge, and the
+  /// pills start just below it, each lower by the same drop, on a 34 pt pitch
+  /// at scale 1 (Monika, 2026-11-07, from her mock of the narrower rail). The
+  /// list renders under the column's gap, as in the Bus window. Ink bands are
+  /// the pixel rows that carry text or glyphs.
   func testFoldButtonsLeaveTheRowsAndPillsWhereTheyStand() throws {
     let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
     let inbox = OverlayConversation(
@@ -569,13 +571,26 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
           + "button ink y \(CGFloat(button.lowerBound) / pixels)-"
           + "\(CGFloat(button.upperBound + 1) / pixels) pt")
 
-      let railWidth = 88 * scale
+      // Mounted as `DictationOverlayView.agentRail` mounts it: the resize
+      // band's inset on both sides of the rail's width. Monika, 2026-11-07:
+      // narrower rail.
+      let railWidth = OverlayAgentDrawerLayout.railWidth(textScale: scale)
+      let pillWidth = OverlayAgentDrawerLayout.railPillWidth(textScale: scale)
+      let trailingInset = OverlayAgentDrawerLayout.railTrailingInset(textScale: scale)
+      XCTAssertEqual(
+        railWidth, OverlayResizeHit.band + pillWidth + trailingInset, accuracy: 0.001,
+        "the rail is the pill and its two insets at scale \(scale)")
+      if scale == 1 {
+        XCTAssertEqual(railWidth, 66, accuracy: 2, "Monika's mock: about 66 pt")
+      }
       let plainRail = try renderBitmap(
-        roster(folds: false).railBody(maximumHeight: height).padding(.top, gap), width: railWidth,
-        height: height, scale: scale)
+        roster(folds: false).railBody(maximumHeight: height)
+          .padding(.horizontal, OverlayResizeHit.band).padding(.top, gap),
+        width: railWidth, height: height, scale: scale)
       let foldedRail = try renderBitmap(
-        roster(folds: true).railBody(maximumHeight: height).padding(.top, gap), width: railWidth,
-        height: height, scale: scale)
+        roster(folds: true).railBody(maximumHeight: height)
+          .padding(.horizontal, OverlayResizeHit.band).padding(.top, gap),
+        width: railWidth, height: height, scale: scale)
       let plainPills = inkBands(plainRail, width: railWidth, columns: 0..<railWidth)
       let foldedPills = inkBands(foldedRail, width: railWidth, columns: 0..<railWidth)
       XCTAssertFalse(plainPills.isEmpty)
@@ -590,16 +605,23 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       XCTAssertEqual(
         CGFloat(unfold.lowerBound + unfold.upperBound) / 2 / railPixels, band / 2, accuracy: 2,
         "the unfold is centred in the band at scale \(scale)")
-      // Centred on the pills' column: the pills' ink is the column's width.
+      // The pills' column is the widest pill, a band in from the divider; the
+      // button's frame ends on the pills' trailing edge, in the corner.
       let firstRow = try XCTUnwrap(plainPills.first).lowerBound
       let lastRow = try XCTUnwrap(plainPills.last).upperBound
       let pillsInk = try XCTUnwrap(
         inkColumns(plainRail, width: railWidth, rows: firstRow...lastRow))
       let unfoldInk = try XCTUnwrap(inkColumns(foldedRail, width: railWidth, rows: unfold))
+      let pillsEdge = railWidth - trailingInset
       XCTAssertEqual(
-        CGFloat(unfoldInk.lowerBound + unfoldInk.upperBound) / 2 / railPixels,
-        CGFloat(pillsInk.lowerBound + pillsInk.upperBound) / 2 / railPixels, accuracy: 1.5,
-        "the unfold is centred on the pills' column at scale \(scale)")
+        CGFloat(pillsInk.lowerBound + pillsInk.upperBound + 1) / 2 / railPixels,
+        pillsEdge - pillWidth / 2, accuracy: 1.5, "the pills' column at scale \(scale)")
+      XCTAssertEqual(
+        CGFloat(unfoldInk.lowerBound + unfoldInk.upperBound + 1) / 2 / railPixels,
+        pillsEdge - side / 2, accuracy: 1.5,
+        "the unfold's frame ends on the pills' trailing edge at scale \(scale)")
+      XCTAssertLessThanOrEqual(CGFloat(unfoldInk.upperBound + 1) / railPixels, pillsEdge)
+      XCTAssertGreaterThan(CGFloat(unfoldInk.lowerBound) / railPixels, pillsEdge - side)
       // The pills start below the button, every one lower by the same drop:
       // their own spacing is unchanged.
       let drop = OverlayChannelStatusView.railFoldDrop * railPixels
@@ -609,6 +631,12 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         XCTAssertEqual(CGFloat(moved.lowerBound - original.lowerBound), drop, accuracy: 1)
         XCTAssertEqual(CGFloat(moved.upperBound - original.upperBound), drop, accuracy: 1)
       }
+      // The pitch between pill centres: 34 pt at scale 1 (24 pt pills, a 10 pt gap).
+      let centres = plainPills.map { CGFloat($0.lowerBound + $0.upperBound + 1) / 2 / railPixels }
+      let pitch = centres[1] - centres[0]
+      XCTAssertEqual(
+        pitch, 24 * scale + OverlayChannelStatusView.railPillGap, accuracy: 1,
+        "pill pitch at scale \(scale)")
       let firstPill = try XCTUnwrap(pills.first)
       let pillFrameTop = gap + 8 + OverlayChannelPill.railBadgeRise * scale + drop / railPixels
       report.append(
@@ -616,7 +644,8 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
           + "\(CGFloat(unfold.lowerBound) / railPixels)-"
           + "\(CGFloat(unfold.upperBound + 1) / railPixels) pt, ink x "
           + "\(CGFloat(unfoldInk.lowerBound) / railPixels)-"
-          + "\(CGFloat(unfoldInk.upperBound + 1) / railPixels) of \(railWidth) pt; "
+          + "\(CGFloat(unfoldInk.upperBound + 1) / railPixels) of \(railWidth) pt "
+          + "(frame x \(pillsEdge - side)-\(pillsEdge)); pill pitch \(pitch) pt; "
           + "first pill frame top y \(pillFrameTop) pt, ink y "
           + "\(CGFloat(firstPill.lowerBound) / railPixels) pt (without the button "
           + "\(CGFloat(plainPills[0].lowerBound) / railPixels) pt); pills' column ink x "

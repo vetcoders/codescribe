@@ -1640,7 +1640,7 @@ struct OverlayChannelStatusView: View {
       gapCount == 0
       ? 0
       : min(
-        6,
+        Self.railPillGap,
         max(
           0,
           (viewportHeight - CGFloat(rowCount) * 24 * textScale - 2 * badgeRise)
@@ -1659,10 +1659,11 @@ struct OverlayChannelStatusView: View {
           }
         }
         .padding(.vertical, badgeRise)
-        // Room for the unread capsule beside the pills: they stay centred in
-        // the column before it (`OverlayAgentDrawerLayout.railWidth`).
-        .padding(.trailing, OverlayChannelPill.railBadgeReach(scale: textScale))
-        .frame(maxWidth: .infinity)
+        // The widest pill starts at the body's leading edge; the unread
+        // capsule has the trailing inset beside it
+        // (`OverlayAgentDrawerLayout.railWidth`).
+        .padding(.trailing, OverlayAgentDrawerLayout.railTrailingInset(textScale: textScale))
+        .frame(maxWidth: .infinity, alignment: .leading)
         .csAutohidingScrollers(.verticalHidden)
       }
       .csRailOverflowHints(color: palette.mutedText.color)
@@ -1672,7 +1673,11 @@ struct OverlayChannelStatusView: View {
     // when the unfold button takes the band above them.
     .padding(.top, 8 + drop)
     .frame(maxWidth: .infinity)
-    .overlay(alignment: .top) { railUnfoldButton }
+    .overlay(alignment: .topTrailing) { railUnfoldButton }
+    // The panel pads the rail by the resize band on both sides; the pills'
+    // scroll view and the unfold button reach the rail's trailing edge, so
+    // the capsule beside the widest pill is not cut at the band.
+    .padding(.trailing, -OverlayResizeHit.band)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-rail-pills")
   }
@@ -2038,6 +2043,11 @@ struct OverlayChannelStatusView: View {
     .offset(y: (Self.listTopBand - Self.listFoldSide) / 2 - Self.listColumnTopGap)
   }
 
+  /// The gap between the folded rail's pills at text scale 1: 24 pt pills on
+  /// a 34 pt pitch (Monika, 2026-11-07, from her mock: "a little looser", it
+  /// was 6 pt, a 30 pt pitch). A short window narrows it, as before.
+  static let railPillGap: CGFloat = 10
+
   /// How far the folded rail's pills sit lower than they would without the
   /// unfold button, at every text scale. At scale 1 the first pill's frame
   /// begins 1 pt under the button's (the glyph's ink ends 6 pt above it); the
@@ -2045,9 +2055,10 @@ struct OverlayChannelStatusView: View {
   static let railFoldDrop: CGFloat = 6
 
   /// The rail's unfold in the same top band as the list's fold (Monika,
-  /// 2026-11-07, on the render of the folded rail): the same 22 pt
-  /// `sidebar.right` at the same height, centred on the pills' column, which
-  /// leaves room for the unread capsule on its trailing side.
+  /// 2026-11-07, on the render of the folded rail and again on her mock): the
+  /// same 22 pt `sidebar.right` at the same height, in the top-right corner,
+  /// its trailing edge on the widest pill's (`railTrailingInset` from the
+  /// rail's edge).
   @ViewBuilder
   private var railUnfoldButton: some View {
     if let onUnfoldList {
@@ -2056,7 +2067,7 @@ struct OverlayChannelStatusView: View {
         identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
         side: Self.listFoldSide, action: onUnfoldList
       )
-      .padding(.trailing, OverlayChannelPill.railBadgeReach(scale: textScale))
+      .padding(.trailing, OverlayAgentDrawerLayout.railTrailingInset(textScale: textScale))
       .offset(y: (Self.listTopBand - Self.listFoldSide) / 2 - Self.listColumnTopGap)
     }
   }

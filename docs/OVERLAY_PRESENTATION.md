@@ -177,10 +177,12 @@ mark consists of two identical translated checks; it is not two different states
 The horizontal window keeps the conversation header and its current-agent
 actions visible with either the full sidebar or its folded rail. The sidebar
 choice does not replace the current conversation, draft or microphone target.
-Folded-rail controls sit on one centerline, with equal horizontal gutters that
-keep the numbered buttons clear of the native resize band; beside them the
-column keeps room for a two-digit unread capsule, so the centerline is that of
-the pills and their capsules together (`OverlayAgentDrawerLayout.railWidth`).
+Folded-rail controls sit on one centerline: the rail is the widest pill with
+the resize band's inset before it and, after it, the band or the room for a
+two-digit unread capsule, whichever is wider (`OverlayAgentDrawerLayout.railWidth`
+and `railTrailingInset`; about 66 pt at text scale 1, Monika, 2026-11-07:
+narrower rail). The numbered buttons stay clear of the native resize band, and
+the capsule beside the widest pill stays inside the rail.
 The existing All, Inbox and saved-conversation views keep their current data
 and routing semantics; the earlier proposal's additional history filters are
 not part of this change.
@@ -1075,17 +1077,20 @@ and 2).
 The button calls `foldAgentList`, which keeps the selection and drafts and
 leaves the rail of pills. The rail shows the same button in the same top band
 (`overlay-agent-rail-unfold`, "Show agents list"), calling `unfoldAgentList`
-(Monika, 2026-11-07, on the render of the folded rail): the same 22 pt
-`sidebar.right` at the same height (frame 1 to 23 pt below the header),
-centred on the pills' column, which leaves the room beside it for the unread
-capsule. The rail's own band above its first pill (the column's 8 pt gap, the
-rail's 8 pt top and the capsule's 2 pt rise, scaled: 18 pt at text scale 1)
-is shorter than the button, so the pills sit lower by `railFoldDrop`, 6 pt at
-every text scale: the first pill's frame begins 1 pt under the button's at
-scale 1 and the glyph's ink ends 6 pt above it. Their own spacing is
-unchanged, and without the button (no `onUnfoldList`) they stand where they
-stood. The button used to stand at the rail's foot, because the pills were
-not to move; they may, and one button stands in one place. There is no second
+(Monika, 2026-11-07, on the render of the folded rail, and again on her mock
+of the narrower rail): the same 22 pt `sidebar.right` at the same height
+(frame 1 to 23 pt below the header), in the top-right corner, its trailing
+edge on the widest pill's (`railTrailingInset` from the rail's edge). The
+rail's own band above its first pill (the column's 8 pt gap, the rail's 8 pt
+top and the capsule's 2 pt rise, scaled: 18 pt at text scale 1) is shorter
+than the button, so the pills sit lower by `railFoldDrop`, 6 pt at every text
+scale: the first pill's frame begins 1 pt under the button's at scale 1 and
+the glyph's ink ends 6 pt above it. The pills stand a little looser than they
+did: a 10 pt gap (`railPillGap`), so a 34 pt pitch between 24 pt pills at
+scale 1, it was 30; a short window narrows the gap as before. Without the
+button (no `onUnfoldList`) they stand where they stood. The button used to
+stand at the rail's foot, because the pills were not to move; they may, and
+one button stands in one place. There is no second
 button on the left and none on the conversation's edge (Monika, 2026-11-05:
 "jeden po prawej stronie to był dokładnie taki układ, jaki chciałam").
 The divider still folds and unfolds

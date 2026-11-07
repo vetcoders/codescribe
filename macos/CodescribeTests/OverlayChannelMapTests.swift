@@ -839,13 +839,14 @@ final class OverlayChannelMapTests: XCTestCase {
         + OverlayChannelPill.textWidth(
           "+", size: OverlayChannelPill.railBadgeCappedPlusSize * scale)
       XCTAssertLessThanOrEqual(figure, width(250), "@\(scale): 99+ is not clipped")
-      // Centred in the column before the reserved room, the widest pill's
-      // two-digit capsule ends inside the rail's content, before the band.
-      let content =
-        OverlayAgentDrawerLayout.railWidth(textScale: scale) - 2 * OverlayResizeHit.band
+      // The widest pill starts a band in from the divider; its two-digit
+      // capsule ends inside the rail, in the trailing inset. Monika,
+      // 2026-11-07: narrower rail.
+      let rail = OverlayAgentDrawerLayout.railWidth(textScale: scale)
       let reserved = OverlayChannelPill.railBadgeFrame(
         count: 99, pillSize: CGSize(width: widest, height: 24 * scale), scale: scale)
-      XCTAssertLessThanOrEqual(2 + reserved.maxX, content + 0.001, "@\(scale): 99 is not clipped")
+      XCTAssertLessThanOrEqual(
+        OverlayResizeHit.band + reserved.maxX, rail + 0.001, "@\(scale): 99 is not clipped")
     }
     let pillSource = try overlaySource("OverlayChannelPill.swift")
     let badge = try section(

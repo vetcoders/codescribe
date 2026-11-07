@@ -101,14 +101,21 @@ enum OverlayAgentDrawerLayout {
     (12 + 7.2 + 12) * textScale + 3
   }
 
-  /// A 2-point inset on each side of the widest pill, the room its unread
-  /// capsule takes beside it (`OverlayChannelPill.railBadgeReach`), plus
-  /// equal gutters matching the panel's native resize band. Pill and capsule
-  /// stay centred together in the column and end before the trailing resize
-  /// target starts.
+  /// Room from the widest pill's trailing edge to the rail's: the resize
+  /// band, or the unread capsule's reach when that is wider, so a two-digit
+  /// count never leaves the rail. The unfold button ends on the pills'
+  /// trailing edge, this far from the rail's.
+  static func railTrailingInset(textScale: CGFloat) -> CGFloat {
+    max(OverlayResizeHit.band, OverlayChannelPill.railBadgeReach(scale: textScale))
+  }
+
+  /// The folded rail: the resize band's inset before the widest pill and
+  /// `railTrailingInset` after it. Monika, 2026-11-07: narrower rail
+  /// (the pill and two insets, no longer the pill plus a 4 pt margin, the
+  /// capsule's reach and two bands).
   static func railWidth(textScale: CGFloat) -> CGFloat {
-    railPillWidth(textScale: textScale) + 4
-      + OverlayChannelPill.railBadgeReach(scale: textScale) + 2 * OverlayResizeHit.band
+    OverlayResizeHit.band + railPillWidth(textScale: textScale)
+      + railTrailingInset(textScale: textScale)
   }
 
   /// The name pill's width: 224 at 1.0.
