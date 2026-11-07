@@ -16,7 +16,6 @@ struct CSWindowHeaderItem<Content: View>: View {
       .padding(.vertical, 17)
       .padding(.horizontal, 12)
       .frame(
-        minWidth: 0,
         idealWidth: fillsAvailableWidth ? availableWidth : nil,
         maxWidth: fillsAvailableWidth ? (availableWidth ?? .infinity) : nil
       )

@@ -78,6 +78,12 @@ final class AgentWindowChromeTests: XCTestCase {
         }
         let header = try XCTUnwrap(headers().first)
         let rect = frame(header)
+        let attachment = XCTAttachment(
+          string: "requestedWidth=\(width) expanded=\(expanded) window=\(window.frame) "
+            + "layout=\(window.contentLayoutRect) header=\(rect)")
+        attachment.name = "Header width \(width) expanded \(expanded)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
         XCTAssertEqual(headers().count, 1)
         XCTAssertGreaterThanOrEqual(
           rect.maxX, window.frame.width - CSSpace.lg,
