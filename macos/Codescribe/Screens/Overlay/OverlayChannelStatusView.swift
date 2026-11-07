@@ -104,6 +104,10 @@ struct OverlayChannelHudProjection: Equatable {
   /// The second liveness layer: a reader process can heartbeat while the
   /// conversation behind it reads nothing (Founder, 2026-10-14).
   var unreadSince: Date? = nil
+  /// When a follower that is no longer alive last heartbeat its lease; nil
+  /// for a live follower, without a lease or without a claim. The hover
+  /// card's "5 min ago" for a gone agent.
+  var lastHeartbeat: Date? = nil
 
   /// Alive by heartbeat, yet nothing read for longer than the stall horizon.
   func isStalled(now: Date = Date()) -> Bool {

@@ -3812,6 +3812,9 @@ final class OverlayState {
             codexThreadLocal: row.codexThreadLocal,
             unreadSince: row.unreadSinceUnixMs.map {
               Date(timeIntervalSince1970: Double($0) / 1_000)
+            },
+            lastHeartbeat: row.lastHeartbeatUnixMs.map {
+              Date(timeIntervalSince1970: Double($0) / 1_000)
             })
         )
       }, uniquingKeysWith: { _, latest in latest })

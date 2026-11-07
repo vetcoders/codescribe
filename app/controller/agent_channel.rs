@@ -741,6 +741,10 @@ pub struct ChannelHudState {
     /// it; a backlog that only grows is the overlay's "alive but not
     /// reading" signal. `None` = no backlog, no follower, or no claim.
     pub unread_since: Option<SystemTime>,
+    /// When a follower that is no longer alive last heartbeat its lease:
+    /// the time the overlay's hover card gives a gone agent ("5 min ago").
+    /// `None` = a live follower, no lease, or no claim.
+    pub last_heartbeat: Option<SystemTime>,
 }
 
 fn utterance_silence_ms(seconds: f32) -> u32 {
@@ -2419,6 +2423,7 @@ impl RecordingController {
                     codex_thread_url: None,
                     codex_thread_local: None,
                     unread_since: None,
+                    last_heartbeat: None,
                 })
             })
             .collect()
@@ -2463,6 +2468,7 @@ impl RecordingController {
                 codex_thread_url: None,
                 codex_thread_local: None,
                 unread_since: None,
+                last_heartbeat: None,
             });
         }
         let mut ambiguous_open_channels = BTreeSet::new();
@@ -2507,6 +2513,7 @@ impl RecordingController {
                     codex_thread_url: None,
                     codex_thread_local: None,
                     unread_since: None,
+                    last_heartbeat: None,
                     provider,
                     provider_session_id: session,
                 });
@@ -2541,6 +2548,9 @@ impl RecordingController {
             state.unread_since = observation
                 .unread_since
                 .map(|since| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(since.max(0.0)));
+            state.last_heartbeat = observation
+                .last_heartbeat
+                .map(|beat| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(beat.max(0.0)));
             let thread_key = (key.0.clone(), key.1.trim().to_string());
             if let Some(thread) = codex_threads.get(&thread_key) {
                 state.codex_thread_url = Some(format!("codex://threads/{}", thread.thread_id));
@@ -3867,6 +3877,11 @@ mod tests {
             roster[2].unread_since, None,
             "a dead follower has no live backlog"
         );
+        assert_eq!(
+            roster[1].last_heartbeat, None,
+            "a live follower is now, not a time"
+        );
+        assert_eq!(roster[2].last_heartbeat, None, "no lease, no heartbeat");
     }
 
     /// A Codex app follower is usually dead between turns; its row still
@@ -3905,6 +3920,11 @@ mod tests {
             Some(format!("codex://threads/{THREAD}").as_str())
         );
         assert_eq!(roster[2].codex_thread_local, Some(true));
+        assert_eq!(
+            roster[2].last_heartbeat,
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1000)),
+            "a gone follower carries its lease's last heartbeat"
+        );
         assert_eq!(roster[1].codex_thread_url, None, "no lease, no thread");
         assert_eq!(roster[1].codex_thread_local, None);
         assert_eq!(roster[0].codex_thread_url, None);

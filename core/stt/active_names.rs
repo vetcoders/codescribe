@@ -266,6 +266,11 @@ pub struct FollowerObservation {
     pub alive: Option<bool>,
     pub hosts: Option<FollowerHosts>,
     pub unread_since: Option<f64>,
+    /// The lease's last `heartbeat_unix` when its follower is not alive
+    /// (inactive or past the TTL): when the agent was last there. `None`
+    /// for a live follower, whose heartbeat moves with every beat, and for
+    /// a missing or unreadable lease.
+    pub last_heartbeat: Option<f64>,
 }
 
 // Cached facts exclude message bodies and other payloads. Retaining only the
@@ -465,6 +470,7 @@ fn observe_follower_facts(
     if !facts.active || age > LEASE_TTL_SECONDS {
         return FollowerObservation {
             alive: Some(false),
+            last_heartbeat: Some(facts.heartbeat_unix),
             ..unknown
         };
     }
@@ -479,6 +485,7 @@ fn observe_follower_facts(
         alive: Some(true),
         hosts: Some(facts.hosts),
         unread_since,
+        last_heartbeat: None,
     }
 }
 
@@ -1499,6 +1506,7 @@ mod tests {
         assert_eq!(missing.alive, Some(false));
         assert!(missing.hosts.is_none());
         assert!(missing.unread_since.is_none());
+        assert!(missing.last_heartbeat.is_none(), "no lease, no heartbeat");
 
         // Write > 64 newer leases for other sessions so `ada-session` would be
         // evicted from a 64-file directory scan, then write Ada's canonical lease
@@ -1570,6 +1578,10 @@ mod tests {
             .timestamp_millis() as f64
             / 1000.0;
         assert_eq!(live.unread_since, Some(expected_oldest));
+        assert_eq!(
+            live.last_heartbeat, None,
+            "a live follower's heartbeat moves with every beat"
+        );
 
         // Acknowledging the oldest delivery updates `unread_since` even on a cache hit.
         let ack_dir = temp.path().join("acknowledgments").join(&lease_id);
@@ -1599,6 +1611,7 @@ mod tests {
             future.alive, None,
             "future heartbeat must be treated as unknown"
         );
+        assert_eq!(future.last_heartbeat, None, "an unknown claims no time");
 
         // Expired heartbeat -> `alive: Some(false)`.
         fs::write(
@@ -1617,6 +1630,31 @@ mod tests {
         .unwrap();
         let expired = follower_observation_at(temp.path(), provider, session);
         assert_eq!(expired.alive, Some(false));
+        assert_eq!(
+            expired.last_heartbeat,
+            Some(now - (LEASE_TTL_SECONDS + 10.0)),
+            "a gone follower keeps the time of its last heartbeat"
+        );
+
+        // An inactive lease with a fresh heartbeat (explicit detach) is not
+        // alive and says when it was last there.
+        fs::write(
+            &canonical_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "lease_id": lease_id,
+                "name": "ada",
+                "active": false,
+                "heartbeat_unix": now - 30.0,
+                "provider": provider,
+                "provider_session_id": session,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let detached = follower_observation_at(temp.path(), provider, session);
+        assert_eq!(detached.alive, Some(false));
+        assert_eq!(detached.last_heartbeat, Some(now - 30.0));
 
         // Mismatched `provider_session_id`, `provider`, or `lease_id` -> unknown (`alive: None`).
         for bad in [

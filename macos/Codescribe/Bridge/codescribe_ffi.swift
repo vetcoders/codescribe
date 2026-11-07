@@ -10028,6 +10028,12 @@ public struct CsChannelRosterState: Equatable, Hashable {
      * the reader, not the conversation behind it.
      */
     public var unreadSinceUnixMs: Int64?
+    /**
+     * Milliseconds since the Unix epoch of the last heartbeat of a
+     * follower that is no longer alive: when the agent was last there.
+     * `None` = a live follower, no lease, or no claim.
+     */
+    public var lastHeartbeatUnixMs: Int64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -10064,7 +10070,12 @@ public struct CsChannelRosterState: Equatable, Hashable {
          * unacknowledged delivery; `None` = no backlog or no follower. The
          * overlay's "alive but not reading" layer: a process heartbeat proves
          * the reader, not the conversation behind it.
-         */unreadSinceUnixMs: Int64?) {
+         */unreadSinceUnixMs: Int64?,
+        /**
+         * Milliseconds since the Unix epoch of the last heartbeat of a
+         * follower that is no longer alive: when the agent was last there.
+         * `None` = a live follower, no lease, or no claim.
+         */lastHeartbeatUnixMs: Int64? = nil) {
         self.channel = channel
         self.audience = audience
         self.provider = provider
@@ -10078,6 +10089,7 @@ public struct CsChannelRosterState: Equatable, Hashable {
         self.codexThreadUrl = codexThreadUrl
         self.codexThreadLocal = codexThreadLocal
         self.unreadSinceUnixMs = unreadSinceUnixMs
+        self.lastHeartbeatUnixMs = lastHeartbeatUnixMs
     }
 
 
@@ -10106,7 +10118,8 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
                 terminalDetected: FfiConverterOptionBool.read(from: &buf),
                 codexThreadUrl: FfiConverterOptionString.read(from: &buf),
                 codexThreadLocal: FfiConverterOptionBool.read(from: &buf),
-                unreadSinceUnixMs: FfiConverterOptionInt64.read(from: &buf)
+                unreadSinceUnixMs: FfiConverterOptionInt64.read(from: &buf),
+                lastHeartbeatUnixMs: FfiConverterOptionInt64.read(from: &buf)
         )
     }
 
@@ -10124,6 +10137,7 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.codexThreadUrl, into: &buf)
         FfiConverterOptionBool.write(value.codexThreadLocal, into: &buf)
         FfiConverterOptionInt64.write(value.unreadSinceUnixMs, into: &buf)
+        FfiConverterOptionInt64.write(value.lastHeartbeatUnixMs, into: &buf)
     }
 }
 
