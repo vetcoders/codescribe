@@ -55,7 +55,7 @@ enum OverlayAgentDrawerLayout {
   /// for them clips them from the trailing side, leaving their pills.
   static func contentMinimumWidth(textScale: CGFloat) -> CGFloat { 240 * textScale }
 
-  /// The divider is the list's only fold: released narrower than this, the
+  /// The divider folds the list too: released narrower than this, the
   /// list folds to its rail of pills.
   static func railFoldWidth(textScale: CGFloat) -> CGFloat { 160 * textScale }
 

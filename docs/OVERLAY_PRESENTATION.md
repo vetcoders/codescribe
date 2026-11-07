@@ -1031,3 +1031,16 @@ row shows the envelope where an agent's digit and presence dot stand (it
 has neither), its name, the last message's preview, the unread badge and the
 clock (`inboxRow`, identifier `overlay-inbox-row`). Keyboard focus and
 scroll-to-selected reach both rows like any other.
+
+### One fold button
+
+The column's header row holds one `sidebar.right` at its right
+(`overlay-agent-sidebar-fold`, "Hide agents list") and nothing else: no
+"Agents" title (Maciej, 2026-11-01). It calls `foldAgentList`, which keeps
+the selection and drafts and leaves the rail of pills. The rail shows the
+same button above its pills (`overlay-agent-rail-unfold`, "Show agents
+list"), calling `unfoldAgentList`, so the glyph stays where the click folded
+the list. There is no second button on the left and none on the
+conversation's edge (Monika, 2026-11-05: "jeden po prawej stronie to był
+dokładnie taki układ, jaki chciałam"). The divider still folds and unfolds
+the list; the button is the visible way, the divider the dragged one.

@@ -1136,7 +1136,8 @@ struct DictationOverlayView: View {
   }
 
   /// The roster is always a side column, sized by the user and capped to
-  /// leave the conversation readable. Its divider is its only fold.
+  /// leave the conversation readable. Its divider and the `sidebar.right` at
+  /// its top right fold it.
   private func agentDrawerColumn(
     maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
   ) -> some View {
@@ -1148,6 +1149,7 @@ struct DictationOverlayView: View {
     return OverlayObservationScope {
       var roster = channelStatusView
       roster.gestureFocusID = state.agentGestureFocusID
+      roster.onFoldList = { state.foldAgentList() }
       return roster.monitorBody(
         maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
         focusRevision: state.agentDrawerFocusRevision
@@ -1180,9 +1182,10 @@ struct DictationOverlayView: View {
     }
   }
 
-  /// The divider folds both panes; no button does. Crossing the conversation
-  /// floor folds the conversation; released under the rail fold width, the
-  /// list folds to its pills. Ordinary window resizing keeps the split.
+  /// The divider folds both panes; the list's button folds only the list.
+  /// Crossing the conversation floor folds the conversation; released under
+  /// the rail fold width, the list folds to its pills. Ordinary window
+  /// resizing keeps the split.
   private func commitAgentDrawerWidth(_ preferred: CGFloat, windowWidth: CGFloat) {
     if preferred * textScale < OverlayAgentDrawerLayout.railFoldWidth(textScale: textScale) {
       state.foldAgentList()
@@ -1200,13 +1203,15 @@ struct DictationOverlayView: View {
   }
 
   /// The folded list beside the conversation: its pills, the minimal view of
-  /// the list. Its divider, dragged toward the conversation, unfolds it.
+  /// the list. Its `sidebar.right`, or its divider dragged toward the
+  /// conversation, unfolds it.
   private func agentRail(
     maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
   ) -> some View {
     OverlayObservationScope {
       var roster = channelStatusView
       roster.gestureFocusID = state.agentGestureFocusID
+      roster.onUnfoldList = { state.unfoldAgentList() }
       return roster.railBody(maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16))
     }
     .padding(.top, headerHeight + 8)

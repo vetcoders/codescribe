@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Bus window: one fold button (`sidebar.right`) at the top right of the agents list hides it to the rail of pills, and the same button above the pills shows the list again; the divider still folds and unfolds it too.
 - Overlay and Bus window: the card that previews an agent's last messages shows the agent's presence dot between its number and its name, as in the agents list under ✦ and the roster's rows; channel 0 and your inbox keep their plain title.
 - Overlay and Bus window: an agent that stops reading shows its "!" once its oldest unread message is 10 minutes old, without waiting for another change on the bus.
 - Overlay: the list under the Agents button (✦) is as wide as its widest row needs. Your inbox's row no longer keeps room for the antenna and moon it does not show, so a long inbox name above short agent names leaves no empty space on the right; the unread dots still stand in one column at the right edge.

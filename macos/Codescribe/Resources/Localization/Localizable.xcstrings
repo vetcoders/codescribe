@@ -9541,6 +9541,16 @@
         }
       }
     },
+    "Hide agents list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schowaj listę agentów"
+          }
+        }
+      }
+    },
     "Hide full comparison" : {
       "localizations" : {
         "pl" : {
@@ -17804,6 +17814,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokazuj kanały agentów w widoku mini i kompaktowym."
+          }
+        }
+      }
+    },
+    "Show agents list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż listę agentów"
           }
         }
       }
