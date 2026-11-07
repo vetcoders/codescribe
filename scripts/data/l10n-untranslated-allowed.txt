@@ -1,0 +1,55 @@
+# Keys allowed to carry `shouldTranslate: false` in the String Catalogs —
+# which skips them entirely, not just the identical-to-source check: no
+# language owes them a translation and the coverage gate never sees them.
+#
+# Checked by scripts/l10n-lint.py (make verify-l10n-catalog, part of make
+# check). The flag used to be free: a key could be marked untranslatable with
+# no record of why, so 23 user-visible strings — including Settings labels
+# like "Text formatting" and "Fixed windows" — shipped English-only without a
+# trace. This file is the trace. A key marked `shouldTranslate: false` must
+# be named here with the reason; a name here that no catalog still flags is a
+# stale allowance and must be dropped.
+#
+# A line is one key, exactly as the catalog spells it; `#` starts a comment,
+# so a key containing `#` cannot be listed. A blank line separates groups and
+# is never a key, so `(empty string)` stands in for the one real key that is
+# itself empty (scripts/l10n-lint.py: EMPTY_KEY_MARKER). Listing a key here is
+# not a judgment that it should stay untranslated forever — it records
+# today's flag so the gate can see it. Monika's review of the full list (23
+# rows, with the English text and where each one is used) lives alongside the
+# brief that added this file: AI_artifacts/codescribe/2026-11-06_tlumaczenia/.
+#
+# Format-only and empty keys — string interpolation produces these as a
+# literal key; there is no word in them to translate.
+(empty string)
+%@%@
+%@%@%@
+
+# Provider and wire protocol names — identifiers, not prose.
+Gemini (GenerateContent)
+
+# Font and layout samples shown in the internal Design Gallery
+# (DesignSystem/DesignGallery.swift), never in a user-facing screen.
+JetBrains Mono — meta 11
+Native container
+Speak in. Code out.
+System surfaces own their material and borders.
+System — body 14
+System — body 18
+
+# The Lab developer panel (Screens/Settings/LabPanel.swift,
+# Core/DeveloperSurface.swift, Bridge/codescribe_ffi.swift) — gated behind
+# Lab mode and absent from production builds.
+Adaptive buffer (experimental)
+Apple on-device (experimental)
+Applies to Smart and Corrections from the next formatting pass. The on-device model runs first without a cloud credential; on failure the formatting provider is used when one is configured. Max always uses the Agent model. A .env value overrides this toggle.
+Applies to the next recording. Adaptive buffering preserves phrase boundaries within bounded audio and wait limits.
+Fixed windows
+Lab
+Lab mode
+Lab mode is on. Overlay follows the tray toggle — Lab does not steal it.
+Open Voice Lab
+Open the loopback Voice Lab. Production builds never show this panel.
+Text formatting
+Voice Lab
+Whisper buffering
