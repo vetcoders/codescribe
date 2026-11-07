@@ -279,7 +279,8 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
         ], unavailable: false, palette: .light, animates: false,
         hudStates: [
           "5": OverlayChannelHudProjection(
-            open: open, loud: false, autosealDeadline: nil, followerAlive: alive)
+            open: open, loud: false, autosealDeadline: nil, followerAlive: alive,
+            provider: "codex", providerSessionID: "s5")
         ],
         conversations: [conversation], onSelectConversation: { _ in })
       view.mutedChannels = ["5": muted]
