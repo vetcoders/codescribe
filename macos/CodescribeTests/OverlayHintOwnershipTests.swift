@@ -248,4 +248,97 @@ final class OverlayHintOwnershipTests: XCTestCase {
       OverlayHintPanel.shared.presentedTitle, "Another owner",
       "the closed card must not order itself again")
   }
+
+  /// Z2 (Monika, 2026-11-07): resting on the bar's `(0)` pill opens channel
+  /// 0's preview card, the roster's message carousel over the All
+  /// conversation, also while All is the selected conversation. The bar
+  /// shows no conversation, so the roster's "no duplicate preview for the
+  /// open conversation" rule has nothing to duplicate there; it hid the card
+  /// for good after one click on `(0)`. The card belongs to the pill, not to
+  /// a row of the list under ✦, which has none for channel 0.
+  func testBarChannelZeroPillOpensChannelZeroPreviewCard() async throws {
+    let agents = try [agent("2", name: "nela"), agent("4", name: "Tola")]
+    let body = "Z2 broadcast for everyone on channel zero."
+    var broadcastNote = OverlayConversationMessage(
+      id: "reply:z2-all", kind: .reply, text: body, order: 1,
+      emittedAt: "2026-11-06T22:19:00Z", owner: agents[0].owner, recipients: [],
+      deliveryID: nil, replyTo: nil, unsolicited: true, playback: nil, busPath: "")
+    broadcastNote.sourceChannel = "2"
+    let all = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [broadcastNote])
+    let inventory = [all] + agents
+    let state = OverlayState(micAccessProvider: { true })
+    optIntoChannelMap(state)
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: agents.map {
+          OverlayChannelDelivery(
+            channel: $0.channel, agent: $0.name, deliveryID: "z2-\($0.channel)",
+            stage: .received, isOpen: false)
+        }, conversations: inventory))
+    state.applyChannelRoster(
+      inventory.map {
+        CsChannelRosterState(
+          channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+          providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+      })
+    // A click on (0) selects All, as in Monika's running build.
+    state.selectConversation(all.id, expand: false)
+    state.setPresentationMode(.midi)
+    XCTAssertTrue(state.channelMapInHeader, "the bar shows its pills")
+    XCTAssertEqual(state.selectedConversationID, all.id, "fixture: All is selected")
+    let zero = try XCTUnwrap(
+      DictationOverlayView(state: state).channelStatusView.channelMapModel.chips.first)
+    XCTAssertEqual(zero.digit, "0", "(0) leads the pills")
+    XCTAssertTrue(zero.selected, "fixture: the bar draws (0) as the selected pill")
+
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 200, y: 200, width: 410, height: 46),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.setChannelMapPresentation(enabled: state.channelMapInMini)
+    let geometry = DictationOverlayWindow.midiBarGeometry(
+      map: state.channelMapLayoutModel, textScale: 1,
+      visibleWidth: NSScreen.main?.visibleFrame.width)
+    panel.setMidiBarGeometry(geometry)
+    let host = NSHostingView(
+      rootView: AnyView(
+        DictationOverlayView(state: state)
+          .symbolEffectsRemoved()
+          .transaction { $0.disablesAnimations = true }))
+    host.sizingOptions = []
+    panel.contentView = OverlayContentContainer(hosting: host)
+    BackgroundTestWindow.present(panel)
+    panel.setFrame(NSRect(origin: NSPoint(x: 200, y: 200), size: panel.midiSize), display: true)
+    for _ in 0..<3 { settle(host, for: 0.1) }
+    defer {
+      move(panel, to: NSPoint(x: -10_000, y: -10_000))
+      panel.contentView = nil
+      panel.close()
+    }
+
+    // (0) leads the pills: the leftmost pill-sized region inside the bar.
+    // Header controls are 22 pt, the close dot 9 pt; a pill is wider.
+    let zeroRegion = try XCTUnwrap(
+      cursorRegions(of: panel).filter {
+        let frame = $0.convert($0.bounds, to: nil)
+        return $0.onHover != nil && frame.width >= 40 && host.bounds.intersects(frame)
+      }.min { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX },
+      "the bar registers the (0) pill's pointer region")
+    let frame = zeroRegion.convert(zeroRegion.bounds, to: nil)
+    move(panel, to: NSPoint(x: frame.midX, y: frame.midY))
+    XCTAssertTrue(zeroRegion.hovered, "(0) answers the pointer")
+    // The carousel opens after its 350 ms pause.
+    for _ in 0..<30 where OverlayHintPanel.shared.presentedTitle?.contains(body) != true {
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTAssertEqual(
+      OverlayHintPanel.shared.presentedPanel?.hasShadow, true,
+      "resting on (0) at \(frame) opens a card")
+    XCTAssertTrue(
+      OverlayHintPanel.shared.presentedTitle?.contains(body) == true,
+      "the card is channel 0's message carousel: \(OverlayHintPanel.shared.presentedTitle ?? "none")"
+    )
+  }
 }
