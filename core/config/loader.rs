@@ -2436,7 +2436,10 @@ pub const SHARED_CHANNEL_NAME_LIMIT: usize = 24;
 pub fn shared_channel_name_line(name: &str) -> String {
     use unicode_segmentation::UnicodeSegmentation;
     let line = name.split_whitespace().collect::<Vec<_>>().join(" ");
-    let cut: String = line.graphemes(true).take(SHARED_CHANNEL_NAME_LIMIT).collect();
+    let cut: String = line
+        .graphemes(true)
+        .take(SHARED_CHANNEL_NAME_LIMIT)
+        .collect();
     cut.trim_end().to_string()
 }
 
