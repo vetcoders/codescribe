@@ -1716,7 +1716,13 @@ struct OverlayChannelStatusView: View {
         conversation: conversation, palette: palette, textScale: textScale,
         isOpen: conversation.map { $0.id == selectedConversationID } ?? false,
         onOpen: { if let conversation { onSelectConversation?(conversation.id) } },
-        dot: channel.map { presenceDotKind(for: $0) })
+        dot: channel.map { presenceDotKind(for: $0) },
+        // The pills stand a resize band in from the rail's divider; the card
+        // ends that far further left, beside the divider rather than over
+        // it. Over it, the card held the pointer and the press, and the
+        // divider could not be dragged from the folded rail (Z3, Monika,
+        // 2026-11-07).
+        leadingClearance: OverlayResizeHit.band)
     )
     .accessibilityHint(Text(verbatim: hint))
     .modifier(
@@ -3484,6 +3490,9 @@ struct OverlayRosterMessageHint: ViewModifier {
   /// (`OverlayChannelStatusView.presenceDotKind(for:)`); nil for channel 0,
   /// the inbox and a conversation without a live roster row.
   var dot: OverlayAgentDotKind? = nil
+  /// How much further left of its control the card ends
+  /// (`OverlayHeaderControlChrome.hintLeadingClearance`).
+  var leadingClearance: CGFloat = 0
   @StateObject private var session = OverlayRosterPreviewSession()
 
   static func fullText(in conversation: OverlayConversation) -> String? {
@@ -3512,7 +3521,8 @@ struct OverlayRosterMessageHint: ViewModifier {
     content.modifier(
       OverlayHeaderControlChrome(
         title: resolvedTitle,
-        accent: nil, palette: palette, hintLeading: true, showsHint: !isOpen,
+        accent: nil, palette: palette, hintLeading: true,
+        hintLeadingClearance: leadingClearance, showsHint: !isOpen,
         hintContent: preview,
         hintSize: preview == nil ? nil : CGSize(width: 260 * textScale, height: 180 * textScale),
         hintFitsContentHeight: preview != nil, hintContentRevision: session.contentRevision,

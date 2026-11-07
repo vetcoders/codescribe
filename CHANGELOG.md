@@ -63,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bus window: the card that previews an agent's messages, opened by resting on a pill of the folded agents rail, now ends to the left of the rail's divider instead of over it, so the divider can still be dragged to widen the list again after you have rested on a pill.
 - Overlay bar: resting on the channel 0 pill opens channel 0's message card again after you have clicked the pill once; the card was hidden while channel 0 was the selected conversation, although the bar does not show that conversation.
 - Overlay: resting the pointer on the Agents button (✦) opens the agents list and keeps it; it no longer flickers between the list and a conversation's preview card from a row scrolled out of view under the bar.
 - Settings: the window's minimise button works from the first opening and after switching tabs.

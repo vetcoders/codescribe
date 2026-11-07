@@ -52,7 +52,12 @@ and accessibility label.
 
 Hovering the row's navigation area or a folded-rail entry for 350 ms opens
 a compact bounded carousel (up to five recent loaded messages, starting at the
-latest) in the shared `OverlayHintPanel`. Original
+latest) in the shared `OverlayHintPanel`. A folded-rail pill's card ends a
+resize band further left than a row's (`hintLeadingClearance`,
+`OverlayResizeHit.band`), beside the rail's divider rather than over it: the
+card is interactive, and over the divider it took the pointer and the press,
+so the divider could not be dragged from the rail (Z3, Monika, 2026-11-07;
+`testTheRailPillsPreviewCardLeavesTheRailsDividerUncovered`). Original
 paragraphs, rich formatting and attachments use `OverlayConversationMessageContent`.
 The card is narrow (`260 × textScale`), fits short messages to their content
 height, and scrolls only when a message exceeds its `180 × textScale` ceiling;
