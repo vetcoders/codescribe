@@ -46,14 +46,14 @@ final class SettingsWindowChromeTests: XCTestCase {
               .splitViewItems.first
           else { return false }
           return sidebar.isCollapsed == !expanded
-            && abs(self.frame(glass).maxX - window.frame.width) < 1
+            && abs(self.visibleHeaderFrame(glass).maxX - window.frame.width) < 1
         }
         let root = try XCTUnwrap(window.contentView?.superview)
         let glass = try XCTUnwrap(
           first(in: root) {
             $0.identifier?.rawValue == "codescribe-header-glass"
           } as? NSGlassEffectView)
-        let rect = frame(glass)
+        let rect = visibleHeaderFrame(glass)
         XCTAssertEqual(
           window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }.count, 1)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
@@ -158,6 +158,14 @@ final class SettingsWindowChromeTests: XCTestCase {
   private func sidebarMaterial(in window: NSWindow) -> NSGlassEffectView? {
     guard let content = window.contentView else { return nil }
     return first(in: content) { $0 is NSGlassEffectView } as? NSGlassEffectView
+  }
+
+  /// Visible geometry stays 52 pt; the native optical rim bleeds below it.
+  private func visibleHeaderFrame(_ glass: NSGlassEffectView) -> NSRect {
+    guard let viewport = glass.superview,
+      viewport.identifier?.rawValue == "codescribe-header-viewport"
+    else { return .zero }
+    return frame(glass).intersection(frame(viewport))
   }
 
   private func frame(_ view: NSView) -> NSRect {

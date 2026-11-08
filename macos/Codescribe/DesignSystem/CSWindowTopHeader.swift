@@ -49,8 +49,13 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
   /// margin. Convert the split boundary into this coordinate system instead
   /// of counting that margin twice. The detail glass reaches the window edge.
   final class HeaderHost: NSView {
+    /// The native glass rim belongs outside the visible titlebar/content seam.
+    /// This is material bleed, not a painted line or an opaque cover.
+    static var bottomOpticalBleed: CGFloat { CSSpace.sm }
+    let viewport = NSView()
     let glass = NSGlassEffectView()
     let content: NSHostingView<Header>
+    private let glassContent = NSView()
     var refresh: (() -> Void)?
 
     init(header: Header) {
@@ -59,14 +64,19 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
       identifier = NSUserInterfaceItemIdentifier("codescribe-window-top-header")
       clipsToBounds = false
       autoresizingMask = [.width]
+      viewport.identifier = NSUserInterfaceItemIdentifier("codescribe-header-viewport")
+      viewport.clipsToBounds = true
       glass.identifier = NSUserInterfaceItemIdentifier("codescribe-header-glass")
       glass.style = .regular
       glass.cornerRadius = 0
       content.sizingOptions = []
+      content.identifier = NSUserInterfaceItemIdentifier("codescribe-header-content")
       content.safeAreaRegions = []
-      content.autoresizingMask = [.width, .height]
-      glass.contentView = content
-      addSubview(glass)
+      content.autoresizingMask = [.width, .minYMargin]
+      glassContent.addSubview(content)
+      glass.contentView = glassContent
+      viewport.addSubview(glass)
+      addSubview(viewport)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -76,10 +86,20 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
       refresh?()
     }
 
+    func setVisibleFrame(_ rect: NSRect) {
+      if viewport.frame != rect { viewport.frame = rect }
+      let bleed = Self.bottomOpticalBleed
+      let material = NSRect(x: 0, y: -bleed, width: rect.width, height: rect.height + bleed)
+      if glass.frame != material { glass.frame = material }
+      if glassContent.frame != glass.bounds { glassContent.frame = glass.bounds }
+      let controls = NSRect(x: 0, y: bleed, width: rect.width, height: rect.height)
+      if content.frame != controls { content.frame = controls }
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
       let local = convert(point, from: superview)
-      guard glass.frame.contains(local) else { return nil }
-      return glass.hitTest(local)
+      guard viewport.frame.contains(local) else { return nil }
+      return viewport.hitTest(local)
     }
   }
 
@@ -177,7 +197,7 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
       let origin = host.convert(NSPoint.zero, to: nil)
       let rect = NSRect(
         x: leading - origin.x, y: 0, width: max(0, window.frame.width - leading), height: 52)
-      if host.glass.frame != rect { host.glass.frame = rect }
+      host.setVisibleFrame(rect)
     }
 
     @objc private func splitResized(_ notification: Notification) {

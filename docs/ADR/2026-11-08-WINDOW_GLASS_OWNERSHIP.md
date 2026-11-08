@@ -8,11 +8,18 @@ experiment remains a reference, not a second runtime path.
 
 `NavigationSplitView` owns sidebar glass. `CSWindowTopHeader` owns one 52 pt
 top titlebar accessory containing one rectangular `NSGlassEffectView`; the
-actual header is its `contentView`. AppKit owns window controls and the native
+actual header is hosted inside its `contentView`. AppKit owns window controls and the native
 sidebar toggle. Agent and Settings set `titlebarSeparatorStyle = .none` to avoid
 an additional system separator; this does not remove the glass optical edge.
 The Agent context column has its own real-content glass below the titlebar.
 The conversation alone owns the opaque reading canvas.
+
+The accessory has an explicit 52 pt clipping viewport. The native material
+extends 8 pt below it, placing its lower optical rim outside the visible band;
+the real controls retain the original 52 pt frame. No opaque masking stripe is
+added. This targets the activation-sensitive rim still seen after the separate
+AppKit separator was disabled. Its optical result remains subject to paired
+active/inactive Light/Dark captures; geometry assertions alone are insufficient.
 
 ## Why
 

@@ -68,14 +68,15 @@ final class AgentWindowChromeTests: XCTestCase {
           .splitViewItems.first
       else { return false }
       return !sidebar.isCollapsed
-        && abs(self.frame(glass).minX - self.frame(sidebar.viewController.view).maxX) < 1
-        && abs(self.frame(glass).maxX - window.frame.width) < 1
+        && abs(self.visibleHeaderFrame(glass).minX - self.frame(sidebar.viewController.view).maxX)
+          < 1
+        && abs(self.visibleHeaderFrame(glass).maxX - window.frame.width) < 1
     }
     let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }
     XCTAssertEqual(owners.count, 1)
     let owner = try XCTUnwrap(owners.first)
     let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
-    let rect = frame(glass)
+    let rect = visibleHeaderFrame(glass)
     let sidebar = try XCTUnwrap(
       (splitView(in: window)?.delegate as? NSSplitViewController)?.splitViewItems.first)
     let lights = trafficLights(in: window)
@@ -93,6 +94,14 @@ final class AgentWindowChromeTests: XCTestCase {
     XCTAssertEqual(window.contentLayoutRect.maxY, window.frame.height - 52, accuracy: 1)
     XCTAssertEqual(glass.cornerRadius, 0)
     XCTAssertEqual(glass.style, .regular)
+    let viewport = try XCTUnwrap(glass.superview)
+    XCTAssertTrue(viewport.clipsToBounds)
+    XCTAssertLessThan(frame(glass).minY, frame(viewport).minY)
+    XCTAssertEqual(frame(glass).maxY, frame(viewport).maxY, accuracy: 0.5)
+    let controls = try XCTUnwrap(
+      first(in: glass) { $0.identifier?.rawValue == "codescribe-header-content" })
+    XCTAssertEqual(frame(controls).minY, rect.minY, accuracy: 0.5)
+    XCTAssertEqual(frame(controls).maxY, rect.maxY, accuracy: 0.5)
     XCTAssertEqual(window.titlebarSeparatorStyle, .none)
     XCTAssertNotNil(glass.contentView, "the real information and actions belong inside glass")
     XCTAssertEqual(lights.count, 3)
@@ -121,10 +130,11 @@ final class AgentWindowChromeTests: XCTestCase {
         defer { window.close() }
         pump(window) {
           guard let glass = self.rectangularHeaderGlass(in: window) else { return false }
-          return self.frame(glass).width > 200 && self.frame(glass).maxX >= width - 1
+          return self.visibleHeaderFrame(glass).width > 200
+            && self.visibleHeaderFrame(glass).maxX >= width - 1
         }
         let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
-        let rect = frame(glass)
+        let rect = visibleHeaderFrame(glass)
         let attachment = XCTAttachment(
           string: "requestedWidth=\(width) expanded=\(expanded) window=\(window.frame) "
             + "layout=\(window.contentLayoutRect) glass=\(rect)")
@@ -222,7 +232,7 @@ final class AgentWindowChromeTests: XCTestCase {
 
         let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
         let content = try XCTUnwrap(glass.contentView)
-        let rect = frame(glass)
+        let rect = visibleHeaderFrame(glass)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.midY, window.frame.height - 26, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
@@ -620,6 +630,14 @@ final class AgentWindowChromeTests: XCTestCase {
     [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap {
       window.standardWindowButton($0)
     }
+  }
+
+  /// Visible geometry stays 52 pt; the native optical rim bleeds below it.
+  private func visibleHeaderFrame(_ glass: NSGlassEffectView) -> NSRect {
+    guard let viewport = glass.superview,
+      viewport.identifier?.rawValue == "codescribe-header-viewport"
+    else { return .zero }
+    return frame(glass).intersection(frame(viewport))
   }
 
   private func frame(_ view: NSView) -> NSRect {
