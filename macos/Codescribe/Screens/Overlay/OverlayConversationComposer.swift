@@ -1779,6 +1779,13 @@ private struct ConversationMessageField: NSViewRepresentable {
         let key = event.charactersIgnoringModifiers?.lowercased()
       else { return false }
       let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+      if let chord = ComposerTerminalChord.resolve(
+        characters: key, modifiers: modifiers, hasMarkedText: hasMarkedText())
+      {
+        chord.perform(on: self)
+        onTypingActivity()
+        return true
+      }
       switch (modifiers, key) {
       case (.command, "v"):
         paste(nil)
