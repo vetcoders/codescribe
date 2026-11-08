@@ -236,6 +236,15 @@ struct AgentContextPanel: View {
   let thread: ChatThread?
   let close: () -> Void
   let openToolSettings: () -> Void
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorSchemeContrast) private var contrast
+  @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
+  @Environment(\.csContrastOverride) private var contrastOverride
+
+  private var opaqueSurface: Bool {
+    (reduceTransparencyOverride ?? reduceTransparency)
+      || (contrastOverride ?? contrast) == .increased
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -259,6 +268,12 @@ struct AgentContextPanel: View {
     // never widens it (Founder, 2026-10-20).
     .frame(width: AgentWindowMetrics.contextPanelWidth)
     .frame(maxHeight: .infinity, alignment: .top)
+    // One real-content surface below the existing window header. The reading
+    // canvas belongs to the conversation, so it never covers this glass.
+    .background {
+      if opaqueSurface { CSColor.sheet }
+    }
+    .glassEffect(opaqueSurface ? .identity : .regular, in: Rectangle())
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("agent-context-panel")
   }

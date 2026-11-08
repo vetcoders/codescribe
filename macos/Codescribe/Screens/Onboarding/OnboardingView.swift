@@ -21,14 +21,10 @@ struct OnboardingView: View {
       .background {
         OverlayCanvasBackdrop(
           palette: OverlayAppearancePalette.resolve(colorScheme),
-          reduceTransparency: reduceTransparency
+          reduceTransparency: reduceTransparency,
+          role: .chrome,
+          tuningSurface: .onboarding
         )
-        .overlay {
-          // Slightly soften desktop bleed-through in setup, without tinting shared glass.
-          CSColor.windowCanvas.opacity(reduceTransparency ? 0 : 0.08)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
         .ignoresSafeArea()
       }
       .csFocusPolicy()

@@ -20,6 +20,61 @@ import XCTest
 /// asserted. The scene-side evidence is the probe in the 2026-10-14 report.
 @MainActor
 final class SettingsWindowChromeTests: XCTestCase {
+  func testContinuousHeaderTracksTheSettingsSidebarAtBothWidths() throws {
+    let key = "Settings.sidebarExpanded.v1"
+    let previous = UserDefaults.standard.object(forKey: key)
+    defer {
+      if let previous {
+        UserDefaults.standard.set(previous, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
+    for width in [880 as CGFloat, 1120] {
+      for expanded in [true, false] {
+        UserDefaults.standard.set(expanded, forKey: key)
+        let window = mount(contentWidth: width)
+        defer { window.close() }
+        pump(window) {
+          guard let root = window.contentView?.superview,
+            let glass = self.first(
+              in: root,
+              where: {
+                $0.identifier?.rawValue == "codescribe-header-glass"
+              }),
+            let sidebar = (self.splitView(in: window)?.delegate as? NSSplitViewController)?
+              .splitViewItems.first
+          else { return false }
+          return sidebar.isCollapsed == !expanded
+            && abs(self.frame(glass).maxX - window.frame.width) < 1
+        }
+        let root = try XCTUnwrap(window.contentView?.superview)
+        let glass = try XCTUnwrap(
+          first(in: root) {
+            $0.identifier?.rawValue == "codescribe-header-glass"
+          } as? NSGlassEffectView)
+        let rect = frame(glass)
+        XCTAssertEqual(
+          window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }.count, 1)
+        XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
+        XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
+        XCTAssertEqual(rect.height, 52, accuracy: 1)
+        XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
+        if expanded {
+          let sidebar = try XCTUnwrap(
+            (splitView(in: window)?.delegate as? NSSplitViewController)?.splitViewItems.first)
+          XCTAssertEqual(rect.minX, frame(sidebar.viewController.view).maxX, accuracy: 1)
+        }
+        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+          let control = try XCTUnwrap(window.standardWindowButton(type))
+          XCTAssertFalse(rect.intersects(frame(control)))
+        }
+        let content = try XCTUnwrap(glass.contentView)
+        XCTAssertNotNil(content.hitTest(NSPoint(x: rect.width / 2, y: rect.height / 2)))
+      }
+    }
+  }
+
   func testSidebarMaterialRunsThroughTheTitlebar() throws {
     let window = mount(contentWidth: 1120)
     defer {
@@ -45,8 +100,9 @@ final class SettingsWindowChromeTests: XCTestCase {
       "sidebar column must reach the bottom edge")
 
     let material = try XCTUnwrap(sidebarMaterial(in: window))
-    XCTAssertEqual(material.material, .sidebar)
-    XCTAssertEqual(material.blendingMode, .behindWindow)
+    XCTAssertNil(
+      first(in: theme) { $0 is CSSidebarVisualEffectNSView },
+      "no second visual-effect material inside the native sidebar")
     XCTAssertEqual(
       frame(material).maxY, window.frame.height, accuracy: 1,
       "sidebar material must run from the bottom to the top of the window")
@@ -98,9 +154,9 @@ final class SettingsWindowChromeTests: XCTestCase {
     return first(in: content) { $0 is NSSplitView } as? NSSplitView
   }
 
-  private func sidebarMaterial(in window: NSWindow) -> NSVisualEffectView? {
+  private func sidebarMaterial(in window: NSWindow) -> NSGlassEffectView? {
     guard let content = window.contentView else { return nil }
-    return first(in: content) { $0 is CSSidebarVisualEffectNSView } as? NSVisualEffectView
+    return first(in: content) { $0 is NSGlassEffectView } as? NSGlassEffectView
   }
 
   private func frame(_ view: NSView) -> NSRect {

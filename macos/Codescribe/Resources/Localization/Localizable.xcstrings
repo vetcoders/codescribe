@@ -4242,6 +4242,24 @@
         }
       }
     },
+    "Bus header" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bus header"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Belka busa"
+          }
+        }
+      }
+    },
     "By name" : {
       "comment" : "Sorting option for saved conversations: alphabetical by conversation name",
       "localizations" : {
@@ -7678,6 +7696,24 @@
         }
       }
     },
+    "Developer preview only. Changes appear immediately." : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer preview only. Changes appear immediately."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tylko podgląd deweloperski. Zmiany widać od razu."
+          }
+        }
+      }
+    },
     "Device Control and Data Access" : {
       "comment" : "Privacy permission pane name on macOS 27 and later; formerly Accessibility",
       "localizations" : {
@@ -9394,6 +9430,42 @@
         }
       }
     },
+    "Glass tint" : {
+      "comment" : "Developer Lab native glass tint control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glass tint"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tonowanie szkła"
+          }
+        }
+      }
+    },
+    "Glass tuning" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glass tuning"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Regulacja szkła"
+          }
+        }
+      }
+    },
     "Global playback on" : {
       "comment" : "Broadcast channel playback and input controls",
       "localizations" : {
@@ -10581,6 +10653,24 @@
         }
       }
     },
+    "Less tint" : {
+      "comment" : "Developer Lab native glass tint control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Less tint"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mniej tonowania"
+          }
+        }
+      }
+    },
     "Libraxis API key" : {
       "comment" : "Libraxis is a company name",
       "localizations" : {
@@ -11547,6 +11637,24 @@
         }
       }
     },
+    "Mini and MIDI" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mini and MIDI"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mini i midi"
+          }
+        }
+      }
+    },
     "Minimize" : {
       "localizations" : {
         "pl" : {
@@ -11672,6 +11780,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Więcej działań"
+          }
+        }
+      }
+    },
+    "More tint" : {
+      "comment" : "Developer Lab native glass tint control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More tint"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Więcej tonowania"
           }
         }
       }
@@ -13515,6 +13641,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Włączone. Zmienisz to przełącznikiem w Ustawieniach › Lab."
+          }
+        }
+      }
+    },
+    "Onboarding" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Onboarding"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kreator"
           }
         }
       }
@@ -16430,6 +16574,24 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Resetowanie danych"
+          }
+        }
+      }
+    },
+    "Reset glass" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset glass"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Resetuj szkło"
           }
         }
       }
@@ -19655,6 +19817,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Podsumowanie"
+          }
+        }
+      }
+    },
+    "Surface" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Surface"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Powierzchnia"
           }
         }
       }

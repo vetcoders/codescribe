@@ -1627,7 +1627,9 @@ private struct OverlayIntercomHeader: View {
     .background {
       OverlayCanvasBackdrop(
         palette: palette, reduceTransparency: reduceTransparency,
-        cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
+        cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
+        role: .chrome,
+        tuningSurface: .busHeader
       )
       .clipShape(
         RoundedRectangle(
@@ -2105,7 +2107,7 @@ private struct OverlayIntercomCard: View {
         // Later than the rows, so scrolled text stays under the plate. The
         // title bar carries the composer's glass, not a glass of its own
         // (Maciej, 2026-10-23). Reduce Transparency makes this plate opaque.
-        .modifier(OverlayComposerSurface(palette: palette))
+        .modifier(OverlayComposerSurface(palette: palette, role: .chrome))
         .accessibilitySortPriority(1)
       }
     )
@@ -3078,7 +3080,7 @@ private struct OverlayIntercomInstanceCard: View {
         .frame(height: titleBarHeight)
         // Same plate as the docked card: composer glass above the rows, opaque
         // when Reduce Transparency is on. The header's drag grip stays inside it.
-        .modifier(OverlayComposerSurface(palette: palette))
+        .modifier(OverlayComposerSurface(palette: palette, role: .chrome))
         .accessibilitySortPriority(1)
       }
     )
