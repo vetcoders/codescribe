@@ -1498,7 +1498,7 @@ channel `0` when its complete text contains fewer than three words. Unicode
 letter/digit words count, retaining internal apostrophes and hyphens;
 punctuation and `<unclear>` tags do not count. This keeps accidental
 microphone interjections such as `Dziękuję!` or `Dzień dobry` out of held
-delivery, pending mailboxes, follower output, seal hooks and native wakeups.
+delivery, terminal pending envelopes, seal hooks and native wakeups.
 It preserves the committed transcript and source history. Typed and peer
 messages, ordinary dictation, channels 1–9, live drafts and messages carrying
 attachments bypass this length gate. A short draft may grow into a message
@@ -1508,6 +1508,9 @@ the buffered human output. The same rule removes a preview waiting in the
 current decoded batch or selected as the `--once` result. Removing pending
 previews is persisted without an ACK or a synthetic terminal message, so
 repeated interjections cannot fill the mailbox or reappear on resume.
+An earlier read pass may already have printed a live preview on `--watch`;
+the refusal cannot recall that output. Such previews do not wake
+`--until-event`, and the refused take leaves no preview in the mailbox.
 Unrelated previews and accepted terminal/held deliveries retain their
 existing recovery and control behavior.
 
