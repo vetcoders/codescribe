@@ -1294,6 +1294,7 @@ struct OverlayChannelStatusView: View {
   /// mini's auto-hide and the auto-collapse held while the list is in use.
   var onAgentsListHover: ((Bool) -> Void)? = nil
   var headerSelected = false
+  var fullListVisible = false
   /// Mini sets this: it has no chips, so the Agents button itself says an
   /// agent speaks (L15, 2026-11-06). The expanded bar leaves it off; its
   /// chips carry the speaking dot.
@@ -1422,6 +1423,7 @@ struct OverlayChannelStatusView: View {
     view.agentProjects = state.channelAgentProjects
     view.headerSelected =
       !state.isCollapsed && state.windowContentSurface == .agents
+    view.fullListVisible = !state.isCollapsed && state.agentListPresented
     view.sharedChannelStoredName = state.sharedChannelStoredName
     view.agentMicrophoneStops = state.agentsButtonStopsRecording
     view.pendingMuteChannels = state.pendingPlaybackChannels
@@ -1604,6 +1606,12 @@ struct OverlayChannelStatusView: View {
     return Int(time / OverlayAgentStatusDot.speakingBeat) % 2 == 0 ? 1 : speakingStarFaintOpacity
   }
 
+  /// The quick switcher is useful on every surface except the already-visible
+  /// full roster. A selected Agents glyph can also mean a conversation/rail.
+  var headerHoverListRows: [OverlayAgentsHoverRow] {
+    agentCaptureOpen || fullListVisible ? [] : hoverListRows
+  }
+
   var body: some View {
     Button(action: showMonitor) {
       headerGlyph
@@ -1625,7 +1633,7 @@ struct OverlayChannelStatusView: View {
     .modifier(
       OverlayAgentsHoverListChrome(
         title: headerTitle, palette: palette, selected: headerSelected,
-        rows: agentCaptureOpen ? [] : hoverListRows,
+        rows: headerHoverListRows,
         onOpen: { onSelectConversation?($0) }, onHover: onAgentsListHover)
     )
     .accessibilityLabel(

@@ -411,7 +411,11 @@ small list of the mailboxes and the bound agents after a short pause
 replaces the button's "Agents" hint; while agent capture is open, or with no
 row to show (no current mailbox conversation and no agent bound), the button
 keeps its one-line hint, because a click then stops the capture or opens the
-Agents canvas. A click on ✦ keeps its action
+Agents canvas. When the full roster is already visible, the quick list is
+suppressed to avoid duplicating it (Founder, 2026-11-08). It remains available
+on transcription, conversations with the roster folded, and compact forms.
+The canvas and header share `OverlayState.agentListPresented`; the selected
+appearance of ✦ alone does not suppress the list. A click on ✦ keeps its action
 (`OverlayState.toggleAgentSidebar`). The list rides the shared interactive
 hint panel (`OverlayHeaderControlChrome`, as the roster's message preview):
 it is a child window of the overlay, stays while the pointer crosses from ✦
