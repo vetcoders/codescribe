@@ -1491,6 +1491,20 @@ naming someone else does not suppress the existing name gate: rows still reach
 a follower if the transcript text addresses them by assignment, exact match,
 or fuzzy discovery. Rows without `audience` behave exactly as before.
 
+Spoken channel-zero messages have a minimum of three words (Maciej,
+2026-11-08). The follower's `consider` admission gate suppresses a sealed
+`mode: agent`, `audience: "*"` snapshot whose capture session belongs to
+channel `0` when its complete text contains fewer than three words. Unicode
+letter/digit words count, retaining internal apostrophes and hyphens;
+punctuation and `<unclear>` tags do not count. This keeps accidental
+microphone interjections such as `Dziękuję!` or `Dzień dobry` out of held
+delivery, pending mailboxes, follower output, seal hooks and native wakeups.
+It preserves the committed transcript and source history. Typed and peer
+messages, ordinary dictation, channels 1–9, live drafts and messages carrying
+attachments bypass this length gate. A short draft may grow into a message
+of three or more words before closing. Previously accepted pending/held
+deliveries retain their existing recovery and control behavior.
+
 The digit that produced the row is configured in
 `vc.agent-audience-binding.v1.json` under the agent-bridge home
 (`CODESCRIBE_AGENT_BRIDGE_HOME`, otherwise `~/.codescribe/agent-bridge`).
