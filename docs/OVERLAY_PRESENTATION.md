@@ -268,8 +268,7 @@ Hotkeys › Fn and Agent channels edits it, one line of at most 24 characters
 (grapheme clusters; `SettingsViewModel.sharedChannelNameLimit`, and
 `shared_channel_name_line` in the loader cuts a hand-edited settings.json
 the same way), with **Restore default**; the bar does not. The same name heads channel 0's conversation (`0 · <name>`),
-its row in the Bus window (`0 · <name> (n of
-m)`), the chip's hint and its message card; action wording such as the
+its row in the Bus window (`0 · <name> (n of m)`), the chip's hint and its message card; action wording such as the
 bubble route `You → All` stays. Only the name is personal: the digit, the
 chord and the routing of channel 0 do not change. It is not an agent: the counter, `OverlayChannelMapModel.count`
 and the 1–5 / 6–9 row split count agents only. With no agent bound and no
