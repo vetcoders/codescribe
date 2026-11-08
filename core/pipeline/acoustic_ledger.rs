@@ -77,6 +77,9 @@ pub use speech_anchor::WordAnchorIdentity;
 #[cfg(test)]
 #[path = "acoustic_ledger/forward_publication_tests.rs"]
 mod forward_publication_tests;
+#[cfg(test)]
+#[path = "acoustic_ledger/native_dt_word_decision_tests.rs"]
+mod native_dt_word_decision_tests;
 #[path = "acoustic_ledger/word_adjudication.rs"]
 pub mod word_adjudication;
 #[cfg(test)]

@@ -25,6 +25,25 @@ previously measured Whisper word, including through resegmentation or
 retokenization. Independent DictationTranscriber evidence retains its existing
 authority. A phrase-grain Whisper result cannot replace existing word slots.
 
+Complete original words outside a frame's publication band may corroborate an
+already owned, uniquely addressed word through its existing lexical component.
+They do not publish, retime, replace or discharge coverage debt. Distinct complete
+decoder windows agreeing with a retained word prevent a lone contradictory DT
+label from replacing that word; replaying one window supplies no additional
+witness. The lexical decision records this refusal before document commit as a
+resolved selection of the retained word, with the replacement unaccepted. It
+does not leave that word in dispute or require a new trial to close it.
+
+Nonpublication context is marked on each hypothesis. That provenance survives
+group assembly and projection: any context-only member makes the assembled
+witness context-only. It cannot corroborate a replacement, confirm a trial,
+supply publication-band rights or count as a dictionary witness. Complete
+context agreeing with a DT candidate still prevents treating that candidate as
+uncorroborated against the retained consensus; the DT's ordinary independent
+word authority must decide its admission. Published evidence of the same PCM
+frame retains its rights when later context arrives. Ordinary publication may
+promote context metadata but never creates a second independent witness.
+
 A provisional single-token Apple utterance label has no independently measured
 word identity. Authentic complete words in the owning band may refine it without requiring speech
 between those words to be silent. Its unpublished remainder remains explicit
