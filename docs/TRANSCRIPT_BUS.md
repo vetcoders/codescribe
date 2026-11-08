@@ -1501,8 +1501,14 @@ delivery, pending mailboxes, follower output, seal hooks and native wakeups.
 It preserves the committed transcript and source history. Typed and peer
 messages, ordinary dictation, channels 1–9, live drafts and messages carrying
 attachments bypass this length gate. A short draft may grow into a message
-of three or more words before closing. Previously accepted pending/held
-deliveries retain their existing recovery and control behavior.
+of three or more words before closing. A refused closing snapshot retires
+only its own previews, identified by `draft_key`, from persisted pending and
+the buffered human output. The same rule removes a preview waiting in the
+current decoded batch or selected as the `--once` result. Removing pending
+previews is persisted without an ACK or a synthetic terminal message, so
+repeated interjections cannot fill the mailbox or reappear on resume.
+Unrelated previews and accepted terminal/held deliveries retain their
+existing recovery and control behavior.
 
 The digit that produced the row is configured in
 `vc.agent-audience-binding.v1.json` under the agent-bridge home
