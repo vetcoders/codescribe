@@ -641,13 +641,27 @@ impl AcousticLedger {
                         && record.slot.sample_end == candidate.sample_end
                 })
                 .and_then(|record| record.sequence_source.as_ref())
+                // A retired target supplies history, not an exclusion against
+                // the word that now owns its speech.
+                .filter(|target| {
+                    let target = SlotTarget::from(*target);
+                    self.slots_of(&target.observation.occurrence)
+                        .is_some_and(|slots| {
+                            slots.iter().any(|slot| SlotTarget::from(slot) == target)
+                        })
+                })
                 // A resolved sequence position has one target even when a
                 // neighbouring word came from another decoder pass. Falling
                 // back to overlap would give this word a second target.
                 .map(|target| SlotTarget::from(target) == SlotTarget::from(source))
         };
-        if let Some(matches) = correspondence(left, right).or_else(|| correspondence(right, left)) {
-            return matches;
+        let forward = correspondence(left, right);
+        let reverse = correspondence(right, left);
+        if forward == Some(true) || reverse == Some(true) {
+            return true;
+        }
+        if forward == Some(false) || reverse == Some(false) {
+            return false;
         }
         match (
             self.word_anchor_identity(left),
