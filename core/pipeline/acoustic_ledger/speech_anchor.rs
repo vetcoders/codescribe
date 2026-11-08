@@ -1019,10 +1019,7 @@ impl AcousticLedger {
                             && request.range.capture_epoch == owner.capture_epoch
                             && input.words.iter().all(|word| {
                                 word.decode
-                                    == Some((
-                                        request.range.sample_start,
-                                        request.range.sample_end,
-                                    ))
+                                    == Some((request.range.sample_start, request.range.sample_end))
                             })
                     })
             });
@@ -1065,16 +1062,19 @@ impl AcousticLedger {
                         &source.witness,
                         SlotWitness::Unwitnessed | SlotWitness::Absent { .. }
                     )
-                    && !correspondence.iter().flatten().any(|target| {
-                        SlotTarget::from(*target) == SlotTarget::from(source)
-                    })
+                    && !correspondence
+                        .iter()
+                        .flatten()
+                        .any(|target| SlotTarget::from(*target) == SlotTarget::from(source))
                     && self.complete_word_slot(source)
                     && self.asr_source_scope_complete(observation, std::slice::from_ref(source))
                     && shares_burst(source, &pins[index])
-                    && self.original_anchor_word_range(source).is_some_and(|range| {
-                        range.sample_start < pins[index].sample_end
-                            && pins[index].sample_start < range.sample_end
-                    })
+                    && self
+                        .original_anchor_word_range(source)
+                        .is_some_and(|range| {
+                            range.sample_start < pins[index].sample_end
+                                && pins[index].sample_start < range.sample_end
+                        })
                 {
                     resolved.push((index, source));
                 }
