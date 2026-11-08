@@ -81,6 +81,18 @@ AppKit also creates a titlebar boundary region at the join. Its presence is
 evidence of another compositing boundary, not proof of the photographed notch's
 cause. Do not select, hide or modify private system views to suppress it.
 
+A disposable-window A/B on November 8 isolated the native tracking toolbar
+separator with public `NSToolbar.removeItem(at:)`. The header viewport remained
+at the same boundary and size, and the 5.5 pt titlebar boundary region remained.
+The sidebar toggle's glass backing disappeared from the captured join hierarchy.
+This does not establish the pixel source of the photographed notch, but rules
+out separator removal as a geometry-level remedy that preserves native chrome.
+The earlier `isHidden` trial left the tracking item reported as visible. Neither
+experiment is applied in product code. Retain the result-bundle attachments as
+diagnostic evidence; do not keep toolbar mutation in the production or normal
+regression path. The next optical comparison must distinguish the native
+sidebar/titlebar junction from the separately clipped custom glass edge.
+
 Agent/Settings window tests cover the accessory count, native control exclusion,
 52 pt allocation, sidebar boundary, minimum/normal widths and collapsed/expanded
 states. Attachment lifecycle tests cover deferral, a competing owner, retry,
