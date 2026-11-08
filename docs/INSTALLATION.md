@@ -39,11 +39,13 @@ make install-if-idle INSTALL_APP_SOURCE="$PWD/macos/build/Build/Products/Release
 ```
 
 The guarded installer checks the release's version, source commit, Developer ID
-signature, notarization staple and Gatekeeper acceptance. It requests a graceful
-Quit only after idle checks, waits for the old process to exit, then holds the
-runtime interlock while copying the signed bundle. An active take, agent turn,
-unreadable state or failed Quit refuses the copy. Launch the installed app through
-LaunchServices after the installer succeeds.
+signature, notarization staple and Gatekeeper acceptance. After idle checks it
+copies the signed bundle over the installed one without quitting the running
+application, holding the runtime interlock when no application holds it. An
+active take, agent turn or unreadable state refuses the copy. A running
+application is then swapped by the same `restart-if-idle` waiter that
+`make install-app` arms, at its first idle moment and never while you are
+composing; see [Restart an idle application](RESTART_IF_IDLE.md).
 
 ### Method 2: CLI and Batch Quality Tools
 

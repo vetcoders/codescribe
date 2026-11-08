@@ -32,7 +32,11 @@ attempt compares against the bundle installed at that moment. The waiter
 appends its JSON lines to `waiter.log` in the handshake directory.
 
 `make install-if-idle` builds through `make install-app`, so the same waiter
-owns the swap there too. The installer sends no Quit of its own. After the
+owns the swap there too. With `INSTALL_APP_SOURCE` it copies that signed
+bundle over the installed one and then arms the same waiter itself, when an
+application is running. The installer sends no Quit of its own on either
+path, so a Founder composing in the overlay keeps the running generation
+until the waiter's `founder_composing` refusal ends. After the
 bundle is replaced it watches the running process for up to 90 seconds
 (`CODESCRIBE_INSTALL_SWAP_WAIT`) and ends with one of these lines:
 

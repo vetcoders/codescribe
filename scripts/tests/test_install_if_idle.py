@@ -46,11 +46,14 @@ class InstallPrebuiltTests(unittest.TestCase):
             exec(compile(definitions, str(SCRIPT), "exec"), self.namespace)
         self.namespace["DEST"] = self.destination
         self.namespace["cargo_version"] = lambda: "0.15.2"
+        # The swap watch reads its window at call time; zero keeps a test to
+        # one inventory read unless the test widens it.
+        self.namespace["SWAP_WAIT"] = 0.0
         self.commands = []
         self.pids = []
         self.bus_checks = 0
         self.bus_busy_at = None
-        self.quit_exits = True
+        self.waiter = None
         self.copy_fails = False
         self.signature_valid = True
         self.team = "MW223P3NPX"
@@ -101,9 +104,7 @@ class InstallPrebuiltTests(unittest.TestCase):
             code = 0 if self.pids else 1
             stdout = "\n".join(self.pids)
         elif argv[0] == "osascript":
-            self.assertEqual(argv[1:], ["-e", 'quit app "Codescribe"'])
-            if self.quit_exits:
-                self.pids = []
+            raise AssertionError("the installer must never send Quit: " + repr(argv))
         elif argv[0] == "rsync":
             if argv[1] == "--help":
                 stdout = "--xattrs"
@@ -118,7 +119,18 @@ class InstallPrebuiltTests(unittest.TestCase):
         elif argv[0] in ("lsof", "ps"):
             raise AssertionError("lock admission must not wait on process inventory")
         elif argv[0] == "make":
-            self.assertEqual(argv[1:], ["-C", str(REPO), "install-app"])
+            if argv[1:] == ["-C", str(REPO), "--no-print-directory", "restart-if-idle"]:
+                # The armed waiter, as seen from outside: it swaps the
+                # generation, lets the old one leave alone, or waits.
+                if self.waiter == "swaps":
+                    self.pids = ["5151"]
+                elif self.waiter == "leaves":
+                    self.pids = []
+            else:
+                self.assertEqual(argv[1:], ["-C", str(REPO), "install-app"])
+        elif argv[0] == "open":
+            self.assertEqual(argv[1:], ["-g", str(self.destination)])
+            self.pids = ["6161"]
         else:
             raise AssertionError("unexpected product execution: " + repr(argv))
         result = subprocess.CompletedProcess(argv, code, stdout, stderr)
@@ -141,27 +153,66 @@ class InstallPrebuiltTests(unittest.TestCase):
         self.addCleanup(handle.close)
         return handle
 
-    def test_valid_bundle_quits_idle_old_process_and_copies_without_build_or_resign(self):
+    def armed(self):
+        return [i for i, c in enumerate(self.commands) if c[0] == "make" and c[-1] == "restart-if-idle"]
+
+    def copy_index(self):
+        return next(i for i, c in enumerate(self.commands) if c[:2] == ["rsync", "-a"])
+
+    def test_running_app_is_never_quit_and_the_armed_waiter_owns_the_swap(self):
+        # A live app holds the runtime lease shared for its whole lifetime.
         self.pids = ["4242"]
+        self.hold(self.interlock)
         with self.assertRaises(SystemExit) as terminal:
             self.install()
         self.assertEqual(terminal.exception.code, 0)
         self.assertEqual(self.destination.joinpath("Contents", "payload").read_bytes(), b"signed payload")
-        quit_index = next(i for i, c in enumerate(self.commands) if c[0] == "osascript")
-        copy_index = next(i for i, c in enumerate(self.commands) if c[:2] == ["rsync", "-a"])
-        self.assertLess(quit_index, copy_index)
-        self.assertFalse(self.pids)
-        self.assertGreaterEqual(self.bus_checks, 4)
-        self.assertTrue(any(c[0] == "codesign" and str(self.destination) in c for c in self.commands[copy_index + 1:]))
+        self.assertFalse(any(c[0] == "osascript" for c in self.commands))
+        copy_index = self.copy_index()
+        armed = self.armed()
+        self.assertEqual(len(armed), 1)
+        self.assertLess(copy_index, armed[0])
+        self.assertTrue(any(
+            c[0] == "codesign" and str(self.destination) in c
+            for c in self.commands[copy_index + 1:armed[0]]
+        ))
+        self.assertEqual(self.pids, ["4242"])
+        self.assertIn("restart required; old generation still running pid=4242", self.output.getvalue())
 
-    def test_capture_starting_before_quit_refuses_without_quitting_or_copying(self):
+    def test_the_waiter_swapping_the_generation_is_reported(self):
         self.pids = ["4242"]
-        self.bus_busy_at = 2
+        self.waiter = "swaps"
+        with self.assertRaises(SystemExit) as terminal:
+            self.install()
+        self.assertEqual(terminal.exception.code, 0)
+        self.assertIn("old generation exited; new generation running pid=5151", self.output.getvalue())
+
+    def test_old_generation_leaving_without_successor_starts_the_installed_app(self):
+        self.pids = ["4242"]
+        self.waiter = "leaves"
+        self.namespace["SWAP_WAIT"] = 1.0
+        with self.assertRaises(SystemExit) as terminal:
+            self.install()
+        self.assertEqual(terminal.exception.code, 0)
+        self.assertIn(["open", "-g", str(self.destination)], self.commands)
+        self.assertIn("started the installed app pid=6161", self.output.getvalue())
+
+    def test_no_running_app_copies_without_arming_a_restart(self):
+        with self.assertRaises(SystemExit) as terminal:
+            self.install()
+        self.assertEqual(terminal.exception.code, 0)
+        self.assertEqual(self.destination.joinpath("Contents", "payload").read_bytes(), b"signed payload")
+        self.assertFalse(self.armed())
+        self.assertIn("installed app is ready to launch", self.output.getvalue())
+
+    def test_capture_starting_before_the_copy_refuses_without_copying_or_arming(self):
+        self.pids = ["4242"]
+        self.bus_busy_at = 1
         with self.assertRaises(SystemExit) as terminal:
             self.install()
         self.assertEqual(terminal.exception.code, 2)
         self.assert_not_copied()
-        self.assertFalse(any(c[0] == "osascript" for c in self.commands))
+        self.assertFalse(self.armed())
 
     def test_local_install_with_held_runtime_lock_never_queries_process_inventory(self):
         self.hold(self.interlock)
@@ -173,34 +224,22 @@ class InstallPrebuiltTests(unittest.TestCase):
         self.assertTrue(any(c[0] == "make" for c in self.commands))
         self.assertFalse(any(c[0] in ("lsof", "ps") for c in self.commands))
 
-    def test_busy_agent_turn_refuses_before_quit_and_copy(self):
+    def test_busy_agent_turn_refuses_before_the_copy(self):
         self.pids = ["4242"]
         self.hold(self.lease)
         with self.assertRaises(SystemExit) as terminal:
             self.install()
         self.assertEqual(terminal.exception.code, 2)
         self.assert_not_copied()
-        self.assertFalse(any(c[0] == "osascript" for c in self.commands))
-
-    def test_failed_quit_leaves_the_old_bundle_untouched(self):
-        self.pids = ["4242"]
-        self.quit_exits = False
-        with patch("time.monotonic", side_effect=[0, 31]), self.assertRaises(self.namespace["Refuse"]):
-            self.install()
-        self.assert_not_copied()
-
-    def test_unavailable_runtime_interlock_refuses_copy(self):
-        self.hold(self.interlock)
-        with self.assertRaises(self.namespace["Refuse"]):
-            self.install()
-        self.assert_not_copied()
+        self.assertFalse(self.armed())
 
     def test_capture_change_inside_the_install_interlock_refuses_copy(self):
-        self.bus_busy_at = 3
+        self.bus_busy_at = 2
         with self.assertRaises(SystemExit) as terminal:
             self.install()
         self.assertEqual(terminal.exception.code, 2)
         self.assert_not_copied()
+        self.assertFalse(self.armed())
 
     def test_wrong_commit_or_dirty_tree_refuses_before_any_idle_probe(self):
         self.info["CSBuildCommit"] = "987654321"
@@ -230,6 +269,7 @@ class InstallPrebuiltTests(unittest.TestCase):
         self.copy_fails = True
         with self.assertRaises(self.namespace["Refuse"]):
             self.install()
+        self.assertFalse(self.armed())
         with self.interlock.open("a") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 

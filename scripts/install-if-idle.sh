@@ -10,15 +10,18 @@
 # A merely running app does NOT block installation. Historical unpaired
 # starts are abandoned, not live.
 #
-# --from-app PATH copies an already signed and stapled Release bundle after
-# a running old app has exited. Without that flag, make install-app stays.
+# --from-app PATH copies an already signed and stapled Release bundle over
+# the installed one. Without that flag, make install-app builds it.
 #
-# The local install never sends Quit. make install-app arms restart-if-idle,
-# and that native protocol alone swaps the running generation; a second Quit
-# from here used to land on the application mid-handshake, or on the
-# generation the waiter had just started, and left it off. The installer
-# watches the swap and reports it. An application that was running when the
-# bundle was replaced is running when the installer returns.
+# Neither path sends Quit. restart-if-idle alone swaps the running
+# generation: make install-app arms it, and --from-app arms the same waiter
+# after its copy. That native protocol refuses while the Founder is
+# composing (a focused non-empty composer, recent keys or an unsent draft),
+# which a raw Quit never asked. A second Quit from here also used to land on
+# the application mid-handshake, or on the generation the waiter had just
+# started, and left it off. The installer watches the swap and reports it.
+# An application that was running when the bundle was replaced is running
+# when the installer returns.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -50,15 +53,6 @@ def running_app_pids() -> set[str]:
     if result.returncode not in (0, 1):
         raise subprocess.SubprocessError(f"pgrep failed: {result.stderr.strip()}")
     return {pid for pid in result.stdout.split() if pid.isdecimal()}
-
-
-def wait_for_old_generation(old_pids: set[str]) -> set[str]:
-    deadline = time.monotonic() + 30
-    while True:
-        remaining = old_pids & running_app_pids()
-        if not remaining or time.monotonic() >= deadline:
-            return remaining
-        time.sleep(0.25)
 
 
 def resolved_path(flag: str) -> Path:
@@ -114,14 +108,6 @@ def open_exclusive_probe(path: Path) -> tuple[int, bool]:
         os.close(descriptor)
         raise
     return descriptor, True
-
-
-def request_quit() -> None:
-    quit_result = subprocess.run(
-        ["osascript", "-e", 'quit app "Codescribe"'], capture_output=True, text=True
-    )
-    if quit_result.returncode != 0:
-        print(f"install-if-idle: Quit request failed: {quit_result.stderr.strip()}")
 
 
 def parse_from_app(argv: list[str]) -> Path | None:
@@ -359,8 +345,17 @@ def install_local() -> None:
         os.close(interlock)
     if completed.returncode != 0:
         raise SystemExit(completed.returncode)
+    report_swap(running_app_pids())
 
-    old_pids = running_app_pids()
+
+def arm_waiter() -> None:
+    """Arm the restart make install-app arms, through the same target."""
+    armed = subprocess.run(["make", "-C", str(root), "--no-print-directory", "restart-if-idle"])
+    if armed.returncode != 0:
+        print("install-if-idle: restart not armed; run 'make restart-if-idle' at an idle moment")
+
+
+def report_swap(old_pids: set[str]) -> None:
     if not old_pids:
         print("install-if-idle: installed app is ready to launch")
         raise SystemExit(0)
@@ -395,44 +390,38 @@ def install_prebuilt(source: Path, lease_path: Path) -> None:
     # Validation above is not authority for a later bus or turn state.
     assert_bus_idle()
     assert_turn_idle(lease_path)
-    old_pids = running_app_pids()
-    if old_pids:
-        assert_bus_idle()
-        assert_turn_idle(lease_path)
-        if old_pids & running_app_pids():
-            request_quit()
-            remaining = wait_for_old_generation(old_pids)
-            if remaining:
-                raise Refuse(
-                    "old generation still running pid=" + ",".join(sorted(remaining))
-                )
-        print("install-if-idle: old generation exited")
-    assert_bus_idle()
-    assert_turn_idle(lease_path)
+    # A running app holds this lease shared for its whole lifetime, and since
+    # 2026-09-08 a merely running app does not refuse an install. Held here,
+    # the lease keeps a new runtime from starting while the copy runs.
     interlock_path = resolved_path("--print-install-interlock-path")
     interlock, held = open_exclusive_probe(interlock_path)
-    if not held:
-        os.close(interlock)
-        raise Refuse(
-            "runtime install interlock unavailable (runtime lock is held)"
-        )
     try:
-        flags = fcntl.fcntl(interlock, fcntl.F_GETFD)
-        fcntl.fcntl(interlock, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
+        if held:
+            flags = fcntl.fcntl(interlock, fcntl.F_GETFD)
+            fcntl.fcntl(interlock, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
         assert_bus_idle()
         assert_turn_idle(lease_path)
-        print(
-            "install-if-idle: no live take, no agent turn, runtime interlock held — copying prebuilt bundle"
-        )
+        if held:
+            print("install-if-idle: no live take, no agent turn, runtime interlock held — "
+                  "copying prebuilt bundle")
+        else:
+            print("install-if-idle: no live take, no agent turn; runtime lock is held — "
+                  "copying prebuilt bundle over it; the armed waiter swaps the generation when idle")
         destination = DEST
         destination.parent.mkdir(parents=True, exist_ok=True)
         copy_prebuilt(source, destination)
         validate_bundle(destination, allow_destination=True)
         validate_bundle(source, allow_destination=False)
     finally:
-        release_descriptor(interlock)
-    print("install-if-idle: prebuilt bundle copied; launch not requested")
-    raise SystemExit(0)
+        if held:
+            release_descriptor(interlock)
+        else:
+            os.close(interlock)
+    print("install-if-idle: prebuilt bundle copied")
+    old_pids = running_app_pids()
+    if old_pids:
+        arm_waiter()
+    report_swap(old_pids)
 
 
 try:
