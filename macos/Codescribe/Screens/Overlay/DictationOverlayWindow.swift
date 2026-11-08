@@ -664,6 +664,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   func invalidatePresence() {
     cancelUserResize()
     presence?.invalidate()
+    outsideInteractions.stop()
   }
 
   /// True while the screenshot and app-activation monitors are installed.
@@ -678,10 +679,31 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// resigning on the way out must not give the keyboard back.
   private var dispatchingGateClick = false
 
-  /// The transcript canvas needs keyboard input for selection or editing.
+  /// AppKit's key calls; tests record them so a hidden panel never asks the
+  /// window server for the keyboard.
+  var keyCalls = OverlayKeyCalls.appKit
+  /// Reports the user going on in another app while the gate is open.
+  var outsideInteractions: any OverlayOutsideInteractionSource =
+    OverlayGlobalOutsideInteractions()
+
+  /// The transcript canvas or a composer needs keyboard input for selection
+  /// or editing. A panel that still reports key behind a closed gate holds a
+  /// stale record (`OverlayKeyboardRequest.reclaimKey`): the click asks the
+  /// window server again instead of trusting it.
   func takeKeyForTranscript() {
+    let wasKey = keyCalls.isKey(self)
+    let request = OverlayKeyboardRequest.opening(
+      gateOpen: allowsKeyForTranscript, panelIsKey: wasKey)
+    // Still closed here, so the resign-key it posts leaves the responder alone.
+    if request == .reclaimKey { keyCalls.resignKey(self) }
     allowsKeyForTranscript = true
-    if !isKeyWindow { makeKey() }
+    if request != .none { keyCalls.makeKey(self) }
+    if !outsideInteractions.isWatching {
+      outsideInteractions.start { [weak self] interaction in
+        self?.noteInteractionOutside(interaction)
+      }
+    }
+    traceKeyboard("gate.taken", "request=\(request.rawValue) wasKey=\(wasKey)")
   }
 
   /// The canvas resigned. Drop key status so keystrokes return to the app the
@@ -689,7 +711,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   func releaseKeyAfterTranscript() {
     guard allowsKeyForTranscript, !dispatchingGateClick else { return }
     allowsKeyForTranscript = false
-    if isKeyWindow { resignKey() }
+    outsideInteractions.stop()
+    let wasKey = keyCalls.isKey(self)
+    if wasKey { keyCalls.resignKey(self) }
+    traceKeyboard("gate.released", "wasKey=\(wasKey)")
   }
 
   /// Key left from outside: resign the canvas. An active edit uses its
@@ -697,7 +722,31 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   func windowDidResignKey(_ notification: Notification) {
     guard allowsKeyForTranscript else { return }
     allowsKeyForTranscript = false
+    outsideInteractions.stop()
     makeFirstResponder(nil)
+    traceKeyboard("gate.resigned", "")
+  }
+
+  /// The user went on in another app while the gate was open. The window
+  /// server has already moved the keyboard there and AppKit may not have told
+  /// this panel, so the gate closes as on resign-key and the record follows.
+  func noteInteractionOutside(_ interaction: OverlayOutsideInteraction) {
+    outsideInteractions.stop()
+    guard allowsKeyForTranscript else { return }
+    allowsKeyForTranscript = false
+    makeFirstResponder(nil)
+    let wasKey = keyCalls.isKey(self)
+    if wasKey { keyCalls.resignKey(self) }
+    traceKeyboard("gate.left", "reason=\(interaction.rawValue) wasKey=\(wasKey)")
+  }
+
+  /// One `overlay-keyboard` line per gate decision in the diagnostic log, so
+  /// the next keyboard left in another app is attributed from evidence.
+  private func traceKeyboard(_ event: String, _ detail: String) {
+    guard let log = DiagnosticLog.installed else { return }
+    let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "-"
+    let parts = [event, detail, "appActive=\(NSApp.isActive)", "front=\(front)"]
+    log.append(category: "overlay-keyboard", parts.filter { !$0.isEmpty }.joined(separator: " "))
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
