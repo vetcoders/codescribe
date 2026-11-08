@@ -9,15 +9,19 @@ import XCTest
 final class OverlayComposerDraftPersistenceTests: XCTestCase {
   private var root: URL!
 
-  override func setUp() {
-    super.setUp()
-    root = FileManager.default.temporaryDirectory
-      .appendingPathComponent("overlay-composer-drafts-\(UUID().uuidString)", isDirectory: true)
+  override func setUp() async throws {
+    try await super.setUp()
+    await MainActor.run {
+      root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("overlay-composer-drafts-\(UUID().uuidString)", isDirectory: true)
+    }
   }
 
-  override func tearDown() {
-    try? FileManager.default.removeItem(at: root)
-    super.tearDown()
+  override func tearDown() async throws {
+    await MainActor.run {
+      try? FileManager.default.removeItem(at: root)
+    }
+    try await super.tearDown()
   }
 
   private func agentBus(lease: Character) -> OverlayChannelDelivery.Bus {

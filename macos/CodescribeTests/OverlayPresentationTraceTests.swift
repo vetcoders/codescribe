@@ -13,17 +13,21 @@ import XCTest
 final class OverlayPresentationTraceTests: XCTestCase {
   private var trace: OverlayPresentationTrace { .shared }
 
-  override func setUp() {
-    super.setUp()
-    trace.mirrorsToLog = false
-    trace.reset()
+  override func setUp() async throws {
+    try await super.setUp()
+    await MainActor.run {
+      trace.mirrorsToLog = false
+      trace.reset()
+    }
   }
 
-  override func tearDown() {
-    trace.clock = { ProcessInfo.processInfo.systemUptime }
-    trace.mirrorsToLog = true
-    trace.diagnosticSink = nil
-    super.tearDown()
+  override func tearDown() async throws {
+    await MainActor.run {
+      trace.clock = { ProcessInfo.processInfo.systemUptime }
+      trace.mirrorsToLog = true
+      trace.diagnosticSink = nil
+    }
+    try await super.tearDown()
   }
 
   func testDiagnosticSinkPersistsTheLedgerLine() throws {

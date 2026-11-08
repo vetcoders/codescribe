@@ -2694,6 +2694,8 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       file: file, line: line)
   }
 
+  @MainActor
+
   private func paintedBubblePixels(
     _ bitmap: NSBitmapImageRep, in host: NSView, topInset: CGFloat
   ) -> Int {

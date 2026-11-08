@@ -464,20 +464,20 @@ extension OverlayChannelPill {
   /// The folded rail's unread capsule: 13 pt tall with a 9 pt figure, its
   /// top 2 pt above the pill's and its leading edge 1 pt inside the pill's
   /// trailing edge, where the pill's rounded end leaves it clear.
-  static let railBadgeHeight: CGFloat = 13
+  nonisolated static let railBadgeHeight: CGFloat = 13
   static let railBadgeFontSize: CGFloat = 9
-  static let railBadgePadding: CGFloat = 3.5
+  nonisolated static let railBadgePadding: CGFloat = 3.5
   /// The width counted per digit. The 9 pt glyph advances about 6.1 pt;
   /// the padding takes the difference.
-  static let railBadgeDigitAdvance: CGFloat = 5.4
+  nonisolated static let railBadgeDigitAdvance: CGFloat = 5.4
   /// `99+` above 99, in the two digits' width.
   static let railBadgeCappedDigitSize: CGFloat = 8
   static let railBadgeCappedPlusSize: CGFloat = 6
-  static let railBadgeRise: CGFloat = 2
-  static let railBadgeOverlap: CGFloat = 1
+  nonisolated static let railBadgeRise: CGFloat = 2
+  nonisolated static let railBadgeOverlap: CGFloat = 1
   /// The rail keeps room beside its pills for counts of up to two digits;
   /// a larger count reads `99+` in the same width.
-  static let railBadgeReservedCount = 99
+  nonisolated static let railBadgeReservedCount = 99
 
   /// The rail capsule's figure: the count, or `99+` above 99.
   nonisolated static func railBadgeLabel(count: Int) -> String {

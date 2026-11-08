@@ -118,6 +118,9 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
     for scale: CGFloat in [0.8, 1.6] {
       let state = OverlayState.previewFormatted()
       state.showTranscription()
+      state.beginTranscriptEdit()
+      state.updateRevisionDraft(
+        String(repeating: "Recorded line with enough words to wrap.\n", count: 150))
       let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
       let host = NSHostingView(
         rootView: DictationOverlayView(state: state)
@@ -141,7 +144,9 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
         let scroll = try XCTUnwrap(
           descendants(host).compactMap { $0 as? LiveTranscriptScrollView }.first)
         let text = try XCTUnwrap(scroll.documentView as? LiveTranscriptNativeTextView)
+        scroll.tile()
         let scroller = try XCTUnwrap(scroll.verticalScroller)
+        XCTAssertGreaterThan(text.bounds.height, scroll.contentView.bounds.height)
         let viewport = host.convert(scroll.bounds, from: scroll)
         let scrollerRect = host.convert(scroller.bounds, from: scroller)
         let textRect = host.convert(text.bounds, from: text)

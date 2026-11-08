@@ -10,15 +10,19 @@ final class OverlayLocalHoldTests: XCTestCase {
   private var root: URL!
   private var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
-  override func setUp() {
-    super.setUp()
-    root = FileManager.default.temporaryDirectory
-      .appendingPathComponent("overlay-local-hold-\(UUID().uuidString)", isDirectory: true)
+  override func setUp() async throws {
+    try await super.setUp()
+    await MainActor.run {
+      root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("overlay-local-hold-\(UUID().uuidString)", isDirectory: true)
+    }
   }
 
-  override func tearDown() {
-    try? FileManager.default.removeItem(at: root)
-    super.tearDown()
+  override func tearDown() async throws {
+    await MainActor.run {
+      try? FileManager.default.removeItem(at: root)
+    }
+    try await super.tearDown()
   }
 
   private static let all = OverlayConversation(
@@ -37,9 +41,10 @@ final class OverlayLocalHoldTests: XCTestCase {
 
   private func state(
     agents: [OverlayConversation], seconds: UInt32 = 10, extra: [OverlayConversation] = [],
-    dispatch: @escaping @MainActor (
-      OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
-    ) async throws -> AgentBusTextPublication
+    dispatch:
+      @escaping @MainActor (
+        OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
+      ) async throws -> AgentBusTextPublication
   ) -> OverlayState {
     let state = OverlayState()
     state.heldSendSeconds = { seconds }
@@ -298,7 +303,8 @@ final class OverlayLocalHoldTests: XCTestCase {
 
   func testTheInboxSendsThroughItsLinkedAgentAndThatSendIsHeldToo() async throws {
     let lena = try agent("1")
-    let inbox = OverlayConversation(id: "10", channel: "10", name: "Inbox", owner: nil, messages: [])
+    let inbox = OverlayConversation(
+      id: "10", channel: "10", name: "Inbox", owner: nil, messages: [])
     var calls: [(String?, String)] = []
     let state = state(agents: [lena], extra: [inbox]) { owner, text, _, _ in
       calls.append((owner?.id, text))

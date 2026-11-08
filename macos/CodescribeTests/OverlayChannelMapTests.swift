@@ -1011,34 +1011,31 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty, "nothing touches the microphone")
   }
 
-  /// The vertical layout keeps its stacked counter in mini and in the bar
-  /// (Maciej, 2026-10-23: the way to the Intercom group stays in every
-  /// form); the counter leads to the Intercom group and keeps the form.
-  func testVerticalCounterLivesInMiniAndTheBarAndOpensTheIntercomAndNothingElse() throws {
+  /// The integrated Fiszki contract keeps the group reachable through its
+  /// router, without duplicating the map or touching capture.
+  func testFiszkiRouterOpensIntercomWithoutADuplicateMapOrCaptureChange() throws {
     let (state, _, _, _) = try armedState()
     state.channelMapPreference.selectLayout(.vertical)
     state.setPresentationMode(.mini)
+    let view = DictationOverlayView(state: state)
     let surface = state.windowContentSurface
     let generation = state.captureGeneration
     var revealed = 0
     var restored = 0
     state.onRevealIntercom = { revealed += 1 }
     state.onRestoreMidiNaturalWidth = { restored += 1 }
-    let view = DictationOverlayView(state: state)
-    let miniCounter = try XCTUnwrap(
-      view.channelMap(roster: view.channelStatusView), "the vertical mini keeps its counter")
-    XCTAssertEqual(miniCounter.placement, .counter)
-    XCTAssertTrue(miniCounter.stacked)
-    miniCounter.onCounter()
-    XCTAssertEqual(revealed, 1, "mini's counter leads to the Intercom group")
+    XCTAssertNil(
+      view.channelMap(roster: view.channelStatusView),
+      "the vertical mini removes the duplicate channelMap counter")
+    state.toggleAgentSidebar()
+    XCTAssertEqual(revealed, 1, "toggleAgentSidebar in Fiszki leads to the Intercom group")
     XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
     state.setPresentationMode(.midi)
-    let map = try XCTUnwrap(view.channelMap(roster: view.channelStatusView))
-    XCTAssertEqual(map.placement, .counter)
-    XCTAssertTrue(map.stacked)
-    XCTAssertEqual(map.model.counterFigure, "2", "the badge carries the same agent count")
-    map.onCounter()
-    XCTAssertEqual(revealed, 2, "the counter leads to the Intercom group")
+    XCTAssertNil(
+      view.channelMap(roster: view.channelStatusView),
+      "the vertical bar removes the duplicate channelMap counter")
+    state.toggleAgentSidebar()
+    XCTAssertEqual(revealed, 2, "toggleAgentSidebar leads to the Intercom group")
     XCTAssertEqual(state.presentationMode, .midi, "the bar stays the bar")
     XCTAssertEqual(restored, 0)
     XCTAssertNil(state.selectedConversationID)
@@ -1047,10 +1044,8 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
   }
 
-  /// With the map enabled the horizontal mini is the 127 × 36 capsule of
-  /// its controls; the vertical mini is wider by its stacked counter and the
-  /// 6 pt gap after the dot, as the counter is drawn.
-  func testVerticalMiniIsWiderByItsStackedCounter() throws {
+  /// Belka mini omits the brand word; Fiszki retains it and has no second counter.
+  func testFiszkiMiniKeepsTheBrandAndHasNoStackedCounter() throws {
     let (state, _, _, _) = try armedState()
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 100, y: 100, width: 200, height: 46),
@@ -1068,17 +1063,14 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(panel.miniSize, NSSize(width: 127, height: 36))
 
     state.channelMapPreference.selectLayout(.vertical)
-    let map = state.channelMapLayoutModel
-    let expected = ceil(
-      DictationOverlayWindow.miniBrandGap
-        + OverlayChannelPill.counterWidth(
-          figure: String(map.count), openDigitCount: map.openDigits.count,
-          scale: OverlayChannelPill.headerScale(1), stacked: true))
-    XCTAssertEqual(fit(), expected)
-    XCTAssertGreaterThan(expected, 0)
-    XCTAssertEqual(panel.miniSize, NSSize(width: 127 + expected, height: 36))
+    XCTAssertFalse(state.channelMapInMini)
+    XCTAssertEqual(fit(), 0, "the vertical mini has no stacked counter")
+    XCTAssertEqual(
+      panel.miniSize,
+      NSSize(width: DictationOverlayWindow.miniBrandWidth, height: 36),
+      "in vertical mode mini keeps the full brand word")
 
-    panel.setChannelMapPresentation(enabled: false, stackedCounterWidth: expected)
+    panel.setChannelMapPresentation(enabled: false, stackedCounterWidth: 0)
     XCTAssertEqual(
       panel.miniSize,
       NSSize(width: DictationOverlayWindow.miniBrandWidth, height: 36),
@@ -1409,11 +1401,19 @@ final class OverlayChannelMapTests: XCTestCase {
       let generation = state.captureGeneration
       let hudBefore = state.channelHudStates
       let view = DictationOverlayView(state: state)
-      let map = try XCTUnwrap(view.channelMap(roster: view.channelStatusView))
-      XCTAssertEqual(map.stacked, stacked)
+      let roster = view.channelStatusView
+      let select: (String) -> Void
+      if stacked {
+        XCTAssertNil(view.channelMap(roster: roster), "Fiszki keeps its map in Intercom")
+        select = roster.selectChannelConversation
+      } else {
+        let map = try XCTUnwrap(view.channelMap(roster: roster))
+        XCTAssertFalse(map.stacked)
+        select = map.onSelectChannel
+      }
 
       for conversation in [lena, astra, broadcast] {
-        map.onSelectChannel(conversation.channel)
+        select(conversation.channel)
         await Task.yield()
         XCTAssertEqual(state.selectedConversationID, conversation.id)
         XCTAssertEqual(state.captureGeneration, generation)
@@ -1496,7 +1496,8 @@ final class OverlayChannelMapTests: XCTestCase {
       ]))
   }
 
-  private func reply(_ state: String, owner: OverlayConversationOwner) -> OverlayConversationMessage {
+  private func reply(_ state: String, owner: OverlayConversationOwner) -> OverlayConversationMessage
+  {
     OverlayConversationMessage(
       id: "reply:\(state)", kind: .reply, text: "Gotowe.", order: 1,
       emittedAt: "2026-11-06T03:00:00Z", owner: owner, recipients: [], deliveryID: nil,
@@ -1527,7 +1528,8 @@ final class OverlayChannelMapTests: XCTestCase {
       let view = roster(playback: playback)
       let channel = try XCTUnwrap(view.channels.first)
       XCTAssertEqual(
-        view.presenceDotKind(for: channel), speaking ? .speaking : .present, "\(playback ?? "none")")
+        view.presenceDotKind(for: channel), speaking ? .speaking : .present, "\(playback ?? "none")"
+      )
       let chip = view.channelMapModel.chips.first { $0.digit == "5" }
       XCTAssertEqual(chip?.speaking, speaking, "\(playback ?? "none")")
       // The chip's hover card hears it from the same source (L2).

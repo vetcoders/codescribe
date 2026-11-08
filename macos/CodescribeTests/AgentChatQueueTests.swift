@@ -76,14 +76,18 @@ final class AgentChatQueueTests: XCTestCase {
     func generateThreadId() -> String { "t_\(UUID().uuidString)" }
   }
 
-  override func setUp() {
-    super.setUp()
-    UserDefaults.standard.removeObject(forKey: AgentChatStore.acceptedTurnsDefaultsKey)
+  override func setUp() async throws {
+    try await super.setUp()
+    await MainActor.run {
+      UserDefaults.standard.removeObject(forKey: AgentChatStore.acceptedTurnsDefaultsKey)
+    }
   }
 
-  override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: AgentChatStore.acceptedTurnsDefaultsKey)
-    super.tearDown()
+  override func tearDown() async throws {
+    await MainActor.run {
+      UserDefaults.standard.removeObject(forKey: AgentChatStore.acceptedTurnsDefaultsKey)
+    }
+    try await super.tearDown()
   }
 
   private func waitUntil(
