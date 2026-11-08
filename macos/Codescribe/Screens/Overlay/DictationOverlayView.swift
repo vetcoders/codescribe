@@ -1576,7 +1576,10 @@ struct DictationOverlayView: View {
           // any channel records, a press is that capture's stop, never
           // channel 0 or the monitor.
           recordingControls(compact: false, showsPreview: false)
-          miniAgentsButton(roster)
+          OverlayAgentRouterControl(
+            routesToIntercom: state.isVerticalIntercom && state.isCollapsed,
+            mini: true, roster: roster, palette: palette,
+            onRevealIntercom: state.toggleAgentSidebar)
           recordingControls(compact: false, showsMicrophone: false)
         } else {
           if let error = state.expansionPreferenceError {
@@ -1587,7 +1590,10 @@ struct DictationOverlayView: View {
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")
           }
-          roster
+          OverlayAgentRouterControl(
+            routesToIntercom: state.isVerticalIntercom && state.isCollapsed,
+            mini: false, roster: roster, palette: palette,
+            onRevealIntercom: state.toggleAgentSidebar)
           OverlayPinButton(state: state, palette: palette)
           recordingControls(compact: false)
         }
@@ -1600,14 +1606,6 @@ struct DictationOverlayView: View {
     // The bar's layout answers its own one- or two-row height.
     .frame(height: horizontalMap ? nil : OverlayHeaderDensity.rowHeight)
     .accessibilityIdentifier(mini ? "overlay-mini-widget" : "")
-  }
-
-  /// Mini's Agents button: the roster's button, which in mini also says an
-  /// agent speaks (L15), since mini has no chips to carry the dot.
-  private func miniAgentsButton(_ roster: OverlayChannelStatusView) -> OverlayChannelStatusView {
-    var button = roster
-    button.signalsSpeaking = true
-    return button
   }
 
   private var transcriptionPreviewButton: some View {
@@ -1703,55 +1701,6 @@ struct DictationOverlayView: View {
       .onHover { inside in
         if inside { state.refreshAgentChannelModifier() }
       }
-  }
-
-  /// The header's Agents control. Only the folded Fiszki header (mini and
-  /// the bar) routes it to the Intercom cards; the expanded window keeps its
-  /// smart Agents control beside Show transcription, which switches the
-  /// window between the transcription and its Agents view.
-  @ViewBuilder
-  private var agentRouterButton: some View {
-    if state.isVerticalIntercom && state.isCollapsed {
-      Button(action: { state.toggleAgentSidebar() }) {
-        OverlayMicrophoneGlyph(
-          character: OverlayHeaderGlyph.agents,
-          tint: palette.mutedText.color,
-          plateOpacity: 0.12
-        )
-      }
-      .buttonStyle(.plain)
-      .csFocusOutline()
-      .fixedSize()
-      .modifier(
-        OverlayHeaderControlChrome(
-          title: String(localized: "Fiszki", comment: "Intercom cards router button"),
-          accent: .agents, palette: palette, selected: false
-        )
-      )
-      .accessibilityLabel(String(localized: "Fiszki", comment: "Intercom cards router button"))
-      .accessibilityIdentifier("overlay-intercom-router-button")
-    } else if state.recording || state.miniTakeLive {
-      Button(action: { state.toggleAgentSidebar() }) {
-        OverlayMicrophoneGlyph(
-          character: OverlayHeaderGlyph.agents,
-          tint: palette.mutedText.color,
-          plateOpacity: 0.12
-        )
-      }
-      .buttonStyle(.plain)
-      .csFocusOutline()
-      .fixedSize()
-      .modifier(
-        OverlayHeaderControlChrome(
-          title: String(localized: "Agents"),
-          accent: .agents, palette: palette, selected: false
-        )
-      )
-      .accessibilityLabel(String(localized: "Agents"))
-      .accessibilityIdentifier("overlay-agent-glyph")
-    } else {
-      channelStatusView
-    }
   }
 
   /// Internal so a test can assert that two body passes share one search model.
@@ -2444,5 +2393,45 @@ private struct OverlayDividerDragDim: ViewModifier {
       .opacity(active ? OverlayAgentDrawerLayout.dragDimOpacity : 1)
       .blur(radius: active ? OverlayAgentDrawerLayout.dragBlurRadius : 0)
       .allowsHitTesting(!active)
+  }
+}
+
+/// The folded Fiszki header opens the Intercom; other layouts retain the
+/// same roster button and mini's speaking indication. The parent supplies
+/// its already-computed roster so header controls share one observation.
+private struct OverlayAgentRouterControl: View {
+  let routesToIntercom: Bool
+  let mini: Bool
+  let roster: OverlayChannelStatusView
+  let palette: OverlayAppearancePalette
+  let onRevealIntercom: () -> Void
+
+  @ViewBuilder
+  var body: some View {
+    if routesToIntercom {
+      Button(action: onRevealIntercom) {
+        OverlayMicrophoneGlyph(
+          character: OverlayHeaderGlyph.agents,
+          tint: palette.mutedText.color,
+          plateOpacity: 0.12)
+      }
+      .buttonStyle(.plain)
+      .csFocusOutline()
+      .fixedSize()
+      .modifier(
+        OverlayHeaderControlChrome(
+          title: String(localized: "Fiszki", comment: "Intercom cards router button"),
+          accent: .agents, palette: palette, selected: false))
+      .accessibilityLabel(String(localized: "Fiszki", comment: "Intercom cards router button"))
+      .accessibilityIdentifier("overlay-intercom-router-button")
+    } else {
+      rosterButton
+    }
+  }
+
+  private var rosterButton: OverlayChannelStatusView {
+    var button = roster
+    button.signalsSpeaking = mini
+    return button
   }
 }
