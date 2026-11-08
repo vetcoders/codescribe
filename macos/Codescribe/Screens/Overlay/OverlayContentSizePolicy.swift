@@ -3,11 +3,9 @@ import AppKit
 /// Trailing transcript-action column. Transcription owns this width. It is not
 /// the agents drawer preference, and a collapsed mini/midi hides the column.
 ///
-/// The column fits one control, its insets and the panel's resize band. The
-/// band stays inside the column's width and the controls end before it
-/// starts, so every button remains fully clickable while the native edge
-/// resize keeps the outer `OverlayResizeHit.band` points. There is no second
-/// empty strip beyond the band: the control's own chrome is unscaled
+/// The column fits one control, its insets, the native scrollbar and the
+/// panel's resize band. The controls end before the scrollbar's strip, so
+/// each remains clickable while edge resize keeps the outer band. Chrome is unscaled
 /// (`TextScale` multiplies text only), so the width is the same at every
 /// supported text scale.
 enum OverlayTranscriptActionsLayout {
@@ -35,8 +33,11 @@ enum OverlayTranscriptActionsLayout {
 
   static var contentWidth: CGFloat { controlHeight + 2 * controlInset }
 
+  /// Separate strips for the native overlay scroller and window edge resize.
+  static var columnTrailingInset: CGFloat { 2 * OverlayResizeHit.band }
+
   static func columnWidth(textScale: CGFloat) -> CGFloat {
-    contentWidth + OverlayResizeHit.band
+    contentWidth + columnTrailingInset
   }
 
   /// Height of the full semantic inventory if every action were available at

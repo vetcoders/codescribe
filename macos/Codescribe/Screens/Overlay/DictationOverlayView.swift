@@ -1166,14 +1166,14 @@ struct DictationOverlayView: View {
     return
       rail
       .frame(height: availableHeight)
+      .background { OverlayMenuCursorRegion() }
       .padding(.top, headerHeight + OverlayTranscriptActionsLayout.columnTopGap)
       .padding(.bottom, OverlayTranscriptActionsLayout.columnBottomPadding)
-      // Keep the complete action buttons outside the native resize band.
-      .padding(.trailing, OverlayResizeHit.band)
+      // Keep the buttons clear of both native scrolling and edge resize.
+      .padding(.trailing, OverlayTranscriptActionsLayout.columnTrailingInset)
       .frame(width: width, height: max(0, maximumHeight), alignment: .top)
       .frame(maxHeight: .infinity, alignment: .top)
       .focusable(false)
-      .background { OverlayMenuCursorRegion() }
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-transcript-actions")
       .onAppear { state.refreshRetranscriptionAvailability() }

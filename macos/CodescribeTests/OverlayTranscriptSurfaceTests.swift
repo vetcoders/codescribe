@@ -39,15 +39,15 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
 
   func testColumnWidthIsOneControlItsInsetsAndTheResizeBandAtEveryScale() {
     // The control chrome is unscaled, so the column is the same width at
-    // every supported text scale: 28 control + 4 + 4 insets + 16 resize band.
+    // every text scale: 28 control + 4 + 4 insets + 16 scroller + 16 resize.
     XCTAssertEqual(OverlayTranscriptActionsLayout.contentWidth, 36)
     for scale: CGFloat in [0.8, 1, 1.6] {
-      XCTAssertEqual(OverlayTranscriptActionsLayout.columnWidth(textScale: scale), 52)
+      XCTAssertEqual(OverlayTranscriptActionsLayout.columnWidth(textScale: scale), 68)
     }
     XCTAssertEqual(
       OverlayTranscriptActionsLayout.columnWidth(textScale: 1)
         - OverlayTranscriptActionsLayout.contentWidth,
-      OverlayResizeHit.band, "the resize band is the only strip past the controls")
+      2 * OverlayResizeHit.band, "scrolling and resizing have separate strips past the controls")
   }
 
   func testExpandedMinimumHeightFitsSevenSlotsAndKeepsTheFullInventory() {
@@ -155,6 +155,16 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
         XCTAssertEqual(
           scrollerRect.maxX, host.bounds.maxX - OverlayResizeHit.scrollbarInset, accuracy: 1)
         XCTAssertGreaterThan(scrollerRect.minX, textRect.maxX)
+        let controls = descendants(host).compactMap { $0 as? OverlayMenuCursorRegionView }
+          .map { host.convert($0.bounds, from: $0) }
+          .filter {
+            abs($0.width - OverlayTranscriptActionsLayout.contentWidth) < 1 && $0.height > 90
+          }
+        XCTAssertEqual(controls.count, 1, "one mounted action rail")
+        let controlsRect = try XCTUnwrap(controls.first)
+        XCTAssertLessThanOrEqual(
+          controlsRect.maxX, scrollerRect.minX + 1, "the native scroller must not cover action hits"
+        )
         XCTAssertEqual(textRect.minX, host.bounds.minX + 20, accuracy: 1)
         XCTAssertEqual(
           textRect.width, width - 40 - OverlayTranscriptActionsLayout.columnWidth(textScale: scale),
