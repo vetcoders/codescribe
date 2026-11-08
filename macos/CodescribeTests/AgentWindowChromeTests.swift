@@ -135,6 +135,47 @@ final class AgentWindowChromeTests: XCTestCase {
     XCTAssertTrue(lights.allSatisfy { !$0.isHiddenOrHasHiddenAncestor })
   }
 
+  /// Diagnostic A/B confined to the mounted test window. The native toolbar
+  /// remains SwiftUI-owned in the product; private view classes are recorded
+  /// as evidence only and are never selected or changed.
+  func testTrackingSeparatorIsolationPreservesHeaderGeometry() throws {
+    let previousSidebar = UserDefaults.standard.object(forKey: sidebarKey)
+    UserDefaults.standard.set(true, forKey: sidebarKey)
+    defer { restoreSidebarDefault(previousSidebar) }
+    let window = mount(contentWidth: 1120)
+    defer { window.close() }
+    pump(window) {
+      window.toolbar?.items.contains { $0 is NSTrackingSeparatorToolbarItem } == true
+        && self.rectangularHeaderGlass(in: window) != nil
+    }
+    let toolbar = try XCTUnwrap(window.toolbar)
+    let separator = try XCTUnwrap(
+      toolbar.items.first { $0 is NSTrackingSeparatorToolbarItem })
+    let originalHidden = separator.isHidden
+    defer { separator.isHidden = originalHidden }
+    let sidebar = try XCTUnwrap(
+      (splitView(in: window)?.delegate as? NSSplitViewController)?.splitViewItems.first)
+    let boundary = frame(sidebar.viewController.view).maxX
+    let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
+    let beforeFrame = visibleHeaderFrame(glass)
+    let before = XCTAttachment(string: try headerJoinLayers(in: window, boundary: boundary))
+    before.name = "Join with tracking separator visible"
+    before.lifetime = .keepAlways
+    add(before)
+
+    separator.isHidden = true
+    let settle = Date().addingTimeInterval(0.2)
+    pump(window) { Date() >= settle && !separator.isVisible }
+    XCTAssertTrue(separator.isHidden)
+    XCTAssertFalse(separator.isVisible)
+    XCTAssertEqual(visibleHeaderFrame(glass).minX, beforeFrame.minX, accuracy: 1)
+    XCTAssertEqual(visibleHeaderFrame(glass).width, beforeFrame.width, accuracy: 1)
+    let after = XCTAttachment(string: try headerJoinLayers(in: window, boundary: boundary))
+    after.name = "Join with tracking separator hidden"
+    after.lifetime = .keepAlways
+    add(after)
+  }
+
   func testRectangularHeaderAtMinimumAndNormalWidths() throws {
     let previousSidebar = UserDefaults.standard.object(forKey: sidebarKey)
     let previousPanel = UserDefaults.standard.object(forKey: panelKey)
