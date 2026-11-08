@@ -1,4 +1,4 @@
-//! Integrator-owned regressions for word policies v38, v39 and v40.
+//! Integrator-owned regressions for word policies v38 to v41.
 //!
 //! Source under test: `dbd2b84b4` keeps an explicit sequence target exclusive
 //! across decoder passes, and `d545429fa` lets complete native DT evidence
@@ -6,7 +6,10 @@
 //! latest accepted 1:1 word decision through the commit guard. `41900ec8a`
 //! expires sequence exclusions with their target, keeps the untouched full
 //! Whisper frame as context for words this owner already holds, and refuses a
-//! lone DT label against distinct complete Whisper windows.
+//! lone DT label against distinct complete Whisper windows. `4127d0e2a`
+//! records that refusal as a resolved selection of the retained word and
+//! marks context-only Whisper evidence, which may corroborate retention but
+//! never a lexical mutation.
 //!
 //! Recorded take S5 (`agent-channels-cf70e849`, app `f90d941d1`, 2026-11-08):
 //! the inputs below are copied from the decision trail, lines 351, 375, 394
@@ -720,10 +723,30 @@ fn whisper_windows(
         .collect()
 }
 
-/// v40 acceptance on one ledger, as Lena asked: the same recorded batch
-/// corrects "nie" to "mnie" and keeps "Frontier". The refusal is the decision
-/// recorded in `word_choices`, not only a commit that did not happen, and it
-/// rests on Whisper windows the ledger actually holds for that word.
+/// Decode windows of Whisper support for exactly `target`, split by whether
+/// the window published the word or only heard it as context.
+fn window_provenance(
+    choice: &word_adjudication::WordChoiceReceipt,
+    target: &SlotTarget,
+    context_only: bool,
+) -> BTreeSet<(u64, u64)> {
+    choice
+        .support
+        .iter()
+        .filter(|hypothesis| {
+            hypothesis.observation.producer == ObservationProducer::Whisper
+                && hypothesis.targets == [target.clone()]
+                && hypothesis.publication_context_only == context_only
+        })
+        .filter_map(|hypothesis| hypothesis.decode)
+        .collect()
+}
+
+/// Acceptance on one ledger, as Lena asked: the same recorded batch corrects
+/// "nie" to "mnie" and keeps "Frontier". The refusal is the decision recorded
+/// in `word_choices`, not only a commit that did not happen, and it rests on
+/// Whisper windows the ledger actually holds for that word. Under v41 that
+/// refusal resolves the lexical question in favour of the retained word.
 ///
 /// Request 25 heard "Frontier" too, but it published before request 26 put
 /// the word into this owner; context is kept only for words already held.
@@ -741,9 +764,10 @@ fn recorded_s5_one_batch_corrects_nie_and_keeps_frontier_on_two_windows() {
             choice.lexical_resolved,
             choice.reason.as_str(),
         ),
-        ("front", false, false, "whisper_consensus_retained"),
+        ("front", false, true, "whisper_consensus_retained"),
         "{choice:#?}"
     );
+    assert_eq!(choice.selected_label, "Frontier");
     assert!(
         !ledger
             .word_choices()
@@ -779,6 +803,17 @@ fn recorded_s5_one_batch_corrects_nie_and_keeps_frontier_on_two_windows() {
         requests,
         BTreeSet::from([S5_WHISPER[1].request, S5_WHISPER[2].request]),
         "each window comes from its own decoder request"
+    );
+    assert_eq!(
+        (
+            window_provenance(choice, &target, false),
+            window_provenance(choice, &target, true),
+        ),
+        (
+            BTreeSet::from([S5_WHISPER[1].decode]),
+            BTreeSet::from([S5_WHISPER[2].decode]),
+        ),
+        "request 26 published Frontier; request 27 heard it only as context"
     );
 
     let held = held_at(&ledger, &owner, &frontier);
@@ -1088,5 +1123,204 @@ fn recorded_s5_same_anchored_word_does_not_depend_on_argument_order() {
         asymmetric.is_empty(),
         "{} words; order-dependent pairs: {asymmetric:#?}",
         words.len()
+    );
+}
+
+/// v41: retaining consensus resolves the lexical question without accepting
+/// the replacement, and a resolved refusal is still a refusal. DT recorded no
+/// operation on Frontier, and a "front" correction of Frontier built like the
+/// committed "nie" -> "mnie" one cannot pass the commit guard. The control
+/// accepts the same decision and opens the guard for that exact operation,
+/// so the refusal closes it, not a malformed operation.
+#[test]
+fn recorded_s5_retained_consensus_resolves_but_opens_no_commit_guard() {
+    let (mut ledger, owner, before, dt) = s5_after_dt("s5-v41-guard", S5_DT_WORDS);
+    let frontier = retained(&before, "Frontier");
+    let target = SlotTarget::from(&frontier);
+    let decision = latest_choice(&ledger, &dt, &target).clone();
+    assert_eq!(
+        (
+            decision.accepted,
+            decision.lexical_resolved,
+            decision.selected_label.as_str(),
+            decision.candidate.surface.as_str(),
+        ),
+        (false, true, "Frontier", "front")
+    );
+    assert!(
+        !ledger.slot_operations().iter().any(|operation| {
+            operation.observation == dt
+                && operation
+                    .sources
+                    .iter()
+                    .any(|source| SlotTarget::from(source) == target)
+        }),
+        "DT recorded no operation on Frontier"
+    );
+    let correction = ledger
+        .slot_operations()
+        .iter()
+        .find(|operation| {
+            operation.observation == dt
+                && operation.kind == SlotOperationKind::Correct
+                && operation.outputs.iter().any(|slot| slot.text == "mnie")
+        })
+        .cloned()
+        .expect("the committed nie -> mnie correction");
+    let mut front = correction;
+    front.sources = vec![frontier.clone()];
+    front.outputs[0].sample_start = frontier.sample_start;
+    front.outputs[0].sample_end = frontier.sample_end;
+    front.outputs[0].text = decision.candidate.surface.clone();
+    front.source_ranges = vec![OccurrenceIdentity::new(
+        &owner.session,
+        owner.capture_epoch,
+        frontier.sample_start,
+        frontier.sample_end,
+    )];
+    assert!(
+        !ledger.resolved_independent_word_operation(&front),
+        "the recorded refusal keeps the guard closed"
+    );
+
+    let mut accepted = decision.clone();
+    accepted.accepted = true;
+    accepted.selected_label = accepted.candidate.surface.clone();
+    ledger.word_adjudication.choices.push(accepted);
+    assert!(
+        ledger.resolved_independent_word_operation(&front),
+        "control: an accepted decision opens the guard for this exact operation"
+    );
+    ledger.word_adjudication.choices.pop();
+
+    let mut relabelled = decision;
+    relabelled.selected_label = relabelled.candidate.surface.clone();
+    ledger.word_adjudication.choices.push(relabelled);
+    assert!(
+        !ledger.resolved_independent_word_operation(&front),
+        "accepted=false keeps the guard closed although the decision is resolved"
+    );
+}
+
+/// v41: a context window corroborates retention but never becomes a
+/// dictionary witness. The distinct clean frame that keeps "nie" against the
+/// lone DT "mnie" leaves the dictionary witnesses of "nie" exactly as request
+/// 27 alone gave them, although the same window does reach the decision as
+/// the second Whisper window. Under v40 such a window counted, which is how
+/// "szew" became "Szwy".
+#[test]
+fn recorded_s5_context_window_never_becomes_a_dictionary_witness() {
+    let (mut ledger, owner) = s5_fixture("s5-v41-dictionary");
+    let before = ledger
+        .slots_of(&owner)
+        .expect("the S5 owner keeps its slots")
+        .to_vec();
+    let nie = retained(&before, "nie");
+    let target = SlotTarget::from(&nie);
+    let witnesses = ledger.dictionary_witnesses(&owner, std::slice::from_ref(&target));
+    assert_eq!(witnesses, vec![(S5_WHISPER[2].decode, "nie".to_string())]);
+    record_context_frame(
+        &mut ledger,
+        &owner,
+        &ContextFrame {
+            case: "distinct clean window",
+            decode: DISTINCT_DECODE,
+            band: DISTINCT_BAND,
+            finality: "final",
+            exact_timing: true,
+            foreign_decode_word: None,
+            rewritten_word: None,
+            second_window: true,
+        },
+    );
+    assert_eq!(
+        ledger.dictionary_witnesses(&owner, std::slice::from_ref(&target)),
+        witnesses,
+        "a context window is not a dictionary witness"
+    );
+    let (dt, pins) = stage_dt(&mut ledger, &owner, S5_DT_WORDS);
+    ledger.admit_word_slots(&dt, &pins);
+    let choice = latest_choice(&ledger, &dt, &target);
+    assert_eq!(
+        (
+            whisper_windows(choice, &target, "nie"),
+            choice.accepted,
+            choice.reason.as_str(),
+        ),
+        (
+            BTreeSet::from([S5_WHISPER[2].decode, DISTINCT_DECODE]),
+            false,
+            "whisper_consensus_retained",
+        ),
+        "the same window corroborates retention: {:#?}",
+        choice.support
+    );
+}
+
+/// v41 order on one PCM frame. Request 26 published Frontier. A later frame
+/// replaying request 26's decode window, under a band that leaves Frontier to
+/// context, is the same audio: it adds no window and cannot downgrade the
+/// published one to context, so Frontier keeps its dictionary witness. The
+/// control shifts that frame's decode by 10 ms; the same words then reach
+/// Frontier as a new context-only window, so the replay did address it.
+#[test]
+fn recorded_s5_replayed_publication_window_keeps_its_publication_rights() {
+    let replay = ContextFrame {
+        case: "replay of request 26's window",
+        decode: S5_WHISPER[1].decode,
+        band: (S5_WHISPER[2].band.0, S5_WHISPER[1].decode.1),
+        finality: "final",
+        exact_timing: true,
+        foreign_decode_word: None,
+        rewritten_word: None,
+        second_window: false,
+    };
+    let shifted = ContextFrame {
+        case: "request 26's window shifted by 10 ms",
+        decode: (S5_WHISPER[1].decode.0 + 480, S5_WHISPER[1].decode.1),
+        ..replay
+    };
+    let mut outcomes = Vec::new();
+    for frame in [&replay, &shifted] {
+        let (mut ledger, owner) = s5_fixture(&format!("s5-v41-order-{}", frame.decode.0));
+        let before = ledger
+            .slots_of(&owner)
+            .expect("the S5 owner keeps its slots")
+            .to_vec();
+        let target = SlotTarget::from(&retained(&before, "Frontier"));
+        record_context_frame(&mut ledger, &owner, frame);
+        let dictionary = ledger.dictionary_witnesses(&owner, std::slice::from_ref(&target));
+        let (dt, pins) = stage_dt(&mut ledger, &owner, S5_DT_WORDS);
+        ledger.admit_word_slots(&dt, &pins);
+        let choice = latest_choice(&ledger, &dt, &target);
+        outcomes.push((
+            frame.case,
+            window_provenance(choice, &target, false),
+            window_provenance(choice, &target, true),
+            dictionary,
+            choice.reason.clone(),
+        ));
+    }
+    let published = BTreeSet::from([S5_WHISPER[1].decode]);
+    let witness = vec![(S5_WHISPER[1].decode, "Frontier".to_string())];
+    assert_eq!(
+        outcomes,
+        vec![
+            (
+                replay.case,
+                published.clone(),
+                BTreeSet::from([S5_WHISPER[2].decode]),
+                witness.clone(),
+                "whisper_consensus_retained".to_string(),
+            ),
+            (
+                shifted.case,
+                published,
+                BTreeSet::from([shifted.decode, S5_WHISPER[2].decode]),
+                witness,
+                "whisper_consensus_retained".to_string(),
+            ),
+        ],
+        "(case, published windows, context windows, dictionary, reason)"
     );
 }
