@@ -81,9 +81,8 @@ protocol TrayEngine: AnyObject {
   /// overlay action and is never written as the automatic level.
   func setAutoFormatLevel(_ level: FormattingPolicyOption)
   func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool
-  /// Notes Mode is a two-key flag (quick-notes enabled + save-only) written as
-  /// one atomic op. Returns whether the write persisted, so the UI never fakes
-  /// success on a failed write.
+  /// Notes Mode controls note saving independently of automatic paste.
+  /// Returns whether the write persisted, so the UI never fakes success.
   func setNotesMode(_ enabled: Bool) -> Bool
   func setStartInAssistive(_ enabled: Bool) -> Bool
 

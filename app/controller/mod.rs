@@ -3618,6 +3618,16 @@ impl RecordingController {
         paste_mode: PasteMode,
     ) -> Result<OverlayPasteResult> {
         let config = self.get_config().await;
+        // A posted Cmd+V is not a receipt from the recipient. Retain these
+        // exact bytes before the request so an unseen paste can be retried.
+        let mut deferred_insert_shortcut = None;
+        let mut deferred_insert_failure = None;
+        let deferred_delivery = self.arm_or_copy_deferred_payload(
+            paste_text.clone(),
+            &config,
+            &mut deferred_insert_shortcut,
+            &mut deferred_insert_failure,
+        )?;
         let focus_confirmed = target_app
             .as_deref()
             .map(str::trim)
@@ -3676,15 +3686,8 @@ impl RecordingController {
             )
         );
 
-        let mut deferred_insert_shortcut = None;
-        let mut deferred_insert_failure = None;
         let delivery = if decision.route == DeliveryRoute::ClipboardHold {
-            self.arm_or_copy_deferred_payload(
-                paste_text.clone(),
-                &config,
-                &mut deferred_insert_shortcut,
-                &mut deferred_insert_failure,
-            )?
+            deferred_delivery
         } else if focus_confirmed && preflight.can_post_events() {
             match clipboard::paste_to_stop_target(
                 &paste_text,
@@ -3700,12 +3703,7 @@ impl RecordingController {
                     if let Err(error) = outcome {
                         warn!(%error, "{context}: paste failed; arming deferred insert");
                     }
-                    self.arm_or_copy_deferred_payload(
-                        paste_text.clone(),
-                        &config,
-                        &mut deferred_insert_shortcut,
-                        &mut deferred_insert_failure,
-                    )?
+                    deferred_delivery
                 }
             }
         } else {
@@ -3717,12 +3715,7 @@ impl RecordingController {
                 focus_confirmed,
                 "{context}: could not execute the selected clipboard route; arming deferred insert"
             );
-            self.arm_or_copy_deferred_payload(
-                paste_text,
-                &config,
-                &mut deferred_insert_shortcut,
-                &mut deferred_insert_failure,
-            )?
+            deferred_delivery
         };
 
         Ok(OverlayPasteResult {
@@ -3867,27 +3860,26 @@ impl RecordingController {
                         (assistive, force_ai, capture_turn, false),
                         &config,
                         |route, payload, target_app| async move {
+                            // Retain once before requesting delivery. A later
+                            // deferred transcript may replace it while the OS
+                            // request runs; this request must never re-arm its
+                            // older bytes on completion.
+                            let deferred = self
+                                .arm_overlay_text(
+                                    &payload,
+                                    target_app,
+                                    crate::os::selection::current_frontmost_app_name(),
+                                )
+                                .await?;
                             if matches!(
                                 route,
                                 DeliveryRoute::ClipboardHold | DeliveryRoute::DeferredInsert
                             ) {
-                                return self
-                                    .arm_overlay_text(
-                                        &payload,
-                                        target_app,
-                                        Some("Codescribe".into()),
-                                    )
-                                    .await;
+                                return Ok(deferred);
                             }
                             let can_post = clipboard::synthetic_paste_preflight().can_post_events();
                             if !can_post {
-                                return self
-                                    .arm_overlay_text(
-                                        &payload,
-                                        target_app,
-                                        crate::os::selection::current_frontmost_app_name(),
-                                    )
-                                    .await;
+                                return Ok(deferred);
                             }
                             let outcome = clipboard::paste_to_stop_target(
                                 &payload,
@@ -3900,13 +3892,7 @@ impl RecordingController {
                                 if let Err(error) = outcome {
                                     warn!(%error, "Stop-path paste failed; arming deferred insert");
                                 }
-                                return self
-                                    .arm_overlay_text(
-                                        &payload,
-                                        target_app,
-                                        crate::os::selection::current_frontmost_app_name(),
-                                    )
-                                    .await;
+                                return Ok(deferred);
                             }
                             let delivery = OverlayPasteDelivery::PasteRequested;
                             Ok(OverlayPasteResult {
@@ -3916,8 +3902,8 @@ impl RecordingController {
                                 target_app_name: None,
                                 frontmost_app_name:
                                     crate::os::selection::current_frontmost_app_name(),
-                                deferred_insert_shortcut: None,
-                                deferred_insert_failure: None,
+                                deferred_insert_shortcut: deferred.deferred_insert_shortcut,
+                                deferred_insert_failure: deferred.deferred_insert_failure,
                             })
                         },
                     )
@@ -4397,8 +4383,7 @@ impl RecordingController {
             None
         };
         let trimmed = selected_refused.as_deref().unwrap_or(trimmed).trim();
-        let notes_save_only = config.quick_notes_enabled && config.quick_notes_save_only;
-        let intent = delivery_intent_from_session(assistive, force_ai, notes_save_only);
+        let intent = delivery_intent_from_session(assistive, force_ai);
         let latched_target = self.pre_overlay_frontmost_app.read().await.clone();
         // Only an armed Orient paste needs the caret observed; the probe can
         // hold that paste, never redirect it.
@@ -4982,17 +4967,12 @@ impl RecordingController {
                 } else if !assistive {
                     let cfg = self.get_config().await;
 
-                    if outcome.transcript_present
-                        && cfg.transcription_overlay_enabled
-                        && !(cfg.quick_notes_enabled && cfg.quick_notes_save_only)
-                    {
+                    if outcome.transcript_present && cfg.transcription_overlay_enabled {
                         let reason = outcome
                             .commit_trigger
                             .as_deref()
                             .unwrap_or("transcript_present");
                         info!("COMMIT decision: trigger={reason}");
-                    } else if cfg.quick_notes_enabled && cfg.quick_notes_save_only {
-                        info!("COMMIT decision: skipped (quick_notes_save_only)");
                     } else {
                         info!("COMMIT decision: skipped (delivery conditions not met)");
                     }
@@ -8249,6 +8229,105 @@ mod terminal_delivery_target_falsifiers {
                 )
                 .await
                 .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn off_with_notes_keeps_the_real_stop_payload_for_repeated_deferred_insert() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inputs = crate::config::CapturedRuntimeInputs::defaults_at(
+            root.path().to_path_buf(),
+            1_700_000_000_000,
+        );
+        inputs.values.paste_mode = PasteMode::Off;
+        inputs.values.quick_notes_enabled = true;
+        inputs.values.transcript_tagging_enabled = false;
+        inputs.user_settings.paste_mode = Some(PasteMode::Off);
+        inputs.user_settings.quick_notes_enabled = Some(true);
+        let controller = RecordingController::from_startup_inputs(
+            Config::runtime_snapshot_from_captured(inputs),
+            ControllerStartupResources::inert(),
+            root.path(),
+        );
+        for (take, text, force_ai) in [
+            ("dictation", "first transcript", false),
+            ("format", "formatted transcript", true),
+        ] {
+            let disposition = controller
+                .deliver_stop_transcript(
+                    Some(take),
+                    text,
+                    false,
+                    force_ai,
+                    CaptureTurnIntent::HandsFree,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(disposition, TranscriptDelivery::DeferredInsertArmed);
+            for _ in 0..2 {
+                assert_eq!(
+                    clipboard::deliver_deferred_insert_with(|retained| {
+                        assert_eq!(retained, text);
+                        Ok(())
+                    })
+                    .unwrap(),
+                    clipboard::DeferredInsertDelivery::PasteRequested
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn notes_do_not_override_paste_policy_on_dictation_or_format_stop() {
+        for notes in [false, true] {
+            for force_ai in [false, true] {
+                for mode in [PasteMode::Safe, PasteMode::Comfort, PasteMode::Off] {
+                    let controller = RecordingController::new_without_keychain();
+                    let config = Config {
+                        paste_mode: mode,
+                        quick_notes_enabled: notes,
+                        ..Config::default()
+                    };
+                    let result = controller
+                        .deliver_stop_transcript_with_sink(
+                            Some("paste-policy"),
+                            "complete transcript",
+                            (false, force_ai, CaptureTurnIntent::HandsFree, false),
+                            &config,
+                            |route, payload, _| async move {
+                                assert_eq!(payload, "complete transcript");
+                                if mode == PasteMode::Off {
+                                    assert_eq!(route, DeliveryRoute::DeferredInsert);
+                                } else {
+                                    assert_eq!(route, DeliveryRoute::ClipboardPaste);
+                                }
+                                Ok(OverlayPasteResult {
+                                    delivery: if mode == PasteMode::Off {
+                                        OverlayPasteDelivery::DeferredInsertArmed
+                                    } else {
+                                        OverlayPasteDelivery::PasteRequested
+                                    },
+                                    target_app_name: None,
+                                    frontmost_app_name: None,
+                                    deferred_insert_shortcut: None,
+                                    deferred_insert_failure: None,
+                                })
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        result,
+                        if mode == PasteMode::Off {
+                            TranscriptDelivery::DeferredInsertArmed
+                        } else {
+                            TranscriptDelivery::SinkAccepted
+                        }
+                    );
+                }
+            }
         }
     }
 

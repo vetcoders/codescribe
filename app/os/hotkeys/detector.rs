@@ -1366,7 +1366,7 @@ fn widget_shortcut_matches(
         && !modifiers.fn_key
 }
 
-fn deferred_insert_modifiers_match(
+pub(super) fn deferred_insert_modifiers_match(
     shortcut: DeferredInsertShortcut,
     modifiers: HotkeyModifierSnapshot,
 ) -> bool {

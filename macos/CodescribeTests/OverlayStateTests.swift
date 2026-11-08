@@ -4463,11 +4463,12 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.toast, "⌘⌥V")
   }
 
-  func testInsertFallsBackToTaggedCopyWhenHotkeyRegistrationFails() async {
+  func testInsertShowsBindingFailureWhileKeepingDeferredText() async {
     let clock = OverlayStateTestClock()
     let state = makeFinalizedState(clock: clock, text: "fallback transcript")
     let engine = OverlayStateTestEngine()
-    engine.deferOutcome = .copiedToClipboard
+    engine.deferOutcome = .deferredInsertArmed
+    engine.deferredInsertShortcutValue = nil
     engine.deferredInsertFailureValue = "Paste Here hotkey registration failed"
     engine.pasteTargetAppNameValue = "Pensieve"
     let deferCalled = expectation(description: "deferred insert fallback")
@@ -4479,7 +4480,10 @@ final class OverlayStateTests: XCTestCase {
     await fulfillment(of: [deferCalled], timeout: 1)
     await Task.yield()
 
-    XCTAssertEqual(state.toast, "copied")
+    XCTAssertEqual(state.toast, "Paste Here hotkey registration failed")
+    XCTAssertEqual(engine.deferredText, "fallback transcript")
+    XCTAssertNil(engine.copiedTaggedText)
+    XCTAssertNil(engine.pastedText)
   }
 
   func testInsertShowsCopiedToastWhenControllerGuardDegrades() async {

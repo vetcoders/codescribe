@@ -261,7 +261,7 @@ default = "safe"
 type = "string"
 reload = "hot"
 category = "clipboard"
-description = "Automatic paste of completed non-assistive dictation: safe (only into a focused editable non-password field; terminals only when the executable-content guard passes; otherwise held on the clipboard with a notification), comfort (wherever the caret is, terminals included; password fields and the terminal guard still hold), off (never paste; nothing touches the pasteboard). No-speech, empty output, Notes save-only and assistive remain hard vetoes. Replaces the retired AUTO_PASTE_ENABLED bool (settings.json true -> safe, false -> off)"
+description = "Automatic paste of completed non-assistive dictation: safe (only into a focused editable non-password field; terminals only when the executable-content guard passes; otherwise held in Deferred Paste with a notification), comfort (wherever the caret is, terminals included; password fields and the terminal guard still hold), off (never paste; nothing touches the pasteboard). No-speech, empty output and assistive remain hard vetoes. Quick Notes saves independently of paste policy. Replaces the retired AUTO_PASTE_ENABLED bool (settings.json true -> safe, false -> off)"
 
 [vars.TRAY_START_ASSISTIVE]
 default = "0"
@@ -1289,11 +1289,11 @@ category = "hotkeys"
 description = "A middle click opens the overlay's agent chooser: the wheel moves the focus, a left click opens that agent, a middle click talks to it until the next middle click. Off until chosen. While on, Codescribe consumes the middle click, and while choosing also the wheel, the left click and Escape. With MIDDLE_MOUSE_ACTS_AS_FN a hold still dictates."
 
 [vars.CODESCRIBE_DEFERRED_INSERT_SHORTCUT]
-default = "disabled"
+default = "command_option_v"
 type = "string"
 reload = "restart"
 category = "hotkeys"
-description = "Global one-shot chord delivering the armed transcript at the caret (disabled|command_option_v|command_shift_v|command_control_v). Opt-in: listen-only tap cannot swallow the chord, so host-app collisions are possible"
+description = "Global one-shot chord delivering the armed transcript at the caret (disabled|command_option_v|command_shift_v|command_control_v). Defaults to Command-Option-V; a saved explicit chord or disabled choice takes precedence"
 
 [vars.DOUBLE_TAP_INTERVAL_MS]
 default = "200"
@@ -1446,13 +1446,6 @@ type = "bool"
 reload = "restart"
 category = "storage"
 description = "Enable Quick Notes (dictation saved to daily note)"
-
-[vars.QUICK_NOTES_SAVE_ONLY]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "storage"
-description = "Quick Notes save-only mode (skip auto-paste)"
 
 [vars.CODESCRIBE_NOTES_DIR]
 default = ""

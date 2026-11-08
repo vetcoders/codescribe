@@ -324,9 +324,9 @@ fn route_hotkey_event<F, G>(
     }
 }
 
-/// Deliver the armed "Paste Here" transcript and always tell the user what
-/// happened — a silent no-op on an explicit user gesture reads as a broken
-/// hotkey, so nothing-to-insert and expiry both surface a notification.
+/// Request paste of the retained "Paste Here" transcript. A silent no-op on an
+/// explicit user gesture reads as a broken hotkey, so an empty slot or failed
+/// request surfaces a notification. Posting is not recipient acceptance.
 fn deliver_deferred_insert_and_notify() {
     // The hotkey tap holds no controller; the runtime snapshot carries the same
     // clipboard restore settings the controller passes on its own paste path.
@@ -350,19 +350,18 @@ fn deliver_deferred_insert_and_notify() {
             }
         };
     match clipboard::deliver_deferred_insert(restore_clipboard, restore_clipboard_delay_ms) {
-        Ok(clipboard::DeferredInsertDelivery::Delivered) => {
+        Ok(clipboard::DeferredInsertDelivery::PasteRequested) => {
             tracing::info!(
                 restore_clipboard,
                 restore_clipboard_delay_ms,
-                "Deferred transcript delivered"
+                "Deferred transcript paste requested"
             );
         }
-        Ok(
-            clipboard::DeferredInsertDelivery::NothingToInsert
-            | clipboard::DeferredInsertDelivery::Expired,
-        ) => notifications::notify("Codescribe", "Nothing to insert"),
+        Ok(clipboard::DeferredInsertDelivery::NothingToInsert) => {
+            notifications::notify("Codescribe", "Nothing to insert");
+        }
         Err(error) => {
-            tracing::warn!(%error, "Deferred transcript delivery failed");
+            tracing::warn!(%error, "Deferred transcript paste request failed");
             notifications::notify("Codescribe", "Couldn't insert the armed transcript");
         }
     }

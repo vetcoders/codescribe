@@ -2337,6 +2337,24 @@ class NeutralAstTests(unittest.TestCase):
                 contract = next(row for row in evidence["contracts"] if row["symbol"] == symbol)
                 self.assertFalse(contract["accepted"], name)
 
+    def test_paste_retains_exact_payload_before_the_request_without_late_rearming(self):
+        self.assertTrue(self.run_payload(self.payload)["accepted"])
+        cases = [
+            ("retention_removed", "let deferred_delivery = self.arm_or_copy_deferred_payload(",
+             "let deferred_delivery = fake_retention("),
+            ("different_payload_retained", "paste_text.clone(),", '"stale transcript".into(),'),
+            ("late_rearm_overwrites_newer_take", "deferred_delivery\n                }",
+             "self.arm_or_copy_deferred_payload(paste_text.clone(), &config, "
+             "&mut deferred_insert_shortcut, &mut deferred_insert_failure)?\n                }"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate("execute_clipboard_paste", old, new))
+                contract = next(row for row in evidence["contracts"]
+                                if row["symbol"] == "execute_clipboard_paste")
+                self.assertFalse(contract["accepted"], name)
+                self.assertFalse(evidence["accepted"], name)
+
     def test_paste_transport_rejects_transformations_after_tagging(self):
         self.assertTrue(self.run_payload(self.payload)["accepted"],
                         "mutants require an accepted current paste control")

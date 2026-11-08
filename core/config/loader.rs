@@ -1478,7 +1478,6 @@ impl Config {
 
         // Quick Notes (default: off)
         env_flag!("QUICK_NOTES_ENABLED", self.quick_notes_enabled);
-        env_flag!("QUICK_NOTES_SAVE_ONLY", self.quick_notes_save_only);
 
         // Current lane rows override the warned legacy aliases through 2026-10-15.
         if let Ok(raw) = Self::config_runtime_env_var("STT_ENDPOINT") {
@@ -1877,11 +1876,6 @@ impl Config {
             self.quick_notes_enabled,
             settings.quick_notes_enabled
         );
-        apply_copy!(
-            "QUICK_NOTES_SAVE_ONLY",
-            self.quick_notes_save_only,
-            settings.quick_notes_save_only
-        );
 
         // System
         apply_copy!(
@@ -1973,6 +1967,10 @@ impl Config {
     /// This is a persistence write only. Process-env seeding is restricted to
     /// bootstrap loads; live readers must reload the config/settings snapshot.
     pub fn save_to_env(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            key != "QUICK_NOTES_SAVE_ONLY",
+            "retired note setting: {key}; automatic paste is controlled by PASTE_MODE"
+        );
         anyhow::ensure!(
             !matches!(
                 key,
@@ -2068,6 +2066,10 @@ impl Config {
         let mut env_path: Option<PathBuf> = None;
 
         for (key, value) in entries {
+            anyhow::ensure!(
+                *key != "QUICK_NOTES_SAVE_ONLY",
+                "retired note setting: {key}; automatic paste is controlled by PASTE_MODE"
+            );
             anyhow::ensure!(
                 !matches!(
                     *key,
@@ -4607,6 +4609,24 @@ mod tests {
             !config.stt_initial_prompt_enabled,
             "explicit env must be able to keep Whisper initial_prompt disabled"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn retired_notes_paste_override_cannot_be_written_or_hide_paste_mode() {
+        let _tmp = setup_isolated_data_dir();
+        let _paste_mode = TestEnvGuard::unset("PASTE_MODE");
+        let config = Config::default();
+        config.save_to_env("PASTE_MODE", "comfort").unwrap();
+        assert!(config.save_to_env("QUICK_NOTES_SAVE_ONLY", "1").is_err());
+        assert!(
+            config
+                .save_to_env_many(&[("PASTE_MODE", "off"), ("QUICK_NOTES_SAVE_ONLY", "1")])
+                .is_err()
+        );
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Comfort));
+        let loaded = Config::load_without_keychain();
+        assert_eq!(loaded.paste_mode, PasteMode::Comfort);
     }
 
     /// settings.json can disable the live transcription overlay.

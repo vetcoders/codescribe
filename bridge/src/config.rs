@@ -181,7 +181,6 @@ pub struct CsSettings {
     // ── History / quick notes ──
     pub history_enabled: bool,
     pub quick_notes_enabled: bool,
-    pub quick_notes_save_only: bool,
     // ── STT backend ──
     pub use_local_stt: bool,
     pub local_model: String,
@@ -333,7 +332,6 @@ impl CsSettings {
             audio_retention: config.audio_retention.as_str().to_string(),
             history_enabled: config.history_enabled,
             quick_notes_enabled: config.quick_notes_enabled,
-            quick_notes_save_only: config.quick_notes_save_only,
             use_local_stt: config.use_local_stt,
             local_model: config.local_model.clone(),
             stt_file_endpoint: config.stt_file_endpoint.clone(),
@@ -874,8 +872,7 @@ pub struct CsTrayToggles {
     pub formatting_level: String,
     /// UI-initiated recording starts in the assistive lane when enabled.
     pub start_assistive: bool,
-    /// Notes Mode: voice → daily note (no paste). Backed by the core
-    /// `quick_notes_enabled` + `quick_notes_save_only` pair, flipped together.
+    /// Notes Mode: voice also saves to a daily note, independently of paste mode.
     pub notes_mode_enabled: bool,
     /// Cursor-following recording indicator visibility.
     pub hold_indicator: bool,
@@ -1116,10 +1113,7 @@ impl CodescribeConfig {
             auto_paste_enabled: config.paste_mode != PasteMode::Off,
             formatting_level: runtime.automatic_formatting_policy().as_str().to_string(),
             start_assistive: config.tray_start_assistive,
-            // Notes Mode is "on" only when BOTH flags are set (dictation → note
-            // AND no paste). Reading just quick_notes_enabled could show the toggle
-            // ON while dictation still pastes (save_only=false) — an edge desync.
-            notes_mode_enabled: config.quick_notes_enabled && config.quick_notes_save_only,
+            notes_mode_enabled: config.quick_notes_enabled,
             hold_indicator: config.hold_indicator,
             hold_badge_size: config.hold_badge_size,
         }
@@ -1156,22 +1150,10 @@ impl CodescribeConfig {
         Ok(())
     }
 
-    /// Toggle Notes Mode as one explicit two-key operation. Notes Mode means
-    /// "dictation → daily note AND no paste", so `QUICK_NOTES_ENABLED` and
-    /// `QUICK_NOTES_SAVE_ONLY` are written together in a single settings.json
-    /// update — never two independent writes that could half-succeed and desync.
+    /// Toggle daily-note saving without changing the automatic paste policy.
     pub fn set_notes_mode(&self, enabled: bool) -> Result<(), CsError> {
         let value = if enabled { "1" } else { "0" }.to_string();
-        self.update_config_many(vec![
-            CsConfigEntry {
-                key: "QUICK_NOTES_ENABLED".to_string(),
-                value: value.clone(),
-            },
-            CsConfigEntry {
-                key: "QUICK_NOTES_SAVE_ONLY".to_string(),
-                value,
-            },
-        ])
+        self.update_config("QUICK_NOTES_ENABLED".to_string(), value)
     }
 
     /// Batch variant of `update_config` (`save_to_env_many`) — one settings.json
@@ -4209,6 +4191,29 @@ mod settings_snapshot_tests {
             let env = Config::parse_env_file(&env_path).expect("parse optional env");
             assert!(!env.contains_key("PASTE_MODE"));
             assert!(!env.contains_key("FORMATTING_LEVEL"));
+        }
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn notes_mode_roundtrip_preserves_each_paste_mode() {
+        let root = scratch("notes_paste_independence");
+        std::fs::create_dir_all(&root).unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _paste_mode = EnvGuard::remove("PASTE_MODE");
+        let _notes = EnvGuard::remove("QUICK_NOTES_ENABLED");
+        let config = CodescribeConfig::new();
+        for mode in [CsPasteMode::Safe, CsPasteMode::Comfort, CsPasteMode::Off] {
+            config.set_paste_mode(mode).unwrap();
+            for enabled in [true, false] {
+                config.set_notes_mode(enabled).unwrap();
+                let toggles = config.tray_toggles();
+                assert_eq!(toggles.notes_mode_enabled, enabled);
+                assert_eq!(toggles.paste_mode, mode);
+                assert_eq!(config.load_settings().paste_mode, mode);
+            }
         }
         let _ = remove_path_without_following_symlinks(&root);
     }

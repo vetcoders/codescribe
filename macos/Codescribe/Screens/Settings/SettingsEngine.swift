@@ -1106,7 +1106,6 @@ extension CsSettings {
     audioRetention: "forever",
     historyEnabled: true,
     quickNotesEnabled: true,
-    quickNotesSaveOnly: false,
     useLocalStt: true,
     localModel: "whisper-large-v3-turbo",
     sttFileEndpoint: nil,

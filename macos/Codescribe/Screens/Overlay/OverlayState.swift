@@ -4509,8 +4509,13 @@ final class OverlayState {
       case .success(let result):
         switch result.outcome {
         case .deferredInsertArmed:
-          let shortcut = result.deferredInsertShortcut ?? "⌘⌥V"
-          self.showFooterNotice(shortcut, persists: true)
+          if let failure = result.deferredInsertFailure {
+            self.showFooterNotice(failure, persists: true)
+          } else if let shortcut = result.deferredInsertShortcut {
+            self.showFooterNotice(shortcut, persists: true)
+          } else {
+            self.showFooterNotice(String(localized: "insert unavailable"), persists: true)
+          }
         case .copiedToClipboard:
           self.showFooterNotice(String(localized: "copied"))
         case .accessibilityPermissionNeeded:
