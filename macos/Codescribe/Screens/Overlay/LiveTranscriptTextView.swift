@@ -165,7 +165,9 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     // text view below.
     scrollView.focusRingType = .none
     scrollView.hasVerticalScroller = true
-    scrollView.scrollerInsets.right = OverlayResizeHit.scrollbarInset
+    // AppKit places the scroller relative to the inset document edge. Cancel
+    // the text-only trailing reserve so tools never pull the scrollbar inward.
+    scrollView.scrollerInsets.right = OverlayResizeHit.scrollbarInset - contentInsets.right
     // The scroller policy — overlay style, autohide, no horizontal scroller —
     // belongs to `CSScrollerPin`, which the coordinator attaches below and
     // re-applies when the system preference changes (Founder, 2026-10-18).
@@ -189,6 +191,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
       oldInsets.top != contentInsets.top || oldInsets.bottom != contentInsets.bottom
       || oldInsets.left != contentInsets.left || oldInsets.right != contentInsets.right
     scrollView.contentView.contentInsets = contentInsets
+    scrollView.scrollerInsets.right = OverlayResizeHit.scrollbarInset - contentInsets.right
     guard let textView = scrollView.documentView as? LiveTranscriptNativeTextView else { return }
     update(textView, coordinator: context.coordinator)
     if insetsChanged {

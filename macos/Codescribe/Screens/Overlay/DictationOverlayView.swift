@@ -207,7 +207,9 @@ struct OverlayRecordingControls: View {
                 phase: OverlayRecordingLight.arcRotation(
                   at: Date().timeIntervalSinceReferenceDate)
               )
-              .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
+              .frame(
+                width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter
+              )
               .accessibilityHidden(true)
             }
           } else {
@@ -856,8 +858,7 @@ struct DictationOverlayView: View {
         let canvasWidth = max(
           0,
           geometry.size.width
-            - (columnShown ? drawerWidth : 0) - (railShown ? railWidth : 0)
-            - transcriptActionsWidth)
+            - (columnShown ? drawerWidth : 0) - (railShown ? railWidth : 0))
         // The conversation keeps its split width while its cell folds or
         // unfolds: the pane slide animates a clip, never a reflow. Laying the
         // text out at the folding cell's width wrapped it one character per
@@ -870,8 +871,7 @@ struct DictationOverlayView: View {
         let conversationContentWidth = max(
           0,
           geometry.size.width
-            - (columnShown ? splitDrawerWidth : 0) - (railShown ? railWidth : 0)
-            - transcriptActionsWidth)
+            - (columnShown ? splitDrawerWidth : 0) - (railShown ? railWidth : 0))
         let canvasHidden = canvasWidth < 1 || conversationFolded
         HStack(alignment: .top, spacing: 0) {
           ZStack {
@@ -1042,6 +1042,10 @@ struct DictationOverlayView: View {
             )
             .transition(.move(edge: .trailing).combined(with: .opacity))
           }
+        }
+        // Actions float over the reserved text margin. The native viewport
+        // spans the panel, so its scrollbar stays beside the window edge.
+        .overlay(alignment: .trailing) {
           if transcriptActionsShown {
             transcriptActionsColumn(
               maximumHeight: geometry.size.height, width: transcriptActionsWidth, rail: intentRail
@@ -1812,7 +1816,6 @@ struct DictationOverlayView: View {
   private var bodySection: some View {
     transcriptScroll
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .padding(.horizontal, 20)
       .background { OverlayWindowDragRegion(identifier: "overlay-body-drag-region") }
   }
 
@@ -1978,7 +1981,8 @@ struct DictationOverlayView: View {
         showsDiagnostics: showsDiagnostics,
         showsActivityUnderline: overlayVisible && state.animatesTranscriptCaret,
         contentInsets: NSEdgeInsets(
-          top: headerHeight + 4, left: 0, bottom: footerHeight + 10, right: 0),
+          top: headerHeight + 4, left: 20, bottom: footerHeight + 10,
+          right: 20 + OverlayTranscriptActionsLayout.columnWidth(textScale: textScale)),
         onEditingChanged: { editing in
           if editing { state.beginTranscriptEdit() } else { state.endTranscriptEdit() }
         },
@@ -2421,7 +2425,8 @@ private struct OverlayAgentRouterControl: View {
       .modifier(
         OverlayHeaderControlChrome(
           title: String(localized: "Fiszki", comment: "Intercom cards router button"),
-          accent: .agents, palette: palette, selected: false))
+          accent: .agents, palette: palette, selected: false)
+      )
       .accessibilityLabel(String(localized: "Fiszki", comment: "Intercom cards router button"))
       .accessibilityIdentifier("overlay-intercom-router-button")
     } else {

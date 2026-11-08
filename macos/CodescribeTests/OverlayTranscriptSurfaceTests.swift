@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Codescribe
 
-/// Transcription keeps its own action column and measures the text beside it.
+/// Transcription reserves its action column inside a window-wide native viewport.
 @MainActor
 final class OverlayTranscriptSurfaceTests: XCTestCase {
   func testPreviewOpensDictationFromAnAgentWithoutChangingCaptureOrDraft() {
@@ -110,6 +110,52 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
         XCTAssertLessThanOrEqual(
           document.bounds.height, height + 1,
           "unavailable controls must not reserve scroll space ahead of format/retranscribe")
+      }
+    }
+  }
+
+  func testTranscriptScrollbarStaysAtWindowEdgeOutsideActionsAcrossResizes() throws {
+    for scale: CGFloat in [0.8, 1.6] {
+      let state = OverlayState.previewFormatted()
+      state.showTranscription()
+      let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+      let host = NSHostingView(
+        rootView: DictationOverlayView(state: state)
+          .environment(\.csTextScale, scale)
+          .defaultAppStorage(defaults))
+      host.sizingOptions = []
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      for width: CGFloat in [900, 320, 640] {
+        window.setContentSize(NSSize(width: width, height: 600))
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        host.layoutSubtreeIfNeeded()
+        func descendants(_ view: NSView) -> [NSView] {
+          view.subviews.flatMap { [$0] + descendants($0) }
+        }
+        let scroll = try XCTUnwrap(
+          descendants(host).compactMap { $0 as? LiveTranscriptScrollView }.first)
+        let text = try XCTUnwrap(scroll.documentView as? LiveTranscriptNativeTextView)
+        let scroller = try XCTUnwrap(scroll.verticalScroller)
+        let viewport = host.convert(scroll.bounds, from: scroll)
+        let scrollerRect = host.convert(scroller.bounds, from: scroller)
+        let textRect = host.convert(text.bounds, from: text)
+        XCTAssertEqual(viewport.minX, host.bounds.minX, accuracy: 1)
+        XCTAssertEqual(viewport.maxX, host.bounds.maxX, accuracy: 1)
+        XCTAssertEqual(
+          scrollerRect.maxX, host.bounds.maxX - OverlayResizeHit.scrollbarInset, accuracy: 1)
+        XCTAssertGreaterThan(scrollerRect.minX, textRect.maxX)
+        XCTAssertEqual(textRect.minX, host.bounds.minX + 20, accuracy: 1)
+        XCTAssertEqual(
+          textRect.width, width - 40 - OverlayTranscriptActionsLayout.columnWidth(textScale: scale),
+          accuracy: 1, "actions reserve text width without moving the scroller")
+        XCTAssertFalse(window.isVisible)
+        XCTAssertFalse(window.isKeyWindow)
       }
     }
   }

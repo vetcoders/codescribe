@@ -87,8 +87,11 @@ final class OverlayChromeV3Tests: XCTestCase {
       let scroll = try XCTUnwrap(text.enclosingScrollView)
       let rect = root.convert(scroll.bounds, from: scroll)
       XCTAssertEqual(
-        rect.width, width - OverlayTranscriptActionsLayout.columnWidth(textScale: 1) - 2 * 20,
-        accuracy: 1, "the transcript reserves its actions column and two 20-point body margins")
+        rect.width, width, accuracy: 1,
+        "the native scrollbar belongs to the window edge, outside the tools")
+      XCTAssertEqual(
+        text.frame.width, width - OverlayTranscriptActionsLayout.columnWidth(textScale: 1) - 40,
+        accuracy: 1, "only the document reserves the actions column and body margins")
       XCTAssertGreaterThan(rect.height, 100)
       XCTAssertEqual(rect.minY, root.bounds.minY, accuracy: 2)
       XCTAssertEqual(rect.maxY, root.bounds.maxY, accuracy: 2)
@@ -187,8 +190,9 @@ final class OverlayChromeV3Tests: XCTestCase {
       for reduced in [false, true] {
         let root = NSHostingView(
           rootView: OverlayCanvasBackdrop(
-            palette: .resolve(scheme), reduceTransparency: reduced, role: .chrome)
-            .environment(\.colorScheme, scheme)
+            palette: .resolve(scheme), reduceTransparency: reduced, role: .chrome
+          )
+          .environment(\.colorScheme, scheme)
         )
         root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
         root.layoutSubtreeIfNeeded()

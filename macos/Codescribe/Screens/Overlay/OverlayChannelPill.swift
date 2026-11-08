@@ -382,7 +382,8 @@ struct OverlayChannelPill: View {
         if form == .stacked && display.unread {
           OverlayChannelUnreadMark(palette: palette, scale: textScale)
             .offset(
-              Self.unreadMarkOffset(outlineRadius: Self.digitCircle * textScale / 2, scale: textScale))
+              Self.unreadMarkOffset(
+                outlineRadius: Self.digitCircle * textScale / 2, scale: textScale))
         }
       }
   }

@@ -563,8 +563,9 @@ struct OverlayAgentAudioControls: View {
 
   /// Symbol activity follows the existing open input and this actual host.
   /// Reduced motion and hidden windows retain the colored open-state glyph.
-  nonisolated static func microphoneActivityActive(open: Bool, renderVisible: Bool, reduceMotion: Bool) -> Bool
-  {
+  nonisolated static func microphoneActivityActive(
+    open: Bool, renderVisible: Bool, reduceMotion: Bool
+  ) -> Bool {
     open && renderVisible && !reduceMotion
   }
   private var showsSpeaker: Bool {
@@ -2161,7 +2162,8 @@ struct OverlayChannelStatusView: View {
     } pinned: {
       // Nothing floats over the list: the mailboxes are its first rows
       // (Founder, 2026-11-04: one sidebar, no separate card on top).
-      _ in EmptyView()
+      _ in
+      EmptyView()
     } content: { rowFocus in
       VStack(alignment: .leading, spacing: 6) {
         // 0 · All and your inbox lead the list as rows like the agents'
@@ -2844,8 +2846,6 @@ struct OverlayChannelStatusView: View {
     }
     return (panelFocusTarget(for: channel) ?? .frame).help
   }
-
-
 
   /// Your inbox as a roster row: the envelope where an agent's digit and
   /// presence dot stand (it has neither), its name, the last message's
@@ -3873,7 +3873,8 @@ struct OverlayAgentStatusDot: View {
           .fill(tone.color)
           .opacity(
             Self.speakingOpacity(
-              at: context.date.timeIntervalSinceReferenceDate, reduceMotion: reduceMotion))
+              at: context.date.timeIntervalSinceReferenceDate, reduceMotion: reduceMotion)
+          )
           .frame(width: Self.diameter * textScale, height: Self.diameter * textScale)
           .accessibilityHidden(true)
       }
