@@ -435,7 +435,7 @@ struct MessageList: View {
   /// Turns that open a new calendar day, keyed to that day. The full date
   /// lives in one separator above such a turn instead of in every bubble;
   /// a turn without a time neither starts nor breaks a day.
-  static func dayBreaks(
+  nonisolated static func dayBreaks(
     in messages: some Collection<ChatMessage>,
     calendar: Calendar = .autoupdatingCurrent
   ) -> [UUID: Date] {

@@ -178,11 +178,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.finishControllerRecording()
   }
 
-  /// Founder, 2026-11-04 (bus brief §12.1): a still click on the free
-  /// background toggles mini and the bar round and round. The window opens
-  /// only from the chevron, the Agents button and the menus; from the window
-  /// a header click returns to the bar.
-  func testHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar() {
+  private func headerClickState(_ mode: OverlayIntercomPresentationMode) -> OverlayState {
+    let name = "CodescribeTests.header-click.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    preference.selectMode(mode)
     let state = OverlayState()
     state.channelMapPreference = preference
     state.engine = OverlayChromePolicyEngine()
@@ -963,7 +964,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     // The one gate both columns read: collapsed, or ordered out behind Fiszki.
     XCTAssertTrue(
       source.contains(
-        "private var expandedCanvasActive: Bool {\n    !state.isCollapsed && !hiddenBehindIntercom"))
+        "private var expandedCanvasActive: Bool {\n    !state.isCollapsed && !hiddenBehindIntercom")
+    )
     let canvas = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertTrue(
