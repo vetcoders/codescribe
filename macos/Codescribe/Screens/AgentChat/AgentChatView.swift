@@ -481,7 +481,7 @@ private struct ThreadDetail: View {
           Divider()
             .frame(width: AgentWindowMetrics.contextPanelDividerWidth)
           AgentContextPanel(
-            thread: store.currentThread,
+            store: store,
             close: { isContextOpen = false },
             openToolSettings: openToolSettings
           )

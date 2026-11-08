@@ -56,6 +56,10 @@ enum AgentContextPanelCopy {
     String(localized: "Model", comment: "Context panel fact: the conversation's model")
   }
 
+  static var queuedFact: String {
+    String(localized: "Queued", comment: "Context panel fact: accepted turns waiting to run")
+  }
+
   static var messagesFact: String {
     String(
       localized: "Messages",
@@ -231,11 +235,10 @@ struct AgentContextToggle: View {
 // MARK: - Context panel
 
 /// "Agent context": a fixed-width trailing column with what the selected
-/// conversation already stores and one way into the tool settings. It owns no
-/// state and starts nothing: every fact comes from `ChatThread`, and the tools
-/// row only opens Settings › Agent › Tools.
+/// conversation's stored facts and live execution, plus tool settings. It owns
+/// no execution state: the same store feeds the header, rail and this panel.
 struct AgentContextPanel: View {
-  let thread: ChatThread?
+  @ObservedObject var store: AgentChatStore
   let close: () -> Void
   let openToolSettings: () -> Void
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -253,7 +256,7 @@ struct AgentContextPanel: View {
       header
       Divider()
       VStack(alignment: .leading, spacing: 18) {
-        if let thread {
+        if let thread = store.currentThread {
           section(AgentContextPanelCopy.conversationSection) {
             conversationCard(thread)
           }
@@ -327,11 +330,18 @@ struct AgentContextPanel: View {
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
-      if let model = Self.model(of: thread) {
+      AgentLiveStatusPill(activity: store.headerActivity(in: thread.id))
+        .accessibilityIdentifier("agent-context-activity")
+      if let model = store.modelIdentity(for: thread) {
         fact(AgentContextPanelCopy.modelFact) {
           Text(verbatim: model)
         }
+        .accessibilityIdentifier("agent-context-model")
       }
+      fact(AgentContextPanelCopy.queuedFact) {
+        Text(verbatim: "\(store.queuedTurns(in: thread.id).count)")
+      }
+      .accessibilityIdentifier("agent-context-queued-count")
       if !thread.messages.isEmpty {
         fact(AgentContextPanelCopy.messagesFact) {
           Text(verbatim: "\(thread.messages.count)")
@@ -388,16 +398,6 @@ struct AgentContextPanel: View {
     .csFocusRing(cornerRadius: CSRadius.card)
     .help(AgentContextPanelCopy.toolSettingsHelp)
     .accessibilityIdentifier("agent-context-tool-settings")
-  }
-
-  static func model(of thread: ChatThread) -> String? {
-    guard let model = thread.model?.trimmingCharacters(in: .whitespacesAndNewlines),
-      !model.isEmpty
-    else { return nil }
-    if let provider = thread.provider, !provider.isEmpty, !model.hasPrefix(provider + "/") {
-      return provider + "/" + model
-    }
-    return model
   }
 }
 
