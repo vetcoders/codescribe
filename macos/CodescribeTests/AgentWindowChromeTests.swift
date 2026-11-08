@@ -86,6 +86,12 @@ final class AgentWindowChromeTests: XCTestCase {
     attachment.name = "Rectangular titlebar owner"
     attachment.lifetime = .keepAlways
     add(attachment)
+    let layerEvidence = XCTAttachment(
+      string: try headerJoinLayers(
+        in: window, boundary: frame(sidebar.viewController.view).maxX))
+    layerEvidence.name = "Header join compositing layers"
+    layerEvidence.lifetime = .keepAlways
+    add(layerEvidence)
     XCTAssertEqual(frame(owner.view).height, 52, accuracy: 1)
     XCTAssertEqual(rect.height, 52, accuracy: 1)
     XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
@@ -642,6 +648,42 @@ final class AgentWindowChromeTests: XCTestCase {
       viewport.identifier?.rawValue == "codescribe-header-viewport"
     else { return .zero }
     return frame(glass).intersection(frame(viewport))
+  }
+
+  /// Public view/layer geometry only, around the join shown in the desktop
+  /// captures. Runtime class names are evidence, never behavior selectors.
+  private func headerJoinLayers(in window: NSWindow, boundary: CGFloat) throws -> String {
+    let root = try XCTUnwrap(window.contentView?.superview)
+    let join = NSRect(x: boundary - 16, y: window.frame.height - 64, width: 32, height: 64)
+    var rows: [[String: Any]] = []
+    func visit(_ view: NSView, depth: Int) {
+      guard depth < 32, rows.count < 100 else { return }
+      let rect = frame(view)
+      if rect.intersects(join), !view.isHiddenOrHasHiddenAncestor {
+        var row: [String: Any] = [
+          "depth": depth, "class": String(describing: type(of: view)),
+          "identifier": view.identifier?.rawValue ?? "",
+          "frame": NSStringFromRect(rect), "visibleRect": NSStringFromRect(view.visibleRect),
+          "clipsToBounds": view.clipsToBounds, "opaque": view.isOpaque,
+          "layerMasksToBounds": view.layer?.masksToBounds ?? false,
+          "layerCornerRadius": view.layer?.cornerRadius ?? 0,
+        ]
+        if let glass = view as? NSGlassEffectView {
+          row["glassCornerRadius"] = glass.cornerRadius
+          row["glassStyle"] = glass.style.rawValue
+        }
+        if let material = view as? NSVisualEffectView {
+          row["visualEffectMaterial"] = material.material.rawValue
+          row["blendingMode"] = material.blendingMode.rawValue
+        }
+        rows.append(row)
+      }
+      for child in view.subviews { visit(child, depth: depth + 1) }
+    }
+    visit(root, depth: 0)
+    let data = try JSONSerialization.data(
+      withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+    return String(decoding: data, as: UTF8.self)
   }
 
   private func frame(_ view: NSView) -> NSRect {
