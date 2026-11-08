@@ -31,22 +31,10 @@ after another install, exits with `deferred_to_active_waiter`, because every
 attempt compares against the bundle installed at that moment. The waiter
 appends its JSON lines to `waiter.log` in the handshake directory.
 
-`make install-if-idle` builds through `make install-app`, so the same waiter
-owns the swap there too. With `INSTALL_APP_SOURCE` it copies that signed
-bundle over the installed one and then arms the same waiter itself, when an
-application is running. The installer sends no Quit of its own on either
-path, so a Founder composing in the overlay keeps the running generation
-until the waiter's `founder_composing` refusal ends. After the
-bundle is replaced it watches the running process for up to 90 seconds
-(`CODESCRIBE_INSTALL_SWAP_WAIT`) and ends with one of these lines:
-
-- `old generation exited; new generation running pid=…`: the waiter swapped it.
-- `restart required; old generation still running pid=…`: the application is
-  busy or refused; the waiter keeps trying and `waiter.log` holds the reason.
-- `old generation exited without a successor; started the installed app pid=…`:
-  the old process left and nothing replaced it, so the installer opened the
-  installed bundle. If that launch fails too, the install exits 1.
-- `installed app is ready to launch`: nothing was running, nothing is started.
+`make install-app` is the only installer, and this waiter is the only owner
+of the generation swap: nothing else sends the application a Quit. A
+Founder composing in the overlay keeps the running generation until the
+waiter's `founder_composing` refusal ends.
 
 `make restart` still stops and starts the application without asking it.
 Use it only when the application does not answer.

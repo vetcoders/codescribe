@@ -494,8 +494,8 @@ def installation_idle(
     One microphone: the live app take is the most recently started app
     session that has not ended or sealed. Historical ``session_started``
     rows without terminals are abandoned (crash / pre-lifecycle-terminal
-    buses), not a live recording — treating them as live makes
-    ``install-if-idle`` refuse forever after the first missing end.
+    buses), not a live recording — treating them as live makes every
+    idle-gated caller refuse forever after the first missing end.
 
     CLI ``cli_file_verdict`` sessions may run while the app records and do
     not hold the install flock, so an unpaired CLI session is live — but

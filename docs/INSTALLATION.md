@@ -17,7 +17,7 @@ A local app build is not a signed distribution release.
 make app PROFILE=local-release
 
 # Build and copy to /Applications/Codescribe.app
-make install-if-idle
+make install-app
 ```
 
 **Result**: App bundle installed at `/Applications/Codescribe.app`, with model/cache checks handled by `scripts/build-app.sh`.
@@ -35,17 +35,15 @@ use the explicit bundle commands below.
 
 ```bash
 make release-standard
-make install-if-idle INSTALL_APP_SOURCE="$PWD/macos/build/Build/Products/Release/Codescribe.app"
+rsync -a --delete macos/build/Build/Products/Release/Codescribe.app/ /Applications/Codescribe.app/
+make restart-if-idle
 ```
 
-The guarded installer checks the release's version, source commit, Developer ID
-signature, notarization staple and Gatekeeper acceptance. After idle checks it
-copies the signed bundle over the installed one without quitting the running
-application, holding the runtime interlock when no application holds it. An
-active take, agent turn or unreadable state refuses the copy. A running
-application is then swapped by the same `restart-if-idle` waiter that
-`make install-app` arms, at its first idle moment and never while you are
-composing; see [Restart an idle application](RESTART_IF_IDLE.md).
+Copy the bundle over the installed one as `make install-app` does, then let the idle restart
+swap a running application at its first idle moment. It never quits a
+recording, an agent turn or an overlay you are writing in; see
+[Restart an idle application](RESTART_IF_IDLE.md). There is no separate
+installer: `make install-app` is the only install path for a local build.
 
 ### Method 2: CLI and Batch Quality Tools
 
@@ -118,7 +116,7 @@ private sibling checkout when present; they are not part of the public
 source path. A machine that already has `settings.json` keeps it.
 Production DMGs do not bake the developer surface.
 
-The single-instance flag (`LSMultipleInstancesProhibited`) is stamped at install time — by `make install-app` (and so `make install-if-idle`) and every DMG lane, before codesign — never in `macos/project.yml`, so the XCTest host and dev builds still launch while the installed app runs.
+The single-instance flag (`LSMultipleInstancesProhibited`) is stamped at install time — by `make install-app` and every DMG lane, before codesign — never in `macos/project.yml`, so the XCTest host and dev builds still launch while the installed app runs.
 
 ### Supported native launch context
 

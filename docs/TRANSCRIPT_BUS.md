@@ -648,12 +648,11 @@ that has no later `session_ended` (or legacy `transcript_sealed`) for that
 same `session_id`. Historical `session_started` rows without terminals are
 abandoned takes — crash residue or buses written before the controller
 always published an end — not a live recording.
-`scripts/install-if-idle.sh` keys on that current pair, plus any unpaired
-`source=cli_file_verdict` session (the CLI does not hold the install flock),
-and on the agent-turn lease (`~/.codescribe/agent-turn.lock`, held shared by
-the app for the whole turn). A merely running app does not refuse install
-(Founder, 2026-09-08); the process-lifetime runtime lock only stops a _new_
-app start while an idle-time install is copying the bundle. Never tear down
+`bus-demux --assert-install-idle` keys on that current pair, plus any
+unpaired `source=cli_file_verdict` session (the CLI holds no app lock).
+Idle-gated restarts also take the agent-turn lease
+(`~/.codescribe/agent-turn.lock`, held shared by the app for the whole turn).
+A merely running app is not busy (Founder, 2026-09-08). Never tear down
 the app mid-take or mid-turn; never refuse install forever because an old
 session lacked an end line.
 
