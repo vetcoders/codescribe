@@ -250,6 +250,19 @@ impl AgentProvider for AnthropicProvider {
     }
 
     /// Stable provider identity string used in logs and availability gates.
+    /// The window of the model this request would go to: `options.model`, or
+    /// this provider's default when the session leaves it empty.
+    fn context_window(&self, options: &StreamOptions) -> Option<u64> {
+        let model = if options.model.trim().is_empty() {
+            &self.default_model
+        } else {
+            &options.model
+        };
+        Some(codescribe_core::agent::compaction::default_context_window(
+            model,
+        ))
+    }
+
     fn name(&self) -> &str {
         "anthropic-messages"
     }
