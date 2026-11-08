@@ -39,6 +39,12 @@ def identity(path, kind):
 record(local_install=os.environ.get("CODESCRIBE_LOCAL_INSTALL"))
 if name == "git":
     sys.exit(1)
+elif name == "security":
+    # build-app reads the default keychain's name before stage 1 for its
+    # headless-signing diagnostics. The fixture names a keychain under the
+    # disposable HOME; any other query (identities, keychain state) is refused.
+    assert args == ["default-keychain"], ("forbidden keychain query", args)
+    print('    "' + os.environ["HOME"] + '/Library/Keychains/login.keychain-db"')
 elif name == "cargo":
     assert Path.cwd() == repo
     if args[0] == "metadata":
@@ -157,14 +163,18 @@ elif name == "swiftc":
 elif name == "codesign":
     signing_identity = spec["signing_identity"]
     expected_id = "com.vetcoders.codescribe.dev" if profile == "debug" else "com.vetcoders.codescribe"
+    # A real identity signs with the hardened runtime and a timestamp, and the
+    # app (not the publisher) with the default entitlements; ad-hoc stays plain.
+    hardened = [] if signing_identity == "-" else ["--options", "runtime", "--timestamp"]
+    entitlements = [] if signing_identity == "-" else ["--entitlements", str(repo / "scripts/entitlements.plist")]
     if Path(args[-1]).name == "codescribe":
-        assert args[:-1] == ["--force", "--sign", signing_identity, "--identifier", expected_id + ".publisher"], args
+        assert args[:-1] == ["--force", *hardened, "--sign", signing_identity, "--identifier", expected_id + ".publisher"], args
         publisher = Path(args[-1])
         assert publisher.read_bytes() == b"fresh:codescribe"
         publisher.write_bytes(b"fresh:codescribe:signed")
         record(explicit_publisher_signature=True)
         sys.exit(0)
-    assert args[:-1] in [["--force", "--deep", "--sign", signing_identity, "--identifier", expected_id], ["--force", "--sign", signing_identity, "--identifier", expected_id]], args
+    assert args[:-1] in [["--force", "--deep", *hardened, *entitlements, "--sign", signing_identity, "--identifier", expected_id], ["--force", *hardened, *entitlements, "--sign", signing_identity, "--identifier", expected_id]], args
     app = Path(args[-1])
     for folder, filename in [("Frameworks", "libcodescribe_ffi.dylib"), ("MacOS", "codescribe-stt-sidecar"), ("MacOS", "codescribe-stt-bridge")]:
         copied = app / "Contents" / folder / filename
@@ -212,10 +222,15 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
     shutil.copyfile(source, repo / "scripts/build-app.sh")
     (repo / "Cargo.toml").write_text('version = "9.8.7"\n')
     (repo / "skills/codescribe/SKILL.md").write_text("fixture skill\n")
-    for entry in ["bus-demux.py", "cs-bus", "cs-say", "cs-junie", "bus-mcp.py"]:
+    # The agent bridge sources stage_agent_bridge in build-app.sh refuses to
+    # stage without: every bin/ entrypoint, the Claude marketplace manifest and
+    # the codescribe plugin directory that receives the server/ copies.
+    for entry in ["bus-demux.py", "cs-bus", "cs-say", "cs-junie", "bus-mcp.py", "bus-mcp-agent.py", "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py", "bus-mcp-sessions.py"]:
         (repo / "scripts" / entry).write_text("# fixture helper\n")
     (repo / "plugins/.claude-plugin").mkdir(parents=True)
     (repo / "plugins/.claude-plugin/marketplace.json").write_text('{"name":"fixture","plugins":[]}\n')
+    (repo / "plugins/codescribe").mkdir()
+    (repo / "plugins/codescribe/plugin.json").write_text('{"name":"codescribe"}\n')
     (repo / "scripts/lib").mkdir()
     for helper in ["generate-swift-bindings.sh", "refresh-agent-publisher-manifest.py"]:
         shutil.copyfile(helpers / helper, repo / "scripts/lib" / helper)
@@ -284,8 +299,7 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
         elif mode in ("success", "fresh-receipt", "custom-key-files"):
             assert result.returncode == 0, f"script exit {result.returncode}: {result.stdout}"
             assert "install/developer build requires" not in result.stdout, result.stdout
-            if signing_identity == "-":
-                assert not any(c["tool"] == "security" and c["argv"][:1] == ["find-identity"] for c in calls), "Explicit ad-hoc signing must not query identities"
+            assert all(c["argv"] == ["default-keychain"] for c in calls if c["tool"] == "security"), "Explicit signing must not query identities"
             for name in ["install_name_tool", "uniffi-bindgen"] + ([] if skip else ["xcodebuild"]):
                 assert any(c["tool"] == name and "sha256" in c for c in calls), name
             assert sum(c["tool"] == "codesign" and "copy" in c for c in calls) == (0 if skip else 6)
