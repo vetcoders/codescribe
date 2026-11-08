@@ -175,6 +175,11 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       activations.append((pid, bundleID))
       return true
     }
+    var viewerQueries: [String] = []
+    state.resolveFrameViewerHost = { session in
+      viewerQueries.append(session)
+      return .host(pid: 65097)
+    }
 
     state.focusAgentPanel(owner)
     let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
@@ -208,13 +213,16 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     XCTAssertEqual(focusState.phase, .succeeded)
     XCTAssertEqual(focusState.statusText, String(localized: "Focused in Frame"))
     XCTAssertEqual(state.presentationMode, .midi, "expanded overlay folds back after panel focus")
+    XCTAssertEqual(viewerQueries, ["vc-frame-main"])
     XCTAssertEqual(activations.count, 1)
-    XCTAssertEqual(activations.first?.0, 54321)
-    XCTAssertEqual(activations.first?.1, "io.vetcoders.vibecrafted")
+    XCTAssertEqual(activations.first?.0, 65097, "the live viewer, not the follower's hint")
+    XCTAssertNil(activations.first?.1, "the live registration names its own bundle")
 
     // Re-applying the same snapshot must not re-trigger host activation or fold again.
     state.setPresentationMode(.expanded)
     state.applyConversationSnapshot(snapshot)
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertEqual(viewerQueries.count, 1)
     XCTAssertEqual(activations.count, 1)
     XCTAssertEqual(state.presentationMode, .expanded)
   }
@@ -225,6 +233,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     armRoster(on: state, owner: owner)
     state.setPresentationMode(.expanded)
     state.requestAgentPanelFocusCommand = { _ in }
+    state.resolveFrameViewerHost = { _ in .host(pid: 54321) }
     var confirmation: CheckedContinuation<Bool, Never>?
     var calls = 0
     state.activateTerminalHost = { _, _ in
@@ -254,6 +263,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     armRoster(on: state, owner: owner)
     state.setPresentationMode(.expanded)
     state.requestAgentPanelFocusCommand = { _ in }
+    state.resolveFrameViewerHost = { _ in .host(pid: 54321) }
     state.activateTerminalHost = { _, _ in false }
     state.focusAgentPanel(owner)
     let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
@@ -268,6 +278,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     let owner = makeOwner()
     armRoster(on: state, owner: owner)
     state.setPresentationMode(.expanded)
+    state.resolveFrameViewerHost = { _ in .host(pid: 54321) }
     state.panelFocusTimeoutDuration = .milliseconds(20)
     state.requestAgentPanelFocusCommand = { _ in }
     var confirmation: CheckedContinuation<Bool, Never>?
@@ -296,6 +307,10 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       XCTFail("Wrong owner cannot activate")
       return false
     }
+    state.resolveFrameViewerHost = { _ in
+      XCTFail("Wrong owner cannot read the viewer")
+      return .unavailable
+    }
     state.focusAgentPanel(owner)
     let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
     state.applyConversationSnapshot(
@@ -304,17 +319,107 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .requesting)
   }
 
-  private func focusSnapshot(owner: OverlayConversationOwner, requestID: String)
-    -> OverlayChannelDeliverySnapshot
-  {
+  private func focusSnapshot(
+    owner: OverlayConversationOwner,
+    requestID: String,
+    frame: AgentFrameBinding = AgentFrameBinding(
+      session: "fixture", paneID: 42,
+      hostBundleID: "io.vetcoders.vibecrafted", hostPID: 54321)
+  ) -> OverlayChannelDeliverySnapshot {
     let result = OverlayPanelFocusResult(
       requestID: requestID, provider: owner.provider, providerSessionID: owner.providerSessionID,
       leaseID: owner.leaseID, status: "focused", exitCode: 0, elapsedMs: 1,
       emittedAt: "2026-10-25T20:00:00Z",
-      frame: AgentFrameBinding(
-        session: "fixture", paneID: 42,
-        hostBundleID: "io.vetcoders.vibecrafted", hostPID: 54321))
+      frame: frame)
     return .init(deliveries: [], conversations: [], panelFocusResults: [requestID: result])
+  }
+
+  /// The receipt recorded on 2026-11-08 05:55:32Z: the pane was focused, and
+  /// the follower named host 29313, which had exited days earlier.
+  private static let recordedStaleFrame = AgentFrameBinding(
+    session: "vc-host", paneID: 5, hostBundleID: "io.vetcoders.vibecrafted", hostPID: 29313)
+
+  func testRecordedStaleHostIsReplacedByTheApplicationShowingTheSession() async throws {
+    let state = OverlayState.previewFormatted()
+    let owner = makeOwner()
+    armRoster(on: state, owner: owner)
+    state.setPresentationMode(.expanded)
+    state.panelFocusSuccessHoldDuration = .seconds(30)
+    state.requestAgentPanelFocusCommand = { _ in }
+    var activations: [(Int32?, String?)] = []
+    state.activateTerminalHost = { pid, bundleID in
+      activations.append((pid, bundleID))
+      return true
+    }
+    var viewerQueries: [String] = []
+    state.resolveFrameViewerHost = { session in
+      viewerQueries.append(session)
+      return .host(pid: 65097)
+    }
+    state.focusAgentPanel(owner)
+    let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
+    state.applyConversationSnapshot(
+      focusSnapshot(owner: owner, requestID: requestID, frame: Self.recordedStaleFrame))
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertEqual(viewerQueries, ["vc-host"])
+    XCTAssertEqual(activations.map(\.0), [65097])
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .succeeded)
+  }
+
+  func testNoProvenViewerFailsWithoutActivatingAnything() async throws {
+    for viewer: FrameViewerHost in [
+      .noViewer, .ambiguous(pids: [65097, 71519]), .unavailable,
+    ] {
+      let state = OverlayState.previewFormatted()
+      let owner = makeOwner()
+      armRoster(on: state, owner: owner)
+      state.setPresentationMode(.expanded)
+      state.requestAgentPanelFocusCommand = { _ in }
+      state.activateTerminalHost = { pid, _ in
+        // An unreadable snapshot proves nothing about the follower's hint:
+        // the same bundle can run another host under a live, reused pid.
+        XCTFail("\(viewer) must not activate \(String(describing: pid))")
+        return true
+      }
+      state.resolveFrameViewerHost = { _ in viewer }
+      state.focusAgentPanel(owner)
+      let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
+      state.applyConversationSnapshot(
+        focusSnapshot(owner: owner, requestID: requestID, frame: Self.recordedStaleFrame))
+      for _ in 0..<30 { await Task.yield() }
+      let focusState = try XCTUnwrap(state.agentPanelFocusStates[owner.channel])
+      XCTAssertEqual(focusState.phase, .failed, "\(viewer)")
+      XCTAssertEqual(focusState.statusText, focusState.target.failureText, "\(viewer)")
+      XCTAssertEqual(state.presentationMode, .expanded, "\(viewer) leaves the overlay open")
+    }
+  }
+
+  func testAViewerFoundAfterTheTimeoutCannotActivate() async throws {
+    let state = OverlayState.previewFormatted()
+    let owner = makeOwner()
+    armRoster(on: state, owner: owner)
+    state.setPresentationMode(.expanded)
+    state.panelFocusTimeoutDuration = .milliseconds(20)
+    state.requestAgentPanelFocusCommand = { _ in }
+    state.activateTerminalHost = { _, _ in
+      XCTFail("A viewer found after the timeout cannot activate")
+      return true
+    }
+    var answer: CheckedContinuation<FrameViewerHost, Never>?
+    state.resolveFrameViewerHost = { _ in
+      await withCheckedContinuation { answer = $0 }
+    }
+    state.focusAgentPanel(owner)
+    let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
+    state.applyConversationSnapshot(focusSnapshot(owner: owner, requestID: requestID))
+    for _ in 0..<30 { await Task.yield() }
+    let pending = try XCTUnwrap(answer)
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .failed)
+    pending.resume(returning: .host(pid: 65097))
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.phase, .failed)
+    XCTAssertEqual(state.presentationMode, .expanded)
   }
 
   func testReaderConsumesPanelFocusResultFromChannelBusAndReportsFailureReasons() async throws {
@@ -333,6 +438,10 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     state.activateTerminalHost = { _, _ in
       activated = true
       return true
+    }
+    state.resolveFrameViewerHost = { _ in
+      XCTFail("A missing pane has no window to look for")
+      return .unavailable
     }
 
     state.focusAgentPanel(owner)
@@ -1085,6 +1194,10 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     state.activateTerminalHost = { pid, bundleID in
       activations.append((pid, bundleID))
       return true
+    }
+    state.resolveFrameViewerHost = { _ in
+      XCTFail("A terminal tab names its own application")
+      return .unavailable
     }
     state.focusAgentPanel(owner)
     let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)

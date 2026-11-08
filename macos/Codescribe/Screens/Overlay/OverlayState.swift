@@ -2015,6 +2015,12 @@ final class OverlayState {
     await RealAgentBridgeInstaller.activateAgentTerminalHost(
       hostPID: hostPID, hostBundleID: hostBundleID)
   }
+  /// Names the application whose Frame client shows a session now; tests
+  /// replace it so they never read this machine's processes.
+  @ObservationIgnored var resolveFrameViewerHost: @MainActor (String) async -> FrameViewerHost = {
+    session in
+    await FrameViewerHostResolver.resolveLive(session: session)
+  }
   /// Opens a Codex thread link (`codex://threads/<id>`); tests replace it.
   @ObservationIgnored var openCodexThreadLink: @MainActor (URL) -> Bool = { url in
     NSWorkspace.shared.open(url)
@@ -2183,14 +2189,17 @@ final class OverlayState {
       if result.isSuccess {
         let hostPID: Int32?
         let hostBundleID: String
+        let viewerSession: String?
         let binding = channelPlaybackAgents[channel]
         if result.frame == nil, let terminalBundleID = result.terminal?.hostBundleID {
           hostPID = nil
           hostBundleID = terminalBundleID
+          viewerSession = nil
         } else {
           hostPID = result.frame?.hostPID ?? binding?.frame?.hostPID
           hostBundleID =
             result.frame?.hostBundleID ?? binding?.frame?.hostBundleID ?? "io.vetcoders.vibecrafted"
+          viewerSession = result.frame?.session ?? binding?.frame?.session
         }
         // Consume the pane receipt once. While activation is being observed,
         // another snapshot cannot dispatch the same request a second time.
@@ -2217,7 +2226,37 @@ final class OverlayState {
             self.onChannelPresentationChanged?()
             return
           }
-          let activated = await self.activateTerminalHost(hostPID, hostBundleID)
+          var activationPID = hostPID
+          var activationBundleID: String? = hostBundleID
+          if let viewerSession {
+            // The follower's host comes from the environment the agent
+            // inherited and outlives the window it named. The window that
+            // shows the session is read now; without proof nothing is raised.
+            let viewer = await self.resolveFrameViewerHost(viewerSession)
+            guard self.agentPanelFocusStates[channel]?.requestID == state.requestID,
+              self.agentPanelFocusStates[channel]?.phase == .activating
+            else { return }
+            guard case .host(let viewerPID) = viewer else {
+              FrameViewerHostResolver.logger.notice(
+                "no window to raise for Frame session \(viewerSession, privacy: .public): \(String(describing: viewer), privacy: .public)"
+              )
+              self.agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+                requestID: state.requestID, owner: state.owner, phase: .failed,
+                statusText: target.failureText, updatedAt: Date(), target: target)
+              self.onChannelPresentationChanged?()
+              return
+            }
+            if viewerPID != hostPID {
+              FrameViewerHostResolver.logger.info(
+                "Frame session \(viewerSession, privacy: .public) is shown by \(viewerPID, privacy: .public), not the follower's \(String(describing: hostPID), privacy: .public)"
+              )
+            }
+            activationPID = viewerPID
+            // The live registration names its own bundle; the follower's
+            // bundle hint may belong to another host.
+            activationBundleID = nil
+          }
+          let activated = await self.activateTerminalHost(activationPID, activationBundleID)
           // A timeout, retry or replacement owner wins over a late completion.
           guard self.agentPanelFocusStates[channel]?.requestID == state.requestID,
             self.agentPanelFocusStates[channel]?.phase == .activating
